@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.egg
+uv.lock
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---- Data dirs: track code + index files, ignore user content ----
+
+# memory/: track code (*.py, __init__.py) but NOT the memory markdown files
+memory/**/*.md
+!memory/README.md
+memory/user/
+memory/feedback/
+memory/project/
+memory/general/
+
+# knowledge/: track code, don't track user's knowledge notes
+knowledge/*/
+!knowledge/**/__init__.py
+knowledge/**/*.md
+!knowledge/README.md
+
+# Voice: heavy models and runtime state
+voice/models/
+voice/__pycache__/
+
+# Legacy / backup files from the restructure
+*.old

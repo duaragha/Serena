@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "serena"
+version = "0.1.0"
+description = "Serena — unified brain: chats, memory, knowledge, voice, reminders, dream"
+requires-python = ">=3.10"
+dependencies = [
+    # chats (CLI, web, TUI)
+    "click>=8.0",
+    "rich>=13.0",
+    "textual>=3.0",
+    "flask>=3.0",
+    "watchdog>=4.0",
+]
+
+[project.optional-dependencies]
+voice = [
+    "anthropic>=0.84.0",
+    "faster-whisper>=1.1.0",
+    "openwakeword>=0.6.0",
+    "piper-tts>=1.2.0",
+    "sounddevice>=0.5.0",
+    "apscheduler>=3.10.0",
+    "dbus-next>=0.2.3",
+    "feedparser>=6.0.0",
+    "psutil>=6.0.0",
+    "beautifulsoup4>=4.12.0",
+    "httpx>=0.28.0",
+    "websockets>=14.0",
+    "pyyaml>=6.0",
+    "numpy>=1.26.0",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.0",
+]
+
+[project.scripts]
+chats = "cli:main"
+serena = "voice.main:main"
+
+[tool.setuptools]
+# Multiple top-level packages — one per feature.
+# Each feature folder is its own importable package.
+packages = [
+    "core",
+    "chats",
+    "memory",
+    "knowledge",
+    "ui",
+    "voice",
+    "voice.brain",
+    "voice.daemon",
+    "voice.ipc",
+    "voice.tools",
+    "voice.voice",
+    "dream",
+    "reminders",
+]
+py-modules = ["cli"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]  # line-length handled by formatter
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
