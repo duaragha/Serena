@@ -36,9 +36,11 @@ knowledge/*/
 knowledge/**/*.md
 !knowledge/README.md
 
-# Voice: heavy models and runtime state
-voice/models/
-voice/__pycache__/
+# Voice / Reminders / Docs / Dream — personal-only feature folders
+voice/
+reminders/
+docs/
+dream/
 
 # Legacy / backup files from the restructure
 *.old
