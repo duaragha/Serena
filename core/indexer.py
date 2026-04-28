@@ -328,15 +328,20 @@ def _norm_cwd(cwd: str | None) -> str:
 
 
 def _cwd_same_or_child(child_cwd: str | None, parent_cwd: str | None) -> bool:
+    """True when the two cwds are related — same dir, or one nested inside
+    the other in either direction. The 'parent' / 'child' framing is loose:
+    when Claude calls Codex via MCP, Codex often inherits a different cwd
+    (e.g. project root vs subdir), and we want to match in either direction.
+    """
     child = _norm_cwd(child_cwd)
     parent = _norm_cwd(parent_cwd)
     if not child or not parent:
         return False
     if child == parent:
         return True
-    if parent == "/":
+    if parent == "/" or child == "/":
         return False
-    return child.startswith(parent + "/")
+    return child.startswith(parent + "/") or parent.startswith(child + "/")
 
 
 def _session_seconds(row: sqlite3.Row) -> float | None:
