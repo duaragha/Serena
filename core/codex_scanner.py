@@ -39,16 +39,7 @@ class CodexFile:
 
 
 def scan_codex_sessions() -> Iterator[tuple[str, Path]]:
-    """Yield (project_dir_pseudo, jsonl_path) tuples for every Codex session
-    that originated from a real CLI invocation.
-
-    Codex's ``~/.codex/sessions/`` also stores sessions spawned by other
-    agents (e.g. Claude calling codex via MCP — those carry
-    ``originator: "Claude Code"`` in their session_meta). We only surface
-    sessions where the user ran codex directly: ``codex``, ``codex exec``,
-    or any future codex-native CLI variant whose originator name starts
-    with "codex".
-    """
+    """Yield (project_dir_pseudo, jsonl_path) tuples for Codex session files."""
     if not CODEX_SESSIONS_ROOT.exists():
         return
     for jsonl in CODEX_SESSIONS_ROOT.rglob("rollout-*.jsonl"):
@@ -60,8 +51,11 @@ def scan_codex_sessions() -> Iterator[tuple[str, Path]]:
 
 
 def _is_user_initiated(file_path: Path) -> bool:
-    """Read the first line and check the originator field. True iff the
-    session was started directly via the codex CLI (not by another agent)."""
+    """Read the first line and check whether Serena should index this file.
+
+    The name is historical: agent-spawned Codex sessions now need to flow
+    through the indexer so they can be nested under their Claude parent.
+    """
     try:
         with file_path.open("r", encoding="utf-8", errors="replace") as fh:
             first = fh.readline()
@@ -75,8 +69,7 @@ def _is_user_initiated(file_path: Path) -> bool:
         return False
     payload = obj.get("payload") or {}
     originator = (payload.get("originator") or "").lower()
-    # Whitelist anything codex-native; exclude "Claude Code", "anthropic", etc.
-    return originator.startswith("codex")
+    return originator.startswith("codex") or originator == "claude code"
 
 
 def _slugify_cwd(cwd: str) -> str:
@@ -103,6 +96,19 @@ def _coerce_datetime(s: str | None) -> datetime | None:
         return datetime.fromisoformat(s)
     except (ValueError, TypeError):
         return None
+
+
+def _is_agent_spawned_originator(
+    originator: str | None, first_ts: datetime | None, last_ts: datetime | None
+) -> bool:
+    origin = (originator or "").lower()
+    if origin in ("claude code", "codex_exec"):
+        return True
+    if origin == "codex-tui":
+        return False
+    if origin == "codex_cli_rs" and first_ts and last_ts:
+        return (last_ts - first_ts).total_seconds() < 300
+    return False
 
 
 def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
@@ -171,6 +177,7 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
     project_dir = _slugify_cwd(cwd) if cwd else "codex"
 
     first_ts = _coerce_datetime(session_meta.get("timestamp"))
+    originator = str(session_meta.get("originator") or "")
 
     try:
         stat = file_path.stat()
@@ -202,7 +209,7 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
         cr_tok = cached_input
         out_tok = out_only + reasoning
 
-    return SessionMeta(
+    meta = SessionMeta(
         session_id=sid,
         project_dir=project_dir,
         cwd=cwd,
@@ -225,6 +232,9 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
         cache_read_tokens=cr_tok,
         cache_create_tokens=cc_tok,
     )
+    meta.originator = originator
+    meta.agent_spawned = _is_agent_spawned_originator(originator, first_ts, last_ts or first_ts)
+    return meta
 
 
 def _current_device_tag() -> str:

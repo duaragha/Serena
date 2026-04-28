@@ -641,6 +641,14 @@ html, body {
   border-left-color: var(--green);
   background: rgba(63,185,80,0.12);
 }
+.session-row.child-session {
+  padding-left: 28px;
+  opacity: 0.82;
+}
+.session-row.child-session:hover,
+.session-row.child-session.focused {
+  opacity: 1;
+}
 
 .session-star {
   flex-shrink: 0;
@@ -651,6 +659,15 @@ html, body {
   color: var(--border-bright);
 }
 .session-star.starred { color: var(--amber); }
+.session-disclosure {
+  flex-shrink: 0;
+  width: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  text-align: center;
+}
+.session-disclosure:hover { color: var(--text); }
 .session-title {
   flex: 1;
   overflow: hidden;
@@ -658,6 +675,11 @@ html, body {
   white-space: nowrap;
   font-size: 12px;
   color: var(--text);
+}
+.child-count-badge {
+  margin-left: 6px;
+  color: var(--text-dim);
+  font-size: 10px;
 }
 .session-project {
   flex-shrink: 0;
@@ -1786,12 +1808,14 @@ html, body {
 let currentTab = 'chats';
 let sessions = [];
 let allSessions = [];
+let sessionSource = [];
 let currentProject = null;
 let currentSessionId = null;
 let focusedIndex = -1;
 let focusedSid = null;  // authoritative: which chat is focused, survives re-renders
 let selectedIds = new Set();
 let searchTimeout = null;
+const _expandedParents = new Set();
 
 // Memory state
 let memories = [];
@@ -1883,6 +1907,11 @@ function totalTokens(s) {
   return (s.input_tokens || 0) + (s.output_tokens || 0) + (s.cache_create_tokens || 0);
 }
 
+function setSessionSource(items) {
+  sessionSource = items || [];
+  sessions = sessionSource;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // CHATS: Data Loading
 // ═══════════════════════════════════════════════════════════════
@@ -1907,7 +1936,7 @@ async function loadSessions(projectOrDirs, opts) {
     // New session files that appear during a live terminal just show up as their
     // own rows now; user can click them to continue, or mark the old one done.
     // Keep any in-flight pseudo sessions pinned at the top after a reload
-    sessions = _pseudoSessions.length ? [..._pseudoSessions, ...allSessions] : allSessions;
+    setSessionSource(_pseudoSessions.length ? [..._pseudoSessions, ...allSessions] : allSessions);
     renderSessionList();
     updateChatCount();
   } catch(e) {
@@ -1920,7 +1949,7 @@ async function searchSessions(q) {
   try {
     const r = await fetch('/api/search?q=' + encodeURIComponent(q));
     const results = await r.json();
-    sessions = results;
+    setSessionSource(results);
     renderSessionList();
   } catch(e) {
     console.error('searchSessions:', e);
@@ -1983,42 +2012,65 @@ function updateChatCount() {
 // ═══════════════════════════════════════════════════════════════
 function renderSessionList() {
   const el = document.getElementById('sessionList');
-  if (!sessions.length) {
+  const source = sessionSource.length ? sessionSource : sessions;
+  if (!source.length) {
     el.innerHTML = '<div class="empty-text">No conversations found</div>';
     focusedIndex = -1;
     focusedSid = null;
     return;
   }
 
+  const tree = buildSessionTree(source);
+  const topSessions = tree.top;
+  const childrenByParent = tree.childrenByParent;
+  if (!topSessions.length) {
+    el.innerHTML = '<div class="empty-text">No conversations found</div>';
+    sessions = [];
+    focusedIndex = -1;
+    focusedSid = null;
+    return;
+  }
   const active = _activeTerms.size
-    ? sessions.filter(s => _activeTerms.has(s.session_id))
+    ? topSessions.filter(s => _activeTerms.has(s.session_id))
     : [];
   const activeSet = new Set(active.map(s => s.session_id));
 
   // Done chats — hidden from Active/Starred/time groups, rendered at bottom.
-  const doneList = sessions.filter(s => s.is_done && !activeSet.has(s.session_id));
+  const doneList = topSessions.filter(s => s.is_done && !activeSet.has(s.session_id));
   const doneSet = new Set(doneList.map(s => s.session_id));
 
-  const remaining = sessions.filter(s => !activeSet.has(s.session_id) && !doneSet.has(s.session_id));
+  const remaining = topSessions.filter(s => !activeSet.has(s.session_id) && !doneSet.has(s.session_id));
   const starred = remaining.filter(s => s.starred);
   const unstarred = remaining.filter(s => !s.starred);
   const rendered = [];
 
   let html = '';
+  const appendRow = (s) => {
+    const children = childrenByParent.get(s.session_id) || [];
+    html += renderSessionRow(s, rendered.length, {
+      childCount: children.length,
+      isExpanded: _expandedParents.has(s.session_id),
+    });
+    rendered.push(s);
+    if (children.length && _expandedParents.has(s.session_id)) {
+      for (const child of children) {
+        html += renderSessionRow(child, rendered.length, { isChild: true });
+        rendered.push(child);
+      }
+    }
+  };
 
   if (active.length) {
     html += '<div class="group-header active-header">\u25CF Active Terminals</div>';
     for (const s of active) {
-      html += renderSessionRow(s, rendered.length);
-      rendered.push(s);
+      appendRow(s);
     }
   }
 
   if (starred.length) {
     html += '<div class="group-header starred-header">\u2605 Starred</div>';
     for (const s of starred) {
-      html += renderSessionRow(s, rendered.length);
-      rendered.push(s);
+      appendRow(s);
     }
   }
 
@@ -2029,8 +2081,7 @@ function renderSessionList() {
       group = g;
       html += '<div class="group-header">' + esc(g) + '</div>';
     }
-    html += renderSessionRow(s, rendered.length);
-    rendered.push(s);
+    appendRow(s);
   }
 
   if (doneList.length) {
@@ -2040,8 +2091,7 @@ function renderSessionList() {
     // Always render the rows so they stay in `sessions`; hide via CSS when collapsed.
     html += '<div class="done-section' + (_doneCollapsed ? ' collapsed' : '') + '">';
     for (const s of doneList) {
-      html += renderSessionRow(s, rendered.length);
-      rendered.push(s);
+      appendRow(s);
     }
     html += '</div>';
   }
@@ -2070,6 +2120,36 @@ function toggleDoneCollapsed() {
   renderSessionList();
 }
 
+function isHiddenCodexPlumbing(s) {
+  const origin = String(s.originator || '').toLowerCase();
+  return s.parent_session_id === 'orphan-claude-code' || (origin === 'claude code' && !s.parent_session_id);
+}
+
+function buildSessionTree(source) {
+  const byId = new Map(source.map(s => [s.session_id, s]));
+  const childrenByParent = new Map();
+  const top = [];
+
+  for (const s of source) {
+    if (isHiddenCodexPlumbing(s)) continue;
+    const parentId = s.parent_session_id || '';
+    if (parentId && byId.has(parentId)) {
+      if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+      childrenByParent.get(parentId).push(s);
+    } else if (!parentId) {
+      top.push(s);
+    }
+  }
+
+  return { top, childrenByParent };
+}
+
+function toggleParentExpansion(sid) {
+  if (_expandedParents.has(sid)) _expandedParents.delete(sid);
+  else _expandedParents.add(sid);
+  renderSessionList();
+}
+
 // Bootstrap Icons (MIT) — inline SVG marks for Claude (Anthropic sparkle)
 // and Codex (OpenAI flower). Currentcolor lets CSS pick the brand tint.
 const _CLAUDE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="m3.127 10.604 3.135-1.76.053-.153-.053-.085H6.11l-.525-.032-1.791-.048-1.554-.065-1.505-.08-.38-.081L0 7.832l.036-.234.32-.214.455.04 1.009.069 1.513.105 1.097.064 1.626.17h.259l.036-.105-.089-.065-.068-.064-1.566-1.062-1.695-1.121-.887-.646-.48-.327-.243-.306-.104-.67.435-.48.585.04.15.04.593.456 1.267.981 1.654 1.218.242.202.097-.068.012-.049-.109-.181-.9-1.626-.96-1.655-.428-.686-.113-.411a2 2 0 0 1-.068-.484l.496-.674L4.446 0l.662.089.279.242.411.94.666 1.48 1.033 2.014.302.597.162.553.06.17h.105v-.097l.085-1.134.157-1.392.154-1.792.052-.504.25-.605.497-.327.387.186.319.456-.045.294-.19 1.23-.37 1.93-.243 1.29h.142l.161-.16.654-.868 1.097-1.372.484-.545.565-.601.363-.287h.686l.505.751-.226.775-.707.895-.585.759-.839 1.13-.524.904.048.072.125-.012 1.897-.403 1.024-.186 1.223-.21.553.258.06.263-.218.536-1.307.323-1.533.307-2.284.54-.028.02.032.04 1.029.098.44.024h1.077l2.005.15.525.346.315.424-.053.323-.807.411-3.631-.863-.872-.218h-.12v.073l.726.71 1.331 1.202 1.667 1.55.084.383-.214.302-.226-.032-1.464-1.101-.565-.497-1.28-1.077h-.084v.113l.295.432 1.557 2.34.08.718-.112.234-.404.141-.444-.08-.911-1.28-.94-1.44-.759-1.291-.093.053-.448 4.821-.21.246-.484.186-.403-.307-.214-.496.214-.98.258-1.28.21-1.016.19-1.263.112-.42-.008-.028-.092.012-.953 1.307-1.448 1.957-1.146 1.227-.274.109-.477-.247.045-.44.266-.39 1.586-2.018.956-1.25.617-.723-.004-.105h-.036l-4.212 2.736-.75.096-.324-.302.04-.496.154-.162 1.267-.871z"/></svg>';
@@ -2080,16 +2160,19 @@ function _agentBadge(agent) {
   return '<span class="agent-icon claude" title="Claude">' + _CLAUDE_SVG + '</span>';
 }
 
-function renderSessionRow(s, idx) {
+function renderSessionRow(s, idx, opts) {
+  opts = opts || {};
   const isFocused = idx === focusedIndex;
   const isSelected = selectedIds.has(s.session_id);
   const isActive = _activeTerms.has(s.session_id);
   const isDone = !!s.is_done;
+  const childCount = opts.childCount || 0;
   let cls = 'session-row';
   if (isFocused) cls += ' focused';
   if (isSelected) cls += ' selected';
   if (isActive) cls += ' active-terminal';
   if (isDone && !isActive) cls += ' done';
+  if (opts.isChild) cls += ' child-session';
 
   const tokens = totalTokens(s);
   const starCls = s.starred ? 'session-star starred' : 'session-star';
@@ -2102,10 +2185,21 @@ function renderSessionRow(s, idx) {
       + '</span>'
     : '';
 
-  return '<div class="' + cls + '" data-idx="' + idx + '" data-sid="' + s.session_id + '" '
+  const disclosure = childCount
+    ? '<span class="session-disclosure" title="' + childCount + ' nested Codex session' + (childCount === 1 ? '' : 's') + '" '
+      + 'onclick="event.stopPropagation();toggleParentExpansion(\'' + s.session_id + '\')">'
+      + (opts.isExpanded ? '\u25BE' : '\u25B8') + '</span>'
+    : '';
+  const childBadge = childCount
+    ? '<span class="child-count-badge">+' + childCount + '</span>'
+    : '';
+  const childAttr = childCount ? ' data-children-count="' + childCount + '"' : '';
+
+  return '<div class="' + cls + '" data-idx="' + idx + '" data-sid="' + s.session_id + '"' + childAttr + ' '
     + 'onclick="onRowClick(event,' + idx + ')" ondblclick="openConv(\'' + s.session_id + '\')">'
     + '<span class="' + starCls + '" onclick="event.stopPropagation();toggleStar(\'' + s.session_id + '\')">' + starChar + '</span>'
-    + '<span class="session-title">' + liveIndicator + _agentBadge(s.agent) + esc(s.display_title || 'Untitled') + '</span>'
+    + disclosure
+    + '<span class="session-title">' + liveIndicator + _agentBadge(s.agent) + esc(s.display_title || 'Untitled') + childBadge + '</span>'
     + '<span class="session-project">' + esc(s.project_short || '') + '</span>'
     + '<span class="session-tokens">' + formatTokens(tokens) + '</span>'
     + '<span class="session-date-created" title="Created">' + formatDate(s.first_timestamp) + '</span>'
@@ -2585,6 +2679,7 @@ function _migrateActiveOnClear(freshSessions) {
   for (const pseudo of _pseudoSessions) {
     if (!pseudo.cwd) continue;
     const pCands = freshSessions.filter(s =>
+      s.agent === 'claude' &&
       s.cwd === pseudo.cwd &&
       s.first_timestamp &&
       s.first_timestamp >= pseudo.first_timestamp
@@ -2598,6 +2693,7 @@ function _migrateActiveOnClear(freshSessions) {
     if (_isPseudoSid(oldSid)) continue;
     if (!meta.cwd) continue;
     const candidates = freshSessions.filter(s =>
+      s.agent === 'claude' &&
       !claimedByPseudo.has(s.session_id) &&
       s.session_id !== oldSid &&
       s.cwd === meta.cwd &&
@@ -2637,6 +2733,7 @@ async function _reconcilePseudos(fresh) {
     // Match heuristic: same cwd + real session started at or after the pseudo was
     // created. Pick the newest candidate to avoid stealing an older session's id.
     const candidates = fresh.filter(s =>
+      s.agent === 'claude' &&
       s.cwd === pseudo.cwd &&
       s.first_timestamp &&
       s.first_timestamp >= pseudo.first_timestamp
@@ -2716,6 +2813,8 @@ function _unmarkActive(sid) {
   if (_isPseudoSid(sid)) {
     const pi = _pseudoSessions.findIndex(p => p.session_id === sid);
     if (pi >= 0) _pseudoSessions.splice(pi, 1);
+    const srcIdx = sessionSource.findIndex(s => s.session_id === sid);
+    if (srcIdx >= 0) sessionSource.splice(srcIdx, 1);
     const si = sessions.findIndex(s => s.session_id === sid);
     if (si >= 0) sessions.splice(si, 1);
   }
@@ -3267,7 +3366,7 @@ async function newChatInline() {
     pending_rename_title: typedTitle || null,
   };
   _pseudoSessions.unshift(pseudo);
-  sessions.unshift(pseudo);
+  setSessionSource([pseudo, ...sessionSource]);
   _markActive(tempId);
 
   currentSessionId = tempId;
