@@ -1478,6 +1478,109 @@ html, body {
 .brain-card-value { font-size: 15px; font-weight: 600; color: var(--text-bright); margin-top: 2px; }
 .brain-card-sub { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
 
+/* ── Dev Servers ── */
+.dev-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 20px 40px;
+}
+.dev-wrap {
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+}
+.dev-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.dev-title {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+.dev-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dev-server-row {
+  display: grid;
+  grid-template-columns: 120px minmax(160px, 1fr) minmax(220px, 2fr) 32px;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.dev-server-row:hover {
+  border-color: var(--border-bright);
+  background: var(--surface2);
+}
+.dev-port {
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--green);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 700;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+.dev-port:hover { color: var(--text-bright); }
+.dev-command {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dev-pid {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.dev-cwd {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dev-kill {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.dev-kill:hover {
+  color: var(--red);
+  border-color: var(--red);
+  background: var(--red-dim);
+}
+@media (max-width: 760px) {
+  .dev-server-row {
+    grid-template-columns: 1fr 32px;
+    align-items: start;
+  }
+  .dev-cwd { grid-column: 1 / -1; }
+}
+
 /* ── Utility ── */
 .hidden { display: none !important; }
 .loading-text { color: var(--text-dim); padding: 20px; text-align: center; font-size: 12px; }
@@ -1517,6 +1620,7 @@ html, body {
     <div class="tab" data-tab="memory" onclick="switchTab('memory')">Memory <span class="count" id="memoryCount"></span></div>
     <div class="tab" data-tab="knowledge" onclick="switchTab('knowledge')">Knowledge <span class="count" id="knowledgeCount"></span></div>
     <div class="tab" data-tab="usage" onclick="switchTab('usage')">Usage</div>
+    <div class="tab" data-tab="dev" onclick="switchTab('dev')">Dev</div>
     <div class="tab-spacer"></div>
     <button class="tab-action" onclick="shutdownServer()" title="Shutdown server">Quit</button>
   </div>
@@ -1656,6 +1760,21 @@ html, body {
     </div>
   </div>
 
+  <!-- ═══ DEV VIEW ═══ -->
+  <div class="main hidden" id="viewDev">
+    <div class="dev-scroll">
+      <div class="dev-wrap">
+        <div class="dev-topbar">
+          <div class="dev-title">Dev Servers</div>
+          <button class="tab-action" onclick="loadDevServers()">Refresh</button>
+        </div>
+        <div class="dev-list" id="devServerList">
+          <div class="empty-text">No dev servers detected</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Shortcut Bar -->
   <div class="shortcut-bar" id="shortcutBar"></div>
 </div>
@@ -1691,6 +1810,10 @@ let usageRange = '30';
 let usageSubtab = 'overview';
 let usageData = null;
 
+// Dev server state
+let devServers = [];
+let devRefreshTimer = null;
+
 // ═══════════════════════════════════════════════════════════════
 // Tab Switching
 // ═══════════════════════════════════════════════════════════════
@@ -1701,10 +1824,13 @@ function switchTab(tab) {
   document.getElementById('viewMemory').classList.toggle('hidden', tab !== 'memory');
   document.getElementById('viewKnowledge').classList.toggle('hidden', tab !== 'knowledge');
   document.getElementById('viewUsage').classList.toggle('hidden', tab !== 'usage');
+  document.getElementById('viewDev').classList.toggle('hidden', tab !== 'dev');
   updateShortcutBar();
   if (tab === 'memory') { if (memories.length) renderMemoryList(); else loadMemories(); }
   if (tab === 'knowledge') { if (topics.length) renderTopicList(); else loadTopics(); }
   if (tab === 'usage') { loadUsage(); }
+  if (tab === 'dev') startDevRefresh();
+  else stopDevRefresh();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3060,6 +3186,7 @@ window.__gtkShortcut = function(action) {
     case 'view-memory':    switchTab('memory'); return;
     case 'view-knowledge': switchTab('knowledge'); return;
     case 'view-usage':     switchTab('usage'); return;
+    case 'view-dev':       switchTab('dev'); return;
   }
 };
 
@@ -3709,6 +3836,91 @@ function flavorLine(tokens) {
   return "You've used about " + Math.round(ratio * 100) + "% as many tokens as " + pick.name + ".";
 }
 
+// ═══════════════════════════════════════════════════════════════
+// DEV SERVERS
+// ═══════════════════════════════════════════════════════════════
+function startDevRefresh() {
+  loadDevServers();
+  if (devRefreshTimer) return;
+  devRefreshTimer = setInterval(() => {
+    if (currentTab !== 'dev') {
+      stopDevRefresh();
+      return;
+    }
+    loadDevServers();
+  }, 5000);
+}
+
+function stopDevRefresh() {
+  if (!devRefreshTimer) return;
+  clearInterval(devRefreshTimer);
+  devRefreshTimer = null;
+}
+
+async function loadDevServers() {
+  const el = document.getElementById('devServerList');
+  if (!devServers.length) el.innerHTML = '<div class="loading-text">Loading...</div>';
+  try {
+    const r = await fetch('/api/dev-servers');
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    devServers = Array.isArray(data) ? data : [];
+    renderDevServers();
+  } catch(e) {
+    console.error('loadDevServers:', e);
+    devServers = [];
+    el.innerHTML = '<div class="empty-text">No dev servers detected</div>';
+  }
+}
+
+function renderDevServers() {
+  const el = document.getElementById('devServerList');
+  if (!devServers.length) {
+    el.innerHTML = '<div class="empty-text">No dev servers detected</div>';
+    return;
+  }
+  el.innerHTML = devServers.map(s => {
+    const port = Number(s.port) || 0;
+    const pid = Number(s.pid) || 0;
+    const url = s.url || ('http://localhost:' + port);
+    const command = s.command || 'unknown';
+    const cwd = s.cwd || '\u2014';
+    return '<div class="dev-server-row">'
+      + '<button class="dev-port" onclick="window.open(\'' + escAttr(url) + '\', \'_blank\')" '
+      + 'title="' + esc(url) + '">' + esc(String(port)) + '</button>'
+      + '<div class="dev-command" title="' + esc(command) + '">' + esc(command)
+      + '<div class="dev-pid">PID ' + esc(String(pid)) + '</div></div>'
+      + '<div class="dev-cwd" title="' + esc(cwd) + '">' + esc(cwd) + '</div>'
+      + '<button class="dev-kill" onclick="killDevServer(' + pid + ')" title="Terminate process">\u2715</button>'
+      + '</div>';
+  }).join('');
+}
+
+async function killDevServer(pid) {
+  if (!pid) return;
+  const ok = await showConfirm({
+    title: 'Kill process?',
+    body: 'Send SIGTERM to PID ' + pid + '?',
+    confirm: 'Kill',
+    danger: true,
+  });
+  if (!ok) return;
+
+  try {
+    const r = await fetch('/api/kill-pid', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    showToast('Process terminated', { variant: 'success' });
+    loadDevServers();
+  } catch(e) {
+    showToast(e.message || 'Failed to terminate process', { variant: 'error' });
+  }
+}
+
 function updateShortcutBar() {
   const bar = document.getElementById('shortcutBar');
   let shortcuts = [];
@@ -3727,7 +3939,7 @@ function updateShortcutBar() {
         ['Alt+j/k', 'next/prev'],
         ['Alt+d', 'done / undone'],
         ['Alt+r/t/s', 'rename / title / star'],
-        ['Alt+1-4', 'switch tab'],
+        ['Alt+1-5', 'switch tab'],
         ['Alt+b', 'toggle files'],
         ['Ctrl+C', 'copy (if selection)'],
         ['Ctrl+V', 'paste'],
@@ -3748,6 +3960,10 @@ function updateShortcutBar() {
   } else if (currentTab === 'usage') {
     shortcuts = [
       ['r', 'cycle range'], ['t', 'toggle tab'],
+    ];
+  } else if (currentTab === 'dev') {
+    shortcuts = [
+      ['r', 'refresh'],
     ];
   }
 
@@ -3940,6 +4156,15 @@ document.addEventListener('keydown', function(e) {
     if (e.key === 't') {
       e.preventDefault();
       setUsageSubtab(usageSubtab === 'overview' ? 'models' : 'overview');
+      return;
+    }
+  }
+
+  // === DEV TAB ===
+  if (currentTab === 'dev') {
+    if (e.key === 'r') {
+      e.preventDefault();
+      loadDevServers();
       return;
     }
   }
@@ -4343,6 +4568,262 @@ def _chip_short(project_dir: str, fallback_cwd: str | None) -> str:
     return slug_short
 
 
+def _run_capture(argv: list[str], timeout: float = 3.0) -> str:
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return p.stdout or ""
+
+
+def _parse_listener_addr(raw: str) -> tuple[str, int] | None:
+    addr = raw.strip()
+    if not addr:
+        return None
+    if addr.startswith("TCP "):
+        addr = addr[4:].strip()
+    addr = addr.split(" (LISTEN)", 1)[0].strip()
+
+    match = re.search(r"(?:\[([^\]]+)\]|([^:\s]+)):(\d+)(?:\s|$)", addr)
+    if not match:
+        return None
+
+    host = (match.group(1) or match.group(2) or "").strip()
+    host = host.split("%", 1)[0]
+    if host == "*":
+        host = "0.0.0.0"
+    elif host == "localhost":
+        host = "127.0.0.1"
+
+    try:
+        port = int(match.group(3))
+    except ValueError:
+        return None
+
+    if port < 1024:
+        return None
+    if host not in {"127.0.0.1", "0.0.0.0", "::", "::1"}:
+        return None
+    return host, port
+
+
+def _discover_listeners_ss() -> list[dict]:
+    out = _run_capture(["ss", "-H", "-tlnp"], timeout=3)
+    listeners = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        parsed = _parse_listener_addr(parts[3])
+        if not parsed:
+            continue
+        pid_match = re.search(r"pid=(\d+)", line)
+        if not pid_match:
+            continue
+        command_match = re.search(r'users:\(\("([^"]+)"', line)
+        listeners.append({
+            "pid": int(pid_match.group(1)),
+            "port": parsed[1],
+            "command": command_match.group(1) if command_match else "",
+        })
+    return listeners
+
+
+def _discover_listeners_lsof() -> list[dict]:
+    listeners = []
+    out = _run_capture(["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-F", "pcn"], timeout=5)
+    current_pid: int | None = None
+    current_command = ""
+    for line in out.splitlines():
+        if line.startswith("p"):
+            try:
+                current_pid = int(line[1:])
+            except ValueError:
+                current_pid = None
+            current_command = ""
+        elif line.startswith("c"):
+            current_command = line[1:]
+        elif line.startswith("n") and current_pid:
+            parsed = _parse_listener_addr(line[1:])
+            if parsed:
+                listeners.append({
+                    "pid": current_pid,
+                    "port": parsed[1],
+                    "command": current_command,
+                })
+    if listeners:
+        return listeners
+
+    out = _run_capture(["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"], timeout=5)
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 9:
+            continue
+        try:
+            pid = int(parts[1])
+        except ValueError:
+            continue
+        if "TCP" in parts:
+            idx = parts.index("TCP")
+            if idx + 1 >= len(parts):
+                continue
+            local = parts[idx + 1]
+        else:
+            local = parts[-2] if parts[-1] == "(LISTEN)" else parts[-1]
+        parsed = _parse_listener_addr(local)
+        if parsed:
+            listeners.append({"pid": pid, "port": parsed[1], "command": parts[0]})
+    return listeners
+
+
+def _discover_listeners_netstat() -> list[dict]:
+    out = _run_capture(["netstat", "-ano"], timeout=5)
+    listeners = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        if "LISTENING" not in {p.upper() for p in parts}:
+            continue
+        parsed = _parse_listener_addr(parts[1])
+        if not parsed:
+            continue
+        try:
+            pid = int(parts[-1])
+        except ValueError:
+            continue
+        listeners.append({"pid": pid, "port": parsed[1], "command": ""})
+    return listeners
+
+
+def _windows_command_for_pid(pid: int) -> str:
+    out = _run_capture([
+        "tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH",
+    ], timeout=5)
+    line = out.splitlines()[0].strip() if out.splitlines() else ""
+    if not line or line.upper().startswith("INFO:"):
+        return ""
+    if line.startswith('"'):
+        return line.strip('"').split('","', 1)[0]
+    return line.split(",", 1)[0].strip('"')
+
+
+def _command_for_pid(pid: int, fallback: str = "") -> str:
+    if sys.platform.startswith("linux"):
+        try:
+            command = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8", errors="replace").strip()
+            if command:
+                return command
+        except OSError:
+            pass
+    elif sys.platform == "win32":
+        command = _windows_command_for_pid(pid)
+        if command:
+            return command
+
+    if sys.platform != "win32":
+        out = _run_capture(["ps", "-p", str(pid), "-o", "comm="], timeout=3).strip()
+        if out:
+            return os.path.basename(out)
+
+    return fallback or "unknown"
+
+
+def _cwd_for_pid(pid: int) -> str:
+    if sys.platform.startswith("linux"):
+        try:
+            return os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            return ""
+    if sys.platform == "darwin":
+        out = _run_capture(["lsof", "-p", str(pid), "-d", "cwd", "-Fn"], timeout=3)
+        for line in out.splitlines():
+            if line.startswith("n"):
+                return line[1:]
+    return ""
+
+
+def _cmdline_for_pid(pid: int) -> str:
+    if sys.platform.startswith("linux"):
+        try:
+            data = Path(f"/proc/{pid}/cmdline").read_bytes()
+            return data.replace(b"\0", b" ").decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+    if sys.platform != "win32":
+        return _run_capture(["ps", "-p", str(pid), "-o", "args="], timeout=3).strip()
+    return ""
+
+
+def _serena_self_pids() -> set[int]:
+    pids = {os.getpid()}
+    ppid = os.getppid()
+    if ppid > 1:
+        pids.add(ppid)
+    return pids
+
+
+def _base_command_name(command: str) -> str:
+    base = os.path.basename((command or "").strip()).lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base
+
+
+def _is_serena_process(pid: int, command: str) -> bool:
+    if pid in _serena_self_pids():
+        return True
+
+    base = _base_command_name(command)
+    if base != "chats" and not base.startswith("python"):
+        return False
+
+    cmdline = " ".join(_cmdline_for_pid(pid).lower().split())
+    if not cmdline:
+        return False
+    if base == "chats" and "desktop" in cmdline:
+        return True
+    return " -m desktop" in cmdline or "ui.web" in cmdline
+
+
+def _list_dev_servers() -> list[dict]:
+    if sys.platform == "win32":
+        raw = _discover_listeners_netstat()
+    elif sys.platform == "darwin":
+        raw = _discover_listeners_lsof()
+    else:
+        raw = _discover_listeners_ss()
+        if not raw:
+            raw = _discover_listeners_lsof()
+
+    servers: dict[tuple[int, int], dict] = {}
+    for item in raw:
+        try:
+            pid = int(item.get("pid") or 0)
+            port = int(item.get("port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pid <= 0 or port < 1024:
+            continue
+
+        command = _command_for_pid(pid, item.get("command", ""))
+        if _is_serena_process(pid, command):
+            continue
+
+        key = (pid, port)
+        if key in servers:
+            continue
+        servers[key] = {
+            "pid": pid,
+            "port": port,
+            "command": command,
+            "cwd": _cwd_for_pid(pid),
+            "url": f"http://localhost:{port}",
+        }
+
+    return sorted(servers.values(), key=lambda s: (s["port"], s["pid"]))
+
+
 @app.route("/api/projects")
 def api_projects():
     raw = list_projects()
@@ -4378,6 +4859,36 @@ def api_projects():
                 g["project_dir"] = p["project_dir"]
     out = sorted(groups.values(), key=lambda g: g.get("latest") or "", reverse=True)
     return jsonify(out)
+
+
+@app.route("/api/dev-servers")
+def api_dev_servers():
+    return jsonify(_list_dev_servers())
+
+
+@app.route("/api/kill-pid", methods=["POST"])
+def api_kill_pid():
+    data = request.get_json(silent=True) or {}
+    try:
+        pid = int(data.get("pid"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Valid pid required"}), 400
+
+    if pid <= 0:
+        return jsonify({"error": "Valid pid required"}), 400
+    if pid in _serena_self_pids():
+        return jsonify({"error": "Refusing to kill the Serena process"}), 400
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return jsonify({"error": "Process not found"}), 404
+    except PermissionError:
+        return jsonify({"error": "Permission denied"}), 403
+    except OSError as e:
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify({"ok": True})
 
 
 @app.route("/api/conversation/<session_id>")
