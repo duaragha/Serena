@@ -117,6 +117,7 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
     last_ts: datetime | None = None
     msg_count = 0
     raw_count = 0
+    last_turn_model: str | None = None
 
     try:
         with file_path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -138,6 +139,13 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
                 kind = obj.get("type")
                 if kind == "session_meta" and session_meta is None:
                     session_meta = obj.get("payload") or {}
+                elif kind == "turn_context":
+                    # Each turn records the model that ran it. Track the most
+                    # recent so the indexed value reflects the session's
+                    # current model (in case user switched mid-session).
+                    payload = obj.get("payload") or {}
+                    if payload.get("model"):
+                        last_turn_model = str(payload["model"])
                 elif kind == "event_msg":
                     payload = obj.get("payload") or {}
                     inner_kind = payload.get("type")
@@ -166,9 +174,12 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
         file_size = 0
         file_mtime = 0.0
 
-    # Derive a model hint from session_meta when present (codex's session_meta
-    # doesn't always include the model name explicitly — fall back to provider).
-    model = session_meta.get("model") or session_meta.get("model_provider") or "codex"
+    # Model resolution priority:
+    #   1. Last `turn_context` event's model (this is where codex actually
+    #      records the model used per turn — e.g. "gpt-5.4")
+    #   2. session_meta's model field (rare in current codex versions)
+    #   3. fall back to the provider name only as a last resort
+    model = last_turn_model or session_meta.get("model") or session_meta.get("model_provider") or "codex"
 
     return SessionMeta(
         session_id=sid,
