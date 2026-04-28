@@ -1,6 +1,7 @@
 """SQLite index for session metadata and full-text search."""
 
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from core.config import DATA_DIR, DB_PATH
@@ -122,6 +123,8 @@ def _migrate(conn: sqlite3.Connection):
         "is_done": "ALTER TABLE sessions ADD COLUMN is_done INTEGER DEFAULT 0",
         "done_at": "ALTER TABLE sessions ADD COLUMN done_at TEXT",
         "agent": "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+        "originator": "ALTER TABLE sessions ADD COLUMN originator TEXT",
+        "parent_session_id": "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT",
     }
     for col, sql in migrations.items():
         if col not in columns:
@@ -166,9 +169,7 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
                 discovered_ids.add(m.group(1))
 
     # Prune zombie rows: indexed sessions the scanners no longer surface.
-    # This catches both "file deleted on disk" AND "scanner refuses to yield
-    # it anymore" (e.g. codex sessions originally spawned by Claude via MCP
-    # that we now filter out).
+    # This catches files deleted on disk or filtered out by scanner policy.
     zombies = [sid for sid in existing_paths if sid not in discovered_ids]
     for sid in zombies:
         conn.execute("DELETE FROM tags WHERE session_id = ?", (sid,))
@@ -221,6 +222,7 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
             project_dir = meta.project_dir
         _upsert_session(conn, meta, all_meta, agent=agent)
 
+    _attribute_codex_parents(conn)
     conn.commit()
     conn.close()
     return new_count, updated_count
@@ -284,8 +286,8 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
          first_timestamp, last_timestamp,
          message_count, raw_message_count, is_teammate,
          model, git_branch, slug, file_path, file_size, file_mtime,
-         input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, agent)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, agent, originator)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         meta.session_id, meta.project_dir, meta.cwd, meta.last_cwd, meta.device,
         meta.first_message, title, custom_title, starred, is_done, done_at,
@@ -295,7 +297,7 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
         meta.model, meta.git_branch, meta.slug,
         meta.file_path, meta.file_size, meta.file_mtime,
         meta.input_tokens, meta.output_tokens, meta.cache_read_tokens, meta.cache_create_tokens,
-        agent,
+        agent, getattr(meta, "originator", None),
     ))
 
     # Apply synced tags
@@ -305,6 +307,102 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
                 "INSERT OR IGNORE INTO tags (session_id, tag) VALUES (?, ?)",
                 (meta.session_id, tag),
             )
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _norm_cwd(cwd: str | None) -> str:
+    if not cwd:
+        return ""
+    norm = cwd.replace("\\", "/").rstrip("/")
+    if len(norm) >= 2 and norm[1] == ":":
+        norm = norm[0].lower() + norm[1:]
+    return norm or "/"
+
+
+def _cwd_same_or_child(child_cwd: str | None, parent_cwd: str | None) -> bool:
+    child = _norm_cwd(child_cwd)
+    parent = _norm_cwd(parent_cwd)
+    if not child or not parent:
+        return False
+    if child == parent:
+        return True
+    if parent == "/":
+        return False
+    return child.startswith(parent + "/")
+
+
+def _session_seconds(row: sqlite3.Row) -> float | None:
+    first = _parse_dt(row["first_timestamp"])
+    last = _parse_dt(row["last_timestamp"]) or first
+    if not first or not last:
+        return None
+    return max(0.0, (last - first).total_seconds())
+
+
+def _is_agent_spawned_candidate(row: sqlite3.Row) -> bool:
+    origin = (row["originator"] or "").lower()
+    if origin in ("claude code", "codex_exec"):
+        return True
+    if origin == "codex-tui":
+        return False
+    if origin == "codex_cli_rs":
+        seconds = _session_seconds(row)
+        return seconds is not None and seconds < 300
+    return False
+
+
+def _find_claude_parent(codex: sqlite3.Row, claude_rows: list[sqlite3.Row]) -> str | None:
+    codex_first = _parse_dt(codex["first_timestamp"])
+    if not codex_first:
+        return None
+
+    matches: list[tuple[datetime, str]] = []
+    for claude in claude_rows:
+        if not _cwd_same_or_child(codex["cwd"], claude["cwd"]):
+            continue
+        claude_first = _parse_dt(claude["first_timestamp"])
+        claude_last = _parse_dt(claude["last_timestamp"]) or claude_first
+        if not claude_first or not claude_last:
+            continue
+        if claude_first <= codex_first <= claude_last + timedelta(minutes=10):
+            matches.append((claude_last, claude["session_id"]))
+
+    if not matches:
+        return None
+    matches.sort(reverse=True)
+    return matches[0][1]
+
+
+def _attribute_codex_parents(conn: sqlite3.Connection):
+    claude_rows = conn.execute("""
+        SELECT session_id, cwd, first_timestamp, last_timestamp
+        FROM sessions
+        WHERE agent = 'claude'
+    """).fetchall()
+    codex_rows = conn.execute("""
+        SELECT session_id, cwd, first_timestamp, last_timestamp, originator
+        FROM sessions
+        WHERE agent = 'codex'
+    """).fetchall()
+
+    for row in codex_rows:
+        parent_id = None
+        if _is_agent_spawned_candidate(row):
+            parent_id = _find_claude_parent(row, claude_rows)
+            if not parent_id and (row["originator"] or "").lower() == "claude code":
+                parent_id = "orphan-claude-code"
+        conn.execute(
+            "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+            (parent_id, row["session_id"]),
+        )
 
 
 def build_fts(progress_callback=None):
