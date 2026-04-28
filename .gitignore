@@ -42,3 +42,24 @@ voice/__pycache__/
 
 # Legacy / backup files from the restructure
 *.old
+*.bak
+
+# Personal config / state — never commit
+Persona.md
+.codex
+.claude/
+.serena_local/
+*.local.json
+*.local.toml
+config.local.*
+
+# Reminders runtime data (DB lives in user's home, but ignore stray inputs/outputs)
+reminders/inputs/*
+reminders/outputs/*
+!reminders/inputs/.gitkeep
+!reminders/outputs/.gitkeep
+
+# Dream consolidations (runtime memory snapshots)
+dream/*.json
+dream/*.md
+dream/*.log

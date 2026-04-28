@@ -1,7 +1,19 @@
 from pathlib import Path
+import json
 import os
 import re
 import sys
+import time
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_DIR", Path.home() / ".claude"))
@@ -91,20 +103,53 @@ def resolve_session_cwd(raw_cwd: str | None) -> str:
 
 
 def _layout_candidates(rest: str):
-    """Yield candidate local paths for a user-relative suffix, swapping the
-    Linux ``Documents/Projects/`` layout with the Windows ``Projects/`` layout
-    (and vice versa) so cross-OS resumes land in the right repo.
+    """Yield candidate local paths for a user-relative suffix, mapping between
+    the Linux ``Documents/Projects/`` layout (sometimes nested under
+    ``personal_projects/``) and the flat Windows ``Projects/`` layout, so
+    cross-OS resumes land in the right repo.
     """
     home = Path.home()
     if not rest:
         yield home
         return
     yield home / rest
-    parts = rest.replace("\\", "/").split("/")
+    parts = [p for p in rest.replace("\\", "/").split("/") if p]
+
+    def _suffix_paths(after_idx: int):
+        """Drop optional 'personal_projects' segment; yield trailing path candidates."""
+        tail = parts[after_idx:]
+        seen = set()
+        variants: list[list[str]] = []
+        if tail:
+            variants.append(tail)
+            if tail[0] == "personal_projects" and len(tail) >= 2:
+                variants.append(tail[1:])
+        else:
+            variants.append([])
+        for v in variants:
+            key = tuple(v)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield v
+
     if len(parts) >= 2 and parts[0] == "Documents" and parts[1] == "Projects":
-        yield home / "Projects" / Path(*parts[2:]) if parts[2:] else home / "Projects"
+        for tail in _suffix_paths(2):
+            yield home / "Projects" / Path(*tail) if tail else home / "Projects"
+        # Also try parent dirs as fallback when the leaf is missing
+        if len(parts) > 3:
+            for cut in range(len(parts) - 1, 1, -1):
+                yield home / "Projects" / Path(*parts[2:cut]) if parts[2:cut] else home / "Projects"
     elif parts and parts[0] == "Projects":
-        yield home / "Documents" / "Projects" / Path(*parts[1:]) if parts[1:] else home / "Documents" / "Projects"
+        for tail in _suffix_paths(1):
+            base = home / "Documents" / "Projects"
+            yield base / Path(*tail) if tail else base
+            if tail:
+                yield base / "personal_projects" / Path(*tail)
+        # Also try parent dirs as fallback
+        if len(parts) > 2:
+            for cut in range(len(parts) - 1, 0, -1):
+                yield home / "Documents" / "Projects" / Path(*parts[1:cut]) if parts[1:cut] else home / "Documents" / "Projects"
 
 
 def claude_project_dir_for(path: str) -> str:
@@ -114,7 +159,145 @@ def claude_project_dir_for(path: str) -> str:
     where ``<name>`` is the absolute path with ``/``, ``\\``, and ``:`` all
     replaced by ``-``.
     """
-    return re.sub(r"[\\/:]", "-", path)
+    name = re.sub(r"[\\/:]", "-", path)
+    if sys.platform == "win32":
+        return name.replace("_", "-")
+    return name
+
+
+def _history_project_key(project: str) -> str:
+    if sys.platform == "win32":
+        return os.path.normcase(os.path.abspath(project))
+    return project
+
+
+def _lock_history(lock_file) -> None:
+    if fcntl is not None:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    elif msvcrt is not None:
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+
+
+def _unlock_history(lock_file) -> None:
+    if fcntl is not None:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    elif msvcrt is not None:
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def register_session_in_history(session_id: str, project: str, display: str) -> None:
+    history_path = CLAUDE_DIR / "history.jsonl"
+    lock_path = CLAUDE_DIR / "history.jsonl.lock"
+    display_text = (display or "").strip()[:500] or "(cross-platform resume)"
+    project_key = _history_project_key(project)
+
+    try:
+        CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as lock_file:
+            if lock_path.stat().st_size == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            locked = False
+            try:
+                _lock_history(lock_file)
+                locked = True
+                if not history_path.exists():
+                    history_path.touch()
+                    existing = ""
+                else:
+                    existing = history_path.read_text(encoding="utf-8", errors="replace")
+
+                for line in existing.splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    row_project = row.get("project")
+                    if (
+                        row.get("sessionId") == session_id
+                        and isinstance(row_project, str)
+                        and _history_project_key(row_project) == project_key
+                    ):
+                        return
+
+                row = {
+                    "display": display_text,
+                    "pastedContents": {},
+                    "timestamp": int(time.time() * 1000),
+                    "project": project,
+                    "sessionId": session_id,
+                }
+                encoded = (json.dumps(row, separators=(",", ":")) + "\n").encode("utf-8")
+                with history_path.open("a+b") as history_file:
+                    if history_path.stat().st_size > 0:
+                        history_file.seek(-1, os.SEEK_END)
+                        if history_file.read(1) != b"\n":
+                            history_file.write(b"\n")
+                    history_file.write(encoded)
+            finally:
+                if locked:
+                    _unlock_history(lock_file)
+    except OSError:
+        pass
+
+
+def _display_from_session_file(path: Path) -> str:
+    fallback = "(cross-platform resume)"
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for index, line in enumerate(handle):
+                if index >= 50:
+                    break
+                record = json.loads(line)
+                if record.get("type") != "user":
+                    continue
+                message = record.get("message")
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if isinstance(content, str) and content:
+                    return content[:200]
+                if isinstance(content, list):
+                    for item in content:
+                        if not isinstance(item, dict) or item.get("type") != "text":
+                            continue
+                        text = item.get("text")
+                        if isinstance(text, str) and text:
+                            return text[:200]
+    except Exception:
+        pass
+    return fallback
+
+
+def _place_session_file(src: Path, dst: Path) -> bool:
+    if dst.exists() or dst.is_symlink():
+        return True
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    # Symlink: cheap, appends propagate. On Windows this needs admin/dev-mode,
+    # so fall back to hardlink (same volume, no perms needed, appends still
+    # propagate), then finally copy.
+    try:
+        dst.symlink_to(src)
+        return True
+    except OSError:
+        pass
+    try:
+        os.link(src, dst)
+        return True
+    except OSError:
+        pass
+    try:
+        import shutil
+        shutil.copy2(src, dst)
+        return True
+    except OSError:
+        return False
 
 
 def ensure_session_visible(session_id: str, source_project_dir: str, target_cwd: str) -> None:
@@ -125,32 +308,21 @@ def ensure_session_visible(session_id: str, source_project_dir: str, target_cwd:
     target cwd's project dir (e.g. ``-home-raghav``). Symlink the JSONL into
     place when missing so Claude can find it without duplicating data.
     """
-    target_name = claude_project_dir_for(target_cwd)
-    if target_name == source_project_dir:
-        return
+    target_names = [claude_project_dir_for(target_cwd)]
+    if sys.platform == "win32":
+        fallback_name = re.sub(r"[\\/:]", "-", target_cwd)
+        if fallback_name not in target_names:
+            target_names.append(fallback_name)
     src = PROJECTS_DIR / source_project_dir / f"{session_id}.jsonl"
     if not src.exists():
         return
-    dst_dir = PROJECTS_DIR / target_name
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    dst = dst_dir / f"{session_id}.jsonl"
-    if dst.exists() or dst.is_symlink():
-        return
-    # Symlink: cheap, appends propagate. On Windows this needs admin/dev-mode,
-    # so fall back to hardlink (same volume, no perms needed, appends still
-    # propagate), then finally copy.
-    try:
-        dst.symlink_to(src)
-        return
-    except OSError:
-        pass
-    try:
-        os.link(src, dst)
-        return
-    except OSError:
-        pass
-    try:
-        import shutil
-        shutil.copy2(src, dst)
-    except OSError:
-        pass
+    display = _display_from_session_file(src)
+    placed = False
+    for target_name in target_names:
+        if target_name == source_project_dir:
+            placed = True
+            continue
+        dst = PROJECTS_DIR / target_name / f"{session_id}.jsonl"
+        placed = _place_session_file(src, dst) or placed
+    if placed:
+        register_session_in_history(session_id, target_cwd, display)

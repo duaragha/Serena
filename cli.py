@@ -444,6 +444,17 @@ def web(host, port):
 
 
 @main.command()
+def desktop():
+    """Launch the desktop shell (native GTK on Linux, pywebview elsewhere)."""
+    import sys as _sys
+    if _sys.platform.startswith("linux"):
+        from desktop.app_gtk import run
+    else:
+        from desktop.app import run
+    run()
+
+
+@main.command()
 @click.option("--force", "-f", is_flag=True, help="Force full reindex")
 def reindex(force):
     """Rebuild the session and knowledge index."""

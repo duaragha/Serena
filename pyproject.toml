@@ -13,10 +13,17 @@ dependencies = [
     "rich>=13.0",
     "textual>=3.0",
     "flask>=3.0",
+    "flask-sock>=0.7",
+    "ptyprocess>=0.7; sys_platform != 'win32'",
+    "pywinpty>=2.0; sys_platform == 'win32'",
     "watchdog>=4.0",
 ]
 
 [project.optional-dependencies]
+desktop = [
+    "pywebview[gtk]>=5.0; sys_platform == 'linux'",
+    "pywebview>=5.0; sys_platform != 'linux'",
+]
 voice = [
     "anthropic>=0.84.0",
     "faster-whisper>=1.1.0",
@@ -52,6 +59,7 @@ packages = [
     "memory",
     "knowledge",
     "ui",
+    "desktop",
     "voice",
     "voice.brain",
     "voice.daemon",
