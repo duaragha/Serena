@@ -184,8 +184,7 @@ serena/
 │   ├── app_gtk.py        # Linux-native GTK shell with VTE
 │   └── app.py            # pywebview fallback for macOS/Windows
 ├── memory/               # code only; user notes gitignored
-├── knowledge/            # code only; user notes gitignored
-└── docs/                 # specs and design docs
+└── knowledge/            # code only; user notes gitignored
 ```
 
 ## Storage
