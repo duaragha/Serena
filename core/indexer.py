@@ -353,27 +353,31 @@ def _session_seconds(row: sqlite3.Row) -> float | None:
 
 
 def _is_agent_spawned_candidate(row: sqlite3.Row) -> bool:
-    """True when a codex session was spawned by another agent (Claude via
-    MCP server, or the Claude Code VS Code extension) — using the codex
-    session_meta `source` field as the authoritative signal. The originator
-    is packed as "<originator>:<source>".
+    """True when a codex session might have been spawned by another agent.
+    The originator is packed as "<originator>:<source>".
 
-    Counts as agent-spawned: source=mcp, source=vscode, or originator=Claude Code.
-    User-initiated (NOT nested): source=cli (interactive), source=exec (one-shot).
+    Definite agent-spawned (always candidate): source=mcp, source=vscode,
+        or originator=Claude Code.
+    Ambiguous (candidate, but only nests if a Claude parent matches by
+        cwd+time): source=exec — `codex exec` can be user-initiated OR
+        called by claude's Bash tool. The time-window check in
+        _find_claude_parent does the disambiguation. No parent match
+        means real user one-shot, stays top-level.
+    Definitely user-initiated (never candidate): source=cli — real
+        interactive `codex` CLI use; would never overlap with a claude
+        session in the same cwd at the same time.
     """
     origin = (row["originator"] or "").lower()
     if ":" in origin:
         orig_part, source = origin.split(":", 1)
         source = source.strip()
-        if source in ("mcp", "vscode"):
+        if source in ("mcp", "vscode", "exec"):
             return True
-        if source in ("cli", "exec"):
+        if source == "cli":
             return False
-        # Unknown source → fall through to originator-based check
         origin_check = orig_part.strip()
     else:
         origin_check = origin
-    # Originator-based fallback: explicit "Claude Code" tag is always agent-spawned
     return origin_check == "claude code"
 
 
