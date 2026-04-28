@@ -353,15 +353,19 @@ def _session_seconds(row: sqlite3.Row) -> float | None:
 
 
 def _is_agent_spawned_candidate(row: sqlite3.Row) -> bool:
+    """Originator-based decision on whether a codex session might've been
+    spawned by another agent (e.g. Claude calling codex via MCP). The
+    actual parent match still needs cwd + time-window overlap to confirm.
+    """
     origin = (row["originator"] or "").lower()
-    if origin in ("claude code", "codex_exec"):
-        return True
+    # codex-tui = real interactive codex CLI, never agent-spawned
     if origin == "codex-tui":
         return False
-    if origin == "codex_cli_rs":
-        seconds = _session_seconds(row)
-        return seconds is not None and seconds < 300
-    return False
+    # Anything else codex-prefixed (codex_exec, codex_cli_rs) or "Claude Code"
+    # is a candidate. The cwd + time-window check in _find_claude_parent does
+    # the actual disambiguation — agentic work via MCP can run for 10+ minutes,
+    # so don't reject by duration.
+    return True
 
 
 def _find_claude_parent(codex: sqlite3.Row, claude_rows: list[sqlite3.Row]) -> str | None:
