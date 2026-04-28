@@ -118,6 +118,7 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
     msg_count = 0
     raw_count = 0
     last_turn_model: str | None = None
+    last_total_usage: dict | None = None  # cumulative; codex emits a fresh snapshot each turn
 
     try:
         with file_path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -155,6 +156,11 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
                             first_user_msg = text.strip()[:500]
                     if inner_kind in ("user_message", "agent_message", "assistant_message"):
                         msg_count += 1
+                    if inner_kind == "token_count":
+                        info = payload.get("info") or {}
+                        usage = info.get("total_token_usage") if isinstance(info, dict) else None
+                        if isinstance(usage, dict):
+                            last_total_usage = usage
     except OSError:
         return None
 
@@ -181,6 +187,21 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
     #   3. fall back to the provider name only as a last resort
     model = last_turn_model or session_meta.get("model") or session_meta.get("model_provider") or "codex"
 
+    # Token mapping: codex's `input_tokens` is total input (cached + uncached);
+    # `cached_input_tokens` is the cache-hit portion; `output_tokens` is model
+    # output proper; `reasoning_output_tokens` is the hidden reasoning trace.
+    # Map onto Claude's schema: in (uncached), out (output + reasoning),
+    # cache_read (cached_input), cache_create (codex doesn't track separately).
+    in_tok = out_tok = cr_tok = cc_tok = 0
+    if last_total_usage:
+        total_input = int(last_total_usage.get("input_tokens") or 0)
+        cached_input = int(last_total_usage.get("cached_input_tokens") or 0)
+        out_only = int(last_total_usage.get("output_tokens") or 0)
+        reasoning = int(last_total_usage.get("reasoning_output_tokens") or 0)
+        in_tok = max(0, total_input - cached_input)
+        cr_tok = cached_input
+        out_tok = out_only + reasoning
+
     return SessionMeta(
         session_id=sid,
         project_dir=project_dir,
@@ -199,10 +220,10 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
         file_path=str(file_path),
         file_size=file_size,
         file_mtime=file_mtime,
-        input_tokens=0,
-        output_tokens=0,
-        cache_read_tokens=0,
-        cache_create_tokens=0,
+        input_tokens=in_tok,
+        output_tokens=out_tok,
+        cache_read_tokens=cr_tok,
+        cache_create_tokens=cc_tok,
     )
 
 
