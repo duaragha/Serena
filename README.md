@@ -1,4 +1,4 @@
-# Serena — Chats / Memory / Knowledge Browser
+# Serena — Chats / Memory / Knowledge AI Wrapper
 
 A unified UI for managing Claude Code conversations, memories, and knowledge.
 
