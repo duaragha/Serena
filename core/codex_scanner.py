@@ -177,7 +177,17 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
     project_dir = _slugify_cwd(cwd) if cwd else "codex"
 
     first_ts = _coerce_datetime(session_meta.get("timestamp"))
-    originator = str(session_meta.get("originator") or "")
+    # Encode the launch source into the originator field we already have:
+    # codex's session_meta has both `originator` (codex_cli_rs / codex_exec /
+    # codex-tui / "Claude Code") and `source` (mcp / cli / exec). The combo is
+    # the cleanest signal for "was this spawned by another agent?". We pack
+    # them as "<originator>:<source>" so downstream attribution can read both.
+    raw_originator = str(session_meta.get("originator") or "")
+    raw_source = str(session_meta.get("source") or "")
+    if raw_source:
+        originator = f"{raw_originator}:{raw_source}"
+    else:
+        originator = raw_originator
 
     try:
         stat = file_path.stat()

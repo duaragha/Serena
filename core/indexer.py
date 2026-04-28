@@ -353,19 +353,21 @@ def _session_seconds(row: sqlite3.Row) -> float | None:
 
 
 def _is_agent_spawned_candidate(row: sqlite3.Row) -> bool:
-    """Originator-based decision on whether a codex session might've been
-    spawned by another agent (e.g. Claude calling codex via MCP). The
-    actual parent match still needs cwd + time-window overlap to confirm.
+    """True when a codex session was spawned by another agent (e.g. Claude
+    calling codex via MCP) — using the codex session_meta `source` field
+    as the authoritative signal. We pack it into originator as
+    "<originator>:<source>". Only `source=mcp` qualifies for nesting.
+    Real CLI invocations (`source=cli`) and user-initiated one-shots
+    (`source=exec`) stay top-level.
     """
     origin = (row["originator"] or "").lower()
-    # codex-tui = real interactive codex CLI, never agent-spawned
-    if origin == "codex-tui":
-        return False
-    # Anything else codex-prefixed (codex_exec, codex_cli_rs) or "Claude Code"
-    # is a candidate. The cwd + time-window check in _find_claude_parent does
-    # the actual disambiguation — agentic work via MCP can run for 10+ minutes,
-    # so don't reject by duration.
-    return True
+    # Newer codex versions: "<originator>:<source>" — match on the source half.
+    if ":" in origin:
+        source = origin.split(":", 1)[1].strip()
+        return source == "mcp"
+    # Legacy fallback for sessions parsed before the source pack landed:
+    # "Claude Code" originator was the old explicit MCP marker.
+    return origin == "claude code"
 
 
 def _find_claude_parent(codex: sqlite3.Row, claude_rows: list[sqlite3.Row]) -> str | None:
