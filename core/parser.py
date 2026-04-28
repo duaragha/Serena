@@ -27,6 +27,8 @@ class SessionMeta:
     first_timestamp: datetime | None = None
     last_timestamp: datetime | None = None
     message_count: int = 0
+    raw_message_count: int = 0
+    is_teammate: bool = False
     model: str | None = None
     git_branch: str | None = None
     slug: str | None = None
@@ -96,6 +98,8 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
 
     user_count = 0
     assistant_count = 0
+    raw_count = 0
+    first_user_seen = False
 
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
@@ -111,10 +115,18 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
                 rec_type = record.get("type")
                 timestamp_str = record.get("timestamp")
 
+                if rec_type in ("user", "assistant"):
+                    raw_count += 1
+
                 if rec_type == "user" and "message" in record:
                     msg = record["message"]
                     content = msg.get("content", "")
                     text = _extract_text(content)
+
+                    if not first_user_seen:
+                        first_user_seen = True
+                        if isinstance(content, str) and content.lstrip().startswith("<teammate-message"):
+                            meta.is_teammate = True
 
                     # Skip tool results for first message detection
                     if isinstance(content, list):
@@ -175,6 +187,7 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
         pass
 
     meta.message_count = user_count + assistant_count
+    meta.raw_message_count = raw_count
     meta.device = _detect_device(project_dir, meta.cwd)
     return meta
 

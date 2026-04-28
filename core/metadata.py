@@ -51,6 +51,42 @@ def set_custom_title(session_id: str, title: str) -> None:
     _save(data)
 
 
+def set_model(session_id: str, model: str | None) -> None:
+    """Pin the model for a session (overrides the global /model setting on spawn)."""
+    data = _load()
+    entry = data.setdefault(session_id, {})
+    if model:
+        entry["model"] = model
+    else:
+        entry.pop("model", None)
+    _save(data)
+
+
+def set_effort(session_id: str, effort: str | None) -> None:
+    """Pin the effort level for a session (low / medium / high / xhigh / max)."""
+    data = _load()
+    entry = data.setdefault(session_id, {})
+    if effort:
+        entry["effort"] = effort
+    else:
+        entry.pop("effort", None)
+    _save(data)
+
+
+def set_done(session_id: str, done: bool, done_at: str | None = None) -> None:
+    """Mark or unmark a session as 'done'. done_at is the ISO timestamp when marked."""
+    data = _load()
+    entry = data.setdefault(session_id, {})
+    if done:
+        entry["done"] = True
+        if done_at:
+            entry["done_at"] = done_at
+    else:
+        entry.pop("done", None)
+        entry.pop("done_at", None)
+    _save(data)
+
+
 def add_tag_meta(session_id: str, tag: str) -> None:
     data = _load()
     entry = data.setdefault(session_id, {})

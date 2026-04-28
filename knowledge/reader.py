@@ -40,8 +40,9 @@ def list_topics() -> list[dict]:
     descriptions = _parse_index()
     topics = []
 
+    skip = {"__pycache__", "__init__.py"}
     for entry in sorted(KNOWLEDGE_DIR.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("."):
+        if not entry.is_dir() or entry.name.startswith(".") or entry.name in skip:
             continue
 
         # Get title from README.md first line, fallback to slug

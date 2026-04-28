@@ -44,15 +44,28 @@ def _time_group(timestamp_str: str | None) -> str:
 
 
 def _shorten_project(project: str) -> str:
-    """Shorten project dir for display."""
-    if project.startswith("C--Users-ragha-Projects-"):
-        return project[24:]
-    elif project.startswith("-home-raghav-Documents-Projects-"):
-        return project[32:]
-    elif project.startswith("-home-raghav"):
-        return "~" + project[12:]
-    elif project.startswith("C--Users-ragha"):
-        return "~" + project[14:]
+    """Shorten project dir for display.
+
+    Cross-platform: derives the user's home-dir slug at runtime so this works
+    for any user on Linux/macOS/Windows.
+    """
+    from pathlib import Path
+
+    home = str(Path.home()).replace("\\", "/")
+    if home.lower().startswith("c:/"):
+        home_slug = "C--" + home[3:].replace("/", "-")
+    else:
+        home_slug = "-" + home.lstrip("/").replace("/", "-")
+
+    docs_proj = home_slug + "-Documents-Projects-"
+    proj = home_slug + "-Projects-"
+    if project.startswith(docs_proj):
+        return project[len(docs_proj):]
+    if project.startswith(proj):
+        return project[len(proj):]
+    if project.startswith(home_slug):
+        rest = project[len(home_slug):]
+        return "~" + rest if rest else "~"
     return project
 
 
