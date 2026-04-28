@@ -80,14 +80,21 @@ PTY backend uses `pywinpty` (ConPTY) automatically — see `ui/pty_terminal.py`.
 
 When you first launch:
 
-- **Sidebar** populated from `~/.claude/projects/` (Claude Code's standard chat history location). Your existing chats just show up.
-- **Project chips** down the left — single-click filters, double-click starts a new chat scoped to that project's cwd.
-- **Time-grouped sessions** (Today / Yesterday / Last 7 Days / etc.).
-- **Search** at the top of the chat list — full-text across all conversations.
-- **Active Terminals** group at the top of the sidebar — shows whichever chats currently have a running `claude --resume` terminal, with a pulsing live dot. Cleared on app close.
+- **Sidebar** populated from `~/.claude/projects/` (Claude Code's standard chat history location) and `~/.codex/sessions/` (Codex CLI's storage). Your existing chats from both agents show up automatically.
+- **Per-row agent badges** — small inline SVG before each title, color-coded so you can tell Claude vs Codex at a glance:
+  - 🟠 orange Anthropic sparkle = Claude session (`claude --resume <sid>`)
+  - 🟣 purple OpenAI flower = Codex session (`codex resume <sid>`)
+- **Project chips** down the left — single-click filters, double-click starts a new Claude chat scoped to that project's cwd.
+- **Time-grouped sessions** (Today / Yesterday / Last 7 Days / etc.) — Claude and Codex chats interleaved by recency.
+- **Search** at the top of the chat list — full-text across all conversations from both agents.
+- **Active Terminals** group at the top of the sidebar — shows whichever chats currently have a running terminal, with a pulsing live dot. Cleared on app close.
 - **Done** group at the bottom — collapsed by default. Press `D` on a focused chat (or `Alt+D`) to mark done. Auto-unmarks when the session sees new activity.
 - **File pane** (right side, toggle with `Alt+B`) showing the git tree for the active chat's repo.
 - **Memory** and **Knowledge** tabs at the top (also empty until you populate them via `chats memory add` etc.).
+
+### How Codex sessions are filtered
+
+Codex's `~/.codex/sessions/` stores not only sessions you started directly with the `codex` CLI but also any session another agent (e.g. Claude calling Codex via MCP) spawned. Serena scans the first line of each `.jsonl` and only surfaces sessions whose `originator` field starts with `codex` — so MCP-spawned tool-call rollouts stay hidden. You see only the Codex chats you actually opened yourself.
 
 ## Optional setup
 
@@ -175,7 +182,7 @@ Customize keybindings at `~/.config/serena/keybindings.json` (auto-created on fi
 ```
 serena/
 ├── cli.py                # `chats` CLI entry
-├── core/                 # indexer, parser, scanner, metadata sync
+├── core/                 # indexer, parser, scanner (Claude + Codex), metadata sync
 ├── chats/                # session formatter, exporter, watcher, AI titles
 ├── ui/
 │   ├── web.py            # Flask app + entire HTML/CSS/JS frontend (single-file by choice)

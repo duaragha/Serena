@@ -415,8 +415,11 @@ class ChatsApp(Gtk.Window):
         vte.show()
         self._stack.set_visible_child_name(sid)
 
+        # Resolve agent: codex sessions resume via codex CLI, otherwise claude.
+        agent = (session or {}).get("agent") or payload.get("agent") or "claude"
+
         # For brand-new chats we don't pass -r <tempId> to claude.
-        self._spawn_claude(vte, sid, cwd, resume=not is_new)
+        self._spawn_claude(vte, sid, cwd, resume=not is_new, agent=agent)
         self._eval_js(f"window.onGtkCodeStart && window.onGtkCodeStart({json.dumps(sid)});")
         # Tell JS the RESOLVED cwd so the pseudo reconciler can match on cwd
         # when the real session file appears on disk.
@@ -498,39 +501,45 @@ class ChatsApp(Gtk.Window):
             print(f"[vte] launch_default_for_uri failed: {e}", flush=True)
             return False
 
-    def _spawn_claude(self, vte: Vte.Terminal, sid: str, cwd: str, resume: bool = True):
-        claude_bin = shutil.which("claude") or "claude"
-        argv = [claude_bin, "--dangerously-skip-permissions"]
+    def _spawn_claude(self, vte: Vte.Terminal, sid: str, cwd: str, resume: bool = True, agent: str = "claude"):
+        # Dispatch on agent — codex sessions go through a different CLI with
+        # different flags. Default is claude.
+        if agent == "codex":
+            codex_bin = shutil.which("codex") or "codex"
+            if resume and sid and not sid.startswith("new-"):
+                argv = [codex_bin, "resume", sid]
+            else:
+                argv = [codex_bin]
+        else:
+            claude_bin = shutil.which("claude") or "claude"
+            argv = [claude_bin, "--dangerously-skip-permissions"]
 
-        # Resolve model with strict isolation so global-setting drift can't leak
-        # across sessions. Priority: explicit pin → session's historical model
-        # from the indexer → Serena's snapshot of global at launch.
-        chosen_model: str | None = None
-        chosen_effort: str | None = None
-        try:
-            m = meta_sync.get_meta(sid) if sid else {}
-            chosen_model = m.get("model") or None
-            chosen_effort = m.get("effort") or None
-        except Exception as e:
-            print(f"[spawn] meta lookup failed: {e}", flush=True)
-
-        if not chosen_model and sid and not sid.startswith("new-"):
+            chosen_model: str | None = None
+            chosen_effort: str | None = None
             try:
-                s = get_session(sid)
-                if s and s.get("model"):
-                    chosen_model = s["model"]
-            except Exception:
-                pass
-        if not chosen_model:
-            chosen_model = _DEFAULT_MODEL_SNAPSHOT
+                m = meta_sync.get_meta(sid) if sid else {}
+                chosen_model = m.get("model") or None
+                chosen_effort = m.get("effort") or None
+            except Exception as e:
+                print(f"[spawn] meta lookup failed: {e}", flush=True)
 
-        if chosen_model:
-            argv += ["--model", str(chosen_model)]
-        if chosen_effort:
-            argv += ["--effort", str(chosen_effort)]
+            if not chosen_model and sid and not sid.startswith("new-"):
+                try:
+                    s = get_session(sid)
+                    if s and s.get("model"):
+                        chosen_model = s["model"]
+                except Exception:
+                    pass
+            if not chosen_model:
+                chosen_model = _DEFAULT_MODEL_SNAPSHOT
 
-        if resume and sid:
-            argv += ["-r", sid]
+            if chosen_model:
+                argv += ["--model", str(chosen_model)]
+            if chosen_effort:
+                argv += ["--effort", str(chosen_effort)]
+
+            if resume and sid:
+                argv += ["-r", sid]
         envv = [f"{k}={v}" for k, v in os.environ.items()]
 
         t0 = time.monotonic()
