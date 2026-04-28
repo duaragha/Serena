@@ -353,21 +353,28 @@ def _session_seconds(row: sqlite3.Row) -> float | None:
 
 
 def _is_agent_spawned_candidate(row: sqlite3.Row) -> bool:
-    """True when a codex session was spawned by another agent (e.g. Claude
-    calling codex via MCP) — using the codex session_meta `source` field
-    as the authoritative signal. We pack it into originator as
-    "<originator>:<source>". Only `source=mcp` qualifies for nesting.
-    Real CLI invocations (`source=cli`) and user-initiated one-shots
-    (`source=exec`) stay top-level.
+    """True when a codex session was spawned by another agent (Claude via
+    MCP server, or the Claude Code VS Code extension) — using the codex
+    session_meta `source` field as the authoritative signal. The originator
+    is packed as "<originator>:<source>".
+
+    Counts as agent-spawned: source=mcp, source=vscode, or originator=Claude Code.
+    User-initiated (NOT nested): source=cli (interactive), source=exec (one-shot).
     """
     origin = (row["originator"] or "").lower()
-    # Newer codex versions: "<originator>:<source>" — match on the source half.
     if ":" in origin:
-        source = origin.split(":", 1)[1].strip()
-        return source == "mcp"
-    # Legacy fallback for sessions parsed before the source pack landed:
-    # "Claude Code" originator was the old explicit MCP marker.
-    return origin == "claude code"
+        orig_part, source = origin.split(":", 1)
+        source = source.strip()
+        if source in ("mcp", "vscode"):
+            return True
+        if source in ("cli", "exec"):
+            return False
+        # Unknown source → fall through to originator-based check
+        origin_check = orig_part.strip()
+    else:
+        origin_check = origin
+    # Originator-based fallback: explicit "Claude Code" tag is always agent-spawned
+    return origin_check == "claude code"
 
 
 def _find_claude_parent(codex: sqlite3.Row, claude_rows: list[sqlite3.Row]) -> str | None:
