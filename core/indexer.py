@@ -7,6 +7,7 @@ from core.config import DATA_DIR, DB_PATH
 from core import metadata as meta_sync
 from core.parser import SessionMeta, parse_messages_for_search, parse_metadata
 from core.scanner import scan_sessions
+from core.codex_scanner import scan_codex_sessions, parse_codex_metadata, _FILENAME_RE as _CODEX_FILE_RE
 from chats.titles import generate_title
 
 
@@ -120,6 +121,7 @@ def _migrate(conn: sqlite3.Connection):
         "is_teammate": "ALTER TABLE sessions ADD COLUMN is_teammate INTEGER DEFAULT 0",
         "is_done": "ALTER TABLE sessions ADD COLUMN is_done INTEGER DEFAULT 0",
         "done_at": "ALTER TABLE sessions ADD COLUMN done_at TEXT",
+        "agent": "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
     }
     for col, sql in migrations.items():
         if col not in columns:
@@ -145,19 +147,29 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
         if row["raw_message_count"] is None:
             needs_reparse.add(row["session_id"])
 
-    discovered = list(scan_sessions())
-    discovered_ids = {fp.stem for _, fp in discovered}
+    # Combined discovery: claude sessions (project-dir layout) + codex sessions
+    # (date-tree layout). Tag each entry with its agent so the rest of the
+    # pipeline can dispatch parsing + spawning correctly.
+    discovered: list[tuple[str, str, Path]] = []
+    for project_dir, fp in scan_sessions():
+        discovered.append(("claude", project_dir, fp))
+    for project_dir, fp in scan_codex_sessions():
+        discovered.append(("codex", project_dir, fp))
 
-    # Prune zombie rows: indexed sessions whose jsonl no longer exists on disk.
-    zombies = []
-    for sid, path in existing_paths.items():
-        if sid in discovered_ids:
-            continue
-        try:
-            if not Path(path).exists():
-                zombies.append(sid)
-        except Exception:
-            zombies.append(sid)
+    discovered_ids: set[str] = set()
+    for agent, _, fp in discovered:
+        if agent == "claude":
+            discovered_ids.add(fp.stem)
+        else:
+            m = _CODEX_FILE_RE.match(fp.name)
+            if m:
+                discovered_ids.add(m.group(1))
+
+    # Prune zombie rows: indexed sessions the scanners no longer surface.
+    # This catches both "file deleted on disk" AND "scanner refuses to yield
+    # it anymore" (e.g. codex sessions originally spawned by Claude via MCP
+    # that we now filter out).
+    zombies = [sid for sid in existing_paths if sid not in discovered_ids]
     for sid in zombies:
         conn.execute("DELETE FROM tags WHERE session_id = ?", (sid,))
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
@@ -168,8 +180,14 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
     updated_count = 0
     total = len(discovered)
 
-    for i, (project_dir, file_path) in enumerate(discovered):
-        session_id = file_path.stem
+    for i, (agent, project_dir, file_path) in enumerate(discovered):
+        if agent == "claude":
+            session_id = file_path.stem
+        else:
+            cm = _CODEX_FILE_RE.match(file_path.name)
+            if not cm:
+                continue
+            session_id = cm.group(1)
 
         if progress_callback:
             progress_callback(i + 1, total, session_id)
@@ -193,8 +211,15 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
             else:
                 new_count += 1
 
-        meta = parse_metadata(file_path, project_dir)
-        _upsert_session(conn, meta, all_meta)
+        if agent == "claude":
+            meta = parse_metadata(file_path, project_dir)
+        else:
+            meta = parse_codex_metadata(file_path)
+            if meta is None:
+                continue
+            # Re-derive project_dir from the parsed cwd-slug now that we have it
+            project_dir = meta.project_dir
+        _upsert_session(conn, meta, all_meta, agent=agent)
 
     conn.commit()
     conn.close()
@@ -227,7 +252,7 @@ def _apply_synced_meta(conn: sqlite3.Connection, session_id: str, synced: dict):
             )
 
 
-def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict | None = None):
+def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict | None = None, agent: str = "claude"):
     title = generate_title(meta.first_message)
 
     # Get synced metadata (stars, tags, custom_title) from the shared JSON
@@ -259,8 +284,8 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
          first_timestamp, last_timestamp,
          message_count, raw_message_count, is_teammate,
          model, git_branch, slug, file_path, file_size, file_mtime,
-         input_tokens, output_tokens, cache_read_tokens, cache_create_tokens)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, agent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         meta.session_id, meta.project_dir, meta.cwd, meta.last_cwd, meta.device,
         meta.first_message, title, custom_title, starred, is_done, done_at,
@@ -270,6 +295,7 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
         meta.model, meta.git_branch, meta.slug,
         meta.file_path, meta.file_size, meta.file_mtime,
         meta.input_tokens, meta.output_tokens, meta.cache_read_tokens, meta.cache_create_tokens,
+        agent,
     ))
 
     # Apply synced tags
