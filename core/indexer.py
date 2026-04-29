@@ -327,21 +327,37 @@ def _norm_cwd(cwd: str | None) -> str:
     return norm or "/"
 
 
-def _cwd_same_or_child(child_cwd: str | None, parent_cwd: str | None) -> bool:
-    """True when the two cwds are related — same dir, or one nested inside
-    the other in either direction. The 'parent' / 'child' framing is loose:
-    when Claude calls Codex via MCP, Codex often inherits a different cwd
-    (e.g. project root vs subdir), and we want to match in either direction.
+def _cwd_distance(a: str | None, b: str | None) -> int | None:
+    """Return the directory-segment distance between two cwds, or None if
+    they're unrelated (no shared path lineage). 0 = same dir; 1 = direct
+    parent/child; n = n levels apart along the same path.
+
+    A loose ancestor like '/home/raghav' has distance ~4 from
+    '/home/raghav/Documents/Projects/serena' — too loose to be a meaningful
+    match. The caller should reject distances above some threshold
+    (typically 3) so generic home/root claude chats don't claim every codex
+    session below them.
     """
-    child = _norm_cwd(child_cwd)
-    parent = _norm_cwd(parent_cwd)
-    if not child or not parent:
-        return False
-    if child == parent:
-        return True
-    if parent == "/" or child == "/":
-        return False
-    return child.startswith(parent + "/") or parent.startswith(child + "/")
+    a = _norm_cwd(a)
+    b = _norm_cwd(b)
+    if not a or not b:
+        return None
+    if a == b:
+        return 0
+    if a == "/" or b == "/":
+        return None
+    if a.startswith(b + "/"):
+        return a.count("/") - b.count("/")
+    if b.startswith(a + "/"):
+        return b.count("/") - a.count("/")
+    return None
+
+
+def _cwd_same_or_child(child_cwd: str | None, parent_cwd: str | None) -> bool:
+    """Backward-compat shim — true if the two paths are on the same lineage.
+    Use _cwd_distance directly when you need the magnitude.
+    """
+    return _cwd_distance(child_cwd, parent_cwd) is not None
 
 
 def _session_seconds(row: sqlite3.Row) -> float | None:
@@ -381,26 +397,34 @@ def _is_agent_spawned_candidate(row: sqlite3.Row) -> bool:
     return origin_check == "claude code"
 
 
+_MAX_CWD_DISTANCE = 3  # tighter than this rejects loose ancestors like /home/raghav
+
+
 def _find_claude_parent(codex: sqlite3.Row, claude_rows: list[sqlite3.Row]) -> str | None:
     codex_first = _parse_dt(codex["first_timestamp"])
     if not codex_first:
         return None
 
-    matches: list[tuple[datetime, str]] = []
+    # Score each candidate by (cwd_distance, recency_inverse) — lower is better.
+    # A specific cwd match (distance 0) on an older claude chat beats a loose
+    # ancestor (distance 4) on a newer one.
+    matches: list[tuple[int, datetime, str]] = []
     for claude in claude_rows:
-        if not _cwd_same_or_child(codex["cwd"], claude["cwd"]):
+        dist = _cwd_distance(codex["cwd"], claude["cwd"])
+        if dist is None or dist > _MAX_CWD_DISTANCE:
             continue
         claude_first = _parse_dt(claude["first_timestamp"])
         claude_last = _parse_dt(claude["last_timestamp"]) or claude_first
         if not claude_first or not claude_last:
             continue
         if claude_first <= codex_first <= claude_last + timedelta(minutes=10):
-            matches.append((claude_last, claude["session_id"]))
+            matches.append((dist, claude_last, claude["session_id"]))
 
     if not matches:
         return None
-    matches.sort(reverse=True)
-    return matches[0][1]
+    # Prefer smallest cwd distance; tiebreak on most-recently-active claude.
+    matches.sort(key=lambda m: (m[0], -m[1].timestamp()))
+    return matches[0][2]
 
 
 def _attribute_codex_parents(conn: sqlite3.Connection):
