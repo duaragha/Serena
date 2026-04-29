@@ -1,6 +1,8 @@
 """SQLite index for session metadata and full-text search."""
 
+import json
 import sqlite3
+from bisect import bisect_left
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -398,38 +400,140 @@ def _is_agent_spawned_candidate(row: sqlite3.Row) -> bool:
 
 
 _MAX_CWD_DISTANCE = 3  # tighter than this rejects loose ancestors like /home/raghav
+_PARENT_MESSAGE_WINDOW = timedelta(minutes=30)
 
 
-def _find_claude_parent(codex: sqlite3.Row, claude_rows: list[sqlite3.Row]) -> str | None:
+def _dt_epoch_seconds(dt: datetime) -> float:
+    return dt.timestamp()
+
+
+def _is_home_cwd(cwd: str | None) -> bool:
+    if not cwd:
+        return False
+    home = _norm_cwd(str(Path.home().resolve()))
+    if _norm_cwd(cwd) == home:
+        return True
+    try:
+        return _norm_cwd(str(Path(cwd).expanduser().resolve(strict=False))) == home
+    except (OSError, RuntimeError):
+        return False
+
+
+def _read_claude_message_timestamps(file_path: str | None) -> list[datetime]:
+    """Read only user/assistant record timestamps from a Claude JSONL file."""
+    if not file_path:
+        return []
+
+    timestamps: list[datetime] = []
+    try:
+        with open(Path(file_path), "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if record.get("type") not in ("user", "assistant"):
+                    continue
+                ts = _parse_dt(record.get("timestamp"))
+                if ts is not None:
+                    timestamps.append(ts)
+    except (OSError, PermissionError):
+        return []
+
+    timestamps.sort(key=_dt_epoch_seconds)
+    return timestamps
+
+
+def _claude_message_timestamps(
+    claude: sqlite3.Row, cache: dict[str, list[datetime]]
+) -> list[datetime]:
+    session_id = claude["session_id"]
+    if session_id not in cache:
+        cache[session_id] = _read_claude_message_timestamps(claude["file_path"])
+    return cache[session_id]
+
+
+def _closest_message_delta(
+    codex_first: datetime, claude_timestamps: list[datetime]
+) -> timedelta | None:
+    if not claude_timestamps:
+        return None
+
+    target = _dt_epoch_seconds(codex_first)
+    idx = bisect_left(claude_timestamps, target, key=_dt_epoch_seconds)
+
+    closest: float | None = None
+    for candidate_idx in (idx - 1, idx):
+        if 0 <= candidate_idx < len(claude_timestamps):
+            delta = abs(_dt_epoch_seconds(claude_timestamps[candidate_idx]) - target)
+            if closest is None or delta < closest:
+                closest = delta
+
+    if closest is None:
+        return None
+    return timedelta(seconds=closest)
+
+
+def _find_claude_parent(
+    codex: sqlite3.Row,
+    claude_rows: list[sqlite3.Row],
+    claude_timestamp_cache: dict[str, list[datetime]],
+) -> str | None:
     codex_first = _parse_dt(codex["first_timestamp"])
     if not codex_first:
         return None
 
-    # Score each candidate by (cwd_distance, recency_inverse) — lower is better.
-    # A specific cwd match (distance 0) on an older claude chat beats a loose
-    # ancestor (distance 4) on a newer one.
-    matches: list[tuple[int, datetime, str]] = []
+    # Score each candidate by (cwd_distance, closest_message_delta), then keep
+    # the previous most-recently-active tiebreaker for otherwise equal matches.
+    matches: list[tuple[int, timedelta, datetime, bool, str]] = []
     for claude in claude_rows:
         dist = _cwd_distance(codex["cwd"], claude["cwd"])
         if dist is None or dist > _MAX_CWD_DISTANCE:
             continue
-        claude_first = _parse_dt(claude["first_timestamp"])
-        claude_last = _parse_dt(claude["last_timestamp"]) or claude_first
-        if not claude_first or not claude_last:
+
+        timestamps = _claude_message_timestamps(claude, claude_timestamp_cache)
+        if not timestamps:
             continue
-        if claude_first <= codex_first <= claude_last + timedelta(minutes=10):
-            matches.append((dist, claude_last, claude["session_id"]))
+
+        claude_first = _parse_dt(claude["first_timestamp"])
+        claude_last = _parse_dt(claude["last_timestamp"]) or claude_first or timestamps[-1]
+        closest_delta = _closest_message_delta(codex_first, timestamps)
+        if closest_delta is None or closest_delta > _PARENT_MESSAGE_WINDOW:
+            continue
+
+        matches.append(
+            (
+                dist,
+                closest_delta,
+                claude_last,
+                _is_home_cwd(claude["cwd"]),
+                claude["session_id"],
+            )
+        )
 
     if not matches:
         return None
-    # Prefer smallest cwd distance; tiebreak on most-recently-active claude.
-    matches.sort(key=lambda m: (m[0], -m[1].timestamp()))
-    return matches[0][2]
+
+    # A Claude session rooted only at $HOME is too generic to claim Codex work
+    # unless the Codex cwd is also $HOME and no more-specific Claude candidate
+    # was active near the Codex start.
+    non_home_matches = [m for m in matches if not m[3]]
+    if non_home_matches:
+        matches = non_home_matches
+    elif not _is_home_cwd(codex["cwd"]):
+        return None
+
+    matches.sort(key=lambda m: (m[0], m[1], -m[2].timestamp()))
+    return matches[0][4]
 
 
 def _attribute_codex_parents(conn: sqlite3.Connection):
     claude_rows = conn.execute("""
-        SELECT session_id, cwd, first_timestamp, last_timestamp
+        SELECT session_id, cwd, first_timestamp, last_timestamp, file_path
         FROM sessions
         WHERE agent = 'claude'
     """).fetchall()
@@ -438,11 +542,12 @@ def _attribute_codex_parents(conn: sqlite3.Connection):
         FROM sessions
         WHERE agent = 'codex'
     """).fetchall()
+    claude_timestamp_cache: dict[str, list[datetime]] = {}
 
     for row in codex_rows:
         parent_id = None
         if _is_agent_spawned_candidate(row):
-            parent_id = _find_claude_parent(row, claude_rows)
+            parent_id = _find_claude_parent(row, claude_rows, claude_timestamp_cache)
             if not parent_id and (row["originator"] or "").lower() == "claude code":
                 parent_id = "orphan-claude-code"
         conn.execute(
