@@ -51,10 +51,15 @@ def scan_codex_sessions() -> Iterator[tuple[str, Path]]:
 
 
 def _is_user_initiated(file_path: Path) -> bool:
-    """Read the first line and check whether Serena should index this file.
+    """Surface ONLY codex sessions the user started directly via the
+    interactive `codex` CLI (source=cli). Everything else — MCP-spawned,
+    VS Code extension, `codex exec` one-shots — gets filtered out at
+    scan time and never enters the index.
 
-    The name is historical: agent-spawned Codex sessions now need to flow
-    through the indexer so they can be nested under their Claude parent.
+    The previous behavior (indexing all codex sessions to support
+    parent-nesting under their Claude chat) made the sidebar too noisy
+    and the heuristic for finding the right parent was fragile, so
+    we're back to a strict filter.
     """
     try:
         with file_path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -68,8 +73,8 @@ def _is_user_initiated(file_path: Path) -> bool:
     except json.JSONDecodeError:
         return False
     payload = obj.get("payload") or {}
-    originator = (payload.get("originator") or "").lower()
-    return originator.startswith("codex") or originator == "claude code"
+    source = (payload.get("source") or "").lower()
+    return source == "cli"
 
 
 def _slugify_cwd(cwd: str) -> str:
