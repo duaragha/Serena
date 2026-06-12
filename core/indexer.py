@@ -11,16 +11,28 @@ from core import metadata as meta_sync
 from core.parser import SessionMeta, parse_messages_for_search, parse_metadata
 from core.scanner import scan_sessions
 from core.codex_scanner import scan_codex_sessions, parse_codex_metadata, _FILENAME_RE as _CODEX_FILE_RE
+from core.locket_scanner import scan_locket_sessions, parse_locket_metadata
 from chats.titles import generate_title
 
 
+_schema_ready = False
+
+
 def _get_db() -> sqlite3.Connection:
+    global _schema_ready
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    # timeout=30: a full reindex of a few hundred sessions can hold the write
+    # lock past sqlite's default 5s — writers (renames, stars, meta) should
+    # wait it out, not die with "database is locked".
+    conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    _create_tables(conn)
-    _migrate(conn)
+    # DDL only once per process — running CREATE/ALTER on every connection
+    # made every caller (even reads) contend for the write lock.
+    if not _schema_ready:
+        _create_tables(conn)
+        _migrate(conn)
+        _schema_ready = True
     return conn
 
 
@@ -127,6 +139,7 @@ def _migrate(conn: sqlite3.Connection):
         "agent": "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
         "originator": "ALTER TABLE sessions ADD COLUMN originator TEXT",
         "parent_session_id": "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT",
+        "devices_used": "ALTER TABLE sessions ADD COLUMN devices_used TEXT",
     }
     for col, sql in migrations.items():
         if col not in columns:
@@ -160,15 +173,18 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
         discovered.append(("claude", project_dir, fp))
     for project_dir, fp in scan_codex_sessions():
         discovered.append(("codex", project_dir, fp))
+    for project_dir, fp in scan_locket_sessions():
+        discovered.append(("locket", project_dir, fp))
 
     discovered_ids: set[str] = set()
     for agent, _, fp in discovered:
-        if agent == "claude":
-            discovered_ids.add(fp.stem)
-        else:
+        if agent == "codex":
             m = _CODEX_FILE_RE.match(fp.name)
             if m:
                 discovered_ids.add(m.group(1))
+        else:
+            # claude + locket: session_id is the file stem
+            discovered_ids.add(fp.stem)
 
     # Prune zombie rows: indexed sessions the scanners no longer surface.
     # This catches files deleted on disk or filtered out by scanner policy.
@@ -184,13 +200,13 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
     total = len(discovered)
 
     for i, (agent, project_dir, file_path) in enumerate(discovered):
-        if agent == "claude":
-            session_id = file_path.stem
-        else:
+        if agent == "codex":
             cm = _CODEX_FILE_RE.match(file_path.name)
             if not cm:
                 continue
             session_id = cm.group(1)
+        else:
+            session_id = file_path.stem
 
         if progress_callback:
             progress_callback(i + 1, total, session_id)
@@ -216,6 +232,10 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
 
         if agent == "claude":
             meta = parse_metadata(file_path, project_dir)
+        elif agent == "locket":
+            meta = parse_locket_metadata(file_path)
+            if meta is None:
+                continue
         else:
             meta = parse_codex_metadata(file_path)
             if meta is None:
@@ -281,6 +301,7 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
         except Exception:
             pass
 
+    devices_used_csv = ",".join(getattr(meta, "devices_used", []) or [])
     conn.execute("""
         INSERT OR REPLACE INTO sessions
         (session_id, project_dir, cwd, last_cwd, device, first_message, title,
@@ -288,8 +309,9 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
          first_timestamp, last_timestamp,
          message_count, raw_message_count, is_teammate,
          model, git_branch, slug, file_path, file_size, file_mtime,
-         input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, agent, originator)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, agent, originator,
+         devices_used)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         meta.session_id, meta.project_dir, meta.cwd, meta.last_cwd, meta.device,
         meta.first_message, title, custom_title, starred, is_done, done_at,
@@ -300,6 +322,7 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
         meta.file_path, meta.file_size, meta.file_mtime,
         meta.input_tokens, meta.output_tokens, meta.cache_read_tokens, meta.cache_create_tokens,
         agent, getattr(meta, "originator", None),
+        devices_used_csv or None,
     ))
 
     # Apply synced tags
@@ -604,7 +627,7 @@ def search_fts(query: str, limit: int = 20) -> list[dict]:
     out = []
     for r in results:
         session = conn.execute(
-            "SELECT title, custom_title, project_dir, device, first_timestamp, starred FROM sessions WHERE session_id = ?",
+            "SELECT title, custom_title, project_dir, device, first_timestamp, starred, agent FROM sessions WHERE session_id = ?",
             (r["session_id"],),
         ).fetchone()
 
@@ -618,6 +641,7 @@ def search_fts(query: str, limit: int = 20) -> list[dict]:
             "device": session["device"] if session else "",
             "first_timestamp": session["first_timestamp"] if session else "",
             "starred": session["starred"] if session else 0,
+            "agent": session["agent"] if session else "claude",
         })
 
     conn.close()
