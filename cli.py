@@ -631,6 +631,48 @@ def desktop():
     run()
 
 
+@main.command(name="text")
+@click.argument("message", nargs=-1, required=True)
+def text(message):
+    """Text Raghav's phone via the Serena telegram bot (proactive ping).
+
+    Usage: chats text "build's done, come look"
+    Credentials: ~/.config/serena/telegram.env (TELEGRAM_BOT_TOKEN/CHAT_ID).
+    Note: replies go to Locket's webhook brain (phone Serena), not back
+    to the session that sent the text.
+    """
+    import json
+    import urllib.request
+    from pathlib import Path
+
+    env_path = Path.home() / ".config" / "serena" / "telegram.env"
+    if not env_path.exists():
+        console.print("[red]no telegram.env — see serena memory 'notification rail'[/red]")
+        raise SystemExit(1)
+    creds = {}
+    for line in env_path.read_text().splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            creds[k.strip()] = v.strip()
+    token = creds.get("TELEGRAM_BOT_TOKEN")
+    chat_id = creds.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        console.print("[red]telegram.env missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID[/red]")
+        raise SystemExit(1)
+
+    body = json.dumps({"chat_id": chat_id, "text": " ".join(message)}).encode()
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        ok = json.load(resp).get("ok")
+    console.print("[green]sent[/green]" if ok else "[red]telegram rejected the send[/red]")
+    if not ok:
+        raise SystemExit(1)
+
+
 @main.command(name="locket-sync")
 def locket_sync():
     """Pull Serena's in-app Locket chats into the local index store."""
