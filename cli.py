@@ -344,6 +344,17 @@ def memory(ctx):
     if ctx.invoked_subcommand is None:
         from memory.store import format_for_claude
         click.echo(format_for_claude())
+        # Phone-Serena's observations (Locket nightly pass) — fail-soft so
+        # an unreachable Locket never breaks the session digest.
+        try:
+            from memory.locket_mirror import fetch_observations
+            obs = fetch_observations(limit=8)
+            if obs:
+                click.echo("\n## What phone-me noticed (locket observations)")
+                for o in obs:
+                    click.echo(f"- {o}")
+        except Exception:
+            pass
 
 
 @memory.command("loops")
