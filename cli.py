@@ -414,6 +414,21 @@ def memory_add(content, mem_type):
     console.print(f"[green]Memory #{mid} saved ({mem_type})[/green]")
 
 
+@memory.command("sync")
+def memory_sync():
+    """Pull bot-made memory/task changes (from Locket) back into local files."""
+    from memory.locket_mirror import pull
+    r = pull()
+    total = r["created"] + r["updated"] + r["deleted"]
+    if total == 0:
+        console.print("[dim]Memory in sync with Locket — nothing to pull.[/dim]")
+    else:
+        console.print(
+            f"[green]Synced from Locket: +{r['created']} new, "
+            f"{r['updated']} updated, {r['deleted']} removed[/green]"
+        )
+
+
 @memory.command("remove")
 @click.argument("memory_id", type=int)
 def memory_remove(memory_id):

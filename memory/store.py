@@ -85,6 +85,7 @@ def _parse_file(fpath: Path) -> dict | None:
         "created_at": meta.get("created", ""),
         "updated_at": meta.get("updated", ""),
         "snooze_until": meta.get("snooze", ""),
+        "locket_id": meta.get("locket_id", ""),
         "_path": fpath,
         "filename": fpath.name,
     }
@@ -129,7 +130,8 @@ def _find_path(memory_id: int) -> Path | None:
 
 
 def _write_file(mem_id: int, mem_type: str, content: str,
-                created: str = "", updated: str = "", snooze: str = "") -> Path:
+                created: str = "", updated: str = "", snooze: str = "",
+                locket_id: str = "") -> Path:
     if not created:
         created = _now()
     if not updated:
@@ -141,9 +143,27 @@ def _write_file(mem_id: int, mem_type: str, content: str,
     fm = f"---\nid: {mem_id}\ntype: {mem_type}\ncreated: {created}\nupdated: {updated}\n"
     if snooze:
         fm += f"snooze: {snooze}\n"
+    if locket_id:
+        # Link to the always-on Locket serena_memories row, so bot edits
+        # and deletes from the phone reconcile to the right local file.
+        fm += f"locket_id: {locket_id}\n"
     fm += "---\n"
     fpath.write_text(f"{fm}\n{content}\n", encoding="utf-8")
     return fpath
+
+
+def set_locket_id(memory_id: int, locket_id: int) -> None:
+    """Stamp an existing local memory with its Locket row id (rewrites the
+    file in place, preserving everything else)."""
+    fpath = _find_path(memory_id)
+    if not fpath:
+        return
+    m = _parse_file(fpath)
+    if not m:
+        return
+    _write_file(memory_id, m["type"], m["content"],
+                created=m["created_at"], updated=m["updated_at"],
+                snooze=m.get("snooze_until", ""), locket_id=str(locket_id))
 
 
 def _next_id() -> int:
@@ -183,18 +203,21 @@ def list_memories(type_filter: str | None = None) -> list[dict]:
     return [_clean(m) for m in memories]
 
 
-def add_memory(content: str, mem_type: str = "general") -> int:
+def add_memory(content: str, mem_type: str = "general", _no_mirror: bool = False) -> int:
     if mem_type not in MEMORY_TYPES:
         mem_type = "general"
     mid = _next_id()
     _write_file(mid, mem_type, content)
     _rewrite_index()
     # Keep phone-Serena's brain in sync (fail-soft; Locket down = local only).
-    try:
-        from memory.locket_mirror import mirror_add
-        mirror_add(content, mem_type)
-    except Exception:
-        pass
+    # _no_mirror=True when the row is being created BY a pull from Locket,
+    # so we don't echo it straight back and duplicate.
+    if not _no_mirror:
+        try:
+            from memory.locket_mirror import mirror_add
+            mirror_add(content, mem_type, mid)
+        except Exception:
+            pass
     return mid
 
 
@@ -215,6 +238,7 @@ def update_memory(memory_id: int, content: str | None = None, mem_type: str | No
         created=existing["created_at"],
         updated=_now(),
         snooze=existing.get("snooze_until", ""),
+        locket_id=existing.get("locket_id", ""),
     )
     if fpath != new_path:
         try:
@@ -234,11 +258,12 @@ def delete_memory(memory_id: int) -> bool:
     except OSError:
         return False
     _rewrite_index()
-    # Remove the mirrored copy from Locket too (matched by exact content).
+    # Remove the mirrored copy from Locket too (by linked id when we have
+    # it, else exact-content match for legacy rows).
     if existing:
         try:
             from memory.locket_mirror import mirror_delete
-            mirror_delete(existing["content"])
+            mirror_delete(existing["content"], existing.get("locket_id", ""))
         except Exception:
             pass
     return True
@@ -257,7 +282,7 @@ def snooze_memory(memory_id: int, days: float = 7) -> bool:
     new_path = _write_file(
         memory_id, existing["type"], existing["content"],
         created=existing["created_at"], updated=existing["updated_at"],
-        snooze=until,
+        snooze=until, locket_id=existing.get("locket_id", ""),
     )
     if fpath != new_path:
         try:
