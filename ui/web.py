@@ -45,6 +45,10 @@ from chats.llm_titles import generate_titles_batch
 app = Flask(__name__)
 sock = Sock(app)
 
+from core.sidestore_source import sidestore_bp  # noqa: E402
+
+app.register_blueprint(sidestore_bp)
+
 # ---------------------------------------------------------------------------
 # Memory filesystem helpers
 # ---------------------------------------------------------------------------
