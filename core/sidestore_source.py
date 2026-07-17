@@ -163,8 +163,10 @@ def sidestore_ipa():
 
 @sidestore_bp.route("/sidestore/icon.png")
 def sidestore_icon():
-    # The silky S — same art the app icons are generated from.
-    icon = Path(__file__).resolve().parent.parent / "mobile" / "assets" / "icon.png"
-    if not icon.is_file():
-        return jsonify({"error": "no icon"}), 404
-    return send_file(str(icon), mimetype="image/png")
+    # The silky S — same art the app icons are generated from. dist/ first:
+    # in the container only mobile/dist is mounted (assets/ isn't shipped).
+    root = Path(__file__).resolve().parent.parent
+    for icon in (root / "mobile" / "dist" / "favicon.png", root / "mobile" / "assets" / "icon.png"):
+        if icon.is_file():
+            return send_file(str(icon), mimetype="image/png")
+    return jsonify({"error": "no icon"}), 404
