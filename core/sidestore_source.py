@@ -107,7 +107,7 @@ def sidestore_source():
 
     return jsonify(
         {
-            "name": "Serena Source",
+            "name": "Serena",
             "identifier": f"{BUNDLE_ID}.source",
             "subtitle": "she runs things",
             "iconURL": f"{origin}/sidestore/icon.png",

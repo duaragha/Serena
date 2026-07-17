@@ -66,7 +66,7 @@ function reducer(state: State, action: Action): State {
                 ? "can't reach Locket — check the base URL and API key"
                 : state.source === 'mock'
                   ? 'mock transport failed'
-                  : "can't reach the laptop daemon — check the server URL + that `chats serve` is running"
+                  : "can't reach the daemon — check the server URL + that the PC container is up"
               : state.lastError,
       };
     case 'source':

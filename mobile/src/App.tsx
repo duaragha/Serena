@@ -104,7 +104,7 @@ export default function App() {
           <span className="conn-banner-url">
             {state.source === 'locket'
               ? settings.locketBaseUrl || 'no Locket URL set'
-              : settings.serverUrl || 'no laptop URL set'}
+              : settings.serverUrl || 'no daemon URL set'}
           </span>
         </div>
       )}

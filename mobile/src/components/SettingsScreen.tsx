@@ -4,7 +4,7 @@ import type { ConnectionMode } from '../settings';
 
 const MODES: { value: ConnectionMode; label: string }[] = [
   { value: 'auto', label: 'auto' },
-  { value: 'laptop', label: 'laptop' },
+  { value: 'laptop', label: 'daemon' },
   { value: 'locket', label: 'Locket' },
   { value: 'mock', label: 'mock' },
 ];
@@ -51,7 +51,7 @@ export function SettingsScreen({ onDone }: { onDone: () => void }) {
 
       <fieldset disabled={laptopDisabled} className="field-group">
         <label className="field">
-          <span>Laptop URL</span>
+          <span>Daemon URL (PC)</span>
           <input
             value={serverUrl}
             onChange={(e) => setServerUrl(e.target.value)}
@@ -62,7 +62,7 @@ export function SettingsScreen({ onDone }: { onDone: () => void }) {
           />
         </label>
         <label className="field">
-          <span>Laptop token</span>
+          <span>Daemon token</span>
           <input
             value={token}
             onChange={(e) => setToken(e.target.value)}
@@ -81,7 +81,7 @@ export function SettingsScreen({ onDone }: { onDone: () => void }) {
           <input
             value={callToken}
             onChange={(e) => setCallToken(e.target.value)}
-            placeholder="defaults to the laptop token"
+            placeholder="defaults to the daemon token"
             type="password"
             autoCapitalize="none"
             autoCorrect="off"
