@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Serena</string>
+    <string name="title_activity_main">Serena</string>
+    <string name="package_name">sh.serena.app</string>
+    <string name="custom_url_scheme">sh.serena.app</string>
+</resources>

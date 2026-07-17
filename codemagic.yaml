@@ -1,0 +1,93 @@
+workflows:
+  ios-unsigned-ipa:
+    name: iOS unsigned IPA (Serena mobile)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+      node: latest
+      vars:
+        MOBILE_DIR: "$CM_BUILD_DIR/mobile"
+        XCODE_PROJECT: "$CM_BUILD_DIR/mobile/ios/App/App.xcodeproj"
+        XCODE_SCHEME: "App"
+        IOS_DERIVED_DATA: "$CM_BUILD_DIR/build/ios-derived"
+        IPA_OUTPUT_DIR: "$CM_BUILD_DIR/build/ios/ipa"
+    scripts:
+      - name: Install npm dependencies
+        script: cd "$MOBILE_DIR" && npm ci
+      - name: Build web shell
+        script: cd "$MOBILE_DIR" && npm run build
+      - name: Sync Capacitor iOS project
+        script: cd "$MOBILE_DIR" && npx cap sync ios
+      - name: Build ad-hoc-signed iphoneos app
+        script: |
+          #!/bin/bash
+          set -euo pipefail
+
+          # Ad-hoc signing (identity "-"), NOT no-signing: a fully unsigned
+          # binary carries no entitlements blob, so the sideload signer has
+          # nothing to mirror on re-sign. Ad-hoc needs no cert or profile.
+          # Stamp product SemVer plus Codemagic's increasing build number.
+          # SideStore/LiveContainer verify the downloaded IPA version against
+          # the source feed, so the feed must advertise this exact value.
+          PRODUCT_VERSION="$(cd "$MOBILE_DIR" && node -p "require('./package.json').version")"
+          APP_VERSION="${PRODUCT_VERSION}.${BUILD_NUMBER}"
+          echo "stamping version $APP_VERSION"
+          mkdir -p /tmp/xcodebuild_logs
+          XCODEBUILD_LOG="/tmp/xcodebuild_logs/build.log"
+
+          set +e
+          xcodebuild \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$IOS_DERIVED_DATA" \
+            clean build \
+            MARKETING_VERSION="$APP_VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_STYLE=Manual \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" 2>&1 | tee "$XCODEBUILD_LOG"
+          pipe_status=("${PIPESTATUS[@]}")
+          set -e
+
+          if [[ "${pipe_status[0]}" -ne 0 ]]; then
+            echo ""
+            echo "xcodebuild failed with status ${pipe_status[0]}"
+            grep -nE "error:|fatal error|cannot find" "$XCODEBUILD_LOG" || true
+            tail -n 40 "$XCODEBUILD_LOG" || true
+            exit "${pipe_status[0]}"
+          fi
+
+          APP_BUNDLE="$(find "$IOS_DERIVED_DATA/Build/Products/Release-iphoneos" -maxdepth 1 -name "*.app" -print -quit)"
+          if [[ -z "$APP_BUNDLE" ]]; then
+            echo "no .app bundle in build products" >&2
+            exit 1
+          fi
+      - name: Package unsigned IPA
+        script: |
+          #!/bin/bash
+          set -euo pipefail
+
+          APP_PRODUCTS_DIR="$IOS_DERIVED_DATA/Build/Products/Release-iphoneos"
+          APP_BUNDLE="$(find "$APP_PRODUCTS_DIR" -maxdepth 1 -name "*.app" -print -quit)"
+          if [[ -z "$APP_BUNDLE" ]]; then
+            echo "No .app bundle found in $APP_PRODUCTS_DIR" >&2
+            exit 1
+          fi
+
+          rm -rf "$IPA_OUTPUT_DIR/Payload"
+          mkdir -p "$IPA_OUTPUT_DIR/Payload"
+          cp -R "$APP_BUNDLE" "$IPA_OUTPUT_DIR/Payload/"
+
+          cd "$IPA_OUTPUT_DIR"
+          /usr/bin/zip -qry Serena-unsigned.ipa Payload
+          rm -rf Payload
+    artifacts:
+      - build/ios/ipa/Serena-unsigned.ipa
+      - /tmp/xcodebuild_logs/*.log
