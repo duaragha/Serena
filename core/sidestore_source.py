@@ -96,7 +96,12 @@ def sidestore_source():
         return jsonify({"error": "no builds"}), 404
 
     build, ipa = found["build"], found["ipa"]
+    # Behind tailscale serve the backend sees plain http; trust the proxy's
+    # scheme or the store gets http:// URLs pointing at a TLS port.
     origin = request.url_root.rstrip("/")
+    proto = request.headers.get("X-Forwarded-Proto")
+    if proto and origin.startswith("http://"):
+        origin = proto + "://" + origin[len("http://"):]
     version = build.get("version") or ipa.get("version") or "1.0.0"
     finished_at = build.get("finishedAt") or "1970-01-01T00:00:00Z"
 
