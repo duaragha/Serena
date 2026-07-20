@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "serena",
+    "repository": "~/Documents/Projects/serena",
+    "python": ">=3.10"
+  },
+  "portable_source": [
+    "Persona.example.md",
+    "Tooling.md",
+    "VoiceReminder.txt",
+    "README.md",
+    "pyproject.toml",
+    "cli.py",
+    "core",
+    "chats",
+    "ui",
+    "desktop",
+    "mobile",
+    "voice/call",
+    "voice/desk",
+    "voice/desktop",
+    "voice/brain_bridge.py",
+    "systemd",
+    "config",
+    "scripts",
+    "docs",
+    "tests",
+    "static"
+  ],
+  "private_repository_paths": [
+    "Persona.md",
+    "memory",
+    "knowledge",
+    "reminders",
+    "dream"
+  ],
+  "runtime_paths": [
+    "~/.config/serena",
+    "~/.local/share/chats"
+  ],
+  "session_paths": [
+    "~/.claude/projects",
+    "~/.codex/sessions"
+  ],
+  "auth_paths": [
+    "~/.claude/.credentials.json",
+    "~/.codex/auth.json"
+  ],
+  "model_paths": [
+    "voice/models",
+    "~/.config/serena/models"
+  ],
+  "rebuildable_paths": [
+    ".venv",
+    ".venv-pocket",
+    "voice/.venv-wake",
+    "mobile/node_modules",
+    "mobile/dist",
+    "voice/desktop/node_modules",
+    "build",
+    "serena.egg-info"
+  ],
+  "sensitive_names": [
+    "*.env",
+    "*.key",
+    "*.pem",
+    "chat_token",
+    "mcp.json",
+    "mcp.json.bak",
+    "codemagic.env",
+    "locket.env",
+    "telegram.env",
+    ".credentials.json",
+    "auth.json"
+  ],
+  "transient_names": [
+    "*.lock",
+    "*.pid",
+    "*.sqlite3-shm",
+    "*.sqlite3-wal",
+    "*.log",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    "node_modules"
+  ],
+  "services": {
+    "always_on": [
+      "serena-brain.service",
+      "serena-mobile-host.service",
+      "serena-work-supervisor.service",
+      "serena-wake-listener.service",
+      "serena-brain-state-sync.path",
+      "serena-brain-state-sync.timer",
+      "serena-archive-sync.timer"
+    ],
+    "activation_only": [
+      "serena-brain-bridge.service",
+      "serena-desk.service",
+      "serena-dot-overlay.service"
+    ],
+    "acceptance_only": [
+      "serena-wakeword-acceptance.service",
+      "serena-wakeword-acceptance-report.service",
+      "serena-wakeword-acceptance-report.timer",
+      "serena-wakeword-calibration.service",
+      "serena-wakeword-report.service",
+      "serena-wakeword-report.timer"
+    ],
+    "forbidden_without_authorization": [
+      "serena-brain-soak.service"
+    ]
+  },
+  "required_commands": [
+    "git",
+    "python3",
+    "claude",
+    "codex",
+    "node",
+    "npm"
+  ],
+  "required_python_imports": [
+    "flask",
+    "flask_sock",
+    "claude_agent_sdk",
+    "core.brain_daemon",
+    "core.mobile_host",
+    "core.voice_work_supervisor",
+    "voice.call",
+    "voice.desk.client",
+    "voice.desktop.supervisor"
+  ]
+}
