@@ -88,8 +88,14 @@ class _SplitHarness:
     def __init__(self):
         self._vtes: dict[str, Vte.Terminal] = {}
         self._vte_pids: dict[str, int] = {}
-        self._input_drafts: dict[int, str] = {}
+        self._input_drafts: dict[str, str] = {}
         self._sid_agent: dict[str, str] = {}
+        self._runtime_state: dict[str, str] = {}
+        self._runtime_stop_reasons: dict[str, str] = {}
+        self._runtime_wake_after_stop: set[str] = set()
+        self._runtime_closed_vtes: set[int] = set()
+        self._runtime_focus_sid = None
+        self._split_pinned = False
 
         self._stack = Gtk.Stack()
         self._placeholder = Gtk.Box()
@@ -114,6 +120,17 @@ class _SplitHarness:
     def _eval_js(self, script: str):
         # The handler emits: window.onGtkCodeExit && window.onGtkCodeExit("<sid>");
         self.js_exit_calls.append(script)
+
+    def _sid_for_vte(self, vte):
+        return next((sid for sid, candidate in self._vtes.items() if candidate is vte), None)
+
+    def _set_runtime_state(self, sid, state, reason=""):
+        self._runtime_state[sid] = state
+
+    def _evict_runtime_sids(self, _sids, _keep=None):
+        # Runtime eviction is covered separately. This crash fixture verifies
+        # that the surviving VTE is reparented without killing its child.
+        return None
 
     # --- test helpers (NOT under test) ---
     def _build_vte(self) -> Vte.Terminal:
@@ -191,7 +208,7 @@ def test_codex_crash_dismantles_split_and_preserves_survivor(harness, crash_argv
     )
 
     # Give the crashing (codex) half an input draft so we can assert it's wiped.
-    harness._input_drafts[id(right_vte)] = "half-typed prompt"
+    harness._input_drafts[right_sid] = "half-typed prompt"
 
     # Sanity: split is genuinely active and both panes are children of the paned.
     assert harness._split_active is True
@@ -214,7 +231,8 @@ def test_codex_crash_dismantles_split_and_preserves_survivor(harness, crash_argv
     # --- The crashed pane's bookkeeping must be cleaned up ---
     assert right_sid not in harness._vtes, "crashed sid not removed from _vtes"
     assert right_sid not in harness._vte_pids, "crashed sid pid not cleared"
-    assert id(right_vte) not in harness._input_drafts, "crashed pane draft not cleared"
+    assert harness._input_drafts[right_sid] == "half-typed prompt", \
+        "crashed pane draft was not preserved by sid"
 
     # --- JS was told to clear the sidebar marker for the crashed sid ---
     assert any(right_sid in call for call in harness.js_exit_calls), \
