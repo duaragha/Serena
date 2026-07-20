@@ -65,6 +65,23 @@ test('a delayed older event cannot regress a ready card', () => {
   assert.equal(feed.cursor, 7);
 });
 
+test('same-origin https call settings keep artifact links on https', () => {
+  const feed = ingestCallJobEvent(
+    emptyCallJobFeed(),
+    {
+      type: 'artifact.ready',
+      event_seq: 1,
+      job_id: 'job-1',
+      url: '/artifacts/abc.def',
+    },
+    'https://serena.tail.example:8445',
+  );
+  assert.equal(
+    feed.jobs[0]?.url,
+    'https://serena.tail.example:8445/artifacts/abc.def',
+  );
+});
+
 test('a capability cannot switch away from the active call origin', () => {
   const feed = ingestCallJobEvent(
     emptyCallJobFeed(),

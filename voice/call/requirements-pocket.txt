@@ -1,0 +1,3 @@
+# Install in an isolated .venv-pocket. The main call runtime invokes this
+# interpreter as a local, offline worker process.
+pocket-tts==2.1.0

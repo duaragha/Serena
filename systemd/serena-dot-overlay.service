@@ -1,0 +1,39 @@
+[Unit]
+Description=Serena unified desk voice and dot-field app
+After=graphical-session.target network-online.target pipewire.service wireplumber.service
+Wants=network-online.target pipewire.service wireplumber.service
+Conflicts=serena-wake-listener.service
+ConditionPathExists=%h/.config/serena/models/hey_serena.onnx
+ConditionPathExists=%h/.config/serena/wakeword-acceptance.json
+ConditionPathExists=%h/.config/serena/chat_token
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/serena
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/serena/desk.env
+ConfigurationDirectory=serena-overlay serena
+ConfigurationDirectoryMode=0700
+CacheDirectory=serena-overlay serena
+CacheDirectoryMode=0700
+StateDirectory=serena
+StateDirectoryMode=0700
+Environment=GSETTINGS_BACKEND=memory
+ExecStart=%h/Documents/Projects/serena/.venv/bin/python -u -m voice.desktop.supervisor
+ExecStopPost=/usr/bin/systemctl --user --no-block start serena-wake-listener.service
+Restart=no
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-%h/.config/serena-overlay -%h/.cache/serena-overlay %h/.config/serena %h/.cache/serena %h/.local/state/serena
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+IPAddressDeny=any
+IPAddressAllow=localhost

@@ -1,0 +1,2 @@
+# Install after replacing onnxruntime as documented in README.md.
+onnxruntime-directml>=1.20,<2

@@ -81,7 +81,8 @@ function artifactUrl(raw: string, socketUrl: string): string {
   if (!raw.startsWith('/artifacts/') || !socketUrl) return '';
   try {
     const origin = new URL(socketUrl);
-    origin.protocol = origin.protocol === 'wss:' ? 'https:' : 'http:';
+    if (origin.protocol === 'wss:') origin.protocol = 'https:';
+    else if (origin.protocol === 'ws:') origin.protocol = 'http:';
     origin.pathname = '/';
     origin.search = '';
     origin.hash = '';

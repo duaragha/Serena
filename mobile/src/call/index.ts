@@ -4,6 +4,7 @@ import {
   type PermissionState,
   type PluginListenerHandle,
 } from '@capacitor/core';
+import { webCallTransport } from './web';
 
 export type CallConnectionState =
   | 'connecting'
@@ -155,101 +156,124 @@ export function toCallWebSocketUrl(input: string): string {
   return parsed.toString();
 }
 
-function requireAndroid(): void {
-  if (Capacitor.getPlatform() !== 'android' || !Capacitor.isPluginAvailable('SerenaCall')) {
-    throw new Error('Serena call audio transport requires the native Android app');
+function nativeAvailable(): boolean {
+  return Capacitor.getPlatform() === 'android' && Capacitor.isPluginAvailable('SerenaCall');
+}
+
+function requireAvailable(): void {
+  if (!nativeAvailable() && !webCallTransport.isAvailable()) {
+    throw new Error('Serena call audio requires the native Android app or a secure browser');
   }
 }
 
 export const callTransport = {
   isAvailable(): boolean {
-    return Capacitor.getPlatform() === 'android' && Capacitor.isPluginAvailable('SerenaCall');
+    return nativeAvailable() || webCallTransport.isAvailable();
   },
 
-  async endpoint(): Promise<CallEndpointResult> {
-    requireAndroid();
-    return nativeCall.getEndpoint();
+  async endpoint(serverUrl?: string): Promise<CallEndpointResult> {
+    requireAvailable();
+    if (nativeAvailable()) return nativeCall.getEndpoint();
+    return webCallTransport.endpoint(serverUrl);
   },
 
   async connect(options: CallConnectOptions): Promise<CallConnectResult> {
-    requireAndroid();
-    return nativeCall.connect({ ...options, url: toCallWebSocketUrl(options.url) });
+    requireAvailable();
+    const url = toCallWebSocketUrl(options.url);
+    if (nativeAvailable()) return nativeCall.connect({ ...options, url });
+    return webCallTransport.connect(options, url);
   },
 
   async pttBegin(): Promise<CallGenerationResult> {
-    requireAndroid();
-    return nativeCall.beginPushToTalk();
+    requireAvailable();
+    return nativeAvailable() ? nativeCall.beginPushToTalk() : webCallTransport.pttBegin();
   },
 
   async pttEnd(): Promise<CallEndPushToTalkResult> {
-    requireAndroid();
-    return nativeCall.endPushToTalk();
+    requireAvailable();
+    return nativeAvailable() ? nativeCall.endPushToTalk() : webCallTransport.pttEnd();
   },
 
   async cancel(): Promise<CallGenerationResult> {
-    requireAndroid();
-    return nativeCall.cancel();
+    requireAvailable();
+    return nativeAvailable() ? nativeCall.cancel() : webCallTransport.cancel();
   },
 
   async hangup(): Promise<void> {
-    requireAndroid();
-    await nativeCall.hangup();
+    requireAvailable();
+    if (nativeAvailable()) await nativeCall.hangup();
+    else await webCallTransport.hangup();
   },
 
   async getState(): Promise<CallNativeState> {
-    requireAndroid();
-    return nativeCall.getState();
+    requireAvailable();
+    return nativeAvailable() ? nativeCall.getState() : webCallTransport.getState();
   },
 
   async artifactOpened(options: ArtifactOpenedOptions): Promise<void> {
-    requireAndroid();
-    await nativeCall.artifactOpened(options);
+    requireAvailable();
+    if (nativeAvailable()) await nativeCall.artifactOpened(options);
+    else await webCallTransport.artifactOpened(options);
   },
 
   async fetchArtifact(url: string): Promise<ArtifactFetchResult> {
-    requireAndroid();
-    return nativeCall.fetchArtifact({ url });
+    requireAvailable();
+    return nativeAvailable() ? nativeCall.fetchArtifact({ url }) : webCallTransport.fetchArtifact(url);
   },
 
   async checkPermissions(): Promise<CallPermissionStatus> {
-    requireAndroid();
-    return nativeCall.checkPermissions();
+    requireAvailable();
+    return nativeAvailable() ? nativeCall.checkPermissions() : webCallTransport.checkPermissions();
   },
 
   async requestPermissions(): Promise<CallPermissionStatus> {
-    requireAndroid();
-    return nativeCall.requestPermissions();
+    requireAvailable();
+    return nativeAvailable() ? nativeCall.requestPermissions() : webCallTransport.requestPermissions();
   },
 
   onState(listener: (event: CallStateEvent) => void): Promise<PluginListenerHandle> {
-    return nativeCall.addListener('state', listener);
+    return nativeAvailable()
+      ? nativeCall.addListener('state', listener)
+      : webCallTransport.addListener('state', listener);
   },
 
   onControl(listener: (event: CallControlEvent) => void): Promise<PluginListenerHandle> {
-    return nativeCall.addListener('control', listener);
+    return nativeAvailable()
+      ? nativeCall.addListener('control', listener)
+      : webCallTransport.addListener('control', listener);
   },
 
   onRtt(listener: (event: CallRttEvent) => void): Promise<PluginListenerHandle> {
-    return nativeCall.addListener('rtt', listener);
+    return nativeAvailable()
+      ? nativeCall.addListener('rtt', listener)
+      : webCallTransport.addListener('rtt', listener);
   },
 
   onSequenceGap(listener: (event: CallSequenceGapEvent) => void): Promise<PluginListenerHandle> {
-    return nativeCall.addListener('sequenceGap', listener);
+    return nativeAvailable()
+      ? nativeCall.addListener('sequenceGap', listener)
+      : webCallTransport.addListener('sequenceGap', listener);
   },
 
   onPlayback(listener: (event: CallPlaybackEvent) => void): Promise<PluginListenerHandle> {
-    return nativeCall.addListener('playback', listener);
+    return nativeAvailable()
+      ? nativeCall.addListener('playback', listener)
+      : webCallTransport.addListener('playback', listener);
   },
 
   onQueueDepth(listener: (event: CallQueueDepthEvent) => void): Promise<PluginListenerHandle> {
-    return nativeCall.addListener('queueDepth', listener);
+    return nativeAvailable()
+      ? nativeCall.addListener('queueDepth', listener)
+      : webCallTransport.addListener('queueDepth', listener);
   },
 
   onError(listener: (event: CallErrorEvent) => void): Promise<PluginListenerHandle> {
-    return nativeCall.addListener('error', listener);
+    return nativeAvailable()
+      ? nativeCall.addListener('error', listener)
+      : webCallTransport.addListener('error', listener);
   },
 
   removeAllListeners(): Promise<void> {
-    return nativeCall.removeAllListeners();
+    return nativeAvailable() ? nativeCall.removeAllListeners() : webCallTransport.removeAllListeners();
   },
 };

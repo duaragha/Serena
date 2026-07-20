@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Serena's frozen wake-word acceptance report daily
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=24h
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

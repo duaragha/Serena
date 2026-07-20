@@ -1,0 +1,38 @@
+[Unit]
+Description=Serena local hey-serena desk voice loop
+After=network-online.target pipewire.service wireplumber.service serena-brain-bridge.service
+Wants=network-online.target pipewire.service wireplumber.service serena-brain-bridge.service
+ConditionPathExists=%h/.config/serena/models/hey_serena.onnx
+ConditionPathExists=%h/.config/serena/wakeword-acceptance.json
+ConditionPathExists=%h/.config/serena/chat_token
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/serena
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/serena/desk.env
+ConfigurationDirectory=serena
+ConfigurationDirectoryMode=0700
+CacheDirectory=serena
+CacheDirectoryMode=0700
+StateDirectory=serena
+StateDirectoryMode=0700
+ExecStart=%h/Documents/Projects/serena/voice/.venv-wake/bin/python -u -m voice.desk.client --manifest %h/.config/serena/wakeword-acceptance.json
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/serena %h/.cache/serena %h/.local/state/serena
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

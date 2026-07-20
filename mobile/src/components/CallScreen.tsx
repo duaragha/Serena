@@ -83,6 +83,7 @@ export function CallScreen({
   const attemptRef = useRef(0);
   const generationRef = useRef(0);
   const coldMeasurementRef = useRef(false);
+  const coldAttemptClaimedRef = useRef(false);
   const partialRef = useRef('');
   const lineIdRef = useRef(0);
   const callStartedAtRef = useRef(0);
@@ -224,7 +225,7 @@ export function CallScreen({
         ]);
         if (!disposed) setListenersReady(true);
       } catch {
-        if (!disposed) setError('could not attach the native call controls');
+        if (!disposed) setError('could not attach the call controls');
       }
     };
     void setup();
@@ -246,7 +247,7 @@ export function CallScreen({
     async (coldStart: boolean) => {
       if (startingRef.current || connectedRef.current) return;
       if (!callTransport.isAvailable()) {
-        setError('calls run in the native android app');
+        setError('calls need the native android app or a secure browser');
         return;
       }
       const token = (settings.callToken || settings.token).trim();
@@ -255,6 +256,8 @@ export function CallScreen({
         return;
       }
       startingRef.current = true;
+      const measureColdStart = coldStart && !coldAttemptClaimedRef.current;
+      if (coldStart) coldAttemptClaimedRef.current = true;
       callActiveRef.current = true;
       const attempt = attemptRef.current + 1;
       attemptRef.current = attempt;
@@ -274,7 +277,7 @@ export function CallScreen({
       setPhase('connecting');
       callStartedAtRef.current = performance.now();
       helloBaselineRef.current = callStartedAtRef.current;
-      coldMeasurementRef.current = coldStart;
+      coldMeasurementRef.current = measureColdStart;
       try {
         let permission = await callTransport.checkPermissions();
         if (!isCurrentAttempt()) return;
@@ -285,13 +288,13 @@ export function CallScreen({
         if (permission.microphone !== 'granted') {
           throw new Error('microphone permission is required');
         }
-        const endpoint = await callTransport.endpoint();
+        const endpoint = await callTransport.endpoint(settings.serverUrl);
         if (!isCurrentAttempt()) return;
         callEndpointRef.current = endpoint.url;
         const result = await callTransport.connect({
           url: endpoint.url,
           token,
-          coldStart,
+          coldStart: measureColdStart,
         });
         if (!isCurrentAttempt()) return;
         connectedRef.current = true;
@@ -309,7 +312,7 @@ export function CallScreen({
         if (attemptRef.current === attempt) startingRef.current = false;
       }
     },
-    [settings.callToken, settings.token],
+    [settings.callToken, settings.serverUrl, settings.token],
   );
 
   const openArtifact = useCallback(async (job: CallArtifactJob) => {
@@ -523,7 +526,7 @@ export function CallScreen({
         {!callIsActive ? (
           <button
             className="call-start"
-            onClick={() => void startCall(false)}
+            onClick={() => void startCall(coldStartRequest)}
             data-testid="start-serena-call"
           >
             <span className="call-control-icon">●</span>

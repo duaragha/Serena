@@ -1,0 +1,29 @@
+[Unit]
+Description=Serena local wake-word calibration collector
+After=pipewire.service wireplumber.service
+Wants=pipewire.service
+ConditionPathExists=%h/.config/serena/models/hey_serena.onnx
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/serena
+ExecStart=%h/Documents/Projects/serena/voice/.venv-wake/bin/python -m voice.call.wakeword_harness collect --environment normal-desk
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/serena %h/.config/serena
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+[Install]
+WantedBy=default.target

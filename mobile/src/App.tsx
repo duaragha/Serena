@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { App as CapacitorApp } from '@capacitor/app';
 import { useSerena } from './store';
 import { SessionList } from './components/SessionList';
@@ -22,6 +22,7 @@ function isCallDeepLink(raw: string | undefined): boolean {
 
 export default function App() {
   const { state, settings } = useSerena();
+  const coldCallClaimedRef = useRef(false);
   const [view, setView] = useState<View>('list');
   const [callRequest, setCallRequest] = useState({
     id: 0,
@@ -34,10 +35,12 @@ export default function App() {
     let listener: Awaited<ReturnType<typeof CapacitorApp.addListener>> | undefined;
     const openCall = (raw: string | undefined, coldStart: boolean) => {
       if (disposed || !isCallDeepLink(raw)) return;
+      const measureColdStart = coldStart && !coldCallClaimedRef.current;
+      coldCallClaimedRef.current = true;
       setCallRequest((current) => ({
         id: current.id + 1,
         autoStart: true,
-        coldStart,
+        coldStart: measureColdStart,
       }));
       setView('call');
     };
@@ -119,10 +122,12 @@ export default function App() {
             <button
               className="call-contact-card"
               onClick={() => {
+                const coldStart = !coldCallClaimedRef.current;
+                coldCallClaimedRef.current = true;
                 setCallRequest((current) => ({
                   id: current.id + 1,
-                  autoStart: false,
-                  coldStart: false,
+                  autoStart: true,
+                  coldStart,
                 }));
                 setView('call');
               }}

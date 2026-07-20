@@ -1,0 +1,26 @@
+[Unit]
+Description=Serena local dot-field state and amplitude bridge
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/serena
+ExecStart=%h/Documents/Projects/serena/.venv/bin/python -u -m voice.brain_bridge
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=default.target

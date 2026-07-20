@@ -1,0 +1,36 @@
+[Unit]
+Description=Serena same-origin mobile chat and call host
+After=network-online.target serena-brain.service
+Wants=network-online.target serena-brain.service
+ConditionPathExists=%h/Documents/Projects/serena/mobile/dist/index.html
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/serena
+Environment=PYTHONUNBUFFERED=1
+Environment=SERENA_CALL_TRUST_IDMAPPED_SYSTEM=1
+Environment=SERENA_CALL_TTS_BACKEND=pocket
+Environment=SERENA_CALL_POCKET_PYTHON=%h/Documents/Projects/serena/.venv-pocket/bin/python
+Environment=SERENA_CALL_POCKET_VOICE=anna
+Environment=HF_HOME=%h/.cache/serena/pocket-tts
+Environment=SERENA_CALL_BACKCHANNEL_DELAY_MS=0
+Environment=SERENA_CALL_WHISPER_MODEL=%h/Documents/Projects/serena/voice/models/faster-whisper-small.en
+ExecStart=%h/Documents/Projects/serena/.venv/bin/python -u -m core.mobile_host --host 127.0.0.1 --port 8767
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/serena %h/.cache/serena %h/.local/share/chats %h/.local/state/serena -%h/.claude/projects/-home-raghav--cache-serena-headless-call-jobs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from pathlib import Path
+
+from voice.call.brain import BrainEvent
+from voice.call.tts import DeterministicTTSStub
+from voice.desk.greetings import SCHEMA_VERSION, DeskGreetingPool, GreetingAudio
+
+
+class _Brain:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    async def stream_turn(
+        self,
+        text: str,
+        *,
+        call_id: str,
+        turn_id: str,
+        request_id: str | None = None,
+        journal: bool = True,
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "call_id": call_id,
+                "turn_id": turn_id,
+                "journal": journal,
+            }
+        )
+        response = f"there you are, greeting {len(self.calls)}."
+        yield BrainEvent("start", request_id or "request")
+        yield BrainEvent("delta", request_id or "request", delta=response)
+        yield BrainEvent("done", request_id or "request", say=response)
+
+
+class _Runtime:
+    def __init__(self) -> None:
+        self.brain = _Brain()
+        self.tts = DeterministicTTSStub(samples_per_sentence=240)
+
+    async def warm(self) -> dict[str, str]:
+        return {"stt": "ready", "tts": "ready", "vad": "ready"}
+
+
+def test_pool_generates_persists_and_refills_after_take(tmp_path: Path) -> None:
+    runtime = _Runtime()
+    path = tmp_path / "desk-greetings.json"
+    pool = DeskGreetingPool(
+        runtime,
+        path=path,
+        target_size=2,
+        refill_after_take_seconds=0,
+    )
+
+    asyncio.run(pool._refill())
+    assert pool.status["cached"] == 2
+    assert len(runtime.brain.calls) == 2
+    assert all(call["journal"] is False for call in runtime.brain.calls)
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+
+    first = pool.take()
+    assert first is not None
+    assert first.text == "there you are, greeting 1."
+    assert pool.wait(2)
+    assert pool.status["cached"] == 2
+    assert len(runtime.brain.calls) == 3
+
+    restored = DeskGreetingPool(runtime, path=path, target_size=2)
+    assert restored.status["cached"] == 2
+
+
+def test_pool_discards_expired_audio(tmp_path: Path) -> None:
+    path = tmp_path / "desk-greetings.json"
+    item = GreetingAudio("old", 24_000, b"\x01\x00", "old", time.time() - 120)
+    from core.brain_lifetime import write_json_atomic
+
+    write_json_atomic(path, {"version": SCHEMA_VERSION, "items": [item.to_json()]})
+    pool = DeskGreetingPool(
+        _Runtime(), path=path, target_size=1, max_age_seconds=60
+    )
+
+    assert pool.status["cached"] == 0
+
+
+def test_pool_rejects_pre_voice_contract_cache(tmp_path: Path) -> None:
+    path = tmp_path / "desk-greetings.json"
+    item = GreetingAudio("alba", 24_000, b"\x01\x00", "old voice", time.time())
+    from core.brain_lifetime import write_json_atomic
+
+    write_json_atomic(path, {"version": 1, "items": [item.to_json()]})
+
+    pool = DeskGreetingPool(_Runtime(), path=path, target_size=1)
+
+    assert pool.status["cached"] == 0
+
+
+def test_pool_fails_closed_when_runtime_is_not_ready(tmp_path: Path) -> None:
+    runtime = _Runtime()
+
+    async def failed_warm() -> dict[str, str]:
+        return {"stt": "ready", "tts": "error: missing", "vad": "ready"}
+
+    runtime.warm = failed_warm  # type: ignore[method-assign]
+    pool = DeskGreetingPool(runtime, path=tmp_path / "cache.json")
+
+    try:
+        asyncio.run(pool._refill())
+    except RuntimeError as exc:
+        assert "not ready" in str(exc)
+    else:
+        raise AssertionError("greeting pool accepted an unready voice runtime")
+
+
+def test_take_delays_refill_while_one_hot_greeting_remains(tmp_path: Path) -> None:
+    runtime = _Runtime()
+    pool = DeskGreetingPool(
+        runtime,
+        path=tmp_path / "cache.json",
+        target_size=2,
+        refill_after_take_seconds=60,
+    )
+    asyncio.run(pool._refill())
+
+    assert pool.take() is not None
+    assert len(runtime.brain.calls) == 2
+    assert pool.status["cached"] == 1
+    assert pool.status["refill_scheduled"] is True
+
+    pool.start_refill()
+    assert pool.wait(2)
+    assert len(runtime.brain.calls) == 3
+    assert pool.status["cached"] == 2
+
+
+def test_empty_pool_cancels_delayed_refill_and_replenishes_now(tmp_path: Path) -> None:
+    runtime = _Runtime()
+    pool = DeskGreetingPool(
+        runtime,
+        path=tmp_path / "cache.json",
+        target_size=2,
+        refill_after_take_seconds=60,
+    )
+    asyncio.run(pool._refill())
+
+    assert pool.take() is not None
+    assert pool.status["refill_scheduled"] is True
+    assert pool.take() is not None
+
+    assert pool.wait(2)
+    assert pool.status["cached"] == 2
+    assert pool.status["refill_scheduled"] is False
+
+
+def test_refill_owns_an_isolated_tts_backend_when_factory_is_set(
+    tmp_path: Path,
+) -> None:
+    runtime = _Runtime()
+
+    class OwnedTTS(DeterministicTTSStub):
+        def __init__(self) -> None:
+            super().__init__(samples_per_sentence=240)
+            self.warm_calls = 0
+            self.closed = False
+
+        async def warm(self) -> None:
+            self.warm_calls += 1
+
+        async def cancel(self, generation: int | None = None) -> None:
+            if generation is None:
+                self.closed = True
+
+    owned = OwnedTTS()
+    pool = DeskGreetingPool(
+        runtime,
+        path=tmp_path / "cache.json",
+        target_size=1,
+        tts_factory=lambda: owned,
+    )
+
+    asyncio.run(pool._refill())
+
+    assert pool.status["cached"] == 1
+    assert owned.warm_calls == 1
+    assert owned.closed is True

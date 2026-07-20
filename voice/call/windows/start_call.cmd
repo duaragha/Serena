@@ -1,0 +1,11 @@
+@echo off
+set "RUNTIME=C:\Users\ragha\.serena-runtime\call-v2a-r4"
+set "SERENA_CALL_TTS_BACKEND=pocket"
+set "SERENA_CALL_POCKET_PYTHON=%RUNTIME%\.venv-pocket\Scripts\python.exe"
+set "SERENA_CALL_POCKET_THREADS=2"
+set "SERENA_CALL_POCKET_QUANTIZE=1"
+set "SERENA_CALL_WHISPER_MODEL=%RUNTIME%\voice\models\faster-whisper-tiny.en"
+set "SERENA_CALL_HOST=0.0.0.0"
+set "SERENA_CALL_PORT=8766"
+cd /d "%RUNTIME%"
+"%RUNTIME%\.venv\Scripts\python.exe" -u -m voice.call.server >> "%RUNTIME%\call.stdout.log" 2>> "%RUNTIME%\call.stderr.log"

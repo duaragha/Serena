@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;">
+  <title>Serena</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Main widget fills the OS window. */
+    html, body {
+      background: #080612;
+    }
+    #widget {
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(circle at 72% 28%, rgba(116, 63, 174, 0.12), transparent 44%),
+        radial-gradient(circle at 25% 78%, rgba(223, 74, 157, 0.075), transparent 46%),
+        linear-gradient(160deg, #0d0918 0%, #080611 52%, #05040b 100%);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    #widget::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(207, 142, 255, 0.34) 44%,
+        rgba(255, 184, 105, 0.2) 60%,
+        transparent 100%
+      );
+      pointer-events: none;
+    }
+    #widget-header {
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid rgba(215, 174, 255, 0.06);
+      background: linear-gradient(180deg, rgba(17, 11, 28, 0.52), rgba(9, 7, 16, 0.12));
+      z-index: 2;
+    }
+    #brain-container {
+      flex: 1;
+      position: relative;
+      min-height: 0;
+      z-index: 0;
+    }
+    #brain-container::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 50% 48%, transparent 42%, rgba(3, 2, 8, 0.52) 100%);
+      pointer-events: none;
+    }
+    #brain-container canvas {
+      -webkit-app-region: no-drag;
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+    }
+    #overlay > * {
+      pointer-events: auto;
+    }
+    #overlay #state-indicator {
+      display: none;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #state-dot.pulse {
+        animation: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="widget">
+    <!-- Header: state indicator at top of widget -->
+    <div id="widget-header">
+      <div id="state-dot"></div>
+      <span id="state-label">offline</span>
+    </div>
+
+    <!-- Brain visualization fills the rest of the widget -->
+    <div id="brain-container"></div>
+  </div>
+
+  <div id="overlay">
+    <!-- Old state indicator (hidden, kept for backwards compat) -->
+    <div id="state-indicator">
+      <div id="state-dot-legacy"></div>
+      <span id="state-label-legacy">offline</span>
+    </div>
+
+    <!-- Transcription / response text area -->
+    <div id="text-area">
+      <div id="transcription" class="text-block hidden"></div>
+      <div id="response" class="text-block hidden"></div>
+    </div>
+
+    <!-- Dashboard panel (hidden by default) -->
+    <div id="dashboard" class="hidden">
+      <div class="dashboard-section">
+        <h3>Calendar</h3>
+        <div id="dash-calendar"><span class="muted">No events</span></div>
+      </div>
+      <div class="dashboard-section">
+        <h3>Weather</h3>
+        <div id="dash-weather"><span class="muted">--</span></div>
+      </div>
+      <div class="dashboard-section">
+        <h3>Notifications</h3>
+        <div id="dash-notifications"><span class="muted">None</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* Browser-only bridge used by local visual QA. Electron supplies the real one. */
+    if (!window.serena) {
+      const preview = { stateListener: null };
+      window.serena = {
+        onStateChange(callback) {
+          preview.stateListener = callback;
+        },
+        onAmplitude() {},
+        onTranscription() {},
+        onResponse() {},
+        onDashboardData() {},
+        onFocusMode() {},
+        onToggleDashboard() {},
+        onCodeStart() {},
+        onCodeEvent() {},
+        onCodeDone() {},
+        onToggleCodePanel() {},
+        onHideCodePanel() {},
+        hideCodePanel() {},
+        setIgnoreMouse() {},
+        toggleDashboard() {},
+        registerBrain(functions) {
+          Object.assign(this, functions);
+        },
+        registerCodePanel(functions) {
+          this.codePanelOnStart = functions.onStart;
+          this.codePanelOnEvent = functions.onEvent;
+          this.codePanelOnDone = functions.onDone;
+          this.codePanelOnToggle = functions.onToggle;
+        },
+        previewState(state) {
+          preview.stateListener?.(state);
+        },
+      };
+    }
+  </script>
+  <script src="app.js"></script>
+  <script type="module">
+    import { BrainVisualizer } from './brain.js';
+    import { TranscriptionDisplay } from './transcription.js';
+    import { Dashboard } from './dashboard.js';
+    import { NotificationManager } from './notifications.js';
+    import { CodePanel } from './code-panel.js';
+
+    const container = document.getElementById('brain-container');
+    const brain = new BrainVisualizer(container);
+    const transcription = new TranscriptionDisplay(container);
+    const dashboard = new Dashboard(document.body);
+    const notifications = new NotificationManager(document.body);
+
+    // Register brain visualization callbacks via the preload bridge
+    window.serena.registerBrain({
+      setState: (state) => brain.setState(state),
+      setAmplitude: (value) => brain.setAmplitude(value),
+      showUserText: (text) => transcription.showUserText(text),
+      showResponseText: (text) => transcription.showResponseText(text),
+      clearText: () => transcription.clear(),
+    });
+    brain.setState(window._serenaVoiceState || 'idle');
+
+    const previewState = new URLSearchParams(window.location.search).get('state');
+    if (previewState) {
+      window.serena.previewState?.(previewState);
+      brain.setState(previewState);
+    }
+
+    // Code output panel
+    const codePanel = new CodePanel(document.body);
+
+    // Register code panel callbacks via the preload bridge
+    window.serena.registerCodePanel({
+      onStart: (data) => {
+        codePanel.clear();
+        codePanel.setStatus(data.status || `working on ${data.project || 'project'}...`);
+        codePanel.show();
+      },
+      onEvent: (event) => {
+        codePanel.addEvent(event);
+      },
+      onDone: (data) => {
+        codePanel.setStatus('done');
+      },
+      onToggle: () => {
+        codePanel.toggle();
+      },
+    });
+    window.serena.onHideCodePanel(() => codePanel.hide());
+
+    // Store references for dashboard/notifications (accessible via closure)
+    window._serenaDashboard = dashboard;
+    window._serenaNotifications = notifications;
+    window._serenaCodePanel = codePanel;
+    window._serenaBrain = brain;
+    window._serenaTranscription = transcription;
+  </script>
+</body>
+</html>
