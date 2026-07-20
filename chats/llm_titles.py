@@ -7,10 +7,24 @@ doing one call for 10 sessions is ~10× faster than one-at-a-time.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 from typing import Iterable
+
+# Headless `claude -p` writes a session file under its cwd's project slug. Run
+# it from a marker dir the scanner excludes so title generation doesn't spawn
+# junk chats (see core/scanner.py "serena-headless").
+_HEADLESS_CWD = os.path.join(os.path.expanduser("~"), ".cache", "serena-headless")
+
+
+def _headless_cwd() -> str | None:
+    try:
+        os.makedirs(_HEADLESS_CWD, exist_ok=True)
+        return _HEADLESS_CWD
+    except OSError:
+        return None
 
 
 BATCH_PROMPT_HEAD = """You are generating concise titles for Claude Code conversations.
@@ -104,6 +118,7 @@ def generate_titles_batch(
             capture_output=True,
             text=True,
             timeout=timeout,
+            cwd=_headless_cwd(),
         )
     except subprocess.TimeoutExpired:
         return {}

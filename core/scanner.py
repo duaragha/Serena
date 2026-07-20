@@ -23,6 +23,23 @@ def scan_sessions(projects_dir: Path | None = None):
     for project_dir in sorted(root.iterdir()):
         if not project_dir.is_dir():
             continue
+        # Skip container-staging slugs that aren't real projects:
+        #  - *serena-resume*: claude --resume cwd-staging copies
+        #  - *serena-headless*: the cwd for headless `claude -p` utility calls
+        #    (smart-spawn router, AI title generation) — never real chats.
+        #  - -root: the container resolves unknown cwds to /root, so web-UI
+        #    terminal resumes land dupes here. Never a real project on a
+        #    user (non-root) machine.
+        is_headless_utility = (
+            "serena-headless" in project_dir.name
+            and "serena-headless-brain" not in project_dir.name
+        )
+        if (
+            "serena-resume" in project_dir.name
+            or is_headless_utility
+            or project_dir.name == "-root"
+        ):
+            continue
         for session_file in project_dir.glob("*.jsonl"):
             if not UUID_RE.match(session_file.stem):
                 continue

@@ -6,7 +6,7 @@ Locket chat brain, which reads serena_memories per request) drifted onto
 a stale seed. This module closes the loop:
 
   - add_memory()    -> mirror_add()    POSTs the same content to Locket
-  - delete_memory() -> mirror_delete() removes the matching Locket row
+  - delete_memory() -> archives completed tasks/loops and removes other rows
   - fetch_observations() pulls phone-side observations back for the
     session digest, so terminal sessions see what she noticed.
 
@@ -71,7 +71,16 @@ def _request(method: str, path: str, body: dict | None = None, timeout: int = 4)
         return None
 
 
-def mirror_add(content: str, mem_type: str, memory_id: int | None = None) -> None:
+def mirror_add(
+    content: str,
+    mem_type: str,
+    memory_id: int | None = None,
+    *,
+    source_session_id: str = "",
+    source_agent: str = "",
+    source_title: str = "",
+    source_message_timestamp: str = "",
+) -> None:
     """Copy a new laptop memory into Locket and link the two by stamping the
     returned Locket row id into the local file's frontmatter (so later edits
     and deletes from the phone reconcile to the right file). Fail-soft."""
@@ -79,6 +88,10 @@ def mirror_add(content: str, mem_type: str, memory_id: int | None = None) -> Non
         "type": _TYPE_MAP.get(mem_type, "reference"),
         "content": content,
         "source": "laptop",
+        "sourceSessionId": source_session_id or None,
+        "sourceAgent": source_agent or None,
+        "sourceTitle": source_title or None,
+        "sourceMessageTimestamp": source_message_timestamp or None,
     })
     locket_id = ((resp or {}).get("data") or {}).get("id")
     if locket_id and memory_id is not None:
@@ -104,6 +117,50 @@ def mirror_delete(content: str, locket_id: str = "") -> None:
             return
 
 
+def mirror_archive(content: str, locket_id: str = "") -> None:
+    """Archive a completed task in Locket instead of erasing its history."""
+    if locket_id:
+        _request(
+            "PATCH",
+            f"/api/v1/serena/memories/{locket_id}/",
+            {"archived": True},
+        )
+        return
+    q = urllib.parse.quote(content[:120])
+    listing = _request("GET", f"/api/v1/serena/memories/?q={q}")
+    rows = (listing or {}).get("data") or []
+    for row in rows:
+        if row.get("content") == content and row.get("source") == "laptop":
+            _request(
+                "PATCH",
+                f"/api/v1/serena/memories/{row['id']}/",
+                {"archived": True},
+            )
+            return
+
+
+def mirror_update(old_content: str, new_content: str, locket_id: str = "") -> None:
+    """Update the Locket copy of an edited local memory."""
+    if locket_id:
+        _request(
+            "PATCH",
+            f"/api/v1/serena/memories/{locket_id}/",
+            {"content": new_content},
+        )
+        return
+    q = urllib.parse.quote(old_content[:120])
+    listing = _request("GET", f"/api/v1/serena/memories/?q={q}")
+    rows = (listing or {}).get("data") or []
+    for row in rows:
+        if row.get("content") == old_content and row.get("source") == "laptop":
+            _request(
+                "PATCH",
+                f"/api/v1/serena/memories/{row['id']}/",
+                {"content": new_content},
+            )
+            return
+
+
 # Locket type -> laptop memory type (inverse of _TYPE_MAP, for pull).
 _INV_TYPE_MAP = {
     "task": "task", "loop": "loop", "feedback": "feedback",
@@ -111,7 +168,125 @@ _INV_TYPE_MAP = {
 }
 
 
-def pull() -> dict:
+def _remote_rows(include_archived: bool = True) -> list[dict] | None:
+    path = "/api/v1/serena/memories/?include_snoozed=true"
+    if include_archived:
+        path += "&include_archived=true"
+    listing = _request("GET", path)
+    if listing is None:
+        return None
+    return listing.get("data") or []
+
+
+def push_local(
+    prune_stale_laptop: bool = False,
+    dry_run: bool = False,
+    type_filter: str | None = None,
+) -> dict:
+    """Push unlinked local markdown memories into Locket.
+
+    This is the backfill half of "one memory store": older laptop files may
+    predate mirroring and therefore have no locket_id. Exact remote matches are
+    linked instead of duplicated. Optional stale pruning removes remote
+    source=laptop rows that do not correspond to any local memory.
+    """
+    result = {
+        "ok": False,
+        "dry_run": dry_run,
+        "pushed": 0,
+        "linked": 0,
+        "pruned": 0,
+        "remote": 0,
+    }
+    rows = _remote_rows(include_archived=True)
+    if rows is None:
+        return result
+    result["remote"] = len(rows)
+
+    from memory.store import _scan_all, set_locket_id
+
+    if type_filter and type_filter not in _TYPE_MAP:
+        return result
+
+    remote_by_id = {
+        int(row["id"]): row
+        for row in rows
+        if row.get("id") is not None
+    }
+    remote_exact: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        content = row.get("content")
+        rtype = row.get("type")
+        if isinstance(content, str) and isinstance(rtype, str):
+            remote_exact.setdefault((rtype, content), row)
+
+    local_seen_locket: set[int] = set()
+    for memory in _scan_all():
+        local_type = memory.get("type", "general")
+        if type_filter and local_type != type_filter:
+            continue
+        remote_type = _TYPE_MAP.get(local_type)
+        if not remote_type:
+            continue
+        locket_id = (memory.get("locket_id") or "").strip()
+        if locket_id:
+            try:
+                local_seen_locket.add(int(locket_id))
+            except ValueError:
+                pass
+            continue
+
+        content = memory.get("content") or ""
+        exact = remote_exact.get((remote_type, content))
+        if exact and exact.get("id") is not None:
+            if not dry_run:
+                set_locket_id(memory["id"], int(exact["id"]))
+            local_seen_locket.add(int(exact["id"]))
+            result["linked"] += 1
+            continue
+
+        if not dry_run:
+            resp = _request("POST", "/api/v1/serena/memories/", {
+                "type": remote_type,
+                "content": content,
+                "source": "laptop",
+                "sourceSessionId": memory.get("source_session_id") or None,
+                "sourceAgent": memory.get("source_agent") or None,
+                "sourceTitle": memory.get("source_title") or None,
+                "sourceMessageTimestamp": memory.get("source_message_timestamp") or None,
+            })
+            new_id = ((resp or {}).get("data") or {}).get("id")
+            if new_id is not None:
+                set_locket_id(memory["id"], int(new_id))
+                local_seen_locket.add(int(new_id))
+        result["pushed"] += 1
+
+    if prune_stale_laptop:
+        for rid, row in remote_by_id.items():
+            if row.get("source") != "laptop" or rid in local_seen_locket:
+                continue
+            if type_filter and row.get("type") != _TYPE_MAP.get(type_filter):
+                continue
+            if not dry_run:
+                _request("PATCH", f"/api/v1/serena/memories/{rid}/", {"archived": True})
+            result["pruned"] += 1
+
+    result["ok"] = True
+    if not dry_run:
+        try:
+            from core.locket_sync_state import record_success
+            record_success("memory_push", {
+                "pushed": result["pushed"],
+                "linked": result["linked"],
+                "pruned": result["pruned"],
+                "remote": result["remote"],
+            })
+        except Exception:
+            pass
+    return result
+
+
+def pull(dry_run: bool = False) -> dict:
     """Reconcile bot-made changes (Locket serena_memories) back into the
     local markdown files, keyed by locket_id.
 
@@ -123,11 +298,12 @@ def pull() -> dict:
     Laptop-sourced rows the phone never touched are left alone. Fail-soft:
     on any network error, returns zeros and changes nothing.
     """
-    result = {"created": 0, "updated": 0, "deleted": 0}
+    result = {"created": 0, "updated": 0, "deleted": 0, "dry_run": dry_run, "ok": False}
     listing = _request("GET", "/api/v1/serena/memories/?include_snoozed=true")
     if listing is None:
         return result
     rows = listing.get("data") or []
+    result["remote"] = len(rows)
     by_locket_id = {}
     for r in rows:
         rid = r.get("id")
@@ -154,10 +330,12 @@ def pull() -> dict:
         row = by_locket_id.get(lid)
         if row is None:
             # Gone on the always-on store -> deleted from the phone.
-            delete_memory(lm["id"])
+            if not dry_run:
+                delete_memory(lm["id"])
             result["deleted"] += 1
         elif (row.get("content") or "") != lm["content"]:
-            update_memory(lm["id"], content=row.get("content") or lm["content"])
+            if not dry_run:
+                update_memory(lm["id"], content=row.get("content") or lm["content"])
             result["updated"] += 1
 
     # 2. New memories the bot created on the phone (source=app, unseen).
@@ -178,9 +356,31 @@ def pull() -> dict:
         # overkill — instead create then stamp the existing locket_id and
         # let the dup-guard on the next add be a no-op. Simpler: create a
         # local file and stamp it, without re-POSTing.
-        new_id = add_memory(row.get("content") or "", mem_type, _no_mirror=True)
-        set_locket_id(new_id, lid)
+        if not dry_run:
+            new_id = add_memory(
+                row.get("content") or "",
+                mem_type,
+                _no_mirror=True,
+                source_session_id=row.get("sourceSessionId") or "",
+                source_agent=row.get("sourceAgent") or "",
+                source_title=row.get("sourceTitle") or "",
+                source_message_timestamp=row.get("sourceMessageTimestamp") or "",
+            )
+            set_locket_id(new_id, lid)
         result["created"] += 1
+
+    result["ok"] = True
+    if not dry_run:
+        try:
+            from core.locket_sync_state import record_success
+            record_success("memory", {
+                "created": result["created"],
+                "updated": result["updated"],
+                "deleted": result["deleted"],
+                "remote": result.get("remote", 0),
+            })
+        except Exception:
+            pass
 
     return result
 

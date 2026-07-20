@@ -45,6 +45,17 @@ Run it when:
 
 Skip it for trivial questions or things answerable from the current session. The rule: if you'd otherwise make him repeat himself, search first.
 
+### Always-on Telegram recall
+
+Locket keeps a sanitized cache of Claude/Codex chats and the knowledge base so phone Serena can search them while the laptop is off. The desktop queues a sync after completed turns and also refreshes every 30 minutes.
+
+- `chats archive-sync` pushes only changed chats and knowledge files.
+- `chats archive-sync --dry-run` shows counts without uploading.
+- `chats archive-sync --force` repairs or rebuilds the remote cache.
+- Add the `noindex` tag to a chat to remove it from the Locket cache on the next sync.
+
+The cache contains user/assistant text only. Tool results, machine context, common secret formats, and Vault data are excluded. New memories carry the current chat session id and agent; old memories without provenance stay explicitly unknown.
+
 ## Talking to a Linked Sibling (claude ↔ codex)
 
 Raghav's mental model: linked chats are a group text — he gets feedback from two people at once. Either agent can ping the other; he sees the conversation happen live on the other pane.

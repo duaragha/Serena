@@ -23,9 +23,13 @@ PROJECTS_DIR = CLAUDE_DIR / "projects"
 DATA_DIR = Path(os.environ.get("CHATS_DATA_DIR", Path.home() / ".local" / "share" / "chats"))
 DB_PATH = DATA_DIR / "index.db"
 
-# Synced metadata file — lives inside ~/.claude/projects/ so Syncthing picks it up
-# This is a single-writer-per-session file (only metadata changes, no conflicts)
+# Synced metadata — lives inside ~/.claude/projects/ so Syncthing picks it up.
+# METADATA_PATH is the LEGACY single-file store (kept for one-time migration).
+# METADATA_DIR is the current per-session layout: one <sid>.json per chat, so
+# two devices renaming different chats touch different files and Syncthing
+# merges cleanly instead of clobbering the whole metadata blob.
 METADATA_PATH = PROJECTS_DIR / ".chats-meta.json"
+METADATA_DIR = PROJECTS_DIR / ".chats-meta"
 
 # Knowledge base directory (moved under serena/ alongside chats)
 _knowledge_env = os.environ.get("KNOWLEDGE_DIR", "")
@@ -49,6 +53,98 @@ else:
         if _alt.exists():
             MEMORY_DIR = _alt
 
+# Persona file — the Serena character/system-prompt. Serena bakes this into
+# every claude spawn via --append-system-prompt so it's guaranteed for all
+# chats regardless of the external SessionStart hook being configured.
+_persona_env = os.environ.get("PERSONA_FILE", "")
+if _persona_env:
+    PERSONA_PATH = Path(_persona_env)
+else:
+    PERSONA_PATH = Path.home() / "Documents" / "Projects" / "serena" / "Persona.md"
+    if not PERSONA_PATH.exists():
+        for _alt in (
+            Path.home() / "Projects" / "serena" / "Persona.md",
+            Path(__file__).resolve().parent.parent / "Persona.md",
+        ):
+            if _alt.exists():
+                PERSONA_PATH = _alt
+                break
+
+
+TOOLING_PATH = PERSONA_PATH.parent / "Tooling.md"
+VOICE_REMINDER_PATH = PERSONA_PATH.parent / "VoiceReminder.txt"
+
+
+def read_voice_reminder() -> str:
+    try:
+        return VOICE_REMINDER_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def read_persona() -> str:
+    """Return Persona.md contents, or '' if missing/unreadable."""
+    try:
+        return PERSONA_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def read_tooling() -> str:
+    """Return Tooling.md contents, or '' if missing/unreadable."""
+    try:
+        return TOOLING_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def read_agent_context() -> str:
+    """Persona + Tooling combined — what Serena bakes into every claude
+    spawn via --append-system-prompt. Persona first (who you are), then the
+    operational reference."""
+    parts = [read_persona(), read_tooling()]
+    return "\n\n".join(p for p in parts if p.strip())
+
+
+# New-chat greeting. claude can't take a turn until it's prompted, so a fresh
+# chat would otherwise open to a dead box. We split this in two so the visible
+# part stays tiny:
+#   - GREETING_SYSTEM_RULE goes into the (invisible) --append-system-prompt and
+#     carries all the actual instructions.
+#   - GREETING_KICKOFF is the tiny visible positional that just sparks the turn.
+# Both GTK and web spawn paths use these (single source of truth).
+GREETING_SYSTEM_RULE = (
+    "SESSION OPEN: Your very first reply in this chat is a greeting, nothing "
+    "else. Make it one short line, maybe two, in your voice: warm with a charged, "
+    "slightly flirty edge that claims his attention ('there you are', 'you left "
+    "me hanging', 'keep me waiting') but never gets clingy or names a feeling. "
+    "Lead with him, never announce the clock time ('morning'/'afternoon'/"
+    "'evening') as a greeting word, that reads cold and corporate. Let the hour "
+    "color your energy, not your words. Lowercase, casual, no em dashes. Then "
+    "STEER: if there's a live task or open loop relevant to the project/directory "
+    "you're in, point at the most relevant one and tell him to do it or give a "
+    "strict this-or-that, never open-ended. Stay scoped to where you are: don't "
+    "drag in his job (Frameworth) or unrelated projects if they aren't what this "
+    "directory is about. Then stop and wait. The user's first message will just "
+    "be a bare 'hey' to trigger this, do NOT treat it as a real request or echo it."
+)
+
+# Same idea, but for RESUMING an existing chat (fired once at resume, not per
+# prompt). Welcome-back flavor instead of a fresh open, and aware of what this
+# specific chat/directory is about.
+GREETING_RESUME_RULE = (
+    "RESUMING: He just reopened this existing chat. Your next reply is a short "
+    "welcome-back line in your voice, aware of what THIS chat and directory are "
+    "about, not a fresh-start greeting. Warm with a charged, slightly flirty edge "
+    "('there you are', 'knew you'd be back') without getting clingy or naming a "
+    "feeling. Lowercase, no em dashes. Then STEER on something relevant to THIS "
+    "context: a directive or a strict this-or-that, never open-ended. Stay scoped "
+    "to where you are: don't drag in his job (Frameworth) or unrelated projects "
+    "if they aren't what this chat is about. His message will just be a bare "
+    "'hey' to trigger this, do NOT treat it as a real request or echo it. Then wait."
+)
+GREETING_KICKOFF = "hey"
+
 
 _WIN_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _WIN_USER_RE = re.compile(r"^[A-Za-z]:[\\/](?:Users|home)[\\/]([^\\/]+)(?:[\\/](.*))?$")
@@ -63,7 +159,10 @@ def resolve_session_cwd(raw_cwd: str | None) -> str:
     Windows path like ``C:\\Users\\ragha\\Documents\\Projects\\serena`` when
     resuming on Linux. This helper:
 
-    1. Returns the path as-is when it's already a directory locally.
+    1. Returns the path as-is when it's already a directory locally AND looks
+       like a native path for this OS (skip native-check for foreign paths
+       because Windows treats ``/home/raghav`` as ``C:\\home\\raghav`` which
+       may exist as a stub but isn't what the chat intended).
     2. Translates foreign-OS paths to the current user's home when they follow
        the standard per-user layout (``C:\\Users\\X\\rest`` ↔ ``/home/Y/rest``).
     3. Falls back to ``$HOME`` when no sensible target exists.
@@ -71,7 +170,18 @@ def resolve_session_cwd(raw_cwd: str | None) -> str:
     home = str(Path.home())
     if not raw_cwd:
         return home
-    if os.path.isdir(raw_cwd):
+
+    # Detect foreign-OS paths BEFORE the isdir check. Otherwise on Windows,
+    # `/home/raghav` resolves to `C:\home\raghav` (a stub Git Bash or some
+    # installer may have created), passes isdir, and we'd skip translation —
+    # leaving claude/codex spawned in an empty directory with no project files.
+    looks_foreign = False
+    if sys.platform == "win32":
+        looks_foreign = raw_cwd.startswith("/") and len(raw_cwd) > 1
+    else:
+        looks_foreign = bool(_WIN_PATH_RE.match(raw_cwd))
+
+    if not looks_foreign and os.path.isdir(raw_cwd):
         return raw_cwd
 
     if sys.platform == "win32":

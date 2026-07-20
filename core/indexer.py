@@ -2,11 +2,13 @@
 
 import json
 import sqlite3
+import threading
 from bisect import bisect_left
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from core.config import DATA_DIR, DB_PATH
+from core.config import DATA_DIR, DB_PATH, claude_project_dir_for
 from core import metadata as meta_sync
 from core.parser import SessionMeta, parse_messages_for_search, parse_metadata
 from core.scanner import scan_sessions
@@ -14,8 +16,76 @@ from core.codex_scanner import scan_codex_sessions, parse_codex_metadata, _FILEN
 from core.locket_scanner import scan_locket_sessions, parse_locket_metadata
 from chats.titles import generate_title
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
+
 
 _schema_ready = False
+_INDEX_THREAD_LOCK = threading.RLock()
+_INDEX_LOCK_PATH = DATA_DIR / "index-update.lock"
+
+
+def _is_locked_error(exc: Exception) -> bool:
+    return "database is locked" in str(exc).lower()
+
+
+def _db_write_available(timeout: float = 0.1) -> bool:
+    """Cheaply test whether SQLite can take a write lock right now."""
+    conn = sqlite3.connect(str(DB_PATH), timeout=timeout)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.rollback()
+        return True
+    except sqlite3.OperationalError as e:
+        if _is_locked_error(e):
+            return False
+        raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def _index_update_lock(skip_if_running: bool = False):
+    """Serialize expensive index rebuilds across Flask threads/processes.
+
+    The desktop UI can request refreshes faster than update_index() can scan and
+    parse active sessions. Let at most one refresh run; stale reads are better
+    than stacking writers behind SQLite.
+    """
+    got_thread = _INDEX_THREAD_LOCK.acquire(blocking=not skip_if_running)
+    if not got_thread:
+        yield False
+        return
+
+    lock_file = None
+    locked = False
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        lock_file = _INDEX_LOCK_PATH.open("a+b")
+        if fcntl is not None:
+            flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if skip_if_running else 0)
+            try:
+                fcntl.flock(lock_file.fileno(), flags)
+                locked = True
+            except BlockingIOError:
+                yield False
+                return
+        yield True
+    finally:
+        if locked and fcntl is not None and lock_file is not None:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        if lock_file is not None:
+            try:
+                lock_file.close()
+            except OSError:
+                pass
+        _INDEX_THREAD_LOCK.release()
+
 
 
 def _get_db() -> sqlite3.Connection:
@@ -147,11 +217,29 @@ def _migrate(conn: sqlite3.Connection):
     conn.commit()
 
 
-def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]:
+def update_index(
+    force: bool = False,
+    progress_callback=None,
+    skip_if_running: bool = False,
+) -> tuple[int, int]:
     """Scan for new/changed sessions and update the index.
 
     Returns (new_count, updated_count).
     """
+    with _index_update_lock(skip_if_running=skip_if_running) as acquired:
+        if not acquired:
+            return 0, 0
+        if skip_if_running and not _db_write_available():
+            return 0, 0
+        try:
+            return _update_index_locked(force=force, progress_callback=progress_callback)
+        except sqlite3.OperationalError as e:
+            if skip_if_running and _is_locked_error(e):
+                return 0, 0
+            raise
+
+
+def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[int, int]:
     conn = _get_db()
 
     existing = {}
@@ -175,6 +263,12 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
         discovered.append(("codex", project_dir, fp))
     for project_dir, fp in scan_locket_sessions():
         discovered.append(("locket", project_dir, fp))
+
+    # The same Claude session can legitimately exist under several cwd/OS
+    # slug folders. Indexing every copy reparses large transcripts repeatedly
+    # and makes the final row depend on scanner order. Keep one stable,
+    # most-complete copy per session id instead.
+    discovered = _dedupe_discovered(discovered, existing_paths)
 
     discovered_ids: set[str] = set()
     for agent, _, fp in discovered:
@@ -244,10 +338,124 @@ def update_index(force: bool = False, progress_callback=None) -> tuple[int, int]
             project_dir = meta.project_dir
         _upsert_session(conn, meta, all_meta, agent=agent)
 
+    _hide_internal_sessions(conn)
     _attribute_codex_parents(conn)
+    _repair_custom_title_groups(conn)
     conn.commit()
     conn.close()
     return new_count, updated_count
+
+
+def _dedupe_discovered(
+    discovered: list[tuple[str, str, Path]],
+    existing_paths: dict[str, str],
+) -> list[tuple[str, str, Path]]:
+    selected: dict[str, tuple[tuple[int, int, int, int], tuple[str, str, Path]]] = {}
+    for entry in discovered:
+        agent, project_dir, file_path = entry
+        if agent == "codex":
+            match = _CODEX_FILE_RE.match(file_path.name)
+            if not match:
+                continue
+            session_id = match.group(1)
+        else:
+            session_id = file_path.stem
+        try:
+            stat = file_path.stat()
+        except OSError:
+            continue
+        cwd_match = _claude_slug_affinity(project_dir, file_path) if agent == "claude" else 0
+        stable = int(existing_paths.get(session_id) == str(file_path))
+        # Completeness wins. For equal copies, prefer the folder matching the
+        # transcript's own cwd before preserving a stale Syncthing copy path.
+        score = (stat.st_size, cwd_match, stable, stat.st_mtime_ns)
+        current = selected.get(session_id)
+        if current is None or score > current[0]:
+            selected[session_id] = (score, entry)
+    return [item[1] for item in selected.values()]
+
+
+def _claude_slug_affinity(project_dir: str, file_path: Path) -> int:
+    """Return 1 when a copy lives under the slug recorded by its transcript."""
+    try:
+        with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for index, line in enumerate(handle):
+                if index >= 200:
+                    break
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cwd = record.get("cwd")
+                if not isinstance(cwd, str) or not cwd:
+                    continue
+                expected = claude_project_dir_for(cwd)
+                normalize = lambda value: value.replace("_", "-").casefold()
+                return int(normalize(expected) == normalize(project_dir))
+    except OSError:
+        pass
+    return 0
+
+
+def _project_identity(row: sqlite3.Row) -> str:
+    raw = str(row["last_cwd"] or row["cwd"] or row["project_dir"] or "")
+    value = raw.replace("\\", "/").replace("_", "-").casefold().rstrip("/")
+    for marker in ("/documents/projects/", "/projects/", "-documents-projects-", "-projects-"):
+        if marker in value:
+            return value.split(marker, 1)[1].replace("/", "-")
+    return value
+
+
+def _repair_custom_title_groups(conn: sqlite3.Connection) -> int:
+    """Re-link same-project duplicate names when one is explicitly custom.
+
+    Syncthing can restore a session or metadata file before its group siblings.
+    The custom title is the durable user signal that these rows are one named
+    thread, so use it to heal missing group metadata without deleting history.
+    """
+    rows = conn.execute(
+        """
+        SELECT session_id, project_dir, cwd, last_cwd, title, custom_title
+        FROM sessions
+        WHERE COALESCE(is_teammate, 0) = 0
+          AND COALESCE(custom_title, title, '') <> ''
+        """
+    ).fetchall()
+    buckets: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        display = str(row["custom_title"] or row["title"] or "").strip().casefold()
+        if display:
+            buckets.setdefault((display, _project_identity(row)), []).append(row)
+
+    all_meta = meta_sync.get_all_meta()
+    repaired = 0
+    for members in buckets.values():
+        if len(members) < 2 or not any(row["custom_title"] for row in members):
+            continue
+        session_ids = [row["session_id"] for row in members]
+        groups = [(all_meta.get(sid) or {}).get("group") for sid in session_ids]
+        if groups[0] and all(group == groups[0] for group in groups):
+            continue
+        meta_sync.link_sessions(session_ids)
+        repaired += 1
+    return repaired
+
+
+def _is_internal_project(project_dir: str | None) -> bool:
+    value = (project_dir or "").casefold()
+    return "serena-headless-brain" in value or "-tmp-serena-" in value
+
+
+def _hide_internal_sessions(conn: sqlite3.Connection) -> None:
+    """Keep resident-brain rotations indexed without showing them as chats."""
+    conn.execute(
+        """
+        UPDATE sessions
+        SET is_teammate = 1
+        WHERE project_dir LIKE '%serena-headless-brain%'
+           OR project_dir LIKE '%-tmp-serena-%'
+        """
+    )
 
 
 def _apply_synced_meta(conn: sqlite3.Connection, session_id: str, synced: dict):
@@ -317,7 +525,8 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
         meta.first_message, title, custom_title, starred, is_done, done_at,
         meta.first_timestamp.isoformat() if meta.first_timestamp else None,
         meta.last_timestamp.isoformat() if meta.last_timestamp else None,
-        meta.message_count, meta.raw_message_count, 1 if meta.is_teammate else 0,
+        meta.message_count, meta.raw_message_count,
+        1 if (meta.is_teammate or _is_internal_project(meta.project_dir)) else 0,
         meta.model, meta.git_branch, meta.slug,
         meta.file_path, meta.file_size, meta.file_mtime,
         meta.input_tokens, meta.output_tokens, meta.cache_read_tokens, meta.cache_create_tokens,
@@ -616,10 +825,13 @@ def search_fts(query: str, limit: int = 20) -> list[dict]:
         return []
 
     results = conn.execute("""
-        SELECT session_id, snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet,
-               role, timestamp
+        SELECT messages_fts.session_id,
+               snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet,
+               messages_fts.role, messages_fts.timestamp
         FROM messages_fts
-        WHERE content MATCH ?
+        JOIN sessions s ON s.session_id = messages_fts.session_id
+        WHERE messages_fts.content MATCH ?
+          AND COALESCE(s.is_teammate, 0) = 0
         ORDER BY rank
         LIMIT ?
     """, (query, limit)).fetchall()
@@ -769,11 +981,18 @@ def toggle_star(session_id_prefix: str) -> bool:
 
     sid = session["session_id"]
     new_val = 0 if session.get("starred") else 1
-    conn = _get_db()
-    conn.execute("UPDATE sessions SET starred = ? WHERE session_id = ?", (new_val, sid))
-    conn.commit()
-    conn.close()
     meta_sync.set_starred(sid, bool(new_val))
+    conn = _get_db()
+    try:
+        conn.execute("UPDATE sessions SET starred = ? WHERE session_id = ?", (new_val, sid))
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if not _is_locked_error(e):
+            raise
+        # Synced metadata is authoritative; the next successful index refresh
+        # will apply it to SQLite. Avoid surfacing transient refresh locks to UI.
+    finally:
+        conn.close()
     return bool(new_val)
 
 
@@ -787,14 +1006,19 @@ def toggle_done(session_id_prefix: str) -> bool:
     sid = session["session_id"]
     new_val = 0 if session.get("is_done") else 1
     done_at = datetime.now(timezone.utc).isoformat() if new_val else None
-    conn = _get_db()
-    conn.execute(
-        "UPDATE sessions SET is_done = ?, done_at = ? WHERE session_id = ?",
-        (new_val, done_at, sid),
-    )
-    conn.commit()
-    conn.close()
     meta_sync.set_done(sid, bool(new_val), done_at)
+    conn = _get_db()
+    try:
+        conn.execute(
+            "UPDATE sessions SET is_done = ?, done_at = ? WHERE session_id = ?",
+            (new_val, done_at, sid),
+        )
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if not _is_locked_error(e):
+            raise
+    finally:
+        conn.close()
     return bool(new_val)
 
 
@@ -805,11 +1029,16 @@ def set_title(session_id_prefix: str, title: str):
         raise ValueError(f"No session found with ID '{session_id_prefix}'")
 
     sid = session["session_id"]
-    conn = _get_db()
-    conn.execute("UPDATE sessions SET custom_title = ? WHERE session_id = ?", (title, sid))
-    conn.commit()
-    conn.close()
     meta_sync.set_custom_title(sid, title)
+    conn = _get_db()
+    try:
+        conn.execute("UPDATE sessions SET custom_title = ? WHERE session_id = ?", (title, sid))
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if not _is_locked_error(e):
+            raise
+    finally:
+        conn.close()
 
 
 def list_projects() -> list[dict]:

@@ -1,5 +1,7 @@
 """CLI entry point for the chats tool."""
 
+from __future__ import annotations
+
 import click
 from pathlib import Path
 from rich.console import Console
@@ -415,18 +417,52 @@ def memory_add(content, mem_type):
 
 
 @memory.command("sync")
-def memory_sync():
-    """Pull bot-made memory/task changes (from Locket) back into local files."""
-    from memory.locket_mirror import pull
-    r = pull()
+@click.option("--dry-run", is_flag=True, help="Show memory changes without writing local files")
+@click.option(
+    "--prune-stale-laptop",
+    is_flag=True,
+    help="Archive remote source=laptop rows that no longer exist locally",
+)
+@click.option(
+    "--type",
+    "type_filter",
+    type=click.Choice(["task", "loop", "feedback", "user", "project", "reference", "general"]),
+    help="Only push this local memory type to Locket",
+)
+def memory_sync(dry_run, prune_stale_laptop, type_filter):
+    """Sync memory/task changes between local files and Locket."""
+    from memory.locket_mirror import pull, push_local
+    from core.locket_sync_state import last_success
+    r = pull(dry_run=dry_run)
+    if not r.get("ok"):
+        console.print("[yellow]Could not reach Locket memory API.[/yellow]")
+        console.print(f"[dim]Last successful memory sync: {last_success('memory')}[/dim]")
+        return
     total = r["created"] + r["updated"] + r["deleted"]
     if total == 0:
-        console.print("[dim]Memory in sync with Locket — nothing to pull.[/dim]")
+        label = "would change" if dry_run else "changed"
+        console.print(f"[dim]Memory in sync with Locket — 0 files {label}.[/dim]")
     else:
+        verb = "Would sync" if dry_run else "Synced"
         console.print(
-            f"[green]Synced from Locket: +{r['created']} new, "
+            f"[green]{verb} from Locket to laptop: +{r['created']} new, "
             f"{r['updated']} updated, {r['deleted']} removed[/green]"
         )
+    pushed = push_local(
+        prune_stale_laptop=prune_stale_laptop,
+        dry_run=dry_run,
+        type_filter=type_filter,
+    )
+    if not pushed.get("ok"):
+        console.print("[yellow]Could not push laptop memories to Locket.[/yellow]")
+    else:
+        verb = "Would push" if dry_run else "Pushed"
+        console.print(
+            f"[green]{verb} laptop to Locket: +{pushed['pushed']} new, "
+            f"{pushed['linked']} linked, {pushed['pruned']} pruned[/green]"
+        )
+    if not dry_run:
+        console.print(f"[dim]Last successful memory sync: {last_success('memory')}[/dim]")
 
 
 @memory.command("remove")
@@ -466,6 +502,38 @@ def memory_search(query):
         return
     for m in results:
         console.print(f"  [dim]#{m['id']}[/dim] [{m['type']}] {m['content']}")
+
+
+@memory.command("ledger")
+@click.argument("key")
+@click.option("--goal", help="What we're trying to do.")
+@click.option("--facts", help="What we actually know, verified.")
+@click.option("--decision", help="What got decided.")
+@click.option("--promise", help="What either agent committed to.")
+@click.option("--risk", help="The one thing worth watching.")
+@click.option("--next", "next_action", help="The next concrete move.")
+def memory_ledger(key, goal, facts, decision, promise, risk, next_action):
+    """Create or update the ledger card for KEY (a short stable slug, e.g.
+    'persona-tuning'). Only options you pass get changed — the rest keep
+    their current value. Run with just KEY and no options to print current
+    state without changing anything."""
+    from memory.store import find_ledger, upsert_ledger, LEDGER_FIELDS
+    passed = {
+        "goal": goal, "facts": facts, "decision": decision,
+        "promise": promise, "risk": risk, "next_action": next_action,
+    }
+    passed = {k: v for k, v in passed.items() if v is not None}
+    if passed:
+        mid = upsert_ledger(key, **passed)
+        console.print(f"[green]Ledger '{key}' updated (#{mid})[/green]")
+    m = find_ledger(key)
+    if not m:
+        console.print(f"[yellow]No ledger for '{key}' yet. Pass --goal etc. to create one.[/yellow]")
+        return
+    for f in LEDGER_FIELDS:
+        v = (m.get(f) or "").strip()
+        if v:
+            console.print(f"  [dim]{f}:[/dim] {v}")
 
 
 @main.group(invoke_without_command=True)
@@ -700,17 +768,33 @@ def text(message):
 
 
 @main.command(name="locket-sync")
-def locket_sync():
+@click.option("--dry-run", is_flag=True, help="Show chat sync counts without writing files")
+def locket_sync(dry_run):
     """Pull Serena's in-app Locket chats into the local index store."""
     from core.locket_scanner import sync_locket_chats, scan_locket_sessions, LOCKET_SYNC_ROOT
     from core.indexer import update_index, _get_db
     from core.parser import parse_messages_for_search
+    from core.locket_sync_state import last_success
 
-    n = sync_locket_chats()
-    if n == 0:
+    details = sync_locket_chats(dry_run=dry_run, return_details=True)
+    if not details.get("ok"):
         console.print("[yellow]No conversations synced (unconfigured, unreachable, or empty).[/yellow]")
+        console.print(f"[dim]Last successful Locket chat sync: {last_success('chats')}[/dim]")
         return
-    console.print(f"[green]Synced {n} locket conversation(s) → {LOCKET_SYNC_ROOT}[/green]")
+    n = details["conversations"]
+    if n == 0:
+        console.print("[dim]Locket chat sync reached the API; no conversations returned.[/dim]")
+        return
+    verb = "Would sync" if dry_run else "Synced"
+    console.print(
+        f"[green]{verb} {n} locket conversation(s) → {LOCKET_SYNC_ROOT}[/green]"
+    )
+    console.print(
+        f"[dim]Chats: +{details['created']} new, {details['updated']} updated, "
+        f"{details['deleted']} deleted, {details['unchanged']} unchanged[/dim]"
+    )
+    if dry_run:
+        return
     new, updated = update_index()
 
     # Incremental FTS for just the locket sessions — recall only triggers a
@@ -730,6 +814,46 @@ def locket_sync():
     conn.commit()
     conn.close()
     console.print(f"[green]Index: {new} new, {updated} updated · FTS: {fts_rows} locket messages[/green]")
+    console.print(f"[dim]Last successful Locket chat sync: {last_success('chats')}[/dim]")
+
+
+@main.command(name="locket-status")
+def locket_status():
+    """Show last successful Locket memory/chat sync details."""
+    from core.locket_sync_state import load_state
+
+    state = load_state()
+    for key, label in (("memory", "Memory"), ("chats", "Chats"), ("archive", "Recall archive")):
+        entry = state.get(key) or {}
+        counts = entry.get("counts") or {}
+        console.print(f"[bold]{label}[/bold]: {entry.get('last_success_at') or 'never'}")
+        if counts:
+            console.print(
+                "  "
+                + ", ".join(f"{k}={v}" for k, v in counts.items() if k not in {"ok", "dry_run"})
+            )
+
+
+@main.command(name="archive-sync")
+@click.option("--dry-run", is_flag=True, help="Show recall archive changes without uploading")
+@click.option("--force", is_flag=True, help="Upload every chat and knowledge file again")
+def archive_sync(dry_run, force):
+    """Push Claude/Codex chats and knowledge to Locket for offline recall."""
+    from core.locket_archive_sync import sync_locket_archive
+
+    result = sync_locket_archive(dry_run=dry_run, force=force)
+    if not result.get("ok") and not dry_run:
+        console.print("[yellow]Recall archive sync is unconfigured or failed.[/yellow]")
+    verb = "Would sync" if dry_run else "Synced"
+    console.print(
+        f"[green]{verb} {result.get('sessions_changed', 0)} chat(s), "
+        f"{result.get('knowledge_changed', 0)} knowledge file(s)[/green]"
+    )
+    console.print(
+        f"[dim]Deletes: {result.get('sessions_deleted', 0)} chats, "
+        f"{result.get('knowledge_deleted', 0)} knowledge files; "
+        f"requests={result.get('requests', 0)}[/dim]"
+    )
 
 
 @main.command()
@@ -776,6 +900,17 @@ def reindex(force):
     console.print("[cyan]Building knowledge search index...[/cyan]")
     build_knowledge_fts()
     console.print("[green]Knowledge search index ready.[/green]")
+
+    try:
+        from core.locket_archive_sync import sync_locket_archive
+
+        synced = sync_locket_archive(refresh_index=False)
+        console.print(
+            f"[green]Locket recall: {synced.get('sessions_synced', 0)} chats, "
+            f"{synced.get('knowledge_synced', 0)} knowledge files[/green]"
+        )
+    except Exception as error:
+        console.print(f"[yellow]Locket recall sync skipped: {error}[/yellow]")
 
 
 @main.command(name="mark-done")
@@ -833,6 +968,16 @@ def gen_image(out, timeout, reasoning, prompt):
     codex_bin = shutil.which("codex") or "codex"
     gen_dir = os.path.expanduser("~/.codex/generated_images")
     pre_files = set(glob.glob(os.path.join(gen_dir, "**", "*"), recursive=True)) if os.path.isdir(gen_dir) else set()
+    # codex 0.141+ saves the generated image into its CWD (not gen_dir). Run in an
+    # isolated empty temp dir so we can reliably pick up THIS call's output and never
+    # grab a stale prior render.
+    import tempfile
+    workdir = tempfile.mkdtemp(prefix="serena_genimg_")
+    # Each `codex exec` writes a rollout that embeds the generated image as base64
+    # (2-4MB a pop). These one-shot gen sessions are throwaway — snapshot the rollout
+    # dir so we can delete the one this call creates, or they silently eat the disk.
+    sess_dir = os.path.expanduser("~/.codex/sessions")
+    pre_rollouts = set(glob.glob(os.path.join(sess_dir, "**", "*.jsonl"), recursive=True))
 
     # Compose the prompt: $imagegen trigger + the actual ask. Codex sees
     # $imagegen and auto-loads the skill.
@@ -851,28 +996,40 @@ def gen_image(out, timeout, reasoning, prompt):
 
     console.print(f"[dim]Generating image (codex exec, fresh session)…[/dim]")
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=workdir)
     except subprocess.TimeoutExpired:
         console.print(f"[red]Timed out after {timeout}s.[/red]"); return
     if proc.returncode != 0:
         console.print(f"[red]codex exec failed (exit {proc.returncode}):[/red]")
         console.print(proc.stderr or proc.stdout); return
 
+    IMG_EXT = (".png", ".jpg", ".jpeg", ".webp")
     # Try to extract the path from codex's stdout (we asked it to print SAVED:<path>)
     saved_path = None
     for line in proc.stdout.splitlines():
         m = re.match(r"^SAVED:(.+)$", line.strip())
         if m:
-            saved_path = m.group(1).strip()
+            cand = m.group(1).strip()
+            if not os.path.isabs(cand):
+                cand = os.path.join(workdir, cand)
+            if os.path.isfile(cand):
+                saved_path = cand
             break
 
-    # Fallback: diff the generated_images dir
+    # Primary: newest image codex dropped in the isolated workdir (codex 0.141 saves to CWD)
     if not saved_path:
-        post_files = set(glob.glob(os.path.join(gen_dir, "**", "*"), recursive=True))
-        new_files = [p for p in (post_files - pre_files) if os.path.isfile(p)]
-        if new_files:
-            new_files.sort(key=os.path.getmtime)
-            saved_path = new_files[-1]
+        imgs = [p for p in glob.glob(os.path.join(workdir, "**", "*"), recursive=True)
+                if os.path.isfile(p) and p.lower().endswith(IMG_EXT)]
+        if imgs:
+            imgs.sort(key=os.path.getmtime)
+            saved_path = imgs[-1]
+
+    # NO shared-dir fallback. It used to diff ~/.codex/generated_images for new files,
+    # but that dir is shared across every concurrent/orphaned gen: a straggler codex
+    # process from an earlier topic can drop its image there mid-run, and the diff then
+    # hands it back as *this* call's result (a Jozy Altidore render was once saved as a
+    # Messi asset this way). A gen that leaves nothing in its own isolated workdir is a
+    # failure; report it as one and let the caller retry.
 
     if not saved_path or not os.path.exists(saved_path):
         console.print("[yellow]Image generated but couldn't locate the file. Codex output:[/yellow]")
@@ -893,6 +1050,15 @@ def gen_image(out, timeout, reasoning, prompt):
             return
 
     console.print(f"[green]Saved:[/green] {final}")
+
+    # Clean up after ourselves: the temp workdir and this call's throwaway rollout
+    # (which holds the image inline as base64). Without this, a long batch run fills the disk.
+    shutil.rmtree(workdir, ignore_errors=True)
+    try:
+        for p in set(glob.glob(os.path.join(sess_dir, "**", "*.jsonl"), recursive=True)) - pre_rollouts:
+            os.remove(p)
+    except OSError:
+        pass
 
 
 @main.command(name="ask-claude")
@@ -915,38 +1081,51 @@ def ask_claude(sid, from_sid, timeout, port, prompt):
     if not text:
         console.print("[red]prompt is required[/red]"); return
 
-    p = port or _detect_serena_port()
-    if not p:
+    ports = [int(port)] if port else _detect_serena_ports()
+    if not ports:
         console.print("[red]Could not find a running Serena instance on localhost.[/red]"); return
 
-    target_sid = sid
-    if not target_sid:
+    # Two paths, mirroring ask-codex:
+    #   --sid explicitly provided → straight to /api/claude-bridge
+    #   --sid omitted → /api/ask-linked-claude which handles both the
+    #       already-linked and auto-spawn cases atomically
+    if sid:
+        endpoint = "/api/claude-bridge"
+        body = {"target_sid": sid, "prompt": text, "timeout": timeout}
+    else:
         my_sid = from_sid or _detect_codex_sid()
         if not my_sid:
             console.print("[red]Could not detect current codex sid; pass --sid or --from-sid.[/red]"); return
-        target_sid = _find_linked_sibling(my_sid, target_agent="claude")
-        if not target_sid:
-            console.print(f"[red]Codex {my_sid[:8]} has no linked claude sibling. Link one in Serena first.[/red]"); return
+        endpoint = "/api/ask-linked-claude"
+        body = {"codex_sid": my_sid, "prompt": text, "timeout": timeout}
+    errors: list[str] = []
+    for p in ports:
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{p}{endpoint}",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout + 30) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except socket.timeout as e:
+            console.print(f"[red]Bridge call timed out on port {p}: {e}[/red]"); return
+        except (urllib.error.URLError, urllib.error.HTTPError) as e:
+            errors.append(f"{p}: {e}")
+            continue
 
-    body = {"target_sid": target_sid, "prompt": text, "timeout": timeout}
-    try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{p}/api/claude-bridge",
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout + 30) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout) as e:
-        console.print(f"[red]Bridge call failed: {e}[/red]"); return
+        if payload.get("ok"):
+            console.print(payload.get("response") or "(no response)")
+            return
+        msg = payload.get("message", "unknown error")
+        errors.append(f"{p}: {msg}")
+        if port or not _is_bridge_live_miss(msg):
+            if payload.get("response"):
+                console.print(payload["response"])
+            break
 
-    if not payload.get("ok"):
-        console.print(f"[red]{payload.get('message', 'unknown error')}[/red]")
-        if payload.get("response"):
-            console.print(payload["response"])
-        return
-    console.print(payload.get("response") or "(no response)")
+    console.print(f"[red]{errors[-1] if errors else 'bridge failed'}[/red]")
 
 
 @main.command(name="ask-codex")
@@ -972,8 +1151,8 @@ def ask_codex(sid, from_sid, timeout, port, prompt):
         console.print("[red]prompt is required[/red]"); return
 
     # Find Serena's port (it picks one at random per launch)
-    p = port or _detect_serena_port()
-    if not p:
+    ports = [int(port)] if port else _detect_serena_ports()
+    if not ports:
         console.print("[red]Could not find a running Serena instance on localhost.[/red]"); return
 
     # Two paths:
@@ -992,26 +1171,36 @@ def ask_codex(sid, from_sid, timeout, port, prompt):
         endpoint = "/api/ask-linked-codex"
         body = {"claude_sid": my_sid, "prompt": text, "timeout": timeout}
 
-    try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{p}{endpoint}",
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout + 30) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout) as e:
-        console.print(f"[red]Bridge call failed: {e}[/red]"); return
+    errors: list[str] = []
+    for p in ports:
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{p}{endpoint}",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout + 30) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except socket.timeout as e:
+            console.print(f"[red]Bridge call timed out on port {p}: {e}[/red]"); return
+        except (urllib.error.URLError, urllib.error.HTTPError) as e:
+            errors.append(f"{p}: {e}")
+            continue
 
-    if payload.get("spawned"):
-        console.print(f"[dim]Auto-spawned linked codex {payload.get('codex_sid', '')[:8]}.[/dim]")
-    if not payload.get("ok"):
-        console.print(f"[red]{payload.get('message', 'unknown error')}[/red]")
-        if payload.get("response"):
-            console.print(payload["response"])
-        return
-    console.print(payload.get("response") or "(no response)")
+        if payload.get("spawned"):
+            console.print(f"[dim]Auto-spawned linked codex {payload.get('codex_sid', '')[:8]}.[/dim]")
+        if payload.get("ok"):
+            console.print(payload.get("response") or "(no response)")
+            return
+        msg = payload.get("message", "unknown error")
+        errors.append(f"{p}: {msg}")
+        if port or not _is_bridge_live_miss(msg):
+            if payload.get("response"):
+                console.print(payload["response"])
+            break
+
+    console.print(f"[red]{errors[-1] if errors else 'bridge failed'}[/red]")
 
 
 def _detect_claude_sid() -> str | None:
@@ -1190,9 +1379,20 @@ def _detect_codex_sid() -> str | None:
     return None
 
 
-def _detect_serena_port() -> int | None:
-    """Find a running Serena Flask instance on localhost. Returns the
-    NEWEST Serena's port (so post-relaunch wins over a stale older one).
+def _is_bridge_live_miss(message: str) -> bool:
+    msg = (message or "").lower()
+    needles = (
+        "no live terminal",
+        "no live vte",
+        "gtk window not initialized",
+        "gtk shell not available",
+        "pty_terminal unavailable",
+    )
+    return any(n in msg for n in needles)
+
+
+def _detect_serena_ports() -> list[int]:
+    """Find running Serena Flask instances on localhost, newest first.
 
     Cross-platform: uses `ss` on Linux + `netstat`/`Get-NetTCPConnection` on
     Windows. Falls back to a port-probe of common ranges if neither works.
@@ -1204,7 +1404,7 @@ def _detect_serena_port() -> int | None:
         try:
             out = subprocess.check_output(["ss", "-tlnp"], text=True, timeout=2)
         except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            return None
+            return []
         port_re = re.compile(r"127\.0\.0\.1:(\d+)")
         pid_re = re.compile(r"pid=(\d+)")
         for line in out.splitlines():
@@ -1233,7 +1433,7 @@ def _detect_serena_port() -> int | None:
                 ["netstat", "-ano", "-p", "TCP"], text=True, timeout=4
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            return None
+            return []
         # Lines like: "  TCP    127.0.0.1:50937    0.0.0.0:0    LISTENING    25224"
         row_re = re.compile(r"\s+TCP\s+127\.0\.0\.1:(\d+)\s+\S+\s+LISTENING\s+(\d+)")
         seen_pids: dict[int, str] = {}
@@ -1259,9 +1459,21 @@ def _detect_serena_port() -> int | None:
                 # likely newer in Windows's monotonic-ish PID assignment.
                 candidates.append((float(pid), port))
     if not candidates:
-        return None
-    candidates.sort()
-    return candidates[-1][1]  # newest wins
+        return []
+    ports: list[int] = []
+    seen: set[int] = set()
+    for _started, p in sorted(candidates, reverse=True):
+        if p in seen:
+            continue
+        seen.add(p)
+        ports.append(p)
+    return ports
+
+
+def _detect_serena_port() -> int | None:
+    """Compatibility wrapper: newest running Serena port, if any."""
+    ports = _detect_serena_ports()
+    return ports[0] if ports else None
 
 
 if __name__ == "__main__":

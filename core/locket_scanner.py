@@ -53,16 +53,30 @@ def _load_env() -> tuple[str, str] | None:
     return url, key
 
 
-def sync_locket_chats(timeout: int = 10) -> int:
+def sync_locket_chats(
+    timeout: int = 10,
+    *,
+    dry_run: bool = False,
+    return_details: bool = False,
+) -> int | dict:
     """Pull conversations from the Locket API into LOCKET_SYNC_ROOT.
 
     Full overwrite per conversation (files are small); returns the number
     of conversations written. Fail-soft: any error returns 0 — the index
     just serves the last synced state.
     """
+    details = {
+        "ok": False,
+        "dry_run": dry_run,
+        "conversations": 0,
+        "created": 0,
+        "updated": 0,
+        "deleted": 0,
+        "unchanged": 0,
+    }
     env = _load_env()
     if env is None:
-        return 0
+        return details if return_details else 0
     base, key = env
 
     req = urllib.request.Request(
@@ -73,14 +87,22 @@ def sync_locket_chats(timeout: int = 10) -> int:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.load(resp)
     except Exception:
-        return 0
+        return details if return_details else 0
 
     conversations = (payload.get("data") or []) if isinstance(payload, dict) else []
+    details["ok"] = True
+    details["conversations"] = len(conversations)
     if not conversations:
-        return 0
+        if not dry_run:
+            try:
+                from core.locket_sync_state import record_success
+                record_success("chats", details)
+            except Exception:
+                pass
+        return details if return_details else 0
 
-    LOCKET_SYNC_ROOT.mkdir(parents=True, exist_ok=True)
-    written = 0
+    if not dry_run:
+        LOCKET_SYNC_ROOT.mkdir(parents=True, exist_ok=True)
     for conv in conversations:
         conv_id = conv.get("id")
         messages = conv.get("messages") or []
@@ -99,10 +121,29 @@ def sync_locket_chats(timeout: int = 10) -> int:
                     "content": [{"type": "text", "text": str(m.get("content") or "")}],
                 },
             }, ensure_ascii=False))
+        content = "\n".join(lines) + "\n"
         out = LOCKET_SYNC_ROOT / f"{conv_id}.jsonl"
-        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        written += 1
-    return written
+        if out.exists():
+            try:
+                old = out.read_text(encoding="utf-8")
+            except OSError:
+                old = ""
+            if old == content:
+                details["unchanged"] += 1
+                continue
+            details["updated"] += 1
+        else:
+            details["created"] += 1
+        if not dry_run:
+            out.write_text(content, encoding="utf-8")
+
+    if not dry_run:
+        try:
+            from core.locket_sync_state import record_success
+            record_success("chats", details)
+        except Exception:
+            pass
+    return details if return_details else len(conversations)
 
 
 def scan_locket_sessions() -> Iterator[tuple[str, Path]]:

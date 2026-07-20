@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from core import metadata as meta_sync
 from core.parser import SessionMeta
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
@@ -51,10 +52,10 @@ def scan_codex_sessions() -> Iterator[tuple[str, Path]]:
 
 
 def _is_user_initiated(file_path: Path) -> bool:
-    """Surface ONLY codex sessions the user started directly via the
-    interactive `codex` CLI (source=cli). Everything else — MCP-spawned,
-    VS Code extension, `codex exec` one-shots — gets filtered out at
-    scan time and never enters the index.
+    """Surface interactive CLI sessions and Serena-owned resident work.
+
+    Other MCP, extension, and generic exec sessions stay filtered out at scan
+    time so the sidebar does not fill with internal one-shots.
 
     The previous behavior (indexing all codex sessions to support
     parent-nesting under their Claude chat) made the sidebar too noisy
@@ -73,8 +74,22 @@ def _is_user_initiated(file_path: Path) -> bool:
     except json.JSONDecodeError:
         return False
     payload = obj.get("payload") or {}
-    source = (payload.get("source") or "").lower()
-    return source == "cli"
+    source = _source_name(payload.get("source"))
+    if source == "cli":
+        return True
+    match = _FILENAME_RE.match(file_path.name)
+    if source == "exec" and match:
+        return bool(meta_sync.get_meta(match.group(1)).get("resident_work"))
+    return False
+
+
+def _source_name(source) -> str:
+    """Normalize Codex session_meta payload.source across CLI versions."""
+    if isinstance(source, str):
+        return source.lower()
+    if isinstance(source, dict):
+        return next(iter(source.keys()), "").lower()
+    return ""
 
 
 def _slugify_cwd(cwd: str) -> str:
@@ -188,7 +203,7 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
     # the cleanest signal for "was this spawned by another agent?". We pack
     # them as "<originator>:<source>" so downstream attribution can read both.
     raw_originator = str(session_meta.get("originator") or "")
-    raw_source = str(session_meta.get("source") or "")
+    raw_source = _source_name(session_meta.get("source"))
     if raw_source:
         originator = f"{raw_originator}:{raw_source}"
     else:

@@ -39,6 +39,7 @@ class SessionMeta:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_create_tokens: int = 0
+    devices_used: list[str] = field(default_factory=list)
 
 
 def _extract_text(content) -> str:
@@ -100,6 +101,7 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
     assistant_count = 0
     raw_count = 0
     first_user_seen = False
+    devices: set[str] = set()
 
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
@@ -140,9 +142,17 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
                     user_count += 1
 
                     if record.get("cwd"):
+                        cwd_val = record["cwd"]
                         if not meta.cwd:
-                            meta.cwd = record["cwd"]
-                        meta.last_cwd = record["cwd"]
+                            meta.cwd = cwd_val
+                        meta.last_cwd = cwd_val
+                        # Per-message device classification: if the same session
+                        # is resumed on a different OS, the cwd shape changes.
+                        if isinstance(cwd_val, str):
+                            if len(cwd_val) >= 2 and cwd_val[1] == ":":
+                                devices.add("windows")
+                            elif cwd_val.startswith("/"):
+                                devices.add("linux")
                     if not meta.git_branch and record.get("gitBranch"):
                         meta.git_branch = record["gitBranch"]
                     if not meta.first_message and text:
@@ -189,6 +199,7 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
     meta.message_count = user_count + assistant_count
     meta.raw_message_count = raw_count
     meta.device = _detect_device(project_dir, meta.cwd)
+    meta.devices_used = sorted(devices)
     return meta
 
 
@@ -313,7 +324,12 @@ def parse_full(file_path: Path) -> list[Message]:
 
 
 def parse_messages_for_search(file_path: Path) -> list[tuple[str, str, str]]:
-    """Extract (role, text, timestamp) tuples for FTS indexing. Skips tool noise."""
+    """Extract (role, text, timestamp) tuples for FTS indexing. Skips tool noise.
+    Auto-dispatches to codex format if the file lives under ~/.codex/sessions/."""
+    fp_str = str(file_path)
+    if "/.codex/sessions/" in fp_str or "\\.codex\\sessions\\" in fp_str:
+        return _parse_codex_messages_for_search(file_path)
+
     results = []
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
@@ -356,4 +372,36 @@ def parse_messages_for_search(file_path: Path) -> list[tuple[str, str, str]]:
     except (OSError, PermissionError):
         pass
 
+    return results
+
+
+def _parse_codex_messages_for_search(file_path: Path) -> list[tuple[str, str, str]]:
+    """Codex .jsonl uses event_msg envelope with payload.type. Extract user/agent
+    text for FTS indexing."""
+    results: list[tuple[str, str, str]] = []
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") != "event_msg":
+                    continue
+                payload = obj.get("payload") or {}
+                inner = payload.get("type")
+                ts = obj.get("timestamp", "")
+                if inner == "user_message":
+                    text = payload.get("message") or payload.get("text") or ""
+                    if isinstance(text, str) and text.strip():
+                        results.append(("user", text, ts))
+                elif inner in ("agent_message", "assistant_message"):
+                    text = payload.get("message") or payload.get("text") or ""
+                    if isinstance(text, str) and text.strip():
+                        results.append(("assistant", text, ts))
+    except (OSError, PermissionError):
+        pass
     return results
