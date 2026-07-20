@@ -136,10 +136,10 @@ Install the scoped requirements with the exact Python interpreter that runs
 python -m pip install -r voice/call/requirements.txt
 ```
 
-Here, `python` means that exact serving interpreter. Root project packaging
-does not include `voice`, and `voice/.venv` does not automatically power
-`ui/web.py`. Installing only into `voice/.venv` leaves the call route without
-its runtime libraries if `chats serve` uses another Python.
+Here, `python` means the exact interpreter that runs the mobile host. The
+separate `.venv-pocket` environment owns only the local Pocket TTS worker. It
+does not provide the call server's STT, VAD, transport, or orchestration
+dependencies.
 
 Kokoro uses these existing local assets:
 
@@ -237,7 +237,7 @@ With the resident brain live and local TTS assets installed, run:
 
 ```bash
 python -m voice.call.tool_acceptance \
-  --tts-python voice/.venv/bin/python
+  --tts-python .venv-pocket/bin/python
 ```
 
 The v2.5c harness sends a real voice-protocol turn over `brain.sock`, requires

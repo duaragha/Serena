@@ -355,8 +355,8 @@ Classify every voice package as active, compatibility fallback, migration source
 
 Candidate paths requiring classification:
 
-- active candidates: `voice/call`, `voice/desk`, `voice/desktop`, `voice/brain_bridge.py`
-- legacy candidates: `voice/brain`, `voice/voice`, `voice/daemon`, `LIVE_VOICE_DAEMON.md`, older daemon TTS files
+- supported production paths: `voice/call`, `voice/desk`, `voice/desktop`, `voice/brain_bridge.py`
+- removed legacy paths: `voice/brain`, `voice/voice`, `voice/daemon`, `LIVE_VOICE_DAEMON.md`, and the older daemon TTS files
 
 **Acceptance:**
 
@@ -711,7 +711,7 @@ Create reviewable commits for:
 
 - GTK/VTE crash tests no longer emit invalid-pointer warnings.
 - The root README describes the current control plane and supported entrypoints.
-- `LIVE_VOICE_DAEMON.md` is updated, moved to legacy documentation, or removed after reference proof.
+- `LIVE_VOICE_DAEMON.md` is removed after reference proof.
 - Service installation documentation matches installed units.
 
 #### R0-O3: Quarantine obsolete implementations

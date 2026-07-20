@@ -9,9 +9,9 @@ drive the brain just by writing one word to the file:
     ~/.config/serena/voice_state   ->  "idle" | "thinking" | "speaking" | "listening"
     ~/.config/serena/voice_working ->  active background coding lease
 
-Serena's TTS (kokoro_speak.py) writes "speaking" while she talks and "idle" when
-she stops; the UserPromptSubmit hook writes "thinking" while she works. The file
-write is harmless whether or not this bridge is running.
+The supported call and desk runtimes write the listening, thinking, speaking,
+and idle states. The private coding supervisor publishes working leases and
+structured activity events. Writes are harmless when the bridge is not running.
 """
 import asyncio
 import json

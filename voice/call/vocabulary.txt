@@ -1,0 +1,18 @@
+# One name or phrase per line. The local recognizer loads this on startup.
+Serena
+Raghav
+Locket
+Frameworth
+Codex
+Claude
+Kokoro
+Pocket TTS
+openWakeWord
+tailnet
+Gideon
+Railway
+Shopify
+SideStore
+Konpeki
+Atrium
+Vantage

@@ -10,7 +10,7 @@
     "test:dot-field": "electron tests/dot-field-smoke.cjs --no-sandbox"
   },
   "dependencies": {
-    "electron": "^35.0.0",
-    "ws": "^8.20.0"
+    "electron": "^43.1.1",
+    "ws": "^8.21.1"
   }
 }

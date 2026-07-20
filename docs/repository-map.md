@@ -1,7 +1,7 @@
 # Serena Repository and Runtime Map
 
-**Audited:** 2026-07-20  
-**Repository:** `/home/raghav/Documents/Projects/serena`  
+**Audited:** 2026-07-20
+**Repository:** `/home/raghav/Documents/Projects/serena`
 **Authority:** this file classifies where Serena source, state, credentials, generated assets, and installed wiring belong.
 
 ## Ownership rule
@@ -81,7 +81,7 @@ These paths may be removed once the owning process is stopped. Bootstrap recreat
 
 ## Installed runtime wiring
 
-The active brain, mobile host, private work supervisor, and wake listener all execute code directly from this repository. Most installed service files currently match `systemd/` byte for byte. The installer must make every supported unit a symlink to its canonical source so copies cannot drift.
+The active brain, mobile host, private work supervisor, and wake listener all execute code directly from this repository. Every supported installed unit is linked to its canonical definition in `systemd/`, so installed copies cannot drift.
 
 The supported always-on services are:
 
@@ -97,27 +97,23 @@ The desk loop, bridge, and dot overlay are activation-time services. They do not
 
 The brain soak unit is source only. The 24-hour soak must not run without new explicit authorization from Raghav.
 
-## Confirmed obsolete or generated paths
+## Removed obsolete and generated paths
 
-The following paths have no supported service, process, active import, or current control-plane role. They are removal candidates after the active source is committed.
+The consolidation pass proved and removed the unsupported voice daemon generations, duplicate voice packages, old voice entrypoints, superseded systemd units, stale design material, empty nested repository metadata, old lockfiles, packaging output, and test caches. The active recognizer vocabulary now lives with its owner at `voice/call/vocabulary.txt`.
 
-- old voice implementation: `voice/brain/`, `voice/daemon/`, `voice/voice/`, `voice/tools/`, `voice/ipc/`
-- old voice entrypoints: `voice/main.py`, `voice/live_daemon.py`, `voice/daemon_cli.py`, `voice/daemon_tts.py`, `voice/run_voice_daemon.sh`, `voice/serena-voice`
-- old voice support: `voice/scripts/`, `voice/systemd/`, `voice/tests/`, `voice/config.py`, `voice/config.yaml`, `voice/sentence_splitter.py`, `voice/transcript_tailer.py`, `voice/voice_common.py`, `voice/kokoro_speak.py`, `voice/vocabulary.txt`
-- stale design material: `LIVE_VOICE_DAEMON.md`, `MCP-SERVERS-TODO.md`, `chats/orchestrator-design.html`, `docs/personal-assistant-spec.md`, `voice/docs/`
-- generated clutter: `.docker-nocred/`, `chats/.playwright-mcp/`, `build/`, `serena.egg-info/`, Python caches, test caches, old lockfiles, empty `chats/.git/`, empty `.codex`, and temporary files
+The supported voice surface is now only `voice/call/`, `voice/desk/`, `voice/desktop/`, and `voice/brain_bridge.py`. No legacy scheduler, speech daemon, or notification relay remains in the repository.
 
 ## Remote PC finding
 
 The Windows PC currently runs the `serena-daemon:local` container from `C:\Users\ragha\Projects\serena`. Its Git metadata is still at commit `7b2d85e`, while its working files have been changed by synchronization. The laptop repository is the current source authority. The PC must not be hard-reset until its current folder is backed up and the new bootstrap path is proven.
 
-## Baseline evidence
+## Consolidation evidence
 
-Before consolidation:
-
-- Python: 512 passed, 10 warnings
-- Mobile: 9 passed
-- active source change set: 38 modified tracked files plus over 250 newly visible source files after fixing the ignore boundary
-- active source was previously hidden by a blanket `voice/*` ignore rule
+- Safe private snapshot: 1,235 files and 238,356,228 bytes, all checksum-verified
+- Clean committed reconstruction: 507 Python tests passed
+- Mobile clean install, 9 tests, and production build passed
+- Electron dot-field smoke passed from a clean install
+- Always-on user services remained active after canonical relinking
+- The 24-hour soak was not run
 
 This map is updated when a path changes ownership. New code must fit one of the four storage classes above.

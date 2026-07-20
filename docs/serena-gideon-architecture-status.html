@@ -960,8 +960,8 @@
 <p>Classify every voice package as active, compatibility fallback, migration source, or dead code. Remove or quarantine dead paths only after references and tests prove they are unused.</p>
 <p>Candidate paths requiring classification:</p>
 <ul>
-<li>active candidates: <code>voice/call</code>, <code>voice/desk</code>, <code>voice/desktop</code>, <code>voice/brain_bridge.py</code></li>
-<li>legacy candidates: <code>voice/brain</code>, <code>voice/voice</code>, <code>voice/daemon</code>, <code>LIVE_VOICE_DAEMON.md</code>, older daemon TTS files</li>
+<li>supported production paths: <code>voice/call</code>, <code>voice/desk</code>, <code>voice/desktop</code>, <code>voice/brain_bridge.py</code></li>
+<li>removed legacy paths: <code>voice/brain</code>, <code>voice/voice</code>, <code>voice/daemon</code>, <code>LIVE_VOICE_DAEMON.md</code>, and the older daemon TTS files</li>
 </ul>
 <p><strong>Acceptance:</strong></p>
 <ul>
@@ -1256,7 +1256,7 @@
 <ul>
 <li>GTK/VTE crash tests no longer emit invalid-pointer warnings.</li>
 <li>The root README describes the current control plane and supported entrypoints.</li>
-<li><code>LIVE_VOICE_DAEMON.md</code> is updated, moved to legacy documentation, or removed after reference proof.</li>
+<li><code>LIVE_VOICE_DAEMON.md</code> is removed after reference proof.</li>
 <li>Service installation documentation matches installed units.</li>
 </ul>
 <h4>R0-O3: Quarantine obsolete implementations</h4>

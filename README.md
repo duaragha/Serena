@@ -1,216 +1,181 @@
-# Serena — Chats / Memory / Knowledge AI Wrapper
+# Serena
 
-A unified UI for managing Claude Code conversations, memories, and knowledge.
+Serena is Raghav's persistent personal assistant runtime. The repository contains one control plane for conversation, memory, voice, coding work, Claude and Codex sessions, the desktop shell, and the phone call surface.
 
-The headline feature: a sidebar of every Claude Code chat across every project, with full-text search, an inline terminal that resumes any chat in-place (no shell-out to `gnome-terminal`), persistent active terminals across chat switches, a git-tracked file pane, and a "Done" workflow to keep the active list curated.
+The product has one identity at the surface. Claude and Codex are private execution runtimes behind it, authenticated through their first-party subscription logins. The core loop does not require an Anthropic or OpenAI API key.
 
-Built primarily for **Linux** (native GTK shell with `Vte.Terminal` for the embedded terminal). Works on **Windows** and **macOS** via a pywebview + xterm.js fallback path.
+## What is live
 
-## Quick start
+- A resident grounded brain with an NDJSON Unix socket and local HTTP fallback
+- A Linux desktop app with a front door, linked Claude and Codex panes, memory, knowledge, and terminal views
+- A private coding supervisor that can start subscription-backed work and stream visible progress
+- A local voice pipeline with wake detection, VAD, faster-whisper STT, Pocket or Kokoro TTS, and call telemetry
+- A phone web client served over the tailnet
+- A desktop dot-field display for idle, listening, thinking, speaking, and working states
+- A canonical runtime manifest, private backup and restore tooling, service installer, and clean reconstruction verifier
 
-```bash
-git clone <this repo>
-cd serena
-python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-pip install -e ".[desktop]"
-chats desktop
+The current architecture and remaining physical acceptance gates are documented in [docs/serena-gideon-architecture-status.md](docs/serena-gideon-architecture-status.md).
+
+## Architecture
+
+```text
+phone / desk mic / desktop front door
+                 |
+                 v
+          local control plane
+       core/brain_daemon.py
+                 |
+      +----------+-----------+
+      |          |           |
+      v          v           v
+ memory state  voice loop  private work
+      |          |           |
+      +----------+-----------+
+                 |
+          Claude + Codex CLIs
+       subscription authentication
 ```
 
-The window opens. Your existing Claude Code chats from `~/.claude/projects/` populate the sidebar automatically.
+The supported production paths are deliberately small:
 
-## Platform notes
+| Path | Responsibility |
+|---|---|
+| `core/` | resident brain, state, read-only tools, tasking, bridges, and service processes |
+| `chats/` | Claude and Codex session indexing, handoff, titles, and export |
+| `ui/` | Flask front door, browser UI, and PTY transport |
+| `desktop/` | native GTK shell and cross-platform fallback |
+| `voice/call/` | call protocol, STT, TTS, VAD, wake acceptance, integrity, and telemetry |
+| `voice/desk/` | passive wake listener and desk conversation client |
+| `voice/desktop/` | Electron dot field and coding activity display |
+| `mobile/` | phone call client and native wrappers |
+| `memory/`, `knowledge/` | private persistent context and retrieval code |
+| `systemd/` | canonical user service definitions |
+| `config/` | secret-free templates and the runtime manifest |
+| `scripts/` | backup, restore, bootstrap, and reconstruction tools |
+| `docs/` | architecture, operations, setup, and acceptance documentation |
 
-### Linux (best experience)
+See [docs/repository-map.md](docs/repository-map.md) for the exact boundary between source, private data, runtime state, secrets, and rebuildable caches.
 
-The desktop shell is a native GTK 3 app: `WebKit2.WebView` for the chat UI, `Vte.Terminal` for the embedded terminal (the same widget GNOME Terminal is built on). You get:
+## Linux setup
 
-- Native drag-and-drop of files into the terminal — drop an image, the path types into the prompt
-- Per-VTE keyboard shortcuts that fire even while the terminal has focus (`Alt+W` close terminal, `Alt+J/K` next/prev chat, etc.)
-- `Ctrl+Backspace` → delete word, `Shift+Enter` → newline, both intercepted at the GTK layer
-- `Ctrl+click` opens URLs in your default browser
-
-System dependencies (Debian / Ubuntu / Mint):
+Serena's daily-driver desktop uses GTK 3, WebKit2, and VTE.
 
 ```bash
 sudo apt install \
-    libgirepository1.0-dev libcairo2-dev \
-    gir1.2-gtk-3.0 gir1.2-webkit2-4.1 gir1.2-vte-2.91 \
-    python3-gi python3-gi-cairo
+  libgirepository1.0-dev libcairo2-dev \
+  gir1.2-gtk-3.0 gir1.2-webkit2-4.1 gir1.2-vte-2.91 \
+  python3-gi python3-gi-cairo
+
+git clone <private-repository-url> ~/Documents/Projects/serena
+cd ~/Documents/Projects/serena
+python3 -m venv --system-site-packages .venv
+.venv/bin/python -m pip install -e '.[desktop,dev]'
+.venv/bin/python -m scripts.bootstrap doctor --source-only
 ```
 
-Then `pip install -e ".[desktop]"` (pulls in pywebview + GTK Python bindings).
+Restore the private snapshot or create `Persona.md` from `Persona.example.md`, then authenticate `claude` and `codex` with their subscription login flows. Live credentials and tokens belong under `~/.config/serena`, never in Git.
 
-### macOS (functional fallback)
-
-The native GTK shell isn't available on macOS, so `chats desktop` falls back to a pywebview window (uses WKWebView) with an xterm.js-based terminal pane wired up over WebSockets to a backend `pty` process.
-
-What this means in practice:
-
-- Window + chat browsing work the same as Linux
-- Inline terminal works (xterm.js + ptyprocess), just rendered in the browser instead of a native VTE
-- File drag-drop uses an HTTP upload endpoint instead of native GTK drop. Works, slightly slower than a real native drop.
-- Alt+key shortcuts (close terminal, next chat, etc.) won't fire while the terminal has focus — those are GTK-specific. Single-key shortcuts in the chat list still work.
-- `Cmd+C / Cmd+V` for copy-paste (browser native).
-
-Setup:
+Install the canonical user services after the doctor is clean:
 
 ```bash
-brew install python@3.11
-cd serena
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[desktop]"
-chats desktop
+.venv/bin/python -m scripts.bootstrap install-services
+.venv/bin/python -m scripts.bootstrap install-services --apply
 ```
 
-### Windows
+The apply step links installed units back to `systemd/`, reloads the user manager, and enables only supported always-on services. It never starts the 24-hour soak.
 
-Same fallback path as macOS (pywebview using Edge WebView2, which ships pre-installed on Windows 11).
-
-```powershell
-cd serena
-py -3.11 -m venv .venv
-.\.venv\Scripts\activate
-pip install -e ".[desktop]"
-chats desktop
-```
-
-PTY backend uses `pywinpty` (ConPTY) automatically — see `ui/pty_terminal.py`. No additional setup.
-
-## What you get out of the box
-
-When you first launch:
-
-- **Sidebar** populated from `~/.claude/projects/` (Claude Code's standard chat history location) and `~/.codex/sessions/` (Codex CLI's storage). Your existing chats from both agents show up automatically.
-- **Per-row agent badges** — small inline SVG before each title, color-coded so you can tell Claude vs Codex at a glance:
-  - 🟠 orange Anthropic sparkle = Claude session (`claude --resume <sid>`)
-  - 🟣 purple OpenAI flower = Codex session (`codex resume <sid>`)
-- **Project chips** down the left — single-click filters, double-click starts a new Claude chat scoped to that project's cwd.
-- **Time-grouped sessions** (Today / Yesterday / Last 7 Days / etc.) — Claude and Codex chats interleaved by recency.
-- **Search** at the top of the chat list — full-text across all conversations from both agents.
-- **Active Terminals** group at the top of the sidebar — shows whichever chats currently have a running terminal, with a pulsing live dot. Cleared on app close.
-- **Done** group at the bottom — collapsed by default. Press `D` on a focused chat (or `Alt+D`) to mark done. Auto-unmarks when the session sees new activity.
-- **File pane** (right side, toggle with `Alt+B`) showing the git tree for the active chat's repo.
-- **Memory** and **Knowledge** tabs at the top (also empty until you populate them via `chats memory add` etc.).
-
-### How Codex sessions are filtered
-
-Codex's `~/.codex/sessions/` stores not only sessions you started directly with the `codex` CLI but also any session another agent (e.g. Claude calling Codex via MCP) spawned. Serena scans the first line of each `.jsonl` and only surfaces sessions whose `originator` field starts with `codex` — so MCP-spawned tool-call rollouts stay hidden. You see only the Codex chats you actually opened yourself.
-
-## Optional setup
-
-### Custom persona / instructions
-
-Drop a `Persona.md` in the repo root to give Claude an identity to act as inside chats. A starter template is in `Persona.example.md` — copy it and edit:
+## Run the desktop app
 
 ```bash
-cp Persona.example.md Persona.md
-$EDITOR Persona.md
+.venv/bin/chats desktop
 ```
 
-`Persona.md` is gitignored — your customizations stay local.
+The app opens on Serena's front door. She can continue an existing thread, create a private coding job, or open visible Claude and Codex panes when visibility is useful.
 
-There's also `~/.claude/CLAUDE.md` (Claude Code's global instructions file, lives in your home dir, not the repo) where you can add things like "always consult Codex for second opinions on judgment calls."
-
-### Codex as a peer model
-
-If you have ChatGPT Plus and the [Codex CLI](https://github.com/openai/codex) installed, you can register it as an MCP server so Claude can consult it for second opinions:
+Useful commands:
 
 ```bash
-codex login   # authenticates via your ChatGPT account, no API key needed
+.venv/bin/chats recall "search terms"
+.venv/bin/chats memory active
+.venv/bin/chats knowledge search "topic"
+.venv/bin/chats web
 ```
 
-Then add to `~/.claude.json` under `mcpServers`:
+## Voice and phone
 
-```json
-{
-  "mcpServers": {
-    "codex": {
-      "type": "stdio",
-      "command": "codex",
-      "args": ["mcp-server"]
-    }
-  }
-}
+Voice dependencies are intentionally separated from the main environment:
+
+```bash
+python3 -m venv voice/.venv-wake
+voice/.venv-wake/bin/python -m pip install -r voice/call/requirements-desk.txt
+
+python3 -m venv .venv-pocket
+.venv-pocket/bin/python -m pip install -r voice/call/requirements-pocket.txt
 ```
 
-Restart Claude Code. The `mcp__codex__codex` tool will be available, and any CLAUDE.md instructions about consulting Codex will fire automatically.
+Wake-word setup and calibration are in [voice/call/WAKEWORD.md](voice/call/WAKEWORD.md). The one-call iPhone acceptance procedure is in [voice/call/IPHONE_CALL_ACCEPTANCE.md](voice/call/IPHONE_CALL_ACCEPTANCE.md). The phone client is built with:
 
-### Knowledge base
+```bash
+cd mobile
+npm ci
+npm test -- --run
+npm run build
+```
 
-The `knowledge/` directory is a long-term store of distilled research notes. Add Markdown files in topic folders, run `chats knowledge` to list them, `chats knowledge search "<query>"` for FTS. The Knowledge tab in the desktop UI browses them visually.
+## Tests and reconstruction
 
-### Personal memories
+Normal verification:
 
-`chats memory add "fact" --type user|feedback|project|reference` saves cross-session memory. Surfaced on every session start so Claude has context it would otherwise forget.
+```bash
+.venv/bin/python -m pytest -q
+cd mobile && npm test -- --run && npm run build
+cd ../voice/desktop && npm run test:dot-field
+```
 
-## Keyboard shortcuts (Linux)
+Clean committed reconstruction:
 
-In the chat list:
+```bash
+.venv/bin/python -m scripts.verify_reconstruction
+```
 
-| Key | Action |
+The reconstruction verifier exports `HEAD` into a clean cache directory, creates a new Python environment, installs Serena, builds the mobile client, runs the complete Python and mobile suites, and exercises the Electron dot field. It does not import private data, modify services, start voice, or run the 24-hour soak.
+
+## Backup and recovery
+
+Create a private snapshot:
+
+```bash
+.venv/bin/python -m scripts.backup
+```
+
+Verify a snapshot before restoring it:
+
+```bash
+.venv/bin/python -m scripts.restore \
+  ~/.local/share/serena/backups/serena-TIMESTAMP \
+  --repo ~/Documents/Projects/serena \
+  --home ~
+```
+
+Backups exclude credentials, session histories, and large model caches by default. See [docs/backup-and-bootstrap.md](docs/backup-and-bootstrap.md) before using any opt-in secret or authentication flags.
+
+## Storage rules
+
+| Data | Canonical location |
 |---|---|
-| `↑ / ↓` | Navigate |
-| `Enter` | Open conversation (live terminal) |
-| `/` | Focus search |
-| `N` | New chat (inline) |
-| `Alt+N` | New chat (external `gnome-terminal`) |
-| `O` | Resume in external terminal |
-| `S` | Star toggle |
-| `R` | Rename |
-| `T` | AI-generated title |
-| `D` | Toggle done |
-| `Alt+Del` | Delete (Alt prefix prevents accidents) |
-| `Ctrl+A` | Select all |
+| portable source | this Git repository |
+| private identity, memory, and knowledge | ignored paths inside this working tree |
+| runtime state, tokens, models, and acceptance evidence | `~/.config/serena` |
+| chat index and desktop WebView state | `~/.local/share/chats` |
+| Claude and Codex sessions and authentication | their first-party home directories |
+| rebuildable Python, Node, model, and build caches | ignored local directories |
 
-While terminal has focus (Linux only):
+Never commit a live token, credential, transcript, runtime database, or personal memory file.
 
-| Key | Action |
-|---|---|
-| `Alt+W` | Close current terminal |
-| `Alt+J / Alt+K` | Next / previous chat |
-| `Alt+1..4` | Switch to Chats / Memory / Knowledge / Usage tab |
-| `Alt+B` | Toggle file pane |
-| `Ctrl+Shift+C / V` | Copy / paste |
-| `Ctrl+Backspace` | Delete word |
-| `Shift+Enter` | Insert newline (multi-line claude prompt) |
-| `Ctrl+click` | Open URL |
+## Current machine roles
 
-Customize keybindings at `~/.config/serena/keybindings.json` (auto-created on first launch with defaults).
-
-## Repo layout
-
-```
-serena/
-├── cli.py                # `chats` CLI entry
-├── core/                 # indexer, parser, scanner (Claude + Codex), metadata sync
-├── chats/                # session formatter, exporter, watcher, AI titles
-├── ui/
-│   ├── web.py            # Flask app + entire HTML/CSS/JS frontend (single-file by choice)
-│   └── pty_terminal.py   # cross-platform PTY (ptyprocess on Linux/macOS, pywinpty on Windows)
-├── desktop/
-│   ├── app_gtk.py        # Linux-native GTK shell with VTE
-│   └── app.py            # pywebview fallback for macOS/Windows
-├── memory/               # code only; user notes gitignored
-└── knowledge/            # code only; user notes gitignored
-```
-
-## Storage
-
-| What | Where |
-|---|---|
-| Index DB | `~/.claude/projects/.chats-index.db` (SQLite, rebuilt by indexer) |
-| Synced metadata (stars, dones, tags, custom titles) | `~/.claude/projects/.chats-meta.json` |
-| Image upload staging (drag-drop) | `/tmp/serena-chats-uploads/<uuid>.<ext>` |
-| Keybindings overrides | `~/.config/serena/keybindings.json` |
-
-The metadata JSON is intentionally small and key-by-UUID so it's safe to sync via Syncthing / iCloud across multiple devices without conflicts.
-
-## Known limitations
-
-- macOS / Windows have a less polished terminal experience than Linux (xterm.js vs. native VTE). The Linux path is the daily-driver target.
-- Chats from other devices (synced via the metadata file) appear in the sidebar but `chats desktop` can only resume chats whose `.jsonl` files exist locally.
-- The auto-poll refreshes the chat list every 5 seconds while any terminal is running, off when nothing's active.
+The laptop repository is the source authority. The Windows PC currently runs the Serena container and must be migrated through a backup and the documented bootstrap path, not by hard-resetting its synchronized working folder.
 
 ## License
 
-Internal / personal project. Not licensed for redistribution without permission.
+Private personal project. No redistribution license is granted.

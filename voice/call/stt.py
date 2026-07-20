@@ -10,7 +10,7 @@ from pathlib import Path
 from .process_worker import CancellableModelProcess
 from .protocol import MIC_SAMPLE_RATE
 
-DEFAULT_VOCABULARY_PATH = Path(__file__).resolve().parents[1] / "vocabulary.txt"
+DEFAULT_VOCABULARY_PATH = Path(__file__).with_name("vocabulary.txt")
 
 
 def load_whisper_hotwords(path: str | Path | None = None) -> str:

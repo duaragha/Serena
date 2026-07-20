@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from voice.call.stt import load_whisper_hotwords
+from voice.call.stt import DEFAULT_VOCABULARY_PATH, load_whisper_hotwords
+
+
+def test_default_vocabulary_is_packaged_with_the_call_runtime() -> None:
+    hotwords = load_whisper_hotwords(DEFAULT_VOCABULARY_PATH)
+
+    assert "Serena" in hotwords
+    assert "Raghav" in hotwords
 
 
 def test_vocabulary_file_is_loaded_and_comments_are_ignored(tmp_path) -> None:

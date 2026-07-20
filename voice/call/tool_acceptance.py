@@ -558,7 +558,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--tts-python",
         type=Path,
-        help="dedicated local model interpreter, for example voice/.venv/bin/python",
+        help="dedicated local model interpreter, for example .venv-pocket/bin/python",
     )
     parser.add_argument("--timeout", type=float, default=90.0)
     args = parser.parse_args(argv)
