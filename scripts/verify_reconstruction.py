@@ -18,6 +18,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT_ROOT = Path("~/.config/serena/acceptance").expanduser()
+DEFAULT_WORK_ROOT = Path("~/.cache/serena/reconstruction").expanduser()
 
 
 def _run(command: list[str], cwd: Path, timeout: float) -> dict[str, Any]:
@@ -84,7 +85,8 @@ def verify(
         workspace.mkdir(parents=True, exist_ok=False)
         temporary = False
     else:
-        workspace = Path(tempfile.mkdtemp(prefix="serena-reconstruct-"))
+        DEFAULT_WORK_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        workspace = Path(tempfile.mkdtemp(prefix="serena-reconstruct-", dir=DEFAULT_WORK_ROOT))
         temporary = True
 
     steps: list[dict[str, Any]] = []
@@ -125,21 +127,21 @@ def verify(
                 120,
             )
         )
-        tests = [str(python), "-m", "pytest", "-q"]
-        if not full_python_tests:
-            tests.extend(["tests/test_brain_state.py", "voice/call/tests/test_package_import.py"])
-        steps.append(_run(tests, workspace, 900))
         if (workspace / "mobile" / "package-lock.json").is_file():
             steps.append(_run(["npm", "ci", "--ignore-scripts"], workspace / "mobile", 600))
             steps.append(_run(["npm", "test", "--", "--run"], workspace / "mobile", 300))
             steps.append(_run(["npm", "run", "build"], workspace / "mobile", 600))
+        tests = [str(python), "-m", "pytest", "-q"]
+        if not full_python_tests:
+            tests.extend(["tests/test_brain_state.py", "voice/call/tests/test_package_import.py"])
+        steps.append(_run(tests, workspace, 900))
         if (workspace / "voice" / "desktop" / "package-lock.json").is_file():
-            steps.append(
-                _run(["npm", "ci", "--ignore-scripts"], workspace / "voice" / "desktop", 600)
-            )
+            steps.append(_run(["npm", "ci"], workspace / "voice" / "desktop", 600))
             smoke = workspace / "voice" / "desktop" / "tests" / "dot-field-smoke.cjs"
             if smoke.is_file():
-                steps.append(_run(["node", str(smoke)], workspace / "voice" / "desktop", 120))
+                steps.append(
+                    _run(["npm", "run", "test:dot-field"], workspace / "voice" / "desktop", 120)
+                )
 
         ok = all(step["returncode"] == 0 for step in steps)
         result: dict[str, Any] = {
@@ -153,11 +155,11 @@ def verify(
         report_root = DEFAULT_REPORT_ROOT
         report_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         report_path = report_root / "reconstruction.json"
+        result["report"] = str(report_path)
         report_path.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         report_path.chmod(0o600)
-        result["report"] = str(report_path)
         return result
     finally:
         if temporary and not keep:
