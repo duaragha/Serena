@@ -110,9 +110,11 @@ The Windows PC currently runs the `serena-daemon:local` container from `C:\Users
 ## Consolidation evidence
 
 - Safe private snapshot: 1,235 files and 238,356,228 bytes, all checksum-verified
-- Clean committed reconstruction: 507 Python tests passed
+- Clean committed reconstruction: 508 Python tests passed
 - Mobile clean install, 9 tests, and production build passed
 - Electron dot-field smoke passed from a clean install
+- Mobile and Electron dependency audits report zero known vulnerabilities
+- Docker source-only build passed with private identity and memory paths excluded
 - Always-on user services remained active after canonical relinking
 - The 24-hour soak was not run
 
