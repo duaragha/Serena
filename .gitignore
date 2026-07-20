@@ -1,67 +1,87 @@
-# Python
+# Python environments and generated files
+.venv/
+.venv-*/
+voice/.venv/
+voice/.venv-*/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
-.venv/
-venv/
-
-# Build artifacts
+.mypy_cache/
+.pyright/
 build/
 dist/
 *.egg
-uv.lock
 
-# OS / editor
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
+# JavaScript and native build output
+node_modules/
+mobile/dist/
+mobile/android/.gradle/
+mobile/android/app/build/
+mobile/ios/App/Pods/
+mobile/ios/App/DerivedData/
 
-# ---- Data dirs: track code + index files, ignore user content ----
+# Large local model caches. Source records their required names and hashes.
+voice/models/
 
-# memory/: track code (*.py, __init__.py) but NOT the memory markdown files
+# Local runtime, browser, Docker, and handoff state
+.docker-nocred/
+chats/.playwright-mcp/
+chats/.serena-handoff.md
+.serena_local/
+.mcp.json
+tmp*
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.jsonl
+*.log
+*.pid
+*.lock
+
+# Secrets and machine-local configuration
+Persona.md
+.codex/
+.claude/
+*.env
+*.key
+*.pem
+*.local.json
+*.local.toml
+config.local.*
+
+# Personal memory content. Code and documented schemas remain tracked.
 memory/**/*.md
 !memory/README.md
 memory/user/
 memory/feedback/
 memory/project/
 memory/general/
+memory/task/
+memory/loop/
+memory/ledger/
+memory/reference/
+memory/**/*sync-conflict*
 
-# knowledge/: track code, don't track user's knowledge notes
+# Personal knowledge content. Reader code and documentation remain tracked.
 knowledge/*/
 !knowledge/**/__init__.py
 knowledge/**/*.md
 !knowledge/README.md
 
-# Voice / Reminders / Docs / Dream — personal-only feature folders
-voice/
+# Personal reminder and dream runtime data
 reminders/
-docs/
 dream/
 
-# Legacy / backup files from the restructure
+# Backups and editor noise
 *.old
 *.bak
-
-# Personal config / state — never commit
-Persona.md
-.codex
-.claude/
-.serena_local/
-*.local.json
-*.local.toml
-config.local.*
-
-# Reminders runtime data (DB lives in user's home, but ignore stray inputs/outputs)
-reminders/inputs/*
-reminders/outputs/*
-!reminders/inputs/.gitkeep
-!reminders/outputs/.gitkeep
-
-# Dream consolidations (runtime memory snapshots)
-dream/*.json
-dream/*.md
-dream/*.log
+*sync-conflict*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Serena's always-on Locket recall cache
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
+Persistent=true
+Unit=serena-archive-sync.service
+
+[Install]
+WantedBy=timers.target

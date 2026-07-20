@@ -1,0 +1,1569 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Serena Gideon Architecture Completion Spec</title>
+  <style>
+    :root {
+      --bg: #08050f;
+      --panel: rgba(18, 12, 30, .76);
+      --panel-solid: #120c1e;
+      --panel-2: rgba(31, 20, 48, .72);
+      --line: rgba(220, 190, 255, .13);
+      --line-hot: rgba(222, 124, 255, .34);
+      --text: #f4eff9;
+      --muted: #aea3bb;
+      --violet: #a778ff;
+      --pink: #f073ba;
+      --amber: #f3b65d;
+      --green: #7ee2b8;
+      --red: #ff778f;
+      --shadow: 0 24px 90px rgba(0, 0, 0, .36);
+      --radius: 22px;
+      --serif: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 82% -10%, rgba(166, 84, 255, .17), transparent 36rem),
+        radial-gradient(circle at -5% 42%, rgba(240, 115, 186, .10), transparent 33rem),
+        linear-gradient(145deg, #08050f 0%, #0d0716 45%, #08050f 100%);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    a { color: #d9b9ff; text-decoration-color: rgba(217, 185, 255, .4); text-underline-offset: 3px; }
+    a:hover { color: #fff; text-decoration-color: var(--pink); }
+    button { font: inherit; }
+
+    #reading-progress {
+      position: fixed;
+      z-index: 100;
+      inset: 0 auto auto 0;
+      width: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--violet), var(--pink), var(--amber));
+      box-shadow: 0 0 18px rgba(240, 115, 186, .7);
+    }
+
+    #ambient {
+      position: fixed;
+      z-index: -1;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: .55;
+      pointer-events: none;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 28px 20px 24px;
+      border-right: 1px solid var(--line);
+      background: rgba(8, 5, 15, .74);
+      backdrop-filter: blur(24px);
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(191, 139, 255, .35) transparent;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      margin: 0 4px 24px;
+    }
+
+    .brand-orb {
+      position: relative;
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 34% 30%, #fff 0 2%, rgba(255,255,255,.7) 3%, transparent 9%),
+        radial-gradient(circle at 38% 36%, #f6b5dc 0 8%, #bd72ff 28%, #6938ba 58%, #20103a 78%);
+      box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 0 30px rgba(167,120,255,.48);
+    }
+    .brand-orb::after {
+      content: "";
+      position: absolute;
+      inset: -6px;
+      border: 1px solid rgba(240, 115, 186, .24);
+      border-radius: inherit;
+      animation: breathe 5s ease-in-out infinite;
+    }
+
+    .brand strong { display: block; font-size: 14px; letter-spacing: .11em; text-transform: uppercase; }
+    .brand span { display: block; color: var(--muted); font-size: 11px; letter-spacing: .06em; }
+
+    .side-label {
+      margin: 21px 10px 8px;
+      color: #796f84;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    #toc { display: grid; gap: 2px; }
+    #toc a {
+      display: grid;
+      grid-template-columns: 22px 1fr;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 7px 10px;
+      color: #968ba4;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.3;
+      text-decoration: none;
+      transition: .2s ease;
+    }
+    #toc a .n { color: #63596f; font-family: var(--mono); font-size: 10px; }
+    #toc a:hover, #toc a.active {
+      color: #fff;
+      border-color: var(--line);
+      background: rgba(167, 120, 255, .09);
+    }
+    #toc a.active .n { color: var(--pink); }
+
+    .side-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 24px; }
+    .quiet-button {
+      padding: 9px 10px;
+      color: #c7bdcf;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255,255,255,.025);
+      cursor: pointer;
+      font-size: 11px;
+      transition: .2s ease;
+    }
+    .quiet-button:hover { color: #fff; border-color: var(--line-hot); background: rgba(167,120,255,.08); }
+
+    main { min-width: 0; padding: 34px clamp(24px, 5vw, 74px) 100px; }
+    .content { width: min(100%, 1080px); margin: 0 auto; }
+
+    .hero {
+      position: relative;
+      min-height: 470px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 290px;
+      align-items: center;
+      gap: clamp(32px, 6vw, 80px);
+      margin: 0 0 58px;
+      padding: clamp(38px, 6vw, 74px);
+      border: 1px solid var(--line);
+      border-radius: 32px;
+      background:
+        linear-gradient(135deg, rgba(30, 18, 50, .79), rgba(12, 8, 21, .86)),
+        radial-gradient(circle at 78% 40%, rgba(237, 107, 193, .14), transparent 24rem);
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.045);
+      overflow: hidden;
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      width: 520px;
+      height: 520px;
+      right: -290px;
+      top: -280px;
+      border: 1px solid rgba(240, 115, 186, .12);
+      border-radius: 50%;
+      box-shadow: 0 0 0 70px rgba(167,120,255,.018), 0 0 0 140px rgba(167,120,255,.012);
+    }
+    .eyebrow { color: var(--pink); font-size: 11px; font-weight: 800; letter-spacing: .17em; text-transform: uppercase; }
+    .hero h1 {
+      max-width: 680px;
+      margin: 18px 0;
+      font-family: var(--serif);
+      font-size: clamp(44px, 6vw, 78px);
+      font-weight: 500;
+      letter-spacing: -.045em;
+      line-height: .98;
+    }
+    .hero h1 em { color: #deb7ff; font-style: normal; }
+    .hero-copy { max-width: 650px; margin: 0; color: #bfb4ca; font-size: 17px; line-height: 1.65; }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 25px; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 11px;
+      color: #cfc4d8;
+      border: 1px solid var(--line);
+      border-radius: 99px;
+      background: rgba(255,255,255,.025);
+      font-size: 11px;
+    }
+    .chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+
+    .core-visual { position: relative; display: grid; place-items: center; min-height: 270px; }
+    .core-orb {
+      position: relative;
+      z-index: 2;
+      width: 138px;
+      height: 138px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 38% 32%, rgba(255,255,255,.88) 0 1.5%, transparent 5%),
+        radial-gradient(circle at 40% 38%, #f2a4d5 0 7%, #a95cf2 27%, #5b2e9b 49%, #1d102f 72%);
+      box-shadow:
+        inset -18px -24px 42px rgba(5,2,12,.56),
+        0 0 55px rgba(167,120,255,.48),
+        0 0 110px rgba(240,115,186,.18);
+      animation: float 6s ease-in-out infinite;
+    }
+    .core-orb::before, .core-orb::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      border: 1px solid rgba(222,183,255,.2);
+    }
+    .core-orb::before { inset: -34px; animation: spin 18s linear infinite; border-style: dashed; }
+    .core-orb::after { inset: -69px; border-color: rgba(243,182,93,.12); animation: spin 28s linear infinite reverse; }
+    .orbit-dot {
+      position: absolute;
+      z-index: 3;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--amber);
+      box-shadow: 0 0 14px var(--amber);
+      transform: translate(98px, -54px);
+    }
+
+    .snapshot {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin: -30px 22px 72px;
+      position: relative;
+      z-index: 4;
+    }
+    .metric {
+      min-height: 118px;
+      padding: 21px;
+      border: 1px solid var(--line);
+      border-radius: 17px;
+      background: rgba(15,10,25,.84);
+      box-shadow: 0 12px 35px rgba(0,0,0,.21);
+      backdrop-filter: blur(16px);
+    }
+    .metric strong { display: block; margin-bottom: 4px; font-size: 27px; font-weight: 650; letter-spacing: -.03em; }
+    .metric span { color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .metric.good strong { color: var(--green); }
+    .metric.warn strong { color: var(--amber); }
+    .metric.bad strong { color: var(--red); }
+
+    .scoreboard {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin: 26px 0 65px;
+    }
+    .score-card {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(145deg, rgba(31,20,48,.75), rgba(15,10,24,.72));
+    }
+    .score-card .top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    .score-card .layer-name { color: #d5cbde; font-size: 12px; font-weight: 700; }
+    .score-card .score { color: #fff; font-family: var(--mono); font-size: 12px; }
+    .score-card p { min-height: 42px; margin: 8px 0 14px; color: #897f95; font-size: 11px; line-height: 1.5; }
+    .bar { height: 4px; border-radius: 4px; background: rgba(255,255,255,.06); overflow: hidden; }
+    .bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,var(--violet),var(--pink)); box-shadow: 0 0 10px rgba(240,115,186,.4); }
+
+    #spec > h1, #spec > p:first-of-type { display: none; }
+    #spec { counter-reset: section; }
+    #spec > h2 {
+      scroll-margin-top: 28px;
+      margin: 82px 0 22px;
+      padding-top: 24px;
+      border-top: 1px solid var(--line);
+      font-family: var(--serif);
+      font-size: clamp(31px, 4vw, 48px);
+      font-weight: 500;
+      letter-spacing: -.035em;
+      line-height: 1.08;
+    }
+    #spec > h2::before {
+      counter-increment: section;
+      content: "0" counter(section);
+      display: block;
+      margin-bottom: 9px;
+      color: var(--pink);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .15em;
+    }
+    #spec h3 {
+      margin: 38px 0 13px;
+      color: #e5dceb;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+    #spec h4 { margin: 0; color: #fff; font-size: 17px; line-height: 1.35; }
+    #spec p { color: #b8aebf; }
+    #spec strong { color: #eee7f3; }
+    #spec ul, #spec ol { padding-left: 1.35rem; color: #b8aebf; }
+    #spec li { margin: 7px 0; padding-left: 5px; }
+    #spec li::marker { color: var(--violet); }
+    #spec code {
+      padding: .17em .42em;
+      color: #f1c9e5;
+      border: 1px solid rgba(240,115,186,.13);
+      border-radius: 6px;
+      background: rgba(240,115,186,.07);
+      font-family: var(--mono);
+      font-size: .88em;
+    }
+    #spec pre {
+      overflow: auto;
+      padding: 22px;
+      color: #dcd2e5;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #0b0712;
+      box-shadow: inset 0 1px 12px rgba(0,0,0,.28);
+      line-height: 1.55;
+    }
+    #spec pre code { padding: 0; border: 0; background: transparent; color: inherit; }
+    #spec hr { height: 1px; margin: 60px 0; border: 0; background: var(--line); }
+
+    #spec table {
+      width: 100%;
+      margin: 20px 0 34px;
+      border-collapse: separate;
+      border-spacing: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: rgba(13,9,21,.7);
+      font-size: 13px;
+    }
+    #spec thead { background: rgba(167,120,255,.09); }
+    #spec th, #spec td { padding: 12px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    #spec th { color: #e8dff0; font-size: 10px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+    #spec td { color: #aca1b7; }
+    #spec tr:last-child td { border-bottom: 0; }
+    #spec tbody tr:hover { background: rgba(167,120,255,.035); }
+
+    .objective {
+      position: relative;
+      margin: 16px 0;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: linear-gradient(145deg, rgba(27,17,42,.82), rgba(13,9,21,.77));
+      overflow: hidden;
+      transition: border-color .2s ease, transform .2s ease;
+    }
+    .objective:hover { border-color: rgba(210,165,255,.25); }
+    .objective-head {
+      display: grid;
+      grid-template-columns: 74px 1fr 28px;
+      align-items: center;
+      gap: 14px;
+      width: 100%;
+      padding: 18px 19px;
+      color: inherit;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    .objective-id {
+      color: var(--pink);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .06em;
+    }
+    .objective-title { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+    .chevron { color: #81758c; font-size: 19px; transition: transform .2s ease; }
+    .objective.collapsed .chevron { transform: rotate(-90deg); }
+    .objective-body { padding: 0 22px 20px 107px; }
+    .objective.collapsed .objective-body { display: none; }
+    .objective-body > p:first-child { margin-top: 0; }
+    .objective-body > p:has(> strong:only-child) { margin-top: 22px; color: var(--amber); font-size: 10px; letter-spacing: .13em; text-transform: uppercase; }
+
+    .callout {
+      margin: 48px 0;
+      padding: 24px 25px;
+      border: 1px solid rgba(243,182,93,.24);
+      border-left: 3px solid var(--amber);
+      border-radius: 4px 16px 16px 4px;
+      background: rgba(243,182,93,.055);
+    }
+    .callout strong { color: var(--amber); }
+
+    .mobile-bar { display: none; }
+
+    @keyframes breathe { 50% { transform: scale(1.09); opacity: .45; } }
+    @keyframes float { 50% { transform: translateY(-9px) scale(1.025); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 1000px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: fixed; z-index: 80; left: 0; width: min(86vw, 320px); transform: translateX(-104%); transition: transform .25s ease; box-shadow: 20px 0 60px rgba(0,0,0,.45); }
+      body.nav-open .sidebar { transform: translateX(0); }
+      .mobile-bar {
+        position: sticky;
+        z-index: 70;
+        top: 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(8,5,15,.85);
+        backdrop-filter: blur(18px);
+      }
+      .mobile-bar button { color: #fff; border: 0; background: transparent; cursor: pointer; }
+      main { padding-top: 22px; }
+    }
+
+    @media (max-width: 760px) {
+      main { padding-inline: 14px; }
+      .hero { min-height: auto; grid-template-columns: 1fr; padding: 34px 25px 50px; }
+      .hero h1 { font-size: 46px; }
+      .core-visual { min-height: 220px; }
+      .snapshot { grid-template-columns: 1fr 1fr; margin: -28px 10px 54px; }
+      .scoreboard { grid-template-columns: 1fr; }
+      #spec table { display: block; overflow-x: auto; }
+      .objective-head { grid-template-columns: 64px 1fr 22px; padding-inline: 15px; }
+      .objective-body { padding: 0 17px 17px; }
+    }
+
+    @media print {
+      :root { --text: #17121c; --muted: #5e5664; --line: #ddd4e1; }
+      body { color: #17121c; background: #fff; font-size: 11pt; }
+      #ambient, #reading-progress, .sidebar, .mobile-bar, .side-actions, .core-visual { display: none !important; }
+      .layout { display: block; }
+      main { padding: 0; }
+      .hero { min-height: 0; grid-template-columns: 1fr; padding: 28px; color: #17121c; background: #f7f2fa; box-shadow: none; }
+      .hero h1, #spec > h2, #spec h3, #spec h4 { color: #17121c; }
+      .snapshot { margin: 16px 0 30px; }
+      .metric, .score-card, .objective, #spec table, #spec pre { color: #17121c; background: #fff; box-shadow: none; break-inside: avoid; }
+      .scoreboard { grid-template-columns: repeat(3, 1fr); }
+      .objective-body { display: block !important; }
+      a { color: #4d2e74; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+      #ambient { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="reading-progress"></div>
+  <canvas id="ambient" aria-hidden="true"></canvas>
+
+  <div class="mobile-bar">
+    <strong>Serena architecture</strong>
+    <button id="nav-toggle" type="button" aria-label="Open contents">contents</button>
+  </div>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-orb" aria-hidden="true"></span>
+        <div><strong>Serena</strong><span>completion contract v1.0</span></div>
+      </div>
+      <div class="side-label">contents</div>
+      <nav id="toc" aria-label="Document contents"></nav>
+      <div class="side-actions">
+        <button class="quiet-button" id="expand-all" type="button">expand all</button>
+        <button class="quiet-button" id="collapse-all" type="button">collapse all</button>
+        <button class="quiet-button" id="print-spec" type="button">print</button>
+        <a class="quiet-button" href="serena-gideon-architecture-status.md">markdown</a>
+      </div>
+    </aside>
+
+    <main>
+      <div class="content">
+        <header class="hero">
+          <div>
+            <div class="eyebrow">architecture audit • 20 july 2026</div>
+            <h1>from working pieces to one <em>continuous Serena.</em></h1>
+            <p class="hero-copy">The honest completion contract for the Gideon-style system: what is real, what is still weak, what “done” means, and the order that gets us there without pretending staged code is a finished product.</p>
+            <div class="hero-meta">
+              <span class="chip"><i></i> active execution spec</span>
+              <span class="chip">6 architecture layers</span>
+              <span class="chip">24-hour soak deferred</span>
+            </div>
+          </div>
+          <div class="core-visual" aria-hidden="true">
+            <span class="core-orb"></span>
+            <span class="orbit-dot"></span>
+          </div>
+        </header>
+
+        <section class="snapshot" aria-label="Audit snapshot">
+          <div class="metric good"><strong>512</strong><span>Python tests passing</span></div>
+          <div class="metric good"><strong>9</strong><span>mobile tests passing</span></div>
+          <div class="metric warn"><strong>6</strong><span>layers, all still incomplete</span></div>
+          <div class="metric bad"><strong>0</strong><span>self-improvement loop today</span></div>
+        </section>
+
+        <section aria-labelledby="score-heading">
+          <div class="eyebrow">honest scorecard</div>
+          <h2 id="score-heading" style="margin:.4rem 0;font-family:var(--serif);font-size:clamp(32px,4vw,49px);font-weight:500;letter-spacing:-.035em">the whole system, at a glance</h2>
+          <p style="max-width:730px;color:var(--muted)">The foundation is real. The product is not finished. The largest gaps are controlled autonomy, proven ambient reliability, measured improvement, and a genuine local cognitive model.</p>
+          <div class="scoreboard">
+            <div class="score-card"><div class="top"><span class="layer-name">L1 · Foundation brain</span><span class="score">7/10</span></div><p>Live and restartable, but single-session and weakly routed.</p><div class="bar"><i style="width:70%"></i></div></div>
+            <div class="score-card"><div class="top"><span class="layer-name">L2 · Persistent identity</span><span class="score">6/10</span></div><p>Ledger continuity works. Automatic memory learning does not.</p><div class="bar"><i style="width:60%"></i></div></div>
+            <div class="score-card"><div class="top"><span class="layer-name">L3 · Continuous runtime</span><span class="score">5/10</span></div><p>Core services live. Wake and phone proof remain open.</p><div class="bar"><i style="width:50%"></i></div></div>
+            <div class="score-card"><div class="top"><span class="layer-name">L4 · Bounded autonomy</span><span class="score">5/10</span></div><p>Read-only is strong. Write authority needs one broker.</p><div class="bar"><i style="width:50%"></i></div></div>
+            <div class="score-card"><div class="top"><span class="layer-name">L5 · Self-improvement</span><span class="score">0/10</span></div><p>No challenger, evaluation, promotion, or rollback loop.</p><div class="bar"><i style="width:1%"></i></div></div>
+            <div class="score-card"><div class="top"><span class="layer-name">L6 · Cognitive model</span><span class="score">1/10</span></div><p>Local speech exists. Local Serena reasoning does not.</p><div class="bar"><i style="width:10%"></i></div></div>
+          </div>
+        </section>
+
+        <article id="spec">
+<h1>Serena Gideon Architecture Completion Spec</h1>
+<p><strong>Version:</strong> 1.0<br />
+<strong>Audit date:</strong> 2026-07-20<br />
+<strong>Repository:</strong> <code>/home/raghav/Documents/Projects/serena</code><br />
+<strong>Status:</strong> active completion contract<br />
+<strong>Human reading view:</strong> <a href="./serena-gideon-architecture-status.html"><code>serena-gideon-architecture-status.html</code></a></p>
+<h2>1. Purpose</h2>
+<p>This document is the execution contract for turning the current Serena project into a persistent, Gideon-like personal assistant. It converts the six-layer architecture into implementation objectives, acceptance gates, dependencies, and an honest live status.</p>
+<p>The target is not fictional omniscience or an unsupported AGI claim. The target is one continuously available Serena who keeps identity and context across surfaces, speaks and listens naturally, performs bounded work, improves through measured experiments, and can eventually use a personalized local cognitive model.</p>
+<p>The HTML and Markdown versions contain the same architecture, objective IDs, status, and acceptance criteria. The HTML is optimized for Raghav to read. This Markdown file is optimized for implementation and future agent handoff.</p>
+<h2>2. Non-negotiable system contract</h2>
+<p>These constraints outrank convenience and feature speed.</p>
+<ol>
+<li><strong>One identity:</strong> every surface and model speaks as one Serena. Models and worker sessions are private implementation details.</li>
+<li><strong>One control plane:</strong> identity, active state, memory, device state, notification policy, permissions, jobs, and completion reports belong to one runtime contract.</li>
+<li><strong>Subscription-backed frontier reasoning:</strong> Claude and Codex use first-party subscription authentication. Metered provider credentials are rejected.</li>
+<li><strong>Local ears and mouth:</strong> wake-word detection, VAD, speech recognition, and speech synthesis remain local in the core voice loop.</li>
+<li><strong>Read-only by default:</strong> state-changing actions require explicit authority, a scoped capability, an audit record, and a defined rollback boundary.</li>
+<li><strong>No invisible claims:</strong> Serena may say work started only after a durable job lease exists and a worker has actually begun.</li>
+<li><strong>No third-party core dependency:</strong> core identity, memory, voice, tasking, and mobile delivery cannot require Telegram, ntfy, hosted STT, hosted TTS, or another relay service.</li>
+<li><strong>Surfaces are clients:</strong> the desktop app, front door, voice display, mobile app, and coding views do not own Serena's state.</li>
+<li><strong>Tests are not acceptance by themselves:</strong> a feature is complete only when code, automated tests, live integration, user-facing behavior, telemetry, documentation, and rollback are all proven where applicable.</li>
+<li><strong>Do not run the 24-hour soak:</strong> the long soak remains explicitly deferred. It may run only after Raghav directly reverses this instruction.</li>
+</ol>
+<h2>3. Definition of status</h2>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Operational</strong></td>
+<td>Implemented, live, and proven on the real surface. Minor hardening may remain.</td>
+</tr>
+<tr>
+<td><strong>Partial</strong></td>
+<td>Meaningful implementation exists, but one or more integration, safety, reliability, or hardware gates are open.</td>
+</tr>
+<tr>
+<td><strong>Staged</strong></td>
+<td>Code and harness exist, but the real runtime or acceptance event has not happened.</td>
+</tr>
+<tr>
+<td><strong>Absent</strong></td>
+<td>No implementation matching the objective exists.</td>
+</tr>
+<tr>
+<td><strong>Deferred</strong></td>
+<td>Intentionally not run or not authorized yet.</td>
+</tr>
+</tbody>
+</table>
+<p>No layer is currently perfect. The strongest pieces are the resident brain, ledger grounding, subscription guards, read-only tools, and durable coding queue. The weakest pieces are measured self-improvement, a personalized cognitive model, proactive ambient behavior, and real-hardware acceptance.</p>
+<h2>4. Verified baseline snapshot</h2>
+<p>This is the audit baseline. Future work updates this section only with fresh evidence.</p>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Verified state on 2026-07-20</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Python suite</td>
+<td>512 passed, 10 warnings</td>
+</tr>
+<tr>
+<td>Mobile suite</td>
+<td>9 passed</td>
+</tr>
+<tr>
+<td>Dot-field smoke</td>
+<td>passed under Electron</td>
+</tr>
+<tr>
+<td>Resident brain</td>
+<td>active through <code>serena-brain.service</code></td>
+</tr>
+<tr>
+<td>Mobile host</td>
+<td>active through <code>serena-mobile-host.service</code></td>
+</tr>
+<tr>
+<td>Private coding supervisor</td>
+<td>active through <code>serena-work-supervisor.service</code></td>
+</tr>
+<tr>
+<td>Wake-only listener</td>
+<td>active through <code>serena-wake-listener.service</code></td>
+</tr>
+<tr>
+<td>Full desk voice loop</td>
+<td>inactive until a validated wake handoff</td>
+</tr>
+<tr>
+<td>Dot overlay</td>
+<td>inactive until voice interaction starts</td>
+</tr>
+<tr>
+<td>Wake acceptance</td>
+<td>failed/inconclusive: 34 false candidates in 20.44 hours, zero recorded positive attempts</td>
+</tr>
+<tr>
+<td>Physical iPhone call acceptance</td>
+<td>not completed, only the preflight handoff exists</td>
+</tr>
+<tr>
+<td>24-hour brain soak</td>
+<td>deferred and forbidden without new authorization</td>
+</tr>
+<tr>
+<td>Worktree</td>
+<td>38 tracked files modified, 53 untracked entries, about 10,700 inserted lines uncommitted</td>
+</tr>
+<tr>
+<td>Local cognitive LLM</td>
+<td>absent</td>
+</tr>
+<tr>
+<td>Self-improvement loop</td>
+<td>absent</td>
+</tr>
+</tbody>
+</table>
+<h2>5. Architecture at a glance</h2>
+<pre><code class="language-text">phone / laptop / desktop / front door / coding view
+                         |
+                         v
+                  Serena control plane
+       identity | state | memory | permissions | jobs
+                         |
+          +--------------+--------------+
+          |              |              |
+          v              v              v
+    resident brain   capability broker  activity stream
+          |
+     model router
+   local reflex brain
+   frontier conversation
+   frontier coding workers
+</code></pre>
+<p>The system is one product even when several models execute private work. The user sees one stance, one progress stream, and one completion report.</p>
+<h2>6. Layer scorecard</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th style="text-align: right;">Current score</th>
+<th>Status</th>
+<th>Short verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1. Foundation brain</td>
+<td style="text-align: right;">7/10</td>
+<td>Partial</td>
+<td>Real and live, but still single-session and weakly routed</td>
+</tr>
+<tr>
+<td>L2. Persistent identity</td>
+<td style="text-align: right;">6/10</td>
+<td>Partial</td>
+<td>Ledger continuity works, automatic memory learning does not</td>
+</tr>
+<tr>
+<td>L3. Continuous runtime</td>
+<td style="text-align: right;">5/10</td>
+<td>Partial</td>
+<td>Core services live, wake and phone acceptance remain open</td>
+</tr>
+<tr>
+<td>L4. Bounded autonomy</td>
+<td style="text-align: right;">5/10</td>
+<td>Partial</td>
+<td>Read-only path is strong, write path lacks a universal broker</td>
+</tr>
+<tr>
+<td>L5. Measured self-improvement</td>
+<td style="text-align: right;">0/10</td>
+<td>Absent</td>
+<td>No challenger, evaluation, promotion, or rollback loop</td>
+</tr>
+<tr>
+<td>L6. Personalized cognitive model</td>
+<td style="text-align: right;">1/10</td>
+<td>Absent</td>
+<td>Local speech models exist, local Serena reasoning does not</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>7. L1: Foundation brain</h2>
+<h3>Intent</h3>
+<p>Provide one resident reasoning service that every Serena surface uses. It must remain replaceable at the model layer while keeping identity, memory, permissions, jobs, and surface behavior stable.</p>
+<h3>Current implementation</h3>
+<ul>
+<li><code>core/brain_daemon.py</code> owns one warm Claude Agent SDK session.</li>
+<li>The daemon accepts <code>frontdoor</code>, <code>voice</code>, and <code>plain</code> protocols over authenticated local transports.</li>
+<li>Token deltas stream to clients.</li>
+<li>Active ledgers are injected every turn from canonical state.</li>
+<li>Session lifecycle logic rotates or restarts the SDK child without treating the model session as durable identity.</li>
+<li>Billing guards reject metered provider authentication.</li>
+<li>The front door has a cold <code>claude -p</code> fallback.</li>
+<li>Spoken coding work enters <code>core/voice_work_supervisor.py</code>, which runs a subscription-backed Codex implementation followed by a subscription-backed Fable review.</li>
+</ul>
+<h3>What is already strong</h3>
+<ul>
+<li>The brain service is live and restartable.</li>
+<li>State survives daemon replacement because it lives outside the SDK session.</li>
+<li>Streaming, request IDs, model metadata, cancellation, and response commitment exist.</li>
+<li>Subscription authentication is verified before unattended model work.</li>
+<li>Coding progress is translated into one Serena-facing activity stream.</li>
+</ul>
+<h3>Critical gaps</h3>
+<ul>
+<li>Model selection is protocol-based, not difficulty-, latency-, privacy-, or cost-aware.</li>
+<li>Conversation is serialized through one resident session. A long turn can block other surfaces.</li>
+<li>Frontier conversation and coding workers do not yet operate behind one formal model-router interface.</li>
+<li>There is no local cognitive fallback.</li>
+<li>There is no priority arbitration for phone, desk, front door, proactive events, and background jobs arriving together.</li>
+<li>Day-scale stability remains unproven because the 24-hour soak is deferred.</li>
+</ul>
+<h3>Objectives</h3>
+<h4>L1-O1: Formalize the control-plane brain interface</h4>
+<p>Create one typed turn contract used by front door, call, desk, mobile, and proactive events. The contract must carry protocol, priority, authority, conversation identity, device identity, deadline, cancellation, and response destination.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Every live surface uses the shared contract.</li>
+<li>No surface imports provider-specific SDK behavior.</li>
+<li>Contract conformance tests cover malformed input, cancellation, disconnect, retry, and duplicate request IDs.</li>
+<li>A trace can follow one request from surface to brain to worker to final delivery.</li>
+</ul>
+<h4>L1-O2: Add explicit model routing</h4>
+<p>Route each turn by required capability rather than surface name alone.</p>
+<p>Required routing classes:</p>
+<ul>
+<li><code>reflex</code>: local, private, low-latency acknowledgements and simple commands</li>
+<li><code>conversation</code>: resident frontier Serena dialogue</li>
+<li><code>research</code>: frontier reasoning with read tools</li>
+<li><code>coding</code>: subscription-backed implementation worker</li>
+<li><code>review</code>: independent subscription-backed review/fix worker</li>
+</ul>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>The router records why a model class was chosen.</li>
+<li>Routing is deterministic under tests.</li>
+<li>A model outage degrades to a declared fallback without changing identity.</li>
+<li>No metered credential can enter any route.</li>
+</ul>
+<h4>L1-O3: Add turn arbitration and non-blocking work</h4>
+<p>Separate short interactive turns from long-running work. The resident conversational lane must not be held by a coding job or a slow event evaluation.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>A background coding job cannot block a voice acknowledgement.</li>
+<li>Phone and desk turns receive defined priority over proactive events.</li>
+<li>Cancellation releases the turn lease and reaps child processes.</li>
+<li>Duplicate requests are idempotent.</li>
+</ul>
+<h4>L1-O4: Close all pre-soak lifetime gates</h4>
+<p>Keep the existing rotation, journal, orphan cleanup, and restart grounding green without starting the forbidden 24-hour soak.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Ordinary lifecycle tests remain green.</li>
+<li>Repeated forced child rotation preserves the active thread.</li>
+<li>No orphan model process remains after interruption tests.</li>
+<li>The spec records the 24-hour soak as <code>Deferred</code>, not <code>Passed</code>.</li>
+</ul>
+<h3>Layer completion gate</h3>
+<p>L1 becomes Operational when L1-O1 through L1-O4 pass, model routing is explicit, concurrent surface traffic is arbitrated, and all normal reliability tests are green. The deferred 24-hour soak prevents a claim of final day-scale perfection.</p>
+<hr />
+<h2>8. L2: Persistent identity</h2>
+<h3>Intent</h3>
+<p>Keep Serena recognizably the same person across models, restarts, devices, calls, chats, and months of relationship history. Memory must know what is current, what changed, why it changed, and where the fact came from.</p>
+<h3>Current implementation</h3>
+<ul>
+<li><code>Persona.md</code> defines the shared identity and priority stack.</li>
+<li><code>memory/store.py</code> stores tasks, ledgers, loops, feedback, user facts, project facts, and references as Markdown files.</li>
+<li><code>core/brain_state.py</code> produces a canonical bounded digest of active tasks, ledgers, and loops.</li>
+<li><code>core/brain_state_sync.py</code> pushes validated active-state snapshots to the home machine.</li>
+<li><code>core/indexer.py</code> provides full-text chat and knowledge search.</li>
+<li>The resident brain receives active ledger context before every response.</li>
+<li>Claude and Codex sessions can be linked in metadata as one Serena thread.</li>
+</ul>
+<h3>What is already strong</h3>
+<ul>
+<li>The ledger is a real handoff mechanism, not just a behavioral instruction.</li>
+<li>Identity lives outside provider sessions.</li>
+<li>Active-state snapshots are hashed, atomic, bounded, and exclude credentials and raw chat text.</li>
+<li>Session restart does not erase active project state.</li>
+<li>Provenance fields exist for manually captured memories.</li>
+</ul>
+<h3>Critical gaps</h3>
+<ul>
+<li>Memory retrieval is mostly literal substring or FTS matching.</li>
+<li>Voice and resident-brain conversations do not automatically create canonical memories.</li>
+<li>The resident brain has read-only memory tools and cannot safely propose or commit memory changes.</li>
+<li>Facts lack validity intervals, confidence, supersession links, and contradiction resolution.</li>
+<li>Episodic events, durable semantic facts, procedures, and active commitments are not cleanly separated.</li>
+<li>There is no regular consolidation pass from transcripts into compact memory.</li>
+<li>Identity consistency is still partly enforced by prompt text rather than runtime validation.</li>
+</ul>
+<h3>Objectives</h3>
+<h4>L2-O1: Introduce a typed memory schema</h4>
+<p>Add structured records for:</p>
+<ul>
+<li><code>semantic_fact</code>: durable truth about Raghav, Serena, or a project</li>
+<li><code>episode</code>: dated event or conversation outcome</li>
+<li><code>procedure</code>: repeatable workflow and tool contract</li>
+<li><code>commitment</code>: promise, task, wait state, or deadline</li>
+<li><code>preference</code>: interaction or product preference</li>
+<li><code>correction</code>: a previous belief or behavior explicitly rejected</li>
+</ul>
+<p>Every record must carry source, timestamp, confidence, sensitivity, validity, and supersession metadata.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Existing Markdown memories migrate without data loss.</li>
+<li>A fact can be superseded without deleting its history.</li>
+<li>Contradictory current facts cannot both be injected as truth.</li>
+<li>Sensitive records can be excluded from a surface or device.</li>
+</ul>
+<h4>L2-O2: Build retrieval that combines state and relevance</h4>
+<p>Keep ledgers authoritative for live threads, then combine keyword, semantic, recency, project, people, and current-surface signals for longer-term recall.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Active ledger state always outranks recalled transcript text.</li>
+<li>Retrieval explains which records were selected and why.</li>
+<li>A regression corpus proves relevant memories are recalled without flooding context.</li>
+<li>Retrieval remains useful when exact words differ from the stored wording.</li>
+</ul>
+<h4>L2-O3: Add a safe memory proposal pipeline</h4>
+<p>After a conversation or completed job, Serena may propose memory changes. The proposal layer cannot directly mutate canonical state.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Proposed additions, updates, merges, and supersessions are stored separately.</li>
+<li>Low-risk project-state updates can be auto-committed under a written policy.</li>
+<li>Personal or sensitive changes require explicit review unless already covered by a narrow standing rule.</li>
+<li>Every commit is auditable and reversible.</li>
+</ul>
+<h4>L2-O4: Consolidate conversations across surfaces</h4>
+<p>Calls, desk voice, front door, mobile chat, Claude, and Codex must feed one session timeline and one consolidation process.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>One topic can continue across two devices without re-explanation.</li>
+<li>Calls and voice turns are searchable with their originating surface.</li>
+<li>The next surface receives the latest commitment and register.</li>
+<li>Duplicate transcript imports do not create duplicate memories.</li>
+</ul>
+<h3>Layer completion gate</h3>
+<p>L2 becomes Operational when the typed schema, relevance retrieval, proposal pipeline, and cross-surface consolidation all work with provenance and rollback. Flat Markdown may remain as an export format, but it cannot remain the only memory model.</p>
+<hr />
+<h2>9. L3: Continuous runtime</h2>
+<h3>Intent</h3>
+<p>Make Serena continuously reachable without making the full microphone, display, or frontier model run constantly. Presence should be ambient, private, recoverable, and consistent across the laptop, home PC, and phone.</p>
+<h3>Current implementation</h3>
+<ul>
+<li>The brain, mobile host, work supervisor, state sync, archive sync, and wake-only listener have systemd units.</li>
+<li><code>voice/call</code> implements local VAD, faster-whisper STT, local TTS, audio streaming, reconnect telemetry, call transcripts, greeting state, and tasking.</li>
+<li><code>voice/desk</code> implements wake handoff, listening/thinking/speaking states, local microphone ownership, playback, reconnect, and local fallback behavior.</li>
+<li><code>voice/desktop</code> renders the dot-field and coding activity panel.</li>
+<li>The wake-only listener can launch the paired voice and display supervisor after a validated phrase.</li>
+<li>The phone call surface and exact acceptance harness exist.</li>
+</ul>
+<h3>What is already strong</h3>
+<ul>
+<li>Wake-only idle behavior avoids running the full assistant continuously.</li>
+<li>Voice and animation share a lifecycle and state channel.</li>
+<li>Raw audio is not retained by the wake acceptance collector.</li>
+<li>The call pipeline records stage timing and network RTT.</li>
+<li>A private coding job can continue after voice conversation closes.</li>
+</ul>
+<h3>Critical gaps</h3>
+<ul>
+<li>Current wake acceptance is not livable at the frozen threshold.</li>
+<li>There are no positive-attempt results in the acceptance report.</li>
+<li>The physical iPhone call has not passed cold-open, 20-minute integrity, network roam, acoustic, transcript, and billing gates.</li>
+<li>The dot display is proven by smoke test, not prolonged normal use.</li>
+<li>There is no native iPhone dialer integration. The current acceptance path is the Serena web/app surface.</li>
+<li>Multi-machine state sync does not yet provide full device failover.</li>
+<li>Proactive events and native mobile notifications are not operational.</li>
+<li>Several obsolete voice implementations coexist with the active stack.</li>
+</ul>
+<h3>Objectives</h3>
+<h4>L3-O1: Pass wake-word acceptance</h4>
+<p>Calibrate the frozen <code>hey_serena.onnx</code> path against normal desk noise and real spoken attempts. Preserve exact phrase verification so ordinary conversation cannot wake Serena.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>The existing acceptance harness reports <code>acceptance_claim: true</code>.</li>
+<li>Required active days, positive attempts, environments, miss rate, false-wake policy, timing, and device consistency all pass.</li>
+<li>The production listener consumes the exact accepted manifest and model hashes.</li>
+<li>Pre-wake audio remains local and unretained.</li>
+</ul>
+<h4>L3-O2: Pass one physical iPhone call</h4>
+<p>Use the existing one-call procedure to close cold-open and call-integrity gates together.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Cold app open to first hello is under 5 seconds.</li>
+<li>The call lasts at least 20 minutes with at least three complete turns.</li>
+<li>One Wi-Fi to cellular network roam reconnects successfully.</li>
+<li>No sequence gap, underrun, overlap, distortion, or repeated chunk occurs.</li>
+<li>Every turn appears in the resident session transcript.</li>
+<li>In-app hang-up closes cleanly.</li>
+<li>Human acoustic attestation and subscription billing attestation pass.</li>
+<li><code>~/.local/state/serena/iphone-call-acceptance.json</code> reports <code>ok: true</code>.</li>
+</ul>
+<h4>L3-O3: Consolidate the active voice stack</h4>
+<p>Classify every voice package as active, compatibility fallback, migration source, or dead code. Remove or quarantine dead paths only after references and tests prove they are unused.</p>
+<p>Candidate paths requiring classification:</p>
+<ul>
+<li>active candidates: <code>voice/call</code>, <code>voice/desk</code>, <code>voice/desktop</code>, <code>voice/brain_bridge.py</code></li>
+<li>legacy candidates: <code>voice/brain</code>, <code>voice/voice</code>, <code>voice/daemon</code>, <code>LIVE_VOICE_DAEMON.md</code>, older daemon TTS files</li>
+</ul>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>One architecture document names the production entrypoints.</li>
+<li>No dead scheduler can send a notification or speak.</li>
+<li>No active path depends on <code>ntfy.sh</code> or another prohibited relay.</li>
+<li>Package imports and service units point only to supported modules.</li>
+<li>Voice test coverage remains green after consolidation.</li>
+</ul>
+<h4>L3-O4: Add device presence and failover</h4>
+<p>Track which devices are online, which device owns the microphone, where responses should appear, and what degraded behavior is available when the home brain is unavailable.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Device heartbeats expire safely.</li>
+<li>Only one device owns an active call or desk microphone session unless conference mode is explicit.</li>
+<li>The laptop can report a declared degraded mode when the home brain is down.</li>
+<li>Reconnection cannot replay an already completed turn.</li>
+</ul>
+<h4>L3-O5: Implement bounded proactivity</h4>
+<p>Replace placeholder schedulers with the agreed event judgment and mobile outbox.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Quiet hours, daily limits, deduplication, active-typing suppression, and heavy-lane exclusion are enforced in code.</li>
+<li>Suppressed events remain visible in an audit timeline.</li>
+<li>Mobile notifications use the Serena-owned application path.</li>
+<li>No placeholder greeting or third-party notification path remains active.</li>
+</ul>
+<h3>Layer completion gate</h3>
+<p>L3 becomes Operational when wake and one physical iPhone call pass, production voice paths are consolidated, device ownership is explicit, and the first bounded proactive event reaches the Serena app through the owned delivery path.</p>
+<hr />
+<h2>10. L4: Bounded autonomy</h2>
+<h3>Intent</h3>
+<p>Allow Serena to inspect broadly and act effectively while ensuring that authority is explicit, narrow, observable, revocable, and reversible.</p>
+<h3>Current implementation</h3>
+<ul>
+<li><code>core/brain_tools.py</code> exposes four read-only tools for git, GitHub, chat recall, and ledger reads.</li>
+<li>System binaries are validated before unattended execution.</li>
+<li>Chat recall uses query-only SQLite.</li>
+<li>The brain uses <code>dontAsk</code> with an explicit read-only allowlist.</li>
+<li>Spoken coding requests enter a durable inbox only when the resident worker lease is healthy.</li>
+<li>The private worker verifies both ChatGPT and Claude first-party subscription login.</li>
+<li>Codex implements, then Fable reviews and may directly fix the work.</li>
+<li>Work status and final summaries reach the voice display.</li>
+</ul>
+<h3>What is already strong</h3>
+<ul>
+<li>Read-only voice questions can be answered without opening a visible coding pane.</li>
+<li>The worker cannot claim a job unless it owns the durable lease.</li>
+<li>Interrupted jobs can be recovered or reported as failed.</li>
+<li>Metered credentials are scrubbed from worker environments.</li>
+<li>Model identities and linked sessions are preserved for later inspection.</li>
+</ul>
+<h3>Critical gaps</h3>
+<ul>
+<li>The reviewer uses <code>--dangerously-skip-permissions</code>.</li>
+<li>Coding jobs edit the live working tree instead of an isolated worktree or sandbox.</li>
+<li>Voice authorization is recognized partly through regular expressions.</li>
+<li>Broad verbs such as <code>deploy</code> or <code>ship</code> can enter the coding path without a universal real-world impact check.</li>
+<li>There is no capability broker shared by files, shell, MCP servers, deploys, DNS, messages, purchases, or smart-home actions.</li>
+<li>There is no standing-grant interface, expiry, or revocation model.</li>
+<li>There is no uniform action receipt showing authority, scope, result, and rollback.</li>
+</ul>
+<h3>Objectives</h3>
+<h4>L4-O1: Implement the capability broker</h4>
+<p>Every state-changing action must request a typed capability before execution.</p>
+<p>Minimum capability fields:</p>
+<ul>
+<li>actor and originating surface</li>
+<li>requested action and target</li>
+<li>read or write classification</li>
+<li>data sensitivity</li>
+<li>real-world impact</li>
+<li>authority source</li>
+<li>scope and expiry</li>
+<li>allowed executable or tool</li>
+<li>rollback or compensation plan</li>
+<li>audit destination</li>
+</ul>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>No write-capable tool bypasses the broker.</li>
+<li>Read-only tools remain unattended.</li>
+<li>High-stakes actions always require a fresh explicit go.</li>
+<li>Capability denials are visible and cannot be converted into success language.</li>
+</ul>
+<h4>L4-O2: Isolate coding work</h4>
+<p>Run autonomous edits in a dedicated git worktree or equivalent workspace. Preserve unrelated user changes and make promotion explicit.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>A coding job cannot overwrite unrelated dirty-tree changes.</li>
+<li>The implementation and review workers operate on the same isolated candidate.</li>
+<li>Tests run before promotion.</li>
+<li>Promotion produces a visible diff and can be rolled back.</li>
+<li>External writes such as deploy, push, publish, or message remain separate capabilities.</li>
+</ul>
+<h4>L4-O3: Replace regex authority with intent plus policy</h4>
+<p>Regex may identify candidate work, but it cannot be the final authorization decision.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Questions such as "can you deploy" never execute.</li>
+<li>Negation and quoted commands cannot trigger work.</li>
+<li><code>fix</code>, <code>build</code>, and <code>code</code> can authorize local reversible edits when the target is clear.</li>
+<li><code>deploy</code>, <code>ship</code>, <code>send</code>, <code>delete</code>, <code>buy</code>, and account changes require explicit scoped confirmation.</li>
+<li>An intent regression corpus covers natural speech and STT errors.</li>
+</ul>
+<h4>L4-O4: Create action receipts and cancellation</h4>
+<p>Each accepted job or external action must expose start, progress, completion, failure, authority, and cancellation state.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Raghav can see what is running and stop it.</li>
+<li>Cancellation reaches the real worker process.</li>
+<li>Completed actions identify changed files or external objects.</li>
+<li>Failures never disappear behind a generic completion message.</li>
+</ul>
+<h3>Layer completion gate</h3>
+<p>L4 becomes Operational when all writes pass through the capability broker, coding is isolated, consequential voice commands require explicit scoped authority, and every action produces a durable receipt with cancellation and rollback behavior.</p>
+<hr />
+<h2>11. L5: Measured self-improvement</h2>
+<h3>Intent</h3>
+<p>Allow Serena to improve prompts, routing, tools, memory policy, and orchestration through controlled experiments. The live system must never rewrite itself and assume the result is better.</p>
+<h3>Current implementation</h3>
+<p>No self-improvement system exists. The repository has a strong automated test suite and a second model review pass for coding jobs, but neither creates challenger Serena versions or promotes measured improvements.</p>
+<h3>Critical gaps</h3>
+<ul>
+<li>No correction and failure corpus</li>
+<li>No versioned behavioral configuration</li>
+<li>No challenger generation</li>
+<li>No benchmark runner for Serena-specific behavior</li>
+<li>No baseline comparison</li>
+<li>No safety regression evaluation</li>
+<li>No promotion gate</li>
+<li>No automatic rollback</li>
+<li>No experiment history</li>
+</ul>
+<h3>Objectives</h3>
+<h4>L5-O1: Build the Serena evaluation corpus</h4>
+<p>Create privacy-reviewed cases from real failures, corrections, and important workflows.</p>
+<p>Required suites:</p>
+<ul>
+<li>identity and register continuity</li>
+<li>ledger and memory retrieval</li>
+<li>voice intent and STT ambiguity</li>
+<li>read versus write authority</li>
+<li>coding ownership and progress reporting</li>
+<li>heavy-lane behavior</li>
+<li>interruption and proactivity timing</li>
+<li>model-routing decisions</li>
+<li>failure honesty and rollback</li>
+</ul>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Every case has input, relevant state, expected invariants, scoring method, and sensitivity label.</li>
+<li>Private cases remain local.</li>
+<li>Cases are immutable during a scored comparison.</li>
+<li>Real regressions add a case before a fix is promoted.</li>
+</ul>
+<h4>L5-O2: Version the improvable surface</h4>
+<p>Move prompts, routing policy, memory retrieval policy, notification policy, and tool descriptions into versioned artifacts with schemas.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>A baseline version can be reproduced exactly.</li>
+<li>Changes generate a machine-readable diff.</li>
+<li>Invalid versions fail closed.</li>
+<li>Identity and safety invariants cannot be silently removed.</li>
+</ul>
+<h4>L5-O3: Implement challenger experiments</h4>
+<p>Allow a model to propose one bounded change, run it in isolation, and score it against the frozen corpus.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Challengers cannot modify the live runtime.</li>
+<li>Every experiment records proposer, change, model, seed where available, scores, cost class, and failures.</li>
+<li>Multiple runs are required where output variance matters.</li>
+<li>A challenger with any critical safety regression is rejected regardless of aggregate score.</li>
+</ul>
+<h4>L5-O4: Add promotion and rollback</h4>
+<p>Promote only measured winners after human approval until a narrower standing policy is deliberately established.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Promotion requires defined minimum improvement and zero critical regressions.</li>
+<li>The previous version remains immediately restorable.</li>
+<li>Live telemetry can automatically roll back a promoted version after a new critical failure.</li>
+<li>Serena reports what changed in plain language.</li>
+</ul>
+<h3>Layer completion gate</h3>
+<p>L5 becomes Operational when at least one real improvement travels through corpus creation, challenger generation, isolated evaluation, human approval, promotion, and rollback rehearsal. Passing ordinary repository tests is not sufficient.</p>
+<hr />
+<h2>12. L6: Personalized cognitive model</h2>
+<h3>Intent</h3>
+<p>Own a local cognitive layer that can represent Serena's voice, tool conventions, common project context, and private reflex behavior without pretending it matches frontier reasoning.</p>
+<h3>Current implementation</h3>
+<ul>
+<li>Local <code>hey_serena.onnx</code> wake-word model</li>
+<li>Local Silero VAD</li>
+<li>Local faster-whisper models</li>
+<li>Local Kokoro and pocket TTS assets</li>
+<li>No Ollama installation on the laptop</li>
+<li>No local language model connected to the control plane</li>
+<li>No fine-tuning or adapter pipeline</li>
+</ul>
+<h3>Critical gaps</h3>
+<ul>
+<li>No selected open-weight cognitive base model</li>
+<li>No hardware placement decision between laptop and home PC</li>
+<li>No approved dialogue and tool-trace dataset</li>
+<li>No data redaction and consent pass</li>
+<li>No LoRA or supervised fine-tuning pipeline</li>
+<li>No teacher-student generation policy</li>
+<li>No personalized-model evaluation suite</li>
+<li>No model provenance and rollback lifecycle</li>
+<li>No gaming-aware resource unloading on the home PC</li>
+</ul>
+<h3>Objectives</h3>
+<h4>L6-O1: Define the local model role</h4>
+<p>The first local model is not the universal brain. It owns narrow, measurable work:</p>
+<ul>
+<li>wake acknowledgement and low-latency conversational reflexes</li>
+<li>local intent classification</li>
+<li>simple read-only tool selection</li>
+<li>offline status and memory lookup</li>
+<li>Serena voice and formatting consistency</li>
+<li>graceful explanation when frontier reasoning is unavailable</li>
+</ul>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>The role boundary is encoded in routing policy.</li>
+<li>The local model cannot silently answer outside its evaluated capability.</li>
+<li>Escalation to frontier reasoning preserves the same conversation identity.</li>
+</ul>
+<h4>L6-O2: Select and deploy an open-weight base</h4>
+<p>Evaluate a realistic model for the available hardware, beginning with a gpt-oss 20b-class or comparable tool-capable model.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Hardware fit, latency, memory use, context length, tool use, and unload time are benchmarked.</li>
+<li>The gaming PC automatically unloads the model before gaming workloads.</li>
+<li>The model runs without exposing private data to a hosted inference provider.</li>
+<li>Model source, license, quantization, and hash are recorded.</li>
+</ul>
+<h4>L6-O3: Build the approved training dataset</h4>
+<p>Derive training material only from explicitly permitted Serena conversations, corrections, tool traces, and synthetic variations grounded in real policy.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Secrets and unrelated private content are removed.</li>
+<li>Training, validation, and held-out test sets are separated.</li>
+<li>Synthetic examples are labelled and cannot replace real evaluation evidence.</li>
+<li>Dataset provenance is inspectable per example.</li>
+</ul>
+<h4>L6-O4: Train adapters and evaluate</h4>
+<p>Fine-tune behavior and tool use with adapters before considering any larger weight update.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>The base model and adapter are versioned separately.</li>
+<li>Evaluation compares base, personalized, and frontier routes.</li>
+<li>Persona improvement cannot come with worse authority handling or factual reliability.</li>
+<li>The adapter can be disabled instantly.</li>
+</ul>
+<h4>L6-O5: Integrate as a routed cognitive layer</h4>
+<p>Connect the accepted local model to L1's router as <code>reflex</code>, not as an unbounded replacement for frontier models.</p>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Local-to-frontier escalation is transparent in telemetry but invisible as an identity split.</li>
+<li>Local failure cannot block emergency access to the frontier lane.</li>
+<li>Resource policy unloads the model when idle or when gaming begins.</li>
+<li>Private local turns can remain entirely on-device.</li>
+</ul>
+<h3>Layer completion gate</h3>
+<p>L6 becomes Operational when an open-weight model is locally deployed, evaluated, personalized with a reversible adapter, routed only within its proven capability, and safely unloaded under gaming or resource pressure.</p>
+<hr />
+<h2>13. Cross-cutting release objective</h2>
+<h3>R0: Consolidate the repository before adding intelligence</h3>
+<p>The current feature work is too large and too mixed to call release-ready. Stabilization comes before new self-improvement or local-model work.</p>
+<h4>R0-O1: Partition and commit the live architecture</h4>
+<p>Create reviewable commits for:</p>
+<ol>
+<li>resident brain and lifetime</li>
+<li>canonical state and memory</li>
+<li>voice call pipeline</li>
+<li>desk wake and display</li>
+<li>private coding supervisor</li>
+<li>mobile call surface</li>
+<li>systemd and deployment</li>
+<li>tests and documentation</li>
+</ol>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>No unrelated user change is discarded.</li>
+<li>Each commit has a focused diff and passing relevant tests.</li>
+<li>Generated assets, local credentials, caches, and runtime databases stay untracked.</li>
+<li><code>git status</code> reaches a deliberate, explainable state.</li>
+</ul>
+<h4>R0-O2: Remove warnings and stale documentation</h4>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>GTK/VTE crash tests no longer emit invalid-pointer warnings.</li>
+<li>The root README describes the current control plane and supported entrypoints.</li>
+<li><code>LIVE_VOICE_DAEMON.md</code> is updated, moved to legacy documentation, or removed after reference proof.</li>
+<li>Service installation documentation matches installed units.</li>
+</ul>
+<h4>R0-O3: Quarantine obsolete implementations</h4>
+<p><strong>Acceptance:</strong></p>
+<ul>
+<li>Every legacy voice path has an owner decision.</li>
+<li>Dead code is removed only after import, service, and test reference checks.</li>
+<li>Placeholder proactive greetings cannot run.</li>
+<li>The obsolete <code>ntfy.sh</code> path is removed from the supported architecture.</li>
+</ul>
+<h3>R0 completion gate</h3>
+<p>R0 passes when the active production architecture is obvious from the filesystem, the work is committed in reviewable units, the normal test suites are green without invalid-pointer warnings, and stale paths cannot accidentally run.</p>
+<hr />
+<h2>14. Required build order</h2>
+<p>This order is binding because later layers depend on earlier contracts.</p>
+<h3>Phase 0: Truthful baseline and repository consolidation</h3>
+<p>Complete R0-O1 through R0-O3. Do not add a local LLM or self-improvement loop while the active runtime is still mixed with obsolete implementations.</p>
+<h3>Phase 1: Reliable presence</h3>
+<p>Complete L3-O1, L3-O2, and L3-O3. The next meaningful user proof is a wake that behaves and one real iPhone call that passes every gate.</p>
+<h3>Phase 2: Safe control plane</h3>
+<p>Complete L1-O1, L1-O3, L4-O1, L4-O2, L4-O3, and L4-O4. This creates the stable contract needed for broader tools and background work.</p>
+<h3>Phase 3: Real memory and device continuity</h3>
+<p>Complete L2-O1 through L2-O4, then L3-O4 and L3-O5. Serena may become more proactive only after memory, device ownership, and permission boundaries are explicit.</p>
+<h3>Phase 4: Measured self-improvement</h3>
+<p>Complete L5-O1 through L5-O4. The first goal is one small measured promotion with a successful rollback rehearsal.</p>
+<h3>Phase 5: Personalized local cognition</h3>
+<p>Complete L1-O2 and L6-O1 through L6-O5. The local model enters as a constrained reflex lane after routing, memory, permissions, and evaluation already exist.</p>
+<h3>Deferred final gate</h3>
+<p>The 24-hour brain soak remains deferred. Stop immediately before starting it unless Raghav explicitly authorizes it in a future instruction.</p>
+<h2>15. Objective dependency map</h2>
+<table>
+<thead>
+<tr>
+<th>Objective</th>
+<th>Depends on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R0-O1</td>
+<td>current baseline</td>
+</tr>
+<tr>
+<td>R0-O2</td>
+<td>R0-O1</td>
+</tr>
+<tr>
+<td>R0-O3</td>
+<td>R0-O1</td>
+</tr>
+<tr>
+<td>L3-O1</td>
+<td>R0-O1</td>
+</tr>
+<tr>
+<td>L3-O2</td>
+<td>R0-O1</td>
+</tr>
+<tr>
+<td>L3-O3</td>
+<td>R0-O1</td>
+</tr>
+<tr>
+<td>L1-O1</td>
+<td>R0-O1, L3-O3</td>
+</tr>
+<tr>
+<td>L1-O3</td>
+<td>L1-O1</td>
+</tr>
+<tr>
+<td>L4-O1</td>
+<td>L1-O1</td>
+</tr>
+<tr>
+<td>L4-O2</td>
+<td>L4-O1</td>
+</tr>
+<tr>
+<td>L4-O3</td>
+<td>L4-O1</td>
+</tr>
+<tr>
+<td>L4-O4</td>
+<td>L4-O1, L4-O2</td>
+</tr>
+<tr>
+<td>L2-O1</td>
+<td>R0-O1</td>
+</tr>
+<tr>
+<td>L2-O2</td>
+<td>L2-O1</td>
+</tr>
+<tr>
+<td>L2-O3</td>
+<td>L2-O1, L4-O1</td>
+</tr>
+<tr>
+<td>L2-O4</td>
+<td>L1-O1, L2-O2, L2-O3</td>
+</tr>
+<tr>
+<td>L3-O4</td>
+<td>L1-O1, L2-O4</td>
+</tr>
+<tr>
+<td>L3-O5</td>
+<td>L3-O4, L4-O1</td>
+</tr>
+<tr>
+<td>L5-O1</td>
+<td>L2-O4, L4-O1</td>
+</tr>
+<tr>
+<td>L5-O2</td>
+<td>L1-O1, L2-O1</td>
+</tr>
+<tr>
+<td>L5-O3</td>
+<td>L5-O1, L5-O2, L4-O2</td>
+</tr>
+<tr>
+<td>L5-O4</td>
+<td>L5-O3</td>
+</tr>
+<tr>
+<td>L1-O2</td>
+<td>L1-O1, L5-O1</td>
+</tr>
+<tr>
+<td>L6-O1</td>
+<td>L1-O2</td>
+</tr>
+<tr>
+<td>L6-O2</td>
+<td>L6-O1</td>
+</tr>
+<tr>
+<td>L6-O3</td>
+<td>L2-O1, L5-O1</td>
+</tr>
+<tr>
+<td>L6-O4</td>
+<td>L6-O2, L6-O3, L5-O1</td>
+</tr>
+<tr>
+<td>L6-O5</td>
+<td>L1-O2, L6-O4</td>
+</tr>
+</tbody>
+</table>
+<h2>16. Completion reporting format</h2>
+<p>Every implementation milestone must report:</p>
+<pre><code class="language-text">objective: Lx-Oy
+status: done | partial | blocked | deferred
+changed:
+  - file or runtime surface
+verified:
+  - exact command or real-hardware action
+evidence:
+  - result, telemetry file, screenshot, or report path
+remaining:
+  - concrete open gate
+rollback:
+  - how to undo or disable the change
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Never mark an objective done from code existence alone.</li>
+<li>Never translate a staged harness into a passed hardware gate.</li>
+<li>Never call the wake word accepted while <code>acceptance_claim</code> is false.</li>
+<li>Never call the iPhone call accepted without the durable acceptance JSON.</li>
+<li>Never call self-improvement implemented because a reviewer model ran.</li>
+<li>Never call a speech model a personalized cognitive model.</li>
+<li>Never run the 24-hour soak without new explicit authorization.</li>
+</ul>
+<h2>17. Final target</h2>
+<p>The finished Serena system behaves like this:</p>
+<p>Raghav speaks, types, or calls from any approved device. One Serena recognizes the context, decides whether the request is conversation, recall, research, coding, or a consequential action, and chooses the correct private model route. She acknowledges immediately, works without forcing him to manage terminals, exposes truthful progress, requests authority only where stakes require it, remembers the outcome with provenance, and returns through the surface that makes sense.</p>
+<p>She can improve her own prompts, routing, tools, and memory policy only through a frozen evaluation corpus, isolated challenger runs, explicit promotion, and instant rollback. A local personalized model handles narrow private reflex work, while frontier models remain available for difficult reasoning. Stronger future models slot into the same body without replacing Serena's identity, memory, permissions, or relationship continuity.</p>
+        </article>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const slug = text => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+      const spec = document.getElementById('spec');
+      let prefaceNode = spec.firstElementChild;
+      while (prefaceNode && prefaceNode.tagName !== 'H2') {
+        const next = prefaceNode.nextElementSibling;
+        prefaceNode.hidden = true;
+        prefaceNode = next;
+      }
+      const headings = [...spec.querySelectorAll(':scope > h2')];
+      const toc = document.getElementById('toc');
+
+      headings.forEach((heading, index) => {
+        heading.id = heading.id || slug(heading.textContent);
+        const link = document.createElement('a');
+        link.href = '#' + heading.id;
+        link.innerHTML = `<span class="n">${String(index + 1).padStart(2, '0')}</span><span>${heading.textContent.replace(/^\d+\.\s*/, '')}</span>`;
+        link.addEventListener('click', () => document.body.classList.remove('nav-open'));
+        toc.appendChild(link);
+      });
+
+      const h4s = [...spec.querySelectorAll('h4')].filter(h => /^(L[1-6]|R0)-O\d+:/.test(h.textContent));
+      h4s.forEach(h4 => {
+        const match = h4.textContent.match(/^((?:L[1-6]|R0)-O\d+):\s*(.+)$/);
+        if (!match) return;
+        const card = document.createElement('section');
+        card.className = 'objective';
+        card.id = match[1].toLowerCase();
+
+        const head = document.createElement('button');
+        head.className = 'objective-head';
+        head.type = 'button';
+        head.setAttribute('aria-expanded', 'true');
+        head.innerHTML = `<span class="objective-id">${match[1]}</span><span class="objective-title">${match[2]}</span><span class="chevron">⌄</span>`;
+
+        const body = document.createElement('div');
+        body.className = 'objective-body';
+        let node = h4.nextSibling;
+        while (node && !(node.nodeType === 1 && /^(H2|H3|H4)$/.test(node.tagName))) {
+          const next = node.nextSibling;
+          body.appendChild(node);
+          node = next;
+        }
+        h4.replaceWith(card);
+        card.append(head, body);
+        head.addEventListener('click', () => {
+          const collapsed = card.classList.toggle('collapsed');
+          head.setAttribute('aria-expanded', String(!collapsed));
+        });
+      });
+
+      document.getElementById('expand-all').addEventListener('click', () => {
+        document.querySelectorAll('.objective').forEach(card => {
+          card.classList.remove('collapsed');
+          card.querySelector('button').setAttribute('aria-expanded', 'true');
+        });
+      });
+      document.getElementById('collapse-all').addEventListener('click', () => {
+        document.querySelectorAll('.objective').forEach(card => {
+          card.classList.add('collapsed');
+          card.querySelector('button').setAttribute('aria-expanded', 'false');
+        });
+      });
+      document.getElementById('print-spec').addEventListener('click', () => window.print());
+      document.getElementById('nav-toggle').addEventListener('click', () => document.body.classList.toggle('nav-open'));
+
+      const links = [...toc.querySelectorAll('a')];
+      const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return;
+          links.forEach(a => a.classList.toggle('active', a.hash === '#' + entry.target.id));
+        });
+      }, { rootMargin: '-12% 0px -76% 0px' });
+      headings.forEach(h => observer.observe(h));
+
+      const updateProgress = () => {
+        const max = document.documentElement.scrollHeight - innerHeight;
+        const pct = max > 0 ? scrollY / max * 100 : 0;
+        document.getElementById('reading-progress').style.width = pct + '%';
+      };
+      addEventListener('scroll', updateProgress, { passive: true });
+      updateProgress();
+
+      const canvas = document.getElementById('ambient');
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        const ctx = canvas.getContext('2d');
+        let dots = [];
+        const resize = () => {
+          const dpr = Math.min(devicePixelRatio || 1, 2);
+          canvas.width = innerWidth * dpr;
+          canvas.height = innerHeight * dpr;
+          canvas.style.width = innerWidth + 'px';
+          canvas.style.height = innerHeight + 'px';
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          dots = Array.from({ length: Math.min(70, Math.floor(innerWidth / 20)) }, () => ({
+            x: Math.random() * innerWidth,
+            y: Math.random() * innerHeight,
+            r: Math.random() * 1.5 + .3,
+            v: Math.random() * .09 + .025,
+            a: Math.random() * .25 + .05,
+            hue: Math.random() > .82 ? 38 : Math.random() > .5 ? 327 : 266
+          }));
+        };
+        const draw = () => {
+          ctx.clearRect(0, 0, innerWidth, innerHeight);
+          dots.forEach(d => {
+            d.y -= d.v;
+            if (d.y < -4) { d.y = innerHeight + 4; d.x = Math.random() * innerWidth; }
+            ctx.beginPath();
+            ctx.fillStyle = `hsla(${d.hue}, 86%, 72%, ${d.a})`;
+            ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+            ctx.fill();
+          });
+          requestAnimationFrame(draw);
+        };
+        addEventListener('resize', resize);
+        resize();
+        draw();
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+.git
+mobile
+desktop
+docs
+**/__pycache__
+**/*.pyc
+*.log
+dist
+.venv
+.serena-handoff.md

@@ -1,0 +1,12 @@
+[Unit]
+Description=Sync Serena chat and knowledge recall cache to Locket
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/chats archive-sync
+Nice=10
+CPUQuota=50%
+MemoryHigh=400M
+MemoryMax=700M

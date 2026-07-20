@@ -1,0 +1,18 @@
+{
+  "servers": {
+    "example-read-only-server": {
+      "enabled": false,
+      "transport": "http",
+      "url": "http://127.0.0.1:9000/mcp",
+      "shared": true,
+      "targets": ["claude", "codex"],
+      "command": null,
+      "args": [],
+      "cwd": null,
+      "env": {},
+      "headers": {},
+      "secrets": {},
+      "advanced": {}
+    }
+  }
+}

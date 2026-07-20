@@ -1,0 +1,40 @@
+# Serena mobile daemon. Mounts the host's claude/codex auth + sessions so the
+# container can read chats and drive the agents on the send path.
+#   build:  docker compose -f docker-compose.serena.yml build
+#   run:    docker compose -f docker-compose.serena.yml up -d
+services:
+  serena-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.serena
+    image: serena-daemon:local
+    container_name: serena-daemon
+    ports:
+      - "8771:8771"
+    volumes:
+      # claude sessions (projects/) + auth (.credentials.json) — RW so `send` can
+      # append turns back to the real session files (they then Syncthing across).
+      - "C:/Users/ragha/.claude:/root/.claude"
+      # claude's top-level config (project<->session map, settings) — needed by --resume
+      - "C:/Users/ragha/.claude.json:/root/.claude.json"
+      # codex auth.json + sessions
+      - "C:/Users/ragha/.codex:/root/.codex"
+      # daemon auth token (chat_token)
+      - "C:/Users/ragha/.config/serena:/root/.config/serena"
+      # live persona/tooling — injected into every claude turn via
+      # --append-system-prompt so mobile replies are *her*, not bare claude.
+      # Mounted (not just COPY'd) so edits take effect without an image rebuild.
+      - "C:/Users/ragha/Projects/serena/Persona.md:/app/Persona.md:ro"
+      - "C:/Users/ragha/Projects/serena/Tooling.md:/app/Tooling.md:ro"
+      # memory (RW so turns can save new memories) + knowledge (RO). Without
+      # these the container sees zero memory/knowledge and replies are ungrounded.
+      - "C:/Users/ragha/Projects/serena/memory:/data/memory"
+      - "C:/Users/ragha/Projects/serena/knowledge:/data/knowledge:ro"
+      # built phone/desktop client — daemon serves it at /app for the laptop
+      - "C:/Users/ragha/Projects/serena/mobile/dist:/app/mobile/dist:ro"
+      # rebuilt session index (sqlite) — kept in a named volume, not the host
+      - "serena-data:/data"
+    restart: unless-stopped
+
+volumes:
+  serena-data:

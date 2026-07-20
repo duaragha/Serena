@@ -1,0 +1,33 @@
+# Serena mobile daemon — serves the phone app over /ws/chat and drives
+# claude/codex for the send path. Node base (claude CLI is a node package) +
+# python for the daemon.
+FROM node:20-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Agent CLIs used by the send path (auth comes from the mounted ~/.claude /.codex).
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
+
+# Daemon runtime deps (Linux subset of pyproject — no win32/pty-win packages).
+RUN pip3 install --break-system-packages --no-cache-dir \
+    flask flask-sock click rich watchdog ptyprocess simple-websocket psutil
+
+WORKDIR /app
+COPY . /app
+
+ENV HOME=/root \
+    CLAUDE_DIR=/root/.claude \
+    CHATS_DATA_DIR=/data \
+    MEMORY_DIR=/data/memory \
+    KNOWLEDGE_DIR=/data/knowledge \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+RUN mkdir -p /data /root/.config/serena
+
+EXPOSE 8771
+# Real daemon now that the synced code is here: cli `serve` registers the
+# /ws/chat route (ui/web.py) backed by core/chat_daemon.py.
+CMD ["python3", "cli.py", "serve", "--port", "8771"]
