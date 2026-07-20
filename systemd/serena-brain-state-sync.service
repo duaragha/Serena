@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync Serena canonical active state to the home brain
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/raghav/Documents/Projects/serena
+Environment=SERENA_BRAIN_SYNC_TARGET=docker-pc
+ExecStart=/home/raghav/Documents/Projects/serena/.venv/bin/python3 -m core.brain_state_sync

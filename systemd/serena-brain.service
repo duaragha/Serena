@@ -1,0 +1,28 @@
+# Serena brain daemon, the resident process (docs/spec-brain-daemon.md).
+# Install (after `claude setup-token`, put CLAUDE_CODE_OAUTH_TOKEN=... in
+# ~/.config/serena/brain.env):
+#   cp systemd/serena-brain.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now serena-brain.service
+[Unit]
+Description=Serena brain daemon (resident SDK session)
+After=network.target
+
+[Service]
+Type=exec
+WorkingDirectory=/home/raghav/Documents/Projects/serena
+ExecStart=/home/raghav/Documents/Projects/serena/.venv/bin/python3 -m core.brain_daemon
+# Billing guard, belt AND suspenders: the daemon also hard-fails on these.
+UnsetEnvironment=ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_AWS_API_KEY ANTHROPIC_AWS_BASE_URL ANTHROPIC_BASE_URL ANTHROPIC_BEDROCK_BASE_URL ANTHROPIC_BEDROCK_MANTLE_BASE_URL ANTHROPIC_CUSTOM_HEADERS ANTHROPIC_FOUNDRY_API_KEY ANTHROPIC_FOUNDRY_AUTH_TOKEN ANTHROPIC_FOUNDRY_BASE_URL ANTHROPIC_FOUNDRY_RESOURCE ANTHROPIC_IDENTITY_TOKEN ANTHROPIC_IDENTITY_TOKEN_FILE ANTHROPIC_VERTEX_BASE_URL ANTHROPIC_VERTEX_PROJECT_ID AWS_BEARER_TOKEN_BEDROCK CLAUDE_CODE_API_BASE_URL CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL CLAUDE_CODE_CUSTOM_OAUTH_URL CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER CLAUDE_CODE_GB_BASE_URL CLAUDE_CODE_HOST_AUTH_ENV_VAR CLAUDE_CODE_HTTP_PROXY CLAUDE_CODE_HTTPS_PROXY CLAUDE_CODE_PROXY_AUTHENTICATE CLAUDE_CODE_PROXY_URL CLAUDE_CODE_SESSION_ACCESS_TOKEN CLAUDE_CODE_USE_ANTHROPIC_AWS CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_USE_VERTEX
+EnvironmentFile=-%h/.config/serena/brain.env
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+StateDirectory=serena
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+KillMode=control-group
+# One brain only; the daemon's own instance lock is the real gate.
+[Install]
+WantedBy=default.target

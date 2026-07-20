@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Serena memory for canonical-state changes
+
+[Path]
+PathChanged=/home/raghav/Documents/Projects/serena/memory
+Unit=serena-brain-state-sync.service
+
+[Install]
+WantedBy=default.target

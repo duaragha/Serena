@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile Serena canonical state with the home brain
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+Persistent=true
+Unit=serena-brain-state-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+# Twenty-four hour v1c acceptance soak. Install beside serena-brain.service.
+[Unit]
+Description=Serena brain 24-hour resident-session acceptance soak
+Wants=serena-brain.service
+After=serena-brain.service
+
+[Service]
+Type=exec
+WorkingDirectory=/home/raghav/Documents/Projects/serena
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:handle-lid-switch --who=Serena-brain-soak --why=24-hour-acceptance-soak --mode=block /home/raghav/Documents/Projects/serena/.venv/bin/python3 -m core.brain_soak --duration-hours 24 --sample-seconds 60 --checkpoint-hours 0,6,12,18,24 --require-pass
+UMask=0077
+StateDirectory=serena
+StateDirectoryMode=0700
+TimeoutStartSec=infinity
+Restart=no
+
+[Install]
+WantedBy=default.target
