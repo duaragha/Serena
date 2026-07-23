@@ -311,6 +311,7 @@ class SoundDevicePlayback:
     ) -> None:
         self.overlay = overlay
         self.device = device
+        self.last_amplitude = 0.0
         self._stream = None
         self._sample_rate = 0
         self._first_write: PlaybackStart | None = None
@@ -337,7 +338,8 @@ class SoundDevicePlayback:
         if not pcm or len(pcm) % 2:
             raise ValueError("desk playback requires whole PCM16 samples")
         underflow = bool(self._stream.write(pcm))
-        self.overlay.set_amplitude(pcm_visual_level(pcm))
+        self.last_amplitude = pcm_visual_level(pcm)
+        self.overlay.set_amplitude(self.last_amplitude)
         if self._first_write is None:
             self._first_write = PlaybackStart(time.monotonic_ns(), underflow)
             return self._first_write
@@ -362,6 +364,7 @@ class SoundDevicePlayback:
                 stream.stop()
                 stream.close()
         finally:
+            self.last_amplitude = 0.0
             self.overlay.set_amplitude(0.0)
             self._sample_rate = 0
 

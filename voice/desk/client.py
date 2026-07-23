@@ -27,6 +27,7 @@ from voice.call.wakeword import (
     sha256_file,
 )
 from voice.call.wakeword_calibration import load_acceptance_manifest
+from voice.desk.duplex import BargeInGate
 from voice.desk.io import (
     DEFAULT_STATE_PATH,
     GreetingFetcher,
@@ -573,6 +574,16 @@ class DeskClient:
         expected_output_sequence = 0
         output_rate: int | None = None
         first_output_written = False
+        # SERENA_DESK_BARGE_IN=0 restores the exact half-duplex behavior:
+        # thinking/speaking phases never consume the microphone queue.
+        barge_gate: BargeInGate | None = BargeInGate(
+            voice_activity_dbfs=self.config.voice_activity_dbfs
+        )
+        if not barge_gate.enabled:
+            barge_gate = None
+        # After a barge-in cancels a generation, its already-in-flight TTS
+        # frames may still arrive; drop them until the next audio.start.
+        discard_stale_audio = False
 
         self.microphone.drain()
         transport.begin_listening()
@@ -589,6 +600,8 @@ class DeskClient:
             except queue.Empty:
                 event = None
             if event is not None:
+                if discard_stale_audio and event.kind == "audio":
+                    continue
                 outcome = self._handle_event(
                     transport,
                     event,
@@ -601,6 +614,8 @@ class DeskClient:
                 expected_output_sequence = outcome["expected_output_sequence"]
                 output_rate = outcome["output_rate"]
                 first_output_written = outcome["first_output_written"]
+                if discard_stale_audio and output_rate is not None:
+                    discard_stale_audio = False
                 if outcome["ended"]:
                     return
                 if outcome["phase_changed"]:
@@ -614,6 +629,9 @@ class DeskClient:
                         return
                     self.microphone.drain()
                     packer.reset()
+                    if barge_gate is not None:
+                        barge_gate.reset()
+                    discard_stale_audio = False
                     transport.begin_listening()
                     self.overlay.set_state("listening")
                     phase = "listening"
@@ -627,8 +645,6 @@ class DeskClient:
                         call_id=transport.call_id,
                         generation=transport.generation,
                     )
-                continue
-
             if transport.failure:
                 raise DeskConnectionLost(transport.failure)
 
@@ -670,7 +686,48 @@ class DeskClient:
                     elapsed_ms=round(elapsed * 1_000, 3),
                 )
                 return
-            time.sleep(0.01)
+            if barge_gate is None:
+                time.sleep(0.01)
+                continue
+            try:
+                pcm = self.microphone.frames.get(
+                    timeout=0.0 if event is not None else 0.08
+                )
+            except queue.Empty:
+                continue
+            playback_amplitude = (
+                float(getattr(self.playback, "last_amplitude", 0.0))
+                if phase == "speaking"
+                else 0.0
+            )
+            if not barge_gate.feed(
+                pcm, phase=phase, playback_amplitude=playback_amplitude
+            ):
+                continue
+            barged_frames = barge_gate.trigger_frames
+            self.playback.finish()
+            transport.cancel()
+            packer.reset()
+            transport.begin_listening()
+            self.overlay.set_state("listening")
+            for barged_pcm in barged_frames:
+                for wire_frame in packer.feed(barged_pcm):
+                    transport.send_mic_frame(wire_frame)
+            self.metrics.record(
+                "desk.barge_in",
+                call_id=transport.call_id,
+                generation=transport.generation,
+                phase=phase,
+                sustained_frames=len(barged_frames),
+            )
+            phase = "listening"
+            phase_started_ns = time.monotonic_ns()
+            heard_voice = True
+            expected_output_sequence = 0
+            output_rate = None
+            first_output_written = False
+            discard_stale_audio = True
+            barge_gate.reset()
 
     def _handle_event(
         self,
@@ -748,6 +805,8 @@ class DeskClient:
                 raise RuntimeError("desk code.panel action is invalid")
             return result
         if kind in {"endpoint.detected", "stt.start", "stt.result", "brain.delta", "brain.done"}:
+            if phase == "speaking" or output_rate is not None:
+                return result
             result["phase"] = "thinking"
             result["phase_changed"] = phase != "thinking"
             if result["phase_changed"]:

@@ -7,6 +7,7 @@ import pytest
 
 from voice.call.endpoint import (
     VAD_WINDOW_SAMPLES,
+    ProcessEndpointDetector,
     SileroEndpointDetector,
     SileroProcessPool,
 )
@@ -87,6 +88,32 @@ class FakeProcessWorker:
 
     def close(self) -> None:
         self.closed += 1
+
+
+def test_process_endpoint_mirrors_state_and_passes_commit_reason() -> None:
+    class StatefulWorker(FakeProcessWorker):
+        def request_sync(self, payload: dict, *, generation: int) -> dict:
+            self.requests.append({**payload, "generation": generation})
+            if payload["op"] == "process":
+                return {
+                    "ok": True,
+                    "result": None,
+                    "speech_active": True,
+                    "trailing_ms": 720,
+                }
+            return {"ok": True, "result": None}
+
+    worker = StatefulWorker()
+    detector = ProcessEndpointDetector(worker)
+
+    assert detector.process_pcm(b"\x01\x00" * 512) is None
+    assert detector.speech_active is True
+    assert detector.trailing_ms == 720
+
+    assert detector.finish(reason="silence") is None
+    assert detector.speech_active is False
+    assert detector.trailing_ms == 0
+    assert worker.requests[-1]["reason"] == "silence"
 
 
 def test_vad_process_pool_is_bounded_and_reuses_clean_slot() -> None:

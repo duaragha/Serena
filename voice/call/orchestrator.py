@@ -46,12 +46,35 @@ from .tasking import (
 )
 from .telemetry import DEFAULT_METRICS_PATH, CallTelemetry
 from .tts import AsyncTTSBackend, create_tts_backend
+from .turn_taking import UNKNOWN, AdaptiveEouPolicy, assess_completeness
 
 _SESSION_IDS = itertools.count(1)
 _RTT_SAMPLE_EXPIRY_NS = 30 * 1_000_000_000
 _MAX_PENDING_RTT_SAMPLES = 64
+_ADAPTIVE_PRE_ROLL_SAMPLES = 6_400  # ~400ms of 16kHz mic audio mirrored pre-speech
 DEFAULT_DESK_METRICS_PATH = Path.home() / ".config" / "serena" / "desk_metrics.jsonl"
 DEFAULT_DESK_GREETING_STATE = Path.home() / ".config" / "serena" / "desk_greeting_state.json"
+
+
+def _reply_splitter(tts: object) -> IncrementalSentenceSplitter:
+    """Splitter for brain-delta segmentation, shared by all TTS backends.
+
+    True-streaming backends used to override the first-clause knobs to
+    260/260, which silenced the fast first clause entirely: nothing was
+    emitted until a full sentence boundary or a 260-char hard cut, so first
+    audio could wait out an entire long opening sentence. The splitter's
+    tested defaults (12/56 with clause-boundary preference) already preserve
+    natural phrasing, and continuous synthesis makes an early first clause
+    cheaper for true-stream backends, not costlier. Env knobs stay for
+    tuning phrasing without a deploy.
+    """
+    del tts  # same segmentation policy for every backend today
+    first = int(os.environ.get("SERENA_CALL_FIRST_CLAUSE_CHARS", "12"))
+    hard = int(os.environ.get("SERENA_CALL_FIRST_CLAUSE_HARD_CHARS", "56"))
+    return IncrementalSentenceSplitter(
+        first_clause_chars=first,
+        first_clause_hard_chars=hard,
+    )
 
 
 class STTBackend(Protocol):
@@ -73,7 +96,12 @@ class EndpointDetector(Protocol):
 
     def process_pcm(self, pcm: bytes) -> EndpointResult | None: ...
 
-    def finish(self, *, force: bool = False) -> EndpointResult | None: ...
+    def finish(
+        self,
+        *,
+        force: bool = False,
+        reason: str | None = None,
+    ) -> EndpointResult | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,12 +151,14 @@ class CallRuntime:
         task_dispatcher: CallTaskDispatcher | None = None,
         metrics_path: Path = DEFAULT_METRICS_PATH,
         warm_timeout: float | None = None,
+        eou_policy: AdaptiveEouPolicy | None = None,
     ) -> None:
         self.stt = stt
         self.brain = brain
         self.tts = tts
         self.endpoint_factory = endpoint_factory
         self.endpoint_warmer = endpoint_warmer
+        self.eou_policy = eou_policy
         self.greeting_state = greeting_state or CallGreetingState()
         self.hello_state = hello_state or CallHelloState()
         self.task_dispatcher = task_dispatcher
@@ -316,11 +346,28 @@ def warm_default_runtime_background() -> None:
 
 
 def build_desk_runtime() -> CallRuntime:
-    """Share the local models while using hands-free desk endpoint timing."""
+    """Share the local models while using hands-free desk endpoint timing.
+
+    The VAD child's silence threshold is the adaptive CEILING: the parent's
+    AdaptiveEouPolicy commits earlier (at min/base trailing silence) via
+    finish(reason="silence"), and the child only emits on its own when an
+    incomplete utterance runs the pause out to the ceiling.
+    """
 
     shared = get_default_runtime()
+    eou_min_ms = int(os.environ.get("SERENA_DESK_EOU_MIN_MS", "480"))
+    eou_base_ms = int(
+        os.environ.get(
+            "SERENA_DESK_EOU_BASE_MS",
+            os.environ.get("SERENA_DESK_VAD_SILENCE_MS", "800"),
+        )
+    )
+    eou_max_ms = int(os.environ.get("SERENA_DESK_EOU_MAX_MS", "2400"))
+    # An operator raising only the legacy silence knob must never end up with
+    # a ceiling below the base commit threshold.
+    eou_max_ms = max(eou_max_ms, eou_base_ms, eou_min_ms)
     vad_pool = SileroProcessPool(
-        silence_ms=int(os.environ.get("SERENA_DESK_VAD_SILENCE_MS", "650")),
+        silence_ms=eou_max_ms,
         pre_roll_ms=int(os.environ.get("SERENA_DESK_VAD_PRE_ROLL_MS", "400")),
         max_utterance_ms=int(os.environ.get("SERENA_DESK_MAX_UTTERANCE_MS", "30000")),
     )
@@ -333,6 +380,14 @@ def build_desk_runtime() -> CallRuntime:
         greeting_state=CallGreetingState(DEFAULT_DESK_GREETING_STATE),
         task_dispatcher=shared.task_dispatcher,
         metrics_path=DEFAULT_DESK_METRICS_PATH,
+        eou_policy=AdaptiveEouPolicy(
+            min_ms=eou_min_ms,
+            base_ms=eou_base_ms,
+            max_ms=eou_max_ms,
+            partial_trigger_ms=int(
+                os.environ.get("SERENA_DESK_EOU_PARTIAL_TRIGGER_MS", "240")
+            ),
+        ),
     )
 
 
@@ -404,6 +459,18 @@ class CallSession:
         self._opened_artifact_events: set[int] = set()
         self._tts_namespace = next(_SESSION_IDS)
         self._endpoint_warm_task: asyncio.Task[str] | None = None
+        # Adaptive end-of-utterance state (desk runtime only). The parent
+        # mirrors the child's utterance so a speculative STT decode can start
+        # at the first candidate pause and be reused at commit time.
+        self._eou_policy = runtime.eou_policy
+        self._mirror_pre_roll: deque[bytes] = deque()
+        self._mirror_pre_roll_samples = 0
+        self._mirror_utterance = bytearray()
+        self._mirror_speech_active = False
+        self._last_trailing_ms = 0
+        self._speculative_task: asyncio.Task[str] | None = None
+        self._speculative_text: str | None = None
+        self._speculative_stale = False
         self._tailnet_peer = normalize_tailnet_peer(peer_host)
         self._tailnet_path = TailnetPathMeasurement.unknown()
         self._tailnet_probe_task: asyncio.Task[TailnetPathMeasurement] | None = None
@@ -1112,6 +1179,7 @@ class CallSession:
                     continue
                 if isinstance(item, _ResetEndpoint):
                     await asyncio.to_thread(self.endpoint.reset)
+                    self._reset_turn_mirror()
                     continue
                 if not self._input_generation_active(generation):
                     self.telemetry.record(
@@ -1131,15 +1199,167 @@ class CallSession:
                     result = await asyncio.to_thread(self.endpoint.finish, force=item.force)
                 else:
                     result = await asyncio.to_thread(self.endpoint.process_pcm, item.frame.pcm)
+                    if result is None and self._eou_policy is not None:
+                        result = await self._observe_adaptive_frame(
+                            generation, item.frame.pcm
+                        )
                 if result is not None:
-                    await self._endpoint_detected(generation, result)
+                    precomputed = self._take_speculative_transcript()
+                    self._reset_turn_mirror()
+                    await self._endpoint_detected(
+                        generation, result, precomputed=precomputed
+                    )
             except Exception as exc:
                 await self._error("audio_processing", str(exc), generation=generation)
             finally:
                 self._audio_queue.task_done()
 
-    async def _endpoint_detected(self, generation: int, result: EndpointResult) -> None:
+    async def _observe_adaptive_frame(
+        self, generation: int, pcm: bytes
+    ) -> EndpointResult | None:
+        """Adaptive end-of-utterance step for one already-processed mic frame.
+
+        Mirrors the utterance parent-side, starts one speculative STT decode
+        at the first candidate pause, and commits the turn early through
+        finish(reason="silence") when the policy allows. Returns the early
+        EndpointResult, or None to keep listening.
+        """
+        policy = self._eou_policy
+        assert policy is not None
+        speech_active = bool(getattr(self.endpoint, "speech_active", False))
+        trailing_ms = int(getattr(self.endpoint, "trailing_ms", 0))
+        if not speech_active:
+            self._push_pre_roll(pcm)
+            self._last_trailing_ms = 0
+            return None
+        if not self._mirror_speech_active:
+            self._mirror_speech_active = True
+            self._mirror_utterance = bytearray()
+            for chunk in self._mirror_pre_roll:
+                self._mirror_utterance.extend(chunk)
+            self._mirror_pre_roll.clear()
+            self._mirror_pre_roll_samples = 0
+        self._mirror_utterance.extend(pcm)
+        self._harvest_speculative_result()
+        if (
+            self._speculative_task is not None or self._speculative_text is not None
+        ) and trailing_ms < self._last_trailing_ms:
+            # Speech resumed after the speculative decode was submitted, so
+            # its transcript no longer covers the utterance.
+            self._speculative_stale = True
+        self._last_trailing_ms = trailing_ms
+        if (
+            trailing_ms >= policy.partial_trigger_ms
+            and self._speculative_task is None
+            and (self._speculative_text is None or self._speculative_stale)
+        ):
+            self._start_speculative_transcribe(generation)
+        completeness = UNKNOWN
+        if self._speculative_text is not None and not self._speculative_stale:
+            completeness = assess_completeness(self._speculative_text)
+        transcript_pending = self._speculative_task is not None
+        if (
+            policy.decide(
+                trailing_ms,
+                completeness,
+                transcript_pending=transcript_pending,
+            )
+            != "commit"
+        ):
+            return None
+        result = await asyncio.to_thread(self.endpoint.finish, reason="silence")
+        if result is not None:
+            self.telemetry.record(
+                "endpoint.adaptive_commit",
+                generation=generation,
+                trailing_ms=trailing_ms,
+                completeness=completeness,
+            )
+        return result
+
+    def _push_pre_roll(self, pcm: bytes) -> None:
+        self._mirror_pre_roll.append(pcm)
+        self._mirror_pre_roll_samples += len(pcm) // 2
+        while (
+            self._mirror_pre_roll
+            and self._mirror_pre_roll_samples - len(self._mirror_pre_roll[0]) // 2
+            >= _ADAPTIVE_PRE_ROLL_SAMPLES
+        ):
+            dropped = self._mirror_pre_roll.popleft()
+            self._mirror_pre_roll_samples -= len(dropped) // 2
+
+    def _start_speculative_transcribe(self, generation: int) -> None:
+        pcm = bytes(self._mirror_utterance)
+        if not pcm:
+            return
+        self._speculative_text = None
+        self._speculative_stale = False
+        self.telemetry.record(
+            "stt.speculative_start",
+            generation=generation,
+            samples=len(pcm) // 2,
+        )
+        self._speculative_task = self._spawn(
+            self.runtime.stt.transcribe(
+                pcm, 16_000, generation=self._stt_generation(generation)
+            ),
+            f"call-speculative-stt-{generation}",
+        )
+
+    def _harvest_speculative_result(self) -> None:
+        task = self._speculative_task
+        if task is None or not task.done():
+            return
+        self._speculative_task = None
+        if task.cancelled() or task.exception() is not None:
+            return
+        self._speculative_text = str(task.result())
+
+    def _take_speculative_transcript(self) -> str | asyncio.Task[str] | None:
+        """Pop the speculative decode for reuse at end of utterance.
+
+        Returns the finished transcript, the still-running decode task when it
+        is fresh (awaiting it beats re-decoding the same audio), or None when
+        no reusable speculative decode exists.
+        """
+        self._harvest_speculative_result()
+        task = self._speculative_task
+        text = self._speculative_text
+        stale = self._speculative_stale
+        self._speculative_task = None
+        self._speculative_text = None
+        self._speculative_stale = False
+        if stale:
+            if task is not None:
+                task.cancel()
+            return None
+        if text is not None:
+            return text
+        return task
+
+    def _reset_turn_mirror(self) -> None:
+        self._mirror_pre_roll.clear()
+        self._mirror_pre_roll_samples = 0
+        self._mirror_utterance = bytearray()
+        self._mirror_speech_active = False
+        self._last_trailing_ms = 0
+        task = self._speculative_task
+        self._speculative_task = None
+        self._speculative_text = None
+        self._speculative_stale = False
+        if task is not None:
+            task.cancel()
+
+    async def _endpoint_detected(
+        self,
+        generation: int,
+        result: EndpointResult,
+        *,
+        precomputed: str | asyncio.Task[str] | None = None,
+    ) -> None:
         if not self._input_generation_active(generation):
+            if isinstance(precomputed, asyncio.Task):
+                precomputed.cancel()
             self.telemetry.record(
                 "endpoint.cancelled_drop",
                 generation=generation,
@@ -1175,27 +1395,57 @@ class CallSession:
             await asyncio.gather(self._turn_task, return_exceptions=True)
         self._turn_generation = generation
         self._turn_task = self._spawn(
-            self._run_turn(generation, result.pcm), f"call-turn-{generation}"
+            self._run_turn(generation, result.pcm, precomputed=precomputed),
+            f"call-turn-{generation}",
         )
 
-    async def _run_turn(self, generation: int, pcm: bytes) -> None:
+    async def _run_turn(
+        self,
+        generation: int,
+        pcm: bytes,
+        *,
+        precomputed: str | asyncio.Task[str] | None = None,
+    ) -> None:
         if not self._input_generation_active(generation):
+            if isinstance(precomputed, asyncio.Task):
+                precomputed.cancel()
             return
         stt_started = time.monotonic_ns()
         self.telemetry.stage(generation, "stt.start", samples=len(pcm) // 2)
         self.telemetry.record("stt.start", generation=generation, samples=len(pcm) // 2)
         await self._send_control_for_generation(generation, "stt.start", generation=generation)
         if not self._input_generation_active(generation):
+            if isinstance(precomputed, asyncio.Task):
+                precomputed.cancel()
             return
-        try:
-            text = await self.runtime.stt.transcribe(
-                pcm, 16_000, generation=self._stt_generation(generation)
+        text: str | None = None
+        if isinstance(precomputed, str):
+            text = precomputed
+        elif precomputed is not None:
+            try:
+                text = await asyncio.shield(precomputed)
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                text = None
+            except Exception:
+                text = None
+        speculative_hit = text is not None
+        if precomputed is not None:
+            self.telemetry.record(
+                "stt.speculative", generation=generation, hit=speculative_hit
             )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self._error("stt", str(exc), generation=generation)
-            return
+        if text is None:
+            try:
+                text = await self.runtime.stt.transcribe(
+                    pcm, 16_000, generation=self._stt_generation(generation)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self._error("stt", str(exc), generation=generation)
+                return
         if not self._generation_active(generation):
             return
         elapsed_ms = (time.monotonic_ns() - stt_started) / 1_000_000
@@ -1204,12 +1454,14 @@ class CallSession:
             generation=generation,
             elapsed_ms=round(elapsed_ms, 3),
             text_chars=len(text),
+            speculative=speculative_hit,
         )
         self.telemetry.stage(
             generation,
             "stt.done",
             elapsed_ms=round(elapsed_ms, 3),
             text_chars=len(text),
+            speculative=speculative_hit,
         )
         await self._send_control_for_generation(
             generation, "stt.result", generation=generation, text=text
@@ -1342,13 +1594,7 @@ class CallSession:
         return item.item_id
 
     async def _brain_to_tts(self, generation: int, text: str) -> str | None:
-        if getattr(self.runtime.tts, "supports_true_stream", False):
-            splitter = IncrementalSentenceSplitter(
-                first_clause_chars=260,
-                first_clause_hard_chars=260,
-            )
-        else:
-            splitter = IncrementalSentenceSplitter()
+        splitter = _reply_splitter(self.runtime.tts)
         sentences: asyncio.Queue[_TTSRequest | None] = asyncio.Queue(maxsize=8)
         content_queued = asyncio.Event()
         tts_task = asyncio.create_task(

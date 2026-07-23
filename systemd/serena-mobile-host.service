@@ -15,6 +15,12 @@ Environment=SERENA_CALL_POCKET_VOICE=alba
 Environment=HF_HOME=%h/.cache/serena/pocket-tts
 Environment=SERENA_CALL_BACKCHANNEL_DELAY_MS=0
 Environment=SERENA_CALL_WHISPER_MODEL=%h/Documents/Projects/serena/voice/models/faster-whisper-small.en
+Environment=SERENA_DESK_EOU_PARTIAL_TRIGGER_MS=240
+Environment=SERENA_DESK_EOU_MIN_MS=480
+Environment=SERENA_DESK_EOU_BASE_MS=800
+Environment=SERENA_DESK_EOU_MAX_MS=2400
+Environment=SERENA_CALL_FIRST_CLAUSE_CHARS=12
+Environment=SERENA_CALL_FIRST_CLAUSE_HARD_CHARS=56
 ExecStart=%h/Documents/Projects/serena/.venv/bin/python -u -m core.mobile_host --host 127.0.0.1 --port 8767
 Restart=on-failure
 RestartSec=3

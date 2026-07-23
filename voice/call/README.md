@@ -12,8 +12,11 @@ bringing down the web server.
 
 The server also exposes authenticated `/ws/desk`. It shares the already-warmed
 STT, brain, and TTS workers with the call runtime while keeping a separate
-Silero endpoint pool tuned to 650 ms trailing silence by default. The local
-desk client and its privacy boundary are documented in `voice/desk/README.md`.
+adaptive endpoint pool. A candidate pause starts speculative transcription at
+240 ms. Complete thoughts can commit after 480 ms, unknown endings after
+800 ms, and clearly incomplete thoughts keep listening for up to 2.4 seconds.
+The local desk client and its privacy boundary are documented in
+`voice/desk/README.md`.
 
 `GET /desk/greeting` returns one short, varied, already-synthesized PCM16
 greeting from a bounded local pool. The pool refills through the same resident
@@ -94,9 +97,14 @@ can be canceled before they reach inference. Model readiness has a bounded
 timeout, so a driver or model-load hang becomes an explicit `call.ready` error.
 
 The faster-whisper process transcribes English with beam size 1,
-`condition_on_previous_text=False`, and `vad_filter=False`. It only selects
-CUDA when CTranslate2 reports an available CUDA device and supported compute
-type. Otherwise it runs CPU int8. There is no cloud STT.
+`condition_on_previous_text=False`, and `vad_filter=False`. During a candidate
+pause, the desk runtime starts a speculative decode of the utterance collected
+so far. A fresh partial is reused as the final transcript, while speech that
+resumes invalidates it and causes the next pause to refresh the decode. The
+turn boundary waits for an in-flight partial instead of falling through the
+base silence threshold. It only selects CUDA when CTranslate2 reports an
+available CUDA device and supported compute type. Otherwise it runs CPU int8.
+There is no cloud STT.
 
 The streaming brain client sends this NDJSON shape to `brain.sock`:
 
@@ -121,11 +129,12 @@ Canceling it closes the connection, interrupts its daemon SDK turn, and
 releases the shared turn lock. The deterministic stub is for tests and the
 benchmark only.
 
-Brain deltas feed an incremental sentence splitter. Kokoro synthesizes one
-sentence at a time and returns small PCM chunks immediately after that
-sentence is ready. The async backend boundary supports a future true-stream
-Orpheus or CosyVoice adapter, but neither is claimed or installed here. The
-pipeline never uses edge-tts, ElevenLabs, network TTS, or persisted raw audio.
+Brain deltas feed an incremental sentence splitter. The first natural clause
+can enter TTS after 12 characters, with a 56-character hard ceiling, instead
+of waiting for a full long opening sentence. Kokoro synthesizes one segment at
+a time and returns small PCM chunks immediately after that segment is ready.
+The pipeline never uses edge-tts, ElevenLabs, network TTS, or persisted raw
+audio.
 
 ### Laptop voice selection
 

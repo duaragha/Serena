@@ -90,11 +90,18 @@ class ProcessEndpointDetector:
         self.worker = worker
         self._generation = 0
         self._generation_lock = threading.Lock()
+        # Per-frame mirror of the child detector's state, refreshed by every
+        # process_pcm call so the parent can run adaptive endpointing without
+        # extra round trips. Consumers read these via getattr with defaults.
+        self.speech_active = False
+        self.trailing_ms = 0
 
     def warm(self) -> None:
         self.worker.warm_sync()
 
     def reset(self) -> None:
+        self.speech_active = False
+        self.trailing_ms = 0
         self._request({"op": "reset"})
 
     def process_pcm(self, pcm: bytes) -> EndpointResult | None:
@@ -106,10 +113,17 @@ class ProcessEndpointDetector:
                 "pcm_b64": base64.b64encode(bytes(pcm)).decode("ascii"),
             }
         )
+        self.speech_active = bool(response.get("speech_active", False))
+        self.trailing_ms = int(response.get("trailing_ms", 0))
         return self._decode_result(response.get("result"))
 
-    def finish(self, *, force: bool = False) -> EndpointResult | None:
-        response = self._request({"op": "finish", "force": bool(force)})
+    def finish(self, *, force: bool = False, reason: str | None = None) -> EndpointResult | None:
+        payload: dict = {"op": "finish", "force": bool(force)}
+        if reason is not None:
+            payload["reason"] = str(reason)
+        self.speech_active = False
+        self.trailing_ms = 0
+        response = self._request(payload)
         return self._decode_result(response.get("result"))
 
     def close(self) -> None:
@@ -294,8 +308,20 @@ class PooledSileroEndpoint:
     def process_pcm(self, pcm: bytes) -> EndpointResult | None:
         return self._ensure_detector().process_pcm(pcm)
 
-    def finish(self, *, force: bool = False) -> EndpointResult | None:
-        return self._ensure_detector().finish(force=force)
+    def finish(self, *, force: bool = False, reason: str | None = None) -> EndpointResult | None:
+        return self._ensure_detector().finish(force=force, reason=reason)
+
+    @property
+    def speech_active(self) -> bool:
+        with self._lock:
+            detector = self._detector
+        return bool(getattr(detector, "speech_active", False))
+
+    @property
+    def trailing_ms(self) -> int:
+        with self._lock:
+            detector = self._detector
+        return int(getattr(detector, "trailing_ms", 0))
 
     def close(self, *, reusable: bool = False) -> None:
         with self._lock:
@@ -399,17 +425,20 @@ class SileroEndpointDetector:
                 return result
         return None
 
-    def finish(self, *, force: bool = False) -> EndpointResult | None:
+    def finish(self, *, force: bool = False, reason: str | None = None) -> EndpointResult | None:
         """Flush a PTT utterance.
 
         A forced PTT end preserves all received samples even if the VAD model
         never crossed threshold. Normal endpointing still requires speech.
+        An explicit ``reason`` (the parent's adaptive early commit passes
+        "silence") overrides the default "ptt_end" classification; without it
+        behaviour is unchanged.
         """
         residual = bytes(self._pending)
         self._pending.clear()
         if self._speech_started:
             pcm = b"".join(self._utterance) + residual
-            return self._emit(pcm, "ptt_end")
+            return self._emit(pcm, reason if reason else "ptt_end")
         if force:
             pcm = b"".join(self._raw) + residual
             if pcm:

@@ -163,6 +163,7 @@ class _Transport:
         self.sent: list[bytes] = []
         self.playback_acks: list[tuple[int, int]] = []
         self.gaps: list[tuple[int, int]] = []
+        self.cancels = 0
 
     def connect(self) -> None:
         self.connects += 1
@@ -214,7 +215,7 @@ class _Transport:
         self.gaps.append((expected, received))
 
     def cancel(self) -> None:
-        pass
+        self.cancels += 1
 
     def close(self) -> None:
         self.closed += 1
@@ -243,6 +244,7 @@ def _client(
         config=DeskConfig(
             listen_idle_seconds=1,
             listen_max_seconds=2,
+            response_timeout=0.2,
             reconnect_attempts=0,
         ),
         metrics=metrics,
@@ -354,6 +356,30 @@ def test_output_gap_is_reported_and_playback_aborts() -> None:
             first_output_written=False,
         )
     assert transport.gaps == [(0, 2)]
+
+
+def test_late_brain_delta_does_not_downgrade_active_playback_to_thinking() -> None:
+    microphone = _Microphone()
+    transport = _Transport()
+    client, _playback, _overlay, _fetcher, _metrics = _client(
+        [], microphone, lambda: transport
+    )
+
+    outcome = client._handle_event(
+        transport,
+        TransportEvent(
+            "control",
+            {"type": "brain.delta", "generation": 0, "delta": "more words"},
+        ),
+        phase="speaking",
+        expected_output_sequence=3,
+        output_rate=24_000,
+        first_output_written=True,
+    )
+
+    assert outcome["phase"] == "speaking"
+    assert outcome["phase_changed"] is False
+    assert outcome["output_rate"] == 24_000
 
 
 def test_server_code_panel_control_reaches_overlay() -> None:
@@ -627,3 +653,92 @@ def test_frozen_manifest_rejects_changed_model_version_or_microphone(
             sounddevice_module=ChangedMicrophone,
             package_version="0.6.0",
         )
+
+
+class _BargeTransport(_Transport):
+    """Scripts a turn that reaches 'speaking' and stays there (no audio.end),
+    then loads loud mic frames so the barge-in path is the only exit."""
+
+    LOUD_FRAME = (8_000).to_bytes(2, "little", signed=True) * 1_280
+
+    def send_mic_frame(self, pcm: bytes) -> None:
+        self.sent.append(pcm)
+        if len(self.sent) == 2:
+            self.events.put(
+                TransportEvent(
+                    "control", {"type": "endpoint.detected", "generation": 1}
+                )
+            )
+            self.events.put(
+                TransportEvent(
+                    "control",
+                    {"type": "audio.start", "generation": 1, "sample_rate": 24_000},
+                )
+            )
+            for sequence in range(12):
+                self.events.put(
+                    TransportEvent(
+                        "audio",
+                        AudioFrame(
+                            AudioHeader(
+                                AudioKind.TTS_PCM16,
+                                0,
+                                sequence,
+                                24_000,
+                                sequence + 1,
+                            ),
+                            b"\x02\x00" * 480,
+                        ),
+                    )
+                )
+            # No audio.end: Serena keeps "speaking" until interrupted.
+            assert self.microphone is not None
+            for _ in range(6):
+                self.microphone.frames.put(self.LOUD_FRAME)
+
+
+def test_sustained_speech_while_speaking_barges_in(monkeypatch) -> None:
+    monkeypatch.delenv("SERENA_DESK_BARGE_IN", raising=False)
+    microphone = _Microphone()
+    transport = _BargeTransport(microphone)
+    client, playback, overlay, _fetcher, metrics = _client(
+        [], microphone, lambda: transport
+    )
+
+    client._run_conversation(transport, threading.Event(), max_completed_turns=1)
+
+    # Her voice was cut and the turn was cancelled server-side.
+    assert playback.finished >= 1
+    assert transport.cancels >= 1
+    # A fresh listening generation opened after the barge.
+    assert transport.generation >= 2
+    # The barged speech itself was forwarded, not lost: beyond the 2 scripted
+    # listening frames, the packed trigger frames went out on the wire.
+    assert len(transport.sent) >= 4
+    assert all(len(frame) == MIC_FRAME_BYTES for frame in transport.sent)
+    # The loop services one microphone frame between queued playback frames,
+    # so interruption is not starved behind buffered TTS.
+    assert len(playback.writes) < 12
+    # The overlay came back to listening after speaking.
+    assert "speaking" in overlay.states
+    assert overlay.states[-1] == "listening"
+    assert any(event == "desk.barge_in" for event, _ in metrics.rows)
+
+
+def test_soft_noise_while_speaking_does_not_barge(monkeypatch) -> None:
+    monkeypatch.delenv("SERENA_DESK_BARGE_IN", raising=False)
+
+    class _SoftNoiseTransport(_BargeTransport):
+        LOUD_FRAME = (20).to_bytes(2, "little", signed=True) * 1_280
+
+    microphone = _Microphone()
+    transport = _SoftNoiseTransport(microphone)
+    client, playback, _overlay, _fetcher, metrics = _client(
+        [], microphone, lambda: transport
+    )
+
+    client._run_conversation(transport, threading.Event(), max_completed_turns=1)
+
+    assert not any(event == "desk.barge_in" for event, _ in metrics.rows)
+    # Only the 2 scripted listening frames went out; quiet noise stayed local.
+    assert len(transport.sent) == 2

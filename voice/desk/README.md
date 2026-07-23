@@ -46,7 +46,8 @@ local mic, 80 ms
   -> hot varied greeting, local playback
   -> 80 ms to exact 200 ms PCM16 frame packer
   -> authenticated /ws/desk
-  -> Silero endpoint, faster-whisper, resident brain, local TTS
+  -> adaptive Silero endpoint plus speculative faster-whisper
+  -> resident brain, early first-clause local TTS
   -> PCM16 playback with real per-chunk dot amplitude
 
 remote host unavailable after bounded reconnects
@@ -65,6 +66,13 @@ ws://127.0.0.1:8765
 States are `idle`, `listening`, `thinking`, and `speaking`. Speaking amplitude
 is calculated from every PCM chunk actually handed to PortAudio. If samples
 stop for 260 ms, the renderer falls back to a synthetic breathing pulse.
+
+After wake, the microphone remains live during thinking and speaking. The
+desk client checks one microphone frame between queued response events, so
+buffered TTS cannot starve interruption detection. Sustained speech interrupts
+after 160 ms while thinking or 320 ms while speaking. Playback-aware energy
+gating rejects short noise and likely speaker bleed. Set
+`SERENA_DESK_BARGE_IN=0` to restore the old half-duplex behavior.
 
 ## Install
 

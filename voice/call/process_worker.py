@@ -661,6 +661,7 @@ def _encode_endpoint_result(result: Any) -> dict[str, Any] | None:
 
 def _serve_vad(config: dict[str, Any]) -> None:
     from .endpoint import LocalSileroModel, SileroEndpointDetector
+    from .protocol import MIC_SAMPLE_RATE
 
     detector = SileroEndpointDetector(
         LocalSileroModel(),
@@ -681,17 +682,29 @@ def _serve_vad(config: dict[str, Any]) -> None:
         try:
             request = json.loads(line)
             operation = request.get("op")
+            response: dict[str, Any] = {"ok": True}
             if operation == "process":
                 pcm = base64.b64decode(request["pcm_b64"], validate=True)
                 result = detector.process_pcm(pcm)
+                # Per-frame endpoint state lets the parent run adaptive
+                # end-of-utterance commits without extra round trips.
+                response["speech_active"] = detector.speech_started
+                response["trailing_ms"] = int(
+                    detector.trailing_silence_samples * 1000 // MIC_SAMPLE_RATE
+                )
             elif operation == "finish":
-                result = detector.finish(force=bool(request.get("force")))
+                reason = request.get("reason")
+                result = detector.finish(
+                    force=bool(request.get("force")),
+                    reason=str(reason) if reason else None,
+                )
             elif operation == "reset":
                 detector.reset()
                 result = None
             else:
                 raise ValueError("unknown VAD operation")
-            _send({"ok": True, "result": _encode_endpoint_result(result)})
+            response["result"] = _encode_endpoint_result(result)
+            _send(response)
         except Exception as exc:
             _send({"ok": False, "error": str(exc)})
 
