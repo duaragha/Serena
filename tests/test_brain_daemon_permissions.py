@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import tomllib
 from mcp import types
 
-from core import brain_daemon, brain_tools
+from core import brain_daemon, brain_laptop_tools, brain_tools
 
 
 class CapturedOptions:
@@ -147,6 +147,32 @@ def test_brain_options_are_unattended_and_read_only(monkeypatch, tmp_path: Path)
     }.isdisjoint(options.allowed_tools)
 
 
+def test_laptop_tools_are_separate_and_capability_brokered(
+    monkeypatch, tmp_path: Path
+):
+    prompt_path = tmp_path / "brain-system-prompt.md"
+    monkeypatch.setattr(brain_daemon, "_persona_context", lambda: "persona")
+    monkeypatch.setattr(brain_daemon, "BRAIN_SYSTEM_PROMPT_FILE", prompt_path)
+    read_server = brain_tools.brain_tools_server()
+    laptop_server = brain_laptop_tools.laptop_tools_server()
+
+    options = brain_daemon._build_agent_options(
+        CapturedOptions,
+        read_server,
+        brain_tools.BRAIN_TOOL_NAMES,
+        laptop_tools=laptop_server,
+        laptop_tool_names=brain_laptop_tools.LAPTOP_TOOL_NAMES,
+    )
+
+    assert set(options.mcp_servers) == {"serena-ro", "serena-laptop"}
+    assert options.permission_mode == "dontAsk"
+    assert options.allowed_tools == [
+        *brain_tools.BRAIN_TOOL_NAMES,
+        *brain_laptop_tools.LAPTOP_TOOL_NAMES,
+    ]
+    assert "mcp__serena-laptop__laptop_action" in options.allowed_tools
+
+
 def test_sdk_command_keeps_private_prompt_out_of_process_arguments(
     monkeypatch, tmp_path: Path
 ):
@@ -201,6 +227,15 @@ def test_surface_roles_are_scoped_to_their_own_turns(monkeypatch):
     assert '<voice-turn-context>{"call_id":"call-7","turn_id":"turn-3"}' in voice
     assert "FRONTDOOR_ONLY_RULES" in frontdoor
     assert "STRICT front-door JSON" in frontdoor
+
+
+def test_tool_use_assistant_blocks_keep_a_spoken_word_boundary():
+    assert brain_daemon._join_assistant_chunks(
+        ["i'll check that now.", "you've got Chats open."]
+    ) == "i'll check that now. you've got Chats open."
+    assert brain_daemon._join_assistant_chunks(["already ", "spaced"]) == (
+        "already spaced"
+    )
 
 
 def test_state_block_keeps_full_ledger_grounding_after_digest_is_unchanged(

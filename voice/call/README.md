@@ -127,6 +127,25 @@ sentence is ready. The async backend boundary supports a future true-stream
 Orpheus or CosyVoice adapter, but neither is claimed or installed here. The
 pipeline never uses edge-tts, ElevenLabs, network TTS, or persisted raw audio.
 
+### Laptop voice selection
+
+`voice.call.voice_quality` measures the installed local voices on the serving
+machine, exports one WAV per candidate, and applies hard first-PCM, realtime
+factor, and clipping gates. Naturalness remains an explicit curated/listening
+choice instead of a fake waveform score:
+
+```bash
+HF_HOME=~/.cache/serena/pocket-tts \
+python -m voice.call.voice_quality \
+  --pocket-python "$PWD/.venv-pocket/bin/python"
+```
+
+The report is written privately to
+`~/.local/state/serena/voice-quality.json`; samples live beside it in
+`voice-quality-samples/`. Pocket Alba is the laptop default because its casual
+profile clears the realtime gate. Kokoro remains a local fallback, not the
+interactive default.
+
 ## Install and models
 
 Install the scoped requirements with the exact Python interpreter that runs

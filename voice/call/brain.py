@@ -332,6 +332,8 @@ class BrainHttpFallback:
                     "session_turns",
                     "first_delta",
                     "session_id",
+                    "route_class",
+                    "route_reason",
                     "billing_mode",
                     "daemon_pid",
                     "daemon_started",

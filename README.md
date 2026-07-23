@@ -10,6 +10,7 @@ The product has one identity at the surface. Claude and Codex are private execut
 - A Linux desktop app with a front door, linked Claude and Codex panes, memory, knowledge, and terminal views
 - A private coding supervisor that can start subscription-backed work and stream visible progress
 - A local voice pipeline with wake detection, VAD, faster-whisper STT, Pocket or Kokoro TTS, and call telemetry
+- Capability-based resident model routing plus an audited, reversible local laptop-control broker for desk voice turns
 - A phone web client served over the tailnet
 - A desktop dot-field display for idle, listening, thinking, speaking, and working states
 - A canonical runtime manifest, private backup and restore tooling, service installer, and clean reconstruction verifier

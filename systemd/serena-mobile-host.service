@@ -11,7 +11,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=SERENA_CALL_TRUST_IDMAPPED_SYSTEM=1
 Environment=SERENA_CALL_TTS_BACKEND=pocket
 Environment=SERENA_CALL_POCKET_PYTHON=%h/Documents/Projects/serena/.venv-pocket/bin/python
-Environment=SERENA_CALL_POCKET_VOICE=anna
+Environment=SERENA_CALL_POCKET_VOICE=alba
 Environment=HF_HOME=%h/.cache/serena/pocket-tts
 Environment=SERENA_CALL_BACKCHANNEL_DELAY_MS=0
 Environment=SERENA_CALL_WHISPER_MODEL=%h/Documents/Projects/serena/voice/models/faster-whisper-small.en

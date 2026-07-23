@@ -139,3 +139,26 @@ def test_false_model_candidate_stays_asleep_without_exact_phrase() -> None:
 def test_wake_phrase_normalization_is_exact_after_punctuation() -> None:
     assert normalize_wake_phrase("  Hey, SERENA! ") == "hey serena"
     assert normalize_wake_phrase("hey serena open coding") != "hey serena"
+
+
+def test_structured_wake_events_never_persist_the_transcript() -> None:
+    microphone = _Microphone([b"\0" * 2_560])
+    events = []
+    listener = WakeOnlyListener(
+        _Scorer([0.9]),
+        WakeGate(0.5, patience_frames=1, cooldown_seconds=0),
+        microphone,
+        lambda: None,
+        phrase_verifier=_Verifier(
+            [PhraseVerification(True, "Hey Serena, private trailing words")]
+        ),
+        phrase_post_roll_frames=0,
+        event_sink=events.append,
+    )
+    assert listener.run() is True
+    candidate = next(
+        event for event in events if event["event"] == "wake.phrase_candidate"
+    )
+    assert candidate["accepted"] is True
+    assert candidate["recognized_words"] == 5
+    assert "transcript" not in candidate

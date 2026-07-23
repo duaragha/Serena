@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 import queue
 import re
 import signal
 import subprocess
 import threading
+import time
 import unicodedata
+import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -34,11 +39,47 @@ DEFAULT_PHRASE_MODEL = (
 TARGET_WAKE_PHRASE = "hey serena"
 PHRASE_WINDOW_FRAMES = 20
 PHRASE_POST_ROLL_FRAMES = 2
+WAKE_EVENT_PREFIX = "SERENA_WAKE_EVENT "
+
+
+def journal_wake_event(payload: dict[str, object]) -> None:
+    """Emit one transcript-free structured event to the user journal."""
+
+    event = {
+        **payload,
+        "wall_ns": time.time_ns(),
+        "monotonic_ns": time.monotonic_ns(),
+    }
+    print(
+        WAKE_EVENT_PREFIX
+        + json.dumps(event, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
 
 
 def normalize_wake_phrase(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(text)).casefold()
     return " ".join(re.sub(r"[^a-z0-9]+", " ", normalized).split())
+
+
+def phrase_model_sha256(path: str | Path) -> str:
+    """Hash a local verifier directory as one stable tree identity."""
+
+    root = Path(path).expanduser().resolve()
+    digest = hashlib.sha256()
+    if not root.is_dir():
+        raise FileNotFoundError(f"wake phrase model is missing at {root}")
+    files = sorted(item for item in root.rglob("*") if item.is_file())
+    if not files:
+        raise ValueError(f"wake phrase model has no files at {root}")
+    for item in files:
+        digest.update(str(item.relative_to(root)).encode("utf-8"))
+        digest.update(b"\0")
+        with item.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +172,9 @@ class WakeOnlyListener:
         phrase_verifier: WakePhraseVerifier,
         phrase_window_frames: int = PHRASE_WINDOW_FRAMES,
         phrase_post_roll_frames: int = PHRASE_POST_ROLL_FRAMES,
+        event_sink: Callable[[dict[str, object]], None] = journal_wake_event,
+        event_context: dict[str, object] | None = None,
+        heartbeat_seconds: float | None = None,
     ) -> None:
         if phrase_window_frames < 1:
             raise ValueError("phrase_window_frames must be at least 1")
@@ -143,16 +187,39 @@ class WakeOnlyListener:
         self.phrase_verifier = phrase_verifier
         self.phrase_window_frames = phrase_window_frames
         self.phrase_post_roll_frames = phrase_post_roll_frames
+        self.event_sink = event_sink
+        self.event_context = dict(event_context or {})
+        self.heartbeat_seconds = max(
+            5.0,
+            float(
+                heartbeat_seconds
+                if heartbeat_seconds is not None
+                else os.environ.get("SERENA_WAKE_HEARTBEAT_SECONDS", "60")
+            ),
+        )
+
+    def _event(self, name: str, **values: object) -> None:
+        self.event_sink({"event": name, **self.event_context, **values})
 
     def run(self, stop: threading.Event | None = None) -> bool:
         stop = stop or threading.Event()
         recent_frames: deque[bytes] = deque(maxlen=self.phrase_window_frames)
+        listener_id = uuid.uuid4().hex
+        self.event_context.setdefault("listener_id", listener_id)
+        last_heartbeat = time.monotonic()
         self.microphone.start()
+        self._event("wake.listener_started")
         try:
             while not stop.is_set():
                 try:
                     pcm = self.microphone.frames.get(timeout=0.25)
                 except queue.Empty:
+                    pcm = None
+                now = time.monotonic()
+                if now - last_heartbeat >= self.heartbeat_seconds:
+                    self._event("wake.heartbeat")
+                    last_heartbeat = now
+                if pcm is None:
                     continue
                 if len(pcm) != WAKE_FRAME_BYTES:
                     continue
@@ -171,11 +238,12 @@ class WakeOnlyListener:
                     recent_frames.append(trailing)
                     candidate.append(trailing)
                 verification = self.phrase_verifier.verify(b"".join(candidate))
-                print(
-                    "[wake-listener] phrase candidate "
-                    f"score={score:.4f} accepted={verification.accepted} "
-                    f"transcript={verification.transcript!r}",
-                    flush=True,
+                normalized = normalize_wake_phrase(verification.transcript)
+                self._event(
+                    "wake.phrase_candidate",
+                    score=round(score, 6),
+                    accepted=verification.accepted,
+                    recognized_words=len(normalized.split()),
                 )
                 if not verification.accepted:
                     self.scorer.reset()
@@ -183,11 +251,13 @@ class WakeOnlyListener:
                     recent_frames.clear()
                     continue
                 self.microphone.close()
+                self._event("wake.accepted", score=round(score, 6))
                 self.launcher()
                 return True
             return False
         finally:
             self.microphone.close()
+            self._event("wake.listener_stopped")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -222,6 +292,10 @@ def main(argv: list[str] | None = None) -> int:
             args.phrase_model,
             target_phrase=args.phrase,
         ),
+        event_context={
+            "phrase": normalize_wake_phrase(args.phrase),
+            "phrase_model_sha256": phrase_model_sha256(args.phrase_model),
+        },
     )
     listener.run(stop)
     return 0

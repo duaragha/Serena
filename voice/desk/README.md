@@ -28,6 +28,11 @@ local TTS runtime as `/ws/call` after a valid `hey serena` trigger.
   verifier hashes, openWakeWord version, gate settings, audio contract, and
   exact microphone identity are verified before the microphone opens.
 
+The production wake-only listener adds a second local faster-whisper phrase
+check after the frozen openWakeWord gate. It emits structured journal events
+containing timestamps, score, accepted boolean, word count, and verifier hash.
+It does not persist audio or transcripts.
+
 The wake-to-first-write metric is a diagnostic PortAudio buffer-write time. It
 is explicitly marked `acoustic_acceptance_claim: false`. The 1.5 second gate
 still needs an audible or loopback measurement on the actual desk hardware.
@@ -141,3 +146,30 @@ Timing and state telemetry lands in
 transcripts. The frozen model can run the desk loop the same day. A week-long
 false-wake verdict comes later from the separate passive observation collector,
 not from a short desk-loop smoke test.
+
+Mark intentional two-stage attempts immediately before saying the wake phrase,
+then generate the structured livability report:
+
+```bash
+.venv/bin/python -m voice.desk.wake_acceptance attempt
+.venv/bin/python -m voice.desk.wake_acceptance report
+```
+
+The report at
+`~/.local/state/serena/wake-two-stage-report.json` requires seven observed
+background hours across seven active days, twenty marked attempts, no more
+than five percent misses, no unintended final accepts, and one unchanged local
+phrase-verifier identity. Code or a short smoke run cannot set
+`acceptance_claim` to true.
+
+After a physical session with at least three turns and one deliberate
+interruption, close it normally and run:
+
+```bash
+.venv/bin/python -m voice.desk.acceptance --heard-clean
+```
+
+That report independently requires complete endpoint, STT, brain, first-write,
+and audio-end evidence for every accepted turn, a first-write p90 at or below
+1.5 seconds, no runtime failure events, a physical barge-in, a clean hangup,
+human heard-clean confirmation, and the accepted two-stage wake report.

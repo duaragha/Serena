@@ -79,6 +79,9 @@ STREAM_TRANSPORT = (
 )
 MODEL = os.environ.get("SERENA_BRAIN_MODEL", "sonnet")
 VOICE_MODEL = os.environ.get("SERENA_BRAIN_VOICE_MODEL", "").strip() or MODEL
+REFLEX_MODEL = (
+    os.environ.get("SERENA_BRAIN_REFLEX_MODEL", "").strip() or VOICE_MODEL
+)
 BRAIN_TOKEN = secrets.token_urlsafe(32)
 
 _started = time.time()
@@ -89,6 +92,11 @@ _notional_sdk_cost_usd = 0.0
 _turn_lock: asyncio.Lock | None = None
 _last_state_fingerprint = ""
 _active_model = MODEL
+_last_route = {
+    "class": "conversation",
+    "model": MODEL,
+    "reason": "resident session startup",
+}
 _instance_lock_handle: BinaryIO | None = None
 
 _BRAIN_BUILTIN_TOOLS: list[str] = []
@@ -205,7 +213,15 @@ def _persona_context() -> str:
         "trust it over anything remembered from earlier in this session. "
         "For repo history or status, use mcp__serena-ro__git_latest. For GitHub, "
         "chat recall, and ledger reads, use the matching mcp__serena-ro__ tool. "
-        "Never substitute Bash or a state-changing MCP tool for those reads."
+        "Never substitute Bash or a state-changing MCP tool for those reads. "
+        "On a local desk voice turn, mcp__serena-laptop__laptop_context can read "
+        "the active window and audio state. Reversible laptop controls may use "
+        "mcp__serena-laptop__laptop_action, whose capability broker independently "
+        "checks the original words. Use read-only context silently and answer with "
+        "the result instead of narrating that you need to check first. Never claim "
+        "a denied action happened. Typing, "
+        "clicking, messaging, deletion, purchases, deployment, and account changes "
+        "are intentionally unavailable through that tool."
     )
     return "\n\n".join(p for p in parts if p and p.strip())
 
@@ -287,6 +303,22 @@ def _model_for_protocol(protocol: str) -> str:
     return VOICE_MODEL if protocol == "voice" else MODEL
 
 
+def _join_assistant_chunks(chunks: list[str]) -> str:
+    """Keep SDK text blocks readable across tool-use message boundaries."""
+
+    merged = ""
+    for chunk in chunks:
+        if (
+            merged
+            and chunk
+            and not merged[-1].isspace()
+            and not chunk[0].isspace()
+        ):
+            merged += " "
+        merged += chunk
+    return merged.strip()
+
+
 async def _select_model(client, protocol: str) -> str:
     """Route a turn without splitting Serena across separate SDK sessions."""
     global _active_model
@@ -297,7 +329,38 @@ async def _select_model(client, protocol: str) -> str:
     return desired
 
 
+async def _select_route(client, payload: dict):
+    """Choose a capability class while retaining the one resident session."""
+
+    global _active_model, _last_route
+    from core.brain_router import route_turn
+
+    decision = route_turn(
+        payload,
+        conversation_model=MODEL,
+        voice_model=VOICE_MODEL,
+        reflex_model=REFLEX_MODEL,
+    )
+    if decision.model != _active_model:
+        await client.set_model(decision.model)
+        _active_model = decision.model
+    _last_route = decision.as_dict()
+    return decision
+
+
 async def _run_turn(client, payload: dict, on_delta=None) -> dict:
+    """Bind the exact originating turn for brokered tools, then run it."""
+
+    from core.brain_laptop_tools import reset_current_turn, set_current_turn
+
+    token = set_current_turn(payload)
+    try:
+        return await _run_turn_scoped(client, payload, on_delta=on_delta)
+    finally:
+        reset_current_turn(token)
+
+
+async def _run_turn_scoped(client, payload: dict, on_delta=None) -> dict:
     """One serialized turn through the resident session. When on_delta is
     given, token deltas stream to it as they arrive (voice/TTS path)."""
     global _turns
@@ -306,7 +369,8 @@ async def _run_turn(client, payload: dict, on_delta=None) -> dict:
     protocol = payload.get("protocol") or "plain"
 
     t0 = time.time()
-    selected_model = await _select_model(client, protocol)
+    route = await _select_route(client, payload)
+    selected_model = route.model
     await asyncio.wait_for(
         client.query(_compose_message(payload)),
         timeout=SDK_QUERY_START_TIMEOUT_SECONDS,
@@ -345,13 +409,15 @@ async def _run_turn(client, payload: dict, on_delta=None) -> dict:
                 global _notional_sdk_cost_usd
                 _notional_sdk_cost_usd += float(cost)
     _turns += 1
-    raw = "".join(chunks).strip()
+    raw = _join_assistant_chunks(chunks)
 
     out = {
         "ok": True,
         "elapsed": round(time.time() - t0, 2),
         "turns": _turns,
         "model": selected_model,
+        "route_class": route.route_class,
+        "route_reason": route.reason,
         "billing_mode": "subscription_oauth_guarded",
         "daemon_pid": os.getpid(),
         "daemon_started": _started,
@@ -574,6 +640,8 @@ async def _handle_stream_connection(
                             "session_id": out.get("_session_id") or out.get("session_id"),
                             "turn_id": str(_req.get("turn_id") or "") or None,
                             "model": out.get("model"),
+                            "route_class": out.get("route_class"),
+                            "route_reason": out.get("route_reason"),
                             "billing_mode": out.get("billing_mode"),
                             "daemon_pid": out.get("daemon_pid"),
                             "daemon_started": out.get("daemon_started"),
@@ -806,7 +874,9 @@ async def _handle_http_connection(
                 "boot_time": _boot_time,
                 "model": MODEL,
                 "voice_model": VOICE_MODEL,
+                "reflex_model": REFLEX_MODEL,
                 "active_model": _active_model,
+                "routing": dict(_last_route),
                 "uptime": round(time.time() - _started),
                 "turns": _turns,
                 "billing": {
@@ -981,10 +1051,15 @@ def _build_agent_options(
     brain_tools,
     brain_tool_names: list[str],
     *,
+    laptop_tools=None,
+    laptop_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
-    allowed_tools = list(brain_tool_names)
+    allowed_tools = [*brain_tool_names, *(laptop_tool_names or [])]
+    mcp_servers = {"serena-ro": brain_tools}
+    if laptop_tools is not None:
+        mcp_servers["serena-laptop"] = laptop_tools
     prompt_path = _write_private_text(
         BRAIN_SYSTEM_PROMPT_FILE,
         _persona_context(),
@@ -994,7 +1069,7 @@ def _build_agent_options(
         model=MODEL,
         system_prompt={"type": "preset", "preset": "claude_code"},
         extra_args={"append-system-prompt-file": str(prompt_path)},
-        mcp_servers={"serena-ro": brain_tools},
+        mcp_servers=mcp_servers,
         strict_mcp_config=True,
         # Keep the resident surface read-only by construction. The allow list
         # executes unattended; everything else is unavailable or denied rather
@@ -1078,6 +1153,8 @@ class ResidentClientManager:
         brain_tools_factory,
         brain_tool_names: list[str],
         *,
+        laptop_tools_factory=None,
+        laptop_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
     ) -> None:
@@ -1085,6 +1162,8 @@ class ResidentClientManager:
         self.client_type = client_type
         self.brain_tools_factory = brain_tools_factory
         self.brain_tool_names = brain_tool_names
+        self.laptop_tools_factory = laptop_tools_factory
+        self.laptop_tool_names = list(laptop_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.policy = policy_from_environment()
@@ -1132,13 +1211,19 @@ class ResidentClientManager:
         await self._start_epoch("boot")
 
     async def _start_epoch(self, reason: str) -> None:
-        global _active_model
+        global _active_model, _last_route
         requested_session_id = str(uuid.uuid4())
         process_token = requested_session_id
         options = _build_agent_options(
             self.options_type,
             self.brain_tools_factory(),
             self.brain_tool_names,
+            laptop_tools=(
+                self.laptop_tools_factory()
+                if self.laptop_tools_factory is not None
+                else None
+            ),
+            laptop_tool_names=self.laptop_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -1148,6 +1233,11 @@ class ResidentClientManager:
             await asyncio.wait_for(client.connect(), timeout=SDK_DISCONNECT_TIMEOUT_SECONDS)
             print(f"[brain] epoch connected session={requested_session_id}", flush=True)
             _active_model = MODEL
+            _last_route = {
+                "class": "conversation",
+                "model": MODEL,
+                "reason": f"resident session {reason}",
+            }
             state = _state_block(force=True)
             handoff = self.journal.render_handoff()
             warm_parts = []
@@ -1503,6 +1593,7 @@ async def _run_daemon() -> None:
 
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
+    from core.brain_laptop_tools import LAPTOP_TOOL_NAMES, laptop_tools_server
     from core.brain_tools import BRAIN_TOOL_NAMES, brain_tools_server
 
     manager = ResidentClientManager(
@@ -1510,6 +1601,8 @@ async def _run_daemon() -> None:
         ClaudeSDKClient,
         brain_tools_server,
         BRAIN_TOOL_NAMES,
+        laptop_tools_factory=laptop_tools_server,
+        laptop_tool_names=LAPTOP_TOOL_NAMES,
     )
     print(f"[brain] connecting SDK client (model={MODEL})...", flush=True)
     try:
