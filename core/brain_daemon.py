@@ -220,6 +220,18 @@ def _persona_context() -> str:
         "checks the original words. Use read-only context silently and answer with "
         "the result instead of narrating that you need to check first. Never claim "
         "a denied action happened. Typing, "
+        "When he asks you on a spoken turn to build, fix, change, investigate, "
+        "or continue something in his code, that is yours to start: call "
+        "mcp__serena-work__start_coding_work and say plainly that you have "
+        "started it. Judge it like a person would, not by keywords. If it is "
+        "clear, start it, do not ask permission he already gave. If you "
+        "genuinely do not know which project or which of two things he means, "
+        "read the ledger or your memory first, and only then ask him one short "
+        "question instead of guessing. The worker is a separate process that "
+        "cannot hear you, so put everything it needs in the request, including "
+        "the project. A broker re-reads his real words, so if the tool refuses, "
+        "tell him it refused and why; never say work started when it did not. "
+        "Typing, "
         "clicking, messaging, deletion, purchases, deployment, and account changes "
         "are intentionally unavailable through that tool."
     )
@@ -1053,13 +1065,21 @@ def _build_agent_options(
     *,
     laptop_tools=None,
     laptop_tool_names: list[str] | None = None,
+    work_tools=None,
+    work_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
-    allowed_tools = [*brain_tool_names, *(laptop_tool_names or [])]
+    allowed_tools = [
+        *brain_tool_names,
+        *(laptop_tool_names or []),
+        *(work_tool_names or []),
+    ]
     mcp_servers = {"serena-ro": brain_tools}
     if laptop_tools is not None:
         mcp_servers["serena-laptop"] = laptop_tools
+    if work_tools is not None:
+        mcp_servers["serena-work"] = work_tools
     prompt_path = _write_private_text(
         BRAIN_SYSTEM_PROMPT_FILE,
         _persona_context(),
@@ -1155,6 +1175,8 @@ class ResidentClientManager:
         *,
         laptop_tools_factory=None,
         laptop_tool_names: list[str] | None = None,
+        work_tools_factory=None,
+        work_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
     ) -> None:
@@ -1164,6 +1186,8 @@ class ResidentClientManager:
         self.brain_tool_names = brain_tool_names
         self.laptop_tools_factory = laptop_tools_factory
         self.laptop_tool_names = list(laptop_tool_names or [])
+        self.work_tools_factory = work_tools_factory
+        self.work_tool_names = list(work_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.policy = policy_from_environment()
@@ -1224,6 +1248,12 @@ class ResidentClientManager:
                 else None
             ),
             laptop_tool_names=self.laptop_tool_names,
+            work_tools=(
+                self.work_tools_factory()
+                if self.work_tools_factory is not None
+                else None
+            ),
+            work_tool_names=self.work_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -1594,6 +1624,7 @@ async def _run_daemon() -> None:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
     from core.brain_laptop_tools import LAPTOP_TOOL_NAMES, laptop_tools_server
+    from core.brain_work_tools import WORK_TOOL_NAMES, work_tools_server
     from core.brain_tools import BRAIN_TOOL_NAMES, brain_tools_server
 
     manager = ResidentClientManager(
@@ -1603,6 +1634,8 @@ async def _run_daemon() -> None:
         BRAIN_TOOL_NAMES,
         laptop_tools_factory=laptop_tools_server,
         laptop_tool_names=LAPTOP_TOOL_NAMES,
+        work_tools_factory=work_tools_server,
+        work_tool_names=WORK_TOOL_NAMES,
     )
     print(f"[brain] connecting SDK client (model={MODEL})...", flush=True)
     try:
