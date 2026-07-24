@@ -50,14 +50,43 @@ _LIVE_RELAY = re.compile(
     r"(?P<request>.+)$",
     re.IGNORECASE,
 )
+# Spoken work language is broader than a bare verb-first imperative. The
+# original pattern only fired when the sentence literally began with one of
+# ~24 verbs, so ordinary asks ("go fix the deep link", "start working on it",
+# "keep going on the voice work") silently never became jobs, they were not
+# refused, they simply never reached the inbox. Lead-ins are stripped and the
+# remainder must still open with a work verb, so questions ("how can we fix"),
+# explanations ("tell me why"), hypotheticals ("what if we built"), and
+# cancellations ("don't update") stay non-executing exactly as before.
 _LIVE_WORK = re.compile(
-    r"^(?:(?:okay|ok)\s*,?\s+)?"
-    r"(?:(?:please\s+)?(?:can\s+you|could\s+you|would\s+you)\s+"
-    r"(?:please\s+)?|please\s+|i\s+(?:want|need)\s+you\s+to\s+|"
-    r"go\s+ahead\s+and\s+)?"
+    r"^(?:(?:okay|ok|alright|right|yeah|yep)\s*,?\s+)?"
+    r"(?:(?:please\s+)?(?:can\s+you|could\s+you|would\s+you)\s+(?:please\s+)?"
+    r"|please\s+"
+    r"|i\s+(?:want|need)\s+you\s+to\s+"
+    r"|(?:i\s+)?(?:would|'d)\s+like\s+you\s+to\s+"
+    r"|go\s+ahead\s+and\s+"          # must precede bare "go"
+    r"|let'?s\s+"
+    r"|go\s+"
+    r")?"
     r"(?P<request>(?:fix|build|implement|change|update|add|remove|replace|refactor|debug|"
     r"investigate|test|verify|review|finish|deploy|ship|wire|hook\s+up|"
-    r"work\s+on|create|write|code|do)\b.*)$",
+    r"work\s+on|create|write|code|do"
+    r"|start|continue|keep\s+going|get\s+started|carry\s+on"
+    r"|look\s+into|dig\s+into|jump\s+into|tackle"
+    r"|sort\s+out|sort|handle|take\s+care\s+of|deal\s+with"
+    r"|clean\s+up|set\s+up|make|patch|repair|migrate|rename|polish"
+    r"|optimi[sz]e|document|connect|move|split|merge|extract"
+    r")\b.*)$",
+    re.IGNORECASE,
+)
+# Passive phrasing that names the target first: "i need the deep link fixed".
+_LIVE_WORK_PASSIVE = re.compile(
+    r"^(?:(?:okay|ok|alright)\s*,?\s+)?"
+    r"i\s+(?:want|need)\s+"
+    r"(?P<request>(?!you\s+to\b).+?\s+"
+    r"(?:fixed|done|built|updated|changed|removed|added|replaced|working|"
+    r"sorted|handled|cleaned\s+up|set\s+up|finished|patched))"
+    r"[.!]*$",
     re.IGNORECASE,
 )
 _CODE_PANEL_TARGET = re.compile(
@@ -135,10 +164,15 @@ def parse_live_work_intent(text: str) -> LiveWorkIntent | None:
         request = relay.group("request").strip(" ,.;:")
         if request and not _DRAFT_CANCELLATION.search(request):
             return LiveWorkIntent(request=request)
-    match = _LIVE_WORK.fullmatch(clean)
-    if _DRAFT_CANCELLATION.search(clean) or match is None:
+    if _DRAFT_CANCELLATION.search(clean):
         return None
-    return LiveWorkIntent(request=match.group("request").strip())
+    match = _LIVE_WORK.fullmatch(clean)
+    if match is not None:
+        return LiveWorkIntent(request=match.group("request").strip())
+    passive = _LIVE_WORK_PASSIVE.fullmatch(clean)
+    if passive is not None:
+        return LiveWorkIntent(request=passive.group("request").strip())
+    return None
 
 
 def parse_code_panel_intent(text: str) -> CodePanelIntent | None:

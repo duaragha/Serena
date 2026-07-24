@@ -76,6 +76,23 @@ def _claude_binary() -> str:
     found = shutil.which("claude")
     if found:
         return found
+    # A systemd --user unit can start at boot before the login session exports
+    # a full PATH, so `which` misses an installed CLI and the supervisor dies
+    # with "not installed" (observed 2026-07-24 09:27). Codex already resolves
+    # by filesystem for the same reason; claude must too, or spoken coding is
+    # dead until something restarts the unit.
+    candidates = [
+        HOME / ".local" / "bin" / "claude",
+        HOME / ".claude" / "local" / "claude",
+        Path("/usr/local/bin/claude"),
+        Path("/usr/bin/claude"),
+    ]
+    candidates.extend(
+        sorted((HOME / ".nvm" / "versions" / "node").glob("*/bin/claude"), reverse=True)
+    )
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
     raise FileNotFoundError("Claude CLI is not installed")
 
 

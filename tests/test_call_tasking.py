@@ -1129,3 +1129,82 @@ def test_task_acceptance_does_not_merge_reused_call_lifecycles(
 
     assert report["acceptance_claim"] is False
     assert report["jobs"] == 0
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Natural spoken imperatives that silently never became jobs before:
+        # they were not refused, they never reached the inbox at all.
+        ("go fix the phev deep link", "fix the phev deep link"),
+        ("let's fix the phev deep link", "fix the phev deep link"),
+        ("start working on the deep link", "start working on the deep link"),
+        ("get started on the konpeki launch", "get started on the konpeki launch"),
+        ("keep going on the voice work", "keep going on the voice work"),
+        ("look into the trash purge bug", "look into the trash purge bug"),
+        ("sort out the deep link", "sort out the deep link"),
+        ("take care of the phev notification", "take care of the phev notification"),
+        ("clean up the voice stack", "clean up the voice stack"),
+        ("tackle the wake word threshold", "tackle the wake word threshold"),
+        (
+            "jump into the locket repo and fix the macros screen",
+            "jump into the locket repo and fix the macros screen",
+        ),
+        ("alright, continue the voice work", "continue the voice work"),
+        # Passive, target-first phrasing.
+        ("i need the trash purge bug fixed", "the trash purge bug fixed"),
+        ("i need the deep link working", "the deep link working"),
+    ],
+)
+def test_live_work_parser_accepts_natural_spoken_imperatives(
+    text: str, expected: str
+) -> None:
+    intent = parse_live_work_intent(text)
+    assert intent is not None
+    assert intent.request == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "what's the status of the phev work",
+        "did you fix the deep link",
+        "why is the wake word so twitchy",
+        "don't fix the deep link",
+        "i need to think about the architecture",
+        "i need you to know the deep link is broken",
+    ],
+)
+def test_widened_parser_still_refuses_questions_and_cancellations(text: str) -> None:
+    assert parse_live_work_intent(text) is None
+
+
+def test_cancellation_guard_outranks_widened_lead_ins() -> None:
+    # "why don't you patch it" contains a cancellation token; the guard wins
+    # on purpose. Never weaken the guard to win a phrasing.
+    assert parse_live_work_intent("why don't you patch the endpoint") is None
+
+
+def test_claude_binary_resolves_without_a_login_path(monkeypatch, tmp_path):
+    """A boot-time systemd --user PATH must not make the CLI 'not installed'."""
+    from core import voice_work_supervisor as vws
+
+    home = tmp_path
+    installed = home / ".local" / "bin" / "claude"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#!/bin/sh\n")
+    installed.chmod(0o755)
+
+    monkeypatch.setattr(vws, "HOME", home)
+    monkeypatch.setattr(vws.shutil, "which", lambda _name: None)
+    assert vws._claude_binary() == str(installed)
+
+
+def test_claude_binary_still_raises_when_genuinely_absent(monkeypatch, tmp_path):
+    from core import voice_work_supervisor as vws
+
+    monkeypatch.setattr(vws, "HOME", tmp_path)
+    monkeypatch.setattr(vws.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(vws.os, "access", lambda *_a, **_k: False)
+    with pytest.raises(FileNotFoundError):
+        vws._claude_binary()
