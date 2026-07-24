@@ -3,11 +3,14 @@ from __future__ import annotations
 import queue
 import threading
 
+import pytest
+
 from voice.call.wakeword import WakeGate
 from voice.desk.wake_listener import (
     PhraseVerification,
     WakeOnlyListener,
     normalize_wake_phrase,
+    wake_phrase_matches,
 )
 
 
@@ -139,6 +142,35 @@ def test_false_model_candidate_stays_asleep_without_exact_phrase() -> None:
 def test_wake_phrase_normalization_is_exact_after_punctuation() -> None:
     assert normalize_wake_phrase("  Hey, SERENA! ") == "hey serena"
     assert normalize_wake_phrase("hey serena open coding") != "hey serena"
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Hey, Serena!",
+        "hey serina",
+        "hay sirena",
+        "hi sarina",
+        "okay, hey Serena, are you awake",
+    ],
+)
+def test_wake_phrase_matcher_accepts_live_asr_variants(transcript: str) -> None:
+    assert wake_phrase_matches(transcript) is True
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "",
+        "Serena",
+        "hey Siri",
+        "hey Sabrina",
+        "hey there",
+        "open the window",
+    ],
+)
+def test_wake_phrase_matcher_rejects_unrelated_speech(transcript: str) -> None:
+    assert wake_phrase_matches(transcript) is False
 
 
 def test_structured_wake_events_never_persist_the_transcript() -> None:

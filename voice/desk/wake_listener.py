@@ -40,6 +40,17 @@ TARGET_WAKE_PHRASE = "hey serena"
 PHRASE_WINDOW_FRAMES = 20
 PHRASE_POST_ROLL_FRAMES = 2
 WAKE_EVENT_PREFIX = "SERENA_WAKE_EVENT "
+WAKE_HELLO_VARIANTS = frozenset({"hey", "hay", "hi"})
+WAKE_NAME_VARIANTS = frozenset(
+    {
+        "serena",
+        "serina",
+        "sirena",
+        "sarena",
+        "sarina",
+        "sereena",
+    }
+)
 
 
 def journal_wake_event(payload: dict[str, object]) -> None:
@@ -60,6 +71,26 @@ def journal_wake_event(payload: dict[str, object]) -> None:
 def normalize_wake_phrase(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(text)).casefold()
     return " ".join(re.sub(r"[^a-z0-9]+", " ", normalized).split())
+
+
+def wake_phrase_matches(text: str, target_phrase: str = TARGET_WAKE_PHRASE) -> bool:
+    """Match the wake phrase without requiring tiny Whisper to spell it exactly."""
+
+    words = normalize_wake_phrase(text).split()
+    target_words = normalize_wake_phrase(target_phrase).split()
+    if not words or not target_words:
+        return False
+
+    target_length = len(target_words)
+    if any(
+        words[index : index + target_length] == target_words
+        for index in range(len(words) - target_length + 1)
+    ):
+        return True
+
+    if target_words != ["hey", "serena"] or len(words) != 2:
+        return False
+    return words[0] in WAKE_HELLO_VARIANTS and words[1] in WAKE_NAME_VARIANTS
 
 
 def phrase_model_sha256(path: str | Path) -> str:
@@ -142,7 +173,7 @@ class FasterWhisperWakePhraseVerifier:
         transcript = " ".join(
             segment.text.strip() for segment in segments if segment.text.strip()
         ).strip()
-        accepted = normalize_wake_phrase(transcript) == self.target_phrase
+        accepted = wake_phrase_matches(transcript, self.target_phrase)
         return PhraseVerification(accepted, transcript)
 
 
