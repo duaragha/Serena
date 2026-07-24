@@ -12,7 +12,7 @@ import asyncio
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from mcp.types import ToolAnnotations
 
-from core.brain_laptop_tools import _CURRENT_TURN
+from core.brain_laptop_tools import current_turn
 from core.work_authority import start_coding_work as _start_coding_work
 
 _BROKERED_WORK = ToolAnnotations(
@@ -43,12 +43,18 @@ async def start_coding_work(args):
     result = await asyncio.to_thread(
         _start_coding_work,
         str(args.get("request") or ""),
-        origin=_CURRENT_TURN.get() or {},
+        origin=current_turn(),
     )
     if result.allowed:
-        text = f"queued (job {result.item_id[:8]}): {result.request}"
+        text = f"QUEUED. job {result.item_id[:8]}. Work has started: {result.request}"
     else:
-        text = f"not queued, {result.reason}"
+        # Unmissable, because the live failure mode was Serena calling this,
+        # getting a refusal, and telling Raghav "started, I'm on it" anyway.
+        text = (
+            f"NOT QUEUED. NOTHING HAS STARTED. Reason: {result.reason}. "
+            "Tell Raghav plainly that you could not start it and why. Do not "
+            "say you are on it, working on it, or that it is running."
+        )
     return {"content": [{"type": "text", "text": text}]}
 
 

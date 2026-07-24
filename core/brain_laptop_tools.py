@@ -15,6 +15,13 @@ _CURRENT_TURN: contextvars.ContextVar[Mapping[str, object] | None] = contextvars
     "serena_current_brain_turn",
     default=None,
 )
+# The SDK dispatches in-process MCP tool handlers from its own receive task,
+# which does not inherit the context the daemon set around the turn, so the
+# contextvar alone always read empty inside a tool and every brokered action
+# was refused as "no originating spoken turn" (observed live 2026-07-24).
+# The daemon serializes turns under one lock, so a module-level mirror is a
+# safe fallback and keeps the broker able to see the real words.
+_ACTIVE_TURN: dict[str, object] | None = None
 
 _LOCAL_READ_ONLY = ToolAnnotations(
     readOnlyHint=True,
@@ -31,11 +38,21 @@ _LOCAL_BROKERED_ACTION = ToolAnnotations(
 
 
 def set_current_turn(payload: Mapping[str, object]):
+    global _ACTIVE_TURN
+    _ACTIVE_TURN = dict(payload)
     return _CURRENT_TURN.set(dict(payload))
 
 
 def reset_current_turn(token) -> None:
+    global _ACTIVE_TURN
+    _ACTIVE_TURN = None
     _CURRENT_TURN.reset(token)
+
+
+def current_turn() -> Mapping[str, object]:
+    """The turn a brokered tool is running inside, contextvar or mirror."""
+
+    return _CURRENT_TURN.get() or _ACTIVE_TURN or {}
 
 
 @tool(
@@ -65,7 +82,7 @@ async def laptop_action(args):
         execute_laptop_action,
         str(args.get("action") or ""),
         str(args.get("target") or ""),
-        origin=_CURRENT_TURN.get() or {},
+        origin=current_turn(),
     )
     return {"content": [{"type": "text", "text": str(result)}]}
 

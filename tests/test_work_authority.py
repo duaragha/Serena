@@ -147,3 +147,29 @@ def test_audit_records_refusals_too(tmp_path) -> None:
 def test_result_shape_is_stable() -> None:
     result = WorkAuthorityResult(True, "queued", "fix it", "abc")
     assert (result.allowed, result.request, result.item_id) == (True, "fix it", "abc")
+
+
+def test_turn_context_survives_the_sdk_dispatch_task() -> None:
+    """The SDK runs tool handlers off its own task, which does not inherit the
+    daemon's context. Every brokered action was silently refused because of it,
+    and Serena then claimed work had started. The mirror must hold."""
+    import asyncio
+
+    from core.brain_laptop_tools import current_turn, reset_current_turn, set_current_turn
+
+    payload = {"text": "fix the phev tracker", "protocol": "voice",
+               "call_id": "desk-9", "turn_id": "desk-9:1"}
+    token = set_current_turn(payload)
+    try:
+        async def foreign_task():
+            # A task created outside the caller's context, like the SDK's.
+            return await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, current_turn), 5
+            )
+
+        seen = asyncio.run(foreign_task())
+        assert seen.get("text") == "fix the phev tracker"
+        assert seen.get("call_id") == "desk-9"
+    finally:
+        reset_current_turn(token)
+    assert current_turn() == {}
