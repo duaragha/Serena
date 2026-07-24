@@ -275,7 +275,7 @@ class PocketTTSBackend(AsyncTTSBackend):
             or sys.executable
         )
         self.worker_module = worker_module
-        self.voice = voice or os.environ.get("SERENA_CALL_POCKET_VOICE", "alba")
+        self.voice = voice or os.environ.get("SERENA_CALL_POCKET_VOICE", "anna")
         self.language = language or os.environ.get(
             "SERENA_CALL_POCKET_LANGUAGE", "english"
         )

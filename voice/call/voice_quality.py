@@ -42,8 +42,8 @@ class VoiceCandidate:
 
 
 CANDIDATES = (
-    VoiceCandidate("pocket-alba", "pocket", "alba", 0, "casual"),
-    VoiceCandidate("pocket-anna", "pocket", "anna", 1, "neutral"),
+    VoiceCandidate("pocket-anna", "pocket", "anna", 0, "neutral"),
+    VoiceCandidate("pocket-alba", "pocket", "alba", 1, "casual"),
     VoiceCandidate("kokoro-af-heart", "kokoro", "af_heart", 2, "neutral"),
 )
 
@@ -83,7 +83,14 @@ def apply_selection(report: dict[str, Any]) -> dict[str, Any]:
     """Re-evaluate a completed hardware report without rerunning the models."""
 
     updated = dict(report)
-    results = list(updated.get("results") or [])
+    current_candidates = {
+        candidate.name: asdict(candidate) for candidate in CANDIDATES
+    }
+    results = []
+    for result in list(updated.get("results") or []):
+        current = current_candidates.get(str(result.get("name") or ""))
+        results.append({**result, **current} if current is not None else result)
+    updated["results"] = results
     chosen = choose_candidate(results)
     updated["selected"] = chosen["name"] if chosen else None
     updated["selected_backend"] = chosen["backend"] if chosen else None

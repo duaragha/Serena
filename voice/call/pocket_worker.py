@@ -77,7 +77,7 @@ def _serve(config: dict[str, Any]) -> None:
             language=str(config.get("language") or "english"),
             quantize=bool(config.get("quantize", True)),
         )
-        voice = str(config.get("voice") or "alba")
+        voice = str(config.get("voice") or "anna")
         state = model.get_state_for_audio_prompt(voice)
     finally:
         tts_model_module.download_if_necessary = original_download

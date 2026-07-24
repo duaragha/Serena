@@ -27,9 +27,17 @@ from voice.desk.client import (
     DEFAULT_MANIFEST_PATH,
     WakeScorer,
     _device_selector,
+    derive_greeting_url,
     load_manifest_wake_config,
+    load_token,
 )
-from voice.desk.io import SoundDeviceMicrophone
+from voice.desk.io import (
+    GreetingFetcher,
+    OverlayPublisher,
+    SoundDeviceMicrophone,
+    SoundDevicePlayback,
+    record_wake_greeting_handoff,
+)
 
 WAKE_FRAME_BYTES = 2_560
 FULL_VOICE_UNIT = "serena-dot-overlay.service"
@@ -177,7 +185,7 @@ class FasterWhisperWakePhraseVerifier:
         return PhraseVerification(accepted, transcript)
 
 
-def launch_full_voice_app() -> None:
+def _start_full_voice_app() -> None:
     subprocess.run(
         [
             "systemctl",
@@ -188,6 +196,60 @@ def launch_full_voice_app() -> None:
         ],
         check=True,
     )
+
+
+def launch_full_voice_app() -> None:
+    """Play the hot greeting first, then hand conversation off to the full app."""
+
+    websocket_url = os.environ.get(
+        "SERENA_DESK_URL", "ws://127.0.0.1:8767/ws/desk"
+    )
+    greeting_url = os.environ.get("SERENA_DESK_GREETING_URL") or derive_greeting_url(
+        websocket_url
+    )
+    overlay = OverlayPublisher()
+    playback = SoundDevicePlayback(overlay)
+    launched = False
+    try:
+        greeting, source = GreetingFetcher(greeting_url, load_token()).fetch()
+        overlay.open()
+        overlay.set_state("speaking")
+        playback.start(greeting.sample_rate)
+        frame_bytes = max(2, greeting.sample_rate * 2 * 40 // 1000)
+        for offset in range(0, len(greeting.pcm), frame_bytes):
+            first_write = playback.write(
+                greeting.pcm[offset : offset + frame_bytes]
+            )
+            if first_write is None or launched:
+                continue
+            record_wake_greeting_handoff(
+                greeting,
+                first_write,
+                source,
+            )
+            journal_wake_event(
+                {
+                    "event": "wake.hot_greeting_first_write",
+                    "greeting_id": greeting.greeting_id,
+                    "source": source,
+                    "underflow": first_write.underflow,
+                }
+            )
+            _start_full_voice_app()
+            launched = True
+        playback.finish()
+    except Exception as exc:
+        journal_wake_event(
+            {
+                "event": "wake.hot_greeting_failed",
+                "error": type(exc).__name__,
+            }
+        )
+    finally:
+        playback.close()
+        overlay.close()
+    if not launched:
+        _start_full_voice_app()
 
 
 class WakeOnlyListener:

@@ -7,7 +7,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from voice.desk.greetings import GreetingAudio
-from voice.desk.io import GreetingFetcher, SoundDevicePlayback, pcm_visual_level
+from voice.desk.io import (
+    FALLBACK_SCHEMA_VERSION,
+    GreetingFetcher,
+    PlaybackStart,
+    SoundDevicePlayback,
+    consume_wake_greeting_handoff,
+    pcm_visual_level,
+    record_wake_greeting_handoff,
+)
 
 
 class _Overlay:
@@ -69,6 +77,32 @@ def test_playback_publishes_level_from_every_real_pcm_chunk(monkeypatch) -> None
     assert stream.started and stream.stopped and stream.closed
 
 
+def test_wake_greeting_handoff_is_runtime_only_and_single_use(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "handoff.json"
+    greeting = GreetingAudio(
+        "hot-greeting",
+        24_000,
+        b"\x01\x00" * 2_400,
+        "private",
+        time.time(),
+    )
+    first_write = PlaybackStart(time.monotonic_ns(), False)
+
+    recorded = record_wake_greeting_handoff(
+        greeting,
+        first_write,
+        "server-cache",
+        path=marker,
+    )
+    consumed = consume_wake_greeting_handoff(path=marker)
+
+    assert consumed == recorded
+    assert consumed.playback_end_monotonic_ns > first_write.monotonic_ns
+    assert consume_wake_greeting_handoff(path=marker) is None
+
+
 def test_greeting_fetcher_uses_persisted_assistant_audio_when_server_fails(
     tmp_path: Path,
 ) -> None:
@@ -76,7 +110,10 @@ def test_greeting_fetcher_uses_persisted_assistant_audio_when_server_fails(
     greeting = GreetingAudio("last-good", 24_000, b"\x01\x00", "hi", 1.0)
     from core.brain_lifetime import write_json_atomic
 
-    write_json_atomic(fallback_path, {"version": 1, "greeting": greeting.to_json()})
+    write_json_atomic(
+        fallback_path,
+        {"version": FALLBACK_SCHEMA_VERSION, "greeting": greeting.to_json()},
+    )
     fetcher = GreetingFetcher(
         "http://127.0.0.1:1/desk/greeting",
         "secret",
@@ -89,6 +126,25 @@ def test_greeting_fetcher_uses_persisted_assistant_audio_when_server_fails(
     assert source == "local-fallback"
     assert restored.greeting_id == "last-good"
     assert restored.pcm == greeting.pcm
+
+
+def test_greeting_fetcher_rejects_retired_voice_cache(tmp_path: Path) -> None:
+    fallback_path = tmp_path / "last.json"
+    greeting = GreetingAudio("retired", 24_000, b"\x01\x00", "hi", 1.0)
+    from core.brain_lifetime import write_json_atomic
+
+    write_json_atomic(fallback_path, {"version": 1, "greeting": greeting.to_json()})
+    fetcher = GreetingFetcher(
+        "http://127.0.0.1:1/desk/greeting",
+        "secret",
+        fallback_path=fallback_path,
+        timeout=0.2,
+    )
+
+    restored, source = fetcher.fetch()
+
+    assert source == "tone-fallback"
+    assert restored.greeting_id == "tone-fallback"
 
 
 def test_greeting_fetcher_has_local_tone_as_last_resort(tmp_path: Path) -> None:

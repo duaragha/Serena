@@ -24,7 +24,7 @@ MAX_GREETING_BYTES = 2 * 1024 * 1024
 MAX_GREETING_AGE_SECONDS = 12 * 60 * 60
 # Every serving-voice change bumps this schema so a cached greeting cannot
 # speak in a retired voice before the warmed runtime takes over.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class GreetingRuntime(Protocol):

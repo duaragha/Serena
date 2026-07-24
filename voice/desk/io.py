@@ -26,6 +26,90 @@ DEFAULT_STATE_PATH = Path.home() / ".config" / "serena" / "voice_state"
 DEFAULT_FALLBACK_PATH = (
     Path.home() / ".cache" / "serena" / "desk-last-greeting.json"
 )
+FALLBACK_SCHEMA_VERSION = 2
+WAKE_GREETING_HANDOFF_SCHEMA_VERSION = 1
+DEFAULT_WAKE_GREETING_HANDOFF_PATH = (
+    Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    / "serena-wake-greeting-handoff.json"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PlaybackStart:
+    monotonic_ns: int
+    underflow: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WakeGreetingHandoff:
+    greeting_id: str
+    playback_end_monotonic_ns: int
+    source: str
+
+
+def record_wake_greeting_handoff(
+    greeting: GreetingAudio,
+    first_write: PlaybackStart,
+    source: str,
+    *,
+    path: Path = DEFAULT_WAKE_GREETING_HANDOFF_PATH,
+) -> WakeGreetingHandoff:
+    duration_ns = round(
+        len(greeting.pcm) / 2 / greeting.sample_rate * 1_000_000_000
+    )
+    handoff = WakeGreetingHandoff(
+        greeting.greeting_id,
+        first_write.monotonic_ns + duration_ns,
+        source,
+    )
+    write_json_atomic(
+        Path(path),
+        {
+            "version": WAKE_GREETING_HANDOFF_SCHEMA_VERSION,
+            "greeting_id": handoff.greeting_id,
+            "playback_end_monotonic_ns": handoff.playback_end_monotonic_ns,
+            "source": handoff.source,
+        },
+    )
+    return handoff
+
+
+def consume_wake_greeting_handoff(
+    *,
+    path: Path = DEFAULT_WAKE_GREETING_HANDOFF_PATH,
+    max_future_seconds: float = 15.0,
+) -> WakeGreetingHandoff | None:
+    marker = Path(path)
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return None
+    finally:
+        with suppress(OSError):
+            marker.unlink()
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != WAKE_GREETING_HANDOFF_SCHEMA_VERSION
+    ):
+        return None
+    try:
+        handoff = WakeGreetingHandoff(
+            str(payload["greeting_id"]),
+            int(payload["playback_end_monotonic_ns"]),
+            str(payload["source"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    now_ns = time.monotonic_ns()
+    max_future_ns = now_ns + round(max(1.0, max_future_seconds) * 1_000_000_000)
+    if (
+        not handoff.greeting_id
+        or not handoff.source
+        or handoff.playback_end_monotonic_ns < now_ns - 2_000_000_000
+        or handoff.playback_end_monotonic_ns > max_future_ns
+    ):
+        return None
+    return handoff
 
 
 def pcm_visual_level(pcm: bytes) -> float:
@@ -199,7 +283,10 @@ class GreetingFetcher:
                     raise RuntimeError("desk greeting response was invalid")
                 write_json_atomic(
                     self.fallback_path,
-                    {"version": 1, "greeting": greeting.to_json()},
+                    {
+                        "version": FALLBACK_SCHEMA_VERSION,
+                        "greeting": greeting.to_json(),
+                    },
                 )
                 return greeting, "server-cache"
         except Exception:
@@ -213,7 +300,10 @@ class GreetingFetcher:
             payload = json.loads(self.fallback_path.read_text(encoding="utf-8"))
         except (OSError, TypeError, ValueError):
             return None
-        if not isinstance(payload, dict) or payload.get("version") != 1:
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") != FALLBACK_SCHEMA_VERSION
+        ):
             return None
         return GreetingAudio.from_json(payload.get("greeting"))
 
@@ -292,12 +382,6 @@ class SoundDeviceMicrophone:
         if stream is not None:
             stream.stop()
             stream.close()
-
-
-@dataclass(frozen=True, slots=True)
-class PlaybackStart:
-    monotonic_ns: int
-    underflow: bool
 
 
 class SoundDevicePlayback:

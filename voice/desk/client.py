@@ -34,6 +34,8 @@ from voice.desk.io import (
     OverlayPublisher,
     SoundDeviceMicrophone,
     SoundDevicePlayback,
+    WakeGreetingHandoff,
+    consume_wake_greeting_handoff,
     fallback_tone,
 )
 from voice.desk.transport import DeskTransport, MicFramePacker, TransportEvent
@@ -314,7 +316,7 @@ class DeskClient:
 
     def __init__(
         self,
-        scorer: WakeScorer,
+        scorer: WakeScorer | None,
         gate: WakeGate,
         microphone: SoundDeviceMicrophone,
         playback: SoundDevicePlayback,
@@ -358,6 +360,8 @@ class DeskClient:
     ) -> tuple[bool, float]:
         if len(pcm) != 2_560:
             raise ValueError("wake frame must contain exactly 1,280 PCM16 samples")
+        if self.scorer is None:
+            raise RuntimeError("wake scorer is unavailable in handoff mode")
         frame = np.frombuffer(pcm, dtype="<i2")
         score = self.scorer.score_frame(frame)
         return self.gate.observe(score, monotonic_ns=monotonic_ns), score
@@ -377,7 +381,11 @@ class DeskClient:
             if start_awake:
                 self.session_stop.clear()
                 self.metrics.record("wake.handoff_received")
-                self._activate(time.monotonic_ns(), stop)
+                self._activate(
+                    time.monotonic_ns(),
+                    stop,
+                    greeting_handoff=consume_wake_greeting_handoff(),
+                )
                 return
             while not stop.is_set():
                 try:
@@ -413,36 +421,61 @@ class DeskClient:
             if callable(close_metrics):
                 close_metrics()
 
-    def _activate(self, wake_ns: int, stop: threading.Event) -> None:
+    def _activate(
+        self,
+        wake_ns: int,
+        stop: threading.Event,
+        *,
+        greeting_handoff: WakeGreetingHandoff | None = None,
+    ) -> None:
         # Wake is the start of a listening interaction. Show that immediately;
         # thinking begins only after Raghav has actually finished an utterance.
         self.overlay.set_state("listening")
         transport: DeskTransport = self.transport_factory()
         connect_thread = self._start_connect(transport)
 
-        greeting, source = self.greeting_fetcher.fetch()
-        self.overlay.set_state("speaking")
-        try:
-            first_write = self.playback.play(greeting)
-        except Exception as exc:
+        if greeting_handoff is None:
+            greeting, source = self.greeting_fetcher.fetch()
+            self.overlay.set_state("speaking")
+            try:
+                first_write = self.playback.play(greeting)
+            except Exception as exc:
+                self.metrics.record(
+                    "greeting.playback_failed",
+                    source=source,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                transport.close()
+                return
+            latency_ms = (first_write.monotonic_ns - wake_ns) / 1_000_000
             self.metrics.record(
-                "greeting.playback_failed",
+                "greeting.first_write",
+                call_id=transport.call_id,
+                greeting_id=greeting.greeting_id,
                 source=source,
-                error=f"{type(exc).__name__}: {exc}",
+                wake_to_first_write_ms=round(latency_ms, 3),
+                underflow=first_write.underflow,
+                assistant_voice=source != "tone-fallback",
+                acoustic_acceptance_claim=False,
             )
-            transport.close()
-            return
-        latency_ms = (first_write.monotonic_ns - wake_ns) / 1_000_000
-        self.metrics.record(
-            "greeting.first_write",
-            call_id=transport.call_id,
-            greeting_id=greeting.greeting_id,
-            source=source,
-            wake_to_first_write_ms=round(latency_ms, 3),
-            underflow=first_write.underflow,
-            assistant_voice=source != "tone-fallback",
-            acoustic_acceptance_claim=False,
-        )
+        else:
+            self.overlay.set_state("speaking")
+            self.metrics.record(
+                "greeting.handoff_consumed",
+                call_id=transport.call_id,
+                greeting_id=greeting_handoff.greeting_id,
+                source=greeting_handoff.source,
+            )
+            while not self._session_should_stop(stop):
+                remaining_ns = (
+                    greeting_handoff.playback_end_monotonic_ns
+                    - time.monotonic_ns()
+                )
+                if remaining_ns <= 0:
+                    break
+                self.session_stop.wait(min(0.05, remaining_ns / 1_000_000_000))
+            self.microphone.drain()
+            self.overlay.set_state("listening")
         if self._session_should_stop(stop):
             transport.close()
             return
@@ -941,7 +974,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         gate = WakeGate(args.threshold, args.patience_frames, args.cooldown_seconds)
     # Model construction is deliberately before either audio device opens.
-    scorer = OpenWakeWordScorer(spec)
+    # The wake-only listener already verified the phrase. Loading the same ONNX
+    # model again here added roughly 1.7 seconds before the greeting could play.
+    scorer = None if args.start_awake else OpenWakeWordScorer(spec)
     overlay = OverlayPublisher(
         state_path=args.state_path,
         websocket_url=args.overlay_url,

@@ -54,13 +54,33 @@ def test_supervisor_starts_every_component_in_its_own_process_group(
     assert all(process.start_new_session for process in spawned)
 
 
-def test_production_order_opens_display_before_awake_voice() -> None:
+def test_dot_display_waits_for_voice_first_start_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sleeps: list[float] = []
+    items = (
+        Component("desk-voice", ("desk",), tmp_path),
+        Component("dot-display", ("display",), tmp_path),
+    )
+    monkeypatch.setattr("voice.desktop.supervisor.subprocess.Popen", FakeProcess)
+    monkeypatch.setattr(
+        "voice.desktop.supervisor.time.sleep", lambda seconds: sleeps.append(seconds)
+    )
+    supervisor = VoiceAppSupervisor(items)
+
+    supervisor.start()
+
+    assert sleeps == [0.1, 1.0, 0.1]
+
+
+def test_production_order_opens_awake_voice_before_display() -> None:
     configured = components()
 
     assert [item.name for item in configured] == [
+        "desk-voice",
         "brain-bridge",
         "dot-display",
-        "desk-voice",
     ]
     desk = next(item for item in configured if item.name == "desk-voice")
     assert "--start-awake" in desk.command

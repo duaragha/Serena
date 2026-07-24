@@ -3,7 +3,6 @@ Description=Serena local hey-serena wake-only listener
 After=pipewire.service wireplumber.service
 Wants=pipewire.service wireplumber.service
 Before=serena-dot-overlay.service
-Conflicts=serena-dot-overlay.service
 ConditionPathExists=%h/.config/serena/models/hey_serena.onnx
 ConditionPathExists=%h/.config/serena/wakeword-acceptance.json
 

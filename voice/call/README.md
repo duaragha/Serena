@@ -151,9 +151,9 @@ python -m voice.call.voice_quality \
 
 The report is written privately to
 `~/.local/state/serena/voice-quality.json`; samples live beside it in
-`voice-quality-samples/`. Pocket Alba is the laptop default because its casual
-profile clears the realtime gate. Kokoro remains a local fallback, not the
-interactive default.
+`voice-quality-samples/`. Pocket Anna is the laptop default because it is the
+female profile selected for Serena and clears the realtime gate. Kokoro remains
+a local fallback, not the interactive default.
 
 ## Install and models
 

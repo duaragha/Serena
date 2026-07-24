@@ -18,6 +18,7 @@ DESKTOP_ROOT = REPO_ROOT / "voice" / "desktop"
 DESK_PYTHON = REPO_ROOT / "voice" / ".venv-wake" / "bin" / "python"
 ELECTRON = DESKTOP_ROOT / "node_modules" / ".bin" / "electron"
 MANIFEST = Path.home() / ".config" / "serena" / "wakeword-acceptance.json"
+DOT_DISPLAY_DELAY_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,16 +31,6 @@ class Component:
 def components() -> tuple[Component, ...]:
     return (
         Component(
-            "brain-bridge",
-            (sys.executable, "-u", "-m", "voice.brain_bridge"),
-            REPO_ROOT,
-        ),
-        Component(
-            "dot-display",
-            (str(ELECTRON), ".", "--ozone-platform-hint=auto"),
-            DESKTOP_ROOT,
-        ),
-        Component(
             "desk-voice",
             (
                 str(DESK_PYTHON),
@@ -51,6 +42,16 @@ def components() -> tuple[Component, ...]:
                 "--start-awake",
             ),
             REPO_ROOT,
+        ),
+        Component(
+            "brain-bridge",
+            (sys.executable, "-u", "-m", "voice.brain_bridge"),
+            REPO_ROOT,
+        ),
+        Component(
+            "dot-display",
+            (str(ELECTRON), ".", "--ozone-platform-hint=auto"),
+            DESKTOP_ROOT,
         ),
     )
 
@@ -76,6 +77,10 @@ class VoiceAppSupervisor:
         environment = os.environ.copy()
         environment["PYTHONUNBUFFERED"] = "1"
         for item in self.items:
+            if item.name == "dot-display":
+                # Electron can monopolize the laptop during its cold start.
+                # Let the awake voice process reach first PCM before opening it.
+                time.sleep(DOT_DISPLAY_DELAY_SECONDS)
             process = subprocess.Popen(
                 item.command,
                 cwd=item.cwd,

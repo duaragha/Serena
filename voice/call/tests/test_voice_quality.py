@@ -44,14 +44,21 @@ def test_existing_report_can_be_reselected_after_gate_fix() -> None:
         {
             "results": [
                 {
-                    **_result("alba", 0),
+                    **_result("pocket-alba", 0),
                     "backend": "pocket",
                     "voice": "alba",
-                }
+                },
+                {
+                    **_result("pocket-anna", 1),
+                    "backend": "pocket",
+                    "voice": "anna",
+                },
             ],
             "acceptance_claim": False,
         }
     )
-    assert report["selected"] == "alba"
-    assert report["selected_voice"] == "alba"
+    assert report["selected"] == "pocket-anna"
+    assert report["selected_voice"] == "anna"
+    assert report["results"][0]["preference"] == 1
+    assert report["results"][1]["preference"] == 0
     assert report["acceptance_claim"] is True

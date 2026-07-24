@@ -21,7 +21,7 @@ from voice.desk.client import (
     main,
 )
 from voice.desk.greetings import GreetingAudio
-from voice.desk.io import PlaybackStart
+from voice.desk.io import PlaybackStart, WakeGreetingHandoff
 from voice.desk.transport import TransportEvent
 
 
@@ -296,13 +296,18 @@ def test_network_and_greeting_begin_only_after_threshold_gate() -> None:
     assert any(event == "greeting.first_write" for event, _ in metrics.rows)
 
 
-def test_awake_handoff_starts_one_session_without_scoring_another_wake() -> None:
+def test_awake_handoff_starts_one_session_without_scoring_another_wake(
+    monkeypatch,
+) -> None:
     microphone = _Microphone()
     client, _playback, _overlay, _fetcher, metrics = _client(
         [], microphone, lambda: _Transport(ready=False)
     )
     activations: list[int] = []
-    client._activate = lambda wake_ns, _stop: activations.append(wake_ns)
+    monkeypatch.setattr(
+        "voice.desk.client.consume_wake_greeting_handoff", lambda: None
+    )
+    client._activate = lambda wake_ns, _stop, **_kwargs: activations.append(wake_ns)
 
     client.run(start_awake=True)
 
@@ -310,6 +315,31 @@ def test_awake_handoff_starts_one_session_without_scoring_another_wake() -> None
     assert microphone.started is True
     assert microphone.closed is True
     assert any(event == "wake.handoff_received" for event, _ in metrics.rows)
+
+
+def test_hot_wake_greeting_is_not_replayed_by_cold_handoff() -> None:
+    microphone = _Microphone()
+    transport = _Transport()
+    client, playback, overlay, fetcher, metrics = _client(
+        [], microphone, lambda: transport
+    )
+    client._run_remote_with_reconnect = lambda *_args: True
+    handoff = WakeGreetingHandoff(
+        "already-playing",
+        time.monotonic_ns(),
+        "server-cache",
+    )
+
+    client._activate(
+        time.monotonic_ns(),
+        threading.Event(),
+        greeting_handoff=handoff,
+    )
+
+    assert fetcher.calls == 0
+    assert playback.played == []
+    assert overlay.states == ["listening", "speaking", "listening"]
+    assert any(event == "greeting.handoff_consumed" for event, _ in metrics.rows)
 
 
 def test_conversation_sends_exact_post_wake_frames_and_tracks_states() -> None:
