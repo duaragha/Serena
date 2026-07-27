@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
 from voice.desk.greetings import GreetingAudio
 from voice.desk.io import (
     FALLBACK_SCHEMA_VERSION,
+    WAKE_FRAME_BYTES,
     GreetingFetcher,
+    PipeWireMicrophone,
     PlaybackStart,
     SoundDevicePlayback,
     consume_wake_greeting_handoff,
@@ -49,6 +53,134 @@ class _RawOutputStream:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _ChunkedCaptureOutput:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = deque(chunks)
+        self.closed = False
+
+    def read(self, size: int) -> bytes:
+        if not self.chunks:
+            return b""
+        chunk = self.chunks.popleft()
+        if len(chunk) <= size:
+            return chunk
+        self.chunks.appendleft(chunk[size:])
+        return chunk[:size]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _ExitedCaptureProcess:
+    def __init__(self, chunks: list[bytes], returncode: int = 7) -> None:
+        self.stdout = _ChunkedCaptureOutput(chunks)
+        self.returncode = returncode
+        self.command: list[str] = []
+        self.kwargs = {}
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def kill(self) -> None:
+        raise AssertionError("an exited capture must not be killed")
+
+
+class _BlockingCaptureOutput:
+    def __init__(self) -> None:
+        self.released = threading.Event()
+        self.closed = False
+
+    def read(self, _size: int) -> bytes:
+        self.released.wait(1)
+        return b""
+
+    def close(self) -> None:
+        self.closed = True
+        self.released.set()
+
+
+class _HungCaptureProcess:
+    def __init__(self) -> None:
+        self.stdout = _BlockingCaptureOutput()
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        return -9 if self.killed else None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self, timeout: float):
+        if not self.killed:
+            raise subprocess.TimeoutExpired("pw-cat", timeout)
+        return -9
+
+    def kill(self) -> None:
+        self.killed = True
+        self.stdout.released.set()
+
+
+def test_pipewire_capture_assembles_frames_and_bounds_its_queue() -> None:
+    first = b"\x01\x00" * (WAKE_FRAME_BYTES // 2)
+    second = b"\x02\x00" * (WAKE_FRAME_BYTES // 2)
+    third = b"\x03\x00" * (WAKE_FRAME_BYTES // 2)
+    process = _ExitedCaptureProcess(
+        [
+            first[:311],
+            first[311:] + second[:97],
+            second[97:] + third,
+        ]
+    )
+
+    def factory(command, **kwargs):
+        process.command = list(command)
+        process.kwargs = dict(kwargs)
+        return process
+
+    microphone = PipeWireMicrophone(
+        target="dmic_dc_filtered",
+        max_frames=2,
+        process_factory=factory,
+    )
+    microphone.start()
+    deadline = time.monotonic() + 1
+    while microphone.failure_reason is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    assert microphone.frames.get_nowait() == second
+    assert microphone.frames.get_nowait() == third
+    assert microphone.dropped_frames == 1
+    assert microphone.failure_reason == "PipeWire capture exited with status 7"
+    assert process.command[:2] == ["/usr/bin/pw-cat", "--record"]
+    assert process.command[process.command.index("--target") + 1] == "dmic_dc_filtered"
+    assert "--raw" not in process.command
+    assert "--sample-count" not in process.command
+    assert process.command[-1] == "-"
+    assert process.kwargs["stderr"] is subprocess.DEVNULL
+    microphone.close()
+    assert process.stdout.closed is True
+
+
+def test_pipewire_capture_close_escalates_to_kill_without_hanging() -> None:
+    process = _HungCaptureProcess()
+    microphone = PipeWireMicrophone(
+        process_factory=lambda *_args, **_kwargs: process,
+        terminate_timeout=0.01,
+        kill_timeout=0.05,
+    )
+    microphone.start()
+
+    started = time.monotonic()
+    microphone.close()
+    elapsed = time.monotonic() - started
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.stdout.closed is True
+    assert elapsed < 0.5
 
 
 def test_playback_publishes_level_from_every_real_pcm_chunk(monkeypatch) -> None:

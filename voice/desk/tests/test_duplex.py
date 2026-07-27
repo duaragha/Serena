@@ -8,7 +8,12 @@ FRAME_SAMPLES = 1_280  # 80 ms at 16 kHz
 
 
 def _frame(value: int) -> bytes:
-    return int(value).to_bytes(2, "little", signed=True) * FRAME_SAMPLES
+    """A frame at roughly `value` RMS, alternating so it is sound and not a
+    constant offset. The gate now ignores DC, because this laptop's DMIC wedges
+    to a DC-heavy signal that a plain RMS reads as endless speech."""
+    sample = int(value).to_bytes(2, "little", signed=True)
+    inverted = int(-value).to_bytes(2, "little", signed=True)
+    return (sample + inverted) * (FRAME_SAMPLES // 2)
 
 
 LOUD = _frame(8_000)   # ~-12 dBFS, clearly above every threshold

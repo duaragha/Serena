@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import math
 import os
 import queue
 import signal
@@ -27,7 +28,7 @@ from voice.call.wakeword import (
     sha256_file,
 )
 from voice.call.wakeword_calibration import load_acceptance_manifest
-from voice.desk.duplex import BargeInGate
+from voice.desk.duplex import BargeInGate, speech_level_dbfs
 from voice.desk.io import (
     DEFAULT_STATE_PATH,
     GreetingFetcher,
@@ -81,8 +82,12 @@ def load_manifest_wake_config(
     requested_device: str | int | None = None,
     sounddevice_module=None,
     package_version: str | None = None,
+    validate_device: bool = True,
 ) -> ManifestWakeConfig:
-    """Load and verify every frozen wake input before opening the microphone."""
+    """Load frozen wake inputs.
+
+    A named native capture backend may own runtime device validation.
+    """
 
     try:
         manifest = load_acceptance_manifest(Path(path))
@@ -156,40 +161,43 @@ def load_manifest_wake_config(
         raise WakeWordConfigurationError(
             "requested microphone does not match the acceptance manifest selector"
         )
-    if sounddevice_module is None:
+    if validate_device:
+        if sounddevice_module is None:
+            try:
+                import sounddevice as sounddevice_module
+            except ImportError as exc:
+                raise WakeWordConfigurationError(
+                    "sounddevice is not installed"
+                ) from exc
+        resolved = (
+            sounddevice_module.default.device[0]
+            if manifest_selector is None
+            else manifest_selector
+        )
         try:
-            import sounddevice as sounddevice_module
-        except ImportError as exc:
-            raise WakeWordConfigurationError("sounddevice is not installed") from exc
-    resolved = (
-        sounddevice_module.default.device[0]
-        if manifest_selector is None
-        else manifest_selector
-    )
-    try:
-        info = sounddevice_module.query_devices(resolved, "input")
-        sounddevice_module.check_input_settings(
-            device=manifest_selector,
-            channels=1,
-            dtype="int16",
-            samplerate=16_000,
+            info = sounddevice_module.query_devices(resolved, "input")
+            sounddevice_module.check_input_settings(
+                device=manifest_selector,
+                channels=1,
+                dtype="int16",
+                samplerate=16_000,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise WakeWordConfigurationError(
+                f"frozen microphone path is unavailable: {exc}"
+            ) from exc
+        identity = ":".join(
+            (
+                str(resolved),
+                str(info.get("name") or "unknown"),
+                str(info.get("hostapi") or "unknown"),
+                str(info.get("max_input_channels") or "unknown"),
+            )
         )
-    except (OSError, TypeError, ValueError) as exc:
-        raise WakeWordConfigurationError(
-            f"frozen microphone path is unavailable: {exc}"
-        ) from exc
-    identity = ":".join(
-        (
-            str(resolved),
-            str(info.get("name") or "unknown"),
-            str(info.get("hostapi") or "unknown"),
-            str(info.get("max_input_channels") or "unknown"),
-        )
-    )
-    if identity != str(manifest.get("device") or ""):
-        raise WakeWordConfigurationError(
-            "microphone identity does not match the acceptance manifest"
-        )
+        if identity != str(manifest.get("device") or ""):
+            raise WakeWordConfigurationError(
+                "microphone identity does not match the acceptance manifest"
+            )
 
     spec = WakeWordModelSpec(
         model_path=model_path,
@@ -277,6 +285,63 @@ class DeskMetrics:
                 self._queue.task_done()
 
 
+# A fixed voice threshold assumes a quiet microphone. This laptop's built-in
+# DMIC idles around -42 dBFS, above the -45 default, so every frame read as
+# speech: the barge-in gate cancelled her reply the instant she began forming
+# it, and she went to "thinking" and then silent. Measure the room instead.
+NOISE_CALIBRATION_SECONDS = 1.0
+NOISE_SETTLING_FRAMES = 3
+NOISE_FLOOR_PERCENTILE = 75.0
+NOISE_FLOOR_MARGIN_DB = 8.0
+NOISE_FLOOR_CEILING_DBFS = -30.0
+
+
+def measure_noise_floor(frames: list[bytes]) -> tuple[float, float]:
+    """Return (floor dBFS, DC offset) for the room, ignoring settling frames.
+
+    DC offset is removed before measuring. This laptop's AMD DMIC wedges to a
+    DC-heavy signal after a reboot, and a constant offset reads as a loud room
+    forever, which would pin the threshold above his actual voice.
+    """
+    usable = frames[NOISE_SETTLING_FRAMES:] or frames
+    blocks = [np.frombuffer(frame, dtype="<i2").astype(np.float64) for frame in usable if frame]
+    blocks = [block for block in blocks if block.size]
+    if not blocks:
+        return float("nan"), 0.0
+    offset = float(np.mean(np.concatenate(blocks)))
+    levels = []
+    for block in blocks:
+        level = speech_level_dbfs(block)
+        if math.isfinite(level):
+            levels.append(level)
+    if not levels:
+        return float("nan"), offset
+    return float(np.percentile(levels, NOISE_FLOOR_PERCENTILE)), offset
+
+
+def calibrate_voice_threshold(
+    frames: list[bytes],
+    configured: float,
+    *,
+    margin_db: float = NOISE_FLOOR_MARGIN_DB,
+    ceiling_dbfs: float = NOISE_FLOOR_CEILING_DBFS,
+) -> float:
+    """Lift the voice threshold above the room, never below the configured one.
+
+    Per-frame levels at a high percentile rather than one RMS over everything:
+    the first frames off a freshly opened capture carry settling garbage that
+    reads far louder than the room, and one such frame would otherwise set the
+    threshold for the whole session.
+
+    Capped, because a threshold raised past speech would leave her unable to
+    hear him at all, which is a worse failure than an occasional false trigger.
+    """
+    floor, _offset = measure_noise_floor(frames)
+    if not math.isfinite(floor):
+        return configured
+    return min(max(configured, floor + margin_db), ceiling_dbfs)
+
+
 @dataclass(frozen=True, slots=True)
 class DeskConfig:
     websocket_url: str = "ws://127.0.0.1:8767/ws/desk"
@@ -340,6 +405,8 @@ class DeskClient:
         self.metrics = metrics or DeskMetrics()
         self.local_fallback = local_fallback
         self.session_stop = session_stop or threading.Event()
+        # Replaced by the measured room floor once the microphone is running.
+        self.voice_activity_dbfs = self.config.voice_activity_dbfs
 
     def _session_should_stop(self, service_stop: threading.Event) -> bool:
         return service_stop.is_set() or self.session_stop.is_set()
@@ -366,6 +433,30 @@ class DeskClient:
         score = self.scorer.score_frame(frame)
         return self.gate.observe(score, monotonic_ns=monotonic_ns), score
 
+    def _calibrate_microphone(self) -> None:
+        """Learn the room's noise floor before deciding what counts as speech."""
+        frames: list[bytes] = []
+        deadline = time.monotonic() + NOISE_CALIBRATION_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                frames.append(
+                    self.microphone.frames.get(timeout=max(0.02, deadline - time.monotonic()))
+                )
+            except queue.Empty:
+                break
+        floor, offset = measure_noise_floor(frames)
+        self.voice_activity_dbfs = calibrate_voice_threshold(
+            frames, self.config.voice_activity_dbfs
+        )
+        self.metrics.record(
+            "desk.noise_calibrated",
+            configured_dbfs=round(self.config.voice_activity_dbfs, 2),
+            threshold_dbfs=round(self.voice_activity_dbfs, 2),
+            floor_dbfs=None if not math.isfinite(floor) else round(floor, 2),
+            dc_offset=round(offset, 1),
+            frames=len(frames),
+        )
+
     def run(
         self,
         stop: threading.Event | None = None,
@@ -376,6 +467,7 @@ class DeskClient:
         self.overlay.open()
         self.overlay.set_state("idle")
         self.microphone.start()
+        self._calibrate_microphone()
         self.metrics.record("desk.started", network_preconnected=False)
         try:
             if start_awake:
@@ -610,7 +702,7 @@ class DeskClient:
         # SERENA_DESK_BARGE_IN=0 restores the exact half-duplex behavior:
         # thinking/speaking phases never consume the microphone queue.
         barge_gate: BargeInGate | None = BargeInGate(
-            voice_activity_dbfs=self.config.voice_activity_dbfs
+            voice_activity_dbfs=self.voice_activity_dbfs
         )
         if not barge_gate.enabled:
             barge_gate = None
@@ -702,7 +794,7 @@ class DeskClient:
                 except queue.Empty:
                     continue
                 frame = np.frombuffer(pcm, dtype="<i2")
-                if rms_dbfs(frame) >= self.config.voice_activity_dbfs:
+                if speech_level_dbfs(frame) >= self.voice_activity_dbfs:
                     heard_voice = True
                 for wire_frame in packer.feed(pcm):
                     transport.send_mic_frame(wire_frame)

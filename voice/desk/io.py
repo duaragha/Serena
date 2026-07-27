@@ -7,6 +7,7 @@ import json
 import math
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -28,6 +29,8 @@ DEFAULT_FALLBACK_PATH = (
 )
 FALLBACK_SCHEMA_VERSION = 2
 WAKE_GREETING_HANDOFF_SCHEMA_VERSION = 1
+DEFAULT_PIPEWIRE_WAKE_TARGET = "dmic_dc_filtered"
+PIPEWIRE_CAPTURE_EXECUTABLE = "/usr/bin/pw-cat"
 DEFAULT_WAKE_GREETING_HANDOFF_PATH = (
     Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
     / "serena-wake-greeting-handoff.json"
@@ -382,6 +385,176 @@ class SoundDeviceMicrophone:
         if stream is not None:
             stream.stop()
             stream.close()
+
+
+class PipeWireMicrophone:
+    """Bounded native PipeWire capture for the always-on wake listener."""
+
+    def __init__(
+        self,
+        *,
+        target: str = DEFAULT_PIPEWIRE_WAKE_TARGET,
+        max_frames: int = 64,
+        executable: str = PIPEWIRE_CAPTURE_EXECUTABLE,
+        terminate_timeout: float = 0.5,
+        kill_timeout: float = 1.0,
+        process_factory=None,
+    ) -> None:
+        if not str(target).strip():
+            raise ValueError("PipeWire wake target cannot be empty")
+        if max_frames < 1:
+            raise ValueError("wake microphone queue must hold at least one frame")
+        self.target = str(target).strip()
+        self.executable = str(executable)
+        self.frames: queue.Queue[bytes] = queue.Queue(maxsize=max_frames)
+        self.dropped_frames = 0
+        self.last_frame_monotonic_ns: int | None = None
+        self._failure_reason: str | None = None
+        self._terminate_timeout = max(0.0, float(terminate_timeout))
+        self._kill_timeout = max(0.0, float(kill_timeout))
+        self._process_factory = process_factory
+        self._process = None
+        self._reader: threading.Thread | None = None
+        self._closing = threading.Event()
+
+    @property
+    def failure_reason(self) -> str | None:
+        return self._failure_reason
+
+    def _command(self) -> list[str]:
+        return [
+            self.executable,
+            "--record",
+            "--target",
+            self.target,
+            "--latency",
+            "80ms",
+            "--rate",
+            str(MIC_SAMPLE_RATE),
+            "--channels",
+            "1",
+            "--channel-map",
+            "mono",
+            "--format",
+            "s16",
+            "--media-role",
+            "Communication",
+            "-",
+        ]
+
+    def start(self) -> None:
+        if self._process is not None:
+            raise RuntimeError("PipeWire wake capture is already running")
+        self._closing.clear()
+        self._failure_reason = None
+        self.last_frame_monotonic_ns = None
+        factory = self._process_factory or subprocess.Popen
+        try:
+            process = factory(
+                self._command(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+                close_fds=True,
+            )
+        except OSError as exc:
+            self._failure_reason = f"could not start PipeWire capture: {exc}"
+            raise RuntimeError(self._failure_reason) from exc
+        if process.stdout is None:
+            with suppress(Exception):
+                process.kill()
+            self._failure_reason = "PipeWire capture has no audio stream"
+            raise RuntimeError(self._failure_reason)
+        self._process = process
+        self._reader = threading.Thread(
+            target=self._read_frames,
+            name="serena-pipewire-capture",
+            daemon=True,
+        )
+        self._reader.start()
+
+    def _enqueue(self, payload: bytes) -> None:
+        try:
+            self.frames.put_nowait(payload)
+        except queue.Full:
+            self.dropped_frames += 1
+            with suppress(queue.Empty):
+                self.frames.get_nowait()
+            with suppress(queue.Full):
+                self.frames.put_nowait(payload)
+
+    def _read_frames(self) -> None:
+        process = self._process
+        if process is None or process.stdout is None:
+            return
+        pending = bytearray()
+        try:
+            while not self._closing.is_set():
+                chunk = process.stdout.read(WAKE_FRAME_BYTES - len(pending))
+                if not chunk:
+                    break
+                pending.extend(chunk)
+                if len(pending) != WAKE_FRAME_BYTES:
+                    continue
+                payload = bytes(pending)
+                pending.clear()
+                self.last_frame_monotonic_ns = time.monotonic_ns()
+                self._enqueue(payload)
+        except Exception as exc:
+            if not self._closing.is_set():
+                self._failure_reason = (
+                    f"PipeWire capture reader failed: {type(exc).__name__}"
+                )
+            return
+        if self._closing.is_set():
+            return
+        returncode = process.poll()
+        if returncode is None:
+            self._failure_reason = "PipeWire capture stream closed unexpectedly"
+        else:
+            self._failure_reason = (
+                f"PipeWire capture exited with status {returncode}"
+            )
+        if pending:
+            self.dropped_frames += 1
+
+    def drain(self) -> None:
+        while True:
+            try:
+                self.frames.get_nowait()
+            except queue.Empty:
+                return
+
+    def close(self) -> None:
+        self._closing.set()
+        process = self._process
+        reader = self._reader
+        self._process = None
+        self._reader = None
+        if process is not None:
+            try:
+                running = process.poll() is None
+            except Exception:
+                running = True
+            if running:
+                with suppress(Exception):
+                    process.terminate()
+                try:
+                    process.wait(timeout=self._terminate_timeout)
+                except (subprocess.TimeoutExpired, TimeoutError):
+                    with suppress(Exception):
+                        process.kill()
+                    with suppress(Exception):
+                        process.wait(timeout=self._kill_timeout)
+                except Exception:
+                    with suppress(Exception):
+                        process.kill()
+            if process.stdout is not None:
+                with suppress(Exception):
+                    process.stdout.close()
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=self._kill_timeout)
 
 
 class SoundDevicePlayback:

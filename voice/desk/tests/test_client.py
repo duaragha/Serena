@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from voice.call.protocol import MIC_FRAME_BYTES, AudioFrame, AudioHeader, AudioKind
@@ -651,6 +652,37 @@ def test_frozen_manifest_controls_the_exact_production_wake_config(
     assert frozen.input_device == 3
 
 
+def test_native_wake_config_skips_only_portaudio_device_probe(
+    tmp_path: Path,
+) -> None:
+    path, model = _acceptance_manifest(tmp_path)
+
+    class ForbiddenSoundDevice:
+        @staticmethod
+        def query_devices(*_args, **_kwargs):
+            raise AssertionError("native wake capture must not query PortAudio")
+
+        @staticmethod
+        def check_input_settings(*_args, **_kwargs):
+            raise AssertionError("native wake capture must not check PortAudio")
+
+    frozen = load_manifest_wake_config(
+        path,
+        requested_device="3",
+        sounddevice_module=ForbiddenSoundDevice,
+        package_version="0.6.0",
+        validate_device=False,
+    )
+
+    assert frozen.spec.model_path == model.resolve()
+    assert frozen.spec.score_label == "hey_serena"
+    assert frozen.gate.threshold == 0.62
+    assert frozen.gate.patience_frames == 2
+    assert frozen.gate.cooldown_seconds == 3.5
+    assert frozen.input_device == 3
+    assert frozen.configuration_sha256
+
+
 def test_frozen_manifest_rejects_changed_model_version_or_microphone(
     tmp_path: Path,
 ) -> None:
@@ -689,7 +721,12 @@ class _BargeTransport(_Transport):
     """Scripts a turn that reaches 'speaking' and stays there (no audio.end),
     then loads loud mic frames so the barge-in path is the only exit."""
 
-    LOUD_FRAME = (8_000).to_bytes(2, "little", signed=True) * 1_280
+    # Alternating, not constant: a constant frame is pure DC, and the gate
+    # now ignores DC because this laptop's DMIC wedges to a DC-heavy signal.
+    LOUD_FRAME = (
+        (8_000).to_bytes(2, "little", signed=True)
+        + (-8_000).to_bytes(2, "little", signed=True)
+    ) * 640
 
     def send_mic_frame(self, pcm: bytes) -> None:
         self.sent.append(pcm)
@@ -772,3 +809,72 @@ def test_soft_noise_while_speaking_does_not_barge(monkeypatch) -> None:
     assert not any(event == "desk.barge_in" for event, _ in metrics.rows)
     # Only the 2 scripted listening frames went out; quiet noise stayed local.
     assert len(transport.sent) == 2
+
+
+def test_voice_threshold_lifts_above_a_noisy_room() -> None:
+    """His built-in DMIC idles near -41 dBFS, above the -45 default.
+
+    Every frame then read as speech, so the barge-in gate cancelled her reply
+    the moment she started forming it: "thinking" for a split second, then
+    nothing at all.
+    """
+    from voice.desk.client import calibrate_voice_threshold
+
+    rng = np.random.default_rng(7)
+    noisy = [
+        (rng.normal(0, 300, 1600)).astype("<i2").tobytes() for _ in range(12)
+    ]  # about -41 dBFS
+    lifted = calibrate_voice_threshold(noisy, -45.0)
+    assert -36.0 < lifted < -30.0
+
+
+def test_a_quiet_room_keeps_the_sensitive_default() -> None:
+    from voice.desk.client import calibrate_voice_threshold
+
+    rng = np.random.default_rng(7)
+    quiet = [(rng.normal(0, 2, 1600)).astype("<i2").tobytes() for _ in range(12)]
+    assert calibrate_voice_threshold(quiet, -45.0) == -45.0
+
+
+def test_the_threshold_can_never_rise_past_speech() -> None:
+    """A threshold above his voice would leave her unable to hear him at all,
+    which is worse than an occasional false trigger."""
+    from voice.desk.client import calibrate_voice_threshold
+
+    rng = np.random.default_rng(7)
+    roaring = [
+        (rng.normal(0, 12_000, 1600)).astype("<i2").tobytes() for _ in range(12)
+    ]
+    assert calibrate_voice_threshold(roaring, -45.0) == -30.0
+
+
+def test_a_loud_opening_frame_does_not_set_the_whole_session(caplog) -> None:
+    """A freshly opened capture spits settling garbage before the real room."""
+    from voice.desk.client import calibrate_voice_threshold
+
+    rng = np.random.default_rng(7)
+    startup = [(rng.normal(0, 12_000, 1600)).astype("<i2").tobytes() for _ in range(3)]
+    room = [(rng.normal(0, 260, 1600)).astype("<i2").tobytes() for _ in range(12)]
+    assert calibrate_voice_threshold(startup + room, -45.0) < -30.0
+
+
+def test_no_microphone_frames_leaves_the_configured_threshold() -> None:
+    from voice.desk.client import calibrate_voice_threshold
+
+    assert calibrate_voice_threshold([], -45.0) == -45.0
+
+
+def test_a_dc_wedged_microphone_does_not_read_as_constant_speech() -> None:
+    """The live fault: an -8300 DC offset alone measured -12 dBFS, so every
+    frame counted as him talking and barge-in killed her reply immediately."""
+    from voice.desk.client import measure_noise_floor
+    from voice.desk.duplex import speech_level_dbfs
+
+    rng = np.random.default_rng(3)
+    quiet_room = rng.normal(0, 250, 1600)
+    wedged = (quiet_room - 8_300).astype("<i2")
+    assert speech_level_dbfs(wedged) < -35.0
+
+    floor, offset = measure_noise_floor([wedged.tobytes()] * 12)
+    assert offset < -8_000
+    assert floor < -35.0

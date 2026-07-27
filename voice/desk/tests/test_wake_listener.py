@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -42,12 +43,21 @@ class _Microphone:
             self.frames.put(frame)
         self.started = False
         self.closed = False
+        self.failure_reason: str | None = None
 
     def start(self) -> None:
         self.started = True
 
     def close(self) -> None:
         self.closed = True
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
 
 
 def test_background_audio_only_scores_local_wake_frames() -> None:
@@ -194,3 +204,80 @@ def test_structured_wake_events_never_persist_the_transcript() -> None:
     assert candidate["accepted"] is True
     assert candidate["recognized_words"] == 5
     assert "transcript" not in candidate
+
+
+def test_listener_fails_closed_when_pipewire_frames_stall() -> None:
+    microphone = _Microphone([])
+    clock = _Clock()
+    events = []
+
+    def stall(*, timeout: float):
+        assert timeout == 0.25
+        clock.value = 1.1
+        raise queue.Empty
+
+    microphone.frames.get = stall
+    listener = WakeOnlyListener(
+        _Scorer([]),
+        WakeGate(0.5, patience_frames=1, cooldown_seconds=0),
+        microphone,
+        lambda: None,
+        phrase_verifier=_Verifier([]),
+        event_sink=events.append,
+        microphone_stall_seconds=1.0,
+        monotonic=clock,
+    )
+
+    with pytest.raises(RuntimeError, match="produced no audio frames"):
+        listener.run()
+
+    assert microphone.closed is True
+    assert [event["event"] for event in events] == [
+        "wake.listener_started",
+        "wake.microphone_stalled",
+        "wake.listener_stopped",
+    ]
+    assert events[1]["reason"] == "frame_timeout"
+
+
+def test_listener_exits_immediately_when_pipewire_capture_fails() -> None:
+    microphone = _Microphone([])
+    microphone.failure_reason = "PipeWire capture exited with status 1"
+    events = []
+    listener = WakeOnlyListener(
+        _Scorer([]),
+        WakeGate(0.5, patience_frames=1, cooldown_seconds=0),
+        microphone,
+        lambda: None,
+        phrase_verifier=_Verifier([]),
+        event_sink=events.append,
+    )
+
+    with pytest.raises(RuntimeError, match="status 1"):
+        listener.run()
+
+    stalled = next(
+        event for event in events if event["event"] == "wake.microphone_stalled"
+    )
+    assert stalled["reason"] == "capture_failed"
+    assert microphone.closed is True
+
+
+def test_wake_service_is_bound_to_wireplumber_and_native_capture() -> None:
+    repo = Path(__file__).resolve().parents[3]
+    unit = (repo / "systemd" / "serena-wake-listener.service").read_text(
+        encoding="utf-8"
+    )
+
+    assert "After=wireplumber.service" in unit
+    assert "BindsTo=wireplumber.service" in unit
+    assert "PartOf=wireplumber.service" in unit
+    assert "WantedBy=wireplumber.service" in unit
+    assert "WantedBy=default.target" not in unit
+    assert "--pipewire-target dmic_dc_filtered" in unit
+    assert "TimeoutStopSec=2" in unit
+    assert "KillMode=control-group" in unit
+    assert "LogRateLimitBurst=100" in unit
+    assert "StartLimitIntervalSec=180" in unit
+    assert "ExecStartPre=" not in unit
+    assert "RestartSec=5" in unit

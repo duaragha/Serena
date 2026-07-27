@@ -52,3 +52,9 @@ LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 IPAddressDeny=any
 IPAddressAllow=localhost
+
+[Install]
+# Not graphical-session.target: it is never activated on this machine, so a
+# unit wanted by it simply never starts. wireplumber is the session's real
+# audio hook and is what the wake listener already came up on.
+WantedBy=wireplumber.service

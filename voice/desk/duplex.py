@@ -18,6 +18,22 @@ import numpy as np
 
 from voice.call.wakeword import rms_dbfs
 
+__all__ = ["BargeInGate", "speech_level_dbfs"]
+
+
+def speech_level_dbfs(frame: np.ndarray) -> float:
+    """Loudness of a frame with any constant offset removed.
+
+    This laptop's AMD DMIC wedges to a DC-heavy signal after a reboot: a
+    measured offset of -8300 alone reads as -12 dBFS, so plain RMS said "he is
+    talking" on every single frame. The barge-in gate then cancelled her reply
+    the instant she started forming it, and she went quiet mid-thought.
+    """
+    if frame.size == 0:
+        return rms_dbfs(frame)
+    centred = frame.astype(np.float64)
+    return rms_dbfs(centred - centred.mean())
+
 ENV_ENABLED = "SERENA_DESK_BARGE_IN"
 ENV_SUSTAIN_MS = "SERENA_DESK_BARGE_SUSTAIN_MS"
 ENV_THINKING_SUSTAIN_MS = "SERENA_DESK_BARGE_THINKING_SUSTAIN_MS"
@@ -107,7 +123,7 @@ class BargeInGate:
         if not self.enabled:
             return False
         self._recent.append(pcm)
-        level = rms_dbfs(np.frombuffer(pcm, dtype="<i2"))
+        level = speech_level_dbfs(np.frombuffer(pcm, dtype="<i2"))
         if phase == "speaking":
             amplitude = max(0.0, min(1.0, float(playback_amplitude)))
             threshold = self.voice_activity_dbfs + self.margin_db

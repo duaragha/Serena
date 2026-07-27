@@ -198,7 +198,11 @@ def _start_full_voice_app() -> None:
             "restart",
             FULL_VOICE_UNIT,
         ],
-        check=True,
+        # Not check=True. The app conflicts with this unit, so systemd kills
+        # this process as part of starting it: systemctl dies on SIGTERM, and
+        # raising there turned a successful handoff into a failed unit that
+        # eventually trips the start-limit and stops answering to his name.
+        check=False,
     )
 
 
