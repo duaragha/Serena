@@ -29,6 +29,8 @@ from .process_worker import (
     _trusted_bubblewrap,
 )
 from .protocol import MAX_TTS_FRAME_MS, TTS_SAMPLE_RATES
+from .timestretch import StreamingTimeStretch
+from .voice_speed import read_voice_speed
 
 
 @dataclass(frozen=True, slots=True)
@@ -729,11 +731,65 @@ class PocketTTSBackend(AsyncTTSBackend):
         _terminate_process(process)
 
 
+class SpeedAdjustedTTSBackend(AsyncTTSBackend):
+    """Wrap an engine so the speed slider applies to every voice surface.
+
+    Pocket has no speaking-rate control, so the rate is applied to its audio
+    with a pitch-preserving stretch. Wrapping the backend rather than patching
+    each caller is what makes one slider move the typed turn, the desk
+    conversation and the phone call alike.
+
+    The rate is read per utterance, so a slider moved mid-conversation is heard
+    on her next sentence. At 1.0 the samples are passed through untouched.
+    """
+
+    def __init__(self, inner: AsyncTTSBackend) -> None:
+        self._inner = inner
+        self.name = f"{inner.name}+speed"
+        self.execution = getattr(inner, "execution", "local")
+        self.model_source = getattr(inner, "model_source", "unknown")
+        self.supports_true_stream = inner.supports_true_stream
+        self.network_isolation = getattr(inner, "network_isolation", "none")
+
+    def __getattr__(self, item):
+        # Consumers reach for engine details (sample_rate, provider, metadata).
+        return getattr(self._inner, item)
+
+    async def warm(self) -> None:
+        await self._inner.warm()
+
+    async def cancel(self, generation: int | None = None) -> None:
+        await self._inner.cancel(generation)
+
+    def retire_generation(self, generation: int) -> None:
+        self._inner.retire_generation(generation)
+
+    async def stream(self, sentence: str, *, generation: int):
+        speed = read_voice_speed()
+        stretcher: StreamingTimeStretch | None = None
+        rate = getattr(self._inner, "sample_rate", 24_000)
+        async for chunk in self._inner.stream(sentence, generation=generation):
+            if speed == 1.0:
+                yield chunk
+                continue
+            if stretcher is None:
+                rate = chunk.sample_rate or rate
+                stretcher = StreamingTimeStretch(rate, speed)
+            stretched = stretcher.feed(chunk.pcm)
+            if stretched:
+                yield PCMChunk(stretched, chunk.sample_rate)
+        if stretcher is not None:
+            tail = stretcher.flush()
+            if tail:
+                yield PCMChunk(tail, rate)
+
+
 def create_tts_backend() -> AsyncTTSBackend:
     backend = os.environ.get("SERENA_CALL_TTS_BACKEND", "kokoro").strip().lower()
     if backend == "pocket":
-        return PocketTTSBackend()
+        return SpeedAdjustedTTSBackend(PocketTTSBackend())
     if backend == "kokoro":
+        # Kokoro takes a native speed, so it needs no stretching.
         return KokoroOnnxBackend()
     raise RuntimeError(f"unsupported Serena call TTS backend {backend!r}")
 

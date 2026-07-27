@@ -20,6 +20,15 @@ contextBridge.exposeInMainWorld('serena', {
     ipcRenderer.send('typed-message', String(text || ''));
   },
 
+  // How fast she talks. Persisted by the main process, read by every voice
+  // surface, so it survives a restart and applies beyond this window.
+  setVoiceSpeed: (value) => {
+    ipcRenderer.send('set-voice-speed', Number(value));
+  },
+  onVoiceSpeed: (callback) => {
+    ipcRenderer.on('voice-speed', (_event, value) => callback(value));
+  },
+
   // Backend → Renderer event listeners
   onStateChange: (callback) => {
     ipcRenderer.on('state-change', (_event, state) => callback(state));

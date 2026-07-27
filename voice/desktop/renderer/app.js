@@ -249,3 +249,30 @@ window.serena.onFocusMode((enabled) => {
     input.focus();
   });
 })();
+
+// --- How fast she talks ---
+
+(function setUpSpeedSlider() {
+  const range = document.getElementById('speed-range');
+  const readout = document.getElementById('speed-value');
+  if (!range || !readout || !window.serena || !window.serena.setVoiceSpeed) return;
+
+  const show = (value) => {
+    readout.textContent = `${Number(value).toFixed(2).replace(/0$/, '')}\u00d7`;
+  };
+
+  // Reflect the saved rate, so the slider shows what she is actually doing
+  // rather than snapping back to 1 every time the overlay restarts.
+  window.serena.onVoiceSpeed?.((value) => {
+    range.value = String(value);
+    show(value);
+  });
+
+  range.addEventListener('input', () => {
+    show(range.value);
+    window.serena.setVoiceSpeed(range.value);
+  });
+  // Dragging must not be read as typing or trip the global shortcuts.
+  range.addEventListener('keydown', (event) => event.stopPropagation());
+  show(range.value);
+})();

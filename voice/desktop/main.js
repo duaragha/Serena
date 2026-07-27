@@ -1,6 +1,8 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const WebSocket = require('ws');
 
 // NOTE: GNOME system tray requires the AppIndicator extension.
@@ -10,6 +12,39 @@ const WebSocket = require('ws');
 // Without this, the tray icon will not be visible on GNOME desktops.
 
 const WS_URL = 'ws://localhost:8765';
+// One file, read by every process that speaks as her (this overlay's bridge,
+// the desk conversation, the phone host), so the slider moves all of them.
+const VOICE_SPEED_PATH = path.join(os.homedir(), '.config', 'serena', 'voice_speed');
+const MIN_VOICE_SPEED = 0.5;
+const MAX_VOICE_SPEED = 2.0;
+
+function clampSpeed(value) {
+  const speed = Number(value);
+  if (!Number.isFinite(speed)) return 1.0;
+  return Math.min(Math.max(speed, MIN_VOICE_SPEED), MAX_VOICE_SPEED);
+}
+
+function readVoiceSpeed() {
+  try {
+    return clampSpeed(fs.readFileSync(VOICE_SPEED_PATH, 'utf8').trim());
+  } catch {
+    return 1.0;  // unset or unreadable is simply her normal rate
+  }
+}
+
+function writeVoiceSpeed(value) {
+  const speed = clampSpeed(value);
+  const temporary = `${VOICE_SPEED_PATH}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(VOICE_SPEED_PATH), { recursive: true });
+    // Written then renamed: a reader mid-sentence never sees half a number.
+    fs.writeFileSync(temporary, `${speed.toFixed(2)}\n`, 'utf8');
+    fs.renameSync(temporary, VOICE_SPEED_PATH);
+  } catch (error) {
+    console.error('[serena] could not save voice speed:', error.message);
+  }
+  return speed;
+}
 const RECONNECT_INTERVAL_MS = 3000;
 const WINDOW_WIDTH = 500;
 const WINDOW_HEIGHT = 600;
@@ -385,6 +420,11 @@ ipcMain.on('hide-code-panel', hideCodePanel);
 
 ipcMain.on('renderer-ready', (event) => {
   event.sender.send('state-change', currentState);
+  event.sender.send('voice-speed', readVoiceSpeed());
+});
+
+ipcMain.on('set-voice-speed', (_event, value) => {
+  writeVoiceSpeed(value);
 });
 
 // --- App lifecycle ---

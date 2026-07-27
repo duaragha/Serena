@@ -111,3 +111,30 @@ def test_interrupted_playback_kills_the_player() -> None:
     play = source.split("async def _play_pcm", 1)[1].split("async def", 1)[0]
     assert "except asyncio.CancelledError:" in play
     assert "process.kill()" in play
+
+
+def test_the_speed_slider_is_wired_end_to_end() -> None:
+    """A slider that moved nothing would be worse than no slider."""
+    html = (DESKTOP / "renderer" / "index.html").read_text(encoding="utf-8")
+    css = (DESKTOP / "renderer" / "styles.css").read_text(encoding="utf-8")
+    app = (DESKTOP / "renderer" / "app.js").read_text(encoding="utf-8")
+    preload = (DESKTOP / "preload.js").read_text(encoding="utf-8")
+    main = (DESKTOP / "main.js").read_text(encoding="utf-8")
+
+    assert 'id="speed-range"' in html and 'type="range"' in html
+    assert "#speed-range" in css
+    assert "setVoiceSpeed" in preload and "set-voice-speed" in preload
+    assert "set-voice-speed" in main and "voice_speed" in main
+    assert "setVoiceSpeed" in app
+    # The saved rate must come back after a restart, not reset to 1.
+    assert "onVoiceSpeed" in app and "onVoiceSpeed" in preload
+
+
+def test_the_overlay_and_python_agree_on_the_settings_file() -> None:
+    """Two processes writing different paths is the classic way a slider
+    silently does nothing."""
+    from voice.call.voice_speed import DEFAULT_SPEED_PATH
+
+    main = (DESKTOP / "main.js").read_text(encoding="utf-8")
+    assert f"'{DEFAULT_SPEED_PATH.name}'" in main
+    assert "'.config', 'serena'" in main
