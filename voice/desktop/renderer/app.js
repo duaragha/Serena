@@ -54,10 +54,6 @@ window.serena.onStateChange((state) => {
     window.serena.setState(state);
   }
 
-  // Update transcription display
-  if (state === 'idle' && window.serena.clearText) {
-    window.serena.clearText();
-  }
 });
 
 window.serena.onAmplitude((value) => {
@@ -73,11 +69,6 @@ window.serena.onTranscription((text) => {
   // Clear previous response when new transcription starts
   responseEl.classList.add('hidden');
   responseEl.textContent = '';
-
-  // Show in brain overlay text
-  if (window.serena.showUserText) {
-    window.serena.showUserText(text);
-  }
 });
 
 // --- Response display ---
@@ -89,11 +80,6 @@ window.serena.onResponse((text) => {
   responseEl.classList.remove('hidden');
   responseEl.classList.remove('fade-out');
   typewriterEffect(responseEl, text);
-
-  // Show in brain overlay text
-  if (window.serena.showResponseText) {
-    window.serena.showResponseText(text);
-  }
 
   // Fade out after a delay
   responseTimeout = setTimeout(() => {

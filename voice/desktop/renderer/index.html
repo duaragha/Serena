@@ -178,14 +178,12 @@
   <script src="app.js"></script>
   <script type="module">
     import { BrainVisualizer } from './brain.js';
-    import { TranscriptionDisplay } from './transcription.js';
     import { Dashboard } from './dashboard.js';
     import { NotificationManager } from './notifications.js';
     import { CodePanel } from './code-panel.js';
 
     const container = document.getElementById('brain-container');
     const brain = new BrainVisualizer(container);
-    const transcription = new TranscriptionDisplay(container);
     const dashboard = new Dashboard(document.body);
     const notifications = new NotificationManager(document.body);
 
@@ -193,9 +191,6 @@
     window.serena.registerBrain({
       setState: (state) => brain.setState(state),
       setAmplitude: (value) => brain.setAmplitude(value),
-      showUserText: (text) => transcription.showUserText(text),
-      showResponseText: (text) => transcription.showResponseText(text),
-      clearText: () => transcription.clear(),
     });
     brain.setState(window._serenaVoiceState || 'idle');
 
@@ -232,7 +227,6 @@
     window._serenaNotifications = notifications;
     window._serenaCodePanel = codePanel;
     window._serenaBrain = brain;
-    window._serenaTranscription = transcription;
   </script>
 </body>
 </html>

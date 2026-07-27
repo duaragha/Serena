@@ -4,9 +4,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 const callbacks = {
   setState: null,
   setAmplitude: null,
-  showUserText: null,
-  showResponseText: null,
-  clearText: null,
 };
 
 // Code panel callbacks — registered by the module script
@@ -78,9 +75,6 @@ contextBridge.exposeInMainWorld('serena', {
   registerBrain: (fns) => {
     if (fns.setState) callbacks.setState = fns.setState;
     if (fns.setAmplitude) callbacks.setAmplitude = fns.setAmplitude;
-    if (fns.showUserText) callbacks.showUserText = fns.showUserText;
-    if (fns.showResponseText) callbacks.showResponseText = fns.showResponseText;
-    if (fns.clearText) callbacks.clearText = fns.clearText;
     ipcRenderer.send('renderer-ready');
   },
 
@@ -95,9 +89,6 @@ contextBridge.exposeInMainWorld('serena', {
   // Stable proxy functions survive contextBridge's value freezing.
   setState: (state) => callbacks.setState?.(state),
   setAmplitude: (value) => callbacks.setAmplitude?.(value),
-  showUserText: (text) => callbacks.showUserText?.(text),
-  showResponseText: (text) => callbacks.showResponseText?.(text),
-  clearText: () => callbacks.clearText?.(),
 
   codePanelOnStart: (data) => codePanelCallbacks.onStart?.(data),
   codePanelOnEvent: (event) => codePanelCallbacks.onEvent?.(event),
