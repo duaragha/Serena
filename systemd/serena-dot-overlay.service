@@ -2,6 +2,10 @@
 Description=Serena unified desk voice and dot-field app
 After=graphical-session.target network-online.target pipewire.service wireplumber.service
 Wants=network-online.target pipewire.service wireplumber.service
+# Exactly one of these owns the microphone. The listener hands off by
+# restarting this unit and then exits, but a stray listener left running
+# would silently take the microphone away from the app.
+Conflicts=serena-wake-listener.service
 ConditionPathExists=%h/.config/serena/models/hey_serena.onnx
 ConditionPathExists=%h/.config/serena/wakeword-acceptance.json
 ConditionPathExists=%h/.config/serena/chat_token

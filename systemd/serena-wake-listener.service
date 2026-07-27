@@ -1,20 +1,28 @@
 [Unit]
 Description=Serena local hey-serena wake-only listener
-After=pipewire.service wireplumber.service
-Wants=pipewire.service wireplumber.service
+After=wireplumber.service
+BindsTo=wireplumber.service
+PartOf=wireplumber.service
 Before=serena-dot-overlay.service
 ConditionPathExists=%h/.config/serena/models/hey_serena.onnx
 ConditionPathExists=%h/.config/serena/wakeword-acceptance.json
+StartLimitIntervalSec=180
+StartLimitBurst=3
 
 [Service]
 Type=simple
 WorkingDirectory=%h/Documents/Projects/serena
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-%h/.config/serena/desk.env
-ExecStart=%h/Documents/Projects/serena/voice/.venv-wake/bin/python -u -m voice.desk.wake_listener --manifest %h/.config/serena/wakeword-acceptance.json --phrase-model %h/Documents/Projects/serena/voice/models/faster-whisper-tiny.en --phrase "hey serena"
+ExecStart=%h/Documents/Projects/serena/voice/.venv-wake/bin/python -u -m voice.desk.wake_listener --manifest %h/.config/serena/wakeword-acceptance.json --pipewire-target dmic_dc_filtered --phrase-model %h/Documents/Projects/serena/voice/models/faster-whisper-tiny.en --phrase "hey serena"
 Restart=on-failure
-RestartSec=2
-TimeoutStopSec=5
+RestartSec=5
+TimeoutStopSec=2
+KillMode=control-group
+MemoryMax=768M
+CPUQuota=100%
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
@@ -26,6 +34,9 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX
+# ProtectHome=read-only otherwise blocks the dot-field state file and the wake
+# metrics, so waking looks dead even when the phrase was heard.
+ReadWritePaths=%h/.config/serena %h/.cache/serena %h/.local/state/serena
 
 [Install]
-WantedBy=default.target
+WantedBy=wireplumber.service
