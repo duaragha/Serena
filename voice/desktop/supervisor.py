@@ -128,6 +128,20 @@ class VoiceAppSupervisor:
                 return_code = process.poll()
                 if return_code is None:
                     continue
+                if name == "desk-voice" and return_code == 0:
+                    # A spoken conversation ending is not the app ending. The
+                    # overlay carries the type bar, which is exactly what is
+                    # needed when the microphone is the thing misbehaving, so
+                    # tearing it down here would remove the fallback at the
+                    # only moment it matters. The wake listener restarts this
+                    # unit to bring the microphone back.
+                    print(
+                        "[voice-app] desk-voice finished its conversation; "
+                        "keeping the overlay and bridge up for typing",
+                        flush=True,
+                    )
+                    self.processes.pop(name, None)
+                    break
                 print(
                     f"[voice-app] {name} exited with status {return_code}; "
                     "stopping the paired voice app",

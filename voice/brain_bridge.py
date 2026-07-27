@@ -18,6 +18,7 @@ import json
 import math
 import os
 import socket
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -56,6 +57,20 @@ def parse_client_message(raw):
         message = json.loads(raw)
     except (TypeError, ValueError):
         return None
+    if isinstance(message, dict) and message.get("type") == "typed":
+        # The overlay's type bar: same turn a spoken one would make, for when
+        # the mic is unusable (bad driver, noisy room, someone nearby).
+        if set(message) != {"type", "text"}:
+            return None
+        text = message.get("text")
+        if not isinstance(text, str):
+            return None
+        text = " ".join(text.split())
+        if not text or len(text) > 4_000:
+            return None
+        return json.dumps(
+            {"type": "typed", "text": text}, ensure_ascii=False, separators=(",", ":")
+        )
     if not isinstance(message, dict) or set(message) != {"type", "value"}:
         return None
     if message.get("type") != "amplitude":
@@ -126,14 +141,85 @@ async def handler(ws):
         await ws.send(json.dumps({"type": "state_change", "state": state}))
         async for raw in ws:
             message = parse_client_message(raw)
-            if message is not None:
-                await broadcast(message, exclude=ws)
+            if message is None:
+                continue
+            if '"type":"typed"' in message:
+                text = json.loads(message)["text"]
+                asyncio.create_task(run_typed_turn(text))
+                continue
+            await broadcast(message, exclude=ws)
     except websockets.ConnectionClosed:
         # Overlay restarts and laptop sleep often end without a close frame.
         # That is a normal client departure, not a bridge failure.
         pass
     finally:
         clients.discard(ws)
+
+
+_typed_lock = asyncio.Lock()
+
+
+async def run_typed_turn(text: str) -> None:
+    """Run one typed desk turn: show it, think, speak as she forms it.
+
+    Deliberately the same path a spoken turn takes, including her brokered
+    tools, so typing is an input channel and not a second personality. Clauses
+    go to the speaker the moment they are complete, because waiting for the
+    whole reply makes her sound like a form submission rather than a person.
+    """
+
+    from voice.desk.say import set_state, speak_stream, stream_turn
+
+    if _typed_lock.locked():
+        await broadcast(
+            json.dumps({"type": "response", "text": "one sec, still on the last one."})
+        )
+        return
+    async with _typed_lock:
+        await broadcast(
+            json.dumps({"type": "transcription", "text": text}, ensure_ascii=False)
+        )
+        call_id = f"desk-typed-{int(time.time())}"
+        clauses: asyncio.Queue = asyncio.Queue()
+        player = asyncio.create_task(speak_stream(clauses))
+        spoke = False
+
+        async def on_sentence(clause: str) -> None:
+            nonlocal spoke
+            if not spoke:
+                spoke = True
+                set_state("speaking")
+            await clauses.put(clause)
+
+        set_state("thinking")
+        try:
+            said = await stream_turn(
+                text,
+                call_id=call_id,
+                turn_id=f"{call_id}:1",
+                timeout=240.0,
+                on_sentence=on_sentence,
+            )
+        except (OSError, asyncio.TimeoutError) as exc:
+            await clauses.put(None)
+            with suppress(Exception):
+                await player
+            set_state("idle")
+            await broadcast(
+                json.dumps({"type": "response", "text": f"(could not reach the brain: {exc})"})
+            )
+            return
+        await broadcast(
+            json.dumps(
+                {"type": "response", "text": said or "(silence)"}, ensure_ascii=False
+            )
+        )
+        await clauses.put(None)
+        try:
+            await player
+        except Exception as exc:  # noqa: BLE001 - audio must not break a turn
+            print(f"[brain_bridge] typed turn audio failed: {exc}", flush=True)
+        set_state("idle")
 
 
 async def broadcast(msg, *, exclude=None):

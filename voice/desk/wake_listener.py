@@ -32,9 +32,10 @@ from voice.desk.client import (
     load_token,
 )
 from voice.desk.io import (
+    DEFAULT_PIPEWIRE_WAKE_TARGET,
     GreetingFetcher,
     OverlayPublisher,
-    SoundDeviceMicrophone,
+    PipeWireMicrophone,
     SoundDevicePlayback,
     record_wake_greeting_handoff,
 )
@@ -191,7 +192,10 @@ def _start_full_voice_app() -> None:
             "systemctl",
             "--user",
             "--no-block",
-            "start",
+            # restart, not start: the unit now stays up after a conversation
+            # so the overlay's type bar survives, and a plain start would be a
+            # no-op that never gives the microphone back.
+            "restart",
             FULL_VOICE_UNIT,
         ],
         check=True,
@@ -252,6 +256,14 @@ def launch_full_voice_app() -> None:
         _start_full_voice_app()
 
 
+class WakeMicrophone(Protocol):
+    frames: queue.Queue[bytes]
+
+    def start(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
 class WakeOnlyListener:
     """Listen locally for one phrase, then hand off and exit."""
 
@@ -259,7 +271,7 @@ class WakeOnlyListener:
         self,
         scorer: WakeScorer,
         gate: WakeGate,
-        microphone: SoundDeviceMicrophone,
+        microphone: WakeMicrophone,
         launcher: Callable[[], None] = launch_full_voice_app,
         *,
         phrase_verifier: WakePhraseVerifier,
@@ -268,6 +280,8 @@ class WakeOnlyListener:
         event_sink: Callable[[dict[str, object]], None] = journal_wake_event,
         event_context: dict[str, object] | None = None,
         heartbeat_seconds: float | None = None,
+        microphone_stall_seconds: float = 3.0,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if phrase_window_frames < 1:
             raise ValueError("phrase_window_frames must be at least 1")
@@ -282,6 +296,10 @@ class WakeOnlyListener:
         self.phrase_post_roll_frames = phrase_post_roll_frames
         self.event_sink = event_sink
         self.event_context = dict(event_context or {})
+        self.microphone_stall_seconds = max(
+            1.0, float(microphone_stall_seconds)
+        )
+        self.monotonic = monotonic
         self.heartbeat_seconds = max(
             5.0,
             float(
@@ -299,16 +317,38 @@ class WakeOnlyListener:
         recent_frames: deque[bytes] = deque(maxlen=self.phrase_window_frames)
         listener_id = uuid.uuid4().hex
         self.event_context.setdefault("listener_id", listener_id)
-        last_heartbeat = time.monotonic()
-        self.microphone.start()
-        self._event("wake.listener_started")
+        last_heartbeat = self.monotonic()
+        last_frame = last_heartbeat
+        started = False
         try:
+            self.microphone.start()
+            started = True
+            self._event("wake.listener_started")
             while not stop.is_set():
                 try:
                     pcm = self.microphone.frames.get(timeout=0.25)
                 except queue.Empty:
                     pcm = None
-                now = time.monotonic()
+                now = self.monotonic()
+                if stop.is_set():
+                    continue
+                failure_reason = getattr(
+                    self.microphone, "failure_reason", None
+                )
+                if failure_reason:
+                    self._event(
+                        "wake.microphone_stalled",
+                        reason="capture_failed",
+                    )
+                    raise RuntimeError(str(failure_reason))
+                if pcm is None and now - last_frame >= self.microphone_stall_seconds:
+                    self._event(
+                        "wake.microphone_stalled",
+                        reason="frame_timeout",
+                    )
+                    raise RuntimeError(
+                        "PipeWire wake capture produced no audio frames"
+                    )
                 if now - last_heartbeat >= self.heartbeat_seconds:
                     self._event("wake.heartbeat")
                     last_heartbeat = now
@@ -316,6 +356,7 @@ class WakeOnlyListener:
                     continue
                 if len(pcm) != WAKE_FRAME_BYTES:
                     continue
+                last_frame = now
                 recent_frames.append(pcm)
                 score = self.scorer.score_frame(np.frombuffer(pcm, dtype="<i2"))
                 if not self.gate.observe(score):
@@ -350,13 +391,21 @@ class WakeOnlyListener:
             return False
         finally:
             self.microphone.close()
-            self._event("wake.listener_stopped")
+            if started:
+                self._event("wake.listener_stopped")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
     parser.add_argument("--input-device")
+    parser.add_argument(
+        "--pipewire-target",
+        default=os.environ.get(
+            "SERENA_WAKE_PIPEWIRE_TARGET",
+            DEFAULT_PIPEWIRE_WAKE_TARGET,
+        ),
+    )
     parser.add_argument("--phrase-model", type=Path, default=DEFAULT_PHRASE_MODEL)
     parser.add_argument("--phrase", default=TARGET_WAKE_PHRASE)
     return parser
@@ -376,11 +425,12 @@ def main(argv: list[str] | None = None) -> int:
     frozen = load_manifest_wake_config(
         args.manifest,
         requested_device=requested_device,
+        validate_device=False,
     )
     listener = WakeOnlyListener(
         OpenWakeWordScorer(frozen.spec),
         frozen.gate,
-        SoundDeviceMicrophone(device=frozen.input_device),
+        PipeWireMicrophone(target=args.pipewire_target),
         phrase_verifier=FasterWhisperWakePhraseVerifier(
             args.phrase_model,
             target_phrase=args.phrase,
@@ -388,6 +438,7 @@ def main(argv: list[str] | None = None) -> int:
         event_context={
             "phrase": normalize_wake_phrase(args.phrase),
             "phrase_model_sha256": phrase_model_sha256(args.phrase_model),
+            "pipewire_target": args.pipewire_target,
         },
     )
     listener.run(stop)

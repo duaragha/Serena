@@ -10,6 +10,15 @@ ConditionPathExists=%h/.config/serena/chat_token
 Type=simple
 WorkingDirectory=%h/Documents/Projects/serena
 Environment=PYTHONUNBUFFERED=1
+# The bridge speaks her replies for typed turns, so it needs the same local
+# TTS setup serena-mobile-host.service uses. Without the id-mapped trust the
+# sandbox check rejects a perfectly good /usr/bin/bwrap under this unit's
+# user namespace and typed turns come back silent.
+Environment=SERENA_CALL_TRUST_IDMAPPED_SYSTEM=1
+Environment=SERENA_CALL_TTS_BACKEND=pocket
+Environment=SERENA_CALL_POCKET_PYTHON=%h/Documents/Projects/serena/.venv-pocket/bin/python
+Environment=SERENA_CALL_POCKET_VOICE=anna
+Environment=HF_HOME=%h/.cache/serena/pocket-tts
 EnvironmentFile=-%h/.config/serena/desk.env
 Environment=SERENA_DESK_BARGE_IN=1
 Environment=SERENA_DESK_BARGE_THINKING_SUSTAIN_MS=160

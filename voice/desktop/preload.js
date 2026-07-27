@@ -18,6 +18,11 @@ const codePanelCallbacks = {
 };
 
 contextBridge.exposeInMainWorld('serena', {
+  // Renderer → Backend: the type bar, for when the mic is unusable
+  sendTyped: (text) => {
+    ipcRenderer.send('typed-message', String(text || ''));
+  },
+
   // Backend → Renderer event listeners
   onStateChange: (callback) => {
     ipcRenderer.on('state-change', (_event, state) => callback(state));

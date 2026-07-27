@@ -218,3 +218,48 @@ window.serena.onFocusMode((enabled) => {
     overlayEl.classList.remove('focus-mode');
   }
 });
+
+// ── Type bar ────────────────────────────────────────────────────────────
+// A typed line runs the same turn as a spoken one, so this is an input
+// channel, not a separate mode. Kept usable while she is mid-answer: the
+// bar dims and holds the text rather than dropping it.
+(() => {
+  const bar = document.getElementById('type-bar');
+  const input = document.getElementById('type-input');
+  if (!bar || !input || !window.serena || !window.serena.sendTyped) return;
+
+  let busy = false;
+
+  const setBusy = (value) => {
+    busy = value;
+    bar.classList.toggle('busy', value);
+    input.placeholder = value ? 'thinking…' : 'type to serena';
+  };
+
+  input.addEventListener('keydown', (event) => {
+    // Never let the overlay's global shortcuts swallow ordinary typing.
+    event.stopPropagation();
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    const text = input.value.trim();
+    if (!text || busy) return;
+    window.serena.sendTyped(text);
+    input.value = '';
+    setBusy(true);
+  });
+
+  // She has answered (or failed); take the bar back.
+  window.serena.onResponse(() => setBusy(false));
+
+  // Safety net: never strand the bar if a turn dies without a response.
+  window.serena.onStateChange((state) => {
+    if (state === 'idle') setBusy(false);
+  });
+
+  // Focus the bar on any keystroke that is plainly someone starting to type.
+  document.addEventListener('keydown', (event) => {
+    if (document.activeElement === input) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key.length !== 1) return;
+    input.focus();
+  });
+})();

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
 import time
@@ -27,7 +28,7 @@ BRAIN_SOCK = Path.home() / ".config" / "serena" / "brain.sock"
 VOICE_STATE = Path.home() / ".config" / "serena" / "voice_state"
 
 
-def _set_state(state: str) -> None:
+def set_state(state: str) -> None:
     """Drive the dot field through the same state file the daemon watches."""
     try:
         VOICE_STATE.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +37,7 @@ def _set_state(state: str) -> None:
         pass
 
 
-async def _ask_brain(text: str, *, call_id: str, turn_id: str, timeout: float) -> str:
+async def ask_brain(text: str, *, call_id: str, turn_id: str, timeout: float) -> str:
     reader, writer = await asyncio.open_unix_connection(str(BRAIN_SOCK))
     request = {
         "type": "turn",
@@ -68,7 +69,138 @@ async def _ask_brain(text: str, *, call_id: str, turn_id: str, timeout: float) -
     return said.strip()
 
 
-async def _speak(text: str) -> None:
+_tts_backend = None
+_tts_lock: asyncio.Lock | None = None
+
+
+def _tts_environment() -> None:
+    """Match serena-mobile-host.service so the local engine actually loads."""
+    import os
+
+    os.environ.setdefault("SERENA_CALL_TTS_BACKEND", "pocket")
+    pocket_python = Path.home() / "Documents/Projects/serena/.venv-pocket/bin/python"
+    if pocket_python.exists():
+        os.environ.setdefault("SERENA_CALL_POCKET_PYTHON", str(pocket_python))
+    os.environ.setdefault("SERENA_CALL_POCKET_VOICE", "anna")
+    os.environ.setdefault("HF_HOME", str(Path.home() / ".cache/serena/pocket-tts"))
+
+
+async def _backend():
+    """One warm backend for the process. Spawning a worker per clause would
+    cost more than the streaming buys."""
+    global _tts_backend
+    if _tts_backend is None:
+        _tts_environment()
+        from voice.call.tts import create_tts_backend
+
+        _tts_backend = create_tts_backend()
+    return _tts_backend
+
+
+async def speak_stream(sentences: "asyncio.Queue[str | None]") -> None:
+    """Play clauses in order as they are produced, never overlapping."""
+    global _tts_lock
+    if _tts_lock is None:
+        _tts_lock = asyncio.Lock()
+    async with _tts_lock:
+        backend = await _backend()
+        while True:
+            clause = await sentences.get()
+            if clause is None:
+                return
+            chunks: list[bytes] = []
+            rate = 24_000
+            async for chunk in backend.stream(clause, generation=0):
+                pcm = getattr(chunk, "pcm", chunk)
+                rate = getattr(chunk, "sample_rate", rate) or rate
+                if pcm:
+                    chunks.append(pcm)
+            if chunks:
+                await _play_pcm(b"".join(chunks), rate)
+
+
+async def _play_pcm(pcm: bytes, rate: int) -> None:
+    import shutil
+
+    player = shutil.which("aplay") or shutil.which("paplay")
+    if player is None:
+        raise RuntimeError("no local audio player (aplay/paplay) found")
+    if player.endswith("paplay"):
+        argv = [player, "--raw", "--format=s16le", f"--rate={rate}", "--channels=1"]
+    else:
+        argv = [player, "-q", "-t", "raw", "-f", "S16_LE", "-r", str(rate), "-c", "1"]
+    process = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await process.communicate(pcm)
+    if process.returncode != 0:
+        raise RuntimeError((err or b"").decode("utf-8", "replace").strip() or "playback failed")
+
+
+async def stream_turn(
+    text: str,
+    *,
+    call_id: str,
+    turn_id: str,
+    timeout: float,
+    on_sentence=None,
+) -> str:
+    """One turn, speaking each clause the moment it is complete.
+
+    Waiting for the whole reply before making a sound is what makes her feel
+    like a form submission instead of someone talking, so the brain's token
+    deltas feed the same incremental splitter the call pipeline uses and each
+    finished clause goes straight out.
+    """
+    from voice.call.sentences import IncrementalSentenceSplitter
+
+    splitter = IncrementalSentenceSplitter(first_clause_chars=12, first_clause_hard_chars=56)
+    reader, writer = await asyncio.open_unix_connection(str(BRAIN_SOCK))
+    request = {
+        "type": "turn",
+        "request_id": f"{call_id}-{turn_id}",
+        "protocol": "voice",
+        "text": text,
+        "stream": True,
+        "call_id": call_id,
+        "turn_id": turn_id,
+    }
+    writer.write((json.dumps(request) + "\n").encode("utf-8"))
+    await writer.drain()
+    parts: list[str] = []
+    said = ""
+    try:
+        while True:
+            line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+            if not line:
+                break
+            event = json.loads(line)
+            kind = event.get("type")
+            if kind == "response.delta":
+                delta = event.get("delta") or ""
+                if delta:
+                    parts.append(delta)
+                    if on_sentence is not None:
+                        for clause in splitter.feed(delta):
+                            await on_sentence(clause)
+            elif kind == "response.done":
+                said = (event.get("say") or "").strip() or "".join(parts).strip()
+                if on_sentence is not None:
+                    for clause in splitter.flush():
+                        await on_sentence(clause)
+                break
+            elif kind == "error":
+                said = f"(brain error: {event.get('error')})"
+                break
+    finally:
+        writer.close()
+    return said.strip()
+
+
+async def speak(text: str) -> None:
     """Say it out loud through the same local TTS the voice loop uses.
 
     Default to the backend the running services actually use (pocket, see
@@ -118,30 +250,51 @@ async def _speak(text: str) -> None:
         )
 
 
-async def main_async(text: str, *, speak: bool, timeout: float) -> int:
+async def main_async(text: str, *, play_audio: bool, timeout: float) -> int:
     if not BRAIN_SOCK.exists():
         print("brain daemon is not running (no brain.sock)", file=sys.stderr)
         return 1
     call_id = f"desk-typed-{int(time.time())}"
     started = time.monotonic()
-    _set_state("thinking")
+    set_state("thinking")
+    clauses: asyncio.Queue = asyncio.Queue()
+    player = asyncio.create_task(speak_stream(clauses)) if play_audio else None
+    spoke = False
+
+    async def on_sentence(clause: str) -> None:
+        nonlocal spoke
+        if not spoke:
+            spoke = True
+            set_state("speaking")
+        await clauses.put(clause)
+
     try:
-        said = await _ask_brain(text, call_id=call_id, turn_id=f"{call_id}:1", timeout=timeout)
+        said = await stream_turn(
+            text,
+            call_id=call_id,
+            turn_id=f"{call_id}:1",
+            timeout=timeout,
+            on_sentence=on_sentence if play_audio else None,
+        )
     except (OSError, asyncio.TimeoutError) as exc:
-        _set_state("idle")
+        if player is not None:
+            await clauses.put(None)
+            with contextlib.suppress(Exception):
+                await player
+        set_state("idle")
         print(f"could not reach the brain: {exc}", file=sys.stderr)
         return 1
     elapsed = time.monotonic() - started
     print(f"\n  you:    {text}")
     print(f"  serena: {said or '(silence)'}")
     print(f"  ({elapsed:.1f}s)\n")
-    if speak and said:
-        _set_state("speaking")
+    if player is not None:
+        await clauses.put(None)
         try:
-            await _speak(said)
+            await player
         except Exception as exc:  # noqa: BLE001 - never fail the turn on audio
             print(f"(could not play audio: {exc})", file=sys.stderr)
-    _set_state("idle")
+    set_state("idle")
     return 0
 
 
@@ -152,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=240.0)
     args = parser.parse_args(argv)
     return asyncio.run(
-        main_async(" ".join(args.text), speak=not args.quiet, timeout=args.timeout)
+        main_async(" ".join(args.text), play_audio=not args.quiet, timeout=args.timeout)
     )
 
 

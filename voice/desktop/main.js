@@ -108,6 +108,12 @@ function createWindow() {
   });
 
   // Renderer can still send set-ignore-mouse events, but no-op now
+  // The overlay's type bar. Same turn a spoken one makes; the bridge runs it.
+  ipcMain.on('typed-message', (_event, text) => {
+    const clean = String(text || '').trim();
+    if (clean) wsSend({ type: 'typed', text: clean.slice(0, 4000) });
+  });
+
   ipcMain.on('set-ignore-mouse', (_event, _ignore) => {
     // No longer needed. The proper window has real hit testing.
   });
