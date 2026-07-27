@@ -41,6 +41,8 @@ from voice.desk.io import (
 )
 from voice.desk.transport import DeskTransport, MicFramePacker, TransportEvent
 
+SAMPLE_DTYPE = "<i2"
+
 DEFAULT_MODEL_PATH = Path.home() / ".config" / "serena" / "models" / "hey_serena.onnx"
 DEFAULT_TOKEN_PATH = Path.home() / ".config" / "serena" / "chat_token"
 DEFAULT_METRICS_PATH = Path.home() / ".local" / "state" / "serena" / "desk_metrics.jsonl"
@@ -290,10 +292,24 @@ class DeskMetrics:
 # speech: the barge-in gate cancelled her reply the instant she began forming
 # it, and she went to "thinking" and then silent. Measure the room instead.
 NOISE_CALIBRATION_SECONDS = 1.0
+# A freshly opened capture hands back zero-filled frames before real audio
+# flows. Those are not a quiet room, they are no room at all, and believing
+# them measured a floor of -120 dBFS and dropped the threshold back to the
+# default that the room sits above, so every frame read as speech again.
+NOISE_CALIBRATION_DEADLINE_SECONDS = 5.0
+NOISE_MIN_REAL_FRAMES = 8
 NOISE_SETTLING_FRAMES = 3
 NOISE_FLOOR_PERCENTILE = 75.0
 NOISE_FLOOR_MARGIN_DB = 8.0
 NOISE_FLOOR_CEILING_DBFS = -30.0
+
+
+def is_real_audio(frame: bytes) -> bool:
+    """True when a frame carries signal rather than digital silence."""
+    if not frame:
+        return False
+    samples = np.frombuffer(frame, dtype=SAMPLE_DTYPE)
+    return bool(samples.size) and bool(np.any(samples))
 
 
 def measure_noise_floor(frames: list[bytes]) -> tuple[float, float]:
@@ -303,8 +319,9 @@ def measure_noise_floor(frames: list[bytes]) -> tuple[float, float]:
     DC-heavy signal after a reboot, and a constant offset reads as a loud room
     forever, which would pin the threshold above his actual voice.
     """
-    usable = frames[NOISE_SETTLING_FRAMES:] or frames
-    blocks = [np.frombuffer(frame, dtype="<i2").astype(np.float64) for frame in usable if frame]
+    real = [frame for frame in frames if is_real_audio(frame)]
+    usable = real[NOISE_SETTLING_FRAMES:] or real
+    blocks = [np.frombuffer(frame, dtype=SAMPLE_DTYPE).astype(np.float64) for frame in usable]
     blocks = [block for block in blocks if block.size]
     if not blocks:
         return float("nan"), 0.0
@@ -407,6 +424,7 @@ class DeskClient:
         self.session_stop = session_stop or threading.Event()
         # Replaced by the measured room floor once the microphone is running.
         self.voice_activity_dbfs = self.config.voice_activity_dbfs
+        self.noise_calibrated = False
 
     def _session_should_stop(self, service_stop: threading.Event) -> bool:
         return service_stop.is_set() or self.session_stop.is_set()
@@ -436,15 +454,24 @@ class DeskClient:
     def _calibrate_microphone(self) -> None:
         """Learn the room's noise floor before deciding what counts as speech."""
         frames: list[bytes] = []
-        deadline = time.monotonic() + NOISE_CALIBRATION_SECONDS
-        while time.monotonic() < deadline:
-            try:
-                frames.append(
-                    self.microphone.frames.get(timeout=max(0.02, deadline - time.monotonic()))
-                )
-            except queue.Empty:
+        started = time.monotonic()
+        deadline = started + NOISE_CALIBRATION_SECONDS
+        give_up = started + NOISE_CALIBRATION_DEADLINE_SECONDS
+        while True:
+            now = time.monotonic()
+            real = sum(1 for frame in frames if is_real_audio(frame))
+            # Keep waiting past the normal window while the capture is still
+            # warming up and handing back silence, rather than calibrating to it.
+            if now >= deadline and real >= NOISE_MIN_REAL_FRAMES:
                 break
+            if now >= give_up:
+                break
+            try:
+                frames.append(self.microphone.frames.get(timeout=0.1))
+            except queue.Empty:
+                continue
         floor, offset = measure_noise_floor(frames)
+        self.noise_calibrated = math.isfinite(floor)
         self.voice_activity_dbfs = calibrate_voice_threshold(
             frames, self.config.voice_activity_dbfs
         )
@@ -455,6 +482,8 @@ class DeskClient:
             floor_dbfs=None if not math.isfinite(floor) else round(floor, 2),
             dc_offset=round(offset, 1),
             frames=len(frames),
+            real_frames=sum(1 for frame in frames if is_real_audio(frame)),
+            waited_ms=round((time.monotonic() - started) * 1000, 1),
         )
 
     def run(
@@ -701,11 +730,20 @@ class DeskClient:
         first_output_written = False
         # SERENA_DESK_BARGE_IN=0 restores the exact half-duplex behavior:
         # thinking/speaking phases never consume the microphone queue.
-        barge_gate: BargeInGate | None = BargeInGate(
-            voice_activity_dbfs=self.voice_activity_dbfs
+        #
+        # Without a measured room the threshold is a guess, and a guess below
+        # the real floor makes the gate fire on every frame and cancel her
+        # reply before a word of it is spoken. Not being interruptible is a far
+        # better failure than never answering, so barge-in sits this one out.
+        barge_gate: BargeInGate | None = (
+            BargeInGate(voice_activity_dbfs=self.voice_activity_dbfs)
+            if self.noise_calibrated
+            else None
         )
-        if not barge_gate.enabled:
+        if barge_gate is not None and not barge_gate.enabled:
             barge_gate = None
+        if not self.noise_calibrated:
+            self.metrics.record("desk.barge_in_disabled", reason="noise floor unmeasured")
         # After a barge-in cancels a generation, its already-in-flight TTS
         # frames may still arrive; drop them until the next audio.start.
         discard_stale_audio = False

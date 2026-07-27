@@ -250,6 +250,9 @@ def _client(
         ),
         metrics=metrics,
     )
+    # These exercise behaviour after the room has been measured; run() is not
+    # called here, so the calibration that normally sets this never happens.
+    client.noise_calibrated = True
     return client, playback, overlay, fetcher, metrics
 
 
@@ -878,3 +881,80 @@ def test_a_dc_wedged_microphone_does_not_read_as_constant_speech() -> None:
     floor, offset = measure_noise_floor([wedged.tobytes()] * 12)
     assert offset < -8_000
     assert floor < -35.0
+
+
+def test_digital_silence_is_not_a_quiet_room() -> None:
+    """The live regression: a freshly opened capture hands back zero-filled
+    frames, calibration read a floor of -120 dBFS, the threshold fell back to
+    the default the room sits above, and every frame counted as him talking."""
+    from voice.desk.client import measure_noise_floor
+
+    silence = [b"\x00\x00" * 800] * 12
+    floor, offset = measure_noise_floor(silence)
+    assert not np.isfinite(floor)
+    assert offset == 0.0
+
+    from voice.desk.client import calibrate_voice_threshold
+
+    assert calibrate_voice_threshold(silence, -45.0) == -45.0
+
+
+def test_real_frames_are_used_even_when_silence_arrives_first() -> None:
+    from voice.desk.client import measure_noise_floor
+
+    rng = np.random.default_rng(11)
+    warmup = [b"\x00\x00" * 800] * 6
+    room = [(rng.normal(0, 400, 800)).astype("<i2").tobytes() for _ in range(12)]
+    floor, _offset = measure_noise_floor(warmup + room)
+    assert -42.0 < floor < -30.0
+
+
+def test_calibration_waits_for_a_capture_that_starts_silent(monkeypatch) -> None:
+    """It must not calibrate to the warm-up silence and walk away."""
+    import queue as queue_module
+
+    from voice.desk import client as client_module
+
+    rng = np.random.default_rng(5)
+    frames = queue_module.Queue()
+    for _ in range(20):
+        frames.put(b"\x00\x00" * 800)
+    for _ in range(20):
+        frames.put((rng.normal(0, 400, 800)).astype("<i2").tobytes())
+
+    class _Mic:
+        def __init__(self) -> None:
+            self.frames = frames
+
+    class _Metrics:
+        def __init__(self) -> None:
+            self.records: list[tuple[str, dict]] = []
+
+        def record(self, event, **fields):
+            self.records.append((event, fields))
+
+    client = client_module.DeskClient.__new__(client_module.DeskClient)
+    client.microphone = _Mic()
+    client.metrics = _Metrics()
+    client.config = client_module.DeskConfig()
+    client.voice_activity_dbfs = client.config.voice_activity_dbfs
+
+    client._calibrate_microphone()
+
+    assert client.voice_activity_dbfs > -45.0
+    event, fields = client.metrics.records[-1]
+    assert event == "desk.noise_calibrated"
+    assert fields["real_frames"] >= client_module.NOISE_MIN_REAL_FRAMES
+
+
+def test_barge_in_stands_down_when_the_room_was_never_measured() -> None:
+    """Not being interruptible beats never answering.
+
+    An uncalibrated threshold sits below the real floor, so the gate fires on
+    every frame and cancels her reply before a word of it is spoken.
+    """
+    source = (Path(__file__).resolve().parents[1] / "client.py").read_text(
+        encoding="utf-8"
+    )
+    assert "if self.noise_calibrated" in source
+    assert "desk.barge_in_disabled" in source
