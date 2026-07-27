@@ -135,7 +135,16 @@ async def _play_pcm(pcm: bytes, rate: int) -> None:
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, err = await process.communicate(pcm)
+    try:
+        _, err = await process.communicate(pcm)
+    except asyncio.CancelledError:
+        # Interrupted mid-sentence. The player is a separate process, so it
+        # keeps talking over the next turn unless it is killed here.
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        with contextlib.suppress(Exception):
+            await process.wait()
+        raise
     if process.returncode != 0:
         raise RuntimeError((err or b"").decode("utf-8", "replace").strip() or "playback failed")
 

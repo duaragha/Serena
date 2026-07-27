@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -406,7 +408,226 @@ async def read_ledger(args):
                          "text": format_ledgers(args.get("name") or "")}]}
 
 
-BRAIN_TOOLS = (git_latest, github_activity, recall_chats, read_ledger)
+_STOPWORDS = frozenset(
+    "a about after again all also an and any are as at be because been before being "
+    "but by can could did do does for from get got had has have here how i if in into "
+    "is it its just me more most my of on or over should so some still than that the "
+    "their them then there they this to too very was were what when where which while "
+    "who why will with would you your".split()
+)
+_MEMORY_HITS = 8
+_KNOWLEDGE_HITS = 10
+
+
+def _terms(query: str) -> list[str]:
+    words = re.findall(r"[a-z0-9]+", query.lower())
+    kept = [word for word in words if len(word) > 2 and word not in _STOPWORDS]
+    return kept or words
+
+
+def _weights(terms: list[str], corpus: list[str]) -> dict[str, float]:
+    """Weight each term by how rare it is in what we are searching.
+
+    Plain hit-counting is useless on his notes: asking about the "type bar"
+    ranked a Google Ads memory first because it happened to say "field type".
+    A term in half the corpus tells us nothing, a term in one document tells
+    us everything, so weight by inverse document frequency.
+    """
+    total = max(1, len(corpus))
+    lowered = [text.lower() for text in corpus]
+    weights = {}
+    for term in terms:
+        matches = _matcher(term)
+        frequency = sum(1 for text in lowered if matches(text))
+        weights[term] = math.log(total / frequency) if frequency else 0.0
+    return weights
+
+
+_SHORT_TERM = 5
+
+
+def _matcher(term: str):
+    """Long terms match as substrings, short ones only as whole words.
+
+    He says "the phev tracker" about a directory called full_tracker, so
+    substrings have to work. But a bare "bar" inside "barcode" is not a hit,
+    and short words are exactly the ones common enough to appear inside
+    something unrelated.
+    """
+    if len(term) > _SHORT_TERM:
+        return lambda text: term in text
+    # Both boundaries, or "bar" happily matches "barcode". Plurals still count.
+    pattern = re.compile(rf"\b{re.escape(term)}s?\b", re.IGNORECASE)
+    return lambda text: pattern.search(text) is not None
+
+
+def _relevance(terms: list[str], weights: dict[str, float], haystack: str) -> float:
+    low = haystack.lower()
+    return sum(
+        weights.get(term, 0.0) for term in terms if _matcher(term)(low)
+    )
+
+
+_MIN_COVERAGE = 0.35
+
+
+def _top(
+    scored: list[tuple[float, object]],
+    limit: int,
+    *,
+    available: float = 0.0,
+) -> list[tuple[float, object]]:
+    """Keep the strong matches and cut the tail.
+
+    Two floors, and the absolute one matters most. Ranking alone always has a
+    best result, so a query whose distinctive word appears nowhere still
+    returns whatever merely shared a filler word: asking about the "type bar"
+    came back with a Google Ads note, confidently, because it said "field
+    type". A match has to carry a real share of what was asked for. Answering
+    "nothing in memory about that" is correct there, and out loud a confident
+    wrong answer is far worse than a miss.
+    """
+    if not scored:
+        return []
+    scored.sort(key=lambda row: row[0], reverse=True)
+    floor = max(scored[0][0] * 0.35, available * _MIN_COVERAGE)
+    return [row for row in scored if row[0] >= floor][:limit]
+
+
+def _search_memory(query: str) -> str:
+    from memory.store import _ago, list_memories
+
+    terms = _terms(query)
+    if not terms:
+        return "(no search terms)"
+    records = list_memories()
+    weights = _weights(terms, [record.get("content", "") for record in records])
+    scored = [
+        (score, record)
+        for record, score in (
+            (record, _relevance(terms, weights, record.get("content", "")))
+            for record in records
+        )
+        if score > 0
+    ]
+    hits = _top(scored, _MEMORY_HITS, available=sum(weights.values()))
+    if not hits:
+        return f"nothing in memory about {query!r}"
+    lines = []
+    for _score, record in hits:
+        age = _ago(record.get("updated_at", ""))
+        suffix = f"  ({age})" if age else ""
+        content = " ".join(str(record.get("content", "")).split())[:400]
+        lines.append(f"- [{record.get('id')}] ({record.get('type')}) {content}{suffix}")
+    extra = len(scored) - len(hits)
+    if extra > 0:
+        lines.append(f"(+{extra} weaker matches, narrow the search)")
+    return "\n".join(lines)[:4000]
+
+
+def _search_knowledge(query: str) -> str:
+    from knowledge.reader import KNOWLEDGE_DIR, list_topics
+
+    topics = list_topics()
+    terms = _terms(query)
+    if not terms:
+        listing = [f"- {_label(topic)}" for topic in topics[:40]]
+        return (
+            f"{len(topics)} knowledge topics, most recent first:\n"
+            + "\n".join(listing)
+        )[:4000]
+
+    bodies = []
+    for topic in topics:
+        body = ""
+        directory = KNOWLEDGE_DIR / topic["slug"]
+        for path in sorted(directory.glob("*.md"))[:8]:
+            with contextlib.suppress(OSError):
+                body += path.read_text(errors="replace")[:20_000]
+        bodies.append(body)
+
+    headings = [
+        f"{topic['slug']} {topic['title']} {topic.get('description', '')}"
+        for topic in topics
+    ]
+    heading_weights = _weights(terms, headings)
+    body_weights = _weights(terms, bodies)
+    scored = []
+    for topic, heading, body in zip(topics, headings, bodies, strict=True):
+        # A topic that is about the thing beats one that mentions it in passing.
+        score = _relevance(terms, heading_weights, heading) * 3 + _relevance(
+            terms, body_weights, body
+        )
+        if score > 0:
+            scored.append((score, topic))
+    hits = _top(scored, _KNOWLEDGE_HITS, available=sum(heading_weights.values()) * 3
+                + sum(body_weights.values()))
+    if not hits:
+        return f"nothing in the knowledge base about {query!r}"
+    lines = [f"- {_label(topic)}" for _score, topic in hits]
+    lines.append("(read_knowledge <slug> for the full write-up)")
+    return "\n".join(lines)[:4000]
+
+
+def _label(topic: dict) -> str:
+    """Most topics have no real title, just the slug echoed back."""
+    title = str(topic.get("title") or "").strip()
+    description = " ".join(str(topic.get("description") or "").split())[:200]
+    label = topic["slug"] if title.lower() == topic["slug"].lower() else (
+        f"{topic['slug']}: {title}"
+    )
+    return f"{label} — {description}" if description else label
+
+
+def _read_knowledge(slug: str) -> str:
+    from knowledge.reader import get_topic_content, list_topics
+
+    slug = slug.strip().strip("/")
+    if not slug:
+        return "(no topic given)"
+    known = {topic["slug"] for topic in list_topics()}
+    if slug not in known:
+        return f"no knowledge topic called {slug!r}. Use search_knowledge first."
+    return get_topic_content(slug)[:12_000]
+
+
+@tool("search_memory", "Search everything Serena has saved about Raghav: his "
+      "preferences, feedback, project decisions, references, open loops and "
+      "tasks. Only active tasks/loops/ledgers are injected into context, so "
+      "check here before saying you do not know something about him or his "
+      "projects. Read-only.",
+      {"query": str}, annotations=_LOCAL_READ_ONLY)
+async def search_memory(args):
+    out = await asyncio.to_thread(_search_memory, str(args.get("query") or ""))
+    return {"content": [{"type": "text", "text": out}]}
+
+
+@tool("search_knowledge", "Find topics in Raghav's knowledge base: research "
+      "and write-ups saved from past sessions. Searches titles and full text. "
+      "An empty query lists what is in there. Read-only.",
+      {"query": str}, annotations=_LOCAL_READ_ONLY)
+async def search_knowledge(args):
+    out = await asyncio.to_thread(_search_knowledge, str(args.get("query") or ""))
+    return {"content": [{"type": "text", "text": out}]}
+
+
+@tool("read_knowledge", "Read one knowledge-base topic in full, by the slug "
+      "search_knowledge returned. Read-only.",
+      {"topic": str}, annotations=_LOCAL_READ_ONLY)
+async def read_knowledge(args):
+    out = await asyncio.to_thread(_read_knowledge, str(args.get("topic") or ""))
+    return {"content": [{"type": "text", "text": out}]}
+
+
+BRAIN_TOOLS = (
+    git_latest,
+    github_activity,
+    recall_chats,
+    read_ledger,
+    search_memory,
+    search_knowledge,
+    read_knowledge,
+)
 BRAIN_TOOL_NAMES = [f"mcp__serena-ro__{item.name}" for item in BRAIN_TOOLS]
 
 

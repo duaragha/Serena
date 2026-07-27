@@ -90,3 +90,24 @@ def test_type_bar_is_wired_end_to_end() -> None:
     assert "sendTyped" in app
     # Typing must never be swallowed by the overlay's global shortcuts.
     assert "stopPropagation" in app
+
+
+def test_a_new_message_interrupts_her_instead_of_being_refused() -> None:
+    """She speaks far slower than he types.
+
+    Serialising typed turns meant the second message got "one sec, still on the
+    last one" almost every time, which is not how interrupting someone works.
+    """
+    source = (DESKTOP.parent / "brain_bridge.py").read_text(encoding="utf-8")
+    # The docstring still quotes the old line; it must not be a reply any more.
+    assert '"text": "one sec' not in source
+    assert "_interrupt_typed_turn" in source
+    assert "previous.cancel()" in source
+
+
+def test_interrupted_playback_kills_the_player() -> None:
+    """aplay is a separate process; cancelling the task leaves it talking."""
+    source = (DESKTOP.parent / "desk" / "say.py").read_text(encoding="utf-8")
+    play = source.split("async def _play_pcm", 1)[1].split("async def", 1)[0]
+    assert "except asyncio.CancelledError:" in play
+    assert "process.kill()" in play

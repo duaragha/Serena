@@ -156,7 +156,25 @@ async def handler(ws):
         clients.discard(ws)
 
 
-_typed_lock = asyncio.Lock()
+_typed_turn: asyncio.Task | None = None
+
+
+async def _interrupt_typed_turn() -> None:
+    """Cut off whatever she is saying so the new message wins.
+
+    Turning a message away with "one sec, still on the last one" is not how
+    interrupting someone works, and it lands constantly, because she speaks far
+    slower than he types. Talking over her is allowed on the spoken side; it
+    should be allowed here too.
+    """
+    global _typed_turn
+
+    previous = _typed_turn
+    if previous is None or previous.done() or previous is asyncio.current_task():
+        return
+    previous.cancel()
+    with suppress(BaseException):
+        await previous
 
 
 async def run_typed_turn(text: str) -> None:
@@ -168,58 +186,66 @@ async def run_typed_turn(text: str) -> None:
     whole reply makes her sound like a form submission rather than a person.
     """
 
+    global _typed_turn
+
     from voice.desk.say import set_state, speak_stream, stream_turn
 
-    if _typed_lock.locked():
+    await _interrupt_typed_turn()
+    _typed_turn = asyncio.current_task()
+    await broadcast(
+        json.dumps({"type": "transcription", "text": text}, ensure_ascii=False)
+    )
+    call_id = f"desk-typed-{int(time.time())}"
+    clauses: asyncio.Queue = asyncio.Queue()
+    player = asyncio.create_task(speak_stream(clauses))
+    spoke = False
+
+    async def on_sentence(clause: str) -> None:
+        nonlocal spoke
+        if not spoke:
+            spoke = True
+            set_state("speaking")
+        await clauses.put(clause)
+
+    set_state("thinking")
+    try:
+        said = await stream_turn(
+            text,
+            call_id=call_id,
+            turn_id=f"{call_id}:1",
+            timeout=240.0,
+            on_sentence=on_sentence,
+        )
+    except asyncio.CancelledError:
+        player.cancel()
+        with suppress(BaseException):
+            await player
+        raise
+    except (OSError, asyncio.TimeoutError) as exc:
+        await clauses.put(None)
+        with suppress(Exception):
+            await player
+        set_state("idle")
         await broadcast(
-            json.dumps({"type": "response", "text": "one sec, still on the last one."})
+            json.dumps({"type": "response", "text": f"(could not reach the brain: {exc})"})
         )
         return
-    async with _typed_lock:
-        await broadcast(
-            json.dumps({"type": "transcription", "text": text}, ensure_ascii=False)
+    await broadcast(
+        json.dumps(
+            {"type": "response", "text": said or "(silence)"}, ensure_ascii=False
         )
-        call_id = f"desk-typed-{int(time.time())}"
-        clauses: asyncio.Queue = asyncio.Queue()
-        player = asyncio.create_task(speak_stream(clauses))
-        spoke = False
-
-        async def on_sentence(clause: str) -> None:
-            nonlocal spoke
-            if not spoke:
-                spoke = True
-                set_state("speaking")
-            await clauses.put(clause)
-
-        set_state("thinking")
-        try:
-            said = await stream_turn(
-                text,
-                call_id=call_id,
-                turn_id=f"{call_id}:1",
-                timeout=240.0,
-                on_sentence=on_sentence,
-            )
-        except (OSError, asyncio.TimeoutError) as exc:
-            await clauses.put(None)
-            with suppress(Exception):
-                await player
-            set_state("idle")
-            await broadcast(
-                json.dumps({"type": "response", "text": f"(could not reach the brain: {exc})"})
-            )
-            return
-        await broadcast(
-            json.dumps(
-                {"type": "response", "text": said or "(silence)"}, ensure_ascii=False
-            )
-        )
-        await clauses.put(None)
-        try:
+    )
+    await clauses.put(None)
+    try:
+        await player
+    except asyncio.CancelledError:
+        player.cancel()
+        with suppress(BaseException):
             await player
-        except Exception as exc:  # noqa: BLE001 - audio must not break a turn
-            print(f"[brain_bridge] typed turn audio failed: {exc}", flush=True)
-        set_state("idle")
+        raise
+    except Exception as exc:  # noqa: BLE001 - audio must not break a turn
+        print(f"[brain_bridge] typed turn audio failed: {exc}", flush=True)
+    set_state("idle")
 
 
 async def broadcast(msg, *, exclude=None):
