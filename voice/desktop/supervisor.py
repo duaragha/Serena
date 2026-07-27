@@ -19,6 +19,11 @@ DESK_PYTHON = REPO_ROOT / "voice" / ".venv-wake" / "bin" / "python"
 ELECTRON = DESKTOP_ROOT / "node_modules" / ".bin" / "electron"
 MANIFEST = Path.home() / ".config" / "serena" / "wakeword-acceptance.json"
 DOT_DISPLAY_DELAY_SECONDS = 1.0
+# --start-awake runs exactly one conversation and returns. Dropping the flag
+# puts the same client back on the wake word instead.
+START_AWAKE = "--start-awake"
+REARM_MIN_UPTIME_SECONDS = 5.0
+REARM_MAX_CONSECUTIVE_FAILURES = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +77,8 @@ class VoiceAppSupervisor:
         self.items = items or components()
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
         self.stopping = threading.Event()
+        self.rearm_failures = 0
+        self._rearmed_at = 0.0
 
     def start(self) -> None:
         environment = os.environ.copy()
@@ -95,6 +102,49 @@ class VoiceAppSupervisor:
                 raise RuntimeError(
                     f"{item.name} exited during startup with status {return_code}"
                 )
+
+    def _rearm_is_flapping(self) -> bool:
+        """A wake-armed client that keeps dying instantly must not spin.
+
+        Only a rearmed client counts. The first conversation is launched awake
+        and is supposed to end, so it never looks like a failure.
+        """
+        if not self._rearmed_at:
+            return False
+        if time.monotonic() - self._rearmed_at >= REARM_MIN_UPTIME_SECONDS:
+            self.rearm_failures = 0
+            return False
+        self.rearm_failures += 1
+        return self.rearm_failures >= REARM_MAX_CONSECUTIVE_FAILURES
+
+    def rearm_wake(self) -> bool:
+        """Put the microphone back on the wake word after a conversation.
+
+        Without this the app launches awake, has exactly one conversation, and
+        is then deaf for as long as it stays up: the voice client has returned,
+        and the standalone wake listener only takes over once the whole unit
+        stops, which it no longer does. Two turns in and she stops answering.
+        """
+        item = next((entry for entry in self.items if entry.name == "desk-voice"), None)
+        if item is None:
+            return False
+        command = tuple(part for part in item.command if part != START_AWAKE)
+        environment = os.environ.copy()
+        environment["PYTHONUNBUFFERED"] = "1"
+        try:
+            process = subprocess.Popen(
+                command, cwd=item.cwd, env=environment, start_new_session=True
+            )
+        except OSError as exc:
+            print(f"[voice-app] could not rearm the wake word: {exc}", flush=True)
+            return False
+        self.processes["desk-voice"] = process
+        self._rearmed_at = time.monotonic()
+        print(
+            f"[voice-app] listening for 'hey serena' again pid={process.pid}",
+            flush=True,
+        )
+        return True
 
     def forward_session_close(self) -> None:
         process = self.processes.get("desk-voice")
@@ -133,14 +183,20 @@ class VoiceAppSupervisor:
                     # overlay carries the type bar, which is exactly what is
                     # needed when the microphone is the thing misbehaving, so
                     # tearing it down here would remove the fallback at the
-                    # only moment it matters. The wake listener restarts this
-                    # unit to bring the microphone back.
-                    print(
-                        "[voice-app] desk-voice finished its conversation; "
-                        "keeping the overlay and bridge up for typing",
-                        flush=True,
-                    )
+                    # only moment it matters.
                     self.processes.pop(name, None)
+                    if self._rearm_is_flapping():
+                        print(
+                            "[voice-app] wake rearm keeps failing; keeping the "
+                            "overlay and bridge up for typing only",
+                            flush=True,
+                        )
+                        break
+                    if not self.rearm_wake():
+                        print(
+                            "[voice-app] keeping the overlay and bridge up for typing",
+                            flush=True,
+                        )
                     break
                 print(
                     f"[voice-app] {name} exited with status {return_code}; "
