@@ -281,3 +281,38 @@ def test_wake_service_is_bound_to_wireplumber_and_native_capture() -> None:
     assert "StartLimitIntervalSec=180" in unit
     assert "ExecStartPre=" not in unit
     assert "RestartSec=5" in unit
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "hey serena",
+        "hey serena.",
+        "Hey, Serena, what's the weather",
+        "uh hey sarina",
+        "hey serina can you",
+        "so hey sereena i wanted",
+    ],
+)
+def test_his_name_for_her_is_heard_inside_a_longer_transcript(transcript) -> None:
+    """Tiny Whisper on a short clip returns three to five words, not two.
+
+    The variant fallback only ran when the transcript was exactly two words,
+    so saying her name with a filler in front or a question after it was
+    refused: score 0.72, accepted false, nothing happened.
+    """
+    assert wake_phrase_matches(transcript) is True
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "hey there",
+        "serena",
+        "what is the weather",
+        "hey can you hear me",
+        "",
+    ],
+)
+def test_things_that_are_not_her_name_still_do_not_wake_her(transcript) -> None:
+    assert wake_phrase_matches(transcript) is False

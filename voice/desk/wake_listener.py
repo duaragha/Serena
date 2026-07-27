@@ -97,9 +97,16 @@ def wake_phrase_matches(text: str, target_phrase: str = TARGET_WAKE_PHRASE) -> b
     ):
         return True
 
-    if target_words != ["hey", "serena"] or len(words) != 2:
+    if target_words != ["hey", "serena"]:
         return False
-    return words[0] in WAKE_HELLO_VARIANTS and words[1] in WAKE_NAME_VARIANTS
+    # Anywhere in the transcript, not only when it is exactly two words. Tiny
+    # Whisper on a short clip routinely returns three to five: a filler before
+    # her name, a fragment of the question after it, or a stray article. He
+    # said her name and was refused because of the words either side of it.
+    return any(
+        first in WAKE_HELLO_VARIANTS and second in WAKE_NAME_VARIANTS
+        for first, second in zip(words, words[1:], strict=False)
+    )
 
 
 def phrase_model_sha256(path: str | Path) -> str:

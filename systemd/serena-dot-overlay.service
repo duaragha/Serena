@@ -2,10 +2,6 @@
 Description=Serena unified desk voice and dot-field app
 After=graphical-session.target network-online.target pipewire.service wireplumber.service
 Wants=network-online.target pipewire.service wireplumber.service
-# Exactly one of these owns the microphone. The listener hands off by
-# restarting this unit and then exits, but a stray listener left running
-# would silently take the microphone away from the app.
-Conflicts=serena-wake-listener.service
 ConditionPathExists=%h/.config/serena/models/hey_serena.onnx
 ConditionPathExists=%h/.config/serena/wakeword-acceptance.json
 ConditionPathExists=%h/.config/serena/chat_token
@@ -34,6 +30,11 @@ CacheDirectoryMode=0700
 StateDirectory=serena
 StateDirectoryMode=0700
 Environment=GSETTINGS_BACKEND=memory
+# Exactly one of these owns the microphone. Not Conflicts=: that is
+# bidirectional, so the listener started by this unit's own ExecStopPost
+# cancelled the restart that was meant to follow it, and the app never came
+# back. Stopping it here is ordered and cannot race with our own start.
+ExecStartPre=-/usr/bin/systemctl --user stop serena-wake-listener.service
 ExecStart=%h/Documents/Projects/serena/.venv/bin/python -u -m voice.desktop.supervisor
 ExecStopPost=/usr/bin/systemctl --user --no-block start serena-wake-listener.service
 Restart=no
