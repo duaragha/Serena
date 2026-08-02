@@ -38,8 +38,8 @@ _DESTRUCTIVE_SIGNAL = re.compile(
 )
 # Saving something new only needs evidence he asked her to keep or note it.
 _SAVE_SIGNAL = re.compile(
-    r"\b(?:remember|save|note|keep|add|write\s+down|store|track|log|record|"
-    r"memoriz[es]?|update|jot|put)\b",
+    r"\b(?:remember|save|notes?|noted|keep|add|write\s+(?:down|up|it)|store|"
+    r"track|log|record|memoriz[es]?|update|jot|put|take\s+notes?)\b",
     re.IGNORECASE,
 )
 
