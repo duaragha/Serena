@@ -227,6 +227,14 @@ def _persona_context() -> str:
         "what you have saved about him, mcp__serena-ro__search_knowledge and "
         "read_knowledge for saved research. Saying you have nothing on something "
         "you have never looked up is the thing to avoid. "
+        "When he asks you on a spoken turn to remember, correct, or forget "
+        "something, that is yours to do: mcp__serena-memory__save_memory, "
+        "edit_memory, delete_memory for memories, save_knowledge and "
+        "delete_knowledge_topic for the knowledge base. Search first so you "
+        "edit or delete the right entry, and for deletions say what you are "
+        "removing. A broker re-reads his real words, so if a tool refuses, "
+        "tell him it refused and why; never claim something was saved or "
+        "deleted when it was not. "
         "When he asks you on a spoken turn to build, fix, change, investigate, "
         "or continue something in his code, that is yours to start: call "
         "mcp__serena-work__start_coding_work and say plainly that you have "
@@ -1074,6 +1082,8 @@ def _build_agent_options(
     laptop_tool_names: list[str] | None = None,
     work_tools=None,
     work_tool_names: list[str] | None = None,
+    memory_tools=None,
+    memory_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
@@ -1081,12 +1091,15 @@ def _build_agent_options(
         *brain_tool_names,
         *(laptop_tool_names or []),
         *(work_tool_names or []),
+        *(memory_tool_names or []),
     ]
     mcp_servers = {"serena-ro": brain_tools}
     if laptop_tools is not None:
         mcp_servers["serena-laptop"] = laptop_tools
     if work_tools is not None:
         mcp_servers["serena-work"] = work_tools
+    if memory_tools is not None:
+        mcp_servers["serena-memory"] = memory_tools
     prompt_path = _write_private_text(
         BRAIN_SYSTEM_PROMPT_FILE,
         _persona_context(),
@@ -1184,6 +1197,8 @@ class ResidentClientManager:
         laptop_tool_names: list[str] | None = None,
         work_tools_factory=None,
         work_tool_names: list[str] | None = None,
+        memory_tools_factory=None,
+        memory_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
     ) -> None:
@@ -1195,6 +1210,8 @@ class ResidentClientManager:
         self.laptop_tool_names = list(laptop_tool_names or [])
         self.work_tools_factory = work_tools_factory
         self.work_tool_names = list(work_tool_names or [])
+        self.memory_tools_factory = memory_tools_factory
+        self.memory_tool_names = list(memory_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.policy = policy_from_environment()
@@ -1261,6 +1278,12 @@ class ResidentClientManager:
                 else None
             ),
             work_tool_names=self.work_tool_names,
+            memory_tools=(
+                self.memory_tools_factory()
+                if self.memory_tools_factory is not None
+                else None
+            ),
+            memory_tool_names=self.memory_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -1631,6 +1654,7 @@ async def _run_daemon() -> None:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
     from core.brain_laptop_tools import LAPTOP_TOOL_NAMES, laptop_tools_server
+    from core.brain_memory_tools import MEMORY_TOOL_NAMES, memory_tools_server
     from core.brain_work_tools import WORK_TOOL_NAMES, work_tools_server
     from core.brain_tools import BRAIN_TOOL_NAMES, brain_tools_server
 
@@ -1643,6 +1667,8 @@ async def _run_daemon() -> None:
         laptop_tool_names=LAPTOP_TOOL_NAMES,
         work_tools_factory=work_tools_server,
         work_tool_names=WORK_TOOL_NAMES,
+        memory_tools_factory=memory_tools_server,
+        memory_tool_names=MEMORY_TOOL_NAMES,
     )
     print(f"[brain] connecting SDK client (model={MODEL})...", flush=True)
     try:
