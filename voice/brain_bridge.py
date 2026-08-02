@@ -14,11 +14,13 @@ and idle states. The private coding supervisor publishes working leases and
 structured activity events. Writes are harmless when the bridge is not running.
 """
 import asyncio
+import errno
 import json
 import math
 import os
 import socket
 import time
+import uuid
 from contextlib import suppress
 from pathlib import Path
 
@@ -70,6 +72,27 @@ def parse_client_message(raw):
             return None
         return json.dumps(
             {"type": "typed", "text": text}, ensure_ascii=False, separators=(",", ":")
+        )
+    if isinstance(message, dict) and message.get("type") in {
+        "transcription",
+        "response",
+    }:
+        # Desk voice reaches this bridge through the same user-local socket as
+        # amplitude updates. Keep that feed deliberately text-only: broker
+        # metadata, tool traffic, and the raw desk control payload never reach
+        # the renderer.
+        if set(message) != {"type", "text"}:
+            return None
+        kind = message["type"]
+        text = message.get("text")
+        if not isinstance(text, str):
+            return None
+        text = text.strip()
+        limit = 4_000 if kind == "transcription" else 32_000
+        if not text or len(text) > limit:
+            return None
+        return json.dumps(
+            {"type": kind, "text": text}, ensure_ascii=False, separators=(",", ":")
         )
     if not isinstance(message, dict) or set(message) != {"type", "value"}:
         return None
@@ -159,6 +182,12 @@ async def handler(ws):
 _typed_turn: asyncio.Task | None = None
 
 
+def new_typed_call_id() -> str:
+    """Return a collision-proof call id for one overlay-typed turn."""
+
+    return f"desk-typed-{uuid.uuid4().hex}"
+
+
 async def _interrupt_typed_turn() -> None:
     """Cut off whatever she is saying so the new message wins.
 
@@ -201,7 +230,7 @@ async def run_typed_turn(text: str) -> None:
     await broadcast(
         json.dumps({"type": "transcription", "text": text}, ensure_ascii=False)
     )
-    call_id = f"desk-typed-{int(time.time())}"
+    call_id = new_typed_call_id()
     clauses: asyncio.Queue = asyncio.Queue()
     player = asyncio.create_task(speak_stream(clauses))
     spoke = False
@@ -216,13 +245,26 @@ async def run_typed_turn(text: str) -> None:
     set_state("thinking")
     try:
         try:
-            said = await stream_turn(
-                text,
-                call_id=call_id,
-                turn_id=f"{call_id}:1",
-                timeout=240.0,
-                on_sentence=on_sentence,
-            )
+            # systemd starts the overlay and the resident brain together. A
+            # typed message in the small warm-up window used to make Raghav
+            # repeat himself after a harmless ECONNREFUSED. A fresh resident
+            # SDK warm-up can take roughly eight seconds, so wait through a
+            # bounded twelve-second local-only window. Never retry a completed
+            # or remote turn.
+            for attempt in range(12):
+                try:
+                    said = await stream_turn(
+                        text,
+                        call_id=call_id,
+                        turn_id=f"{call_id}:1",
+                        timeout=240.0,
+                        on_sentence=on_sentence,
+                    )
+                    break
+                except OSError as exc:
+                    if exc.errno not in {errno.ECONNREFUSED, errno.ENOENT} or attempt == 11:
+                        raise
+                    await asyncio.sleep(1.0)
         except (OSError, asyncio.TimeoutError) as exc:
             await clauses.put(None)
             with suppress(Exception):

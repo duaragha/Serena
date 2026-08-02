@@ -13,13 +13,19 @@ const stateEl = document.getElementById('state-dot');
 const stateLabelEl = document.getElementById('state-label');
 const transcriptionEl = document.getElementById('transcription');
 const responseEl = document.getElementById('response');
+const conversationHistoryEl = document.getElementById('conversation-history');
+const conversationHistoryListEl = document.getElementById('conversation-history-list');
+const conversationHistoryCountEl = document.getElementById('conversation-history-count');
 const dashboardEl = document.getElementById('dashboard');
 const overlayEl = document.getElementById('overlay');
 
 let responseTimeout = null;
 let responseFadeTimeout = null;
 let typewriterTimeout = null;
-const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+let reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+const HISTORY_LIMIT = 12;
+const conversationHistory = [];
+let pendingUserText = '';
 
 // --- Mouse passthrough handling ---
 // The overlay is click-through by default. When the mouse enters an
@@ -63,6 +69,7 @@ window.serena.onAmplitude((value) => {
 // --- Transcription display ---
 
 window.serena.onTranscription((text) => {
+  pendingUserText = String(text || '').trim();
   transcriptionEl.textContent = text;
   transcriptionEl.classList.remove('hidden');
 
@@ -73,13 +80,15 @@ window.serena.onTranscription((text) => {
 
 // --- Response display ---
 
-window.serena.onResponse((text) => {
+function showResponseText(text) {
   clearTimeout(responseTimeout);
   clearTimeout(responseFadeTimeout);
   clearTimeout(typewriterTimeout);
   responseEl.classList.remove('hidden');
   responseEl.classList.remove('fade-out');
   typewriterEffect(responseEl, text);
+  appendCompletedTurn(pendingUserText, String(text || '').trim());
+  pendingUserText = '';
 
   // Fade out after a delay
   responseTimeout = setTimeout(() => {
@@ -91,6 +100,80 @@ window.serena.onResponse((text) => {
       responseEl.classList.remove('fade-out');
     }, 500);
   }, 8000);
+}
+
+function clearTranscriptionCards() {
+  clearTimeout(responseTimeout);
+  clearTimeout(responseFadeTimeout);
+  clearTimeout(typewriterTimeout);
+  transcriptionEl.classList.add('hidden');
+  responseEl.classList.add('hidden');
+  responseEl.classList.remove('fade-out');
+  transcriptionEl.textContent = '';
+  responseEl.textContent = '';
+}
+
+window.serena.onResponse(showResponseText);
+
+function appendCompletedTurn(userText, responseText) {
+  if (!userText || !responseText || !conversationHistoryListEl) return;
+  conversationHistory.push({ user: userText, assistant: responseText });
+  if (conversationHistory.length > HISTORY_LIMIT) {
+    conversationHistory.splice(0, conversationHistory.length - HISTORY_LIMIT);
+  }
+  renderConversationHistory();
+}
+
+function renderConversationHistory() {
+  conversationHistoryListEl.replaceChildren();
+  for (const turn of conversationHistory) {
+    const turnEl = document.createElement('div');
+    turnEl.className = 'conversation-turn';
+    turnEl.append(
+      conversationLine('user', 'You', turn.user),
+      conversationLine('serena', 'Serena', turn.assistant),
+    );
+    conversationHistoryListEl.appendChild(turnEl);
+  }
+  if (conversationHistoryEl) conversationHistoryEl.classList.remove('hidden');
+  if (conversationHistoryCountEl) {
+    const count = conversationHistory.length;
+    conversationHistoryCountEl.textContent = `${count} turn${count === 1 ? '' : 's'}`;
+  }
+  conversationHistoryListEl.scrollTop = conversationHistoryListEl.scrollHeight;
+}
+
+function conversationLine(kind, label, text) {
+  const line = document.createElement('div');
+  line.className = `conversation-line ${kind}`;
+  const role = document.createElement('span');
+  role.className = 'conversation-role';
+  role.textContent = label;
+  const body = document.createElement('span');
+  body.className = 'conversation-text';
+  body.textContent = text;
+  line.append(role, body);
+  return line;
+}
+
+// A narrow inspection surface for the Electron smoke test. The array itself
+// stays bounded and contains only the same user/assistant text already shown.
+window._serenaConversationHistory = {
+  entries: conversationHistory,
+  appendCompletedTurn,
+  limit: HISTORY_LIMIT,
+};
+
+// Kept as a stable smoke-test surface for the transient cards. Production
+// events still enter through the preload bridge above.
+window._serenaTranscription = {
+  _responseText: responseEl,
+  showResponseText,
+  clear: clearTranscriptionCards,
+};
+Object.defineProperty(window._serenaTranscription, '_reducedMotion', {
+  get: () => reducedMotion,
+  set: (value) => { reducedMotion = value; },
 });
 
 function typewriterEffect(el, text) {

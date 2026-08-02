@@ -383,6 +383,11 @@ def test_brain_server_exposes_exact_annotated_read_only_surface() -> None:
         "github_activity",
         "recall_chats",
         "read_ledger",
+        # Read-only recall over everything she knows, added 2026-08-01: only
+        # active tasks/loops/ledgers are injected, the rest was unreachable.
+        "search_memory",
+        "search_knowledge",
+        "read_knowledge",
     ]
     assert [f"mcp__serena-ro__{name}" for name in names] == brain_tools.BRAIN_TOOL_NAMES
     assert all(item.annotations.readOnlyHint is True for item in exposed)

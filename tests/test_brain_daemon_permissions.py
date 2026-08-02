@@ -121,6 +121,11 @@ def test_brain_options_are_unattended_and_read_only(monkeypatch, tmp_path: Path)
         "github_activity",
         "recall_chats",
         "read_ledger",
+        # Read-only recall over everything she knows, added 2026-08-01: only
+        # active tasks/loops/ledgers are injected, the rest was unreachable.
+        "search_memory",
+        "search_knowledge",
+        "read_knowledge",
     ]
     assert options.allowed_tools == allowed_names == brain_tools.BRAIN_TOOL_NAMES
     assert options.setting_sources == []

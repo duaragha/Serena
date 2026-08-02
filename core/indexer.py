@@ -1,6 +1,8 @@
 """SQLite index for session metadata and full-text search."""
 
 import json
+import re
+import shutil
 import sqlite3
 import threading
 from bisect import bisect_left
@@ -14,6 +16,12 @@ from core.parser import SessionMeta, parse_messages_for_search, parse_metadata
 from core.scanner import scan_sessions
 from core.codex_scanner import scan_codex_sessions, parse_codex_metadata, _FILENAME_RE as _CODEX_FILE_RE
 from core.locket_scanner import scan_locket_sessions, parse_locket_metadata
+from core.voice_transcripts import (
+    VOICE_SESSION_ID,
+    parse_voice_metadata,
+    scan_voice_sessions,
+    voice_transcript_path,
+)
 from chats.titles import generate_title
 
 try:
@@ -172,6 +180,14 @@ def _create_tables(conn: sqlite3.Connection):
             FOREIGN KEY (session_id) REFERENCES sessions(session_id),
             FOREIGN KEY (topic_slug) REFERENCES knowledge_topics(slug)
         );
+
+        -- The permanent voice transcript is append-only.  This offset lets
+        -- its FTS rows be added once per turn rather than rebuilt forever.
+        CREATE TABLE IF NOT EXISTS voice_fts_state (
+            session_id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            indexed_offset INTEGER NOT NULL
+        );
     """)
 
     for vt_sql in [
@@ -263,6 +279,8 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
         discovered.append(("codex", project_dir, fp))
     for project_dir, fp in scan_locket_sessions():
         discovered.append(("locket", project_dir, fp))
+    for project_dir, fp in scan_voice_sessions():
+        discovered.append(("serena-voice", project_dir, fp))
 
     # The same Claude session can legitimately exist under several cwd/OS
     # slug folders. Indexing every copy reparses large transcripts repeatedly
@@ -272,13 +290,9 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
 
     discovered_ids: set[str] = set()
     for agent, _, fp in discovered:
-        if agent == "codex":
-            m = _CODEX_FILE_RE.match(fp.name)
-            if m:
-                discovered_ids.add(m.group(1))
-        else:
-            # claude + locket: session_id is the file stem
-            discovered_ids.add(fp.stem)
+        session_id = _discovered_session_id(agent, fp)
+        if session_id:
+            discovered_ids.add(session_id)
 
     # Prune zombie rows: indexed sessions the scanners no longer surface.
     # This catches files deleted on disk or filtered out by scanner policy.
@@ -294,13 +308,9 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
     total = len(discovered)
 
     for i, (agent, project_dir, file_path) in enumerate(discovered):
-        if agent == "codex":
-            cm = _CODEX_FILE_RE.match(file_path.name)
-            if not cm:
-                continue
-            session_id = cm.group(1)
-        else:
-            session_id = file_path.stem
+        session_id = _discovered_session_id(agent, file_path)
+        if not session_id:
+            continue
 
         if progress_callback:
             progress_callback(i + 1, total, session_id)
@@ -330,6 +340,9 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
             meta = parse_locket_metadata(file_path)
             if meta is None:
                 continue
+        elif agent == "serena-voice":
+            _index_voice_transcript_locked(conn, file_path)
+            continue
         else:
             meta = parse_codex_metadata(file_path)
             if meta is None:
@@ -346,6 +359,15 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
     return new_count, updated_count
 
 
+def _discovered_session_id(agent: str, file_path: Path) -> str | None:
+    if agent == "codex":
+        match = _CODEX_FILE_RE.match(file_path.name)
+        return match.group(1) if match else None
+    if agent == "serena-voice":
+        return VOICE_SESSION_ID
+    return file_path.stem
+
+
 def _dedupe_discovered(
     discovered: list[tuple[str, str, Path]],
     existing_paths: dict[str, str],
@@ -353,13 +375,9 @@ def _dedupe_discovered(
     selected: dict[str, tuple[tuple[int, int, int, int], tuple[str, str, Path]]] = {}
     for entry in discovered:
         agent, project_dir, file_path = entry
-        if agent == "codex":
-            match = _CODEX_FILE_RE.match(file_path.name)
-            if not match:
-                continue
-            session_id = match.group(1)
-        else:
-            session_id = file_path.stem
+        session_id = _discovered_session_id(agent, file_path)
+        if not session_id:
+            continue
         try:
             stat = file_path.stat()
         except OSError:
@@ -485,7 +503,7 @@ def _apply_synced_meta(conn: sqlite3.Connection, session_id: str, synced: dict):
 
 
 def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict | None = None, agent: str = "claude"):
-    title = generate_title(meta.first_message)
+    title = "Serena" if agent == "serena-voice" else generate_title(meta.first_message)
 
     # Get synced metadata (stars, tags, custom_title) from the shared JSON
     if all_meta is not None:
@@ -792,6 +810,9 @@ def build_fts(progress_callback=None):
     """Build/rebuild the full-text search index."""
     conn = _get_db()
     conn.execute("DELETE FROM messages_fts")
+    # A full rebuild owns the voice rows too.  Reset the append cursor so it
+    # cannot claim rows are present when this rebuild is interrupted.
+    conn.execute("DELETE FROM voice_fts_state")
 
     rows = conn.execute("SELECT session_id, file_path FROM sessions").fetchall()
     total = len(rows)
@@ -810,9 +831,293 @@ def build_fts(progress_callback=None):
                 "INSERT INTO messages_fts (content, session_id, role, timestamp) VALUES (?, ?, ?, ?)",
                 (text, row["session_id"], role, ts),
             )
+        if row["session_id"] == VOICE_SESSION_ID:
+            try:
+                indexed_offset = file_path.stat().st_size
+            except OSError:
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO voice_fts_state (session_id, file_path, indexed_offset) VALUES (?, ?, ?)",
+                (VOICE_SESSION_ID, str(file_path), indexed_offset),
+            )
 
     conn.commit()
     conn.close()
+
+
+def index_voice_transcript(
+    file_path: Path | None = None,
+    *,
+    skip_if_running: bool = True,
+) -> bool:
+    """Upsert only the permanent Serena chat and refresh only its FTS rows."""
+
+    path = (file_path or voice_transcript_path()).expanduser().resolve()
+    with _index_update_lock(skip_if_running=skip_if_running) as acquired:
+        if not acquired:
+            return False
+        if skip_if_running and not _db_write_available():
+            return False
+        try:
+            conn = _get_db()
+            if not _index_voice_transcript_locked(conn, path):
+                conn.close()
+                return False
+            conn.commit()
+            conn.close()
+            return True
+        except sqlite3.OperationalError as exc:
+            if skip_if_running and _is_locked_error(exc):
+                return False
+            raise
+
+
+def _voice_rows_since(
+    path: Path, offset: int
+) -> tuple[list[tuple[str, str, str, dict]], int]:
+    """Read only complete user/assistant records appended after *offset*."""
+
+    rows: list[tuple[str, str, str, dict]] = []
+    with path.open("rb") as handle:
+        handle.seek(max(0, offset))
+        for raw in handle:
+            try:
+                record = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            role = record.get("type")
+            if role not in {"user", "assistant"}:
+                continue
+            message = record.get("message")
+            voice = record.get("serena_voice")
+            if not isinstance(message, dict) or not isinstance(voice, dict):
+                continue
+            text = _extract_search_text(message.get("content"))
+            if text:
+                rows.append((role, text, str(record.get("timestamp") or ""), voice))
+        return rows, handle.tell()
+
+
+def _extract_search_text(content) -> str:
+    """Keep the dedicated voice index to visible text blocks only."""
+
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(
+        str(block.get("text") or "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    ).strip()
+
+
+def _index_voice_transcript_locked(conn: sqlite3.Connection, path: Path) -> bool:
+    """Synchronize one append-only transcript while the caller owns the lock."""
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    state = conn.execute(
+        "SELECT file_path, indexed_offset FROM voice_fts_state WHERE session_id = ?",
+        (VOICE_SESSION_ID,),
+    ).fetchone()
+    existing = conn.execute(
+        "SELECT * FROM sessions WHERE session_id = ?", (VOICE_SESSION_ID,)
+    ).fetchone()
+    incremental = (
+        state is not None
+        and existing is not None
+        and state["file_path"] == str(path)
+        and 0 <= int(state["indexed_offset"]) <= stat.st_size
+    )
+    start = int(state["indexed_offset"]) if incremental else 0
+    try:
+        rows, end = _voice_rows_since(path, start)
+    except OSError:
+        return False
+
+    if not incremental:
+        meta = parse_voice_metadata(path)
+        if meta is None:
+            return False
+        conn.execute("DELETE FROM messages_fts WHERE session_id = ?", (VOICE_SESSION_ID,))
+        _upsert_session(conn, meta, agent="serena-voice")
+    elif rows:
+        last_voice = rows[-1][3]
+        surfaces = {
+            value for value in str(existing["devices_used"] or "").split(",") if value
+        }
+        surfaces.update(
+            str(voice.get("surface") or "")
+            for _, _, _, voice in rows
+            if str(voice.get("surface") or "")
+        )
+        last_timestamp = _parse_dt(rows[-1][2]) or _parse_dt(existing["last_timestamp"])
+        meta = SessionMeta(
+            session_id=VOICE_SESSION_ID,
+            project_dir="serena-voice",
+            device=str(last_voice.get("surface") or existing["device"] or "voice"),
+            first_message=str(existing["first_message"] or "Serena"),
+            first_timestamp=_parse_dt(existing["first_timestamp"]),
+            last_timestamp=last_timestamp,
+            message_count=int(existing["message_count"] or 0) + len(rows),
+            raw_message_count=int(existing["raw_message_count"] or 0) + len(rows),
+            model=str(last_voice.get("model") or existing["model"] or "") or None,
+            file_path=str(path),
+            file_size=stat.st_size,
+            file_mtime=stat.st_mtime,
+            devices_used=sorted(surfaces),
+        )
+        _upsert_session(conn, meta, agent="serena-voice")
+
+    for role, text, timestamp, _ in rows:
+        conn.execute(
+            "INSERT INTO messages_fts (content, session_id, role, timestamp) VALUES (?, ?, ?, ?)",
+            (text, VOICE_SESSION_ID, role, timestamp),
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO voice_fts_state (session_id, file_path, indexed_offset) VALUES (?, ?, ?)",
+        (VOICE_SESSION_ID, str(path), end),
+    )
+    return True
+
+
+_VOICE_RECALL_WORD = re.compile(r"[^\W_]+", re.UNICODE)
+_VOICE_RECALL_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "also",
+    "and",
+    "are",
+    "been",
+    "before",
+    "but",
+    "can",
+    "could",
+    "did",
+    "does",
+    "for",
+    "from",
+    "have",
+    "her",
+    "him",
+    "how",
+    "into",
+    "just",
+    "like",
+    "me",
+    "my",
+    "not",
+    "now",
+    "our",
+    "she",
+    "that",
+    "the",
+    "their",
+    "them",
+    "then",
+    "there",
+    "they",
+    "this",
+    "was",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "will",
+    "with",
+    "would",
+    "you",
+    "your",
+}
+
+
+def _safe_voice_fts_query(text: str, *, max_terms: int = 10) -> str:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for match in _VOICE_RECALL_WORD.finditer(text.casefold()):
+        term = match.group(0)
+        if len(term) < 3 or term in _VOICE_RECALL_STOPWORDS or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+        if len(terms) >= max_terms:
+            break
+    return " OR ".join(f'"{term}"' for term in terms)
+
+
+def recall_voice_history(
+    query: str,
+    *,
+    limit: int = 6,
+    max_characters: int = 3_500,
+) -> list[dict]:
+    """Return bounded relevant text from the permanent Serena transcript.
+
+    The caller supplies arbitrary speech, so this function constructs the FTS
+    expression only from tokenizer-safe words rather than passing user syntax
+    to SQLite MATCH.
+    """
+
+    expression = _safe_voice_fts_query(str(query or ""))
+    if not expression or limit < 1 or max_characters < 1:
+        return []
+    if not DB_PATH.exists():
+        return []
+    try:
+        conn = sqlite3.connect(
+            DB_PATH.expanduser().resolve().as_uri() + "?mode=ro",
+            uri=True,
+            timeout=0.2,
+        )
+        conn.row_factory = sqlite3.Row
+    except sqlite3.OperationalError:
+        return []
+    try:
+        rows = conn.execute(
+            """
+            SELECT content, role, timestamp, bm25(messages_fts) AS relevance
+            FROM messages_fts
+            WHERE messages_fts MATCH ?
+              AND session_id = ?
+            ORDER BY relevance, timestamp DESC
+            LIMIT ?
+            """,
+            (expression, VOICE_SESSION_ID, int(limit)),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+    results: list[dict] = []
+    used = 0
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        role = str(row["role"] or "")
+        content = str(row["content"] or "").strip()
+        key = role, content
+        if not content or key in seen:
+            continue
+        seen.add(key)
+        remaining = max_characters - used
+        if remaining <= 0:
+            break
+        clipped = content[:remaining]
+        results.append(
+            {
+                "role": role,
+                "text": clipped,
+                "timestamp": str(row["timestamp"] or ""),
+            }
+        )
+        used += len(clipped)
+    return results
 
 
 def search_fts(query: str, limit: int = 20) -> list[dict]:
@@ -824,7 +1129,7 @@ def search_fts(query: str, limit: int = 20) -> list[dict]:
         conn.close()
         return []
 
-    results = conn.execute("""
+    sql = """
         SELECT messages_fts.session_id,
                snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet,
                messages_fts.role, messages_fts.timestamp
@@ -834,7 +1139,19 @@ def search_fts(query: str, limit: int = 20) -> list[dict]:
           AND COALESCE(s.is_teammate, 0) = 0
         ORDER BY rank
         LIMIT ?
-    """, (query, limit)).fetchall()
+    """
+    try:
+        results = conn.execute(sql, (query, limit)).fetchall()
+    except sqlite3.OperationalError:
+        # Voice transcription routinely includes hyphens and punctuation.
+        # Keep ordinary FTS syntax for power users, but recover invalid input
+        # as literal words instead of making `chats recall` crash.
+        terms = [match.group(0) for match in _VOICE_RECALL_WORD.finditer(query)]
+        fallback = " AND ".join(f'"{term}"' for term in terms[:12])
+        if not fallback:
+            conn.close()
+            return []
+        results = conn.execute(sql, (fallback, limit)).fetchall()
 
     out = []
     for r in results:
@@ -1067,13 +1384,15 @@ def list_projects() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def delete_session(session_id_prefix: str) -> str:
-    """Delete a session's .jsonl file and remove it from the index. Returns the file path deleted."""
+def delete_session(session_id_prefix: str, *, source: str = "unknown") -> str:
+    """Remove a session from the index while retaining a recoverable copy."""
     session = get_session(session_id_prefix)
     if not session:
         raise ValueError(f"No session found with ID '{session_id_prefix}'")
 
     sid = session["session_id"]
+    if sid == VOICE_SESSION_ID or session.get("agent") == "serena-voice":
+        raise PermissionError("Serena's permanent conversation cannot be deleted")
     file_path = Path(session["file_path"])
 
     # Remove from DB
@@ -1084,9 +1403,26 @@ def delete_session(session_id_prefix: str) -> str:
     conn.commit()
     conn.close()
 
-    # Delete the actual file
+    # Keep the source transcript recoverable. Syncthing's trashcan only
+    # protects remote deletions, so a local unlink can otherwise be permanent.
     if file_path.exists():
-        file_path.unlink()
+        recovery_dir = DATA_DIR / "deleted-sessions" / sid
+        if recovery_dir.exists():
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            recovery_dir = recovery_dir.with_name(f"{sid}-{stamp}")
+        recovery_dir.mkdir(parents=True, exist_ok=False)
+        shutil.move(str(file_path), str(recovery_dir / file_path.name))
+        manifest = {
+            "session_id": sid,
+            "original_path": str(file_path),
+            "deleted_at": datetime.now().astimezone().isoformat(),
+            "deleted_via": source,
+            "metadata": meta_sync.get_meta(sid),
+        }
+        (recovery_dir / "recovery.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     # Remove from synced metadata
     meta_sync.delete_meta(sid)

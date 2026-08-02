@@ -379,7 +379,11 @@ async def main_async(text: str, *, play_audio: bool, timeout: float) -> int:
     if not BRAIN_SOCK.exists():
         print("brain daemon is not running (no brain.sock)", file=sys.stderr)
         return 1
-    call_id = f"desk-typed-{int(time.time())}"
+    import uuid
+
+    # uuid, not epoch seconds: two turns in the same second collided, and the
+    # transcript store keys conversations off this id.
+    call_id = f"desk-typed-{uuid.uuid4().hex}"
     started = time.monotonic()
     set_state("thinking")
     clauses: asyncio.Queue = asyncio.Queue()

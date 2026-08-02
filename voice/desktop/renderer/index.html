@@ -114,6 +114,15 @@
       <div id="response" class="text-block hidden"></div>
     </div>
 
+    <!-- Completed turns stay readable after the transient cards fade. -->
+    <details id="conversation-history" class="hidden">
+      <summary>
+        <span>recent conversation</span>
+        <span id="conversation-history-count">0 turns</span>
+      </summary>
+      <div id="conversation-history-list" role="log" aria-label="Recent conversation"></div>
+    </details>
+
     <!-- Type bar: same turn as speaking, for when the mic is unusable -->
     <div id="type-bar">
       <input id="type-input" type="text" autocomplete="off" spellcheck="false"
