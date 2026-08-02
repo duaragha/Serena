@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import contextlib
 import re
 import shutil
 import subprocess
@@ -47,9 +48,68 @@ _APP_IDS = {
     "serena": "chats.desktop",
     "settings": "cinnamon-settings.desktop",
 }
+# "can you open spotify" is an instruction in every household on earth. Strip
+# the politeness before deciding anything, instead of refusing him for
+# phrasing a command the way people actually speak.
+_POLITE_LEAD = re.compile(
+    r"^(?:(?:hey|hi|ok|okay)[,!]?\s+)?(?:serena[,!]?\s+)?"
+    r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+)?",
+    re.IGNORECASE,
+)
+_POLITE_TAIL = re.compile(r"[\s,]*(?:for me|please|real quick|right now)[.!?]?$", re.IGNORECASE)
 _QUESTION_PREFIX = re.compile(
     r"^(can|could|would|will|do|does|did|are|is|should|may|might)\b"
 )
+
+
+def _instruction_text(text: str) -> str:
+    stripped = _POLITE_LEAD.sub("", text, count=1).strip()
+    return _POLITE_TAIL.sub("", stripped).strip()
+
+
+def _desktop_entry_for(name: str) -> str | None:
+    """Resolve a spoken app name against everything actually installed.
+
+    A hardcoded map of nine apps means "open spotify" fails on a machine
+    where Spotify is sitting right there. The desktop database is the real
+    allowlist: if it is installed and has a launcher, she may open it, which
+    is the same authority the applications menu gives any user.
+    """
+    from pathlib import Path as _Path
+
+    wanted = _clean(name)
+    if not wanted:
+        return None
+    if wanted in _APP_IDS:
+        return _APP_IDS[wanted]
+    best = None
+    directories = [
+        _Path.home() / ".local/share/applications",
+        _Path("/usr/share/applications"),
+        _Path("/var/lib/flatpak/exports/share/applications"),
+        _Path.home() / ".local/share/flatpak/exports/share/applications",
+    ]
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for entry in sorted(directory.glob("*.desktop")):
+            try:
+                body = entry.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if "NoDisplay=true" in body:
+                continue
+            display = ""
+            for line in body.splitlines():
+                if line.startswith("Name="):
+                    display = line[5:].strip().lower()
+                    break
+            stem = entry.stem.lower()
+            if wanted == display or wanted == stem:
+                return entry.name
+            if best is None and (wanted in display or wanted in stem.replace("-", " ")):
+                best = entry.name
+    return best
 _NEGATION = re.compile(r"\b(don't|do not|not|never|without|stop before)\b")
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 
@@ -100,7 +160,7 @@ def _authority_denial(action: str, target: str, origin: Mapping[str, object]) ->
         return "laptop actions are available only from a live voice turn"
     if not str(origin.get("call_id") or "").startswith("desk-"):
         return "laptop actions require the local desk voice surface"
-    text = _clean(origin.get("text"))
+    text = _instruction_text(_clean(origin.get("text")))
     if not text:
         return "the originating voice text is unavailable"
     if _QUESTION_PREFIX.search(text):
@@ -112,8 +172,10 @@ def _authority_denial(action: str, target: str, origin: Mapping[str, object]) ->
         return "a fresh direct instruction for this exact action is required"
     if action == "open_app":
         canonical = _clean(target)
-        if canonical not in _APP_IDS or canonical not in text:
-            return "the requested app must be named directly and be allowlisted"
+        if canonical not in text:
+            return "the requested app must be named in the spoken instruction"
+        if _desktop_entry_for(canonical) is None:
+            return f"no installed application matches {canonical!r}"
     if action == "open_url":
         urls = [match.group(0).rstrip(".,!?") for match in _URL.finditer(text)]
         if target not in urls:
@@ -149,7 +211,10 @@ def _command_for(action: str, target: str) -> list[str]:
         launcher = _trusted_executable("gtk-launch")
         if not launcher:
             raise RuntimeError("trusted gtk-launch is unavailable")
-        return [launcher, _APP_IDS[_clean(target)]]
+        entry = _desktop_entry_for(_clean(target))
+        if entry is None:
+            raise ValueError(f"no installed application matches {target!r}")
+        return [launcher, entry.removesuffix(".desktop")]
     if action == "open_url":
         launcher = _trusted_executable("xdg-open")
         if not launcher:
@@ -200,6 +265,7 @@ def execute_laptop_action(
     origin: Mapping[str, object],
     audit_path: Path = DEFAULT_AUDIT_PATH,
     runner=subprocess.run,
+    spawner=subprocess.Popen,
 ) -> LaptopActionResult:
     action = _clean(action).replace(" ", "_")
     target = str(target or "").strip()
@@ -217,17 +283,34 @@ def execute_laptop_action(
         return result
     try:
         command = _command_for(action, target)
-        completed = runner(
-            command,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "command failed").strip()
-            raise RuntimeError(detail[:300])
+        if action in {"open_app", "open_url"}:
+            # gtk-launch runs the application in the foreground and waits for
+            # it to EXIT, so a successful launch looked like a 10s timeout
+            # while the app sat open on screen. Launches are fire-and-forget:
+            # started detached means done.
+            process = spawner(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                exited = process.wait(timeout=1.5)
+                if exited != 0:
+                    raise RuntimeError(f"launcher exited with status {exited}")
+        else:
+            completed = runner(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout or "command failed").strip()
+                raise RuntimeError(detail[:300])
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
         result = LaptopActionResult(
             False,

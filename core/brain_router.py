@@ -26,8 +26,13 @@ _REVIEW = re.compile(
     r"\b(review|audit|double[- ]?check|sanity[- ]?check|inspect the diff|"
     r"check the implementation)\b"
 )
+# A greeting routes to the reflex lane only when the turn IS a greeting.
+# Anchoring on the first word alone sent "hey can you open the calculator"
+# to the smallest model, which answered "Opening calculator now" without
+# calling any tool: a claimed action, no action.
 _REFLEX = re.compile(
-    r"^(hey|hi|hello|thanks|thank you|good morning|good night|yes|no|okay|ok)\b|"
+    r"^(?:hey|hi|hello|thanks|thank you|good morning|good night|yes|no|okay|ok)"
+    r"(?:[,!.]?\s+serena)?[,!.\s]*$|"
     r"\b(volume up|volume down|mute|unmute|play|pause|next track|"
     r"previous track|what(?:'s| is) on screen|active window)\b"
 )

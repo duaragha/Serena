@@ -53,8 +53,12 @@ def test_question_negation_and_remote_call_never_execute(tmp_path: Path) -> None
         calls.append((args, kwargs))
         raise AssertionError("denied action reached the runner")
 
+    # "can you mute the laptop" is deliberately NOT here any more: Raghav
+    # said polite phrasing is how he actually asks, so "can you" is stripped
+    # as a politeness lead-in before judging. A genuine capability question
+    # still reads as one.
     origins = [
-        _origin("can you mute the laptop"),
+        _origin("are you able to mute the laptop"),
         _origin("do not mute the laptop"),
         {**_origin("mute the laptop"), "call_id": "phone-call"},
     ]
@@ -92,12 +96,21 @@ def test_open_app_requires_named_allowlisted_target(
     def runner(*args, **kwargs):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    def spawner(command, **kwargs):
+        # Launches are detached now; a spawned process that is still running
+        # after the short grace wait counts as a successful launch.
+        def wait(timeout=None):
+            raise __import__("subprocess").TimeoutExpired(command, timeout)
+
+        return SimpleNamespace(wait=wait, pid=4242)
+
     denied = execute_laptop_action(
         "open_app",
         "terminal",
         origin=_origin("open the browser"),
         audit_path=tmp_path / "denied.jsonl",
         runner=runner,
+        spawner=spawner,
     )
     allowed = execute_laptop_action(
         "open_app",
@@ -105,6 +118,49 @@ def test_open_app_requires_named_allowlisted_target(
         origin=_origin("open terminal"),
         audit_path=tmp_path / "allowed.jsonl",
         runner=runner,
+        spawner=spawner,
     )
     assert denied.ok is False
     assert allowed.ok is True
+
+
+def test_polite_phrasing_is_an_instruction(tmp_path: Path) -> None:
+    """"Can you please open X" is how he actually asks for things."""
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        from types import SimpleNamespace
+
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    result = execute_laptop_action(
+        "mute",
+        "",
+        origin=_origin("hey serena, can you please mute the laptop"),
+        audit_path=tmp_path / "audit.jsonl",
+        runner=runner,
+    )
+    assert result.ok is True, result.detail
+
+
+def test_any_installed_app_can_be_opened_but_nothing_else(tmp_path: Path) -> None:
+    """The nine-app allowlist meant "open spotify" failed on a machine where
+    it was installed. The desktop database is the real allowlist now."""
+    from core.laptop_actions import _desktop_entry_for
+
+    # An entry every Linux Mint box has, resolved dynamically not via _APP_IDS.
+    assert _desktop_entry_for("calculator") is not None
+    assert _desktop_entry_for("definitely-not-installed-app-xyz") is None
+
+    def runner(command, **kwargs):
+        raise AssertionError("unresolvable app reached the runner")
+
+    result = execute_laptop_action(
+        "open_app",
+        "definitely-not-installed-app-xyz",
+        origin=_origin("open definitely-not-installed-app-xyz"),
+        audit_path=tmp_path / "audit.jsonl",
+        runner=runner,
+    )
+    assert result.ok is False
