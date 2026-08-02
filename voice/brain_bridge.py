@@ -169,12 +169,19 @@ async def _interrupt_typed_turn() -> None:
     """
     global _typed_turn
 
-    previous = _typed_turn
-    if previous is None or previous.done() or previous is asyncio.current_task():
+    me = asyncio.current_task()
+    # Claim ownership BEFORE awaiting the old turn's death. Two messages
+    # arriving together otherwise both capture the same predecessor, both
+    # await it, and then both run at once, with only the later one recorded
+    # as the owner while the orphan burns brain and speaker time.
+    previous, _typed_turn = _typed_turn, me
+    if previous is None or previous.done() or previous is me:
         return
     previous.cancel()
-    with suppress(BaseException):
-        await previous
+    # asyncio.wait, not `await previous` under suppress: suppressing there
+    # also swallowed a cancellation aimed at US while we waited, so a third
+    # message could kill the second and the second would keep running anyway.
+    await asyncio.wait([previous], timeout=15)
 
 
 async def run_typed_turn(text: str) -> None:
@@ -191,7 +198,6 @@ async def run_typed_turn(text: str) -> None:
     from voice.desk.say import set_state, speak_stream, stream_turn
 
     await _interrupt_typed_turn()
-    _typed_turn = asyncio.current_task()
     await broadcast(
         json.dumps({"type": "transcription", "text": text}, ensure_ascii=False)
     )
@@ -209,43 +215,45 @@ async def run_typed_turn(text: str) -> None:
 
     set_state("thinking")
     try:
-        said = await stream_turn(
-            text,
-            call_id=call_id,
-            turn_id=f"{call_id}:1",
-            timeout=240.0,
-            on_sentence=on_sentence,
-        )
-    except asyncio.CancelledError:
-        player.cancel()
-        with suppress(BaseException):
-            await player
-        raise
-    except (OSError, asyncio.TimeoutError) as exc:
-        await clauses.put(None)
-        with suppress(Exception):
-            await player
-        _finish_typed_turn()
+        try:
+            said = await stream_turn(
+                text,
+                call_id=call_id,
+                turn_id=f"{call_id}:1",
+                timeout=240.0,
+                on_sentence=on_sentence,
+            )
+        except (OSError, asyncio.TimeoutError) as exc:
+            await clauses.put(None)
+            with suppress(Exception):
+                await player
+            _finish_typed_turn()
+            await broadcast(
+                json.dumps({"type": "response", "text": f"(could not reach the brain: {exc})"})
+            )
+            return
         await broadcast(
-            json.dumps({"type": "response", "text": f"(could not reach the brain: {exc})"})
+            json.dumps(
+                {"type": "response", "text": said or "(silence)"}, ensure_ascii=False
+            )
         )
-        return
-    await broadcast(
-        json.dumps(
-            {"type": "response", "text": said or "(silence)"}, ensure_ascii=False
-        )
-    )
-    await clauses.put(None)
-    try:
-        await player
-    except asyncio.CancelledError:
-        player.cancel()
+        await clauses.put(None)
+        try:
+            await player
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - audio must not break a turn
+            print(f"[brain_bridge] typed turn audio failed: {exc}", flush=True)
+        _finish_typed_turn()
+    finally:
+        # A cancellation can land ANYWHERE above, including between the text
+        # broadcast and the queue sentinel. An orphaned player waits on that
+        # queue forever while holding the tts lock, and every later typed
+        # message hangs behind it. Whatever the exit, the player is reaped.
+        if not player.done():
+            player.cancel()
         with suppress(BaseException):
             await player
-        raise
-    except Exception as exc:  # noqa: BLE001 - audio must not break a turn
-        print(f"[brain_bridge] typed turn audio failed: {exc}", flush=True)
-    _finish_typed_turn()
 
 
 def _finish_typed_turn() -> None:

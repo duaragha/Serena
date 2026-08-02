@@ -226,3 +226,62 @@ def test_her_voice_is_warmed_before_the_first_typed_message() -> None:
     source = (DESKTOP.parent / "brain_bridge.py").read_text(encoding="utf-8")
     assert "warm_voice" in source
     assert "asyncio.create_task(warm_voice())" in source
+
+
+def test_ownership_is_claimed_before_the_old_turn_dies() -> None:
+    """Two messages arriving together must serialize, not both run.
+
+    Sol reproduced the race: A and B both captured turn C, both awaited it,
+    then both ran at once with only B recorded as the owner.
+    """
+    import asyncio
+
+    from voice import brain_bridge
+
+    async def scenario():
+        order = []
+
+        async def fake_turn(name, delay):
+            await brain_bridge._interrupt_typed_turn()
+            order.append(f"{name}-start")
+            try:
+                await asyncio.sleep(delay)
+                order.append(f"{name}-finish")
+            except asyncio.CancelledError:
+                order.append(f"{name}-cancelled")
+                raise
+
+        first = asyncio.create_task(fake_turn("A", 5.0))
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(fake_turn("B", 0.05))
+        third = asyncio.create_task(fake_turn("C", 0.05))
+        await asyncio.gather(second, third, return_exceptions=True)
+        await asyncio.gather(first, return_exceptions=True)
+        brain_bridge._typed_turn = None
+        return order
+
+    order = asyncio.run(scenario())
+    # A must be cancelled, and at most one of B/C may actually finish.
+    assert "A-cancelled" in order
+    finished = [item for item in order if item.endswith("-finish")]
+    assert len(finished) == 1, order
+
+
+def test_the_player_is_reaped_on_every_exit_path() -> None:
+    """A cancellation between the text broadcast and the queue sentinel used
+    to orphan the player, which held the tts lock forever and hung every
+    later typed message behind it."""
+    source = (DESKTOP.parent / "brain_bridge.py").read_text(encoding="utf-8")
+    body = source.split("async def run_typed_turn", 1)[1].split("\nasync def ", 1)[0]
+    assert "finally:" in body
+    reap = body.split("finally:", 1)[1]
+    assert "player.cancel()" in reap and "await player" in reap
+
+
+def test_cancellation_during_close_still_kills_the_speaker() -> None:
+    """Sol reproduced player_killed=False when the cancel landed inside
+    close(); the old clause then talked over the reply that interrupted it."""
+    source = (DESKTOP.parent / "desk" / "say.py").read_text(encoding="utf-8")
+    body = source.split("async def speak_clause", 1)[1].split("\nclass ", 1)[0]
+    inner_try = body.split("try:", 2)[2].split("except asyncio.CancelledError:")[0]
+    assert "await player.close()" in inner_try

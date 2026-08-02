@@ -181,6 +181,13 @@ async def speak_clause(backend, clause: str) -> None:
                 if player is None:
                     player = await _StreamingPlayer.open(rate)
                 await player.feed(pcm)
+            if player is not None:
+                # close() waits for buffered audio to finish, and a
+                # cancellation landing in that wait must still kill the
+                # speaker, or the old clause talks over the reply that
+                # interrupted it. That is why close() sits INSIDE this
+                # handler's reach.
+                await player.close()
         except asyncio.CancelledError:
             # Interrupted mid-sentence. The speaker is a separate process and
             # the engine is a separate process; both keep going over the next
@@ -197,7 +204,6 @@ async def speak_clause(backend, clause: str) -> None:
             # bug that looks like her trailing off mid-sentence.
             print(f"[say] no audio came back for clause: {clause!r}", flush=True)
             return
-        await player.close()
     finally:
         retire = getattr(backend, "retire_generation", None)
         if retire is not None:
