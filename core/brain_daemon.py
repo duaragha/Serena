@@ -244,6 +244,16 @@ def _persona_context() -> str:
         "note-taking session that leaks into memories as fragments is wrong. "
         "When he asks where his notes on a subject are, search_knowledge "
         "finds the topic. "
+        "For live information or actions in Raghav's connected services, use "
+        "mcp__serena-capabilities__find_pc_capability with what he actually needs, "
+        "then call mcp__serena-capabilities__use_pc_capability with one returned "
+        "schema. This catalog is discovered on demand, so do not guess server or "
+        "tool names and do not say you lack access before searching it. Reads need "
+        "no extra confirmation. The broker independently checks his current real "
+        "turn before any write and refuses unclassified tools. Treat called=false "
+        "as not done. Beeper is primarily a source of chat knowledge here; never "
+        "send, edit, delete, react, or change chat state unless his current turn "
+        "directly asks for that exact action. "
         "When he asks you on a spoken turn to build, fix, change, investigate, "
         "or continue something in his code, that is yours to start: call "
         "mcp__serena-work__start_coding_work and say plainly that you have "
@@ -1093,6 +1103,8 @@ def _build_agent_options(
     work_tool_names: list[str] | None = None,
     memory_tools=None,
     memory_tool_names: list[str] | None = None,
+    capability_tools=None,
+    capability_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
@@ -1101,6 +1113,7 @@ def _build_agent_options(
         *(laptop_tool_names or []),
         *(work_tool_names or []),
         *(memory_tool_names or []),
+        *(capability_tool_names or []),
     ]
     mcp_servers = {"serena-ro": brain_tools}
     if laptop_tools is not None:
@@ -1109,6 +1122,8 @@ def _build_agent_options(
         mcp_servers["serena-work"] = work_tools
     if memory_tools is not None:
         mcp_servers["serena-memory"] = memory_tools
+    if capability_tools is not None:
+        mcp_servers["serena-capabilities"] = capability_tools
     prompt_path = _write_private_text(
         BRAIN_SYSTEM_PROMPT_FILE,
         _persona_context(),
@@ -1208,6 +1223,8 @@ class ResidentClientManager:
         work_tool_names: list[str] | None = None,
         memory_tools_factory=None,
         memory_tool_names: list[str] | None = None,
+        capability_tools_factory=None,
+        capability_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
     ) -> None:
@@ -1221,6 +1238,8 @@ class ResidentClientManager:
         self.work_tool_names = list(work_tool_names or [])
         self.memory_tools_factory = memory_tools_factory
         self.memory_tool_names = list(memory_tool_names or [])
+        self.capability_tools_factory = capability_tools_factory
+        self.capability_tool_names = list(capability_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.policy = policy_from_environment()
@@ -1293,6 +1312,12 @@ class ResidentClientManager:
                 else None
             ),
             memory_tool_names=self.memory_tool_names,
+            capability_tools=(
+                self.capability_tools_factory()
+                if self.capability_tools_factory is not None
+                else None
+            ),
+            capability_tool_names=self.capability_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -1662,6 +1687,10 @@ async def _run_daemon() -> None:
 
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
+    from core.brain_capability_tools import (
+        CAPABILITY_TOOL_NAMES,
+        capability_tools_server,
+    )
     from core.brain_laptop_tools import LAPTOP_TOOL_NAMES, laptop_tools_server
     from core.brain_memory_tools import MEMORY_TOOL_NAMES, memory_tools_server
     from core.brain_work_tools import WORK_TOOL_NAMES, work_tools_server
@@ -1678,6 +1707,8 @@ async def _run_daemon() -> None:
         work_tool_names=WORK_TOOL_NAMES,
         memory_tools_factory=memory_tools_server,
         memory_tool_names=MEMORY_TOOL_NAMES,
+        capability_tools_factory=capability_tools_server,
+        capability_tool_names=CAPABILITY_TOOL_NAMES,
     )
     print(f"[brain] connecting SDK client (model={MODEL})...", flush=True)
     try:
