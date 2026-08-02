@@ -17,7 +17,7 @@ import asyncio
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from mcp.types import ToolAnnotations
 
-from core.brain_laptop_tools import current_turn
+from core.brain_laptop_tools import current_turn, recent_turn_texts
 from core.memory_authority import authorize
 
 _BROKERED_WRITE = ToolAnnotations(
@@ -63,7 +63,8 @@ async def save_memory(args):
     if not content:
         return _text(_REFUSAL.format(reason="empty content"))
     decision = authorize(
-        "save_memory", origin=current_turn(), destructive=False, detail=content[:200]
+        "save_memory", origin=current_turn(), destructive=False, detail=content[:200],
+        recent_texts=recent_turn_texts()
     )
     if not decision.allowed:
         return _text(_REFUSAL.format(reason=decision.reason))
@@ -100,6 +101,7 @@ async def edit_memory(args):
         origin=current_turn(),
         destructive=True,
         detail=f"[{memory_id}] {content[:160]}",
+        recent_texts=recent_turn_texts(),
     )
     if not decision.allowed:
         return _text(_REFUSAL.format(reason=decision.reason))
@@ -132,7 +134,11 @@ async def delete_memory(args):
     except (TypeError, ValueError):
         return _text(_REFUSAL.format(reason="no valid memory id"))
     decision = authorize(
-        "delete_memory", origin=current_turn(), destructive=True, detail=f"[{memory_id}]"
+        "delete_memory",
+        origin=current_turn(),
+        destructive=True,
+        detail=f"[{memory_id}]",
+        recent_texts=recent_turn_texts(),
     )
     if not decision.allowed:
         return _text(_REFUSAL.format(reason=decision.reason))
@@ -177,6 +183,7 @@ async def save_knowledge(args):
         origin=current_turn(),
         destructive=False,
         detail=f"{topic}/{filename}",
+        recent_texts=recent_turn_texts(),
     )
     if not decision.allowed:
         return _text(_REFUSAL.format(reason=decision.reason))
@@ -207,7 +214,11 @@ async def delete_knowledge_topic(args):
     if not topic:
         return _text(_REFUSAL.format(reason="no topic given"))
     decision = authorize(
-        "delete_knowledge_topic", origin=current_turn(), destructive=True, detail=topic
+        "delete_knowledge_topic",
+        origin=current_turn(),
+        destructive=True,
+        detail=topic,
+        recent_texts=recent_turn_texts(),
     )
     if not decision.allowed:
         return _text(_REFUSAL.format(reason=decision.reason))

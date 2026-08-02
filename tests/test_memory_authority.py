@@ -108,3 +108,49 @@ def test_refusals_are_unmissable() -> None:
 
     assert "NOT DONE" in _REFUSAL
     assert "never" not in _REFUSAL.split("Reason")[0]  # the header is the verdict
+
+
+def test_the_instruction_may_arrive_across_turns() -> None:
+    """The live refusal from 2026-08-01, 21:51: "delete that one", then after
+    she asked which, "not you gone nignog, the memory". She judged it right
+    and the broker refused because the last sentence had no delete word."""
+    recents = [
+        "find the memory about comparing two photos for soft features",
+        "delete that one",
+        "what is the memory about comparing 2 pictures about features",
+    ]
+    assert (
+        authority_denial(
+            "delete_memory",
+            _turn("not you gone nignog, the memory"),
+            destructive=True,
+            recent_texts=recents,
+        )
+        is None
+    )
+
+
+def test_the_window_does_not_leak_into_unrelated_conversation() -> None:
+    """A delete word minutes ago must not authorize writes forever after; the
+    binding site caps the window by age and count."""
+    from core.brain_laptop_tools import recent_turn_texts
+
+    texts = recent_turn_texts(max_age_seconds=0.0)
+    assert texts == []  # everything ages out at a zero-second window
+
+
+def test_recent_turns_are_recorded_by_the_binding_site() -> None:
+    from core.brain_laptop_tools import (
+        recent_turn_texts,
+        reset_current_turn,
+        set_current_turn,
+    )
+
+    token = set_current_turn(
+        {"text": "please delete the old phev note", "protocol": "voice",
+         "call_id": "t-1", "turn_id": "t-1:1"}
+    )
+    try:
+        assert "please delete the old phev note" in recent_turn_texts()
+    finally:
+        reset_current_turn(token)

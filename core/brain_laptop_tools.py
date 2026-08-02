@@ -23,6 +23,13 @@ _CURRENT_TURN: contextvars.ContextVar[Mapping[str, object] | None] = contextvars
 # safe fallback and keeps the broker able to see the real words.
 _ACTIVE_TURN: dict[str, object] | None = None
 
+# A short rolling window of his recent turns, so brokers can judge intent the
+# way a person does, across the conversation instead of one sentence at a
+# time. "delete that one" two turns before "the memory we just talked about"
+# is one instruction, not two unrelated utterances.
+_RECENT_TURNS: list[dict[str, object]] = []
+_RECENT_TURNS_LIMIT = 8
+
 _LOCAL_READ_ONLY = ToolAnnotations(
     readOnlyHint=True,
     destructiveHint=False,
@@ -40,6 +47,12 @@ _LOCAL_BROKERED_ACTION = ToolAnnotations(
 def set_current_turn(payload: Mapping[str, object]):
     global _ACTIVE_TURN
     _ACTIVE_TURN = dict(payload)
+    import time as _time
+
+    text = " ".join(str(payload.get("text") or "").split())
+    if text:
+        _RECENT_TURNS.append({"at": _time.time(), "text": text})
+        del _RECENT_TURNS[:-_RECENT_TURNS_LIMIT]
     return _CURRENT_TURN.set(dict(payload))
 
 
@@ -95,3 +108,13 @@ LAPTOP_TOOL_NAMES = [
 
 def laptop_tools_server():
     return create_sdk_mcp_server(name="serena-laptop", tools=list(LAPTOP_TOOLS))
+
+
+def recent_turn_texts(*, max_age_seconds: float = 240.0, limit: int = 6) -> list[str]:
+    """His last few spoken turns, newest last. Genuine turns only, never model
+    output, so anything a broker finds here is grounded in something he said."""
+    import time as _time
+
+    cutoff = _time.time() - max_age_seconds
+    texts = [str(t["text"]) for t in _RECENT_TURNS if float(t["at"]) >= cutoff]
+    return texts[-limit:]

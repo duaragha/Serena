@@ -32,7 +32,8 @@ SPOKEN_PROTOCOLS = frozenset({"voice", "desk"})
 _DESTRUCTIVE_SIGNAL = re.compile(
     r"\b(?:delete|remove|forget|drop|erase|clear|scrap|get\s+rid|wipe|clean\s+up|"
     r"prune|purge|update|change|edit|fix|correct|replace|rewrite|rename|wrong|"
-    r"outdated|stale|merge)\b",
+    r"outdated|stale|merge|gone|trash|bin|toss|ditch|nuke|kill|disappear|"
+    r"vanish|axe|strike|lose\s+it|take\s+(?:it|that)\s+out)\b",
     re.IGNORECASE,
 )
 # Saving something new only needs evidence he asked her to keep or note it.
@@ -60,8 +61,17 @@ def authority_denial(
     origin: Mapping[str, object],
     *,
     destructive: bool,
+    recent_texts: list[str] | None = None,
 ) -> str | None:
-    """Why this action may not run, or None when it may."""
+    """Why this action may not run, or None when it may.
+
+    The signal is looked for across his recent turns, not only the current
+    sentence, because instructions arrive as conversations: "delete that one",
+    then "the memory we just talked about". Live failure on 2026-08-01: she
+    correctly called delete after he asked twice across turns, and the broker
+    refused because the final turn happened not to contain a delete word. The
+    grounding guarantee is unchanged, recent turns are all genuinely his.
+    """
 
     spoken = _clean(origin.get("text"))
     protocol = str(origin.get("protocol") or "").strip().lower()
@@ -73,9 +83,10 @@ def authority_denial(
             f"not a {protocol or 'unknown'} turn"
         )
     signal = _DESTRUCTIVE_SIGNAL if destructive else _SAVE_SIGNAL
-    if not signal.search(spoken):
+    window = [spoken, *(_clean(t) for t in (recent_texts or []))]
+    if not any(signal.search(text) for text in window if text):
         kind = "removing or changing" if destructive else "saving"
-        return f"the spoken turn did not ask for {kind} anything"
+        return f"nothing in the recent conversation asked for {kind} anything"
     return None
 
 
@@ -85,10 +96,13 @@ def authorize(
     origin: Mapping[str, object],
     destructive: bool,
     detail: str = "",
+    recent_texts: list[str] | None = None,
     audit_path: Path = DEFAULT_AUDIT_PATH,
 ) -> MemoryAuthorityResult:
     detail = _clean(detail)[:MAX_CONTENT_CHARS]
-    denial = authority_denial(action, origin, destructive=destructive)
+    denial = authority_denial(
+        action, origin, destructive=destructive, recent_texts=recent_texts
+    )
     if denial is not None:
         result = MemoryAuthorityResult(False, denial, action, detail)
     else:
