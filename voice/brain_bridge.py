@@ -225,7 +225,7 @@ async def run_typed_turn(text: str) -> None:
         await clauses.put(None)
         with suppress(Exception):
             await player
-        set_state("idle")
+        _finish_typed_turn()
         await broadcast(
             json.dumps({"type": "response", "text": f"(could not reach the brain: {exc})"})
         )
@@ -245,6 +245,20 @@ async def run_typed_turn(text: str) -> None:
         raise
     except Exception as exc:  # noqa: BLE001 - audio must not break a turn
         print(f"[brain_bridge] typed turn audio failed: {exc}", flush=True)
+    _finish_typed_turn()
+
+
+def _finish_typed_turn() -> None:
+    """Go idle only if this turn is still the one the overlay belongs to.
+
+    A turn that was interrupted by the next message has already handed the dot
+    field over, so writing idle on the way out would drop the dot mid-sentence
+    of the reply that replaced it.
+    """
+    from voice.desk.say import set_state
+
+    if _typed_turn is not None and _typed_turn is not asyncio.current_task():
+        return
     set_state("idle")
 
 
@@ -291,12 +305,41 @@ def open_event_socket():
     return event_socket
 
 
+async def warm_voice() -> None:
+    """Load her voice before the first typed message, not during it.
+
+    The local engine is a sandboxed child that loads a model and primes
+    itself, roughly seven seconds on this laptop. Built lazily on the first
+    clause, that whole cold start was spent in silence while the reply text
+    was already on screen. Doing it here means the very first thing he types
+    after a restart is answered out loud within about a second.
+    """
+    from voice.desk.say import warm_backend
+
+    started = time.monotonic()
+    try:
+        await warm_backend()
+    except Exception as exc:  # noqa: BLE001 - typing must still work mute
+        print(f"[brain_bridge] voice warm-up failed: {exc}", flush=True)
+        return
+    print(
+        f"[brain_bridge] voice warm in {time.monotonic() - started:.1f}s",
+        flush=True,
+    )
+
+
 async def main():
     event_socket = open_event_socket()
     try:
         async with websockets.serve(handler, HOST, PORT):
             print(f"[brain_bridge] ws://{HOST}:{PORT} watching {STATE_FILE}", flush=True)
-            await asyncio.gather(watch(), watch_local_events(event_socket))
+            warming = asyncio.create_task(warm_voice())
+            try:
+                await asyncio.gather(watch(), watch_local_events(event_socket))
+            finally:
+                warming.cancel()
+                with suppress(BaseException):
+                    await warming
     finally:
         event_socket.close()
         EVENT_SOCKET.unlink(missing_ok=True)

@@ -135,7 +135,7 @@ class LocalColdResponder:
             )
             if max_turns is not None and completed >= max_turns:
                 break
-        self.overlay.set_state("idle")
+        self.overlay.release_state()
         self.metrics.record("desk.local_fallback_stopped", turns=completed)
         return completed
 

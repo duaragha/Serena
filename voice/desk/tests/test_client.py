@@ -71,6 +71,13 @@ class _Overlay:
     def set_state(self, state: str) -> None:
         self.states.append(state)
 
+    def adopt_state(self) -> str:
+        self.states.append("idle")
+        return "idle"
+
+    def release_state(self) -> None:
+        self.states.append("idle")
+
     def send_event(self, message: dict) -> None:
         self.events.append(message)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -371,3 +372,72 @@ def test_overlay_publisher_reconnects_after_send_failure(monkeypatch, tmp_path: 
 
     assert sockets[0].closed is True
     assert any('"value":0.7' in payload for payload in sockets[-1].sent)
+
+
+def test_a_restarted_client_does_not_stomp_a_turn_in_progress(tmp_path: Path) -> None:
+    """The wake rearm knocked the dot field out from under a typed reply.
+
+    On 2026-08-01 the supervisor put the microphone back on the wake word at
+    21:10:38 by starting a fresh client, four seconds after her typed reply
+    appeared and three seconds before her voice reached the speakers. The new
+    process announced itself with "idle" and the overlay went dark while she
+    was still mid-answer.
+    """
+    from voice.desk.io import OverlayPublisher
+
+    state = tmp_path / "state"
+    state.write_text("speaking\n", encoding="utf-8")
+    publisher = OverlayPublisher(state_path=state)
+
+    assert publisher.adopt_state() == "speaking"
+    assert state.read_text(encoding="utf-8").strip() == "speaking"
+    # It adopted the state rather than merely skipping one write, so its own
+    # next transition is still published.
+    publisher.set_state("listening")
+    assert state.read_text(encoding="utf-8").strip() == "listening"
+
+
+def test_a_state_left_behind_by_a_dead_process_is_cleared(tmp_path: Path) -> None:
+    """Inheriting forever would leave the dot stuck on a turn nobody is having."""
+    from voice.desk.io import OverlayPublisher
+
+    state = tmp_path / "state"
+    state.write_text("speaking\n", encoding="utf-8")
+    os.utime(state, (time.time() - 600, time.time() - 600))
+    publisher = OverlayPublisher(state_path=state)
+
+    assert publisher.adopt_state() == "idle"
+    assert state.read_text(encoding="utf-8").strip() == "idle"
+
+
+def test_a_departing_client_does_not_clear_someone_elses_turn(tmp_path: Path) -> None:
+    """A spoken conversation ending is not the machine going quiet.
+
+    The awake client writes idle in its shutdown path. If Raghav typed to her
+    while that conversation was winding down, that write landed on top of the
+    typed turn's "speaking" and blanked the dot field mid-sentence.
+    """
+    from voice.desk.io import OverlayPublisher
+
+    state = tmp_path / "state"
+    publisher = OverlayPublisher(state_path=state)
+    publisher.set_state("listening")
+    # The typed turn takes the overlay over while this client is shutting down.
+    state.write_text("speaking\n", encoding="utf-8")
+
+    publisher.release_state()
+
+    assert state.read_text(encoding="utf-8").strip() == "speaking"
+
+
+def test_a_departing_client_still_clears_its_own_turn(tmp_path: Path) -> None:
+    """Releasing must not mean never going idle, or the dot never settles."""
+    from voice.desk.io import OverlayPublisher
+
+    state = tmp_path / "state"
+    publisher = OverlayPublisher(state_path=state)
+    publisher.set_state("listening")
+
+    publisher.release_state()
+
+    assert state.read_text(encoding="utf-8").strip() == "idle"

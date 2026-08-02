@@ -29,12 +29,25 @@ VOICE_STATE = Path.home() / ".config" / "serena" / "voice_state"
 
 
 def set_state(state: str) -> None:
-    """Drive the dot field through the same state file the daemon watches."""
+    """Drive the dot field through the same state file the daemon watches.
+
+    Written the way the desk client writes it (whole line, atomic replace) so
+    a reader never catches a half-written word and both writers agree on the
+    file's shape.
+    """
+    import os
+    import uuid
+
+    temporary = None
     try:
         VOICE_STATE.parent.mkdir(parents=True, exist_ok=True)
-        VOICE_STATE.write_text(state, encoding="utf-8")
+        temporary = VOICE_STATE.parent / f".{VOICE_STATE.name}.{uuid.uuid4().hex}.tmp"
+        temporary.write_text(state + "\n", encoding="utf-8")
+        os.replace(temporary, VOICE_STATE)
     except OSError:
-        pass
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
 
 
 async def ask_brain(text: str, *, call_id: str, turn_id: str, timeout: float) -> str:
@@ -71,6 +84,21 @@ async def ask_brain(text: str, *, call_id: str, turn_id: str, timeout: float) ->
 
 _tts_backend = None
 _tts_lock: asyncio.Lock | None = None
+_generation = 0
+
+
+def _next_generation() -> int:
+    """One generation per clause, never reused.
+
+    Pocket tracks cancellation per generation. Sending every clause of every
+    turn as generation 0 meant an interrupt aimed at one sentence could only
+    be expressed as "cancel generation 0", which is every sentence she will
+    ever say on this process, so cancelling correctly was impossible.
+    """
+    global _generation
+
+    _generation += 1
+    return _generation
 
 
 def _tts_environment() -> None:
@@ -97,6 +125,24 @@ async def _backend():
     return _tts_backend
 
 
+async def warm_backend() -> object:
+    """Pay Pocket's cold start before anyone is waiting on an answer.
+
+    The engine is a sandboxed child process that loads a model and primes
+    itself; measured cold, the first PCM arrives about seven seconds after
+    the first clause is handed over, and warm it arrives in about a tenth of
+    a second. Creating the backend lazily on the first clause charged that
+    seven seconds to the first thing Raghav typed after a restart: her reply
+    finished appearing on screen before she had made a sound. Warming at
+    startup moves the wait to a moment nobody is listening.
+    """
+    backend = await _backend()
+    warm = getattr(backend, "warm", None)
+    if warm is not None:
+        await warm()
+    return backend
+
+
 async def speak_stream(sentences: "asyncio.Queue[str | None]") -> None:
     """Play clauses in order as they are produced, never overlapping."""
     global _tts_lock
@@ -108,45 +154,115 @@ async def speak_stream(sentences: "asyncio.Queue[str | None]") -> None:
             clause = await sentences.get()
             if clause is None:
                 return
-            chunks: list[bytes] = []
-            rate = 24_000
-            async for chunk in backend.stream(clause, generation=0):
+            await speak_clause(backend, clause)
+
+
+async def speak_clause(backend, clause: str) -> None:
+    """Say one clause, starting playback on the first chunk of audio.
+
+    Collecting a whole clause before opening the speaker wasted the entire
+    synthesis time as silence, twice: once before her first word and again in
+    the gap between clauses, which is what made her sound like she had given
+    up halfway through a sentence.
+    """
+    generation = _next_generation()
+    allow = getattr(backend, "allow_generation", None)
+    if allow is not None:
+        allow(generation)
+    player: _StreamingPlayer | None = None
+    rate = 24_000
+    try:
+        try:
+            async for chunk in backend.stream(clause, generation=generation):
                 pcm = getattr(chunk, "pcm", chunk)
                 rate = getattr(chunk, "sample_rate", rate) or rate
-                if pcm:
-                    chunks.append(pcm)
-            if chunks:
-                await _play_pcm(b"".join(chunks), rate)
+                if not pcm:
+                    continue
+                if player is None:
+                    player = await _StreamingPlayer.open(rate)
+                await player.feed(pcm)
+        except asyncio.CancelledError:
+            # Interrupted mid-sentence. The speaker is a separate process and
+            # the engine is a separate process; both keep going over the next
+            # turn unless they are told to stop here.
+            if player is not None:
+                await player.kill()
+            cancel = getattr(backend, "cancel", None)
+            if cancel is not None:
+                with contextlib.suppress(Exception):
+                    await cancel(generation)
+            raise
+        if player is None:
+            # Never swallow a clause. Silence that nobody logs is exactly the
+            # bug that looks like her trailing off mid-sentence.
+            print(f"[say] no audio came back for clause: {clause!r}", flush=True)
+            return
+        await player.close()
+    finally:
+        retire = getattr(backend, "retire_generation", None)
+        if retire is not None:
+            retire(generation)
 
 
-async def _play_pcm(pcm: bytes, rate: int) -> None:
-    import shutil
+class _StreamingPlayer:
+    """A speaker process fed while she is still being synthesised."""
 
-    player = shutil.which("aplay") or shutil.which("paplay")
-    if player is None:
-        raise RuntimeError("no local audio player (aplay/paplay) found")
-    if player.endswith("paplay"):
-        argv = [player, "--raw", "--format=s16le", f"--rate={rate}", "--channels=1"]
-    else:
-        argv = [player, "-q", "-t", "raw", "-f", "S16_LE", "-r", str(rate), "-c", "1"]
-    process = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        _, err = await process.communicate(pcm)
-    except asyncio.CancelledError:
-        # Interrupted mid-sentence. The player is a separate process, so it
-        # keeps talking over the next turn unless it is killed here.
+    def __init__(self, process) -> None:
+        self._process = process
+
+    @staticmethod
+    def argv(rate: int) -> list[str]:
+        import shutil
+
+        player = shutil.which("aplay") or shutil.which("paplay")
+        if player is None:
+            raise RuntimeError("no local audio player (aplay/paplay) found")
+        if player.endswith("paplay"):
+            return [player, "--raw", "--format=s16le", f"--rate={rate}", "--channels=1"]
+        return [player, "-q", "-t", "raw", "-f", "S16_LE", "-r", str(rate), "-c", "1"]
+
+    @classmethod
+    async def open(cls, rate: int) -> "_StreamingPlayer":
+        process = await asyncio.create_subprocess_exec(
+            *cls.argv(rate),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        return cls(process)
+
+    async def feed(self, pcm: bytes) -> None:
+        try:
+            self._process.stdin.write(pcm)
+            # Draining is the pacing: the speaker only accepts audio as fast
+            # as it plays it, which keeps the engine one buffer ahead instead
+            # of an entire clause ahead.
+            await self._process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise RuntimeError(await self._failure()) from exc
+
+    async def close(self) -> None:
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            self._process.stdin.close()
+            await self._process.stdin.wait_closed()
+        # Waiting here is what makes "the player finished" mean "she stopped
+        # talking", which is the only honest moment to go idle.
+        await self._process.wait()
+        if self._process.returncode != 0:
+            raise RuntimeError(await self._failure())
+
+    async def kill(self) -> None:
         with contextlib.suppress(ProcessLookupError):
-            process.kill()
+            self._process.kill()
         with contextlib.suppress(Exception):
-            await process.wait()
-        raise
-    if process.returncode != 0:
-        raise RuntimeError((err or b"").decode("utf-8", "replace").strip() or "playback failed")
+            await self._process.wait()
+
+    async def _failure(self) -> str:
+        err = b""
+        if self._process.stderr is not None:
+            with contextlib.suppress(Exception):
+                err = await self._process.stderr.read()
+        return err.decode("utf-8", "replace").strip() or "playback failed"
 
 
 async def stream_turn(
@@ -242,17 +358,11 @@ async def speak(text: str) -> None:
         return
     # Play through ALSA rather than a python binding: sounddevice only exists
     # in the wake venv, and this runs from the main one.
-    import shutil
     import subprocess
 
-    player = shutil.which("aplay") or shutil.which("paplay")
-    if player is None:
-        raise RuntimeError("no local audio player (aplay/paplay) found")
-    if player.endswith("paplay"):
-        argv = [player, "--raw", "--format=s16le", f"--rate={rate}", "--channels=1"]
-    else:
-        argv = [player, "-q", "-t", "raw", "-f", "S16_LE", "-r", str(rate), "-c", "1"]
-    process = subprocess.run(argv, input=b"".join(chunks), capture_output=True)
+    process = subprocess.run(
+        _StreamingPlayer.argv(rate), input=b"".join(chunks), capture_output=True
+    )
     if process.returncode != 0:
         raise RuntimeError(
             (process.stderr or b"").decode("utf-8", "replace").strip() or "playback failed"

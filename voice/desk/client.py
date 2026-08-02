@@ -494,7 +494,7 @@ class DeskClient:
     ) -> None:
         stop = stop or threading.Event()
         self.overlay.open()
-        self.overlay.set_state("idle")
+        self.overlay.adopt_state()
         self.microphone.start()
         self._calibrate_microphone()
         self.metrics.record("desk.started", network_preconnected=False)
@@ -528,11 +528,11 @@ class DeskClient:
                     self.metrics.record("desk.session_dismissed")
                 self.scorer.reset()
                 self.microphone.drain()
-                self.overlay.set_state("idle")
+                self.overlay.release_state()
         finally:
             self.playback.close()
             self.microphone.close()
-            self.overlay.set_state("idle")
+            self.overlay.release_state()
             self.overlay.close()
             self.metrics.record("desk.stopped")
             close_fallback = getattr(self.local_fallback, "close", None)

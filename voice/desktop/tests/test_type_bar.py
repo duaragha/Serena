@@ -108,9 +108,12 @@ def test_a_new_message_interrupts_her_instead_of_being_refused() -> None:
 def test_interrupted_playback_kills_the_player() -> None:
     """aplay is a separate process; cancelling the task leaves it talking."""
     source = (DESKTOP.parent / "desk" / "say.py").read_text(encoding="utf-8")
-    play = source.split("async def _play_pcm", 1)[1].split("async def", 1)[0]
+    play = source.split("async def speak_clause", 1)[1].split("\nclass ", 1)[0]
     assert "except asyncio.CancelledError:" in play
-    assert "process.kill()" in play
+    assert "await player.kill()" in play
+    # The engine is a separate process too, and it keeps synthesising the
+    # sentence she was interrupted out of unless the generation is cancelled.
+    assert "await cancel(generation)" in play
 
 
 def test_the_speed_slider_is_wired_end_to_end() -> None:
@@ -138,3 +141,88 @@ def test_the_overlay_and_python_agree_on_the_settings_file() -> None:
     main = (DESKTOP / "main.js").read_text(encoding="utf-8")
     assert f"'{DEFAULT_SPEED_PATH.name}'" in main
     assert "'.config', 'serena'" in main
+
+
+def test_the_dot_goes_idle_only_after_the_last_word_is_played(monkeypatch) -> None:
+    """Live she went idle the instant the reply text finished appearing.
+
+    The turn must hold the overlay until the player has actually finished,
+    and the response text may reach the screen long before that.
+    """
+    import asyncio
+
+    from voice.desk import say
+    from voice import brain_bridge
+
+    states: list[str] = []
+    monkeypatch.setattr(say, "set_state", states.append)
+
+    played: list[str] = []
+
+    async def speak_stream(queue) -> None:
+        while True:
+            clause = await queue.get()
+            if clause is None:
+                return
+            await asyncio.sleep(0.05)
+            played.append(clause)
+
+    async def stream_turn(text, *, call_id, turn_id, timeout, on_sentence=None):
+        await on_sentence("first clause,")
+        await on_sentence("and the rest of it.")
+        return "first clause, and the rest of it."
+
+    monkeypatch.setattr(say, "speak_stream", speak_stream)
+    monkeypatch.setattr(say, "stream_turn", stream_turn)
+    sent: list[str] = []
+
+    async def broadcast(message, *, exclude=None) -> None:
+        sent.append(message)
+        if '"response"' in message:
+            # Nothing must have gone idle by the time the text is on screen.
+            assert states[-1] != "idle"
+
+    monkeypatch.setattr(brain_bridge, "broadcast", broadcast)
+    monkeypatch.setattr(brain_bridge, "_typed_turn", None)
+
+    asyncio.run(brain_bridge.run_typed_turn("what car do i drive"))
+
+    assert played == ["first clause,", "and the rest of it."]
+    assert states == ["thinking", "speaking", "idle"]
+
+
+def test_an_interrupted_turn_does_not_drop_the_dot_on_its_replacement(monkeypatch) -> None:
+    """The turn that was talked over has already handed the overlay on.
+
+    Typing again while she is speaking cancels the old turn. If that old turn
+    still wrote idle on its way out, it would blank the dot field on the reply
+    that replaced it.
+    """
+    import asyncio
+
+    from voice.desk import say
+    from voice import brain_bridge
+
+    states: list[str] = []
+    monkeypatch.setattr(say, "set_state", states.append)
+
+    async def scenario() -> None:
+        newer = asyncio.create_task(asyncio.sleep(0.01))
+        monkeypatch.setattr(brain_bridge, "_typed_turn", newer)
+        brain_bridge._finish_typed_turn()
+        await newer
+
+    asyncio.run(scenario())
+
+    assert states == []
+
+
+def test_her_voice_is_warmed_before_the_first_typed_message() -> None:
+    """Cold, the first PCM landed about seven seconds after the first clause.
+
+    Paid on the first typed turn after a restart, that whole cold start was
+    silence with the reply already on screen.
+    """
+    source = (DESKTOP.parent / "brain_bridge.py").read_text(encoding="utf-8")
+    assert "warm_voice" in source
+    assert "asyncio.create_task(warm_voice())" in source

@@ -191,6 +191,46 @@ class OverlayPublisher:
                     return
                 self._socket = socket
 
+    def adopt_state(self, *, stale_after: float = 90.0) -> str:
+        """Take the overlay over without stomping a turn already in progress.
+
+        The supervisor puts the microphone back on the wake word by starting a
+        brand new client, which used to announce itself by writing "idle". If
+        Raghav had typed to her in the meantime, that write landed while she
+        was still mid-sentence and the dot field went dark on him. A new
+        process knows nothing about the overlay, so it inherits whatever is
+        there rather than overruling it. A state left behind by something that
+        died is not inherited forever: after stale_after it is cleared.
+        """
+        try:
+            current = self.state_path.read_text(encoding="utf-8").strip()
+            age = time.time() - self.state_path.stat().st_mtime
+        except OSError:
+            current, age = "", 0.0
+        busy = {"listening", "thinking", "speaking", "working"}
+        if current in busy and age < stale_after:
+            self._last_state = current
+            return current
+        self.set_state("idle")
+        return "idle"
+
+    def release_state(self) -> None:
+        """Hand the overlay back, but only if it is still ours to hand back.
+
+        A spoken conversation ending is not the machine going quiet. A typed
+        turn can be mid-sentence on the same dot field, and this process
+        writing "idle" on its way out blanked the dot under her while she was
+        still talking. You may only clear the state you last wrote.
+        """
+        try:
+            current = self.state_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            current = ""
+        if current and current != self._last_state:
+            self._last_state = current
+            return
+        self.set_state("idle")
+
     def set_state(self, state: str) -> None:
         if state not in {"idle", "listening", "thinking", "speaking", "working"}:
             raise ValueError(f"invalid voice state {state!r}")

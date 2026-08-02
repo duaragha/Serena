@@ -35,6 +35,9 @@ class _Overlay:
     def set_state(self, state: str) -> None:
         self.states.append(state)
 
+    def release_state(self) -> None:
+        self.states.append("idle")
+
 
 class _Metrics:
     def __init__(self) -> None:
