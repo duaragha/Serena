@@ -47,7 +47,6 @@ class Terminal:
     reader_thread: threading.Thread | None = None
     session_id: str | None = None
     agent: str = ""
-    graphics_protocol: str | None = None
     runtime_state: str = "live"
     runtime_busy: bool = False
     turn_file_version: tuple[int, int] | None = None
@@ -135,7 +134,6 @@ def spawn(
     *,
     session_id: str | None = None,
     agent: str = "",
-    terminal_protocol: str | None = None,
     env: dict[str, str] | None = None,
 ) -> str:
     """Spawn *argv* inside a ConPTY and return its terminal id."""
@@ -149,11 +147,6 @@ def spawn(
     child_env.setdefault("LINES", str(rows))
     child_env.setdefault("PYTHONIOENCODING", "utf-8")
     child_env.setdefault("PYTHONUTF8", "1")
-
-    graphics_protocol = None
-    if terminal_protocol == "sixel":
-        child_env["TERM"] = "xterm-sixel"
-        graphics_protocol = "sixel"
 
     proc = _PtyProcess.spawn(
         argv,
@@ -169,7 +162,6 @@ def spawn(
         rows=rows,
         session_id=session_id,
         agent=(agent or "").lower(),
-        graphics_protocol=graphics_protocol,
     )
 
     with _registry_lock:

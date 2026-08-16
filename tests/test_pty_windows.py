@@ -137,7 +137,6 @@ def test_spawn_sets_conpty_dimensions_environment_and_metadata():
         rows=43,
         session_id="new-session",
         agent="Codex",
-        terminal_protocol="sixel",
         env={"CUSTOM": "kept"},
     )
 
@@ -148,7 +147,7 @@ def test_spawn_sets_conpty_dimensions_environment_and_metadata():
     assert kwargs["dimensions"] == (43, 132)
     assert kwargs["env"] == {
         "CUSTOM": "kept",
-        "TERM": "xterm-sixel",
+        "TERM": "xterm-256color",
         "COLORTERM": "truecolor",
         "COLUMNS": "132",
         "LINES": "43",
@@ -159,7 +158,6 @@ def test_spawn_sets_conpty_dimensions_environment_and_metadata():
     assert terminal.proc is proc
     assert terminal.session_id == "new-session"
     assert terminal.agent == "codex"
-    assert terminal.graphics_protocol == "sixel"
 
 
 def test_reader_preserves_utf8_and_reports_eof_after_buffer_drain():
