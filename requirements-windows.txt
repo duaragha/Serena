@@ -1,0 +1,2 @@
+# 3.0.4 shipped without required native binaries; 3.0.5 repairs the wheels.
+pywinpty==3.0.5

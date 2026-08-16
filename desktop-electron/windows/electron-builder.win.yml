@@ -1,0 +1,53 @@
+appId: ai.serena.desktop
+productName: Serena
+copyright: Copyright © 2026 Raghav
+asar: true
+electronUpdaterCompatibility: ">=2.16"
+
+extraMetadata:
+  main: windows/main-win.js
+
+directories:
+  output: dist/windows
+
+files:
+  - main.js
+  - preload.js
+  - runtime.js
+  - windows/main-win.js
+  - package.json
+
+extraResources:
+  - from: build/windows-sidecar/serena-web-sidecar
+    to: sidecar
+    filter:
+      - "**/*"
+
+artifactName: Serena-Setup-${version}-${arch}.${ext}
+
+win:
+  executableName: Serena
+  icon: ../static/serena-icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Serena
+  installerIcon: ../static/serena-icon.ico
+  uninstallerIcon: ../static/serena-icon.ico
+  differentialPackage: true
+  packElevateHelper: true
+
+publish:
+  - provider: github
+    owner: duaragha
+    repo: Serena
+    releaseType: release
