@@ -1,0 +1,68 @@
+{
+  "name": "serena-desktop",
+  "version": "0.1.0",
+  "description": "Serena desktop shell",
+  "main": "main.js",
+  "author": "Raghav",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "dev": "electron . --dev",
+    "test": "node --test tests/*.test.js",
+    "build:sidecar": "bash scripts/build-sidecar.sh",
+    "clean:intermediate": "bash scripts/clean-intermediate.sh",
+    "dist:appimage": "npm run build:sidecar && electron-builder --linux AppImage",
+    "dist:linux": "npm run build:sidecar && electron-builder --linux AppImage deb",
+    "smoke:appimage": "node tests/smoke-appimage.js"
+  },
+  "devDependencies": {
+    "electron": "43.1.1",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "appId": "ai.serena.desktop",
+    "productName": "Serena",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "runtime.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/sidecar/serena-web-sidecar",
+        "to": "sidecar"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "executableName": "serena",
+      "artifactName": "Serena-${version}-${arch}.${ext}",
+      "desktop": {
+        "entry": {
+          "Name": "Serena",
+          "Comment": "Serena desktop assistant",
+          "StartupWMClass": "Serena"
+        }
+      },
+      "icon": "build/icon.png"
+    },
+    "deb": {
+      "priority": "optional",
+      "recommends": [
+        "libappindicator3-1"
+      ]
+    },
+    "win": {
+      "icon": "build/icon.ico"
+    }
+  }
+}

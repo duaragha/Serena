@@ -27,7 +27,7 @@ artifactName: Serena-Setup-${version}-${arch}.${ext}
 
 win:
   executableName: Serena
-  icon: ../static/serena-icon.ico
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:
@@ -41,8 +41,8 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Serena
-  installerIcon: ../static/serena-icon.ico
-  uninstallerIcon: ../static/serena-icon.ico
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
   differentialPackage: true
   packElevateHelper: true
 
