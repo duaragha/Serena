@@ -45,14 +45,28 @@ from core.codex_usage_reader import CodexUsageReader
 from core.runtime_activity import TurnActivityReader
 from knowledge.reader import get_topic_content, get_file_content, get_topic_files
 from core.parser import parse_full
+from core.voice_transcripts import VOICE_SESSION_ID
 from chats.llm_titles import generate_titles_batch
 
 app = Flask(__name__)
 sock = Sock(app)
 
 from core.sidestore_source import sidestore_bp  # noqa: E402
+from ui.fleet_web import fleet_bp  # noqa: E402
+from ui.operator_web import operator_bp  # noqa: E402
+from ui.webhook_web import webhook_bp  # noqa: E402
 
 app.register_blueprint(sidestore_bp)
+app.register_blueprint(fleet_bp)
+app.register_blueprint(operator_bp)
+app.register_blueprint(webhook_bp)
+
+
+def _is_serena_voice_session(session: dict | None) -> bool:
+    return bool(session) and (
+        session.get("session_id") == VOICE_SESSION_ID
+        or str(session.get("agent") or "").lower() == "serena-voice"
+    )
 
 _INDEX_REFRESH_LOCK = threading.Lock()
 _INDEX_REFRESH_PROC: subprocess.Popen | None = None
@@ -303,13 +317,15 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chats</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0.7.0/lib/addon-canvas.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-image@0.8.0/lib/addon-image.js"></script>
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+<link rel="stylesheet" href="/static/operator_workspace.css">
+<script src="/static/vendor/xterm/xterm.js"></script>
+<script src="/static/vendor/xterm/addon-fit.js"></script>
+<script src="/static/vendor/xterm/addon-web-links.js"></script>
+<script src="/static/vendor/xterm/addon-webgl.js"></script>
+<script src="/static/vendor/xterm/addon-canvas.js"></script>
+<script src="/static/terminal_lifecycle.js"></script>
+<script src="/static/terminal_links.js"></script>
 <style>
 /* ── Reset & Vars ── */
 :root {
@@ -971,8 +987,24 @@ body.pane-dragging * {
 }
 .group-header.starred-header { color: var(--amber); }
 .group-header.active-header { color: var(--green); }
+.group-header.fleet-header {
+  color: #b07cff;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.12s;
+}
+.group-header.fleet-header:hover { color: #ceb5ff; }
+.fleet-chats-section.collapsed { display: none; }
+.group-header.voice-chats-header {
+  color: var(--accent);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.12s;
+}
+.group-header.voice-chats-header:hover { color: #f3a6c9; }
+.voice-chats-section.collapsed { display: none; }
 
-/* Agent badges (Claude / Codex) — inline SVG, color via currentColor */
+/* Agent badges (Claude / Codex / Serena) use inline SVG and currentColor. */
 .agent-icon {
   display: inline-flex;
   align-items: center;
@@ -986,6 +1018,19 @@ body.pane-dragging * {
 .agent-icon svg { width: 14px; height: 14px; display: block; }
 .agent-icon.claude { color: #C15F3C; }   /* Anthropic crail orange */
 .agent-icon.codex  { color: #b07cff; }   /* purple to differentiate cleanly from claude orange */
+.agent-icon.serena { color: #f472b6; }
+.group-header.serena-header {
+  color: #f9a8d4;
+  background: linear-gradient(90deg, rgba(244, 114, 182, 0.1), var(--bg) 72%);
+}
+.session-row.serena-voice {
+  background: linear-gradient(90deg, rgba(244, 114, 182, 0.08), transparent 78%);
+  border-left: 2px solid rgba(244, 114, 182, 0.62);
+}
+.session-row.serena-voice:hover,
+.session-row.serena-voice.focused {
+  background: linear-gradient(90deg, rgba(244, 114, 182, 0.16), rgba(255,255,255,0.025) 78%);
+}
 .group-header.done-header {
   color: var(--text-dim);
   cursor: pointer;
@@ -995,6 +1040,11 @@ body.pane-dragging * {
 }
 .group-header.done-header:hover { color: var(--text); }
 .done-section.collapsed { display: none; }
+.starred-section.collapsed { display: none; }
+.time-section.collapsed { display: none; }
+.group-header.starred-header,
+.group-header.time-header { cursor: pointer; }
+.group-header.time-header:hover { color: var(--text); }
 .session-row.done .session-title { color: var(--text-dim); }
 .session-row.done .session-device,
 .session-row.done .session-date,
@@ -1400,6 +1450,32 @@ body.pane-dragging * {
 }
 .term-status.error { color: #f85149; }
 .term-status.live { color: var(--green); }
+.term-session-ids {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.term-session-ids.hidden { display: none; }
+.term-session-id {
+  height: 21px;
+  padding: 0 6px;
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.term-session-id:hover {
+  color: var(--text);
+  border-color: var(--menu);
+  background: rgba(255, 255, 255, 0.055);
+}
+.term-session-id.claude { color: #ff967d; }
+.term-session-id.codex { color: #8cb4ff; }
 .runtime-pin {
   display: inline-flex;
   align-items: center;
@@ -2336,6 +2412,7 @@ body.pane-dragging * {
     <div class="tab" data-tab="tasks" onclick="switchTab('tasks')">Tasks <span class="count" id="taskCount"></span></div>
     <div class="tab" data-tab="memory" onclick="switchTab('memory')">Memory <span class="count" id="memoryCount"></span></div>
     <div class="tab" data-tab="knowledge" onclick="switchTab('knowledge')">Knowledge <span class="count" id="knowledgeCount"></span></div>
+    <div class="tab" data-tab="fleet" onclick="switchTab('fleet')">Fleet <span class="count" id="fleetCount"></span></div>
     <div class="tab" data-tab="usage" onclick="switchTab('usage')">Usage</div>
     <div class="tab" data-tab="persona" onclick="switchTab('persona')">Persona</div>
     <div class="tab-spacer"></div>
@@ -2759,6 +2836,7 @@ body.pane-dragging * {
             <div class="code-pane term-pane" id="termPane">
               <div class="term-statusbar">
                 <div class="term-status" id="termStatus">Ready to resume.</div>
+                <div class="term-session-ids hidden" id="termSessionIds"></div>
                 <button class="runtime-pin hidden" id="runtimePinBtn"
                         onclick="toggleGtkPinBoth()"
                         title="Keep both linked runtimes live">
@@ -2819,6 +2897,13 @@ body.pane-dragging * {
         <div class="file-content-view hidden" id="fileContentView"></div>
       </div>
     </div>
+  </div>
+
+  <!-- ═══ FLEET VIEW ═══ -->
+  <div class="main hidden" id="viewFleet">
+    <iframe id="fleetFrame" src="/fleet/view" title="Fleet workflow runs"
+            onload="syncFleetFrameVisibility()"
+            style="width:100%;height:100%;border:0;background:var(--bg);"></iframe>
   </div>
 
   <!-- ═══ USAGE VIEW ═══ -->
@@ -2965,30 +3050,84 @@ const usageAlertState = {
 // Tab Switching
 // ═══════════════════════════════════════════════════════════════
 function switchTab(tab) {
+  const leavingChats = currentTab === 'chats' && tab !== 'chats';
+  if (leavingChats && window.__nativeTerminalBridge) {
+    // Native VTEs float above WebKit. Always unmap their GTK host before the
+    // Chats DOM disappears, even if JS has already lost its active-sid marker.
+    window.gtkSend({ type: 'code-tab-visible', visible: false });
+  }
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.getElementById('viewChats').classList.toggle('hidden', tab !== 'chats');
   document.getElementById('viewTasks').classList.toggle('hidden', tab !== 'tasks');
   document.getElementById('viewMemory').classList.toggle('hidden', tab !== 'memory');
   document.getElementById('viewKnowledge').classList.toggle('hidden', tab !== 'knowledge');
+  document.getElementById('viewFleet').classList.toggle('hidden', tab !== 'fleet');
   document.getElementById('viewUsage').classList.toggle('hidden', tab !== 'usage');
   document.getElementById('viewPersona').classList.toggle('hidden', tab !== 'persona');
   updateShortcutBar();
   if (tab === 'tasks') { loadTasks(); }
   if (tab === 'memory') { if (memories.length) renderMemoryList(); else loadMemories(); }
   if (tab === 'knowledge') { if (topics.length) renderTopicList(); else loadTopics(); }
+  syncFleetFrameVisibility();
   if (tab === 'usage') { loadUsage(); }
   if (tab === 'persona') loadPersona();
-  // Returning to chats: hiding the view squished the GTK terminal/split paned to
-  // ~0 width; re-assert the real rect once layout settles so the split divider
-  // restores to its ratio (otherwise the right/codex pane stays shrunk).
-  if (tab === 'chats' && window.__nativeTerminalBridge && _gtkCodeSid) {
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+  // Returning to Chats: force the now-visible DOM allocation and remap the
+  // native overlay immediately. RAF is only an invalid-rect retry.
+  if (tab === 'chats' && window.__nativeTerminalBridge) {
+    let attempts = 0;
+    const restoreNativeTerminal = () => {
+      if (currentTab !== 'chats') return;
       const r = _gtkGetRect();
-      if (r && r.w > 160 && r.h > 120) window.gtkSend({ type: 'code-rect', rect: r });
-    }));
+      if (_gtkRectIsVisible(r)) {
+        window.gtkSend({ type: 'code-tab-visible', visible: true, rect: r });
+      } else if (++attempts < 12) {
+        requestAnimationFrame(restoreNativeTerminal);
+      }
+    };
+    restoreNativeTerminal();
+  }
+  if (tab === 'chats' && !window.__nativeTerminalBridge) {
+    // The PTY and xterm instances never leave the renderer. Wait until the
+    // Chats DOM has a real allocation, then restore the exact prior pane or
+    // split without sending a transient tiny resize to either CLI.
+    window.SerenaTerminalLifecycle.afterReveal(() => {
+      if (currentTab !== 'chats' || convMode !== 'live') return;
+      const sid = currentSessionId && termSessions.has(currentSessionId)
+        ? currentSessionId
+        : activeTermSid;
+      if (sid && termSessions.has(sid)) _activateTermPane(sid);
+    });
   }
 }
+
+function syncFleetFrameVisibility() {
+  const frame = document.getElementById('fleetFrame');
+  if (!frame || !frame.contentWindow) return;
+  frame.contentWindow.postMessage({
+    type: 'serena-fleet-visible',
+    visible: currentTab === 'fleet',
+  }, window.location.origin);
+}
+
+async function openFleetSessionReadOnly(sid) {
+  if (!sid) return;
+  switchTab('chats');
+  await openConv(String(sid), { mode: 'read' });
+}
+
+window.addEventListener('message', event => {
+  if (event.origin !== window.location.origin) return;
+  const frame = document.getElementById('fleetFrame');
+  if (!frame || event.source !== frame.contentWindow) return;
+  const message = event.data || {};
+  if (message.type === 'serena-fleet-count') {
+    const count = Math.max(0, Number(message.active_count) || 0);
+    document.getElementById('fleetCount').textContent = count ? '(' + count + ')' : '';
+  } else if (message.type === 'serena-fleet-open-session' && message.session_id) {
+    openFleetSessionReadOnly(message.session_id);
+  }
+});
 
 // === PERSONA FEATURE === (view + edit Persona.md / Tooling.md in-app)
 const _personaPanes = {
@@ -3420,6 +3559,21 @@ function rowActivityTs(s) {
   return (s && (s.group_last_timestamp || s.last_timestamp || s.first_timestamp)) || '';
 }
 
+const SERENA_VOICE_SESSION_ID = 'serena-voice-main';
+function _isSerenaVoiceSession(sessionOrSid) {
+  if (!sessionOrSid) return false;
+  if (typeof sessionOrSid === 'string') return sessionOrSid === SERENA_VOICE_SESSION_ID;
+  return sessionOrSid.session_id === SERENA_VOICE_SESSION_ID
+    || String(sessionOrSid.agent || '').toLowerCase() === 'serena-voice';
+}
+
+function _isFleetSession(session) {
+  if (!session || typeof session !== 'object') return false;
+  const marker = session.fleet_worker
+    || (session.metadata && session.metadata.fleet_worker);
+  return Boolean(marker && typeof marker === 'object' && marker.run_id);
+}
+
 function setSessionSource(items) {
   sessionSource = items || [];
   sessions = sessionSource;
@@ -3491,6 +3645,7 @@ function _maybeFollowSpawnedChat() {
   const target = sessionSource.find(s =>
     _freshSids.has(s.session_id) &&
     !_autoSwitched.has(s.session_id) &&
+    !s.external_runtime_active &&
     s.session_id !== currentSessionId &&
     s.group === cur.group);
   if (target) {
@@ -3886,7 +4041,7 @@ function renderSessionList() {
   // instead of scattering members across multiple time groups)
   const groupBuckets = new Map(); // gid -> [sessions sorted by last_timestamp desc]
   for (const s of topSessions) {
-    if (!s.group) continue;
+    if (!s.group || _isSerenaVoiceSession(s)) continue;
     if (!groupBuckets.has(s.group)) groupBuckets.set(s.group, []);
     groupBuckets.get(s.group).push(s);
   }
@@ -3927,7 +4082,24 @@ function renderSessionList() {
     });
   }
 
+  // The lifelong Serena transcript is a relationship-level chat, not a
+  // dated coding session. Keep its single row in a stable home above every
+  // ordinary time bucket even if it has not received a turn today.
+  const serenaVoice = visibleTop.filter(_isSerenaVoiceSession);
+  visibleTop = visibleTop.filter(s => !_isSerenaVoiceSession(s));
+
   const rowMembers = (s) => [s, ...(groupSiblings.get(s.session_id) || [])];
+  // Fleet worker sessions have durable metadata even after their runtime ends.
+  // Give every run cluster one stable home instead of letting it leak into
+  // Active, Starred, Done, or date buckets.
+  const fleetChats = visibleTop.filter(s => rowMembers(s).some(_isFleetSession));
+  const fleetSet = new Set(fleetChats.map(s => s.session_id));
+  visibleTop = visibleTop.filter(s => !fleetSet.has(s.session_id));
+
+  // Reserved until voice-created chats carry their own explicit origin tag.
+  // Do not infer voice ownership from broader Serena work metadata.
+  const voiceChats = [];
+
   const active = _activeTerms.size
     ? visibleTop.filter(s => rowMembers(s).some(x => _activeTerms.has(x.session_id)))
     : [];
@@ -3967,6 +4139,11 @@ function renderSessionList() {
     // (linked siblings are folded into the row above — no separate rows)
   };
 
+  if (serenaVoice.length) {
+    html += '<div class="group-header serena-header">Serena</div>';
+    for (const s of serenaVoice) appendRow(s);
+  }
+
   if (active.length) {
     html += '<div class="group-header active-header">\u25CF Active Terminals</div>';
     for (const s of active) {
@@ -3974,29 +4151,69 @@ function renderSessionList() {
     }
   }
 
+  if (fleetChats.length) {
+    const chev = _collapsedState.fleetChats ? '▸' : '▾';
+    html += '<div class="group-header fleet-header" data-testid="fleet-chats-header" role="button" aria-expanded="'
+      + (!_collapsedState.fleetChats) + '" onclick="toggleFleetChatsCollapsed()">'
+      + chev + ' Fleet Chats (' + fleetChats.length + ')</div>';
+    // Keep rows mounted so focus, search, and direct Fleet deep-links retain
+    // their real session indexes while the visual section is collapsed.
+    html += '<div class="fleet-chats-section' + (_collapsedState.fleetChats ? ' collapsed' : '')
+      + '" data-testid="fleet-chats-section">';
+    for (const s of fleetChats) appendRow(s);
+    html += '</div>';
+  }
+
+  const voiceChev = _collapsedState.voiceChats ? '▸' : '▾';
+  html += '<div class="group-header voice-chats-header" data-testid="voice-chats-header" role="button" aria-expanded="'
+    + (!_collapsedState.voiceChats) + '" onclick="toggleVoiceChatsCollapsed()">'
+    + voiceChev + ' Voice Chats (' + voiceChats.length + ')</div>';
+  html += '<div class="voice-chats-section' + (_collapsedState.voiceChats ? ' collapsed' : '')
+    + '" data-testid="voice-chats-section"></div>';
+
   if (starred.length) {
-    html += '<div class="group-header starred-header">\u2605 Starred</div>';
+    const chev = _collapsedState.starred ? '\u25b8' : '\u25be';
+    html += '<div class="group-header starred-header" role="button" aria-expanded="'
+      + (!_collapsedState.starred) + '" onclick="toggleStarredCollapsed()">'
+      + chev + ' \u2605 Starred (' + starred.length + ')</div>';
+    // Rows stay mounted (hidden via CSS) so focus/search keep real indexes.
+    html += '<div class="starred-section' + (_collapsedState.starred ? ' collapsed' : '') + '">';
     for (const s of starred) {
       appendRow(s);
     }
+    html += '</div>';
   }
 
+  // Count per time group up front so the header can show its size.
+  const timeGroupCounts = new Map();
+  for (const s of unstarred) {
+    const g = timeGroup(rowActivityTs(s));
+    timeGroupCounts.set(g, (timeGroupCounts.get(g) || 0) + 1);
+  }
   let group = null;
   for (const s of unstarred) {
     const g = timeGroup(rowActivityTs(s));
     if (g !== group) {
+      if (group !== null) html += '</div>';
       group = g;
-      html += '<div class="group-header">' + esc(g) + '</div>';
+      const collapsed = isTimeGroupCollapsed(g);
+      const chev = collapsed ? '\u25b8' : '\u25be';
+      html += '<div class="group-header time-header" role="button" aria-expanded="'
+        + (!collapsed) + '" onclick="toggleTimeGroupCollapsed(\'' + esc(g).replace(/'/g, "\\'") + '\')">'
+        + chev + ' ' + esc(g) + ' (' + (timeGroupCounts.get(g) || 0) + ')</div>';
+      // Rows stay mounted (hidden via CSS) so focus/search keep real indexes.
+      html += '<div class="time-section' + (collapsed ? ' collapsed' : '') + '">';
     }
     appendRow(s);
   }
+  if (group !== null) html += '</div>';
 
   if (doneList.length) {
-    const chev = _doneCollapsed ? '▸' : '▾';
+    const chev = _collapsedState.done ? '▸' : '▾';
     html += '<div class="group-header done-header" onclick="toggleDoneCollapsed()">'
       + chev + ' ✓ Done (' + doneList.length + ')</div>';
     // Always render the rows so they stay in `sessions`; hide via CSS when collapsed.
-    html += '<div class="done-section' + (_doneCollapsed ? ' collapsed' : '') + '">';
+    html += '<div class="done-section' + (_collapsedState.done ? ' collapsed' : '') + '">';
     for (const s of doneList) {
       appendRow(s);
     }
@@ -4021,9 +4238,83 @@ function renderSessionList() {
   }
 }
 
-let _doneCollapsed = true;
+// === SIDEBAR COLLAPSE STATE ===
+// Persisted SERVER-side (/api/ui-state → ~/.config/serena/ui-state.json), not in
+// localStorage: the desktop shell binds a fresh port each launch, so a
+// localStorage key lives on a throwaway origin and the state would silently
+// reset on every restart and never be shared with a browser tab.
+let _collapsedState = { fleetChats: true, voiceChats: true, starred: false, done: true, timeGroups: [] };
+let _collapsedLoaded = false;
+let _timeGroupsCollapsed = new Set();
+
+function _applyCollapsedState(raw) {
+  const c = (raw && typeof raw === 'object') ? raw : {};
+  if (typeof c.fleetChats === 'boolean') _collapsedState.fleetChats = c.fleetChats;
+  if (typeof c.voiceChats === 'boolean') _collapsedState.voiceChats = c.voiceChats;
+  if (typeof c.starred === 'boolean') _collapsedState.starred = c.starred;
+  if (typeof c.done === 'boolean') _collapsedState.done = c.done;
+  _collapsedState.timeGroups = Array.isArray(c.timeGroups) ? c.timeGroups.map(String) : [];
+  _timeGroupsCollapsed = new Set(_collapsedState.timeGroups);
+}
+
+async function loadCollapsedState() {
+  try {
+    const r = await fetch('/api/ui-state');
+    if (r.ok) {
+      const data = await r.json();
+      _applyCollapsedState(data && data.collapsed);
+    }
+  } catch(e) {}
+  _collapsedLoaded = true;
+  renderSessionList();
+}
+
+function _saveCollapsedState() {
+  _collapsedState.timeGroups = [..._timeGroupsCollapsed];
+  try {
+    fetch('/api/ui-state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collapsed: _collapsedState }),
+    }).catch(() => {});
+  } catch(e) {}
+}
+
+function toggleFleetChatsCollapsed() {
+  _collapsedState.fleetChats = !_collapsedState.fleetChats;
+  _saveCollapsedState();
+  renderSessionList();
+}
+
+function toggleVoiceChatsCollapsed() {
+  _collapsedState.voiceChats = !_collapsedState.voiceChats;
+  _saveCollapsedState();
+  renderSessionList();
+}
+
+function toggleStarredCollapsed() {
+  _collapsedState.starred = !_collapsedState.starred;
+  _saveCollapsedState();
+  renderSessionList();
+}
+
+// Time buckets (Today / Yesterday / This Week / …) collapse per label, so a
+// bucket you shut stays shut while a brand-new bucket (tomorrow's "Today")
+// still renders expanded.
+function isTimeGroupCollapsed(label) {
+  return _timeGroupsCollapsed.has(String(label));
+}
+function toggleTimeGroupCollapsed(label) {
+  const key = String(label);
+  if (_timeGroupsCollapsed.has(key)) _timeGroupsCollapsed.delete(key);
+  else _timeGroupsCollapsed.add(key);
+  _saveCollapsedState();
+  renderSessionList();
+}
+
 function toggleDoneCollapsed() {
-  _doneCollapsed = !_doneCollapsed;
+  _collapsedState.done = !_collapsedState.done;
+  _saveCollapsedState();
   renderSessionList();
 }
 
@@ -4057,13 +4348,16 @@ function toggleParentExpansion(sid) {
   renderSessionList();
 }
 
-// Bootstrap Icons (MIT) — inline SVG marks for Claude (Anthropic sparkle)
-// and Codex (OpenAI flower). Currentcolor lets CSS pick the brand tint.
+// Bootstrap Icons (MIT) marks for Claude, Codex, and the Serena microphone.
+// Currentcolor lets CSS pick the tint.
 const _CLAUDE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="m3.127 10.604 3.135-1.76.053-.153-.053-.085H6.11l-.525-.032-1.791-.048-1.554-.065-1.505-.08-.38-.081L0 7.832l.036-.234.32-.214.455.04 1.009.069 1.513.105 1.097.064 1.626.17h.259l.036-.105-.089-.065-.068-.064-1.566-1.062-1.695-1.121-.887-.646-.48-.327-.243-.306-.104-.67.435-.48.585.04.15.04.593.456 1.267.981 1.654 1.218.242.202.097-.068.012-.049-.109-.181-.9-1.626-.96-1.655-.428-.686-.113-.411a2 2 0 0 1-.068-.484l.496-.674L4.446 0l.662.089.279.242.411.94.666 1.48 1.033 2.014.302.597.162.553.06.17h.105v-.097l.085-1.134.157-1.392.154-1.792.052-.504.25-.605.497-.327.387.186.319.456-.045.294-.19 1.23-.37 1.93-.243 1.29h.142l.161-.16.654-.868 1.097-1.372.484-.545.565-.601.363-.287h.686l.505.751-.226.775-.707.895-.585.759-.839 1.13-.524.904.048.072.125-.012 1.897-.403 1.024-.186 1.223-.21.553.258.06.263-.218.536-1.307.323-1.533.307-2.284.54-.028.02.032.04 1.029.098.44.024h1.077l2.005.15.525.346.315.424-.053.323-.807.411-3.631-.863-.872-.218h-.12v.073l.726.71 1.331 1.202 1.667 1.55.084.383-.214.302-.226-.032-1.464-1.101-.565-.497-1.28-1.077h-.084v.113l.295.432 1.557 2.34.08.718-.112.234-.404.141-.444-.08-.911-1.28-.94-1.44-.759-1.291-.093.053-.448 4.821-.21.246-.484.186-.403-.307-.214-.496.214-.98.258-1.28.21-1.016.19-1.263.112-.42-.008-.028-.092.012-.953 1.307-1.448 1.957-1.146 1.227-.274.109-.477-.247.045-.44.266-.39 1.586-2.018.956-1.25.617-.723-.004-.105h-.036l-4.212 2.736-.75.096-.324-.302.04-.496.154-.162 1.267-.871z"/></svg>';
 const _CODEX_SVG  = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M14.949 6.547a3.94 3.94 0 0 0-.348-3.273 4.11 4.11 0 0 0-4.4-1.934 A4.1 4.1 0 0 0 8.423.2 4.15 4.15 0 0 0 6.305.086a4.1 4.1 0 0 0-1.891.948 4.04 4.04 0 0 0-1.158 1.753 4.1 4.1 0 0 0-1.563.679A4 4 0 0 0 .554 4.72a3.99 3.99 0 0 0 .502 4.731 3.94 3.94 0 0 0 .346 3.274 4.11 4.11 0 0 0 4.402 1.933c.382.425.852.764 1.377.995.526.231 1.095.35 1.67.346 1.78.002 3.358-1.132 3.901-2.804a4.1 4.1 0 0 0 1.563-.68 4 4 0 0 0 1.14-1.253 3.99 3.99 0 0 0-.506-4.716m-6.097 8.406a3.05 3.05 0 0 1-1.945-.694l.096-.054 3.23-1.838a.53.53 0 0 0 .265-.455v-4.49l1.366.778q.02.011.025.035v3.722c-.003 1.653-1.361 2.992-3.037 2.996m-6.53-2.75a2.95 2.95 0 0 1-.36-2.01l.095.057L5.29 12.09a.53.53 0 0 0 .527 0l3.949-2.246v1.555a.05.05 0 0 1-.022.041L6.473 13.3c-1.454.826-3.311.335-4.15-1.098m-.85-6.94A3.02 3.02 0 0 1 3.07 3.949v3.785a.51.51 0 0 0 .262.451l3.93 2.237-1.366.779a.05.05 0 0 1-.048 0L2.585 9.342a2.98 2.98 0 0 1-1.113-4.094zm11.216 2.571L8.747 5.576l1.362-.776a.05.05 0 0 1 .048 0l3.265 1.86a3 3 0 0 1 1.173 1.207 2.96 2.96 0 0 1-.27 3.2 3.05 3.05 0 0 1-1.36.997V8.279a.52.52 0 0 0-.276-.445m1.36-2.015-.097-.057-3.226-1.855a.53.53 0 0 0-.53 0L6.249 6.153V4.598a.04.04 0 0 1 .019-.04L9.533 2.7a3.07 3.07 0 0 1 3.257.139c.474.325.843.778 1.066 1.303.223.526.289 1.103.191 1.664zM5.503 8.575 4.139 7.8a.05.05 0 0 1-.026-.037V4.049c0-.57.166-1.127.476-1.607s.752-.864 1.275-1.105a3.08 3.08 0 0 1 3.234.41l-.096.054-3.23 1.838a.53.53 0 0 0-.265.455zm.742-1.577 1.758-1 1.762 1v2l-1.755 1-1.762-1z"/></svg>';
+const _SERENA_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M8 9.5a3 3 0 0 0 3-3v-3a3 3 0 0 0-6 0v3a3 3 0 0 0 3 3Z"/><path d="M3.5 6.5a.5.5 0 0 1 1 0 3.5 3.5 0 0 0 7 0 .5.5 0 0 1 1 0 4.5 4.5 0 0 1-4 4.473V13h2a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1h2v-2.027a4.5 4.5 0 0 1-4-4.473Z"/></svg>';
 
 function _agentBadge(agent) {
-  if (agent === 'codex') return '<span class="agent-icon codex" title="Codex">' + _CODEX_SVG + '</span>';
+  const normalized = String(agent || 'claude').toLowerCase();
+  if (normalized === 'codex') return '<span class="agent-icon codex" title="Codex">' + _CODEX_SVG + '</span>';
+  if (normalized === 'serena-voice') return '<span class="agent-icon serena" title="Serena">' + _SERENA_SVG + '</span>';
   return '<span class="agent-icon claude" title="Claude">' + _CLAUDE_SVG + '</span>';
 }
 
@@ -4075,7 +4369,7 @@ function renderSessionRow(s, idx, opts) {
   const isFocused = idx === focusedIndex;
   const isSelected = selectedIds.has(s.session_id);
   const isActive = _activeTerms.has(s.session_id);
-  const isDone = !!s.is_done;
+  const isDone = !!s.is_done && !_isSerenaVoiceSession(s);
   const needsAttention = _attentionSids.has(s.session_id);
   const childCount = opts.childCount || 0;
   let cls = 'session-row';
@@ -4085,6 +4379,7 @@ function renderSessionRow(s, idx, opts) {
   if (isDone && !isActive) cls += ' done';
   if (needsAttention) cls += ' needs-attention';
   if (opts.isChild) cls += ' child-session';
+  if (_isSerenaVoiceSession(s)) cls += ' serena-voice';
   // === GROUP FEATURE === (color stripe + link glyph + thread sibling cluster)
   const groupId = s.group || null;
   const groupColor = groupId ? _groupColor(groupId) : null;
@@ -4131,7 +4426,8 @@ function renderSessionRow(s, idx, opts) {
   const agentBadges = dualAgents
     ? opts.agents.map(_agentBadge).join('')
     : _agentBadge(s.agent);
-  const threadBadge = (!dualAgents && opts.threadCount && opts.threadCount > 0)
+  const threadBadge = (opts.threadCount && opts.threadCount > 0
+      && (!dualAgents || opts.threadCount > 1))
     ? '<span class="thread-count-badge" title="' + (opts.threadCount + 1) + ' linked chats">↪ ' + (opts.threadCount + 1) + '</span>'
     : '';
   // === GROUP FEATURE END ===
@@ -4146,7 +4442,7 @@ function renderSessionRow(s, idx, opts) {
     + '<span class="' + starCls + '" onclick="event.stopPropagation();toggleStar(\'' + s.session_id + '\')">' + starChar + '</span>'
     + disclosure
     + linkGlyph
-    + '<span class="session-title"><span class="session-title-main">' + liveIndicator + agentBadges + esc(s.display_title || 'Untitled') + childBadge + threadBadge + '</span>' + snippetHtml + '</span>'
+    + '<span class="session-title"><span class="session-title-main">' + liveIndicator + agentBadges + esc(_isSerenaVoiceSession(s) ? 'Serena' : (s.display_title || 'Untitled')) + childBadge + threadBadge + '</span>' + snippetHtml + '</span>'
     + '<span class="session-device" title="' + esc(s.project_short || '') + '">' + esc(s.device_tag || '') + '</span>'
     + '<span class="session-date" title="Last activity">' + formatDate(rowActivityTs(s)) + '</span>'
     + '</div>';
@@ -4239,11 +4535,16 @@ function showSessionContextMenu(evt, idx) {
   const label = inMultiSelect ? ' (' + count + ')' : '';
   const isDone = !!s.is_done;
   const isStarred = !!s.starred;
+  const isSerenaVoice = _isSerenaVoiceSession(s);
+  const isFleetWorker = _isFleetSession(s);
+  const isReadOnlyTranscript = isSerenaVoice || isFleetWorker;
 
   const items = [];
   if (!inMultiSelect) {
-    items.push({ label: 'Resume',           key: 'Enter', action: () => openConv(sid) });
-    items.push({ label: 'Resume in Terminal', key: 'O',   action: () => resumeSession(sid) });
+    items.push({ label: isReadOnlyTranscript ? 'Open' : 'Resume', key: 'Enter', action: () => openConv(sid) });
+    if (!isReadOnlyTranscript) {
+      items.push({ label: 'Resume in Terminal', key: 'O', action: () => resumeSession(sid) });
+    }
     items.push({ sep: true });
   }
   items.push({
@@ -4251,21 +4552,25 @@ function showSessionContextMenu(evt, idx) {
     key: 'S',
     action: () => inMultiSelect ? bulkToggleStar() : toggleStar(sid),
   });
-  items.push({
-    label: (isDone ? 'Reopen' : 'Mark Done') + label,
-    key: 'D',
-    action: () => inMultiSelect ? bulkToggleDone() : toggleDone(sid),
-  });
-  if (!inMultiSelect) {
+  if (!isReadOnlyTranscript) {
+    items.push({
+      label: (isDone ? 'Reopen' : 'Mark Done') + label,
+      key: 'D',
+      action: () => inMultiSelect ? bulkToggleDone() : toggleDone(sid),
+    });
+  }
+  if (!inMultiSelect && !isReadOnlyTranscript) {
     items.push({ label: 'Rename',         key: 'R', action: () => renameSession(sid) });
   }
-  items.push({
-    label: 'AI Title' + label,
-    key: 'T',
-    action: () => inMultiSelect ? bulkRetitle() : retitleSession(sid),
-  });
+  if (!isReadOnlyTranscript) {
+    items.push({
+      label: 'AI Title' + label,
+      key: 'T',
+      action: () => inMultiSelect ? bulkRetitle() : retitleSession(sid),
+    });
+  }
   // === HANDOFF FEATURE START === (remove this block to unwire the menu items)
-  if (!inMultiSelect) {
+  if (!inMultiSelect && !isReadOnlyTranscript) {
     // Both directions, always. Each jumps to that agent's chat in the thread
     // (reuse the linked one if it exists; spin one up if it doesn't). Handing off
     // to the agent you're already on just refocuses it — no dup, no nag.
@@ -4274,41 +4579,50 @@ function showSessionContextMenu(evt, idx) {
     items.push({ label: 'Hand off → Codex',  action: () => handoffSession(sid, 'codex') });
   }
   // === HANDOFF FEATURE END ===
+  if (!inMultiSelect && !isReadOnlyTranscript && s.group) {
+    items.push({ sep: true });
+    items.push({ label: 'Fork context → Claude', action: () => forkLinkedContext(sid, 'claude') });
+    items.push({ label: 'Fork context → Codex', action: () => forkLinkedContext(sid, 'codex') });
+  }
   // === GROUP FEATURE START === (remove this block to unwire the menu items)
-  items.push({ sep: true });
-  if (inMultiSelect) {
-    items.push({
-      label: 'Link ' + count + ' chats',
-      action: () => linkSessions([...selectedIds]).then(r => r && showToast('Linked ' + count, { variant: 'success' })),
-    });
-  } else {
-    items.push({
-      label: 'Link to chat…',
-      action: () => linkChatPickerFlow(sid),
-    });
-    if (s.group) {
-      const sibs = _siblingsInGroup(s.group, sid);
-      for (const sib of sibs.slice(0, 6)) {
-        items.push({
-          label: '↳ ' + (sib.display_title || 'Untitled'),
-          action: () => {
-            const i = sessions.findIndex(x => x.session_id === sib.session_id);
-            if (i >= 0) { setFocus(i, true); openConv(sib.session_id); }
-          },
-        });
+  if (!isReadOnlyTranscript) {
+    items.push({ sep: true });
+    if (inMultiSelect) {
+      items.push({
+        label: 'Link ' + count + ' chats',
+        action: () => linkSessions([...selectedIds]).then(r => r && showToast('Linked ' + count, { variant: 'success' })),
+      });
+    } else {
+      items.push({
+        label: 'Link to chat…',
+        action: () => linkChatPickerFlow(sid),
+      });
+      if (s.group) {
+        const sibs = _siblingsInGroup(s.group, sid);
+        for (const sib of sibs.slice(0, 6)) {
+          items.push({
+            label: '↳ ' + (sib.display_title || 'Untitled'),
+            action: () => {
+              const i = sessions.findIndex(x => x.session_id === sib.session_id);
+              if (i >= 0) { setFocus(i, true); openConv(sib.session_id); }
+            },
+          });
+        }
+        items.push({ label: 'Unlink this', action: () => unlinkSession(sid) });
+        items.push({ label: 'Disband linked thread', danger: true, action: () => disbandGroup(s.group) });
       }
-      items.push({ label: 'Unlink this', action: () => unlinkSession(sid) });
-      items.push({ label: 'Disband linked thread', danger: true, action: () => disbandGroup(s.group) });
     }
   }
   // === GROUP FEATURE END ===
-  items.push({ sep: true });
-  items.push({
-    label: 'Delete' + label,
-    key: 'Alt+Del',
-    danger: true,
-    action: () => inMultiSelect ? bulkDelete() : deleteSession(sid),
-  });
+  if (!isReadOnlyTranscript) {
+    items.push({ sep: true });
+    items.push({
+      label: 'Delete' + label,
+      key: 'Alt+Del',
+      danger: true,
+      action: () => inMultiSelect ? bulkDelete() : deleteSession(sid),
+    });
+  }
 
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
@@ -4369,16 +4683,38 @@ window.addEventListener('scroll', closeContextMenu, true);
 // ═══════════════════════════════════════════════════════════════
 // CHATS: Conversation
 // ═══════════════════════════════════════════════════════════════
-async function openConv(sid) {
+async function openConv(sid, opts) {
+  opts = opts || {};
   const switching = currentSessionId !== sid;
+  const local = _findClientSession(sid);
+  const externallyRunning = Boolean(local && local.external_runtime_active);
+  const serenaVoice = _isSerenaVoiceSession(local || sid);
+  const fleetWorker = _isFleetSession(local);
+  const readOnly = externallyRunning || serenaVoice || fleetWorker;
+  const showReadView = opts.mode === 'read' || readOnly;
+  document.getElementById('viewLiveBtn').classList.toggle('hidden', serenaVoice || fleetWorker);
   if (switching) {
     // GTK: Python keeps every VTE alive in a stack — code-on swaps the visible child.
     // Web: termSessions Map keeps every xterm + WebSocket alive — switch panes only.
-    convMode = 'live';
-    document.getElementById('viewReadBtn').classList.remove('active');
-    document.getElementById('viewLiveBtn').classList.add('active');
-    document.getElementById('convBody').classList.add('hidden');
-    document.getElementById('convTerminal').classList.remove('hidden');
+    convMode = showReadView ? 'read' : 'live';
+    document.getElementById('viewReadBtn').classList.toggle('active', showReadView);
+    document.getElementById('viewLiveBtn').classList.toggle('active', !showReadView);
+    document.getElementById('convBody').classList.toggle('hidden', !showReadView);
+    document.getElementById('convTerminal').classList.toggle('hidden', showReadView);
+    if (showReadView) {
+      if (window.__nativeTerminalBridge) stopGtkCode();
+      else _hideAllTermPanes();
+    }
+  } else if (showReadView && convMode !== 'read') {
+    // A Fleet deep-link can target the already-selected chat. Honour the
+    // explicit read-only request instead of leaving its terminal visible.
+    convMode = 'read';
+    document.getElementById('viewReadBtn').classList.add('active');
+    document.getElementById('viewLiveBtn').classList.remove('active');
+    document.getElementById('convBody').classList.remove('hidden');
+    document.getElementById('convTerminal').classList.add('hidden');
+    if (window.__nativeTerminalBridge) stopGtkCode();
+    else _hideAllTermPanes();
   }
   currentSessionId = sid;
   if (switching) resetCodeTabs();  // drop previous chat's file tabs
@@ -4393,9 +4729,10 @@ async function openConv(sid) {
   }
 
   // Pull session metadata from the already-loaded sessions array; no network hop.
-  const local = _findClientSession(sid);
   if (local) {
-    document.getElementById('convTitle').textContent = local.display_title || 'Untitled';
+    document.getElementById('convTitle').textContent = serenaVoice
+      ? 'Serena'
+      : (local.display_title || 'Untitled');
     const tokens = (local.input_tokens || 0) + (local.output_tokens || 0) +
                    (local.cache_read_tokens || 0) + (local.cache_create_tokens || 0);
     document.getElementById('convMeta').textContent =
@@ -4411,6 +4748,7 @@ async function openConv(sid) {
 
   // If user is in Read mode on this open, lazily fetch the transcript now.
   if (convMode === 'read') loadReadTranscript(sid);
+  else _stopExternalReadRefresh();
   if (_filesVisible) loadFiles(sid);
 }
 
@@ -4421,6 +4759,7 @@ function closeConv() {
   convMode = 'live';
   document.getElementById('viewReadBtn').classList.remove('active');
   document.getElementById('viewLiveBtn').classList.add('active');
+  document.getElementById('viewLiveBtn').classList.remove('hidden');
   document.getElementById('convBody').classList.add('hidden');
   document.getElementById('convTerminal').classList.remove('hidden');
   currentSessionId = null;
@@ -4449,10 +4788,16 @@ async function bulkToggleStar() {
 }
 
 async function deleteSession(sid) {
+  const target = sessions.find(s => s.session_id === sid);
+  if (_isSerenaVoiceSession(target || sid)) {
+    showToast('Serena is permanent', { variant: 'error' });
+    return;
+  }
+  const title = target && target.display_title ? target.display_title : sid.slice(0, 8);
   const ok = await showConfirm({
-    title: 'Delete conversation?',
-    body: 'This cannot be undone.',
-    confirm: 'Delete',
+    title: 'Move conversation to trash?',
+    body: 'Move "' + title + '" to recoverable trash?',
+    confirm: 'Move to Trash',
     danger: true,
   });
   if (!ok) return;
@@ -4465,7 +4810,12 @@ async function deleteSession(sid) {
 
 async function bulkDelete() {
   if (selectedIds.size === 0) return;
-  const n = selectedIds.size;
+  const ids = Array.from(selectedIds).filter(sid => !_isSerenaVoiceSession(_findClientSession(sid) || sid));
+  if (ids.length === 0) {
+    showToast('Serena is permanent', { variant: 'error' });
+    return;
+  }
+  const n = ids.length;
   const ok = await showConfirm({
     title: 'Delete ' + n + ' conversation' + (n === 1 ? '' : 's') + '?',
     body: 'This cannot be undone.',
@@ -4477,10 +4827,10 @@ async function bulkDelete() {
     await fetch('/api/sessions/bulk-delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: Array.from(selectedIds) }),
+      body: JSON.stringify({ ids }),
     });
-    if (selectedIds.has(currentSessionId)) closeConv();
-    selectedIds.clear();
+    if (ids.includes(currentSessionId)) closeConv();
+    for (const sid of ids) selectedIds.delete(sid);
     updateSelectionInfo();
     await loadSessions(currentProject);
   } catch(e) {}
@@ -4584,6 +4934,11 @@ async function bulkRetitle() {
 }
 
 async function resumeSession(sid) {
+  const target = _findClientSession(sid);
+  if (_isSerenaVoiceSession(target || sid)) {
+    openConv(sid);
+    return;
+  }
   try {
     const r = await fetch('/api/resume/' + sid, { method: 'POST' });
     const data = await r.json();
@@ -4602,7 +4957,7 @@ async function toggleDone(sid) {
     // where it went.
     if (data.done) {
       if (_activeTerms.has(sid)) closeActiveTerminal(sid);
-      _doneCollapsed = false;
+      _collapsedState.done = false;
     }
     renderSessionList();
     showToast(data.done ? 'Marked as done' : 'Back to active', { variant: 'success' });
@@ -4634,7 +4989,7 @@ async function bulkToggleDone() {
     if (markDone) {
       // Close any active terminals among the marked set
       for (const id of ids) if (_activeTerms.has(id)) closeActiveTerminal(id);
-      _doneCollapsed = false;
+      _collapsedState.done = false;
     }
     selectedIds.clear();
     updateSelectionInfo();
@@ -5570,18 +5925,36 @@ async function closeActiveTerminal(sid) {
   }
 }
 
-async function loadReadTranscript(sid) {
-  if (_convLoaded.has(sid)) return;
+let _externalReadTimer = null;
+function _stopExternalReadRefresh() {
+  if (_externalReadTimer) clearTimeout(_externalReadTimer);
+  _externalReadTimer = null;
+}
+function _scheduleExternalReadRefresh(sid) {
+  _stopExternalReadRefresh();
+  _externalReadTimer = setTimeout(() => {
+    if (currentSessionId !== sid || convMode !== 'read') return;
+    _convLoaded.delete(sid);
+    loadReadTranscript(sid, true);
+  }, 2000);
+}
+
+async function loadReadTranscript(sid, force) {
+  if (_convLoaded.has(sid) && !force) return;
   if (_isPseudoSid(sid)) {
     document.getElementById('convBody').innerHTML =
       '<div class="empty-text">New chat — no transcript yet.</div>';
     return;
   }
-  document.getElementById('convBody').innerHTML = '<div class="loading-text">Loading...</div>';
+  if (!force) {
+    document.getElementById('convBody').innerHTML = '<div class="loading-text">Loading...</div>';
+  }
   try {
     const r = await fetch('/api/conversation/' + sid);
     const data = await r.json();
     if (currentSessionId !== sid) return;  // user switched away while we loaded
+    const externallyRunning = Boolean(data.external_runtime_active);
+    _patchClientSession(sid, { external_runtime_active: externallyRunning });
 
     document.getElementById('convTitle').textContent = data.title || 'Untitled';
     const tokens = (data.input_tokens || 0) + (data.output_tokens || 0) +
@@ -5599,7 +5972,10 @@ async function loadReadTranscript(sid) {
       } else if (m.role === 'tool_result') {
         html += '<div class="msg"><div class="msg-tool-output">' + linkifyPaths(esc(m.text)) + '</div></div>';
       } else {
-        const roleLabel = m.role === 'user' ? 'You' : 'Claude';
+        const defaultAgentLabel = data.agent === 'serena-voice' ? 'Serena' : 'Claude';
+        const roleLabel = m.role === 'user'
+          ? 'You'
+          : (data.agent === 'codex' ? 'Codex' : defaultAgentLabel);
         html += '<div class="msg">'
           + '<div class="msg-role ' + m.role + '">' + roleLabel + '</div>'
           + '<div class="msg-body">' + linkifyPaths(esc(m.text)) + '</div>'
@@ -5608,12 +5984,34 @@ async function loadReadTranscript(sid) {
     }
     document.getElementById('convBody').innerHTML = html || '<div class="empty-text">No messages</div>';
     _convLoaded.add(sid);
+    if ((externallyRunning || _isSerenaVoiceSession(data.agent || sid)) && convMode === 'read') _scheduleExternalReadRefresh(sid);
+    else _stopExternalReadRefresh();
   } catch(e) {
     document.getElementById('convBody').innerHTML = '<div class="empty-text">Error loading conversation</div>';
   }
 }
 
 function setConvMode(mode) {
+  const local = currentSessionId ? _findClientSession(currentSessionId) : null;
+  if (mode === 'live' && (_isSerenaVoiceSession(local || currentSessionId) || _isFleetSession(local))) {
+    convMode = 'read';
+    document.getElementById('viewReadBtn').classList.add('active');
+    document.getElementById('viewLiveBtn').classList.remove('active');
+    document.getElementById('convBody').classList.remove('hidden');
+    document.getElementById('convTerminal').classList.add('hidden');
+    if (currentSessionId) loadReadTranscript(currentSessionId);
+    return;
+  }
+  if (mode === 'live' && local && local.external_runtime_active) {
+    showToast('This workflow agent is still running. Its transcript is live in Read.', { variant: 'error' });
+    convMode = 'read';
+    document.getElementById('viewReadBtn').classList.add('active');
+    document.getElementById('viewLiveBtn').classList.remove('active');
+    document.getElementById('convBody').classList.remove('hidden');
+    document.getElementById('convTerminal').classList.add('hidden');
+    loadReadTranscript(currentSessionId, true);
+    return;
+  }
   if (mode === convMode) return;
   convMode = mode;
   document.getElementById('viewReadBtn').classList.toggle('active', mode === 'read');
@@ -5621,6 +6019,7 @@ function setConvMode(mode) {
   document.getElementById('convBody').classList.toggle('hidden', mode !== 'read');
   document.getElementById('convTerminal').classList.toggle('hidden', mode !== 'live');
   if (mode === 'live') {
+    _stopExternalReadRefresh();
     if (!currentSessionId) {
       setTermStatus('Select a conversation first.', 'error');
       return;
@@ -5654,14 +6053,77 @@ function setTermStatus(text, cls) {
   if (cls) el.classList.add(cls);
 }
 
-function _sendResizeForSid(sid) {
+function _renderOpenSessionIds(sids) {
+  const root = document.getElementById('termSessionIds');
+  if (!root) return;
+  root.replaceChildren();
+  const unique = [...new Set((sids || []).filter(Boolean))];
+  root.classList.toggle('hidden', unique.length === 0);
+  for (const sid of unique) {
+    const session = _findClientSession(sid);
+    const runtime = termSessions.get(sid);
+    const agent = ((session && session.agent) || (runtime && runtime.agent) || 'session').toLowerCase();
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'term-session-id ' + agent;
+    btn.textContent = agent + ' ' + sid.slice(0, 8);
+    btn.title = agent + ' session\n' + sid + '\nClick to copy';
+    btn.addEventListener('click', () => {
+      navigator.clipboard.writeText(sid)
+        .then(() => showToast(agent + ' session id copied', { variant: 'success' }))
+        .catch(() => showToast('copy failed', { variant: 'error' }));
+    });
+    root.appendChild(btn);
+  }
+}
+
+function _sendResizeForSid(sid, force) {
   const s = termSessions.get(sid);
   if (!s || !s.ws || s.ws.readyState !== 1) return;
-  try { s.ws.send(JSON.stringify({ resize: { rows: s.term.rows, cols: s.term.cols } })); } catch(e) {}
+  const rows = s.term.rows;
+  const cols = s.term.cols;
+  // Only push real geometry changes: each one is a setwinsize syscall (a slow
+  // ConPTY call on Windows) plus a SIGWINCH repaint in the TUI. `force` is for
+  // reconnects, where the backend may still hold the pre-drop dimensions and
+  // the renderer has no way to know whether they match.
+  if (!force && s.sentRows === rows && s.sentCols === cols) return;
+  try {
+    s.ws.send(JSON.stringify({ resize: { rows, cols } }));
+    s.sentRows = rows;
+    s.sentCols = cols;
+  } catch(e) {}
 }
 
 function sendResize() {
   if (activeTermSid) _sendResizeForSid(activeTermSid);
+}
+
+// Electron delivers BrowserWindow focus to the renderer as a plain window
+// focus event. GTK's VTE grabbed the keyboard itself; xterm.js does not, so
+// without this the first keystroke after alt-tabbing back lands nowhere.
+let _termWindowFocusBound = false;
+function _bindWebTerminalWindowFocus() {
+  if (_termWindowFocusBound) return;
+  _termWindowFocusBound = true;
+  const refocus = () => {
+    if (currentTab !== 'chats' || convMode !== 'live' || !activeTermSid) return;
+    const runtime = termSessions.get(activeTermSid);
+    if (!runtime || !runtime.term) return;
+    // Never yank focus out from under a text field or an open modal.
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+    if (document.getElementById('modalBackdrop')?.classList.contains('visible')) return;
+    // A window resize while hidden leaves xterm measured for the old box.
+    try { runtime.fit.fit(); } catch(e) {}
+    _sendResizeForSid(activeTermSid);
+    try { runtime.term.focus(); } catch(e) {}
+    _setWebTerminalFocus(activeTermSid);
+  };
+  window.addEventListener('focus', refocus);
+  window.addEventListener('blur', () => _setWebTerminalFocus(null));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refocus();
+  });
 }
 
 function _setWebTerminalFocus(sid) {
@@ -5674,6 +6136,27 @@ function _setWebTerminalFocus(sid) {
   }
 }
 
+function _reportWebRuntimeContext(sid) {
+  let runtime = sid ? termSessions.get(sid) : null;
+  if (!runtime) {
+    runtime = Array.from(termSessions.values()).find(item => item.ws && item.ws.readyState === 1);
+  }
+  if (!runtime || !runtime.ws || runtime.ws.readyState !== 1) return;
+  const splitSids = _gtkSplitActive && _gtkSplitSids ? _gtkSplitSids : [];
+  const draft = sid && window.__termDrafts
+    ? (window.__termDrafts.get(sid) || '')
+    : undefined;
+  try {
+    runtime.ws.send(JSON.stringify({
+      runtime_context: {
+        focused_sid: sid || '',
+        split_sids: splitSids,
+        ...(draft === undefined ? {} : { draft }),
+      },
+    }));
+  } catch (_) {}
+}
+
 function _hideAllTermPanes() {
   const container = document.getElementById('termMounts');
   if (!container) return;
@@ -5681,6 +6164,7 @@ function _hideAllTermPanes() {
   activeTermSid = null;
   _webRuntimeFocusSid = null;
   _setWebTerminalFocus(null);
+  _reportWebRuntimeContext(null);
   if (_webRuntimePollTimer) clearInterval(_webRuntimePollTimer);
   _webRuntimePollTimer = null;
   if (!window.__nativeTerminalBridge) {
@@ -5698,8 +6182,15 @@ function _linkedSiblingSid(sid) {
   const src = (sessionSource.length ? sessionSource : sessions);
   const me = src.find(x => x && x.session_id === sid);
   if (!me || !me.group) return null;
-  const sibs = _siblingsInGroup(me.group, sid);
-  return sibs.length ? sibs[0].session_id : null;
+  const sibs = _siblingsInGroup(me.group, sid).filter(s =>
+    !s.external_runtime_active && !s.fleet_worker && !(s.metadata && s.metadata.fleet_worker));
+  if (!sibs.length) return null;
+  const visible = sibs.find(s =>
+    (_gtkSplitSids && _gtkSplitSids.includes(s.session_id)) || termSessions.has(s.session_id));
+  if (visible) return visible.session_id;
+  const myAgent = (me.agent || 'claude').toLowerCase();
+  const opposite = sibs.find(s => (s.agent || 'claude').toLowerCase() !== myAgent);
+  return (opposite || sibs[0]).session_id;
 }
 
 let _webRuntimeSyncing = false;
@@ -5763,12 +6254,20 @@ function _markWebTurnStarted(sid) {
 }
 
 function _fitVisibleWebTerms() {
+  const container = document.getElementById('termMounts');
+  if (!window.SerenaTerminalLifecycle.isRenderable({
+    tab: currentTab,
+    mode: convMode,
+    hidden: !container || container.closest('.hidden') !== null,
+    rect: container ? container.getBoundingClientRect() : null,
+  })) return false;
   const sids = _gtkSplitActive && _gtkSplitSids ? _gtkSplitSids : [activeTermSid];
   for (const sid of sids.filter(Boolean)) {
     const runtime = termSessions.get(sid);
     if (!runtime) continue;
     try { runtime.fit.fit(); _sendResizeForSid(sid); } catch(e) {}
   }
+  return true;
 }
 
 function _applyWebSplitGeometry(container) {
@@ -5829,6 +6328,27 @@ function _layoutWebSplitDivider(container, split) {
   _applyWebSplitGeometry(container);
 }
 
+function _cancelWebTerminalTail(runtime) {
+  if (runtime) runtime.tailFollowUntil = 0;
+}
+
+function _scrollWebTerminalTail(runtime) {
+  if (!runtime || !window.SerenaTerminalLifecycle.shouldFollowTail(
+    runtime.tailFollowUntil, performance.now()
+  )) return false;
+  try {
+    runtime.term.scrollToBottom();
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+function _armWebTerminalTail(runtime) {
+  if (!runtime) return;
+  runtime.tailFollowUntil = window.SerenaTerminalLifecycle.tailDeadline(performance.now());
+}
+
 function _activateTermPane(sid) {
   const container = document.getElementById('termMounts');
   if (!container) return;
@@ -5868,6 +6388,7 @@ function _activateTermPane(sid) {
   const local = _findClientSession(sid);
   _gtkSplitActive = split;
   _gtkSplitSids = split ? [leftSid, rightSid] : null;
+  _reportWebRuntimeContext(sid);
   _gtkCurrentGroup = split
     ? ((local && local.group) || ('pending:' + [leftSid, rightSid].sort().join(':')))
     : null;
@@ -5875,6 +6396,10 @@ function _activateTermPane(sid) {
   _syncRuntimePinButton();
   const s = termSessions.get(sid);
   if (!s) return;
+  const visibleRuntimes = (split ? [sid, sibSid] : [sid])
+    .map(runtimeSid => termSessions.get(runtimeSid))
+    .filter(Boolean);
+  for (const runtime of visibleRuntimes) _armWebTerminalTail(runtime);
   // Status reflects the now-visible session
   if (s.ws && s.ws.readyState === 1) {
     setTermStatus('● live · cwd: ' + (s.cwd || '(unknown)') + (split ? '  ·  ⛓ split' : ''), 'live');
@@ -5885,6 +6410,7 @@ function _activateTermPane(sid) {
   }
   requestAnimationFrame(() => {
     _fitVisibleWebTerms();
+    for (const runtime of visibleRuntimes) _scrollWebTerminalTail(runtime);
     try { s.term.focus(); } catch(e) {}
   });
   _scheduleWebRuntimePolicy();
@@ -5896,7 +6422,7 @@ function _ensureTermResizeObserver() {
   const container = document.getElementById('termMounts');
   if (!container) return;
   _termResizeObs = new ResizeObserver(() => {
-    if (!activeTermSid) return;
+    if (!activeTermSid || currentTab !== 'chats' || convMode !== 'live') return;
     // Debounce — ResizeObserver fires per pixel during window drag (60+ Hz).
     // Each event calls proc.setwinsize() on the backend which on Windows is
     // an expensive ConPTY call AND races with the reader thread. Coalesce
@@ -5914,6 +6440,15 @@ async function startLiveTerminal(sid, opts) {
   // `opts` is for new-chat mode: { cwd: string, agent?: string, isNew: true }.
   // For existing chats (omit opts), we resume by session_id.
   opts = opts || {};
+  const localSession = _findClientSession(sid);
+  if (!opts.isNew && (_isSerenaVoiceSession(localSession || sid) || _isFleetSession(localSession))) {
+    if (!opts.background) openConv(sid);
+    return null;
+  }
+  if (!opts.isNew && localSession && localSession.external_runtime_active) {
+    if (!opts.background) setConvMode('read');
+    return null;
+  }
   // Already alive? Just bring its pane to front.
   if (termSessions.has(sid)) {
     if (!opts.background) _activateTermPane(sid);
@@ -5979,12 +6514,22 @@ async function startLiveTerminal(sid, opts) {
     // ConPTY emits bare \r\n sometimes when the underlying app sent \n —
     // double newlines garble TUI redraws. convertEol normalises that.
     convertEol: _isWin,
+    linkHandler: {
+      activate: (_event, uri) => window.SerenaTerminalLinks.openExternalUri(uri),
+    },
   });
   let state = null;
   const _liveSid = () => (state && state.sid) || sid;
+  // Reconnect swaps the socket out, so every sender reads the current one off
+  // `state` instead of closing over the socket it was created with.
+  const _liveSocket = () => (state && state.ws) || null;
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
-  try { term.loadAddon(new WebLinksAddon.WebLinksAddon()); } catch(e) {}
+  try {
+    term.loadAddon(new WebLinksAddon.WebLinksAddon(
+      (_event, uri) => window.SerenaTerminalLinks.openExternalUri(uri)
+    ));
+  } catch(e) {}
 
   term.open(mount);
   fit.fit();
@@ -6006,8 +6551,19 @@ async function startLiveTerminal(sid, opts) {
     }
     return addon;
   };
+  // Probe before constructing. Electron falls back to SwiftShader or disables
+  // the GPU entirely on some Linux boxes, and WebglAddon throws from its
+  // constructor when there's no WebGL2 context. A caught throw still leaves a
+  // dead canvas attached, so ask first.
+  const webgl2Available = () => {
+    try {
+      return !!document.createElement('canvas').getContext('webgl2');
+    } catch(e) {
+      return false;
+    }
+  };
   try {
-    if (window.WebglAddon && window.WebglAddon.WebglAddon) {
+    if (window.WebglAddon && window.WebglAddon.WebglAddon && webgl2Available()) {
       const addon = new window.WebglAddon.WebglAddon();
       term.loadAddon(addon);
       rendererAddon = addon;
@@ -6026,27 +6582,6 @@ async function startLiveTerminal(sid, opts) {
     rendererAddon = null;
     rendererKind = 'dom';
     try { loadCanvasRenderer(); } catch(_) {}
-  }
-
-  let imageAddon = null;
-  try {
-    if (window.ImageAddon && window.ImageAddon.ImageAddon) {
-      imageAddon = new window.ImageAddon.ImageAddon({
-        pixelLimit: 2000000,
-        sixelSupport: true,
-        sixelScrolling: true,
-        sixelPaletteLimit: 256,
-        sixelSizeLimit: 4000000,
-        storageLimit: 16,
-        showPlaceholder: false,
-        iipSupport: true,
-        iipSizeLimit: 8000000,
-      });
-      term.loadAddon(imageAddon);
-    }
-  } catch(e) {
-    imageAddon = null;
-    console.warn('[terminal] image addon unavailable:', e);
   }
 
   // Install document-level capture-phase listener for Ctrl+C/V/A. WebView2
@@ -6068,6 +6603,12 @@ async function startLiveTerminal(sid, opts) {
 
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
+    // Shadow the outer socket with the live one: after a reconnect the
+    // original is closed and every ws.send below would silently drop.
+    const ws = _liveSocket() || { readyState: 3, send() {} };
+    if (state && (e.key === 'PageUp' || (e.key === 'Home' && e.ctrlKey))) {
+      _cancelWebTerminalTail(state);
+    }
 
     // ─── Ctrl+A: copy current input draft to clipboard (plain Ctrl, no Shift)
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key && e.key.toLowerCase() === 'a') {
@@ -6156,13 +6697,11 @@ async function startLiveTerminal(sid, opts) {
           client_session_id: sid,
           rows: term.rows,
           cols: term.cols,
-          terminal_protocol: imageAddon ? 'sixel' : null,
         }
       : {
           session_id: sid,
           rows: term.rows,
           cols: term.cols,
-          terminal_protocol: imageAddon ? 'sixel' : null,
         };
     const r = await fetch('/api/spawn-terminal', {
       method: 'POST',
@@ -6178,6 +6717,10 @@ async function startLiveTerminal(sid, opts) {
     return;
   }
   if (!spawnResp.ok) {
+    if (spawnResp.external_runtime) {
+      _patchClientSession(sid, { external_runtime_active: true });
+      if (!opts.background) setConvMode('read');
+    }
     setTermStatus(spawnResp.error || 'Failed to spawn terminal', 'error');
     mount.remove();
     if (activeTermSid === sid) activeTermSid = null;
@@ -6186,9 +6729,10 @@ async function startLiveTerminal(sid, opts) {
   }
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = proto + '//' + location.host + '/ws/terminal/' + spawnResp.terminal_id;
   let ws;
   try {
-    ws = new WebSocket(proto + '//' + location.host + '/ws/terminal/' + spawnResp.terminal_id);
+    ws = new WebSocket(wsUrl);
   } catch(e) {
     fetch('/api/kill-terminal/' + spawnResp.terminal_id, { method: 'POST' }).catch(() => {});
     setTermStatus('Failed to connect terminal: ' + e.message, 'error');
@@ -6201,17 +6745,26 @@ async function startLiveTerminal(sid, opts) {
 
   state = {
     sid,
-    term, fit, ws, mount,
+    term, fit, ws, mount, wsUrl,
     tid: spawnResp.terminal_id,
     cwd: spawnResp.cwd || '',
     agent: (spawnResp.agent || opts.agent || '').toLowerCase(),
-    imageAddon,
     rendererAddon,
     renderer: rendererKind,
-    graphicsProtocol: spawnResp.graphics_protocol || null,
     keyboardSelection: null,
     busy: !!opts.seed,
     closed: false,
+    // Reconnect bookkeeping. The PTY outlives a dropped socket now, so a drop
+    // is a retry, not the end of the session.
+    reconnectAttempts: 0,
+    reconnectTimer: null,
+    dropAt: 0,
+    giveUp: false,
+    sentRows: 0,
+    sentCols: 0,
+    tailFollowUntil: opts.isNew
+      ? 0
+      : window.SerenaTerminalLifecycle.tailDeadline(performance.now()),
   };
   termSessions.set(sid, state);
   _termStarting.delete(sid);
@@ -6224,6 +6777,24 @@ async function startLiveTerminal(sid, opts) {
   let outputBytes = 0;
   let outputTimer = null;
   let outputWriting = false;
+  // Ack-based flow control, the renderer half of the xterm.js flow control
+  // guide. We credit the backend only for bytes xterm has actually parsed
+  // (the write callback), and batch those credits so a busy TUI doesn't turn
+  // every frame into a control message. The backend stops draining the PTY
+  // once too much is outstanding, which is what bounds memory here.
+  const FLOW_ACK_BYTES = 131072;
+  let ackPending = 0;
+  const sendAck = (force) => {
+    if (!ackPending) return;
+    if (!force && ackPending < FLOW_ACK_BYTES) return;
+    const socket = state.ws;
+    if (!socket || socket.readyState !== 1) { ackPending = 0; return; }
+    try {
+      socket.send(JSON.stringify({ ack: ackPending }));
+      ackPending = 0;
+    } catch(e) {}
+  };
+  state.resetAckCredit = () => { ackPending = 0; };
   const flushOutput = () => {
     if (outputWriting || !outputParts.length || state.closed) return;
     if (outputTimer) clearTimeout(outputTimer);
@@ -6242,9 +6813,20 @@ async function startLiveTerminal(sid, opts) {
     }
     outputBytes = 0;
     outputWriting = true;
+    const written = batch.byteLength;
     term.write(batch, () => {
       outputWriting = false;
-      if (outputParts.length && !state.closed) flushOutput();
+      ackPending += written;
+      _scrollWebTerminalTail(state);
+      if (outputParts.length && !state.closed) {
+        // Mid-burst: only ack once a batch's worth has piled up.
+        sendAck(false);
+        flushOutput();
+      } else {
+        // Drained. Flush the credit now so the backend never sits paused
+        // waiting for an ack that a quiet terminal would never reach.
+        sendAck(true);
+      }
     });
   };
   const queueOutput = (data) => {
@@ -6263,57 +6845,138 @@ async function startLiveTerminal(sid, opts) {
     outputBytes = 0;
   };
 
-  ws.onopen = () => {
-    if (activeTermSid === state.sid) {
-      setTermStatus('● live · cwd: ' + (state.cwd || '(unknown)'), 'live');
-      term.focus();
+  // The PTY survives a dropped socket for a grace period, so a drop is a
+  // retry rather than the end of the session: reconnect to the SAME terminal
+  // id and the backend replays whatever the child printed while we were gone.
+  const RECONNECT_CEILING_MS = 90000;
+  const _openTerminalSocket = (isResume) => {
+    if (state.closed || state.giveUp) return;
+    let socket;
+    try {
+      socket = new WebSocket(state.wsUrl);
+    } catch(e) {
+      _scheduleTerminalReconnect();
+      return;
     }
-    _markActive(state.sid);
-    _sendResizeForSid(state.sid);
-    // If this terminal is the background half of a linked pair, re-run the
-    // active pane's layout so the split appears now that both are live.
-    if (activeTermSid && activeTermSid !== state.sid && _linkedSiblingSid(activeTermSid) === state.sid) {
-      _activateTermPane(activeTermSid);
-    }
-    if (!opts.background) {
-      const siblingSid = _linkedSiblingSid(state.sid);
-      if (siblingSid && !termSessions.has(siblingSid)) {
-        startLiveTerminal(siblingSid, { background: true });
+    socket.binaryType = 'arraybuffer';
+    state.ws = socket;
+    _wireTerminalSocket(socket, isResume);
+  };
+  const _scheduleTerminalReconnect = () => {
+    if (state.closed || state.giveUp || state.reconnectTimer) return;
+    if (!state.dropAt) state.dropAt = performance.now();
+    if (performance.now() - state.dropAt > RECONNECT_CEILING_MS) {
+      state.giveUp = true;
+      if (activeTermSid === state.sid) {
+        setTermStatus('Disconnected. Reopen this chat to resume.', 'error');
       }
+      return;
     }
+    state.reconnectAttempts += 1;
+    // Exponential backoff with jitter: a backend restart brings every pane
+    // back at once, and synchronised retries would stampede the new server.
+    const backoff = Math.min(8000, 250 * Math.pow(2, state.reconnectAttempts - 1));
+    const delay = Math.round(backoff * (0.75 + Math.random() * 0.5));
+    state.reconnectTimer = setTimeout(() => {
+      state.reconnectTimer = null;
+      _openTerminalSocket(true);
+    }, delay);
   };
-  ws.onmessage = (ev) => {
-    if (typeof ev.data === 'string') {
-      if (ev.data.startsWith('{')) {
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg && msg.exit) {
-            if (activeTermSid === state.sid) setTermStatus('Session ended.', 'error');
-            // Auto-clean on natural exit
-            teardownLiveTerminal(state.sid);
-            return;
-          }
-          if (msg && msg.error) {
-            if (activeTermSid === state.sid) setTermStatus('Error: ' + msg.error, 'error');
-            return;
-          }
-        } catch(e) { /* not JSON — fall through to write */ }
+  const _wireTerminalSocket = (socket, isResume) => {
+    socket.onopen = () => {
+      if (state.ws !== socket || state.closed) return;
+      state.reconnectAttempts = 0;
+      state.dropAt = 0;
+      // The backend resets its ack ledger on every attach; drop any credit we
+      // were still holding for the dead socket so the two stay in step.
+      if (state.resetAckCredit) state.resetAckCredit();
+      try { socket.send(JSON.stringify({ flow: { enabled: true } })); } catch(e) {}
+      if (!opts.isNew || isResume) _armWebTerminalTail(state);
+      if (activeTermSid === state.sid) {
+        setTermStatus('● live · cwd: ' + (state.cwd || '(unknown)'), 'live');
+        term.focus();
       }
-      queueOutput(ev.data);
-    } else {
-      queueOutput(new Uint8Array(ev.data));
-    }
+      _markActive(state.sid);
+      _reportWebRuntimeContext(activeTermSid || state.sid);
+      // Force on every attach: the backend still holds the geometry from
+      // before the drop, and the window may have been resized meanwhile.
+      _sendResizeForSid(state.sid, true);
+      if (isResume) return;
+      // If this terminal is the background half of a linked pair, re-run the
+      // active pane's layout so the split appears now that both are live.
+      if (activeTermSid && activeTermSid !== state.sid && _linkedSiblingSid(activeTermSid) === state.sid) {
+        _activateTermPane(activeTermSid);
+      }
+      if (!opts.background) {
+        const siblingSid = _linkedSiblingSid(state.sid);
+        if (siblingSid && !termSessions.has(siblingSid)) {
+          startLiveTerminal(siblingSid, { background: true });
+        }
+      }
+    };
+    socket.onmessage = (ev) => {
+      if (state.ws !== socket) return;
+      if (typeof ev.data === 'string') {
+        if (ev.data.startsWith('{')) {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg && msg.exit) {
+              if (activeTermSid === state.sid) setTermStatus('Session ended.', 'error');
+              // Auto-clean on natural exit
+              teardownLiveTerminal(state.sid);
+              return;
+            }
+            if (msg && msg.error) {
+              // The PTY is really gone (killed, or the grace period lapsed).
+              // Retrying can't bring it back, so stop and say so.
+              state.giveUp = true;
+              if (activeTermSid === state.sid) setTermStatus('Error: ' + msg.error, 'error');
+              return;
+            }
+            if (msg && msg.attached) {
+              // Control frame; any replayed backlog follows as binary frames,
+              // already ordered behind this one on the same socket.
+              return;
+            }
+            if (msg && msg.input_blocked) {
+              if (window.__termDrafts) window.__termDrafts.set(state.sid, '');
+              if (activeTermSid === state.sid) {
+                setTermStatus('Serena is working in this chat. Manual input is locked.', 'live');
+              }
+              return;
+            }
+          } catch(e) { /* not JSON — fall through to write */ }
+        }
+        queueOutput(ev.data);
+      } else {
+        queueOutput(new Uint8Array(ev.data));
+      }
+    };
+    socket.onerror = () => {
+      if (state.ws !== socket || state.closed || state.giveUp) return;
+      if (activeTermSid === state.sid) setTermStatus('WebSocket error', 'error');
+    };
+    socket.onclose = () => {
+      if (state.ws !== socket || state.closed || state.giveUp) return;
+      if (activeTermSid === state.sid) setTermStatus('Reconnecting…', 'error');
+      _scheduleTerminalReconnect();
+    };
   };
-  ws.onerror = () => {
-    if (activeTermSid === state.sid) setTermStatus('WebSocket error', 'error');
-  };
-  ws.onclose = () => {
-    if (activeTermSid === state.sid) setTermStatus('Disconnected.', 'error');
-  };
+  _wireTerminalSocket(ws, false);
 
   term.onData((data) => {
     if (data.indexOf('\r') !== -1) _markWebTurnStarted(state.sid);
-    if (ws.readyState === 1) ws.send(data);
+    const ws = _liveSocket();
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({
+        input: data,
+        runtime_context: {
+          focused_sid: state.sid,
+          split_sids: _gtkSplitActive && _gtkSplitSids ? _gtkSplitSids : [],
+          draft: window.__termDrafts ? (window.__termDrafts.get(state.sid) || '') : '',
+        },
+      }));
+    }
   });
 
   mount.addEventListener('pointerdown', () => {
@@ -6322,19 +6985,24 @@ async function startLiveTerminal(sid, opts) {
     if (activeTermSid !== state.sid) {
       activeTermSid = state.sid;
       _webRuntimeFocusSid = state.sid;
+      _reportWebRuntimeContext(state.sid);
       for (const child of container.children) {
         child.classList.toggle('runtime-focused', child.dataset.sid === state.sid);
       }
       _scheduleWebRuntimePolicy();
     }
   });
+  mount.addEventListener('wheel', (ev) => {
+    if (ev.deltaY < 0) _cancelWebTerminalTail(state);
+  }, { passive: true, capture: true });
 
   _ensureTermResizeObserver();
-  setupTerminalDrop(mount, ws);
+  _bindWebTerminalWindowFocus();
+  setupTerminalDrop(mount, _liveSocket);
   return state;
 }
 
-function setupTerminalDrop(mount, ws) {
+function setupTerminalDrop(mount, getSocket) {
   // === DROP === We route ALL drops through this JS handler regardless of
   // platform. Previously we deferred to pywebview's Python on_drop on Windows
   // — that worked for real file drops but broke on screenshot drops (no
@@ -6412,6 +7080,7 @@ function setupTerminalDrop(mount, ws) {
 
     // Type each path into the PTY as a quoted literal (matches gnome-terminal drag behavior,
     // which is what claude parses into [Image #N]).
+    const ws = getSocket();
     if (ws && ws.readyState === 1) {
       const input = paths.map(p => "'" + p.replace(/'/g, "'\\''") + "' ").join('');
       ws.send(input);
@@ -6494,7 +7163,14 @@ function teardownLiveTerminal(sid) {
   if (window.__termDrafts) window.__termDrafts.delete(sid);
   _unmarkActive(sid);
   if (s.cancelOutput) s.cancelOutput();
+  // Deliberate teardown: stop the reconnect machinery before closing, or the
+  // close handler would immediately try to resume a PTY we're about to kill.
+  s.giveUp = true;
+  if (s.reconnectTimer) { clearTimeout(s.reconnectTimer); s.reconnectTimer = null; }
   try { if (s.ws && s.ws.readyState <= 1) s.ws.close(); } catch(e) {}
+  // The WebGL renderer holds a GPU context; dropping the Terminal alone leaks
+  // it until GC, and Chromium caps live contexts per process.
+  try { if (s.rendererAddon) s.rendererAddon.dispose(); } catch(e) {}
   try { if (s.term) s.term.dispose(); } catch(e) {}
   if (s.tid) {
     fetch('/api/kill-terminal/' + s.tid, { method: 'POST' }).catch(() => {});
@@ -6523,6 +7199,10 @@ function _gtkGetRect() {
   return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
 }
 
+function _gtkRectIsVisible(rect) {
+  return Boolean(rect && rect.w > 10 && rect.h > 10);
+}
+
 function _sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -6532,31 +7212,45 @@ function _nextFrame() {
 }
 
 async function _prepareGtkTermMount(timeoutMs) {
+  if (currentTab !== 'chats') return null;
   _codeTab = '__term__';
   renderCodeTabs();
   syncCodeView();
   await _nextFrame();
   await _nextFrame();
+  if (currentTab !== 'chats') return null;
   const started = performance.now();
   let rect = _gtkGetRect();
   while (
+    currentTab === 'chats' &&
     (!rect || rect.w < 160 || rect.h < 120) &&
     performance.now() - started < (timeoutMs || 5000)
   ) {
     await _sleep(100);
     rect = _gtkGetRect();
   }
-  return rect;
+  return currentTab === 'chats' ? rect : null;
 }
 
 async function startGtkCode(sid) {
   const seq = ++_gtkStartSeq;
   const local = _findClientSession(sid);
+  if (_isSerenaVoiceSession(local || sid) || _isFleetSession(local)) {
+    openConv(sid);
+    return;
+  }
+  if (local && local.external_runtime_active) {
+    setConvMode('read');
+    return;
+  }
   const agent = (local && local.agent) || 'claude';
   setTermStatus('Starting ' + agent + ' ' + sid.slice(0, 8) + '…', 'live');
   _gtkCodeSid = sid;
+  _renderOpenSessionIds([sid]);
   const rect = await _prepareGtkTermMount();
-  if (seq !== _gtkStartSeq || _gtkCodeSid !== sid) return;
+  // The user may leave Chats while the terminal mount waits for layout.
+  // Never let that stale continuation remap a VTE over Fleet/Memory/etc.
+  if (currentTab !== 'chats' || seq !== _gtkStartSeq || _gtkCodeSid !== sid) return;
   const cwd = (local && local.cwd) || '';
 
   // === SPLIT FEATURE === (linked threads → split-pane view)
@@ -6566,7 +7260,11 @@ async function startGtkCode(sid) {
       _gtkCurrentGroup = local.group;
       _syncRuntimePinButton();
       const pinBoth = _gtkPinnedGroups.has(local.group);
-      const partner = sibs[0];
+      const partnerSid = _linkedSiblingSid(sid);
+      const partner = sibs.find(s => s.session_id === partnerSid);
+      if (!partner) {
+        _gtkCurrentGroup = null;
+      } else {
       // Always render claude on the left, codex on the right — regardless of
       // which side the user clicked or which is more recent.
       const aClaude = (local.agent || 'claude').toLowerCase() === 'claude';
@@ -6610,13 +7308,14 @@ async function startGtkCode(sid) {
         _gtkSplitSids = [leftSid, rightSid];
         _syncRuntimePinButton();
       }
-      _refreshGtkRuntimeStatus();
-      _rememberActive(leftSid);
-      _rememberActive(rightSid);
-      renderSessionList();
-      _ensureActiveRefresh();
-      _wireGtkRectObs();
-      return;
+        _refreshGtkRuntimeStatus();
+        _rememberActive(leftSid);
+        _rememberActive(rightSid);
+        renderSessionList();
+        _ensureActiveRefresh();
+        _wireGtkRectObs();
+        return;
+      }
     }
   }
   _gtkCurrentGroup = null;
@@ -6636,8 +7335,9 @@ async function startGtkCode(sid) {
 function _wireGtkRectObs() {
   if (_gtkRectObs) _gtkRectObs.disconnect();
   _gtkRectObs = new ResizeObserver(() => {
+    if (currentTab !== 'chats' || !_gtkCodeSid) return;
     const r = _gtkGetRect();
-    if (r) window.gtkSend({ type: 'code-rect', rect: r });
+    if (_gtkRectIsVisible(r)) window.gtkSend({ type: 'code-rect', rect: r });
   });
   const mount = document.getElementById('termMounts');
   if (mount) _gtkRectObs.observe(mount);
@@ -6695,6 +7395,7 @@ function toggleGtkPinBoth() {
 
 function _refreshGtkRuntimeStatus() {
   if (!_gtkSplitActive || !_gtkSplitSids) return;
+  _renderOpenSessionIds(_gtkSplitSids);
   const labels = _gtkSplitSids.map(sid => {
     const session = _findClientSession(sid);
     const runtime = termSessions.get(sid);
@@ -6718,7 +7419,8 @@ function _migrateGtkRuntimeState(oldSid, newSid) {
   if (_gtkSplitSids) {
     _gtkSplitSids = _gtkSplitSids.map(sid => sid === oldSid ? newSid : sid);
   }
-  _refreshGtkRuntimeStatus();
+  if (_gtkSplitActive) _refreshGtkRuntimeStatus();
+  else if (_gtkCodeSid) _renderOpenSessionIds([_gtkCodeSid]);
 }
 
 window.onGtkRuntimeState = function(sid, state) {
@@ -6742,8 +7444,9 @@ window.onGtkPanedPos = function(pos, ratio) {
 // === SPLIT FEATURE END ===
 
 function _gtkOnResize() {
+  if (currentTab !== 'chats' || !_gtkCodeSid) return;
   const r = _gtkGetRect();
-  if (r && _gtkCodeSid) window.gtkSend({ type: 'code-rect', rect: r });
+  if (_gtkRectIsVisible(r)) window.gtkSend({ type: 'code-rect', rect: r });
 }
 
 function stopGtkCode() {
@@ -6759,6 +7462,7 @@ function stopGtkCode() {
   _syncRuntimePinButton();
   // === SPLIT FEATURE END ===
   window.gtkSend && window.gtkSend({ type: 'code-off' });
+  _renderOpenSessionIds([]);
   setTermStatus('Ready to resume.');
 }
 
@@ -6774,6 +7478,12 @@ window.onGtkCodeExit = function(sid) {
     setTermStatus('Session ended.', 'error');
     _gtkCodeSid = null;
   }
+};
+
+window.onGtkExternalRuntime = function(sid) {
+  if (!sid) return;
+  _patchClientSession(sid, { external_runtime_active: true });
+  if (sid === currentSessionId) setConvMode('read');
 };
 
 // Windows/macOS path: GTK isn't running, so the Alt+key intercepts in
@@ -7221,10 +7931,6 @@ async function _resolveHandoffSid(sid, timeoutMs) {
 
 async function handoffSession(srcSid, targetAgent) {
   if (!srcSid || !targetAgent) return;
-  if (!window.__gtkBridge) {
-    showToast('Handoff requires the GTK desktop shell', { variant: 'error' });
-    return;
-  }
 
   const toast = showToast('Preparing handoff…', { spinner: true, sticky: true });
   try {
@@ -7391,84 +8097,94 @@ async function handoffSession(srcSid, targetAgent) {
 }
 // === HANDOFF FEATURE END ===
 
-// === VOICE INBOX ===
-// Spoken build requests open a dedicated Codex pane immediately. The pane may
-// be hidden, but its runtime and working-state lease continue until the turn
-// completion watcher fires. Native VTE claiming is owned by app_gtk.py.
-let _voiceInboxPolling = false;
-
-function _voiceWorkCwd() {
-  for (const sid of [activeTermSid, currentSessionId]) {
-    const session = sid ? _findClientSession(sid) : null;
-    if (session && session.cwd) return session.cwd;
-    const runtime = sid ? termSessions.get(sid) : null;
-    if (runtime && runtime.cwd) return runtime.cwd;
-  }
-  return currentProjectCwd || '';
-}
-
-window.__spawnVoiceInboxItem = async function(item) {
-  if (!item || !item.item_id || !item.target_sid || !item.prompt) {
-    throw new Error('voice work item is incomplete');
-  }
-  const cwd = item.cwd || _voiceWorkCwd();
-  const shortProj = cwd ? (cwd.split('/').filter(Boolean).pop() || '~') : '~';
-  return fdSpawnPane('codex', cwd, item.prompt, {
-    tempId: item.target_sid,
-    label: 'Serena working: ' + shortProj,
-  });
-};
-
-async function _pollVoiceInbox() {
-  if (_voiceInboxPolling || window.__nativeTerminalBridge) return;
-  _voiceInboxPolling = true;
-  let item = null;
-  const targetSid = 'new-voice-' + Math.random().toString(36).slice(2, 10)
-    + Date.now().toString(36);
-  const cwd = _voiceWorkCwd();
+async function forkLinkedContext(srcSid, targetAgent) {
+  if (!srcSid || !targetAgent) return;
+  const toast = showToast('Building standalone context…', { spinner: true, sticky: true });
   try {
-    const claim = await fetch('/api/voice-inbox/claim', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target_sid: targetSid, spawn: true }),
-    });
-    const payload = await claim.json();
-    if (!claim.ok) throw new Error(payload.error || 'voice inbox claim failed');
-    item = payload.item || null;
-    if (!item) return;
-    item.target_sid = targetSid;
-    item.cwd = cwd;
-
-    await window.__spawnVoiceInboxItem(item);
-    const started = await fetch('/api/voice-inbox/' + encodeURIComponent(item.item_id)
-      + '/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        target_sid: targetSid,
-        cwd,
-      }),
-    });
-    if (!started.ok) {
-      const detail = await started.json().catch(() => ({}));
-      throw new Error(detail.error || 'working pane was not acknowledged');
-    }
-  } catch (error) {
-    if (item) {
-      fetch('/api/voice-inbox/' + encodeURIComponent(item.item_id) + '/release', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target_sid: targetSid, error: String(error) }),
-      }).catch(() => {});
-    }
-    console.warn('[voice-inbox] dedicated pane spawn failed:', error);
-  } finally {
-    _voiceInboxPolling = false;
+    srcSid = await _resolveHandoffSid(srcSid, 15000);
+  } catch(e) {
+    toast.update('Context fork failed: ' + e.message, 'error');
+    return;
   }
+
+  let resp;
+  try {
+    const r = await fetch('/api/context-fork', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_sid: srcSid, target_agent: targetAgent }),
+    });
+    resp = await r.json();
+    if (!r.ok || !resp.ok) throw new Error(resp.error || 'context fork failed');
+  } catch(e) {
+    toast.update('Context fork failed: ' + e.message, 'error');
+    return;
+  }
+
+  const cwd = resp.cwd || '';
+  const shortProj = cwd ? (cwd.split('/').filter(Boolean).pop() || '~') : '~';
+  const tempId = 'new-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  const iso = new Date().toISOString();
+  const pseudo = {
+    session_id: tempId,
+    display_title: resp.title || 'Context fork',
+    project_short: shortProj,
+    cwd,
+    first_timestamp: iso,
+    last_timestamp: iso,
+    starred: false,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_create_tokens: 0,
+    isPseudo: true,
+    agent: targetAgent,
+    pending_rename_title: resp.title || 'Context fork',
+  };
+  // Intentionally no group or pending_group_link_with. This is a fresh branch.
+  _pseudoSessions.unshift(pseudo);
+  setSessionSource([pseudo, ...sessionSource]);
+  _markActive(tempId);
+  currentSessionId = tempId;
+  focusedSid = tempId;
+  convMode = 'live';
+  document.getElementById('viewReadBtn').classList.remove('active');
+  document.getElementById('viewLiveBtn').classList.add('active');
+  document.getElementById('convBody').classList.add('hidden');
+  document.getElementById('convTerminal').classList.remove('hidden');
+  document.getElementById('convEmpty').classList.add('hidden');
+  document.getElementById('convContent').classList.remove('hidden');
+  document.getElementById('convTitle').textContent = pseudo.display_title;
+  document.getElementById('convMeta').textContent = cwd || '~';
+
+  setTermStatus('Starting ' + targetAgent + '…', 'live');
+  if (window.__nativeTerminalBridge) {
+    const rect = await _prepareGtkTermMount();
+    window.gtkSend({
+      type: 'code-on',
+      sid: tempId,
+      cwd,
+      rect,
+      isNew: true,
+      agent: targetAgent,
+      seed: resp.prompt,
+    });
+    _gtkCodeSid = tempId;
+  } else {
+    await startLiveTerminal(tempId, {
+      cwd,
+      agent: targetAgent,
+      isNew: true,
+      seed: resp.prompt,
+    });
+  }
+  _startPseudoReconciler();
+  toast.update('Started standalone ' + (targetAgent === 'claude' ? 'Claude' : 'Codex') + ' context fork', 'success');
 }
-setInterval(_pollVoiceInbox, 1200);
-setTimeout(_pollVoiceInbox, 400);
-// === VOICE INBOX END ===
+
+// Voice coding jobs are executed only by the resident work supervisor. The
+// web shell intentionally has no queue poller and cannot choose a project or
+// spawn a worker for an accepted job.
 
 // ═══════════════════════════════════════════════════════════════
 // === GROUP FEATURE START === (linked-chats / shared-thread.
@@ -7505,17 +8221,27 @@ function _siblingsInGroup(gid, excludeSid) {
 function _cycleGroup(sid) {
   const cur = sessions.find(x => x.session_id === sid);
   if (!cur || !cur.group) return;
-  const sibs = _siblingsInGroup(cur.group, sid);
-  if (!sibs.length) {
+  const members = [cur, ..._siblingsInGroup(cur.group, sid)];
+  members.sort((a, b) => {
+    const aClaude = (a.agent || 'claude').toLowerCase() === 'claude' ? 0 : 1;
+    const bClaude = (b.agent || 'claude').toLowerCase() === 'claude' ? 0 : 1;
+    if (aClaude !== bClaude) return aClaude - bClaude;
+    return rowActivityTs(b).localeCompare(rowActivityTs(a));
+  });
+  if (members.length < 2) {
     showToast('Linked sibling not in current view', { variant: 'error' });
     return;
   }
-  const next = sibs[0];
+  const openIndex = members.findIndex(member => member.session_id === currentSessionId);
+  const currentIndex = openIndex >= 0
+    ? openIndex
+    : members.findIndex(member => member.session_id === sid);
+  const next = members[(currentIndex + 1) % members.length];
   const idx = sessions.findIndex(s => s.session_id === next.session_id);
   if (idx >= 0) {
     setFocus(idx, true);
-    openConv(next.session_id);
   }
+  openConv(next.session_id);
 }
 
 async function linkSessions(sids) {
@@ -8423,7 +9149,9 @@ document.addEventListener('keydown', function(e) {
     }
     if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      for (const s of sessions) selectedIds.add(s.session_id);
+      for (const s of sessions) {
+        if (!_isSerenaVoiceSession(s)) selectedIds.add(s.session_id);
+      }
       updateSelectionInfo();
       renderSessionList();
       return;
@@ -8919,6 +9647,7 @@ _initAgentFilterIcons();
 loadSessions();
 loadProjects();
 _startAttentionPoll();
+loadCollapsedState();
 startLiveUsagePoll();
 setupLiveUsagePopover();
 // Pre-fetch counts for tabs
@@ -9259,6 +9988,7 @@ function showToast(message, opts) {
 }
 
 </script>
+<script src="/static/operator_workspace.js"></script>
 </body>
 </html>"""
 
@@ -9295,6 +10025,27 @@ def _ambiguous_shorts() -> set[str]:
     return {s for s, dirs in shorts.items() if len(dirs) > 1}
 
 
+def _external_runtime_active(session_id: str) -> bool:
+    try:
+        from core import metadata as meta_sync
+
+        return meta_sync.external_runtime_active(session_id)
+    except Exception:
+        return False
+
+
+def _fleet_worker_marker(session_id: str) -> dict | None:
+    try:
+        from core import metadata as meta_sync
+
+        marker = meta_sync.get_meta(session_id).get("fleet_worker")
+    except Exception:
+        return None
+    if isinstance(marker, dict) and marker.get("run_id"):
+        return marker
+    return None
+
+
 def _decorate_sessions(sessions: list[dict]) -> list[dict]:
     ambiguous = _ambiguous_shorts()
     # === GROUP FEATURE === (this block reads group ids from synced metadata)
@@ -9328,11 +10079,30 @@ def _decorate_sessions(sessions: list[dict]) -> list[dict]:
         s["cache_create_tokens"] = s.get("cache_create_tokens") or 0
         # === GROUP FEATURE === (per-row group id — frontend hashes it for color)
         sid = s.get("session_id")
-        gid = (all_meta.get(sid) or {}).get("group") if sid else None
+        session_meta = (all_meta.get(sid) or {}) if sid else {}
+        gid = session_meta.get("group")
         if gid:
             s["group"] = gid
+        fleet_worker = session_meta.get("fleet_worker")
+        if isinstance(fleet_worker, dict):
+            s["fleet_worker"] = fleet_worker
+        s["external_runtime_active"] = bool(
+            sid and _external_runtime_active(sid)
+        )
         # === GROUP FEATURE END ===
     return sessions
+
+
+def _include_permanent_serena_session(sessions: list[dict]) -> list[dict]:
+    """Keep the one lifelong Serena chat visible across project filters."""
+
+    sid = "serena-voice-main"
+    if any(session.get("session_id") == sid for session in sessions):
+        return sessions
+    serena = get_session(sid)
+    if not serena:
+        return sessions
+    return [serena, *sessions]
 
 
 _LIVE_USAGE_CACHE: dict = {"at": 0.0, "data": None}
@@ -9516,7 +10286,7 @@ def api_sessions():
     else:
         sessions = list_sessions(limit=500)
 
-    return jsonify(_decorate_sessions(sessions))
+    return jsonify(_decorate_sessions(_include_permanent_serena_session(sessions)))
 
 
 @app.route("/api/search")
@@ -9710,8 +10480,146 @@ def api_keybindings():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# === UI STATE === (sidebar collapse etc.)
+# localStorage is keyed per ORIGIN, and the desktop shell picks a fresh port on
+# every launch (desktop/app_gtk.py `_find_free_port`), so browser-local state is
+# silently lost on every restart and never shared between the GTK window and a
+# browser tab. Persist it server-side instead.
+# ─────────────────────────────────────────────────────────────────────────────
+_UI_STATE_PATH = Path.home() / ".config" / "serena" / "ui-state.json"
+
+
+def _load_ui_state() -> dict:
+    try:
+        data = json.loads(_UI_STATE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+@app.route("/api/ui-state")
+def api_ui_state_get():
+    return jsonify(_load_ui_state())
+
+
+@app.route("/api/ui-state", methods=["POST"])
+def api_ui_state_set():
+    """Merge-patch the persisted UI state. Keys are namespaced by the caller
+    (e.g. "collapsed"); a null value deletes a key."""
+    patch = request.get_json(silent=True) or {}
+    if not isinstance(patch, dict):
+        return jsonify({"ok": False, "error": "object required"}), 400
+    state = _load_ui_state()
+    for key, value in patch.items():
+        if value is None:
+            state.pop(key, None)
+        else:
+            state[str(key)] = value
+    try:
+        _UI_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _UI_STATE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(tmp, _UI_STATE_PATH)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "state": state})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # === CODEX BRIDGE === (let claude drive the linked codex VTE in split view)
 # ─────────────────────────────────────────────────────────────────────────────
+def _local_runtime_request() -> bool:
+    try:
+        return ipaddress.ip_address(request.remote_addr or "").is_loopback
+    except ValueError:
+        return False
+
+
+def _native_runtime_context() -> dict | None:
+    try:
+        module = sys.modules.get("desktop.app_gtk")
+        ChatsApp = getattr(module, "ChatsApp", None) if module is not None else None
+        if ChatsApp is None:
+            return None
+        inst = ChatsApp.INSTANCE
+        if inst is None or not getattr(inst, "_use_native_vte", True):
+            return None
+        return inst.runtime_context_snapshot()
+    except (ImportError, AttributeError, RuntimeError):
+        return None
+
+
+def _decorate_runtime_entry(entry: dict) -> dict:
+    result = dict(entry)
+    sid = str(result.get("sid") or "")
+    try:
+        from core import metadata
+
+        meta = metadata.get_meta(sid) if sid else {}
+        result["group"] = meta.get("group") or None
+        result["external"] = bool(
+            sid and metadata.external_runtime_active(sid)
+        )
+        fleet = meta.get("fleet_worker")
+        result["fleet"] = bool(
+            isinstance(fleet, dict) and fleet.get("run_id")
+        )
+    except Exception:
+        result["group"] = None
+        result["external"] = False
+        result["fleet"] = False
+    for key in ("alive", "busy", "draft", "reserved"):
+        result[key] = bool(result.get(key))
+    return result
+
+
+@app.route("/api/runtime-context")
+def api_runtime_context():
+    """Report exact in-app owners. This endpoint is never tailnet-exposed."""
+    if not _local_runtime_request():
+        return jsonify({"ok": False, "error": "runtime context is local-only"}), 403
+    native = _native_runtime_context()
+    browser = pty_terminal.runtime_context_snapshot()
+    contexts = [context for context in (native, browser) if context]
+    runtimes = [
+        _decorate_runtime_entry(entry)
+        for context in contexts
+        for entry in context.get("runtimes", [])
+    ]
+    focused_sid = next(
+        (context.get("focused_sid") for context in contexts if context.get("focused_sid")),
+        None,
+    )
+    split_pair = next(
+        (context.get("split_pair") for context in contexts if context.get("split_pair")),
+        [],
+    )
+    focused_at = max(
+        (float(context.get("focused_at") or 0.0) for context in contexts),
+        default=0.0,
+    )
+    window_active = any(bool(context.get("window_active")) for context in contexts)
+    try:
+        port = int(request.environ.get("SERVER_PORT") or request.host.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        port = None
+    return jsonify(
+        {
+            "ok": True,
+            "focused_sid": focused_sid,
+            "focused_session_id": focused_sid,
+            "split_pair": split_pair,
+            "split_session_ids": split_pair,
+            "runtimes": runtimes,
+            "sessions": runtimes,
+            "port": port,
+            "bridge_port": port,
+            "focused_at": focused_at,
+            "window_active": window_active,
+        }
+    )
+
+
 @app.route("/api/codex-bridge", methods=["POST"])
 def api_codex_bridge():
     from core.codex_bridge import call_codex_via_bridge
@@ -9723,6 +10631,51 @@ def api_codex_bridge():
         return jsonify({"ok": False, "message": "target_sid and prompt are required"}), 400
     result = call_codex_via_bridge(target_sid, prompt, timeout=timeout)
     return jsonify(result)
+
+
+@app.route("/api/codex-work-bridge", methods=["POST"])
+def api_codex_work_bridge():
+    if not _local_runtime_request():
+        return jsonify({"ok": False, "message": "work bridge is local-only"}), 403
+    from core.codex_bridge import call_codex_work_via_bridge
+
+    data = request.get_json(silent=True) or {}
+    target_sid = str(data.get("target_sid") or "").strip()
+    prompt = str(data.get("prompt") or "")
+    item_id = str(data.get("item_id") or "").strip()
+    try:
+        timeout = min(3600.0, max(1.0, float(data.get("timeout") or 300.0)))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "timeout must be numeric"}), 400
+    if not target_sid or not prompt.strip() or not item_id:
+        return jsonify(
+            {
+                "ok": False,
+                "message": "target_sid, prompt, and item_id are required",
+            }
+        ), 400
+    return jsonify(
+        call_codex_work_via_bridge(
+            target_sid, prompt, item_id, timeout=timeout
+        )
+    )
+
+
+@app.route("/api/codex-work-interrupt", methods=["POST"])
+def api_codex_work_interrupt():
+    if not _local_runtime_request():
+        return jsonify({"ok": False, "message": "work interrupt is local-only"}), 403
+    from core.codex_bridge import interrupt_codex_work
+
+    data = request.get_json(silent=True) or {}
+    target_sid = str(data.get("target_sid") or "").strip()
+    item_id = str(data.get("item_id") or "").strip()
+    if not target_sid or not item_id:
+        return jsonify(
+            {"ok": False, "message": "target_sid and item_id are required"}
+        ), 400
+    result = interrupt_codex_work(target_sid, item_id)
+    return jsonify(result), 200 if result.get("ok") else 409
 
 
 @app.route("/api/claude-bridge", methods=["POST"])
@@ -9832,7 +10785,12 @@ from voice.call.browser_auth import (
     browser_call_tickets,
 )
 
-warm_default_runtime_background()
+# SERENA_CALL_RUNTIME=lazy (set by the desktop shell) skips the eager model
+# warm; mobile_host on :8767 already holds the warm stack for wake/phone calls.
+# A call started in-app still works: the pool builds workers on first request.
+_LAZY_CALL_RUNTIME = os.environ.get("SERENA_CALL_RUNTIME", "").lower() == "lazy"
+if not _LAZY_CALL_RUNTIME:
+    warm_default_runtime_background()
 _DESK_GREETING_POOL = None
 _DESK_GREETING_POOL_LOCK = threading.Lock()
 
@@ -9962,6 +10920,7 @@ def serve_desk_greeting():
         headers={
             "X-Serena-Greeting-Id": greeting.greeting_id,
             "X-Serena-Sample-Rate": str(greeting.sample_rate),
+            "X-Serena-Greeting-Daypart": greeting.daypart,
             "Cache-Control": "no-store",
         },
     )
@@ -10196,6 +11155,7 @@ def api_conversation(session_id):
 
     return jsonify({
         "session_id": session["session_id"],
+        "agent": session.get("agent") or "claude",
         "title": session.get("display_title", "Untitled"),
         "date": (session.get("first_timestamp") or "")[:16].replace("T", " "),
         "cwd": cwd,
@@ -10203,6 +11163,7 @@ def api_conversation(session_id):
         "output_tokens": session.get("output_tokens") or 0,
         "cache_read_tokens": session.get("cache_read_tokens") or 0,
         "cache_create_tokens": session.get("cache_create_tokens") or 0,
+        "external_runtime_active": _external_runtime_active(session["session_id"]),
         "messages": messages,
     })
 
@@ -10314,8 +11275,13 @@ def api_bulk_done():
 
 @app.route("/api/session/<session_id>", methods=["DELETE"])
 def api_delete_session(session_id):
+    session = get_session(session_id)
+    if _is_serena_voice_session(session):
+        return jsonify({"error": "Serena's permanent conversation cannot be deleted"}), 403
+    if _fleet_worker_marker(session_id):
+        return jsonify({"error": "Fleet worker chats are durable run history and cannot be deleted"}), 409
     try:
-        path = delete_session(session_id)
+        path = delete_session(session_id, source="serena-web")
         return jsonify({"ok": True, "path": path})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
@@ -10328,8 +11294,14 @@ def api_bulk_delete():
     deleted = []
     errors = []
     for sid in ids:
+        if _is_serena_voice_session(get_session(sid)):
+            errors.append({"id": sid, "error": "Serena's permanent conversation cannot be deleted"})
+            continue
+        if _fleet_worker_marker(sid):
+            errors.append({"id": sid, "error": "Fleet worker chats are durable run history and cannot be deleted"})
+            continue
         try:
-            delete_session(sid)
+            delete_session(sid, source="serena-web-bulk")
             deleted.append(sid)
         except Exception as e:
             errors.append({"id": sid, "error": str(e)})
@@ -10403,6 +11375,10 @@ def api_resume(session_id):
     session = get_session(session_id)
     if not session:
         return jsonify({"error": "Not found"}), 404
+    if _is_serena_voice_session(session):
+        return jsonify({"error": "Serena is a read-only conversation"}), 409
+    if _fleet_worker_marker(session["session_id"]):
+        return jsonify({"error": "Fleet worker chats are read-only"}), 409
 
     cwd = resolve_session_cwd(_get_session_cwd(session))
     sid = session["session_id"]
@@ -10656,12 +11632,21 @@ def api_spawn_terminal():
     cols = int(data.get("cols") or 100)
     rows = int(data.get("rows") or 30)
     seed = str(data.get("seed") or "")
-    terminal_protocol = (data.get("terminal_protocol") or "").lower() or None
 
     if session_id:
         session = get_session(session_id)
         if not session:
             return jsonify({"error": "Session not found"}), 404
+        if _is_serena_voice_session(session):
+            return jsonify({"error": "Serena is a read-only conversation"}), 409
+        if _fleet_worker_marker(session["session_id"]):
+            return jsonify({"error": "Fleet worker chats are read-only"}), 409
+        if _external_runtime_active(session["session_id"]):
+            return jsonify({
+                "ok": False,
+                "error": "Workflow agent is still running. Open its Read view until it finishes.",
+                "external_runtime": True,
+            }), 409
         cwd = resolve_session_cwd(_get_session_cwd(session))
         sid = session["session_id"]
         ensure_session_visible(sid, session.get("project_dir", ""), cwd)
@@ -10689,6 +11674,16 @@ def api_spawn_terminal():
             if seed:
                 argv.append(seed)
 
+    # === MODEL MASK === (mirror of app_gtk: show the assigned Sol, Terra, or
+    # Luna model on matching Codex-relay /workflows rows. DEFAULT OFF — the relay
+    # adds keystroke latency and Fleet's panel now carries real model identity, so
+    # it's obsolete. Strict opt-in: SERENA_MODEL_MASK=on to re-enable.)
+    if agent != "codex" and os.environ.get("SERENA_MODEL_MASK", "off").lower() in ("on", "1", "true"):
+        _mask = str(Path(__file__).resolve().parent / "pty_model_mask.py")
+        if os.path.exists(_mask):
+            argv = [sys.executable, _mask, "--"] + argv
+    # === MODEL MASK END ===
+
     try:
         runtime_sid = sid if session_id else (client_session_id or None)
         from core.billing import strip_metered_auth_env
@@ -10700,7 +11695,6 @@ def api_spawn_terminal():
             rows=rows,
             session_id=runtime_sid,
             agent=agent,
-            terminal_protocol=terminal_protocol,
             env=strip_metered_auth_env(os.environ),
         )
     except FileNotFoundError:
@@ -10715,13 +11709,11 @@ def api_spawn_terminal():
     if seed:
         pty_terminal.mark_turn_started(tid)
 
-    terminal = pty_terminal.get(tid)
     return jsonify({
         "ok": True,
         "terminal_id": tid,
         "cwd": cwd,
         "agent": agent,
-        "graphics_protocol": terminal.graphics_protocol if terminal else None,
     })
 
 
@@ -10812,59 +11804,24 @@ def api_terminal_runtime_sync():
 
 @app.route("/api/voice-inbox/claim", methods=["POST"])
 def api_voice_inbox_claim():
-    from core.voice_inbox import get_default_voice_inbox
-    from core.voice_work_supervisor import resident_worker_available
-
-    data = request.get_json(silent=True) or {}
-    target_sid = str(data.get("target_sid") or "").strip()
-    if not target_sid:
-        return jsonify({"ok": False, "error": "target_sid is required"}), 400
-    if resident_worker_available():
-        return jsonify({"ok": True, "item": None, "resident": True})
-    spawn_claim = bool(data.get("spawn")) and target_sid.startswith("new-voice-")
-    if pty_terminal.tid_for_session(target_sid) is None and not spawn_claim:
-        return jsonify({"ok": False, "error": "target terminal is not live"}), 409
-    item = get_default_voice_inbox().claim_next(target_sid)
-    if item is None:
-        return jsonify({"ok": True, "item": None})
     return jsonify(
         {
-            "ok": True,
-            "item": {
-                "item_id": item.item_id,
-                "prompt": item.prompt,
-                "created_at": item.created_at,
-            },
+            "ok": False,
+            "error": "voice coding jobs are owned only by the resident supervisor",
         }
-    )
+    ), 410
 
 
 @app.route("/api/voice-inbox/<item_id>/<action>", methods=["POST"])
 def api_voice_inbox_finish(item_id, action):
-    from core.voice_inbox import get_default_voice_inbox
-
-    data = request.get_json(silent=True) or {}
-    target_sid = str(data.get("target_sid") or "").strip()
-    if action == "ack":
-        changed = get_default_voice_inbox().acknowledge(
-            item_id,
-            target_sid=target_sid,
-        )
-    elif action == "start":
-        changed = get_default_voice_inbox().acknowledge_started(
-            item_id,
-            target_sid=target_sid,
-            cwd=str(data.get("cwd") or ""),
-        )
-    elif action == "release":
-        changed = get_default_voice_inbox().release(
-            item_id,
-            target_sid=target_sid,
-            error=str(data.get("error") or ""),
-        )
-    else:
-        return jsonify({"ok": False, "error": "unknown action"}), 404
-    return jsonify({"ok": changed}), 200 if changed else 409
+    return jsonify(
+        {
+            "ok": False,
+            "item_id": item_id,
+            "action": action,
+            "error": "desktop voice-inbox execution is retired; use the resident controls",
+        }
+    ), 410
 
 
 @app.route("/api/kill-terminal/<tid>", methods=["POST"])
@@ -10930,24 +11887,70 @@ def api_upload_image():
 def ws_terminal(ws, tid):
     """Bidirectional PTY <-> browser stream.
 
-    Frontend sends either a raw string (user keystrokes) or a JSON object
-    ``{"resize": {"rows": R, "cols": C}}``. Backend pushes raw output strings.
+    Frontend sends either a raw string (user keystrokes) or a JSON object:
+    ``{"resize": {"rows": R, "cols": C}}``, ``{"flow": {"enabled": true}}`` to
+    arm ack-based flow control, or ``{"ack": N}`` to credit N parsed bytes.
+    Backend pushes raw output frames.
+
+    Dropping the socket detaches instead of killing the child, so reconnecting
+    to the same terminal id resumes the same claude/codex process. Only an
+    explicit /api/kill-terminal call, process exit, or the detach grace period
+    expiring terminates it.
     """
     if not pty_terminal.get(tid):
         ws.send(json.dumps({"error": "Terminal not found"}))
         ws.close()
         return
 
+    attachment = pty_terminal.attach(tid)
+    if attachment is None:
+        ws.send(json.dumps({"error": "Terminal not found"}))
+        ws.close()
+        return
+    attach_token, backlog = attachment
+    terminal = pty_terminal.get(tid)
+
     stop_reader = threading.Event()
+    pty_dead = threading.Event()
+
+    try:
+        ws.send(json.dumps({
+            "attached": True,
+            "terminal_id": tid,
+            "replayed_bytes": len(backlog),
+            "rows": terminal.rows if terminal else 0,
+            "cols": terminal.cols if terminal else 0,
+            "ack_bytes": pty_terminal.FLOW_ACK_BYTES,
+        }))
+        if backlog:
+            ws.send(backlog)
+            # Count the replay too. It goes out before the renderer can arm
+            # flow control, so without this a large reconnect backlog would
+            # never appear in the ack ledger and the first watermark check
+            # would start from a false zero.
+            pty_terminal.note_sent(tid, len(backlog))
+    except Exception:
+        pty_terminal.detach(tid, attach_token)
+        return
 
     def reader():
         while not stop_reader.is_set():
+            if not pty_terminal.is_attached(tid, attach_token):
+                break
+            # Ack-based flow control. Park here while the renderer is behind
+            # instead of pausing after each chunk. Per the xterm.js flow
+            # control guide, per-chunk pausing puts a round trip between every
+            # read and collapses throughput on a repainting TUI.
+            if not pty_terminal.wait_for_flow(tid, 0.1):
+                continue
             chunk = pty_terminal.read_available(tid, max_bytes=65536, timeout=0.05)
             if chunk is None:
+                pty_dead.set()
                 try:
                     ws.send(json.dumps({"exit": True}))
                 except Exception:
                     pass
+                stop_reader.set()
                 break
             if chunk:
                 try:
@@ -10957,9 +11960,30 @@ def ws_terminal(ws, tid):
                     ws.send(chunk)
                 except Exception:
                     break
+                pty_terminal.note_sent(tid, len(chunk))
 
     reader_thread = threading.Thread(target=reader, daemon=True)
     reader_thread.start()
+
+    def write_manual(input_bytes: bytes, runtime: dict | None = None) -> bool:
+        if not pty_terminal.write(tid, input_bytes):
+            item_id = pty_terminal.reservation(tid)
+            if item_id:
+                try:
+                    ws.send(json.dumps({"input_blocked": True, "reserved": item_id}))
+                except Exception:
+                    pass
+            return False
+        if isinstance(runtime, dict):
+            pty_terminal.note_web_context(
+                tid,
+                focused_sid=runtime.get("focused_sid"),
+                split_sids=runtime.get("split_sids"),
+                draft=runtime.get("draft"),
+            )
+        else:
+            pty_terminal.note_manual_input(tid, input_bytes)
+        return True
 
     try:
         while True:
@@ -10977,7 +12001,7 @@ def ws_terminal(ws, tid):
                     break
                 continue
             if isinstance(msg, bytes):
-                pty_terminal.write(tid, msg)
+                write_manual(msg)
                 continue
             # Text frame — attempt JSON first (resize control), fallback to raw input
             if msg.startswith("{"):
@@ -10985,17 +12009,60 @@ def ws_terminal(ws, tid):
                     payload = json.loads(msg)
                 except ValueError:
                     payload = None
-                if isinstance(payload, dict) and "resize" in payload:
-                    r = payload["resize"]
-                    pty_terminal.resize(tid, int(r.get("rows", 30)), int(r.get("cols", 100)))
-                    continue
-                if isinstance(payload, dict) and "input" in payload:
-                    pty_terminal.write(tid, payload["input"].encode("utf-8"))
-                    continue
-            pty_terminal.write(tid, msg.encode("utf-8"))
+                # Every control key present in the frame is applied, then one
+                # continue at the end swallows it. Chaining `continue` per key
+                # instead would let whichever branch came first silently drop
+                # the rest, e.g. a resize batched with an ack.
+                if isinstance(payload, dict):
+                    control_handled = False
+                    if "resize" in payload:
+                        r = payload["resize"]
+                        pty_terminal.resize(
+                            tid, int(r.get("rows", 30)), int(r.get("cols", 100))
+                        )
+                        control_handled = True
+                    if "flow" in payload:
+                        flow = payload.get("flow") or {}
+                        if isinstance(flow, dict) and flow.get("enabled"):
+                            pty_terminal.enable_flow_control(tid)
+                        control_handled = True
+                    if "ack" in payload:
+                        try:
+                            pty_terminal.note_ack(tid, int(payload["ack"]))
+                        except (TypeError, ValueError):
+                            pass
+                        control_handled = True
+                    if "runtime_context" in payload:
+                        runtime = payload.get("runtime_context") or {}
+                        if isinstance(runtime, dict) and "input" not in payload:
+                            pty_terminal.note_web_context(
+                                tid,
+                                focused_sid=runtime.get("focused_sid"),
+                                split_sids=runtime.get("split_sids"),
+                                draft=runtime.get("draft"),
+                            )
+                        control_handled = True
+                    if "input" in payload:
+                        input_bytes = str(payload["input"]).encode("utf-8")
+                        runtime = payload.get("runtime_context") or {}
+                        write_manual(
+                            input_bytes,
+                            runtime if isinstance(runtime, dict) else None,
+                        )
+                        continue
+                    if control_handled:
+                        continue
+            input_bytes = msg.encode("utf-8")
+            write_manual(input_bytes)
     finally:
         stop_reader.set()
-        pty_terminal.kill(tid)
+        # Join before detaching: the detached drain takes over the read side,
+        # and two threads reading one fd would interleave the reconnect replay.
+        reader_thread.join(timeout=2.0)
+        if pty_dead.is_set():
+            pty_terminal.kill(tid)
+        else:
+            pty_terminal.detach(tid, attach_token)
 
 
 @app.route("/api/new-chat", methods=["POST"])
@@ -11092,6 +12159,22 @@ def api_handoff():
 # === HANDOFF FEATURE END ===
 
 
+@app.route("/api/context-fork", methods=["POST"])
+def api_context_fork():
+    from chats.context_fork import build_context_fork
+
+    data = request.get_json(silent=True) or {}
+    source_sid = str(data.get("source_sid") or "").strip()
+    target_agent = str(data.get("target_agent") or "").strip().lower()
+    try:
+        result = build_context_fork(source_sid, target_agent)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"could not write context fork: {exc}"}), 500
+    return jsonify(result)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # === GROUP FEATURE START ===
 # Linked-chats / shared-thread: lets the user mark N chats as peers so they
@@ -11174,8 +12257,10 @@ def api_memory_add():
 
     from memory.store import add_memory
 
-    mem_id = add_memory(content, mem_type)
-    return jsonify({"ok": True, "id": mem_id})
+    result = add_memory(content, mem_type)
+    if isinstance(result, str):
+        return jsonify({"ok": True, "state": "proposed", "proposal_id": result})
+    return jsonify({"ok": True, "id": result})
 
 
 @app.route("/api/memory/<int:mem_id>", methods=["PUT"])
@@ -11202,7 +12287,9 @@ def api_memory_update(mem_id):
     if mem_type not in MEMORY_TYPES:
         return jsonify({"error": f"Invalid type"}), 400
 
-    update_memory(mem_id, content=content, mem_type=mem_type)
+    result = update_memory(mem_id, content=content, mem_type=mem_type)
+    if isinstance(result, str):
+        return jsonify({"ok": True, "state": "proposed", "proposal_id": result})
     return jsonify({"ok": True})
 
 
@@ -11210,8 +12297,11 @@ def api_memory_update(mem_id):
 def api_memory_delete(mem_id):
     from memory.store import delete_memory
 
-    if not delete_memory(mem_id):
+    result = delete_memory(mem_id)
+    if not result:
         return jsonify({"error": "Memory not found"}), 404
+    if isinstance(result, str):
+        return jsonify({"ok": True, "state": "proposed", "proposal_id": result})
     return jsonify({"ok": True})
 
 
@@ -11292,7 +12382,7 @@ def run_web(host="0.0.0.0", port=8080, open_browser=False):
     update_knowledge_index()
 
     wake_model = Path.home() / ".config" / "serena" / "models" / "hey_serena.onnx"
-    if wake_model.is_file():
+    if wake_model.is_file() and not _LAZY_CALL_RUNTIME:
         warm_desk_runtime_background()
         _get_desk_greeting_pool().start_refill()
 
