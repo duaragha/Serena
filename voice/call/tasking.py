@@ -20,7 +20,8 @@ from typing import Any, Protocol
 
 from core.artifacts import ArtifactRegistry, get_default_artifact_registry
 from core.billing import command_fingerprint, environment_fingerprint, strip_metered_auth_env
-from core.voice_inbox import VoiceInboxItem, VoiceInboxStore, get_default_voice_inbox
+from core.voice_inbox import VoiceInboxItem, VoiceInboxStore
+from core.work_authority import is_personal_document_request
 from core.work_jobs import WorkJob, WorkJobEvent, WorkJobStore, process_start_token
 
 _DRAFT_LINK = re.compile(
@@ -42,59 +43,26 @@ _DRAFT_CANCELLATION = re.compile(
     re.IGNORECASE,
 )
 _WAKE_PREFIX = re.compile(r"^(?:hey\s+)?serena[,.!?]*\s+", re.IGNORECASE)
-_LIVE_RELAY = re.compile(
-    r"^(?:(?:please\s+)?(?:send|route|pass)(?:\s+this)?\s+to|"
-    r"(?:please\s+)?tell|(?:please\s+)?ask)\s+"
-    r"(?:(?:my|the)\s+)?(?:coding\s+)?(?:session|pane|serena|codex|claude)"
-    r"(?:\s+(?:session|pane))?\s*(?:to\s+|that\s+|[:,]\s*)"
-    r"(?P<request>.+)$",
-    re.IGNORECASE,
-)
-# Spoken work language is broader than a bare verb-first imperative. The
-# original pattern only fired when the sentence literally began with one of
-# ~24 verbs, so ordinary asks ("go fix the deep link", "start working on it",
-# "keep going on the voice work") silently never became jobs, they were not
-# refused, they simply never reached the inbox. Lead-ins are stripped and the
-# remainder must still open with a work verb, so questions ("how can we fix"),
-# explanations ("tell me why"), hypotheticals ("what if we built"), and
-# cancellations ("don't update") stay non-executing exactly as before.
-_LIVE_WORK = re.compile(
-    r"^(?:(?:okay|ok|alright|right|yeah|yep)\s*,?\s+)?"
-    r"(?:(?:please\s+)?(?:can\s+you|could\s+you|would\s+you)\s+(?:please\s+)?"
-    r"|please\s+"
-    r"|i\s+(?:want|need)\s+you\s+to\s+"
-    r"|(?:i\s+)?(?:would|'d)\s+like\s+you\s+to\s+"
-    r"|go\s+ahead\s+and\s+"          # must precede bare "go"
-    r"|let'?s\s+"
-    r"|go\s+"
-    r")?"
-    r"(?P<request>(?:fix|build|implement|change|update|add|remove|replace|refactor|debug|"
-    r"investigate|test|verify|review|finish|deploy|ship|wire|hook\s+up|"
-    r"work\s+on|create|write|code|do"
-    r"|start|continue|keep\s+going|get\s+started|carry\s+on"
-    r"|look\s+into|dig\s+into|jump\s+into|tackle"
-    r"|sort\s+out|sort|handle|take\s+care\s+of|deal\s+with"
-    r"|clean\s+up|set\s+up|make|patch|repair|migrate|rename|polish"
-    r"|optimi[sz]e|document|connect|move|split|merge|extract"
-    r")\b.*)$",
-    re.IGNORECASE,
-)
-# Passive phrasing that names the target first: "i need the deep link fixed".
-_LIVE_WORK_PASSIVE = re.compile(
-    r"^(?:(?:okay|ok|alright)\s*,?\s+)?"
-    r"i\s+(?:want|need)\s+"
-    r"(?P<request>(?!you\s+to\b).+?\s+"
-    r"(?:fixed|done|built|updated|changed|removed|added|replaced|working|"
-    r"sorted|handled|cleaned\s+up|set\s+up|finished|patched))"
-    r"[.!]*$",
-    re.IGNORECASE,
-)
 _CODE_PANEL_TARGET = re.compile(
     r"\b(?:coding|code)\s+(?:panel|terminal|window)\b",
     re.IGNORECASE,
 )
-_CODE_PANEL_OPEN = re.compile(r"\b(?:open|show|bring\s+up|display)\b", re.IGNORECASE)
-_CODE_PANEL_HIDE = re.compile(r"\b(?:hide|close|dismiss)\b", re.IGNORECASE)
+# The verb has to actually govern the panel. Matching "open" or "close"
+# anywhere in the sentence meant that complaining about the drawer ("the coding
+# panel keeps trying to open") opened it.
+_CODE_PANEL_SUBJECT = r"(?:the|a|an|your|my)?\s*(?:coding|code)\s+(?:panel|terminal|window)"
+_CODE_PANEL_OPEN = re.compile(
+    # "open the coding panel", and the split form "bring the code window up".
+    rf"\b(?:open|show|bring\s+up|pull\s+up|display)\s+(?:me\s+)?(?:up\s+)?{_CODE_PANEL_SUBJECT}\b"
+    rf"|\b(?:bring|pull|put)\s+{_CODE_PANEL_SUBJECT}\s+(?:back\s+)?up\b",
+    re.IGNORECASE,
+)
+_CODE_PANEL_HIDE = re.compile(
+    # "close the coding panel", and the split form "put the code window away".
+    rf"\b(?:hide|close|dismiss)\s+{_CODE_PANEL_SUBJECT}\b"
+    rf"|\b(?:put|shove|tuck)\s+{_CODE_PANEL_SUBJECT}\s+away\b",
+    re.IGNORECASE,
+)
 MAX_DRAFT_REQUEST_CHARS = 4_000
 MAX_DRAFT_OUTPUT_CHARS = 256_000
 MAX_WORKER_STDOUT_BYTES = 512 * 1024
@@ -153,25 +121,16 @@ def parse_draft_link_intent(text: str) -> DraftLinkIntent | None:
 
 
 def parse_live_work_intent(text: str) -> LiveWorkIntent | None:
-    """Accept direct build instructions without treating questions as jobs."""
+    """Retired compatibility shim. Regex is never coding intake authority."""
 
     clean = " ".join(str(text).strip().split())
     clean = _WAKE_PREFIX.sub("", clean, count=1).strip()
     if not clean or len(clean) > MAX_DRAFT_REQUEST_CHARS:
         return None
-    relay = _LIVE_RELAY.fullmatch(clean)
-    if relay is not None:
-        request = relay.group("request").strip(" ,.;:")
-        if request and not _DRAFT_CANCELLATION.search(request):
-            return LiveWorkIntent(request=request)
-    if _DRAFT_CANCELLATION.search(clean):
+    # Preserve the personal-document safety floor for callers on older builds,
+    # but never infer a coding job here. The resident brain owns that judgment.
+    if is_personal_document_request(clean):
         return None
-    match = _LIVE_WORK.fullmatch(clean)
-    if match is not None:
-        return LiveWorkIntent(request=match.group("request").strip())
-    passive = _LIVE_WORK_PASSIVE.fullmatch(clean)
-    if passive is not None:
-        return LiveWorkIntent(request=passive.group("request").strip())
     return None
 
 
@@ -516,36 +475,18 @@ class CallTaskDispatcher:
         turn_id: str,
         context: list[str] | None = None,
     ) -> VoiceInboxItem | None:
-        intent = parse_live_work_intent(text)
-        if intent is None:
-            return None
-        request = intent.request
-        prior = [" ".join(str(item).split()) for item in (context or [])]
-        prior = [item for item in prior if item][-6:]
-        if prior:
-            labelled = [
-                item
-                if item.lower().startswith(("raghav:", "serena:"))
-                else f"Raghav: {item}"
-                for item in prior
-            ]
-            request = (
-                "Recent voice context:\n"
-                + "\n".join(labelled)
-                + "\n\nCurrent spoken request: "
-                + request
-            )
-        inbox = self.voice_inbox or get_default_voice_inbox()
-        if not inbox.resident_lease_active():
-            raise RuntimeError("my private coding runtime is not available")
-        return inbox.enqueue(
-            request,
-            call_id=call_id,
-            turn_id=turn_id,
-        )
+        """Retired. Spoken coding work is accepted only by the brain broker."""
+
+        return None
 
     def link_origin_session(self, job_id: str, session_id: str) -> None:
         self.store.link_origin_session(job_id, session_id)
+        job = self.store.get(job_id)
+        if job is not None and job.artifact_id:
+            self.artifacts.attach_provenance(
+                job.artifact_id,
+                origin_session_id=session_id,
+            )
 
     def events_for_call(self, call_id: str, *, after: int = 0) -> list[WorkJobEvent]:
         self._recover_pending()
@@ -618,10 +559,12 @@ class CallTaskDispatcher:
                 name="draft.md",
                 content=result.content,
             )
+            latest = self.store.get(job.job_id)
             artifact = self.artifacts.register(
                 job_id=job.job_id,
                 path=output,
                 name="draft.md",
+                origin_session_id=(latest.origin_session_id if latest is not None else None) or "",
             )
             self.store.mark_artifact_ready(
                 job.job_id,

@@ -10,6 +10,48 @@ from mcp import types
 from core import brain_daemon, brain_laptop_tools, brain_tools
 
 
+def test_completed_brain_turn_emits_bounded_plugin_metadata(monkeypatch):
+    hooks: list[tuple[str, dict]] = []
+
+    class Entry:
+        def fulfilled(self, _key):
+            return None
+
+    monkeypatch.setattr(brain_daemon, "_open_chat_turn", lambda _payload: (Entry(), "turn"))
+    monkeypatch.setattr(brain_daemon, "_close_chat_turn", lambda *_args, **_kwargs: None)
+
+    async def answered(_client, _payload, on_delta=None):
+        del on_delta
+        return {
+            "ok": True,
+            "provider": "codex",
+            "model": "gpt-5.6-terra",
+            "session_id": "session-1",
+        }
+
+    monkeypatch.setattr(brain_daemon, "_run_turn_answered", answered)
+    monkeypatch.setattr(
+        "core.plugin_loader.emit_plugin_hook",
+        lambda event, payload, **_kwargs: hooks.append((event, payload)) or [],
+    )
+
+    asyncio.run(
+        brain_daemon._run_turn(object(), {"text": "hello", "protocol": "voice"})
+    )
+
+    assert hooks == [
+        (
+            "chat.turn.completed",
+            {
+                "provider": "codex",
+                "model": "gpt-5.6-terra",
+                "session_id": "session-1",
+                "protocol": "voice",
+            },
+        )
+    ]
+
+
 class CapturedOptions:
     def __init__(self, **values):
         self.__dict__.update(values)
@@ -234,6 +276,29 @@ def test_surface_roles_are_scoped_to_their_own_turns(monkeypatch):
     assert "STRICT front-door JSON" in frontdoor
 
 
+def test_every_brain_turn_can_read_the_real_system_clock(monkeypatch):
+    """She has a clock now, so a spoken turn must never plead ignorance."""
+
+    import re
+    from datetime import datetime
+
+    monkeypatch.setattr(brain_daemon, "_state_block", lambda: "")
+    from core.daypart import daypart_for_hour
+
+    message = brain_daemon._compose_message(
+        {"protocol": "voice", "text": "what time is it?"}
+    )
+
+    stamped = re.search(r'<current-time [^>]*local-time="([^"]+)"', message)
+    assert stamped is not None
+    moment = datetime.fromisoformat(stamped.group(1))
+    assert moment.tzinfo is not None
+    assert abs((datetime.now().astimezone() - moment).total_seconds()) < 120
+    assert f'day-part="{daypart_for_hour(moment.hour)}"' in message
+    assert "live local system clock" in message
+    assert "Never claim you cannot check the time" in message
+
+
 def test_tool_use_assistant_blocks_keep_a_spoken_word_boundary():
     assert brain_daemon._join_assistant_chunks(
         ["i'll check that now.", "you've got Chats open."]
@@ -243,34 +308,136 @@ def test_tool_use_assistant_blocks_keep_a_spoken_word_boundary():
     )
 
 
-def test_state_block_keeps_full_ledger_grounding_after_digest_is_unchanged(
-    monkeypatch,
-):
+def test_state_block_keeps_stakes_but_leaves_retrievable_detail_out(monkeypatch):
+    """The 2026-08-12 per-turn digest repeated 2,052 retrievable characters."""
+
     from core import brain_state
 
-    record = brain_state._clean_record(
-        {
-            "id": 396,
-            "type": "ledger",
-            "ledger_key": "gideon",
-            "goal": "build the brain",
-            "facts": "voice is local",
-            "decision": "keep sonnet",
-            "risk": "latency p90 is red",
-            "next_action": "finish shorter gates",
-        }
-    )
-    state = brain_state.ActiveState(records=(record,), source="local")
+    records = [
+        brain_state._clean_record(
+            {"id": 1, "type": "task", "content": "finish the latency work"}
+        ),
+        brain_state._clean_record(
+            {"id": 2, "type": "loop", "content": "measure the next voice call"}
+        ),
+        brain_state._clean_record(
+            {
+                "id": 396,
+                "type": "ledger",
+                "ledger_key": "gideon",
+                "goal": "build the brain",
+                "facts": "voice is local",
+                "decision": "keep sonnet",
+                "risk": "latency p90 is red",
+                "next_action": "finish shorter gates",
+            }
+        ),
+    ]
+    state = brain_state.ActiveState(records=tuple(records), source="local")
     monkeypatch.setattr(brain_state, "active_state", lambda: state)
     monkeypatch.setattr(brain_daemon, "_last_state_fingerprint", "")
 
     first = brain_daemon._state_block()
     second = brain_daemon._state_block()
 
-    assert "# Active ledgers" in first
-    assert "# His open tasks" not in second
-    assert "decision: keep sonnet" in second
-    assert "risk: latency p90 is red" in second
+    assert first == second
+    assert "# Live state" in first
+    assert "Active: 1 ledgers, 1 tasks, 1 loops." in first
+    assert "decision=keep sonnet" in first
+    assert "risk=latency p90 is red" in first
+    assert "next=finish shorter gates" in first
+    assert "voice is local" not in first
+    assert "finish the latency work" not in first
+    assert "Use read_ledger" in first
+    assert "search_memory" in first
+
+
+def test_state_block_cannot_silently_reinflate_past_its_budget(monkeypatch):
+    """The live digest reached 4,521 characters before a hard budget existed."""
+
+    from core import brain_state
+
+    records = tuple(
+        brain_state._clean_record(
+            {
+                "id": number,
+                "type": "ledger",
+                "ledger_key": f"ledger-{number}",
+                "goal": "g" * 500,
+                "decision": "d" * 500,
+                "risk": "r" * 500,
+                "next_action": "n" * 500,
+            }
+        )
+        for number in range(40)
+    )
+    state = brain_state.ActiveState(records=records, source="local")
+    monkeypatch.setattr(brain_state, "active_state", lambda: state)
+
+    digest = brain_daemon._state_block(force=True)
+
+    assert len(digest) <= brain_daemon._STATE_BLOCK_MAX_CHARS
+    assert "more ledgers available through read_ledger" in digest
+
+
+def test_haiku_start_failure_retries_then_skips_the_failed_model(monkeypatch):
+    """A missing Haiku once added the same failed start to every casual turn."""
+
+    from core.brain_router import route_turn
+
+    attempts = []
+    capacity = {
+        "codex": {"usable": True, "reason": "available"},
+        "claude": {"usable": True, "reason": "available"},
+    }
+
+    class FakeClient:
+        codex_fallback_enabled = True
+        local_fallback_enabled = False
+
+        async def resolve_route(self, payload, **_options):
+            return route_turn(payload, capacity=capacity)
+
+        async def select_provider(self, *, preferred_provider, **_options):
+            return preferred_provider
+
+    async def run_provider(_client, payload, *, provider, on_delta=None, route=None):
+        del on_delta
+        attempts.append((provider, route.model, dict(payload)))
+        if route.model == "claude-haiku-4-5":
+            raise RuntimeError("Haiku model is unavailable")
+        return {
+            "ok": True,
+            "provider": provider,
+            "model": route.model,
+            "say": "i'm right here.",
+        }
+
+    monkeypatch.setattr(brain_daemon, "_run_provider_turn_scoped", run_provider)
+
+    client = FakeClient()
+
+    async def run_two_turns():
+        first = await brain_daemon._run_turn_answered(
+            client,
+            {"protocol": "voice", "text": "how are you"},
+        )
+        second = await brain_daemon._run_turn_answered(
+            client,
+            {"protocol": "voice", "text": "how are you"},
+        )
+        return first, second
+
+    first, second = asyncio.run(run_two_turns())
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert [(provider, model) for provider, model, _payload in attempts] == [
+        ("claude", "claude-haiku-4-5"),
+        ("codex", "gpt-5.6-terra"),
+        ("codex", "gpt-5.6-terra"),
+    ]
+    assert all("_fast_model_available" not in payload for _, _, payload in attempts)
 
 
 def test_voice_model_routing_reuses_one_sdk_session(monkeypatch):

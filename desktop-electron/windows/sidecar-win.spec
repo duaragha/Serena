@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 
 WINDOWS_DIR = Path(SPECPATH).resolve()
@@ -69,10 +69,18 @@ excludes = [
     "vte",
 ]
 
+# numpy ships compiled extensions and its own metadata; listing the package as
+# a hidden import alone bundles a hollow copy that fails at runtime with a
+# missing numpy._core. collect_all takes the binaries and data with it.
+# collect_all returns (datas, binaries, hiddenimports), in that order.
+numpy_datas, numpy_binaries, numpy_modules = collect_all("numpy")
+hiddenimports = sorted(set(hiddenimports) | set(numpy_modules))
+datas += numpy_datas
+
 a = Analysis(
     [str(ENTRYPOINT)],
     pathex=[str(REPO_ROOT)],
-    binaries=[],
+    binaries=numpy_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

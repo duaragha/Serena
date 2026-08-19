@@ -63,13 +63,15 @@ def test_playback_amplitude_raises_the_self_hear_floor():
     assert results[-1] is True
 
 
-def test_thinking_needs_only_the_short_sustain():
+def test_thinking_requires_enough_speech_to_reject_a_noise_burst():
+    """Two noisy frames used to cancel a response before it reached the UI."""
+
     gate = _gate()
     results = [
         gate.feed(LOUD, phase="thinking", playback_amplitude=0.0)
-        for _ in range(2)
+        for _ in range(6)
     ]
-    assert results == [False, True]
+    assert results == [False, False, False, False, False, True]
 
 
 def test_kill_switch_disables_everything():

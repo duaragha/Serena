@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import sqlite3
+from contextlib import suppress
 import threading
 from bisect import bisect_left
 from contextlib import contextmanager
@@ -796,7 +797,11 @@ def _attribute_codex_parents(conn: sqlite3.Connection):
 
     for row in codex_rows:
         parent_id = None
-        if _is_agent_spawned_candidate(row):
+        # Fleet has its own durable run grouping. A direct Codex worker happens
+        # to look like an ordinary agent-spawned `codex exec` rollout, but it
+        # must never be nested under the nearby Claude chat that launched Fleet.
+        is_fleet_worker = bool(meta_sync.get_meta(row["session_id"]).get("fleet_worker"))
+        if not is_fleet_worker and _is_agent_spawned_candidate(row):
             parent_id = _find_claude_parent(row, claude_rows, claude_timestamp_cache)
             if not parent_id and (row["originator"] or "").lower() == "claude code":
                 parent_id = "orphan-claude-code"
@@ -1358,30 +1363,94 @@ def set_title(session_id_prefix: str, title: str):
         conn.close()
 
 
-def list_projects() -> list[dict]:
-    """List all projects with chat counts."""
+def list_projects(*, include_machinery: bool = False) -> list[dict]:
+    """List projects with chat counts, one row per real project.
+
+    Rows are keyed by the project root a chat's working directory resolves to,
+    not by Claude's slug. The slug format changed between releases, so a single
+    folder minted several of them and a project's history was split across
+    duplicate rows; per-ticket worktrees and renamed folders fragmented it
+    further.
+
+    Two cases need the slug rather than the cwd. A chat run inside a Fleet
+    worktree records a path under Serena's state directory, which says which
+    machine ran it and nothing about which project it was for, and a handful of
+    old sessions never recorded a cwd at all. Both fall back to the slug, which
+    is mapped back to a real directory using the cwds other sessions recorded.
+    """
+
+    from core.config import claude_project_dir_for
+    from core.projects import is_machinery, project_root
+
     conn = _get_db()
-    rows = conn.execute("""
-        SELECT s.project_dir, s.device,
-               COUNT(*) as chat_count,
-               MAX(s.first_timestamp) as latest,
-               MIN(s.first_timestamp) as earliest,
-               (
-                   SELECT COALESCE(s2.last_cwd, s2.cwd)
-                   FROM sessions s2
-                   WHERE s2.project_dir = s.project_dir
-                     AND COALESCE(s2.last_cwd, s2.cwd) IS NOT NULL
-                     AND COALESCE(s2.is_teammate, 0) = 0
-                   ORDER BY s2.last_timestamp DESC
-                   LIMIT 1
-               ) as cwd
-        FROM sessions s
-        WHERE COALESCE(s.is_teammate, 0) = 0
-        GROUP BY s.project_dir
-        ORDER BY latest DESC
-    """).fetchall()
+    rows = [
+        dict(r)
+        for r in conn.execute("""
+            SELECT session_id, project_dir, device, first_timestamp,
+                   COALESCE(NULLIF(last_cwd, ''), NULLIF(cwd, '')) AS cwd
+            FROM sessions
+            WHERE COALESCE(is_teammate, 0) = 0
+        """).fetchall()
+    ]
     conn.close()
-    return [dict(r) for r in rows]
+
+    # Slug -> real root, learned from every session that did record a usable
+    # cwd. This is what lets a Fleet-worktree session rejoin its own project.
+    slug_to_root: dict[str, str] = {}
+    for row in rows:
+        cwd = row.get("cwd") or ""
+        if not cwd or is_machinery(cwd):
+            continue
+        root = project_root(cwd)
+        if not root:
+            continue
+        with suppress(Exception):
+            slug_to_root.setdefault(str(claude_project_dir_for(cwd)), root)
+
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        cwd = row.get("cwd") or ""
+        slug = str(row.get("project_dir") or "")
+        if cwd and not is_machinery(cwd):
+            key = project_root(cwd)
+        else:
+            key = slug_to_root.get(slug, "")
+        machinery = False
+        if not key:
+            # No project could be recovered: this really is scratch space.
+            key = slug or cwd
+            machinery = is_machinery(cwd) or is_machinery(slug) or slug.startswith("-tmp-")
+        if machinery and not include_machinery:
+            continue
+
+        entry = grouped.get(key)
+        if entry is None:
+            grouped[key] = {
+                "project_key": key,
+                "project_dir": slug,
+                "cwd": key if key.startswith(("/", "C:", "~")) else (cwd or key),
+                "device": row.get("device"),
+                "chat_count": 1,
+                "latest": row.get("first_timestamp"),
+                "earliest": row.get("first_timestamp"),
+                "is_machinery": machinery,
+                "source_project_dirs": [slug],
+            }
+            continue
+        entry["chat_count"] += 1
+        if slug not in entry["source_project_dirs"]:
+            entry["source_project_dirs"].append(slug)
+        stamp = row.get("first_timestamp") or ""
+        if stamp > (entry.get("latest") or ""):
+            entry["latest"] = stamp
+            entry["project_dir"] = slug
+            entry["device"] = row.get("device")
+        if not entry.get("earliest") or (stamp and stamp < entry["earliest"]):
+            entry["earliest"] = stamp
+
+    return sorted(
+        grouped.values(), key=lambda item: item.get("latest") or "", reverse=True
+    )
 
 
 def delete_session(session_id_prefix: str, *, source: str = "unknown") -> str:
@@ -1583,15 +1652,33 @@ def unified_search(query: str, limit: int = 30) -> list[dict]:
 
     # Memories
     try:
-        from memory.store import search_memories
-        mem_results = search_memories(query)
-        for m in mem_results:
-            results.append({
-                "source": "memory",
-                "snippet": m["content"][:200],
-                "memory_id": m["id"],
-                "memory_type": m["type"],
-            })
+        from memory.v2 import MemoryV2Store
+
+        if MemoryV2Store.authority_is_active():
+            store = MemoryV2Store()
+            for hit in store.retrieve(query, limit=limit, surface="private"):
+                results.append(
+                    {
+                        "source": "memory",
+                        "snippet": hit.record.content[:200],
+                        "memory_id": hit.record.record_id,
+                        "memory_type": hit.record.record_type,
+                        "score": hit.score,
+                    }
+                )
+        else:
+            from memory.store import search_memories
+
+            mem_results = search_memories(query)
+            for m in mem_results:
+                results.append(
+                    {
+                        "source": "memory",
+                        "snippet": m["content"][:200],
+                        "memory_id": m["id"],
+                        "memory_type": m["type"],
+                    }
+                )
     except Exception:
         pass
 

@@ -1,0 +1,60 @@
+{
+  "_comment": "Copy to ~/.config/serena/scenes.json and edit. Every step still passes through core.action_authority, so listing something here grants nothing on its own. Steps naming a device that is not present fail safely with an explicit unavailable status.",
+  "schema_version": 1,
+  "scenes": {
+    "wind down": {
+      "description": "quiet the laptop down for the evening",
+      "rollback": true,
+      "steps": [
+        {
+          "capability": "laptop.volume_down",
+          "timeout_seconds": 5
+        },
+        {
+          "capability": "laptop.media_play_pause",
+          "on_failure": "continue",
+          "optional": true
+        },
+        {
+          "capability": "home.light_off",
+          "target": "light.desk",
+          "on_failure": "rollback",
+          "optional": true,
+          "timeout_seconds": 10
+        }
+      ]
+    },
+    "focus": {
+      "description": "mute the laptop and put the phone screen out",
+      "rollback": true,
+      "steps": [
+        {
+          "capability": "laptop.mute",
+          "timeout_seconds": 5
+        },
+        {
+          "capability": "android.screen_off",
+          "optional": true,
+          "timeout_seconds": 10
+        }
+      ]
+    },
+    "good morning": {
+      "description": "bring the desk back up",
+      "rollback": false,
+      "steps": [
+        {
+          "capability": "laptop.unmute",
+          "timeout_seconds": 5
+        },
+        {
+          "capability": "home.light_on",
+          "target": "light.desk",
+          "optional": true,
+          "on_failure": "continue",
+          "timeout_seconds": 10
+        }
+      ]
+    }
+  }
+}

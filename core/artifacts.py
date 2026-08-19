@@ -44,6 +44,10 @@ class ArtifactLink:
     sha256: str
     expires_at: int
     token: str
+    origin_session_id: str = ""
+    fleet_run_id: str = ""
+    fleet_worker_key: str = ""
+    created_at: float = 0.0
 
     @property
     def url(self) -> str:
@@ -154,7 +158,17 @@ class ArtifactRegistry:
         path: Path,
         name: str,
         ttl_seconds: int = DEFAULT_ARTIFACT_TTL_SECONDS,
+        origin_session_id: str = "",
+        fleet_run_id: str = "",
+        fleet_worker_key: str = "",
     ) -> ArtifactLink:
+        if not _safe_identifier(job_id):
+            raise ValueError("invalid job id")
+        origin_session_id = _bounded_origin(origin_session_id, "origin session id")
+        fleet_run_id = _bounded_origin(fleet_run_id, "Fleet run id")
+        fleet_worker_key = _bounded_origin(fleet_worker_key, "Fleet worker key")
+        if fleet_worker_key and not fleet_run_id:
+            raise ValueError("Fleet worker provenance requires a Fleet run id")
         source = Path(path)
         root = self.root.resolve()
         resolved = source.resolve(strict=True)
@@ -170,13 +184,15 @@ class ArtifactRegistry:
         expires_at = int(time.time()) + max(60, min(int(ttl_seconds), 7 * 24 * 60 * 60))
         digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
         content_type = mimetypes.guess_type(clean_name)[0] or "application/octet-stream"
+        created_at = time.time()
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO artifacts(
                     artifact_id, job_id, name, path, content_type, size,
-                    sha256, expires_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sha256, expires_at, created_at, origin_session_id,
+                    fleet_run_id, fleet_worker_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact_id,
@@ -187,7 +203,10 @@ class ArtifactRegistry:
                     size,
                     digest,
                     expires_at,
-                    time.time(),
+                    created_at,
+                    origin_session_id,
+                    fleet_run_id,
+                    fleet_worker_key,
                 ),
             )
         token = self._token(artifact_id, job_id, expires_at)
@@ -201,7 +220,91 @@ class ArtifactRegistry:
             sha256=digest,
             expires_at=expires_at,
             token=token,
+            origin_session_id=origin_session_id,
+            fleet_run_id=fleet_run_id,
+            fleet_worker_key=fleet_worker_key,
+            created_at=created_at,
         )
+
+    def search(
+        self,
+        query: str = "",
+        *,
+        origin_session_id: str = "",
+        fleet_run_id: str = "",
+        limit: int = 100,
+        include_expired: bool = False,
+    ) -> list[ArtifactLink]:
+        """Return bounded capability links without exposing managed file paths."""
+
+        clean_query = " ".join(str(query or "").split())[:200]
+        clauses: list[str] = []
+        values: list[object] = []
+        if not include_expired:
+            clauses.append("expires_at >= ?")
+            values.append(int(time.time()))
+        if origin_session_id:
+            clauses.append("origin_session_id = ?")
+            values.append(_bounded_origin(origin_session_id, "origin session id"))
+        if fleet_run_id:
+            clauses.append("fleet_run_id = ?")
+            values.append(_bounded_origin(fleet_run_id, "Fleet run id"))
+        if clean_query:
+            pattern = "%" + _like(clean_query) + "%"
+            clauses.append(
+                "(name LIKE ? ESCAPE '\\' OR job_id LIKE ? ESCAPE '\\' "
+                "OR origin_session_id LIKE ? ESCAPE '\\' "
+                "OR fleet_run_id LIKE ? ESCAPE '\\' "
+                "OR fleet_worker_key LIKE ? ESCAPE '\\')"
+            )
+            values.extend([pattern] * 5)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(min(200, max(1, int(limit))))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM artifacts"
+                + where
+                + " ORDER BY created_at DESC, artifact_id DESC LIMIT ?",
+                tuple(values),
+            ).fetchall()
+        return [self._link_from_row(row) for row in rows]
+
+    def attach_provenance(
+        self,
+        artifact_id: str,
+        *,
+        origin_session_id: str = "",
+        fleet_run_id: str = "",
+        fleet_worker_key: str = "",
+    ) -> bool:
+        """Attach a late-arriving origin without changing artifact capability data."""
+
+        if not _safe_identifier(artifact_id):
+            raise ValueError("invalid artifact id")
+        session = _bounded_origin(origin_session_id, "origin session id")
+        run = _bounded_origin(fleet_run_id, "Fleet run id")
+        worker = _bounded_origin(fleet_worker_key, "Fleet worker key")
+        if worker and not run:
+            raise ValueError("Fleet worker provenance requires a Fleet run id")
+        if not any((session, run, worker)):
+            raise ValueError("artifact provenance is required")
+        assignments: list[str] = []
+        values: list[object] = []
+        for column, value in (
+            ("origin_session_id", session),
+            ("fleet_run_id", run),
+            ("fleet_worker_key", worker),
+        ):
+            if value:
+                assignments.append(f"{column} = ?")
+                values.append(value)
+        values.append(artifact_id)
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE artifacts SET " + ", ".join(assignments) + " WHERE artifact_id = ?",
+                tuple(values),
+            )
+        return updated.rowcount == 1
 
     def resolve(self, token: str) -> ArtifactLink | None:
         payload = self.read(token)
@@ -243,8 +346,32 @@ class ArtifactRegistry:
             sha256=digest,
             expires_at=expires_at,
             token=token,
+            origin_session_id=str(row["origin_session_id"] or ""),
+            fleet_run_id=str(row["fleet_run_id"] or ""),
+            fleet_worker_key=str(row["fleet_worker_key"] or ""),
+            created_at=float(row["created_at"]),
         )
         return ArtifactPayload(link=link, data=data)
+
+    def _link_from_row(self, row: sqlite3.Row) -> ArtifactLink:
+        artifact_id = str(row["artifact_id"])
+        job_id = str(row["job_id"])
+        expires_at = int(row["expires_at"])
+        return ArtifactLink(
+            artifact_id=artifact_id,
+            job_id=job_id,
+            name=str(row["name"]),
+            path=Path(str(row["path"])).absolute(),
+            content_type=str(row["content_type"]),
+            size=int(row["size"]),
+            sha256=str(row["sha256"]),
+            expires_at=expires_at,
+            token=self._token(artifact_id, job_id, expires_at),
+            origin_session_id=str(row["origin_session_id"] or ""),
+            fleet_run_id=str(row["fleet_run_id"] or ""),
+            fleet_worker_key=str(row["fleet_worker_key"] or ""),
+            created_at=float(row["created_at"]),
+        )
 
     def issue_receipt(self, link: ArtifactLink) -> str:
         """Mint short-lived proof that this registry served a verified snapshot."""
@@ -536,10 +663,22 @@ class ArtifactRegistry:
                     size INTEGER NOT NULL,
                     sha256 TEXT NOT NULL,
                     expires_at INTEGER NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    origin_session_id TEXT NOT NULL DEFAULT '',
+                    fleet_run_id TEXT NOT NULL DEFAULT '',
+                    fleet_worker_key TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(artifacts)").fetchall()
+            }
+            for name in ("origin_session_id", "fleet_run_id", "fleet_worker_key"):
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE artifacts ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+                    )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS artifact_receipts (
@@ -556,6 +695,10 @@ class ArtifactRegistry:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_artifact_receipts_cleanup "
                 "ON artifact_receipts(issued_at, consumed_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_artifacts_origin "
+                "ON artifacts(origin_session_id, fleet_run_id, created_at)"
             )
             self._prune_receipts(connection, now=int(time.time()))
         if os.name != "nt":
@@ -588,6 +731,17 @@ def _clean_artifact_name(name: str) -> str:
     if not clean or clean != name or len(clean) > 128:
         raise ValueError("artifact name is invalid")
     return clean
+
+
+def _bounded_origin(value: object, label: str) -> str:
+    clean = str(value or "").strip()
+    if len(clean) > 160 or any(ord(char) < 32 for char in clean):
+        raise ValueError(f"invalid {label}")
+    return clean
+
+
+def _like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _read_regular_file(root: Path, relative: Path, expected_size: int) -> bytes:

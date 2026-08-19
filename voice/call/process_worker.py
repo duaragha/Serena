@@ -514,7 +514,7 @@ def _serve_stt(config: dict[str, Any]) -> None:
     segments, _ = model.transcribe(
         silence,
         language="en",
-        beam_size=1,
+        beam_size=int(config.get("beam_size", 5)),
         condition_on_previous_text=False,
         vad_filter=False,
     )
@@ -540,7 +540,7 @@ def _serve_stt(config: dict[str, Any]) -> None:
             segments, _ = model.transcribe(
                 audio,
                 language="en",
-                beam_size=1,
+                beam_size=int(config.get("beam_size", 5)),
                 condition_on_previous_text=False,
                 vad_filter=False,
                 hotwords=str(config.get("hotwords") or "") or None,

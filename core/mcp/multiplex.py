@@ -36,9 +36,12 @@ import signal
 import subprocess
 import threading
 import time
-from concurrent.futures import Future, TimeoutError as FutureTimeout
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any
+
+from core.security_policy import redact_credentials
 
 # Fixed port for the multiplexer's HTTP server. Doesn't change across
 # Serena restarts so claude's config URLs stay valid.
@@ -58,12 +61,22 @@ class SharedMCPProxy:
     """One running stdio MCP subprocess + a router that maps JSON-RPC IDs
     between concurrent Flask requests and the subprocess."""
 
-    def __init__(self, name: str, command: str, args: list[str],
-                 env: dict[str, str], cwd: str | None):
+    def __init__(
+        self,
+        name: str,
+        command: str,
+        args: list[str],
+        env: dict[str, str],
+        cwd: str | None,
+        secret_names: list[str] | None = None,
+    ):
         self.name = name
         self.command = command
         self.args = args or []
         self.env_extra = env or {}
+        self.secret_values = [
+            self.env_extra.get(str(variable), "") for variable in (secret_names or [])
+        ]
         self.cwd = cwd or None
         self.proc: subprocess.Popen | None = None
         self.pending: dict[str, Future] = {}
@@ -80,7 +93,7 @@ class SharedMCPProxy:
     def start(self) -> None:
         if self.proc and self.proc.poll() is None:
             return
-        env = {**os.environ, **self.env_extra}
+        env = dict(self.env_extra)
         # Force UTF-8 on Python child processes so MCP servers don't write
         # their JSON-RPC in cp1252 (Windows default) and get garbled.
         env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -135,7 +148,9 @@ class SharedMCPProxy:
             with self.pending_lock:
                 for fut in self.pending.values():
                     if not fut.done():
-                        fut.set_exception(RuntimeError(f"{self.name} subprocess crashed, restarting"))
+                        fut.set_exception(
+                            RuntimeError(f"{self.name} subprocess crashed, restarting")
+                        )
                 self.pending.clear()
             try:
                 if self.proc:
@@ -174,7 +189,9 @@ class SharedMCPProxy:
             self._send(forwarded)
             response = fut.result(timeout=timeout)
         except FutureTimeout:
-            return _error_response(original_id, -32603, f"{self.name} timed out after {timeout:.0f}s")
+            return _error_response(
+                original_id, -32603, f"{self.name} timed out after {timeout:.0f}s"
+            )
         except RuntimeError as e:
             return _error_response(original_id, -32603, str(e))
         finally:
@@ -230,17 +247,24 @@ class SharedMCPProxy:
             return
         for line in self.proc.stderr:
             # Keep stderr visible for debugging but tag it
-            print(f"[multiplex:{self.name}:stderr] {line.rstrip()}", flush=True)
+            print(
+                f"[multiplex:{self.name}:stderr] "
+                + redact_credentials(line.rstrip(), secret_values=self.secret_values),
+                flush=True,
+            )
 
 
 # ----- registry / startup / shutdown -----
+
 
 def init_all() -> None:
     """Spawn every `shared: true` server from Serena's master config.
     Idempotent: if already running (PID file alive), reuses the existing
     subprocess instead of double-spawning."""
-    from core.mcp.config import list_servers
     from concurrent.futures import ThreadPoolExecutor
+
+    from core.mcp.config import list_servers
+
     PIDFILE_DIR.mkdir(parents=True, exist_ok=True)
     _reap_dead_pidfiles()
 
@@ -259,6 +283,8 @@ def init_all() -> None:
         candidates.append(server)
 
     def _spawn_one(server: dict) -> tuple[str, SharedMCPProxy | None]:
+        from core.mcp.secrets import server_environment
+
         name = server["name"]
         existing_pid = _read_pid(name)
         if existing_pid and _pid_alive(existing_pid):
@@ -275,8 +301,9 @@ def init_all() -> None:
                 name=name,
                 command=server.get("command") or "",
                 args=server.get("args") or [],
-                env=server.get("env") or {},
+                env=server_environment(server),
                 cwd=server.get("cwd"),
+                secret_names=server.get("secrets") or [],
             )
             if proxy.proc is None:
                 return name, None
@@ -324,6 +351,7 @@ def list_proxies() -> dict[str, dict]:
 
 
 # ----- helpers -----
+
 
 def _pid_alive(pid: int) -> bool:
     try:
@@ -401,7 +429,7 @@ class _MultiplexHandler(BaseHTTPRequestHandler):
         if not path.startswith("/mcp/"):
             self._send_json(404, _error_response(None, -32601, f"not found: {path}"))
             return
-        name = path[len("/mcp/"):].strip("/")
+        name = path[len("/mcp/") :].strip("/")
         proxy = get_proxy(name)
         if proxy is None:
             self._send_json(404, _error_response(None, -32601, f"no shared MCP named {name!r}"))
@@ -435,7 +463,7 @@ class _MultiplexHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "servers": list(_REGISTRY.keys())})
             return
         if path.startswith("/mcp/"):
-            name = path[len("/mcp/"):].strip("/")
+            name = path[len("/mcp/") :].strip("/")
             proxy = get_proxy(name)
             if proxy is None:
                 self._send_json(404, _error_response(None, -32601, f"no shared MCP named {name!r}"))

@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/Documents/Projects/serena
 Environment=PYTHONUNBUFFERED=1
+Environment=SERENA_CODING_JOB_CONCURRENCY=2
 UnsetEnvironment=OPENAI_API_KEY OPENAI_API_BASE OPENAI_BASE_URL OPENAI_ORG_ID OPENAI_ORGANIZATION CODEX_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_SESSION_ACCESS_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
 ExecStart=%h/Documents/Projects/serena/.venv/bin/python -u -m core.voice_work_supervisor
 Restart=on-failure

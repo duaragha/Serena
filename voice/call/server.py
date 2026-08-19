@@ -161,6 +161,7 @@ def desk_greeting():
         headers={
             "X-Serena-Greeting-Id": greeting.greeting_id,
             "X-Serena-Sample-Rate": str(greeting.sample_rate),
+            "X-Serena-Greeting-Daypart": greeting.daypart,
             "Cache-Control": "no-store",
         },
     )

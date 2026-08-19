@@ -39,6 +39,7 @@ from voice.desk.io import (
     SoundDevicePlayback,
     record_wake_greeting_handoff,
 )
+from voice.desk.input_mute import read_voice_input_muted
 
 WAKE_FRAME_BYTES = 2_560
 FULL_VOICE_UNIT = "serena-dot-overlay.service"
@@ -293,6 +294,7 @@ class WakeOnlyListener:
         heartbeat_seconds: float | None = None,
         microphone_stall_seconds: float = 3.0,
         monotonic: Callable[[], float] = time.monotonic,
+        input_muted: Callable[[], bool] = read_voice_input_muted,
     ) -> None:
         if phrase_window_frames < 1:
             raise ValueError("phrase_window_frames must be at least 1")
@@ -311,6 +313,7 @@ class WakeOnlyListener:
             1.0, float(microphone_stall_seconds)
         )
         self.monotonic = monotonic
+        self.input_muted = input_muted
         self.heartbeat_seconds = max(
             5.0,
             float(
@@ -331,11 +334,39 @@ class WakeOnlyListener:
         last_heartbeat = self.monotonic()
         last_frame = last_heartbeat
         started = False
+        was_muted = False
         try:
             self.microphone.start()
             started = True
             self._event("wake.listener_started")
             while not stop.is_set():
+                muted = bool(self.input_muted())
+                if muted:
+                    if not was_muted:
+                        self._event("wake.microphone_muted")
+                        recent_frames.clear()
+                        self.scorer.reset()
+                        self.gate.reset()
+                        drain = getattr(self.microphone, "drain", None)
+                        if callable(drain):
+                            drain()
+                    was_muted = True
+                    last_frame = self.monotonic()
+                    try:
+                        self.microphone.frames.get(timeout=0.25)
+                    except queue.Empty:
+                        pass
+                    continue
+                if was_muted:
+                    self._event("wake.microphone_unmuted")
+                    recent_frames.clear()
+                    self.scorer.reset()
+                    self.gate.reset()
+                    drain = getattr(self.microphone, "drain", None)
+                    if callable(drain):
+                        drain()
+                    last_frame = self.monotonic()
+                    was_muted = False
                 try:
                     pcm = self.microphone.frames.get(timeout=0.25)
                 except queue.Empty:

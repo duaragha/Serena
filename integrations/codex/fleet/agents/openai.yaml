@@ -1,0 +1,13 @@
+interface:
+  display_name: "Fleet"
+  short_description: "Run mixed Claude and Codex workflows"
+  default_prompt: "Use $fleet to run this task through Serena Fleet."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "serena-fleet"
+      description: "Start and manage Serena mixed-model workflows"
+
+policy:
+  allow_implicit_invocation: true

@@ -25,6 +25,12 @@ from core.brain_tools import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _legacy_authority_by_default(monkeypatch, request):
+    if request.node.name != "test_active_v2_is_the_normal_search_authority_with_a_receipt":
+        monkeypatch.setattr("memory.v2.MemoryV2Store.authority_is_active", lambda *args: False)
+
+
 def test_the_recall_tools_are_exposed_to_the_brain() -> None:
     names = {name.rsplit("__", 1)[-1] for name in BRAIN_TOOL_NAMES}
     assert {"search_memory", "search_knowledge", "read_knowledge"} <= names
@@ -98,6 +104,31 @@ def test_a_real_match_is_returned_with_its_id_and_type(monkeypatch) -> None:
     out = _search_memory("backchannel")
     assert "[7]" in out and "(feedback)" in out
     assert "shopify" not in out
+
+
+def test_active_v2_is_the_normal_search_authority_with_a_receipt(
+    monkeypatch, tmp_path
+) -> None:
+    from memory.v2 import MemoryV2Store, source_receipt
+
+    path = tmp_path / "memory-v2.sqlite3"
+    monkeypatch.setenv("SERENA_MEMORY_V2_DB_PATH", str(path))
+    store = MemoryV2Store(path)
+    proposal = store.propose_candidate(
+        content="Raghav prefers durable compact memory tools.",
+        record_type="preference",
+        source=source_receipt(
+            kind="test", locator="test:brain-search", source_text="durable compact"
+        ),
+    )
+    store.approve_proposal(proposal["proposal_id"], reviewer="Raghav")
+    store.activate_authority(actor="Raghav")
+
+    out = _search_memory("compact memory")
+
+    assert "durable compact memory tools" in out
+    assert "retrieval receipt:" in out
+    assert len(store.retrieval_receipts()) == 1
 
 
 def test_knowledge_search_finds_the_topic_that_is_about_the_thing() -> None:

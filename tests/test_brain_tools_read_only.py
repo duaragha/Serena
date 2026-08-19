@@ -96,6 +96,22 @@ def test_read_only_subprocess_timeout_terminates_and_reaps_child(monkeypatch) ->
     assert created[0].returncode is not None
 
 
+def test_read_only_tool_subprocess_does_not_inherit_ambient_credentials(monkeypatch) -> None:
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "must-not-reach-tool")
+
+    result = asyncio.run(
+        brain_tools._run_ro(
+            [
+                sys.executable,
+                "-c",
+                "import os; print(os.environ.get('AWS_SECRET_ACCESS_KEY', 'filtered'))",
+            ]
+        )
+    )
+
+    assert result == "filtered"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
 def test_read_only_subprocess_timeout_kills_descendant_group(tmp_path: Path) -> None:
     child_pid = tmp_path / "child.pid"

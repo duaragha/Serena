@@ -15,6 +15,16 @@ from core.config import MEMORY_DIR
 
 
 MEMORY_TYPES = ["task", "ledger", "loop", "feedback", "user", "project", "reference", "general"]
+_V2_TYPE_MAP = {
+    "task": "commitment",
+    "ledger": "commitment",
+    "loop": "commitment",
+    "feedback": "correction",
+    "user": "semantic_fact",
+    "project": "semantic_fact",
+    "reference": "procedure",
+    "general": "episode",
+}
 
 # Order + human headers for the session digest. Tasks + open loops lead so
 # every chat opens like someone who remembers what we were doing, not a rules
@@ -265,6 +275,41 @@ def _source_context() -> tuple[str, str, str, str]:
     return sid, agent, title, datetime.now().astimezone().isoformat()
 
 
+def _active_v2_store():
+    from memory.v2 import MemoryV2Store
+
+    return MemoryV2Store() if MemoryV2Store.authority_is_active() else None
+
+
+def _v2_source(
+    *,
+    action: str,
+    content: str,
+    source_session_id: str = "",
+    source_agent: str = "",
+) -> dict:
+    from memory.v2 import source_receipt
+
+    if not source_session_id:
+        source_session_id, source_agent, _title, _timestamp = _source_context()
+    locator = f"{source_agent or 'operator'}:{source_session_id or 'local'}:{action}"
+    return source_receipt(
+        kind="legacy_memory_surface",
+        locator=locator,
+        source_text=content,
+        session_id=source_session_id,
+        surface="memory-store",
+    )
+
+
+def _flush_v2_outbox(store, proposal: dict) -> dict:
+    try:
+        store.flush_control_outbox()
+    except Exception:
+        proposal["control_event_pending"] = True
+    return proposal
+
+
 def add_memory(
     content: str,
     mem_type: str = "general",
@@ -273,7 +318,7 @@ def add_memory(
     source_agent: str = "",
     source_title: str = "",
     source_message_timestamp: str = "",
-) -> int:
+) -> int | str:
     if mem_type not in MEMORY_TYPES:
         mem_type = "general"
     mid = _next_id()
@@ -284,6 +329,19 @@ def add_memory(
             source_title,
             source_message_timestamp,
         ) = _source_context()
+    if not _no_mirror and (v2 := _active_v2_store()) is not None:
+        proposal = v2.propose_candidate(
+            content=content,
+            record_type=_V2_TYPE_MAP[mem_type],
+            source=_v2_source(
+                action="add",
+                content=content,
+                source_session_id=source_session_id,
+                source_agent=source_agent,
+            ),
+            sensitivity="personal",
+        )
+        return str(_flush_v2_outbox(v2, proposal)["proposal_id"])
     _write_file(
         mid,
         mem_type,
@@ -314,7 +372,9 @@ def add_memory(
     return mid
 
 
-def update_memory(memory_id: int, content: str | None = None, mem_type: str | None = None):
+def update_memory(
+    memory_id: int, content: str | None = None, mem_type: str | None = None
+) -> str | None:
     fpath = _find_path(memory_id)
     if not fpath:
         return
@@ -325,6 +385,28 @@ def update_memory(memory_id: int, content: str | None = None, mem_type: str | No
     new_type = mem_type if mem_type is not None else existing["type"]
     if new_type not in MEMORY_TYPES:
         new_type = existing["type"]
+    if (v2 := _active_v2_store()) is not None:
+        target = f"legacy:{existing['type']}:{memory_id}"
+        current = v2.get_record(target)
+        if current is None:
+            raise RuntimeError(f"Memory v2 has no canonical record for legacy memory #{memory_id}")
+        proposal = v2.create_proposal(
+            operation="update",
+            target_record_id=target,
+            candidate={
+                "record_type": _V2_TYPE_MAP[new_type],
+                "content": new_content,
+                "confidence": current.confidence,
+                "sensitivity": current.sensitivity,
+                "project": current.project,
+                "people": list(current.people),
+                "valid_from": current.valid_from,
+                "valid_until": current.valid_until,
+                "retention_until": current.retention_until,
+            },
+            source=_v2_source(action="update", content=new_content),
+        )
+        return str(_flush_v2_outbox(v2, proposal)["proposal_id"])
     # Move to new type folder (or rename slug) by writing fresh and removing old
     new_path = _write_file(
         memory_id, new_type, new_content,
@@ -367,11 +449,21 @@ def update_memory(memory_id: int, content: str | None = None, mem_type: str | No
         pass
 
 
-def delete_memory(memory_id: int) -> bool:
+def delete_memory(memory_id: int) -> bool | str:
     fpath = _find_path(memory_id)
     if not fpath:
         return False
     existing = _parse_file(fpath)
+    if existing and (v2 := _active_v2_store()) is not None:
+        target = f"legacy:{existing['type']}:{memory_id}"
+        if v2.get_record(target) is None:
+            raise RuntimeError(f"Memory v2 has no canonical record for legacy memory #{memory_id}")
+        proposal = v2.create_proposal(
+            operation="forget",
+            target_record_id=target,
+            source=_v2_source(action="forget", content=existing["content"]),
+        )
+        return str(_flush_v2_outbox(v2, proposal)["proposal_id"])
     try:
         fpath.unlink()
     except OSError:
@@ -392,7 +484,7 @@ def delete_memory(memory_id: int) -> bool:
     return True
 
 
-def snooze_memory(memory_id: int, days: float = 7) -> bool:
+def snooze_memory(memory_id: int, days: float = 7) -> bool | str:
     """Defer an item (task/loop): hide it from the nudge rail until `days`
     from now, so a different one surfaces instead. Content is untouched."""
     fpath = _find_path(memory_id)
@@ -402,6 +494,28 @@ def snooze_memory(memory_id: int, days: float = 7) -> bool:
     if not existing:
         return False
     until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    if (v2 := _active_v2_store()) is not None:
+        target = f"legacy:{existing['type']}:{memory_id}"
+        current = v2.get_record(target)
+        if current is None:
+            raise RuntimeError(f"Memory v2 has no canonical record for legacy memory #{memory_id}")
+        proposal = v2.create_proposal(
+            operation="update",
+            target_record_id=target,
+            candidate={
+                "record_type": current.record_type,
+                "content": current.content,
+                "confidence": current.confidence,
+                "sensitivity": current.sensitivity,
+                "project": current.project,
+                "people": list(current.people),
+                "valid_from": datetime.strptime(until, "%Y-%m-%d %H:%M:%S").timestamp(),
+                "valid_until": current.valid_until,
+                "retention_until": current.retention_until,
+            },
+            source=_v2_source(action="snooze", content=existing["content"]),
+        )
+        return str(_flush_v2_outbox(v2, proposal)["proposal_id"])
     new_path = _write_file(
         memory_id, existing["type"], existing["content"],
         created=existing["created_at"], updated=existing["updated_at"],

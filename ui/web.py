@@ -994,6 +994,15 @@ body.pane-dragging * {
   transition: color 0.12s;
 }
 .group-header.fleet-header:hover { color: #ceb5ff; }
+.fleet-project-header {
+  padding: 3px 10px 3px 22px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  text-transform: lowercase;
+}
+.fleet-project-count { opacity: 0.6; }
 .fleet-chats-section.collapsed { display: none; }
 .group-header.voice-chats-header {
   color: var(--accent);
@@ -1046,7 +1055,6 @@ body.pane-dragging * {
 .group-header.time-header { cursor: pointer; }
 .group-header.time-header:hover { color: var(--text); }
 .session-row.done .session-title { color: var(--text-dim); }
-.session-row.done .session-device,
 .session-row.done .session-date,
 .session-row.done .session-date-created { opacity: 0.7; }
 .live-indicator {
@@ -1139,7 +1147,6 @@ body.pane-dragging * {
 }
 .session-list-header .col-star { width: 16px; flex-shrink: 0; }
 .session-list-header .col-title { flex: 1; overflow: hidden; }
-.session-list-header .col-device { width: 60px; text-align: center; flex-shrink: 0; }
 .session-list-header .col-date { width: 68px; text-align: right; flex-shrink: 0; }
 
 .session-row {
@@ -1324,15 +1331,6 @@ body.pane-dragging * {
   margin-left: 6px;
   color: var(--text-dim);
   font-size: 10px;
-}
-.session-device {
-  flex-shrink: 0;
-  font-size: 9px;
-  color: var(--text-dim);
-  width: 60px;
-  text-align: center;
-  font-family: var(--mono);
-  letter-spacing: 0.5px;
 }
 .session-date {
   flex-shrink: 0;
@@ -2448,7 +2446,6 @@ body.pane-dragging * {
       <div class="session-list-header">
         <span class="col-star"></span>
         <span class="col-title">Title</span>
-        <span class="col-device">OS</span>
         <span class="col-date">M.Date</span>
       </div>
       <div class="session-list" id="sessionList"></div>
@@ -3067,8 +3064,8 @@ function switchTab(tab) {
   document.getElementById('viewPersona').classList.toggle('hidden', tab !== 'persona');
   updateShortcutBar();
   if (tab === 'tasks') { loadTasks(); }
-  if (tab === 'memory') { if (memories.length) renderMemoryList(); else loadMemories(); }
-  if (tab === 'knowledge') { if (topics.length) renderTopicList(); else loadTopics(); }
+  if (tab === 'memory') { if (memories.length) renderMemoryList(); loadMemories(); }
+  if (tab === 'knowledge') { if (topics.length) renderTopicList(); loadTopics(); }
   syncFleetFrameVisibility();
   if (tab === 'usage') { loadUsage(); }
   if (tab === 'persona') loadPersona();
@@ -3719,6 +3716,27 @@ async function searchSessions(q) {
 let projectChips = [];
 let currentProjectCwd = null;
 
+// The cwd a new chat really starts in when the user picked no folder. Python
+// resolves an empty cwd to $HOME before spawning, so a placeholder row that
+// stored '' could never match the real session it created. Fetched once and
+// cached; _defaultCwd() falls back to '' so a failed fetch degrades to the old
+// behaviour instead of throwing.
+let _serverDefaultCwd = null;
+async function _loadDefaultCwd() {
+  if (_serverDefaultCwd !== null) return _serverDefaultCwd;
+  try {
+    const r = await fetch('/api/default-cwd');
+    if (r.ok) {
+      const d = await r.json();
+      _serverDefaultCwd = (d && d.cwd) || '';
+    }
+  } catch(e) {}
+  return _serverDefaultCwd || '';
+}
+function _defaultCwd() {
+  return _serverDefaultCwd || '';
+}
+
 // Per-launch ephemeral expand state for project tree (paths, not indices, so it
 // survives chip reorderings between renders)
 const _projectExpanded = new Set();
@@ -4160,7 +4178,29 @@ function renderSessionList() {
     // their real session indexes while the visual section is collapsed.
     html += '<div class="fleet-chats-section' + (_collapsedState.fleetChats ? ' collapsed' : '')
       + '" data-testid="fleet-chats-section">';
-    for (const s of fleetChats) appendRow(s);
+    // Fleet runs pile up fast, and one flat list of forty-nine worker chats
+    // says nothing about what they were for. Group them by the project each
+    // run targeted, newest project first, so the section reads like the rest
+    // of the sidebar.
+    const fleetByProject = new Map();
+    for (const s of fleetChats) {
+      const label = s.project_short || 'Other';
+      if (!fleetByProject.has(label)) fleetByProject.set(label, []);
+      fleetByProject.get(label).push(s);
+    }
+    const fleetProjects = Array.from(fleetByProject.keys()).sort((a, b) => {
+      const newest = (label) => fleetByProject.get(label)
+        .reduce((acc, x) => (x.last_timestamp || '') > acc ? (x.last_timestamp || '') : acc, '');
+      return newest(b).localeCompare(newest(a));
+    });
+    for (const label of fleetProjects) {
+      const rows = fleetByProject.get(label);
+      if (fleetProjects.length > 1) {
+        html += '<div class="fleet-project-header">' + esc(label)
+          + ' <span class="fleet-project-count">' + rows.length + '</span></div>';
+      }
+      for (const s of rows) appendRow(s);
+    }
     html += '</div>';
   }
 
@@ -4443,7 +4483,6 @@ function renderSessionRow(s, idx, opts) {
     + disclosure
     + linkGlyph
     + '<span class="session-title"><span class="session-title-main">' + liveIndicator + agentBadges + esc(_isSerenaVoiceSession(s) ? 'Serena' : (s.display_title || 'Untitled')) + childBadge + threadBadge + '</span>' + snippetHtml + '</span>'
-    + '<span class="session-device" title="' + esc(s.project_short || '') + '">' + esc(s.device_tag || '') + '</span>'
     + '<span class="session-date" title="Last activity">' + formatDate(rowActivityTs(s)) + '</span>'
     + '</div>';
 }
@@ -4781,8 +4820,21 @@ async function toggleStar(sid) {
 async function bulkToggleStar() {
   if (!selectedIds.size) return;
   const sids = [...selectedIds];
+  // Star the whole selection, and only clear it when every chat in that
+  // selection is already starred. Toggling each row independently meant a
+  // mixed selection silently UNstarred whatever was already marked, which is
+  // how a batch of stars disappeared without anyone touching them.
+  const picked = sids
+    .map(sid => _findClientSession(sid))
+    .filter(Boolean);
+  const desired = !(picked.length && picked.every(s => s.starred));
+  const needsFlip = sids.filter(sid => {
+    const s = _findClientSession(sid);
+    return !s || Boolean(s.starred) !== desired;
+  });
+  if (!needsFlip.length) return;
   try {
-    await Promise.all(sids.map(sid => fetch('/api/star/' + sid, { method: 'POST' })));
+    await Promise.all(needsFlip.map(sid => fetch('/api/star/' + sid, { method: 'POST' })));
     await loadSessions(currentProject);
   } catch(e) {}
 }
@@ -5652,10 +5704,14 @@ function _migrateActiveOnClear(freshSessions) {
   // will claim and exclude them from the migration pool.
   const claimedByPseudo = new Set();
   for (const pseudo of _pseudoSessions) {
-    if (!pseudo.cwd) continue;
+    // Same default-cwd resolution as the reconciler: a cwd-less placeholder was
+    // still spawned somewhere real ($HOME), so it must keep its claim here or
+    // an unrelated active terminal steals the session it created.
+    const pseudoCwd = pseudo.cwd || _defaultCwd();
+    if (!pseudoCwd) continue;
     const pCands = freshSessions.filter(s =>
       s.agent === 'claude' &&
-      s.cwd === pseudo.cwd &&
+      s.cwd === pseudoCwd &&
       s.first_timestamp &&
       s.first_timestamp >= pseudo.first_timestamp
     );
@@ -5734,9 +5790,14 @@ async function _reconcilePseudos(fresh, opts) {
     // older session's id.
     const pseudoAgent = (pseudo.agent || 'claude').toLowerCase();
     const _normCwd = c => (c || '').replace(/[\\/]+$/, '');
+    // A placeholder with no cwd was spawned with Python's default, which is
+    // $HOME. Comparing '' against the real session's resolved '/home/<user>'
+    // never matched, so the placeholder stranded and the chat rendered twice.
+    // Resolve it the same way the spawner does before comparing.
+    const pseudoCwd = _normCwd(pseudo.cwd) || _normCwd(_defaultCwd());
     let candidates = fresh.filter(s =>
       (s.agent || 'claude').toLowerCase() === pseudoAgent &&
-      _normCwd(s.cwd) === _normCwd(pseudo.cwd) &&
+      _normCwd(s.cwd) === pseudoCwd &&
       _pseudoCandidateTs(s) &&
       _pseudoCandidateTs(s) >= pseudo.first_timestamp
     );
@@ -7696,9 +7757,14 @@ async function newChatInline(cwdOverride) {
 
   // cwd: explicit override (from folder picker) > active project chip > empty
   // (Python defaults empty to $HOME).
+  // Resolve the no-project case to the SAME directory Python will spawn in.
+  // Storing '' here while the terminal starts in $HOME is what left the
+  // placeholder unmatchable, so the chat showed up twice: once as this row and
+  // once as the real session under Today.
+  await _loadDefaultCwd();
   const cwd = (cwdOverride !== undefined && cwdOverride !== null)
     ? cwdOverride
-    : (currentProjectCwd || '');
+    : (currentProjectCwd || _defaultCwd() || '');
   const shortProj = cwd ? (cwd.split('/').filter(Boolean).pop() || '~') : '~';
   const label = typedTitle || 'New chat';
 
@@ -9644,6 +9710,10 @@ function fdInit() {
 updateShortcutBar();
 fdInit();
 _initAgentFilterIcons();
+// Warm the default-cwd cache before any placeholder row can be created, so the
+// reconciler and the /clear migration both resolve a cwd-less placeholder the
+// same way the spawner does.
+_loadDefaultCwd();
 loadSessions();
 loadProjects();
 _startAttentionPoll();
@@ -9997,6 +10067,167 @@ function showToast(message, opts) {
 # Routes
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Dev hot reload
+#
+# The whole UI is the HTML constant above, baked into this module at import.
+# Editing it normally means restarting the sidecar, which kills every PTY and
+# every live agent session with it, so a one-line CSS tweak used to cost the
+# whole workspace (or a five-minute AppImage rebuild).
+#
+# In an unpackaged run the page is instead sliced out of this file on disk at
+# request time. A reload of the window then shows the change with the Python
+# process untouched: terminals stay attached and replay their buffer as usual.
+# The frozen sidecar keeps using the in-memory constant, so shipped builds are
+# byte-identical to before.
+# ---------------------------------------------------------------------------
+
+_HTML_OPEN = 'HTML = r"""'
+_HTML_CLOSE = '</html>"""'
+_html_disk_cache: dict[str, object] = {"mtime": None, "html": None}
+
+
+# Where a packaged build looks for the live interface. The bundled copy is
+# frozen inside the executable, so without this the installed app can never
+# show an edit and every UI tweak costs a full rebuild. When the checkout is
+# present on this machine, the installed app serves the page from it.
+_UI_SOURCE_CANDIDATES = (
+    Path.home() / "Documents" / "Projects" / "serena" / "ui" / "web.py",
+    Path.home() / "Projects" / "serena" / "ui" / "web.py",
+)
+
+
+def _ui_source_path() -> Path | None:
+    """The on-disk page source, or None when only the bundled copy exists."""
+
+    configured = os.environ.get("SERENA_UI_SOURCE", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        return candidate if candidate.is_file() else None
+    if not getattr(sys, "frozen", False):
+        here = Path(__file__).resolve()
+        return here if here.is_file() else None
+    for candidate in _UI_SOURCE_CANDIDATES:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def ui_hot_reload_enabled() -> bool:
+    override = os.environ.get("SERENA_UI_HOTRELOAD", "").strip().lower()
+    if override in {"0", "false", "off"}:
+        return False
+    source = _ui_source_path()
+    if source is None:
+        # A build shipped to a machine with no checkout has nothing to watch.
+        return False
+    if override in {"1", "true", "on"}:
+        return True
+    return True
+
+
+def ui_source_mtime() -> float:
+    source = _ui_source_path()
+    if source is None:
+        return 0.0
+    try:
+        return source.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _live_html() -> str:
+    """Return the page markup, re-read from disk when hot reload is on.
+
+    Any failure falls back to the imported constant. A dev convenience must
+    never be able to serve a broken page.
+    """
+
+    if not ui_hot_reload_enabled():
+        return HTML
+    mtime = ui_source_mtime()
+    if not mtime:
+        return HTML
+    if _html_disk_cache["mtime"] == mtime and _html_disk_cache["html"]:
+        return str(_html_disk_cache["html"])
+    path = _ui_source_path()
+    if path is None:
+        return HTML
+    try:
+        source = path.read_text(encoding="utf-8")
+        start = source.index(_HTML_OPEN) + len(_HTML_OPEN)
+        end = source.index(_HTML_CLOSE, start) + len(_HTML_CLOSE) - len('"""')
+        html = source[start:end]
+    except (OSError, ValueError):
+        return HTML
+    if "<!DOCTYPE html>" not in html[:64]:
+        return HTML
+    _html_disk_cache["mtime"] = mtime
+    _html_disk_cache["html"] = html
+    return html
+
+
+@app.route("/api/ui-version")
+def api_ui_version():
+    """Source mtime, so a dev page can reload itself when the UI changes."""
+
+    return jsonify(
+        {
+            "mtime": ui_source_mtime(),
+            "hot_reload": ui_hot_reload_enabled(),
+            # Opt-in: reloading the window unprompted interrupts whoever is
+            # using the app, so it stays off unless explicitly asked for.
+            "auto_reload": os.environ.get("SERENA_UI_AUTORELOAD", "").strip().lower()
+            in {"1", "true", "on"},
+        }
+    )
+
+
+_HOT_RELOAD_SCRIPT = """<script>
+// Watch the UI source and OFFER a reload. It used to reload the window by
+// itself, which meant that editing the interface yanked the app out from under
+// whoever was using it, repeatedly, while an agent saved the file. The page
+// only reloads when asked, or on the next save after the offer is dismissed
+// if SERENA_UI_AUTORELOAD was set.
+(function () {
+  var known = null;
+  var pill = null;
+
+  function offer() {
+    if (pill) return;
+    pill = document.createElement('button');
+    pill.type = 'button';
+    pill.textContent = 'UI updated \u00b7 reload';
+    pill.setAttribute('data-testid', 'ui-reload-pill');
+    pill.style.cssText = [
+      'position:fixed', 'bottom:14px', 'right:14px', 'z-index:99999',
+      'padding:6px 12px', 'border-radius:999px', 'cursor:pointer',
+      'font:11px var(--mono, monospace)', 'letter-spacing:0.4px',
+      'color:#0c0c10', 'background:#c9a6ff', 'border:none',
+      'box-shadow:0 2px 10px rgba(0,0,0,0.45)', 'opacity:0.92',
+    ].join(';');
+    pill.onclick = function () { location.reload(); };
+    document.body.appendChild(pill);
+  }
+
+  setInterval(async function () {
+    try {
+      var r = await fetch('/api/ui-version', { cache: 'no-store' });
+      if (!r.ok) return;
+      var d = await r.json();
+      if (!d.hot_reload) return;
+      if (known === null) { known = d.mtime; return; }
+      if (d.mtime === known) return;
+      known = d.mtime;
+      if (d.auto_reload) { location.reload(); return; }
+      offer();
+    } catch (e) {}
+  }, 1500);
+})();
+</script>
+"""
+
+
 @app.route("/")
 def index():
     # Inject the user's home dir + slug pattern at runtime so JS slug-decoders
@@ -10011,7 +10242,9 @@ def index():
         + json.dumps({"home": home, "homeSlug": home_slug, "platform": sys.platform})
         + ';</script>\n'
     )
-    return boot + HTML
+    if ui_hot_reload_enabled():
+        boot += _HOT_RELOAD_SCRIPT
+    return boot + _live_html()
 
 
 def _ambiguous_shorts() -> set[str]:
@@ -10065,14 +10298,6 @@ def _decorate_sessions(sessions: list[dict]) -> list[dict]:
             if tag:
                 short = f"{short} {tag}"
         s["project_short"] = short
-        # Multi-device awareness: if the same chat ran on both linux and
-        # windows (Syncthing-shared HOME), the OS column says [both].
-        devs_csv = (s.get("devices_used") or "").strip()
-        devs = {d for d in devs_csv.split(",") if d}
-        if "linux" in devs and "windows" in devs:
-            s["device_tag"] = "[both]"
-        else:
-            s["device_tag"] = _device_tag(s.get("device"))
         s["input_tokens"] = s.get("input_tokens") or 0
         s["output_tokens"] = s.get("output_tokens") or 0
         s["cache_read_tokens"] = s.get("cache_read_tokens") or 0
@@ -10471,6 +10696,20 @@ def api_projects():
     return jsonify(out)
 
 
+@app.route("/api/default-cwd")
+def api_default_cwd():
+    """The directory a new chat actually starts in when none was chosen.
+
+    The frontend used to record an empty cwd on a brand-new chat's placeholder
+    row while the spawned terminal really started in $HOME. The reconciler
+    matches a placeholder to its real session by cwd, so that mismatch left the
+    placeholder unresolved forever and the chat rendered twice. The client asks
+    for this value instead of guessing at a home path it cannot see.
+    """
+
+    return jsonify({"cwd": resolve_session_cwd("")})
+
+
 @app.route("/api/keybindings")
 def api_keybindings():
     """Expose the merged keybindings (defaults + user overrides) in a
@@ -10776,14 +11015,46 @@ _CALL_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _CALL_REPO_ROOT not in sys.path:
     sys.path.insert(0, _CALL_REPO_ROOT)
 
-from voice.call import handle_websocket, warm_default_runtime_background
-from voice.call.orchestrator import get_desk_runtime, warm_desk_runtime_background
-from voice.call.browser_auth import (
-    CALL_SOCKET_COOKIE,
-    CALL_SOCKET_COOKIE_PATH,
-    CALL_SOCKET_TICKET_TTL_SECONDS,
-    browser_call_tickets,
-)
+# The call stack is optional weight: it drags in the audio pipeline and numpy.
+# Importing it unguarded meant one missing dependency killed the whole sidecar
+# on startup, so the desktop app showed a Python traceback dialog and no window
+# at all, over a feature the user had not even asked for yet. Chats, memory and
+# terminals do not need audio, so a failure here disables calling and nothing
+# else.
+CALL_STACK_ERROR: str | None = None
+try:
+    from voice.call import handle_websocket, warm_default_runtime_background
+    from voice.call.orchestrator import get_desk_runtime, warm_desk_runtime_background
+    from voice.call.browser_auth import (
+        CALL_SOCKET_COOKIE,
+        CALL_SOCKET_COOKIE_PATH,
+        CALL_SOCKET_TICKET_TTL_SECONDS,
+        browser_call_tickets,
+    )
+except Exception as _call_import_error:  # noqa: BLE001 - any failure disables calling
+    CALL_STACK_ERROR = f"{type(_call_import_error).__name__}: {_call_import_error}"
+    print(f"[serena] voice calling is unavailable ({CALL_STACK_ERROR})", file=sys.stderr)
+
+    CALL_SOCKET_COOKIE = "serena_call_ticket"
+    CALL_SOCKET_COOKIE_PATH = "/"
+    CALL_SOCKET_TICKET_TTL_SECONDS = 0
+
+    def _call_unavailable(*_args, **_kwargs):
+        raise RuntimeError(f"voice calling is unavailable: {CALL_STACK_ERROR}")
+
+    handle_websocket = _call_unavailable
+    get_desk_runtime = _call_unavailable
+    warm_desk_runtime_background = lambda *_a, **_k: None  # noqa: E731
+    warm_default_runtime_background = lambda *_a, **_k: None  # noqa: E731
+
+    class _NoCallTickets:
+        def issue(self) -> str:
+            raise RuntimeError(f"voice calling is unavailable: {CALL_STACK_ERROR}")
+
+        def consume(self, _ticket: str) -> bool:
+            return False
+
+    browser_call_tickets = _NoCallTickets()
 
 # SERENA_CALL_RUNTIME=lazy (set by the desktop shell) skips the eager model
 # warm; mobile_host on :8767 already holds the warm stack for wake/phone calls.

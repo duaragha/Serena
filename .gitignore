@@ -85,3 +85,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Local timestamped backups made while editing
+*.bak-*
+*.sync-conflict-*

@@ -26,6 +26,8 @@ from pathlib import Path
 
 import websockets
 
+from core.image_input import MAX_IMAGE_WIRE_BYTES, clean_image_input
+
 STATE_FILE = Path.home() / ".config" / "serena" / "voice_state"
 WORKING_FILE = Path.home() / ".config" / "serena" / "voice_working"
 EVENT_SOCKET = Path.home() / ".local" / "state" / "serena" / "brain-events.sock"
@@ -34,6 +36,100 @@ HOST, PORT = "127.0.0.1", 8765
 
 clients = set()
 state = "idle"
+
+
+def _skip_json_value(raw: str, start: int) -> int | None:
+    """Find the end of one JSON value without materialising a large image."""
+
+    length = len(raw)
+    if start >= length:
+        return None
+    first = raw[start]
+    if first == '"':
+        index = start + 1
+        while index < length:
+            char = raw[index]
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                return index + 1
+            index += 1
+        return None
+    if first in "[{":
+        closing = {"[": "]", "{": "}"}
+        stack = [closing[first]]
+        index = start + 1
+        while index < length:
+            char = raw[index]
+            if char == '"':
+                end = _skip_json_value(raw, index)
+                if end is None:
+                    return None
+                index = end
+                continue
+            if char in "[{":
+                stack.append(closing[char])
+            elif char in "]}":
+                if not stack or char != stack.pop():
+                    return None
+                if not stack:
+                    return index + 1
+            index += 1
+        return None
+    index = start
+    while index < length and raw[index] not in ",}":
+        index += 1
+    return index
+
+
+def _top_level_message_type(raw: str) -> str | None:
+    """Read a top-level type independent of key order and before full parsing."""
+
+    decoder = json.JSONDecoder()
+    length = len(raw)
+    index = 0
+    while index < length and raw[index].isspace():
+        index += 1
+    if index >= length or raw[index] != "{":
+        return None
+    index += 1
+    while index < length:
+        while index < length and raw[index].isspace():
+            index += 1
+        if index < length and raw[index] == "}":
+            return None
+        try:
+            key, key_end = decoder.raw_decode(raw, index)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(key, str) or len(key) > 100:
+            return None
+        index = key_end
+        while index < length and raw[index].isspace():
+            index += 1
+        if index >= length or raw[index] != ":":
+            return None
+        index += 1
+        while index < length and raw[index].isspace():
+            index += 1
+        value_end = _skip_json_value(raw, index)
+        if value_end is None:
+            return None
+        if key == "type":
+            try:
+                value, parsed_end = decoder.raw_decode(raw, index)
+            except (TypeError, ValueError):
+                return None
+            if parsed_end != value_end:
+                return None
+            return value if isinstance(value, str) else None
+        index = value_end
+        while index < length and raw[index].isspace():
+            index += 1
+        if index >= length or raw[index] != ",":
+            return None
+        index += 1
 
 
 def read_state():
@@ -50,9 +146,16 @@ def read_state():
 def parse_client_message(raw):
     """Validate a local real-time overlay update from a trusted desk process."""
 
-    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 60_000:
+    if not isinstance(raw, str):
         return None
-    local_event = parse_local_event(raw.encode("utf-8"))
+    raw_bytes = raw.encode("utf-8")
+    # Only the overlay's typed-image envelope may use the larger frame. Keep
+    # the cheap 60 KB rejection ahead of json.loads for every other message.
+    message_type = _top_level_message_type(raw)
+    wire_limit = MAX_IMAGE_WIRE_BYTES if message_type == "typed" else 60_000
+    if len(raw_bytes) > wire_limit:
+        return None
+    local_event = parse_local_event(raw_bytes)
     if local_event is not None:
         return local_event
     try:
@@ -62,17 +165,42 @@ def parse_client_message(raw):
     if isinstance(message, dict) and message.get("type") == "typed":
         # The overlay's type bar: same turn a spoken one would make, for when
         # the mic is unusable (bad driver, noisy room, someone nearby).
-        if set(message) != {"type", "text"}:
+        if not set(message).issubset({"type", "text", "image"}) or "text" not in message:
             return None
         text = message.get("text")
         if not isinstance(text, str):
             return None
         text = " ".join(text.split())
-        if not text or len(text) > 4_000:
+        if len(text) > 4_000:
             return None
-        return json.dumps(
-            {"type": "typed", "text": text}, ensure_ascii=False, separators=(",", ":")
-        )
+        clean = {"type": "typed", "text": text}
+        if message.get("image") is not None:
+            try:
+                clean["image"] = clean_image_input(message["image"])
+            except ValueError:
+                return None
+        if not text and "image" not in clean:
+            return None
+        return json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(message, dict) and message.get("type") == "code_control":
+        action = str(message.get("action") or "").casefold()
+        item_id = str(message.get("item_id") or "").strip()
+        allowed = {"type", "item_id", "action"}
+        if action == "steer":
+            allowed.add("text")
+        if set(message) != allowed or action not in {"status", "cancel", "steer", "resume"}:
+            return None
+        if not item_id or len(item_id) > 100 or not all(
+            char.isalnum() or char in "-_." for char in item_id
+        ):
+            return None
+        clean = {"type": "code_control", "item_id": item_id, "action": action}
+        if action == "steer":
+            text = str(message.get("text") or "").strip()
+            if not text or len(text) > 4_000:
+                return None
+            clean["text"] = text
+        return json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
     if isinstance(message, dict) and message.get("type") in {
         "transcription",
         "response",
@@ -122,24 +250,80 @@ def parse_local_event(raw: bytes):
         return None
     kind = message.get("type")
     if kind == "code_start":
+        if not set(message).issubset({"type", "project", "status", "item_id", "snapshot"}):
+            return None
         project = message.get("project")
         if not isinstance(project, str) or not project or len(project) > 200:
             return None
         clean = {"type": kind, "project": project}
+        item_id = message.get("item_id")
+        if item_id is not None:
+            if not isinstance(item_id, str) or not item_id or len(item_id) > 100:
+                return None
+            clean["item_id"] = item_id
         status = message.get("status")
         if status is not None:
             if not isinstance(status, str) or not status or len(status) > 200:
                 return None
             clean["status"] = status
+        if "snapshot" in message:
+            snapshot = _clean_job_snapshot(message.get("snapshot"))
+            if snapshot is not None:
+                clean["snapshot"] = snapshot
+            elif not _job_snapshot_oversized(message.get("snapshot")):
+                return None
     elif kind == "code_hide":
         if set(message) != {"type"}:
             return None
         clean = {"type": kind}
     elif kind == "code_done":
+        if not set(message).issubset({"type", "summary", "snapshot"}):
+            return None
         summary = message.get("summary")
         if not isinstance(summary, str) or len(summary) > 2_000:
             return None
         clean = {"type": kind, "summary": summary}
+        if "snapshot" in message:
+            snapshot = _clean_job_snapshot(message.get("snapshot"))
+            if snapshot is not None:
+                clean["snapshot"] = snapshot
+            elif not _job_snapshot_oversized(message.get("snapshot")):
+                return None
+    elif kind == "code_snapshot":
+        if set(message) != {"type", "snapshot"}:
+            return None
+        snapshot = _clean_job_snapshot(message.get("snapshot"))
+        if snapshot is None:
+            return None
+        clean = {"type": kind, "snapshot": snapshot}
+    elif kind == "fleet_notice":
+        if set(message) != {"type", "run_id", "state", "token", "text"}:
+            return None
+        run_id = message.get("run_id")
+        notice_state = message.get("state")
+        token = message.get("token")
+        text = message.get("text")
+        if (
+            not isinstance(run_id, str)
+            or not run_id
+            or len(run_id) > 100
+            or not all(char.isalnum() or char == "-" for char in run_id)
+            or notice_state not in {"completed", "failed"}
+            or not isinstance(token, str)
+            or not token
+            or len(token) > 160
+            or not isinstance(text, str)
+            or not text.strip()
+            or len(text) > 600
+        ):
+            return None
+        clean = {
+            "type": kind,
+            "run_id": run_id,
+            "state": notice_state,
+            "token": token,
+            "text": " ".join(text.split()),
+        }
     elif kind == "code_event":
         event = message.get("event")
         if not isinstance(event, dict):
@@ -153,22 +337,187 @@ def parse_local_event(raw: bytes):
             if not isinstance(value, str) or len(value) > 8_000:
                 return None
         clean = {"type": kind, "event": event}
+        item_id = message.get("item_id")
+        if item_id is not None:
+            if (
+                not isinstance(item_id, str)
+                or not item_id
+                or len(item_id) > 100
+                or not all(char.isalnum() or char == "-" for char in item_id)
+            ):
+                return None
+            clean["item_id"] = item_id
     else:
         return None
     return json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+
+
+def _clean_job_snapshot(value):
+    """Validate the bounded durable job projection sent to Electron."""
+
+    if not isinstance(value, dict):
+        return None
+    allowed = {
+        "item_id",
+        "state",
+        "project",
+        "project_root",
+        "brief",
+        "model",
+        "progress",
+        "changes",
+        "tests",
+        "live_proof",
+        "evidence",
+        "review",
+        "controls",
+        "summary",
+        "changes_truncated",
+    }
+    if not set(value).issubset(allowed):
+        return None
+    for required in ("item_id", "state", "project"):
+        if not isinstance(value.get(required), str) or not value.get(required):
+            return None
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+    if len(encoded.encode("utf-8")) > 55_000:
+        return None
+    return json.loads(encoded)
+
+
+def _job_snapshot_oversized(value):
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return False
+    return len(encoded.encode("utf-8")) > 55_000
+
+
+def current_durable_job_snapshot():
+    """Load the newest running job so an overlay restart does not erase it.
+
+    Only a job with work actually in flight belongs here. The overlay
+    reconnects on every bridge restart and every dropped socket, and it opens
+    its coding drawer for what this returns, so counting an accepted-but-idle
+    or long-abandoned job as active made the drawer reappear with nothing
+    running behind it.
+
+    'claimed' is deliberately excluded even though a job passes through it on
+    its way to running: a claim that never reaches 'working' is exactly the
+    stale record that used to reopen the drawer forever. The cost is that an
+    overlay reconnecting inside that sub-second window shows no drawer until
+    the supervisor emits code_start, which it does the moment work begins.
+    """
+
+    try:
+        from core.voice_inbox import get_default_voice_inbox
+
+        store = get_default_voice_inbox()
+        jobs = store.recent_jobs(limit=20)
+        running = {"working", "resume_queued"}
+        job = next((entry for entry in jobs if entry.get("state") in running), None)
+        if job is None:
+            return None
+        return store.overlay_snapshot(str(job["item_id"]))
+    except Exception:
+        return None
+
+
+async def apply_code_control(message: dict) -> dict:
+    """Persist an overlay control and return the current durable snapshot."""
+
+    from core.voice_inbox import get_default_voice_inbox
+
+    store = get_default_voice_inbox()
+    item_id = str(message["item_id"])
+    action = str(message["action"])
+    if action == "cancel":
+        await asyncio.to_thread(store.request_cancel, item_id)
+    elif action == "steer":
+        await asyncio.to_thread(store.add_steering, item_id, str(message["text"]))
+    elif action == "resume":
+        await asyncio.to_thread(store.request_resume, item_id)
+    snapshot = await asyncio.to_thread(store.overlay_snapshot, item_id)
+    if snapshot is None:
+        raise ValueError("coding job was not found")
+    return snapshot
 
 
 async def handler(ws):
     clients.add(ws)
     try:
         await ws.send(json.dumps({"type": "state_change", "state": state}))
+        snapshot = current_durable_job_snapshot()
+        if snapshot is not None:
+            message = parse_local_event(
+                json.dumps(
+                    {"type": "code_snapshot", "snapshot": snapshot},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            if message is not None:
+                await ws.send(message)
         async for raw in ws:
+            raw_type = _top_level_message_type(raw) if isinstance(raw, str) else None
             message = parse_client_message(raw)
             if message is None:
+                if raw_type == "typed":
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "typed_input_error",
+                                "error": "that pasted image could not be accepted; your message is still here.",
+                            },
+                            separators=(",", ":"),
+                        )
+                    )
                 continue
             if '"type":"typed"' in message:
-                text = json.loads(message)["text"]
-                asyncio.create_task(run_typed_turn(text))
+                typed = json.loads(message)
+                await ws.send(json.dumps({"type": "typed_input_accepted"}))
+                asyncio.create_task(run_typed_turn(typed["text"], image=typed.get("image")))
+                continue
+            if '"type":"code_control"' in message:
+                control = json.loads(message)
+                try:
+                    snapshot = await apply_code_control(control)
+                except Exception as error:
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "code_control_result",
+                                "ok": False,
+                                "item_id": control["item_id"],
+                                "action": control["action"],
+                                "error": str(error)[:1_000],
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    )
+                else:
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "code_control_result",
+                                "ok": True,
+                                "item_id": control["item_id"],
+                                "action": control["action"],
+                            },
+                            separators=(",", ":"),
+                        )
+                    )
+                    await broadcast(
+                        json.dumps(
+                            {"type": "code_snapshot", "snapshot": snapshot},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    )
                 continue
             await broadcast(message, exclude=ws)
     except websockets.ConnectionClosed:
@@ -213,7 +562,7 @@ async def _interrupt_typed_turn() -> None:
     await asyncio.wait([previous], timeout=15)
 
 
-async def run_typed_turn(text: str) -> None:
+async def run_typed_turn(text: str, *, image: dict | None = None) -> None:
     """Run one typed desk turn: show it, think, speak as she forms it.
 
     Deliberately the same path a spoken turn takes, including her brokered
@@ -227,8 +576,10 @@ async def run_typed_turn(text: str) -> None:
     from voice.desk.say import set_state, speak_stream, stream_turn
 
     await _interrupt_typed_turn()
+    display_text = text or "image attached"
+    prompt_text = text or "look at this image"
     await broadcast(
-        json.dumps({"type": "transcription", "text": text}, ensure_ascii=False)
+        json.dumps({"type": "transcription", "text": display_text}, ensure_ascii=False)
     )
     call_id = new_typed_call_id()
     clauses: asyncio.Queue = asyncio.Queue()
@@ -253,12 +604,17 @@ async def run_typed_turn(text: str) -> None:
             # or remote turn.
             for attempt in range(12):
                 try:
+                    turn_options = {
+                        "call_id": call_id,
+                        "turn_id": f"{call_id}:1",
+                        "timeout": 240.0,
+                        "on_sentence": on_sentence,
+                    }
+                    if image is not None:
+                        turn_options["images"] = [image]
                     said = await stream_turn(
-                        text,
-                        call_id=call_id,
-                        turn_id=f"{call_id}:1",
-                        timeout=240.0,
-                        on_sentence=on_sentence,
+                        prompt_text,
+                        **turn_options,
                     )
                     break
                 except OSError as exc:
@@ -341,8 +697,101 @@ async def watch_local_events(event_socket):
     while True:
         raw = await loop.sock_recv(event_socket, 65_536)
         message = parse_local_event(raw)
-        if message is not None:
-            await broadcast(message)
+        if message is None:
+            continue
+        parsed = json.loads(message)
+        if parsed.get("type") == "fleet_notice":
+            _launch_fleet_notice(parsed)
+            continue
+        await broadcast(message)
+
+
+_fleet_notice_tasks: set[asyncio.Task] = set()
+
+
+def _record_fleet_notice(
+    notice: dict,
+    event_type: str,
+    *,
+    error: str | None = None,
+) -> None:
+    from core.fleet_store import FleetStore
+
+    payload = {
+        "token": notice["token"],
+        "state": notice["state"],
+        "channel": "voice",
+    }
+    if error:
+        payload["error"] = " ".join(error.split())[:300]
+    FleetStore().append_event(notice["run_id"], event_type, payload)
+
+
+def _fallback_fleet_notice(notice: dict) -> None:
+    """Use the phone only when local speech genuinely failed."""
+
+    from core.fleet_store import FleetStore
+    from core.fleet_supervisor import _send_raghav_text
+
+    store = FleetStore()
+    if store.terminal_notice_delivered(
+        notice["run_id"],
+        notice["token"],
+        channel="telegram",
+    ):
+        return
+    delivered = _send_raghav_text(notice["text"])
+    store.append_event(
+        notice["run_id"],
+        "run.notification.delivered" if delivered else "run.notification.failed",
+        {
+            "token": notice["token"],
+            "state": notice["state"],
+            "channel": "telegram",
+        },
+    )
+
+
+async def speak_fleet_notice(notice: dict) -> None:
+    """Wait for a conversational gap, then speak one Fleet terminal state."""
+
+    from voice.desk.say import set_state, speak_stream
+
+    while read_state() in {"listening", "thinking", "speaking"}:
+        await asyncio.sleep(0.25)
+    sentences: asyncio.Queue = asyncio.Queue()
+    sentences.put_nowait(notice["text"])
+    sentences.put_nowait(None)
+    set_state("speaking")
+    try:
+        await speak_stream(sentences)
+    except Exception as error:  # noqa: BLE001 - phone is the deliberate fallback
+        with suppress(Exception):
+            _record_fleet_notice(
+                notice,
+                "run.notification.failed",
+                error=str(error),
+            )
+        await asyncio.to_thread(_fallback_fleet_notice, notice)
+        print(
+            f"[brain_bridge] Fleet notice failed run={notice['run_id'][:8]}: {error}",
+            flush=True,
+        )
+    else:
+        _record_fleet_notice(notice, "run.notification.delivered")
+        print(
+            f"[brain_bridge] Fleet notice spoken run={notice['run_id'][:8]}",
+            flush=True,
+        )
+    finally:
+        if _typed_turn is None or _typed_turn.done():
+            set_state("idle")
+
+
+def _launch_fleet_notice(notice: dict) -> None:
+    task = asyncio.create_task(speak_fleet_notice(notice))
+    _fleet_notice_tasks.add(task)
+    task.add_done_callback(_fleet_notice_tasks.discard)
 
 
 def open_event_socket():
@@ -381,7 +830,7 @@ async def warm_voice() -> None:
 async def main():
     event_socket = open_event_socket()
     try:
-        async with websockets.serve(handler, HOST, PORT):
+        async with websockets.serve(handler, HOST, PORT, max_size=MAX_IMAGE_WIRE_BYTES):
             print(f"[brain_bridge] ws://{HOST}:{PORT} watching {STATE_FILE}", flush=True)
             warming = asyncio.create_task(warm_voice())
             try:

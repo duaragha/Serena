@@ -4,15 +4,14 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
-import signal
 import subprocess
 import threading
 import time
 from typing import Any
 
-from core.mcp.secrets import resolve_env
+from core.mcp.secrets import resolved_headers, server_environment
+from core.security_policy import SecurityPolicyError, URLPolicy, redact_credentials
 
 _INIT_TIMEOUT = 8.0  # seconds to wait for serverInfo
 
@@ -35,8 +34,10 @@ def _stdio_test(server: dict) -> dict:
         return {"ok": False, "message": "no command"}
     binpath = shutil.which(cmd) or cmd
 
-    env = os.environ.copy()
-    env.update(resolve_env(server["name"], server.get("env") or {}, server.get("secrets") or []))
+    try:
+        env = server_environment(server)
+    except SecurityPolicyError as exc:
+        return {"ok": False, "message": f"environment policy refused spawn: {exc}"}
 
     cwd = server.get("cwd") or None
     try:
@@ -55,6 +56,9 @@ def _stdio_test(server: dict) -> dict:
 
     result: dict[str, Any] = {"ok": False, "message": "no response"}
     deadline = time.time() + _INIT_TIMEOUT
+    secret_values = [
+        env.get(str(name), "") for name in (server.get("secrets") or [])
+    ]
 
     def _read():
         try:
@@ -66,7 +70,9 @@ def _stdio_test(server: dict) -> dict:
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
-                result["message"] = f"non-JSON response: {line[:120]}"
+                result["message"] = "non-JSON response: " + redact_credentials(
+                    line[:120], secret_values=secret_values
+                )
                 return
             if obj.get("id") == 1 and "result" in obj:
                 info = obj["result"].get("serverInfo") or {}
@@ -102,7 +108,10 @@ def _stdio_test(server: dict) -> dict:
         pass
 
     if not result["ok"] and result["message"] == "no response":
-        stderr = (proc.stderr.read() if proc.stderr else "") or ""
+        stderr = redact_credentials(
+            (proc.stderr.read() if proc.stderr else "") or "",
+            secret_values=secret_values,
+        )
         if stderr:
             result["message"] = f"timed out · stderr: {stderr[:200]}"
         else:
@@ -111,13 +120,25 @@ def _stdio_test(server: dict) -> dict:
 
 
 def _http_test(server: dict) -> dict:
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     url = server.get("url") or ""
     if not url:
         return {"ok": False, "message": "no url"}
     try:
+        policy = URLPolicy(
+            allowed_domains=tuple(server.get("allowed_domains") or ()),
+            allow_private_network=bool(server.get("allow_private_network", False)),
+            allow_http=bool(server.get("allow_private_network", False)),
+        )
+        policy.validate(url)
+
+        class PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                policy.validate_redirect(req.full_url, newurl)
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
         body = json.dumps(_INITIALIZE).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -128,9 +149,11 @@ def _http_test(server: dict) -> dict:
                 "Accept": "application/json, text/event-stream",
             },
         )
-        for hk, hv in (server.get("headers") or {}).items():
+        headers = resolved_headers(server)
+        for hk, hv in headers.items():
             req.add_header(hk, hv)
-        with urllib.request.urlopen(req, timeout=_INIT_TIMEOUT) as resp:
+        opener = urllib.request.build_opener(PolicyRedirectHandler())
+        with opener.open(req, timeout=_INIT_TIMEOUT) as resp:
             payload = resp.read().decode("utf-8", errors="replace")
         # Streamable HTTP can be SSE (data: ...). Try both.
         for line in payload.splitlines():
@@ -150,11 +173,17 @@ def _http_test(server: dict) -> dict:
                     "message": f"OK · {info.get('name', '?')} v{info.get('version', '?')}",
                     "server_info": info,
                 }
-        return {"ok": False, "message": f"unexpected response: {payload[:200]}"}
+        return {
+            "ok": False,
+            "message": "unexpected response: "
+            + redact_credentials(payload[:200], secret_values=list(headers.values())),
+        }
     except urllib.error.HTTPError as e:
         return {"ok": False, "message": f"HTTP {e.code}: {e.reason}"}
     except urllib.error.URLError as e:
         return {"ok": False, "message": f"connection failed: {e.reason}"}
+    except SecurityPolicyError as e:
+        return {"ok": False, "message": f"URL policy refused connection: {e}"}
     except Exception as e:
         return {"ok": False, "message": f"error: {e}"}
 

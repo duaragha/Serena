@@ -82,11 +82,20 @@ def authority_denial(
             "memory changes happen only on a live spoken turn, "
             f"not a {protocol or 'unknown'} turn"
         )
-    signal = _DESTRUCTIVE_SIGNAL if destructive else _SAVE_SIGNAL
+    # Saving is not gated at all any more. It costs nothing to undo and the
+    # vocabulary check refused him twice: "let's take notes on X" died because
+    # the list held "note" and not "notes". If she judged that he wants
+    # something remembered, she is right more often than a word list is.
+    #
+    # Deleting still is, because it cannot be undone. That gate is a blacklist
+    # read across the recent conversation rather than one sentence, so
+    # "delete that one" followed by "the memory we just talked about" is one
+    # instruction and not two strangers.
+    if not destructive:
+        return None
     window = [spoken, *(_clean(t) for t in (recent_texts or []))]
-    if not any(signal.search(text) for text in window if text):
-        kind = "removing or changing" if destructive else "saving"
-        return f"nothing in the recent conversation asked for {kind} anything"
+    if not any(_DESTRUCTIVE_SIGNAL.search(text) for text in window if text):
+        return "nothing in the recent conversation asked for removing or changing anything"
     return None
 
 

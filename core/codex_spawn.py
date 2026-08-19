@@ -47,21 +47,9 @@ def _existing_codex_sids() -> set[str]:
 def _find_existing_linked_codex(claude_sid: str) -> str | None:
     """If claude_sid is already in a group that contains a codex member,
     return that codex sid. Otherwise None."""
-    try:
-        from core import metadata as meta
-        from core.indexer import get_session
-    except ImportError:
-        return None
-    gid = meta.get_group(claude_sid)
-    if not gid:
-        return None
-    for member in meta.list_group_members(gid):
-        if member == claude_sid:
-            continue
-        s = get_session(member)
-        if s and (s.get("agent") or "").lower() == "codex":
-            return member
-    return None
+    from core.linked_sessions import find_linked_session
+
+    return find_linked_session(claude_sid, "codex")
 
 
 def _resolve_claude_cwd(claude_sid: str, fallback: str = "") -> str:

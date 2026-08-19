@@ -45,6 +45,43 @@ def test_claude_turn_duration_is_the_completion_boundary(tmp_path):
     assert reader.read(path, "claude") is False
 
 
+def test_claude_rate_limit_is_also_a_completion_boundary(tmp_path):
+    path = tmp_path / "claude.jsonl"
+    reader = TurnActivityReader()
+
+    _append(path, {"type": "system", "subtype": "turn_duration"})
+    start_offset = path.stat().st_size
+    _append(path, {"type": "user", "message": {"role": "user"}})
+    assert reader.completed_since(path, "claude", start_offset) is False
+
+    _append(
+        path,
+        {
+            "type": "assistant",
+            "message": {"role": "assistant"},
+            "error": "rate_limit",
+            "isApiErrorMessage": True,
+        },
+    )
+    assert reader.read(path, "claude") is False
+    assert reader.completed_since(path, "claude", start_offset) is True
+    assert reader.waiting_for_usage_reset(path, "claude") is True
+
+    _append(path, {"type": "user", "message": {"role": "user"}})
+    assert reader.waiting_for_usage_reset(path, "claude") is False
+
+
+def test_completion_before_turn_offset_does_not_finish_new_turn(tmp_path):
+    path = tmp_path / "claude.jsonl"
+    reader = TurnActivityReader()
+
+    _append(path, {"type": "system", "subtype": "turn_duration"})
+    start_offset = path.stat().st_size
+    _append(path, {"type": "user", "message": {"role": "user"}})
+
+    assert reader.completed_since(path, "claude", start_offset) is False
+
+
 def test_long_active_tail_without_start_marker_still_counts_as_working(tmp_path):
     path = tmp_path / "rollout.jsonl"
     _append(path, _codex_event("task_started"))

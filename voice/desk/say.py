@@ -24,6 +24,8 @@ import sys
 import time
 from pathlib import Path
 
+from voice.desk.output_mute import read_voice_output_muted
+
 BRAIN_SOCK = Path.home() / ".config" / "serena" / "brain.sock"
 VOICE_STATE = Path.home() / ".config" / "serena" / "voice_state"
 
@@ -102,10 +104,13 @@ def _next_generation() -> int:
 
 
 def _tts_environment() -> None:
-    """Match serena-mobile-host.service so the local engine actually loads."""
+    """Match serena-mobile-host.service: remote engine first, local fallback."""
     import os
 
-    os.environ.setdefault("SERENA_CALL_TTS_BACKEND", "pocket")
+    os.environ.setdefault("SERENA_CALL_TTS_BACKEND", "remote")
+    os.environ.setdefault(
+        "SERENA_CALL_TTS_REMOTE_URL", "https://pc.tail4d6220.ts.net:8812"
+    )
     pocket_python = Path.home() / "Documents/Projects/serena/.venv-pocket/bin/python"
     if pocket_python.exists():
         os.environ.setdefault("SERENA_CALL_POCKET_PYTHON", str(pocket_python))
@@ -165,11 +170,14 @@ async def speak_clause(backend, clause: str) -> None:
     the gap between clauses, which is what made her sound like she had given
     up halfway through a sentence.
     """
+    if read_voice_output_muted():
+        return
     generation = _next_generation()
     allow = getattr(backend, "allow_generation", None)
     if allow is not None:
         allow(generation)
     player: _StreamingPlayer | None = None
+    muted_during_clause = False
     rate = 24_000
     try:
         try:
@@ -177,6 +185,12 @@ async def speak_clause(backend, clause: str) -> None:
                 pcm = getattr(chunk, "pcm", chunk)
                 rate = getattr(chunk, "sample_rate", rate) or rate
                 if not pcm:
+                    continue
+                if read_voice_output_muted():
+                    muted_during_clause = True
+                    if player is not None:
+                        await player.kill()
+                        player = None
                     continue
                 if player is None:
                     player = await _StreamingPlayer.open(rate)
@@ -187,7 +201,12 @@ async def speak_clause(backend, clause: str) -> None:
                 # speaker, or the old clause talks over the reply that
                 # interrupted it. That is why close() sits INSIDE this
                 # handler's reach.
-                await player.close()
+                if read_voice_output_muted():
+                    muted_during_clause = True
+                    await player.kill()
+                    player = None
+                else:
+                    await player.close()
         except asyncio.CancelledError:
             # Interrupted mid-sentence. The speaker is a separate process and
             # the engine is a separate process; both keep going over the next
@@ -199,7 +218,7 @@ async def speak_clause(backend, clause: str) -> None:
                 with contextlib.suppress(Exception):
                     await cancel(generation)
             raise
-        if player is None:
+        if player is None and not muted_during_clause:
             # Never swallow a clause. Silence that nobody logs is exactly the
             # bug that looks like her trailing off mid-sentence.
             print(f"[say] no audio came back for clause: {clause!r}", flush=True)
@@ -278,13 +297,14 @@ async def stream_turn(
     turn_id: str,
     timeout: float,
     on_sentence=None,
+    images: list[dict[str, str]] | None = None,
 ) -> str:
     """One turn, speaking each clause the moment it is complete.
 
-    Waiting for the whole reply before making a sound is what makes her feel
-    like a form submission instead of someone talking, so the brain's token
-    deltas feed the same incremental splitter the call pipeline uses and each
-    finished clause goes straight out.
+    Streaming replies feed the same incremental splitter the call pipeline
+    uses, so each finished clause goes straight out. When the daemon withholds
+    voice deltas until its durable commit, the final committed reply is queued
+    once instead.
     """
     from voice.call.sentences import IncrementalSentenceSplitter
 
@@ -299,10 +319,13 @@ async def stream_turn(
         "call_id": call_id,
         "turn_id": turn_id,
     }
+    if images:
+        request["images"] = images
     writer.write((json.dumps(request) + "\n").encode("utf-8"))
     await writer.drain()
     parts: list[str] = []
     said = ""
+    queued_clause = False
     try:
         while True:
             line = await asyncio.wait_for(reader.readline(), timeout=timeout)
@@ -316,12 +339,20 @@ async def stream_turn(
                     parts.append(delta)
                     if on_sentence is not None:
                         for clause in splitter.feed(delta):
+                            queued_clause = True
                             await on_sentence(clause)
             elif kind == "response.done":
                 said = (event.get("say") or "").strip() or "".join(parts).strip()
                 if on_sentence is not None:
                     for clause in splitter.flush():
+                        queued_clause = True
                         await on_sentence(clause)
+                    # Voice replies are withheld until the resident daemon has
+                    # durably committed the whole turn. That safe path sends a
+                    # final response without token deltas, so the committed
+                    # text itself must enter TTS or typed turns stay silent.
+                    if said and not queued_clause:
+                        await on_sentence(said)
                 break
             elif kind == "error":
                 said = f"(brain error: {event.get('error')})"
@@ -341,7 +372,13 @@ async def speak(text: str) -> None:
     """
     import os
 
-    os.environ.setdefault("SERENA_CALL_TTS_BACKEND", "pocket")
+    if read_voice_output_muted():
+        return
+
+    os.environ.setdefault("SERENA_CALL_TTS_BACKEND", "remote")
+    os.environ.setdefault(
+        "SERENA_CALL_TTS_REMOTE_URL", "https://pc.tail4d6220.ts.net:8812"
+    )
     # Match serena-mobile-host.service: pocket_tts lives in its own venv and
     # the model cache is pinned, so borrow the same interpreter and cache
     # instead of failing on a missing module in the main venv.
@@ -361,6 +398,8 @@ async def speak(text: str) -> None:
         if pcm:
             chunks.append(pcm)
     if not chunks:
+        return
+    if read_voice_output_muted():
         return
     # Play through ALSA rather than a python binding: sounddevice only exists
     # in the wake venv, and this runs from the main one.

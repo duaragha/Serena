@@ -37,7 +37,8 @@
   ],
   "runtime_paths": [
     "~/.config/serena",
-    "~/.local/share/chats"
+    "~/.local/share/chats",
+    "~/.local/state/serena"
   ],
   "session_paths": [
     "~/.claude/projects",
@@ -89,6 +90,7 @@
     "always_on": [
       "serena-brain.service",
       "serena-mobile-host.service",
+      "serena-fleet.service",
       "serena-work-supervisor.service",
       "serena-wake-listener.service",
       "serena-brain-state-sync.path",
@@ -123,7 +125,9 @@
   "required_python_imports": [
     "flask",
     "flask_sock",
+    "mcp",
     "claude_agent_sdk",
+    "core.fleet_supervisor",
     "core.brain_daemon",
     "core.mobile_host",
     "core.voice_work_supervisor",

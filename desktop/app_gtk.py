@@ -1,8 +1,7 @@
 """Native GTK shell for Linux.
 
-The default Code renderer is xterm.js inside WebKit so the terminal can render
-Sixel graphics. The original VTE overlay remains available as a fallback with
-``SERENA_TERMINAL_BACKEND=vte``.
+The Code pane is a native Vte.Terminal positioned over the WebView via
+GtkOverlay. The web UI still owns the rest of the application.
 
 Each session gets its own VTE in a GtkStack, so switching chats hides the
 current terminal but keeps the claude process running. Terminals are killed
@@ -23,7 +22,13 @@ import time
 import traceback
 import urllib.request
 import uuid
+from contextlib import suppress
 from pathlib import Path
+from urllib.parse import urlsplit
+
+# Flask serves from a sibling thread and resolves the live GTK owner through
+# this canonical module name. Keep the alias valid when launched as a script.
+sys.modules.setdefault("desktop.app_gtk", sys.modules[__name__])
 
 
 # New GTK processes on this machine can lose all keyboard input when routed
@@ -43,7 +48,10 @@ if os.environ.get("SERENA_USE_IBUS", "").lower() not in ("1", "true", "yes"):
 # .desktop / Start Menu (stdout/stderr → /dev/null), we don't lose every
 # print() + traceback. Mirrors the Windows logging we added earlier.
 def _install_file_logging() -> Path:
-    log_dir = Path.home() / ".local" / "share" / "chats" / "logs"
+    data_dir = Path(
+        os.environ.get("CHATS_DATA_DIR", Path.home() / ".local" / "share" / "chats")
+    ).expanduser()
+    log_dir = data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "serena.log"
     try:
@@ -93,8 +101,11 @@ def _install_file_logging() -> Path:
     sys.excepthook = _hook
     return log_path
 
-_LOG_PATH = _install_file_logging()
-print(f"[boot] logging to {_LOG_PATH}", flush=True)
+# Logging is installed from run(), NOT at import time: headless scripts and
+# CLI helpers import this module too (e.g. core.linked_sessions resolving the
+# visible split), and swapping their sys.stdout for the log file silently
+# swallows their output.
+_LOG_PATH: Path | None = None
 # === LOGGING END ===
 
 import gi
@@ -111,6 +122,10 @@ _PCRE2_MULTILINE = 0x00000400
 _PCRE2_UTF = 0x00080000
 _PCRE2_CASELESS = 0x00000008
 
+# A resumed CLI paints its transcript over several frames. Follow that initial
+# redraw to the newest line, then restore normal scrollback behavior.
+_VTE_TAIL_FOLLOW_MS = 6000
+
 # URL regex — simplified version of what gnome-terminal uses. Catches http(s),
 # ftp, file, ssh, mailto, plus plain www.*.
 _URL_REGEX = (
@@ -120,6 +135,24 @@ _URL_REGEX = (
     r"[-[:alnum:]\\Q,?;.:/!*%$^&#~=+@|()\\E]*"
     r"[-[:alnum:]\\Q/!*%$^&#~=+@|()\\E]"
 )
+
+_EXTERNAL_URI_SCHEMES = frozenset({"http", "https"})
+
+
+def _normalize_external_uri(value: object) -> str | None:
+    """Return a browser-safe external URI accepted from the web renderer."""
+    if not isinstance(value, str):
+        return None
+    uri = value.strip()
+    if not uri or any(char.isspace() for char in uri):
+        return None
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return None
+    if parsed.scheme.casefold() not in _EXTERNAL_URI_SCHEMES or not parsed.netloc:
+        return None
+    return uri
 
 from core.indexer import get_session, update_index, update_knowledge_index  # noqa: E402
 from core.config import ensure_session_visible, resolve_session_cwd  # noqa: E402
@@ -157,9 +190,41 @@ def _serve(host: str, port: int) -> None:
 # GTK window
 # ---------------------------------------------------------------------------
 
-_USE_NATIVE_VTE = os.environ.get("SERENA_TERMINAL_BACKEND", "xterm").lower() == "vte"
+def _terminal_backend(value: str | None = None) -> str:
+    """Resolve the single terminal surface owned by this desktop process.
 
-BOOT_SCRIPT = f"window.__nativeTerminalBridge = {json.dumps(_USE_NATIVE_VTE)};\n" + r"""
+    The renderer is the product default. Native VTE remains an explicit
+    recovery switch while the old overlay implementation is retired, never a
+    second simultaneously active surface.
+    """
+
+    raw = str(
+        value
+        if value is not None
+        else os.environ.get("SERENA_TERMINAL_BACKEND", "renderer")
+    ).strip().casefold()
+    aliases = {
+        "renderer": "renderer",
+        "xterm": "renderer",
+        "web": "renderer",
+        "vte": "vte",
+        "native": "vte",
+    }
+    try:
+        return aliases[raw]
+    except KeyError as error:
+        raise RuntimeError(
+            "SERENA_TERMINAL_BACKEND must be renderer or vte"
+        ) from error
+
+
+_TERMINAL_BACKEND = _terminal_backend()
+_USE_NATIVE_VTE = _TERMINAL_BACKEND == "vte"
+
+BOOT_SCRIPT = (
+    f"window.__terminalBackend = {json.dumps(_TERMINAL_BACKEND)};\n"
+    f"window.__nativeTerminalBridge = {json.dumps(_USE_NATIVE_VTE)};\n"
+) + r"""
 window.__gtkBridge = true;
 function markGtkShell() {
   if (document.documentElement) document.documentElement.classList.add('gtk-shell');
@@ -245,6 +310,7 @@ class ChatsApp(Gtk.Window):
     def __init__(self, url: str, width: int, height: int):
         super().__init__(title="Chats")
         ChatsApp.INSTANCE = self
+        self._use_native_vte = _USE_NATIVE_VTE
         self.set_default_size(width, height)
         self.connect("destroy", self._on_destroy)
         self.connect("key-press-event", self._on_key_press)
@@ -301,10 +367,21 @@ class ChatsApp(Gtk.Window):
         self._placeholder = Gtk.Box()
         self._stack.add_named(self._placeholder, "__blank__")
         self._stack.set_visible_child_name("__blank__")
-        self.overlay.add_overlay(self._stack)
-        self.overlay.set_overlay_pass_through(self._stack, False)
-        self.overlay.connect("get-child-position", self._on_overlay_position)
+        if self._use_native_vte:
+            self.overlay.add_overlay(self._stack)
+            self.overlay.set_overlay_pass_through(self._stack, False)
+            self.overlay.connect("get-child-position", self._on_overlay_position)
+        else:
+            # Keep the recovery implementation constructible, but do not put
+            # native widgets in the live scene graph. An empty Gtk overlay was
+            # still capable of painting or intercepting above Fleet after a
+            # WebKit navigation, which violated renderer ownership.
+            self._stack.set_no_show_all(True)
         self._stack_hidden = True  # tracked logically via rect, not via widget visibility
+        # Top-level web tabs can hide the Chats DOM while a native terminal is
+        # still running. Keep that visibility separate from the terminal
+        # lifecycle so leaving Chats unmaps the overlays without resizing VTEs.
+        self._terminal_view_visible: bool = True
 
         # === SPLIT FEATURE ===
         # Second overlay child: a Paned that hosts two reparented VTEs side-by-side
@@ -313,8 +390,11 @@ class ChatsApp(Gtk.Window):
         self._paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self._paned.set_wide_handle(True)
         self._paned.get_style_context().add_class("serena-split-paned")
-        self.overlay.add_overlay(self._paned)
-        self.overlay.set_overlay_pass_through(self._paned, False)
+        if self._use_native_vte:
+            self.overlay.add_overlay(self._paned)
+            self.overlay.set_overlay_pass_through(self._paned, False)
+        else:
+            self._paned.set_no_show_all(True)
         # Re-apply ratio every time the paned re-lays-out — catches initial
         # mount allocation that lands a frame after we set position
         self._paned.connect("size-allocate", self._on_paned_allocate)
@@ -362,7 +442,6 @@ class ChatsApp(Gtk.Window):
         # === SPLIT FEATURE END ===
 
         self._vte_rect: tuple[int, int, int, int] | None = None
-        self._use_native_vte = _USE_NATIVE_VTE
         self._vtes: dict[str, Vte.Terminal] = {}
         self._vte_pids: dict[str, int] = {}
         self._sid_agent: dict[str, str] = {}
@@ -370,15 +449,20 @@ class ChatsApp(Gtk.Window):
         self._runtime_state: dict[str, str] = {}
         self._runtime_last_activity: dict[str, float] = {}
         self._runtime_last_output: dict[str, float] = {}
+        self._vte_tail_follow_until: dict[str, float] = {}
+        self._vte_tail_scroll_pending: set[str] = set()
         self._runtime_file_paths: dict[str, str] = {}
         self._runtime_activity_reader = TurnActivityReader()
         self._runtime_started_at: dict[str, float] = {}
         self._runtime_busy: set[str] = set()
+        self._runtime_turn_offsets: dict[str, int] = {}
         self._runtime_stop_reasons: dict[str, str] = {}
         self._runtime_sleep_after_wake: dict[str, str] = {}
         self._runtime_wake_after_stop: set[str] = set()
+        self._runtime_reclaimed: set[str] = set()
         self._runtime_closed_vtes: set[int] = set()
         self._runtime_leases: dict[str, int] = {}
+        self._runtime_work_reservations: dict[str, str] = {}
         self._runtime_lock = threading.Lock()
         self._runtime_focus_sid: str | None = None
         self._runtime_exclusive_generation = 0
@@ -398,22 +482,18 @@ class ChatsApp(Gtk.Window):
         self._usage_popover: Gtk.Popover | None = None
         self._usage_popover_hide_source = 0
         self._font = self._pick_mono_font()
-        self._runtime_sweep_source = GLib.timeout_add_seconds(
-            30, self._sweep_runtime_idle
+        self._runtime_sweep_source = (
+            GLib.timeout_add_seconds(30, self._sweep_runtime_idle)
+            if self._use_native_vte
+            else 0
         )
         self._voice_inbox_store = None
         self._voice_inbox_source = 0
         self._voice_inbox_inflight: tuple[str, str] | None = None
-        if self._use_native_vte:
-            try:
-                from core.voice_inbox import get_default_voice_inbox
-
-                self._voice_inbox_store = get_default_voice_inbox()
-                self._voice_inbox_source = GLib.timeout_add(
-                    1200, self._poll_voice_inbox
-                )
-            except Exception as error:
-                print(f"[voice-inbox] startup failed: {error}", flush=True)
+        # The resident supervisor is the sole voice-work executor. A desktop
+        # fallback used to claim jobs and spawn an unpinned Codex pane in the
+        # currently visible directory, bypassing the accepted brief and Git
+        # baseline. Keep these fields only for compatibility with old windows.
 
     # ------------------------------------------------------------------
     # Font picker
@@ -439,56 +519,186 @@ class ChatsApp(Gtk.Window):
     # ------------------------------------------------------------------
     def _on_overlay_position(self, overlay, child, allocation):
         # Stack: shows when not split-active and not stack-hidden.
-        if child is self._stack:
-            if self._split_active or self._stack_hidden or self._vte_rect is None:
+        if child == self._stack:
+            if (
+                self._split_active
+                or self._stack_hidden
+                or self._vte_rect is None
+            ):
                 allocation.x = 0
                 allocation.y = 0
                 allocation.width = 0
                 allocation.height = 0
                 return True
             x, y, w, h = self._vte_rect
-            allocation.x = int(x)
+            width = max(int(w), 10)
+            allocation.x = int(x) if self._terminal_view_visible else -(width + 32)
             allocation.y = int(y)
-            allocation.width = max(int(w), 10)
+            allocation.width = width
             allocation.height = max(int(h), 10)
             return True
         # === SPLIT FEATURE === (paned: visible only when split is active)
-        if child is self._paned:
-            if not self._split_active or self._vte_rect is None:
+        if child == self._paned:
+            if (
+                not self._split_active
+                or self._vte_rect is None
+            ):
                 allocation.x = 0
                 allocation.y = 0
                 allocation.width = 0
                 allocation.height = 0
                 return True
             x, y, w, h = self._vte_rect
-            allocation.x = int(x)
+            width = max(int(w), 10)
+            allocation.x = int(x) if self._terminal_view_visible else -(width + 32)
             allocation.y = int(y)
-            allocation.width = max(int(w), 10)
+            allocation.width = width
             allocation.height = max(int(h), 10)
             return True
         # === SPLIT FEATURE END ===
         return False
 
-    def _set_rect(self, rect: dict | None):
+    def _set_rect(self, rect: dict | None) -> bool:
         if not rect:
-            return
-        new_rect = (
-            rect.get("x", 0),
-            rect.get("y", 0),
-            rect.get("w", 800),
-            rect.get("h", 600),
-        )
+            return False
+        try:
+            new_rect = (
+                int(rect.get("x", 0)),
+                int(rect.get("y", 0)),
+                int(rect.get("w", 800)),
+                int(rect.get("h", 600)),
+            )
+        except (TypeError, ValueError):
+            return False
+        # A display:none DOM node reports 0x0. Never turn that transient web
+        # geometry into a native VTE/Paned allocation: doing so sends a 1-column
+        # WINCH to both agents and can corrupt the saved divider ratio.
+        if new_rect[2] <= 10 or new_rect[3] <= 10:
+            return False
         size_changed = (self._vte_rect is None) or (
             self._vte_rect[2] != new_rect[2] or self._vte_rect[3] != new_rect[3]
         )
         self._vte_rect = new_rect
         self.overlay.queue_resize()
-        # === SPLIT FEATURE === (re-apply ratio so the divider keeps its
-        # share of the available width when the outer rect changes)
+        # === SPLIT FEATURE === Defer the divider correction to the Paned's real
+        # size-allocate. Calling set_position with the *new* rect while GTK still
+        # has the old/small allocation is what crushed the right-hand pane.
         if size_changed and self._split_active:
-            self._apply_split_ratio()
-            self._kick_split_winch()
+            self._split_pos_settling = True
         # === SPLIT FEATURE END ===
+        return True
+
+    def _redraw_terminal_underlay(self, rect: tuple[int, int, int, int] | None) -> None:
+        """Damage the WebKit area exposed after parking a native terminal."""
+        if rect is None:
+            return
+        x, y, width, height = rect
+        width = max(int(width), 1)
+        height = max(int(height), 1)
+        for widget in (self.web, self.overlay):
+            try:
+                widget.queue_draw_area(int(x), int(y), width, height)
+            except (AttributeError, RuntimeError):
+                pass
+        try:
+            damage = Gdk.Rectangle()
+            damage.x = int(x)
+            damage.y = int(y)
+            damage.width = width
+            damage.height = height
+            window = self.web.get_window()
+            if window is not None:
+                window.invalidate_rect(damage, True)
+            Gdk.flush()
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _set_terminal_view_visible(
+        self, visible: bool, rect: dict | None = None
+    ) -> None:
+        """Hide native overlays outside Chats without changing VTE geometry."""
+        # Unmapping a VTE in place above accelerated WebKit can leave its last
+        # black backing surface frozen over newly exposed web content. Explicit
+        # underlay damage clears that surface. A hidden-tab allocation is also
+        # parked offscreen, so any late lifecycle show() remains unable to cover
+        # WebKit. Width and height stay cached for PTY and Paned restoration.
+        if visible and rect is not None and not self._set_rect(rect):
+            return
+
+        old_rect = self._vte_rect
+        visible = bool(visible)
+        self._terminal_view_visible = visible
+        for widget in (self._stack, self._paned):
+            widget.set_opacity(1.0)
+            widget.set_sensitive(visible)
+            widget.set_child_visible(True)
+            self.overlay.set_overlay_pass_through(widget, not visible)
+            if visible:
+                widget.show()
+            else:
+                widget.hide()
+
+        self.overlay.queue_resize()
+        self.overlay.queue_draw()
+
+        if not visible:
+            # Never let a hidden terminal keep keyboard focus over Fleet,
+            # Memory, or Knowledge.
+            try:
+                self.web.grab_focus()
+            except (AttributeError, RuntimeError):
+                pass
+            self._redraw_terminal_underlay(old_rect)
+
+            def _redraw_after_parking() -> bool:
+                if not self._terminal_view_visible:
+                    self._redraw_terminal_underlay(old_rect)
+                return False
+
+            GLib.idle_add(_redraw_after_parking)
+        else:
+            # The cached allocation comes back at the current DOM rect. Repaint
+            # the VTEs after the compositor has moved their native surfaces.
+            for sid in self._split_sids if self._split_active else (
+                self._stack.get_visible_child_name(),
+            ):
+                vte = self._vtes.get(sid) if sid else None
+                if vte is not None:
+                    vte.queue_draw()
+            # Geometry never moved, but an explicit repaint/WINCH makes VTE
+            # content return on the first frame instead of after new output.
+            if self._split_active:
+                self._apply_split_ratio()
+                self._kick_split_winch()
+            focus_sid = self._runtime_focus_sid
+            focus_vte = self._vtes.get(focus_sid) if focus_sid else None
+            if focus_vte is not None:
+                self._queue_vte_focus(focus_vte)
+
+        if self._split_active:
+            children = self._paned.get_children()
+            widths = ",".join(str(child.get_allocated_width()) for child in children)
+            print(
+                f"[split] tab {'visible' if visible else 'hidden'} "
+                f"mapped={self._paned.get_mapped()} "
+                f"x={self._paned.get_allocation().x} "
+                f"alloc={self._paned.get_allocated_width()} "
+                f"pos={self._paned.get_position()} children={widths} "
+                f"ratio={self._split_ratio:.2f}",
+                flush=True,
+            )
+
+    def _queue_vte_focus(self, vte: Vte.Terminal | None) -> None:
+        """Focus a terminal only if Chats still owns the native overlay."""
+        if vte is None:
+            return
+
+        def _focus_if_visible() -> bool:
+            if self._terminal_view_visible and vte.get_mapped():
+                vte.grab_focus()
+            return False
+
+        GLib.idle_add(_focus_if_visible)
 
     # ------------------------------------------------------------------
     # Usage popover
@@ -724,7 +934,11 @@ class ChatsApp(Gtk.Window):
                 pid = self._vte_pids.get(sid) if sid else None
                 if pid:
                     try:
-                        os.kill(pid, signal.SIGWINCH)
+                        pgid = os.getpgid(pid)
+                        if pgid == pid and pgid != os.getpgrp():
+                            os.killpg(pgid, signal.SIGWINCH)
+                        else:
+                            os.kill(pid, signal.SIGWINCH)
                     except (ProcessLookupError, PermissionError):
                         pass
                     except Exception as e:
@@ -804,6 +1018,55 @@ class ChatsApp(Gtk.Window):
         except ProcessLookupError:
             pass
 
+    @staticmethod
+    def _runtime_cgroup_dir(pid: int) -> str | None:
+        try:
+            with open(f"/proc/{pid}/cgroup", "r", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("0::"):
+                        rel = line.split("::", 1)[1].strip()
+                        if rel and rel != "/":
+                            return f"/sys/fs/cgroup{rel}"
+        except OSError:
+            pass
+        return None
+
+    def _reclaim_runtime_memory(self, sid: str, pid: int) -> None:
+        """Push a frozen pane's pages to swap via its vte-spawn cgroup.
+
+        Wake stays a millisecond SIGCONT; pages fault back from swap on
+        demand, so this trades idle RSS for refault I/O instead of latency.
+        """
+        cgroup = self._runtime_cgroup_dir(pid)
+        if not cgroup:
+            return
+        before = self._runtime_rss_mb(pid)
+        try:
+            fh = open(os.path.join(cgroup, "memory.reclaim"), "w", encoding="utf-8")
+        except OSError:
+            return
+        with fh:
+            try:
+                fh.write("4G")
+            except OSError:
+                # EAGAIN after a partial pass: whatever was cold is already out.
+                pass
+        self._runtime_reclaimed.add(sid)
+        after = self._runtime_rss_mb(pid)
+        print(
+            f"[runtime] reclaimed {sid[:8]} pid={pid} rss {before}MB -> {after}MB",
+            flush=True,
+        )
+
+    @staticmethod
+    def _runtime_rss_mb(pid: int) -> int:
+        try:
+            with open(f"/proc/{pid}/statm", "r", encoding="utf-8") as fh:
+                pages = int(fh.read().split()[1])
+            return pages * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
+        except (OSError, ValueError, IndexError):
+            return 0
+
     def _remember_runtime(self, sid: str, cwd: str, agent: str) -> None:
         if not sid:
             return
@@ -817,6 +1080,8 @@ class ChatsApp(Gtk.Window):
         if not sid:
             return
         self._runtime_state[sid] = state
+        if state != "paused":
+            self._runtime_reclaimed.discard(sid)
         vte = self._vtes.get(sid)
         if vte is not None:
             style = vte.get_style_context()
@@ -872,11 +1137,39 @@ class ChatsApp(Gtk.Window):
             and time.monotonic() - last_output < 2.0
         )
 
+    def _runtime_transcript_size(self, sid: str) -> int | None:
+        path = self._runtime_transcript_path(sid)
+        if not path:
+            return None
+        try:
+            return Path(path).stat().st_size
+        except OSError:
+            return None
+
     def _runtime_is_working(self, sid: str) -> bool:
         with self._runtime_lock:
             leased = self._runtime_leases.get(sid, 0) > 0
             busy = sid in self._runtime_busy
-        return leased or busy or self._runtime_has_active_turn(sid)
+            reserved = sid in self._runtime_work_reservations
+            turn_offset = self._runtime_turn_offsets.get(sid)
+        if busy and turn_offset is not None:
+            completed = self._runtime_activity_reader.completed_since(
+                self._runtime_transcript_path(sid),
+                self._sid_agent.get(sid, ""),
+                turn_offset,
+            )
+            if completed:
+                with self._runtime_lock:
+                    if self._runtime_turn_offsets.get(sid) == turn_offset:
+                        self._runtime_busy.discard(sid)
+                        self._runtime_turn_offsets.pop(sid, None)
+                        busy = False
+                if not busy:
+                    print(
+                        f"[runtime] reconciled completed turn {sid[:8]}",
+                        flush=True,
+                    )
+        return leased or reserved or busy or self._runtime_has_active_turn(sid)
 
     def _runtime_is_protected(self, sid: str) -> bool:
         return self._runtime_is_working(sid) or bool(self._input_drafts.get(sid))
@@ -895,6 +1188,115 @@ class ChatsApp(Gtk.Window):
                 self._runtime_leases[sid] = count - 1
         GLib.idle_add(self._runtime_after_lease, sid)
 
+    def runtime_work_reservation(self, sid: str) -> str | None:
+        with self._runtime_lock:
+            return self._runtime_work_reservations.get(sid)
+
+    def runtime_reserve_work(self, sid: str, item_id: str) -> tuple[bool, str]:
+        """Reserve one idle Codex VTE for an accepted voice coding turn."""
+        if not sid or not item_id:
+            return False, "sid and item_id are required"
+        vte = self._vtes.get(sid)
+        pid = self._vte_pids.get(sid)
+        if vte is None or not self._runtime_pid_alive(pid):
+            return False, "runtime is not alive"
+        if self._sid_agent.get(sid) != "codex":
+            return False, "target is not a codex runtime"
+        if meta_sync.external_runtime_active(sid):
+            return False, "runtime has an external owner"
+        meta = meta_sync.get_meta(sid)
+        if meta.get("done"):
+            return False, "runtime is marked done"
+        marker = meta.get("fleet_worker")
+        if isinstance(marker, dict) and marker.get("run_id"):
+            return False, "fleet worker runtimes are read-only"
+        if self._runtime_has_active_turn(sid):
+            return False, "runtime has an active turn"
+        with self._runtime_lock:
+            current = self._runtime_work_reservations.get(sid)
+            if current:
+                return False, f"runtime reserved by {current}"
+            if self._runtime_leases.get(sid, 0) > 0 or sid in self._runtime_busy:
+                return False, "runtime has an active turn"
+            if self._input_drafts.get(sid, "").strip():
+                return False, "runtime has an unsent draft"
+            if self._runtime_state.get(sid) not in {"live", "paused"}:
+                return False, f"runtime state is {self._runtime_state.get(sid, 'unknown')}"
+            self._runtime_work_reservations[sid] = item_id
+        try:
+            vte.set_input_enabled(False)
+        except (AttributeError, RuntimeError):
+            pass
+        self._runtime_last_activity[sid] = time.monotonic()
+        return True, "reserved"
+
+    def runtime_release_work(self, sid: str, item_id: str) -> bool:
+        with self._runtime_lock:
+            if self._runtime_work_reservations.get(sid) != item_id:
+                return False
+            self._runtime_work_reservations.pop(sid, None)
+        vte = self._vtes.get(sid)
+        if vte is not None:
+            try:
+                vte.set_input_enabled(True)
+            except (AttributeError, RuntimeError):
+                pass
+        self._runtime_last_activity[sid] = time.monotonic()
+        return True
+
+    def runtime_interrupt_work(self, sid: str, item_id: str) -> bool:
+        """Interrupt only the item holding this VTE, never the desktop process."""
+        if self.runtime_work_reservation(sid) != item_id:
+            return False
+        vte = self._vtes.get(sid)
+        if vte is None or not self._runtime_pid_alive(self._vte_pids.get(sid)):
+            return False
+        try:
+            vte.feed_child(b"\x03")
+        except Exception:
+            return False
+        return True
+
+    def runtime_context_snapshot(self) -> dict:
+        """Return exact native owner state without exposing draft contents."""
+        with self._runtime_lock:
+            busy_sids = set(self._runtime_busy)
+            reservations = dict(self._runtime_work_reservations)
+        sids = set(self._vtes) | set(self._vte_pids) | set(self._runtime_state)
+        entries = []
+        for sid in sorted(sids):
+            pid = self._vte_pids.get(sid)
+            entries.append(
+                {
+                    "sid": sid,
+                    "agent": self._sid_agent.get(sid, ""),
+                    "cwd": self._runtime_cwd.get(sid, ""),
+                    "alive": self._runtime_pid_alive(pid),
+                    "state": self._runtime_state.get(sid, "closed"),
+                    "busy": sid in busy_sids or self._runtime_has_active_turn(sid),
+                    "draft": bool(self._input_drafts.get(sid, "").strip()),
+                    "reserved": sid in reservations,
+                    "reservation_item_id": reservations.get(sid),
+                    "owner": "gtk",
+                    "pid": pid,
+                }
+            )
+        split_pair = [
+            sid for sid in self._split_sids if sid
+        ] if self._split_active else []
+        focused_at = self._runtime_last_activity.get(self._runtime_focus_sid or "", 0.0)
+        try:
+            window_active = bool(self.is_active())
+        except (AttributeError, RuntimeError):
+            window_active = False
+        return {
+            "focused_sid": self._runtime_focus_sid,
+            "split_pair": split_pair,
+            "runtimes": entries,
+            "focused_at": focused_at,
+            "window_active": window_active,
+        }
+
     def _runtime_after_lease(self, sid: str) -> bool:
         if self._runtime_is_background_split_sid(sid):
             self._pause_runtime(sid, "bridge-idle")
@@ -911,8 +1313,13 @@ class ChatsApp(Gtk.Window):
     def runtime_begin_turn(self, sid: str) -> None:
         if not sid:
             return
+        turn_offset = self._runtime_transcript_size(sid)
         with self._runtime_lock:
             self._runtime_busy.add(sid)
+            if turn_offset is not None:
+                self._runtime_turn_offsets[sid] = turn_offset
+            else:
+                self._runtime_turn_offsets.pop(sid, None)
         self._runtime_last_activity[sid] = time.monotonic()
         if self._sid_agent.get(sid) == "codex" and not sid.startswith("new-"):
             try:
@@ -927,62 +1334,9 @@ class ChatsApp(Gtk.Window):
                 )
 
     def _poll_voice_inbox(self) -> bool:
-        store = self._voice_inbox_store
-        if store is None or self._voice_inbox_inflight is not None:
-            return True
-        try:
-            from core.voice_work_supervisor import resident_worker_available
+        """Retired unsafe executor. The resident supervisor owns the queue."""
 
-            if resident_worker_available():
-                return True
-            target_sid = f"new-voice-{uuid.uuid4().hex[:14]}"
-            item = store.claim_next(target_sid)
-            if item is None:
-                return True
-            visible_vte = self._current_vte()
-            visible_sid = self._sid_for_vte(visible_vte)
-            cwd = self._runtime_cwd.get(visible_sid or "", "")
-            self._voice_inbox_inflight = (item.item_id, target_sid)
-            work = {
-                "item_id": item.item_id,
-                "target_sid": target_sid,
-                "prompt": item.prompt,
-                "cwd": cwd,
-            }
-            self._eval_js(
-                "Promise.resolve(window.__spawnVoiceInboxItem && "
-                f"window.__spawnVoiceInboxItem({json.dumps(work)}))"
-                ".then(function(result){ window.gtkSend({"
-                "type:'voice-inbox-spawn-result',"
-                f"item_id:{json.dumps(item.item_id)},"
-                f"target_sid:{json.dumps(target_sid)},"
-                "ok:!!(result&&result.ok),cwd:(result&&result.cwd)||''}); })"
-                ".catch(function(error){ window.gtkSend({"
-                "type:'voice-inbox-spawn-result',"
-                f"item_id:{json.dumps(item.item_id)},"
-                f"target_sid:{json.dumps(target_sid)},"
-                "ok:false,error:String(error)}); });"
-            )
-
-            def _expire_voice_spawn() -> bool:
-                if self._voice_inbox_inflight == (item.item_id, target_sid):
-                    store.release(
-                        item.item_id,
-                        target_sid=target_sid,
-                        error="dedicated pane spawn timed out",
-                    )
-                    self._voice_inbox_inflight = None
-                    print("[voice-inbox] dedicated pane spawn timed out", flush=True)
-                return False
-
-            GLib.timeout_add(15_000, _expire_voice_spawn)
-        except Exception as error:
-            inflight = self._voice_inbox_inflight
-            if inflight is not None:
-                store.release(inflight[0], target_sid=inflight[1], error=str(error))
-                self._voice_inbox_inflight = None
-            print(f"[voice-inbox] poll failed: {error}", flush=True)
-        return True
+        return False
 
     def notify_runtime_turn_finished(self, sid: str) -> None:
         if sid:
@@ -991,6 +1345,7 @@ class ChatsApp(Gtk.Window):
     def _runtime_turn_finished(self, sid: str) -> bool:
         with self._runtime_lock:
             self._runtime_busy.discard(sid)
+            self._runtime_turn_offsets.pop(sid, None)
         self._runtime_last_activity[sid] = time.monotonic()
         if self._runtime_is_background_split_sid(sid):
             def _pause_after_turn() -> bool:
@@ -1108,13 +1463,13 @@ class ChatsApp(Gtk.Window):
             elapsed_ms = (time.perf_counter() - started) * 1000
             print(f"[runtime] woke {sid[:8]} in {elapsed_ms:.2f}ms", flush=True)
             if focus and sid in self._vtes:
-                GLib.idle_add(self._vtes[sid].grab_focus)
+                self._queue_vte_focus(self._vtes[sid])
             return True
         if self._runtime_pid_alive(pid):
             self._set_runtime_state(sid, "live", reason)
             self._runtime_last_activity[sid] = time.monotonic()
             if focus and sid in self._vtes:
-                GLib.idle_add(self._vtes[sid].grab_focus)
+                self._queue_vte_focus(self._vtes[sid])
             return True
         if state == "waking":
             return True
@@ -1217,15 +1572,32 @@ class ChatsApp(Gtk.Window):
                 self._runtime_last_activity[sid] = now
 
     def _sweep_runtime_idle(self) -> bool:
+        """Idle every pane to frozen, swap-reclaimed standby.
+
+        Covers stack panes as well as split ones. The focused pane is exempt
+        here; protected and pinned-split runtimes are exempt inside
+        _pause_runtime. Reclaim fires once per standby stretch and the flag
+        clears whenever the runtime leaves the paused state.
+        """
         now = time.monotonic()
-        if not self._split_active or self._split_pinned:
-            return True
-        for sid in self._split_sids:
-            if not sid or sid == self._runtime_focus_sid:
+        for sid, pid in list(self._vte_pids.items()):
+            if not sid or sid.startswith("new-") or sid == self._runtime_focus_sid:
+                continue
+            if not self._runtime_pid_alive(pid):
                 continue
             last = self._runtime_last_activity.get(sid, 0.0)
-            if now - last >= self._runtime_idle_seconds:
-                self._pause_runtime(sid, "idle-standby")
+            waiting_for_reset = self._runtime_activity_reader.waiting_for_usage_reset(
+                self._runtime_transcript_path(sid),
+                self._sid_agent.get(sid, ""),
+            )
+            if not waiting_for_reset and now - last < self._runtime_idle_seconds:
+                continue
+            if self._runtime_state.get(sid) != "paused":
+                reason = "usage-reset-wait" if waiting_for_reset else "idle-standby"
+                if not self._pause_runtime(sid, reason):
+                    continue
+            if sid not in self._runtime_reclaimed:
+                self._reclaim_runtime_memory(sid, pid)
         return True
 
     def _set_split_pinned(self, pinned: bool, focus_sid: str | None = None) -> None:
@@ -1248,6 +1620,7 @@ class ChatsApp(Gtk.Window):
             self._runtime_last_output,
             self._runtime_file_paths,
             self._runtime_started_at,
+            self._runtime_turn_offsets,
             self._runtime_stop_reasons,
             self._runtime_sleep_after_wake,
         ):
@@ -1259,14 +1632,47 @@ class ChatsApp(Gtk.Window):
         if old in self._runtime_wake_after_stop:
             self._runtime_wake_after_stop.discard(old)
             self._runtime_wake_after_stop.add(new)
+        tail_follow = getattr(self, "_vte_tail_follow_until", None)
+        if tail_follow is not None:
+            tail_follow.pop(old, None)
+        pending_scrolls = getattr(self, "_vte_tail_scroll_pending", None)
+        if pending_scrolls is not None:
+            pending_scrolls.discard(old)
+        migrated_vte = self._vtes.get(new)
+        if migrated_vte is not None:
+            with suppress(AttributeError, RuntimeError):
+                migrated_vte.set_scroll_on_output(False)
         with self._runtime_lock:
             if old in self._runtime_leases:
                 self._runtime_leases[new] = self._runtime_leases.pop(old)
+            if old in self._runtime_work_reservations:
+                self._runtime_work_reservations[new] = (
+                    self._runtime_work_reservations.pop(old)
+                )
         if self._runtime_focus_sid == old:
             self._runtime_focus_sid = new
         state = self._runtime_state.get(new)
         if state:
             self._set_runtime_state(new, state, "sid-migrated")
+
+    def _open_external_uri(self, value: object) -> bool:
+        uri = _normalize_external_uri(value)
+        if not uri:
+            print(f"[external-link] rejected URI: {str(value)[:120]}", flush=True)
+            return False
+        try:
+            if Gtk.show_uri_on_window(self, uri, Gdk.CURRENT_TIME) is not False:
+                print(f"[external-link] opened {uri[:120]}", flush=True)
+                return True
+        except Exception as error:
+            print(f"[external-link] GTK launch failed: {error}", flush=True)
+        try:
+            Gio.AppInfo.launch_default_for_uri(uri, None)
+            print(f"[external-link] opened via Gio {uri[:120]}", flush=True)
+            return True
+        except Exception as error:
+            print(f"[external-link] launch failed for {uri[:120]}: {error}", flush=True)
+            return False
 
     # ------------------------------------------------------------------
     # JS bridge
@@ -1287,8 +1693,14 @@ class ChatsApp(Gtk.Window):
             self._show_usage_popover(payload)
         elif kind == "usage-popover-hide":
             self._schedule_usage_popover_hide(0 if payload.get("immediate") else 160)
+        elif kind == "open-external-uri":
+            self._open_external_uri(payload.get("uri"))
         elif kind == "code-rect":
             self._set_rect(payload.get("rect"))
+        elif kind == "code-tab-visible":
+            self._set_terminal_view_visible(
+                bool(payload.get("visible")), payload.get("rect")
+            )
         elif kind == "code-close":
             self._kill_session(payload.get("sid"))
         # === SPLIT FEATURE ===
@@ -1311,6 +1723,12 @@ class ChatsApp(Gtk.Window):
             submit = bool(payload.get("submit"))
             vte = self._vtes.get(sid) if sid else self._current_vte()
             sid = sid or self._sid_for_vte(vte)
+            if sid and self.runtime_work_reservation(sid):
+                print(
+                    f"[bridge] blocked manual feed for reserved runtime {sid[:8]}",
+                    flush=True,
+                )
+                return
             if vte is None and text:
                 print(f"[bridge] feed-text no VTE for {(sid or '')[:8]}", flush=True)
             if vte is not None and text:
@@ -1341,7 +1759,7 @@ class ChatsApp(Gtk.Window):
                         else:
                             vte.feed_child(text.encode("utf-8"))
                             self._draft_append(vte, text)
-                        GLib.idle_add(vte.grab_focus)
+                        self._queue_vte_focus(vte)
                     except Exception as e:
                         print(f"[bridge] feed-text failed: {e}", flush=True)
                     return False
@@ -1399,37 +1817,6 @@ class ChatsApp(Gtk.Window):
                 a, b = self._split_sids
                 self._split_sids = (new if a == old else a, new if b == old else b)
             print(f"[migrate] {old[:8]} → {new[:8]}", flush=True)
-        elif kind == "voice-inbox-spawn-result":
-            item_id = str(payload.get("item_id") or "")
-            target_sid = str(payload.get("target_sid") or "")
-            expected = self._voice_inbox_inflight
-            if not expected or expected != (item_id, target_sid):
-                return
-            self._voice_inbox_inflight = None
-            store = self._voice_inbox_store
-            if store is None:
-                return
-            if payload.get("ok"):
-                changed = store.acknowledge_started(
-                    item_id,
-                    target_sid=target_sid,
-                    cwd=str(payload.get("cwd") or ""),
-                )
-                print(
-                    f"[voice-inbox] spawned {item_id[:8]} as "
-                    f"{target_sid[:14]} started={changed}",
-                    flush=True,
-                )
-            else:
-                store.release(
-                    item_id,
-                    target_sid=target_sid,
-                    error=str(payload.get("error") or "pane spawn failed"),
-                )
-                print(
-                    f"[voice-inbox] spawn failed: {payload.get('error')}",
-                    flush=True,
-                )
     # ------------------------------------------------------------------
     # Session lifecycle — per-session VTE in the stack
     # ------------------------------------------------------------------
@@ -1442,6 +1829,13 @@ class ChatsApp(Gtk.Window):
             return
         sid = payload.get("sid")
         if not sid:
+            return
+        if not payload.get("isNew") and meta_sync.external_runtime_active(sid):
+            print(f"[vte] refusing duplicate resume for external runtime {sid[:8]}", flush=True)
+            self._eval_js(
+                "window.onGtkExternalRuntime && "
+                f"window.onGtkExternalRuntime({json.dumps(sid)});"
+            )
             return
         t0 = time.monotonic()
         previous_visible = [
@@ -1482,7 +1876,8 @@ class ChatsApp(Gtk.Window):
                 if self._stack.get_visible_child_name() != sid:
                     self._stack.set_visible_child_name(sid)
                 self._activate_runtime(sid, "shown")
-                GLib.idle_add(existing_vte.grab_focus)
+                self._arm_vte_tail_follow(sid, existing_vte)
+                self._queue_vte_focus(existing_vte)
                 self._evict_runtime_sids(previous_visible, {sid})
                 print(f"[swap] {sid[:8]} swap took {(time.monotonic()-t0)*1000:.1f}ms", flush=True)
                 return
@@ -1490,7 +1885,8 @@ class ChatsApp(Gtk.Window):
                 if self._stack.get_visible_child_name() != sid:
                     self._stack.set_visible_child_name(sid)
                 self._activate_runtime(sid, "shown")
-                GLib.idle_add(existing_vte.grab_focus)
+                self._arm_vte_tail_follow(sid, existing_vte)
+                self._queue_vte_focus(existing_vte)
                 self._evict_runtime_sids(previous_visible, {sid})
                 return
             # Stale VTE — destroy it so the spawn path below builds a fresh one
@@ -1529,6 +1925,7 @@ class ChatsApp(Gtk.Window):
         self._stack.add_named(vte, sid)
         vte.show()
         self._stack.set_visible_child_name(sid)
+        self._arm_vte_tail_follow(sid, vte)
 
         # Resolve agent: codex sessions resume via codex CLI, otherwise claude.
         agent = (session or {}).get("agent") or payload.get("agent") or "claude"
@@ -1600,13 +1997,59 @@ class ChatsApp(Gtk.Window):
         except Exception as e:
             print(f"[vte] URL match register failed: {e}", flush=True)
 
+    def _queue_vte_tail_scroll(self, sid: str, vte: Vte.Terminal) -> None:
+        if sid in self._vte_tail_scroll_pending:
+            return
+        self._vte_tail_scroll_pending.add(sid)
+
+        def _scroll() -> bool:
+            self._vte_tail_scroll_pending.discard(sid)
+            if self._vtes.get(sid) is not vte:
+                return False
+            if self._vte_tail_follow_until.get(sid, 0.0) < time.monotonic():
+                return False
+            try:
+                adjustment = vte.get_vadjustment()
+                target = max(
+                    adjustment.get_lower(),
+                    adjustment.get_upper() - adjustment.get_page_size(),
+                )
+                adjustment.set_value(target)
+            except (AttributeError, RuntimeError):
+                pass
+            return False
+
+        GLib.idle_add(_scroll)
+
+    def _stop_vte_tail_follow(
+        self, sid: str, vte: Vte.Terminal | None = None
+    ) -> None:
+        current = self._vtes.get(sid)
+        if vte is not None and current is not vte:
+            return
+        self._vte_tail_follow_until.pop(sid, None)
+        if current is not None:
+            with suppress(AttributeError, RuntimeError):
+                current.set_scroll_on_output(False)
+
+    def _arm_vte_tail_follow(self, sid: str, vte: Vte.Terminal) -> None:
+        """Keep a newly opened transcript at its tail during initial redraw."""
+        deadline = time.monotonic() + (_VTE_TAIL_FOLLOW_MS / 1000.0)
+        self._vte_tail_follow_until[sid] = deadline
+        with suppress(AttributeError, RuntimeError):
+            vte.set_scroll_on_output(True)
+        self._queue_vte_tail_scroll(sid, vte)
+
+        def _release() -> bool:
+            if self._vte_tail_follow_until.get(sid) == deadline:
+                self._stop_vte_tail_follow(sid, vte)
+            return False
+
+        GLib.timeout_add(_VTE_TAIL_FOLLOW_MS, _release)
+
     def _on_vte_scroll(self, vte: Vte.Terminal, event):
         # Scroll the VTE scrollback directly, bypassing app mouse reporting.
         try:
-            adj = vte.get_vadjustment()
-            upper, page, val = adj.get_upper(), adj.get_page_size(), adj.get_value()
-            if upper <= page:
-                return False  # no scrollback (alt screen) → let the app have it
             lines = 3.0
             if event.direction == Gdk.ScrollDirection.UP:
                 delta = -lines
@@ -1618,6 +2061,14 @@ class ChatsApp(Gtk.Window):
                     return False
             else:
                 return False
+            if delta < 0:
+                sid = self._sid_for_vte(vte)
+                if sid:
+                    self._stop_vte_tail_follow(sid, vte)
+            adj = vte.get_vadjustment()
+            upper, page, val = adj.get_upper(), adj.get_page_size(), adj.get_value()
+            if upper <= page:
+                return False  # no scrollback (alt screen) → let the app have it
             adj.set_value(max(adj.get_lower(), min(val + delta, upper - page)))
             return True
         except Exception:
@@ -1625,40 +2076,38 @@ class ChatsApp(Gtk.Window):
 
     def _on_vte_button_press(self, vte: Vte.Terminal, event):
         sid = self._sid_for_vte(vte)
-        if sid:
-            self._activate_runtime(sid, "clicked")
         # Left-click with Ctrl → open URL in the user's default browser.
         # Plain left-click falls through to VTE for selection.
-        if event.button != 1:
-            return False
-        if not (event.state & Gdk.ModifierType.CONTROL_MASK):
-            return False
-
-        uri = None
-        # OSC-8 hyperlink takes priority (apps like newer claude may emit them)
-        try:
-            uri = vte.hyperlink_check_event(event)
-        except Exception:
+        if event.button == 1 and event.state & Gdk.ModifierType.CONTROL_MASK:
             uri = None
-        if not uri:
+            # OSC-8 hyperlink takes priority (apps like newer claude may emit them)
             try:
-                match_text, _tag = vte.match_check_event(event)
-                if match_text:
-                    uri = match_text
-                    if uri.startswith("www."):
-                        uri = "http://" + uri
-            except Exception:
-                pass
+                uri = vte.hyperlink_check_event(event)
+            except Exception as e:
+                print(f"[vte-link] hyperlink_check_event failed: {e}", flush=True)
+            if not uri:
+                try:
+                    match_text, _tag = vte.match_check_event(event)
+                    if match_text:
+                        uri = match_text
+                        if uri.startswith("www."):
+                            uri = "http://" + uri
+                except Exception as e:
+                    print(f"[vte-link] match_check_event failed: {e}", flush=True)
+            if uri and self._open_external_uri(uri):
+                return True
+            if not uri:
+                print(
+                    "[vte-link] ctrl+click produced no URI "
+                    f"(x={int(event.x)} y={int(event.y)} sid={sid[:8] if sid else '?'})",
+                    flush=True,
+                )
 
-        if not uri:
-            return False
-
-        try:
-            Gio.AppInfo.launch_default_for_uri(uri, None)
-            return True
-        except Exception as e:
-            print(f"[vte] launch_default_for_uri failed: {e}", flush=True)
-            return False
+        # Resolve a link before waking a sleeping runtime. Waking redraws the
+        # terminal and can invalidate the event's row before VTE checks it.
+        if sid:
+            self._activate_runtime(sid, "clicked")
+        return False
 
     def _on_vte_focus_in(self, vte: Vte.Terminal, _event):
         sid = self._sid_for_vte(vte)
@@ -1672,6 +2121,8 @@ class ChatsApp(Gtk.Window):
             now = time.monotonic()
             self._runtime_last_activity[sid] = now
             self._runtime_last_output[sid] = now
+            if self._vte_tail_follow_until.get(sid, 0.0) >= now:
+                self._queue_vte_tail_scroll(sid, vte)
 
     def _vte_cell_geometry(self, vte: Vte.Terminal) -> tuple[int, int]:
         width = max(0, vte.get_allocated_width())
@@ -1717,6 +2168,13 @@ class ChatsApp(Gtk.Window):
 
     def _spawn_claude(self, vte: Vte.Terminal, sid: str, cwd: str, resume: bool = True,
                       agent: str = "claude", focus: bool = True):
+        if resume and sid and meta_sync.external_runtime_active(sid):
+            print(f"[vte] blocked external runtime resume for {sid[:8]}", flush=True)
+            self._eval_js(
+                "window.onGtkExternalRuntime && "
+                f"window.onGtkExternalRuntime({json.dumps(sid)});"
+            )
+            return
         # Remember per-sid agent so split-resize logic can target codex specifically.
         if not hasattr(self, "_sid_agent"):
             self._sid_agent = {}
@@ -1757,6 +2215,18 @@ class ChatsApp(Gtk.Window):
                 argv += ["-r", sid]
             elif seed:
                 argv.append(seed)
+
+            # === MODEL MASK === Cosmetic PTY relay: shows the assigned Sol,
+            # Terra, or Luna model on matching Codex-relay /workflows rows.
+            # DEFAULT OFF — wrapping claude in this relay adds keystroke latency
+            # (vte→relay→claude round-trips every byte), and Fleet's own panel now
+            # shows real Sol/Terra/Luna identity, so the mask is obsolete. Strict
+            # opt-in only: SERENA_MODEL_MASK=on to re-enable.
+            if os.environ.get("SERENA_MODEL_MASK", "off").lower() in ("on", "1", "true"):
+                _mask = str(Path(__file__).resolve().parent.parent / "ui" / "pty_model_mask.py")
+                if os.path.exists(_mask):
+                    argv = [sys.executable, _mask, "--"] + argv
+            # === MODEL MASK END ===
         cols, rows = self._sync_vte_size(vte, sid)
         from core.billing import strip_metered_auth_env
 
@@ -1797,7 +2267,7 @@ class ChatsApp(Gtk.Window):
                 )
                 return
             if focus:
-                GLib.idle_add(vte.grab_focus)
+                self._queue_vte_focus(vte)
             if agent == "codex" and resume:
                 self._schedule_codex_resume_stabilizers(sid, vte)
 
@@ -1831,7 +2301,7 @@ class ChatsApp(Gtk.Window):
                     self._sleep_runtime(sid, pending_sleep)
                     return
                 if focus:
-                    GLib.idle_add(vte.grab_focus)
+                    self._queue_vte_focus(vte)
                 if agent == "codex" and resume:
                     self._schedule_codex_resume_stabilizers(sid, vte)
             else:
@@ -1994,6 +2464,19 @@ class ChatsApp(Gtk.Window):
         left_sid, right_sid = sids[0], sids[1]
         if not left_sid or not right_sid or left_sid == right_sid:
             return
+        spawn_meta = payload.get("spawn_meta") or {}
+        for candidate_sid in (left_sid, right_sid):
+            candidate = spawn_meta.get(candidate_sid) or {}
+            if not candidate.get("isNew") and meta_sync.external_runtime_active(candidate_sid):
+                print(
+                    f"[split] refusing external runtime {candidate_sid[:8]}",
+                    flush=True,
+                )
+                self._eval_js(
+                    "window.onGtkExternalRuntime && "
+                    f"window.onGtkExternalRuntime({json.dumps(candidate_sid)});"
+                )
+                return
         previous_visible = [
             sid for sid in (
                 self._split_sids if self._split_active else (
@@ -2001,7 +2484,7 @@ class ChatsApp(Gtk.Window):
                 )
             ) if sid and sid != "__blank__"
         ]
-        meta = payload.get("spawn_meta") or {}
+        meta = spawn_meta
         # Front-door seeds for split spawns — staged per-sid, consumed in
         # _spawn_claude when the deferred spawn actually fires.
         for _sid, _m in meta.items():
@@ -2067,6 +2550,7 @@ class ChatsApp(Gtk.Window):
         self._runtime_focus_sid = focus_sid
         self._paned.show()
         self.overlay.queue_resize()
+        self._split_pos_settling = True
         self._apply_split_ratio()
 
         runtime_specs = (
@@ -2074,6 +2558,7 @@ class ChatsApp(Gtk.Window):
             (right_sid, right_vte, right_cwd, right_agent, right_new, right_created),
         )
         for runtime_sid, vte, cwd, agent, is_new, created in runtime_specs:
+            self._arm_vte_tail_follow(runtime_sid, vte)
             must_live = bool(
                 self._split_pinned
                 or runtime_sid == focus_sid
@@ -2104,7 +2589,7 @@ class ChatsApp(Gtk.Window):
 
         focus_vte = self._vtes.get(focus_sid)
         if focus_vte is not None:
-            GLib.idle_add(focus_vte.grab_focus)
+            self._queue_vte_focus(focus_vte)
         if not self._split_pinned:
             self._schedule_exclusive_runtime(focus_sid)
         self._evict_runtime_sids(previous_visible, {left_sid, right_sid})
@@ -2117,12 +2602,12 @@ class ChatsApp(Gtk.Window):
         # into a narrow paned half. Codex won't redraw without the signal.
         GLib.timeout_add(220, lambda: (self._kick_split_winch(), False)[1])
 
-    def _apply_split_ratio(self) -> None:
+    def _apply_split_ratio(self) -> bool:
         """Initial position from the ratio. The size-allocate handler refines
         this every layout cycle, so we just need a reasonable first guess."""
         alloc = self._paned.get_allocated_width()
         if alloc <= 10:
-            alloc = self._vte_rect[2] if self._vte_rect else 800
+            return False
         min_each = 200
         if alloc < 2 * min_each:
             target_pos = alloc // 2
@@ -2130,9 +2615,11 @@ class ChatsApp(Gtk.Window):
             target_pos = max(min_each, min(int(alloc * self._split_ratio), alloc - min_each))
         self._last_programmatic_pos = target_pos
         self._paned.set_position(target_pos)
+        self._paned.queue_resize()
+        return True
 
     def _on_paned_allocate(self, widget, allocation):
-        if not self._split_active:
+        if not self._split_active or not self._terminal_view_visible:
             return
         alloc_w = allocation.width
         if alloc_w <= 10:
@@ -2146,10 +2633,19 @@ class ChatsApp(Gtk.Window):
         # Wider drift threshold (30px) — GtkPaned snaps near children's preferred
         # widths, so a 6px threshold caused a feedback loop with the notify::
         # position handler recapturing slightly-off ratios.
-        if abs(cur - target_pos) > 30:
+        settling = self._split_pos_settling
+        if settling or abs(cur - target_pos) > 30:
             self._last_programmatic_pos = target_pos
             self._paned.set_position(target_pos)
+            # set_position inside size-allocate changes the property after the
+            # current child allocation. Queue one more pass so the children,
+            # not just get_position(), receive the restored ratio.
+            self._paned.queue_resize()
             self._kick_split_winch()
+        if settling:
+            # notify::position from set_position is synchronous, so it was
+            # safely ignored while this flag was still armed.
+            self._split_pos_settling = False
 
     def _wire_paned_persist(self) -> None:
         if getattr(self, "_paned_pos_handler", None):
@@ -2162,6 +2658,8 @@ class ChatsApp(Gtk.Window):
             self._paned_winch_token = 0
         def _on_pos(_paned, _gp):
             try:
+                if self._split_pos_settling or not self._terminal_view_visible:
+                    return
                 pos = self._paned.get_position()
                 alloc_w = self._paned.get_allocated_width()
                 if alloc_w <= 10:
@@ -2208,6 +2706,7 @@ class ChatsApp(Gtk.Window):
         old_sids = tuple(sid for sid in self._split_sids if sid)
         self._tear_down_paned()
         self._split_active = False
+        self._split_pos_settling = False
         self._split_sids = (None, None)
         self._split_pinned = False
         if focus_sid and focus_sid in self._vtes:
@@ -2215,7 +2714,7 @@ class ChatsApp(Gtk.Window):
             self._stack_hidden = False
             self._runtime_focus_sid = focus_sid
             self._wake_runtime(focus_sid, "split-exit", focus=False)
-            GLib.idle_add(self._vtes[focus_sid].grab_focus)
+            self._queue_vte_focus(self._vtes[focus_sid])
             self._evict_runtime_sids(old_sids, {focus_sid})
         else:
             self._stack.set_visible_child_name("__blank__")
@@ -2249,6 +2748,9 @@ class ChatsApp(Gtk.Window):
                 pass
             except Exception as e:
                 print(f"[vte] kill error: {e}", flush=True)
+        vte = self._vtes.get(sid)
+        self._stop_vte_tail_follow(sid, vte)
+        self._vte_tail_scroll_pending.discard(sid)
         vte = self._vtes.pop(sid, None)
         if vte is not None:
             self._runtime_closed_vtes.add(id(vte))
@@ -2270,6 +2772,7 @@ class ChatsApp(Gtk.Window):
         self._runtime_last_output.pop(sid, None)
         self._runtime_file_paths.pop(sid, None)
         self._runtime_started_at.pop(sid, None)
+        self._runtime_turn_offsets.pop(sid, None)
         self._runtime_stop_reasons.pop(sid, None)
         self._runtime_sleep_after_wake.pop(sid, None)
         self._runtime_wake_after_stop.discard(sid)
@@ -2277,6 +2780,7 @@ class ChatsApp(Gtk.Window):
         with self._runtime_lock:
             self._runtime_busy.discard(sid)
             self._runtime_leases.pop(sid, None)
+            self._runtime_work_reservations.pop(sid, None)
         # Notify JS so the sidebar marker clears immediately
         self._eval_js(f"window.onGtkCodeExit && window.onGtkCodeExit({json.dumps(sid)});")
 
@@ -2373,6 +2877,14 @@ class ChatsApp(Gtk.Window):
                 return
 
             self._vte_pids.pop(actual_sid, None)
+            tail_follow = getattr(self, "_vte_tail_follow_until", None)
+            if tail_follow is not None:
+                tail_follow.pop(actual_sid, None)
+            pending_scrolls = getattr(self, "_vte_tail_scroll_pending", None)
+            if pending_scrolls is not None:
+                pending_scrolls.discard(actual_sid)
+            with suppress(AttributeError, RuntimeError):
+                term.set_scroll_on_output(False)
             sleep_reason = self._runtime_stop_reasons.pop(actual_sid, None)
             if sleep_reason is not None:
                 self._set_runtime_state(actual_sid, "asleep", sleep_reason)
@@ -2387,6 +2899,8 @@ class ChatsApp(Gtk.Window):
                     )
                 return
 
+            with self._runtime_lock:
+                self._runtime_work_reservations.pop(actual_sid, None)
             self._set_runtime_state(actual_sid, "crashed", why)
             try:
                 from core.voice_inbox import get_default_voice_inbox
@@ -2414,6 +2928,12 @@ class ChatsApp(Gtk.Window):
     # ------------------------------------------------------------------
     def _on_drag_data_received(self, widget, context, x, y, data, info, time_):
         from urllib.parse import unquote, urlparse
+
+        sid = self._sid_for_vte(widget)
+        reservation_reader = getattr(self, "runtime_work_reservation", None)
+        if sid and callable(reservation_reader) and reservation_reader(sid):
+            context.finish(False, False, time_)
+            return
 
         if not data:
             context.finish(False, False, time_)
@@ -2480,6 +3000,9 @@ class ChatsApp(Gtk.Window):
         # When the window is focused, prefer an active VTE if one is visible.
         # Otherwise ensure the embedded WebView has focus so list/search/search-bar
         # keyboard handling works on startup / after tab restores.
+        if not self._terminal_view_visible:
+            self.web.grab_focus()
+            return
         if self._split_active:
             for sid in self._split_sids:
                 if sid and sid in self._vtes:
@@ -2511,7 +3034,8 @@ class ChatsApp(Gtk.Window):
         if not self._split_active and self._stack.get_visible_child_name() != sid:
             return
         self._activate_runtime(sid, "code-focus")
-        GLib.idle_add(vte.grab_focus)
+        self._arm_vte_tail_follow(sid, vte)
+        self._queue_vte_focus(vte)
 
     def _on_focus_in(self, *_):
         # Keep keyboard input flowing after window activation without stealing
@@ -2525,6 +3049,13 @@ class ChatsApp(Gtk.Window):
         shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
         alt = bool(state & Gdk.ModifierType.MOD1_MASK)
         key = Gdk.keyval_to_lower(event.keyval)
+
+        focused_vte = self._focused_vte()
+        focused_sid = self._sid_for_vte(focused_vte)
+        if focused_sid and self.runtime_work_reservation(focused_sid):
+            # The accepted work bridge feeds this VTE directly. Swallow every
+            # manual keystroke until that exact item releases its reservation.
+            return True
 
         # Copy/paste bindings:
         #   Ctrl+A  → copy current input draft to clipboard (typed-since-last-Enter)
@@ -2556,6 +3087,7 @@ class ChatsApp(Gtk.Window):
                     if sid:
                         with self._runtime_lock:
                             self._runtime_busy.discard(sid)
+                            self._runtime_turn_offsets.pop(sid, None)
                     return False
                 if key == Gdk.KEY_v:
                     cb = Gtk.Clipboard.get_default(self.get_display())
@@ -2686,6 +3218,12 @@ class ChatsApp(Gtk.Window):
                     pass
         for sid in list(self._vte_pids):
             self._kill_session(sid)
+        if not self._use_native_vte:
+            # WebSocket teardown normally closes renderer-owned PTYs. Kill the
+            # local registry too so a hard window close cannot orphan a CLI.
+            from ui import pty_terminal
+
+            pty_terminal.kill_all()
         Gtk.main_quit()
 
 
@@ -2694,6 +3232,10 @@ class ChatsApp(Gtk.Window):
 # ---------------------------------------------------------------------------
 
 def run(width: int = 1400, height: int = 900) -> None:
+    global _LOG_PATH
+    if _LOG_PATH is None:
+        _LOG_PATH = _install_file_logging()
+        print(f"[boot] logging to {_LOG_PATH}", flush=True)
     # === STARTUP === Fast path: get Flask + the GTK window up FIRST, then do
     # the heavy work (index scans, MCP sync, MCP multiplex spawn) in
     # background threads. Previously these ran serially before Flask started,

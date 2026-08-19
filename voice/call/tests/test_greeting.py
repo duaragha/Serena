@@ -53,6 +53,46 @@ def test_greeting_is_once_after_playback_and_retryable_before_delivery(
         assert path.stat().st_mode & 0o077 == 0
 
 
+def test_call_greeting_carries_the_part_of_day_and_survives_a_reconnect(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "call-state.json"
+    clock = Clock(datetime(2026, 8, 5, 23, 40, tzinfo=timezone.utc))
+    state = CallGreetingState(path, clock=clock)
+
+    context = state.claim("call-late")
+
+    assert context is not None
+    assert context.daypart == "late-night"
+    assert 'day-part="late-night"' in context.prompt()
+    assert "let the part of day color the wording" in context.prompt()
+
+    state.release("call-late")
+    assert CallGreetingState(path, clock=clock).claim("call-late") == context
+
+
+def test_a_pending_greeting_without_a_recorded_bucket_recovers_it(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "call-state.json"
+    path.write_text(
+        '{"version":2,"date":"2026-08-05","calls_today":1,'
+        '"seen_call_ids":["call-old"],'
+        '"pending":{"call-old":{"first_call_today":true,"call_number_today":1,'
+        '"local_time":"2026-08-05T08:15-04:00"}}}',
+        encoding="utf-8",
+    )
+    state = CallGreetingState(
+        path,
+        clock=lambda: datetime(2026, 8, 5, 8, 20, tzinfo=timezone.utc),
+    )
+
+    context = state.claim("call-old")
+
+    assert context is not None
+    assert context.daypart == "morning"
+
+
 def test_corrupt_or_unwritable_state_fails_soft(tmp_path: Path) -> None:
     corrupt = tmp_path / "corrupt.json"
     corrupt.write_text("not json", encoding="utf-8")

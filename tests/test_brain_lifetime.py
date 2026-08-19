@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import brain_daemon, brain_lifetime
+from core import brain_daemon, brain_lifetime, indexer
 from core.brain_lifetime import (
     BRAIN_SDK_ROLE,
     BRAIN_SDK_ROLE_ENV,
@@ -28,6 +28,7 @@ from core.brain_lifetime import (
     secure_directory,
     write_text_atomic,
 )
+from core.voice_transcripts import VoiceTranscriptStore
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +38,12 @@ def _isolate_brain_system_prompt(monkeypatch, tmp_path: Path) -> None:
         "BRAIN_SYSTEM_PROMPT_FILE",
         tmp_path / "brain-system-prompt.md",
     )
+    monkeypatch.setattr(
+        brain_daemon,
+        "_recalled_voice_history_block",
+        lambda _text: "",
+    )
+    monkeypatch.setattr(indexer, "index_voice_transcript", lambda *_args, **_kwargs: True)
 
 
 class CapturedOptions:
@@ -146,6 +153,7 @@ def _manager(tmp_path: Path) -> brain_daemon.ResidentClientManager:
         [],
         journal=RecentThreadJournal(tmp_path / "thread.json"),
         lifetime=LifetimeLedger(tmp_path / "lifetime.json"),
+        voice_transcripts=VoiceTranscriptStore(tmp_path / "voice.jsonl"),
     )
 
 
@@ -656,6 +664,83 @@ def test_non_journaled_probe_never_enters_rotation_handoff(
     asyncio.run(scenario())
 
 
+def test_completed_voice_turn_is_persisted_before_delivery(
+    monkeypatch, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        manager = _manager(tmp_path)
+
+        class UsageClient:
+            async def get_context_usage(self) -> dict:
+                return {}
+
+        manager.client = UsageClient()
+        manager.session_id = "brain-session"
+        monkeypatch.setattr(brain_daemon, "process_tree_snapshot", _fake_process_snapshot)
+        result = await manager.record_completed_turn(
+            payload={
+                "protocol": "voice",
+                "text": "keep this one",
+                "call_id": "desk-call",
+                "turn_id": "desk-call:1",
+            },
+            assistant_text="i kept it",
+            selected_model="sonnet",
+            session_id="brain-session",
+            compact_boundary_seen=False,
+        )
+
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "voice.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert [row["message"]["content"][0]["text"] for row in rows] == [
+            "keep this one",
+            "i kept it",
+        ]
+        assert result["journal_id"]
+        assert manager.journal.delivery_committed(result["journal_id"]) is False
+
+    asyncio.run(scenario())
+
+
+def test_voice_transcript_failure_blocks_delivery_and_discards_pending_journal(
+    monkeypatch, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        manager = _manager(tmp_path)
+
+        class UsageClient:
+            async def get_context_usage(self) -> dict:
+                return {}
+
+        class BrokenTranscript:
+            path = tmp_path / "broken.jsonl"
+
+            def append_turn(self, **_kwargs) -> bool:
+                raise OSError("disk unavailable")
+
+        manager.client = UsageClient()
+        manager.voice_transcripts = BrokenTranscript()
+        monkeypatch.setattr(brain_daemon, "process_tree_snapshot", _fake_process_snapshot)
+        with pytest.raises(RuntimeError, match="voice transcript failed"):
+            await manager.record_completed_turn(
+                payload={
+                    "protocol": "voice",
+                    "text": "do not lose this",
+                    "call_id": "desk-call",
+                    "turn_id": "desk-call:2",
+                },
+                assistant_text="this must not be delivered",
+                selected_model="sonnet",
+                session_id="brain-session",
+                compact_boundary_seen=False,
+            )
+        assert manager.journal.snapshot()["entries"] == 0
+
+    asyncio.run(scenario())
+
+
 def test_queued_turn_waits_until_rotation_is_fully_warm(monkeypatch, tmp_path: Path) -> None:
     async def scenario() -> None:
         FakeSDKClient.instances = []
@@ -739,3 +824,37 @@ def test_surviving_sdk_child_trips_daemon_fatal_event(monkeypatch, tmp_path: Pat
         await manager.stop()
 
     asyncio.run(scenario())
+
+
+def test_a_dead_codex_fallback_degrades_instead_of_killing_the_daemon() -> None:
+    """2026-08-10: stale codex processes held ~/.codex's sqlite locks, the
+    app-server could not initialize, and the daemon died with it, 1603
+    systemd restarts, every spoken turn landing on a corpse. A fallback that
+    cannot start must be a degraded state, never daemon death."""
+    import asyncio
+
+    from core.brain_daemon import ResidentClientManager
+
+    manager = ResidentClientManager.__new__(ResidentClientManager)
+    manager.capacity_reader = object()  # codex_fallback_enabled derives from these
+    manager._codex_brain = None
+    manager.last_error = None
+    manager._codex_blocked_until = 0.0
+
+    class _BrokenBrain:
+        async def start(self):
+            raise RuntimeError(
+                "failed to initialize sqlite state runtime under ~/.codex"
+            )
+
+        async def close(self):
+            pass
+
+    manager.codex_brain_factory = lambda: _BrokenBrain()
+
+    ok = asyncio.run(manager._try_ensure_codex_brain())
+    assert ok is False
+    assert "failed to start" in manager.last_error
+    assert manager._codex_blocked_until > 0
+    # and the broken client was discarded, not left wedged
+    assert manager._codex_brain is None

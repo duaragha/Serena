@@ -1,2 +1,7 @@
 # 3.0.4 shipped without required native binaries; 3.0.5 repairs the wheels.
 pywinpty==3.0.5
+
+# ui.web imports voice.call at boot, and the call pipeline resamples audio with
+# numpy. Without it the frozen sidecar died on startup with an unhandled
+# ModuleNotFoundError before the window ever appeared.
+numpy>=2.1

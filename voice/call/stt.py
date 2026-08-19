@@ -11,6 +11,20 @@ from .process_worker import CancellableModelProcess
 from .protocol import MIC_SAMPLE_RATE
 
 DEFAULT_VOCABULARY_PATH = Path(__file__).with_name("vocabulary.txt")
+DEFAULT_BEAM_SIZE = 5
+
+
+def load_whisper_beam_size() -> int:
+    """Return a bounded decoder beam instead of the old greedy search."""
+
+    raw = os.environ.get("SERENA_CALL_WHISPER_BEAM_SIZE", "").strip()
+    if not raw:
+        return DEFAULT_BEAM_SIZE
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_BEAM_SIZE
+    return min(max(value, 1), 10)
 
 
 def load_whisper_hotwords(path: str | Path | None = None) -> str:
@@ -80,6 +94,7 @@ class FasterWhisperWorker:
         configured = os.environ.get("SERENA_CALL_WHISPER_MODEL")
         self.model_ref = str(model or configured or bundled)
         self.hotwords = load_whisper_hotwords()
+        self.beam_size = load_whisper_beam_size()
         self.device = select_whisper_device()
         self._worker = CancellableModelProcess(
             "stt",
@@ -89,6 +104,7 @@ class FasterWhisperWorker:
                 "compute_type": self.device.compute_type,
                 "sample_rate": MIC_SAMPLE_RATE,
                 "hotwords": self.hotwords,
+                "beam_size": self.beam_size,
             },
             network_disabled=True,
         )

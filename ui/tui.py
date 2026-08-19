@@ -419,8 +419,11 @@ class MemoryScreen(ModalScreen):
             def on_type(mem_type: str) -> None:
                 if not mem_type:
                     mem_type = "general"
-                add_memory(content.strip(), mem_type)
-                self.app.notify(f"Memory saved ({mem_type})")
+                result = add_memory(content.strip(), mem_type)
+                if isinstance(result, str):
+                    self.app.notify(f"Memory proposed, not applied: {result}")
+                else:
+                    self.app.notify(f"Memory saved ({mem_type})")
                 self._refresh_table()
 
             self.app.push_screen(MemoryTypeModal(), on_type)
@@ -434,8 +437,11 @@ class MemoryScreen(ModalScreen):
 
         def on_edit(new_content: str) -> None:
             if new_content.strip() and new_content.strip() != mem["content"]:
-                update_memory(mem["id"], content=new_content.strip())
-                self.app.notify(f"Memory #{mem['id']} updated")
+                result = update_memory(mem["id"], content=new_content.strip())
+                if isinstance(result, str):
+                    self.app.notify(f"Edit proposed, not applied: {result}")
+                else:
+                    self.app.notify(f"Memory #{mem['id']} updated")
                 self._refresh_table()
 
         self.app.push_screen(InputModal("Edit memory:", mem["content"]), on_edit)
@@ -447,8 +453,11 @@ class MemoryScreen(ModalScreen):
 
         def on_type(new_type: str) -> None:
             if new_type and new_type != mem["type"]:
-                update_memory(mem["id"], mem_type=new_type)
-                self.app.notify(f"Memory #{mem['id']} type → {new_type}")
+                result = update_memory(mem["id"], mem_type=new_type)
+                if isinstance(result, str):
+                    self.app.notify(f"Type change proposed, not applied: {result}")
+                else:
+                    self.app.notify(f"Memory #{mem['id']} type → {new_type}")
                 self._refresh_table()
 
         self.app.push_screen(MemoryTypeModal(), on_type)
@@ -462,8 +471,11 @@ class MemoryScreen(ModalScreen):
 
         def on_confirm(confirmed: bool | None) -> None:
             if confirmed:
-                delete_memory(mem["id"])
-                self.app.notify(f"Memory #{mem['id']} deleted")
+                result = delete_memory(mem["id"])
+                if isinstance(result, str):
+                    self.app.notify(f"Forgetting proposed, not applied: {result}")
+                else:
+                    self.app.notify(f"Memory #{mem['id']} deleted")
                 self._refresh_table()
 
         self.app.push_screen(
@@ -1295,7 +1307,7 @@ class ChatsApp(App):
                     deleted = 0
                     for sid in list(self._selected):
                         try:
-                            delete_session(sid)
+                            delete_session(sid, source="serena-tui")
                             deleted += 1
                         except ValueError:
                             pass
@@ -1319,7 +1331,7 @@ class ChatsApp(App):
             def on_confirm_single(confirmed: bool | None) -> None:
                 if confirmed:
                     try:
-                        delete_session(session["session_id"])
+                        delete_session(session["session_id"], source="serena-tui")
                         self.notify(f"Deleted '{title}'")
                         self._last_loaded_sid = None
                         self._load_sessions(self.current_filter_project, self.current_filter_device)

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from core.daypart import DAYPARTS, daypart_for_hour
+
 DEFAULT_STATE_PATH = (
     Path.home() / ".config" / "serena" / "call_state.json"
 )
@@ -21,6 +23,7 @@ class GreetingContext:
     first_call_today: bool
     call_number_today: int
     local_time: str
+    daypart: str = ""
 
     def prompt(self) -> str:
         first = "true" if self.first_call_today else "false"
@@ -28,10 +31,13 @@ class GreetingContext:
             "<call-open "
             f"first-call-today=\"{first}\" "
             f"call-number-today=\"{self.call_number_today}\" "
-            f"local-time=\"{self.local_time}\">\n"
+            f"local-time=\"{self.local_time}\" "
+            f"day-part=\"{self.daypart}\">\n"
             "Raghav just called you and is now listening. Greet him in one "
-            "short, natural spoken line in your normal voice. Use the call "
-            "context when it adds warmth, but never recite the metadata, "
+            "short, natural spoken line in your normal voice. The clock is "
+            "real, so let the part of day color the wording when it lands "
+            "naturally, in your own words rather than a stock phrase. Use the "
+            "call context when it adds warmth, but never recite the metadata, "
             "never explain that this is automated, and never ask an "
             "open-ended question.\n"
             "</call-open>"
@@ -99,6 +105,7 @@ class CallGreetingState:
                     first_call_today=calls_today == 1,
                     call_number_today=calls_today,
                     local_time=now.isoformat(timespec="minutes"),
+                    daypart=daypart_for_hour(now.hour),
                 )
                 pending[call_id] = self._context_value(context)
 
@@ -161,6 +168,7 @@ class CallGreetingState:
             "first_call_today": context.first_call_today,
             "call_number_today": context.call_number_today,
             "local_time": context.local_time,
+            "daypart": context.daypart,
         }
 
     @classmethod
@@ -175,7 +183,18 @@ class CallGreetingState:
             first_call_today=bool(value.get("first_call_today")),
             call_number_today=call_number,
             local_time=local_time,
+            daypart=cls._daypart(value.get("daypart"), local_time),
         )
+
+    @staticmethod
+    def _daypart(value: object, local_time: str) -> str:
+        """Trust a recorded bucket, otherwise recover it from the claimed time."""
+        if isinstance(value, str) and value in DAYPARTS:
+            return value
+        try:
+            return daypart_for_hour(datetime.fromisoformat(local_time).hour)
+        except ValueError:
+            return ""
 
     @staticmethod
     def _pending(state: dict) -> dict[str, dict]:

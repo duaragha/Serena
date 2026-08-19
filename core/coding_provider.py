@@ -7,38 +7,28 @@ could not run it, and sat at "working" until it was cancelled by hand. The
 system already knew: read_fleet_capacity() said codex unusable, claude 43%
 used. Nothing asked it.
 
-So this asks. Both providers healthy keeps the pairing that was chosen for a
-reason, one model writes and a different model reviews, because a reviewer
-that shares the author's blind spots is decoration. When only one provider is
-usable it does both passes, which is worth strictly more than refusing to
-work, and the review runs in a fresh session so it at least re-reads the diff
-cold. When neither is usable nothing is dispatched and the reason is said out
-loud, rather than a job hanging forever with no log line.
+So this asks, then applies the shared Serena policy. The policy may use a
+lighter model for review or a different provider for critical work. When one
+provider is exhausted, each pass takes the first allowed model on the provider
+that remains. When neither is usable nothing is dispatched and the reason is
+said out loud, rather than a job hanging forever with no log line.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from core.coding_job_contract import (
-    CLAUDE_REVIEW_EFFORT,
-    CLAUDE_REVIEW_MODEL,
-    CODEX_EFFORT,
-    CODEX_MODEL,
+from core.coding_model_preferences import (
+    AUTO_MODEL,
+    CLAUDE_MODEL,
+    SONNET_MODEL,
+    normalise_coding_model,
 )
+from core.serena_policy import SerenaPolicyError, classify_risk, resolve_policy
 
-CLAUDE_IMPLEMENT_MODEL = CLAUDE_REVIEW_MODEL
-CLAUDE_IMPLEMENT_EFFORT = CLAUDE_REVIEW_EFFORT
-CODEX_REVIEW_MODEL = CODEX_MODEL
-CODEX_REVIEW_EFFORT = "high"
-
-_MODELS = {
-    ("codex", "implement"): (CODEX_MODEL, CODEX_EFFORT),
-    ("codex", "review"): (CODEX_REVIEW_MODEL, CODEX_REVIEW_EFFORT),
-    ("claude", "implement"): (CLAUDE_IMPLEMENT_MODEL, CLAUDE_IMPLEMENT_EFFORT),
-    ("claude", "review"): (CLAUDE_REVIEW_MODEL, CLAUDE_REVIEW_EFFORT),
-}
+CLAUDE_IMPLEMENT_MODEL = CLAUDE_MODEL
+CLAUDE_IMPLEMENT_EFFORT = "xhigh"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +43,13 @@ class CodingAssignment:
     review_provider: str = ""
     review_model: str = ""
     review_effort: str = ""
+    lane: str = ""
+    risk: str = "normal"
+    selected_model: str = AUTO_MODEL
+    fallback_reason: str = ""
+    policy_version: int = 0
+    implement_decision: dict[str, Any] = field(default_factory=dict)
+    review_decision: dict[str, Any] = field(default_factory=dict)
     capacity: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -61,6 +58,21 @@ class CodingAssignment:
             self.implement_provider
             and self.implement_provider == self.review_provider
         )
+
+    def with_implement_effort(self, effort: str) -> CodingAssignment:
+        """Same providers, the implement pass tiered to this job's complexity.
+
+        Who implements is a capacity question and stays here. How hard they
+        deliberate is a property of the job, which this object cannot see, so
+        the caller applies it once the accepted brief is in hand. Review is
+        deliberately untouched: the reviewer's whole value is a second opinion
+        at full depth on work it did not write.
+        """
+
+        effort = str(effort or "").strip()
+        if not effort or not self.usable or effort == self.implement_effort:
+            return self
+        return replace(self, implement_effort=effort)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,23 +88,27 @@ class CodingAssignment:
                 "model": self.review_model,
                 "effort": self.review_effort,
             },
+            "lane": self.lane,
+            "risk": self.risk,
+            "selected_model": self.selected_model,
+            "fallback_reason": self.fallback_reason,
+            "policy_version": self.policy_version,
+            "implement_decision": self.implement_decision,
+            "review_decision": self.review_decision,
             "self_review": self.same_provider_reviews_itself,
             "capacity": self.capacity,
         }
-
-
-def _pair(implement: str, review: str) -> tuple[str, str, str, str, str, str]:
-    im, ie = _MODELS[(implement, "implement")]
-    rm, re_ = _MODELS[(review, "review")]
-    return implement, im, ie, review, rm, re_
-
 
 def choose_providers(
     capacity: dict[str, Any] | None = None,
     *,
     preferred_implementer: str = "codex",
+    preferred_model: object = AUTO_MODEL,
+    complexity: object = "ordinary",
+    risk: object = "normal",
+    request: object = "",
 ) -> CodingAssignment:
-    """Assign the implement and review passes from live provider capacity.
+    """Resolve and freeze the coding lane against live provider capacity.
 
     An unknown or stale reading never disables a provider, matching
     fleet_capacity's own rule: only a positive, unexpired exhaustion signal
@@ -104,48 +120,86 @@ def choose_providers(
         capacity = read_fleet_capacity()
 
     snapshot: dict[str, Any] = {}
-    usable: dict[str, bool] = {}
     for name in ("codex", "claude"):
         entry = capacity.get(name) if hasattr(capacity, "get") else None
         as_dict = entry.to_dict() if hasattr(entry, "to_dict") else dict(entry or {})
         snapshot[name] = as_dict
-        # Absent reading means unknown, and unknown never blocks a provider.
-        usable[name] = bool(as_dict.get("usable", True))
-
-    other = {"codex": "claude", "claude": "codex"}
-    first = preferred_implementer if preferred_implementer in other else "codex"
-    second = other[first]
-
-    if usable[first] and usable[second]:
-        chosen = _pair(first, second)
-        reason = f"both providers usable, {first} implements and {second} reviews"
-    elif usable[first]:
-        chosen = _pair(first, first)
-        reason = (
-            f"{second} is out of capacity, {first} implements and reviews itself"
+    try:
+        selected_model = normalise_coding_model(preferred_model, strict=True)
+    except ValueError:
+        selected_model = AUTO_MODEL
+    # Keep the old provider-only API truthful for legacy callers. New accepted
+    # jobs pass a concrete preferred_model instead.
+    if selected_model == AUTO_MODEL and preferred_implementer == "claude":
+        selected_model = SONNET_MODEL
+    elif selected_model == AUTO_MODEL and preferred_implementer not in {"codex", "claude"}:
+        preferred_implementer = "codex"
+    risk_level, _risk_reason = classify_risk(
+        request,
+        explicit=risk,
+    )
+    try:
+        implement = resolve_policy(
+            "coding",
+            activity="implement",
+            complexity=complexity,
+            risk=risk_level,
+            role="implement",
+            manual_override=selected_model,
+            capacity=capacity,
         )
-    elif usable[second]:
-        chosen = _pair(second, second)
-        reason = (
-            f"{first} is out of capacity, {second} implements and reviews itself"
+        review = resolve_policy(
+            "coding",
+            activity="review",
+            complexity=complexity,
+            risk=risk_level,
+            role="review",
+            capacity=capacity,
         )
-    else:
+    except SerenaPolicyError as error:
         return CodingAssignment(
             usable=False,
-            reason=_no_capacity_reason(snapshot),
+            reason=(
+                _no_capacity_reason(snapshot)
+                if "no provider has capacity" in str(error)
+                else f"shared Serena coding policy could not resolve: {error}"
+            ),
             capacity=snapshot,
         )
-
-    implement, im, ie, review, rm, re_ = chosen
+    fallbacks = [
+        value
+        for value in (implement.fallback_reason, review.fallback_reason)
+        if value
+    ]
+    reason = (
+        f"{implement.lane} policy selected {implement.model} to implement and "
+        f"{review.model} to review"
+    )
+    unavailable = [
+        provider
+        for provider in ("codex", "claude")
+        if snapshot.get(provider, {}).get("usable") is False
+    ]
+    if len(unavailable) == 1:
+        reason += f"; {unavailable[0]} is out of capacity"
+    if fallbacks:
+        reason += "; " + "; ".join(fallbacks)
     return CodingAssignment(
         usable=True,
         reason=reason,
-        implement_provider=implement,
-        implement_model=im,
-        implement_effort=ie,
-        review_provider=review,
-        review_model=rm,
-        review_effort=re_,
+        implement_provider=implement.provider,
+        implement_model=implement.model,
+        implement_effort=implement.effort,
+        review_provider=review.provider,
+        review_model=review.model,
+        review_effort=review.effort,
+        lane=implement.lane,
+        risk=implement.risk,
+        selected_model=selected_model,
+        fallback_reason="; ".join(fallbacks),
+        policy_version=implement.policy_version,
+        implement_decision=implement.as_dict(),
+        review_decision=review.as_dict(),
         capacity=snapshot,
     )
 

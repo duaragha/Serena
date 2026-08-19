@@ -18,7 +18,9 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from core.brain_lifetime import secure_directory, write_json_atomic
+from core.daypart import current_daypart
 from voice.desk.greetings import MAX_GREETING_BYTES, GreetingAudio
+from voice.desk.output_mute import read_voice_output_muted
 
 MIC_SAMPLE_RATE = 16_000
 WAKE_FRAME_SAMPLES = 1_280
@@ -321,6 +323,7 @@ class GreetingFetcher:
                     pcm,
                     "server-prefetched desk greeting",
                     time.time(),
+                    response.headers.get("X-Serena-Greeting-Daypart", "") or "",
                 )
                 if GreetingAudio.from_json(greeting.to_json()) is None:
                     raise RuntimeError("desk greeting response was invalid")
@@ -348,7 +351,36 @@ class GreetingFetcher:
             or payload.get("version") != FALLBACK_SCHEMA_VERSION
         ):
             return None
-        return GreetingAudio.from_json(payload.get("greeting"))
+        greeting = GreetingAudio.from_json(payload.get("greeting"))
+        # A last-good line that was written for another part of day would greet
+        # him with the wrong half of the clock.  The tone is better than that.
+        if greeting is not None and greeting.daypart not in ("", current_daypart()):
+            return None
+        return greeting
+
+
+MIC_OFF_CLIP_PATH = (
+    Path.home() / ".config" / "serena" / "audio" / "mic-off-24k-mono-s16.raw"
+)
+
+
+def mic_off_audio() -> GreetingAudio:
+    """Say "the mic's off" instead of beeping at him.
+
+    He opened the app with the OS microphone muted and got the fallback tone,
+    which reads as "something is broken" rather than the actual, fixable
+    problem. The clip is pre-rendered in her own voice; if it is missing the
+    tone is still better than silence.
+    """
+    try:
+        pcm = MIC_OFF_CLIP_PATH.read_bytes()
+        if pcm:
+            return GreetingAudio(
+                "mic-off", 24_000, pcm, "the mic's off.", time.time()
+            )
+    except OSError:
+        pass
+    return fallback_tone()
 
 
 def fallback_tone() -> GreetingAudio:
@@ -634,8 +666,10 @@ class SoundDevicePlayback:
             raise RuntimeError("desk playback has not started")
         if not pcm or len(pcm) % 2:
             raise ValueError("desk playback requires whole PCM16 samples")
-        underflow = bool(self._stream.write(pcm))
-        self.last_amplitude = pcm_visual_level(pcm)
+        muted = read_voice_output_muted()
+        output = bytes(len(pcm)) if muted else pcm
+        underflow = bool(self._stream.write(output))
+        self.last_amplitude = 0.0 if muted else pcm_visual_level(pcm)
         self.overlay.set_amplitude(self.last_amplitude)
         if self._first_write is None:
             self._first_write = PlaybackStart(time.monotonic_ns(), underflow)

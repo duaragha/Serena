@@ -44,7 +44,7 @@ def auto_link_codex_chains(window_sec: int = _WINDOW_SEC, recent_hours: int = _R
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT session_id, cwd, project_dir, first_timestamp, last_timestamp, "
-            "custom_title, title FROM sessions WHERE agent='codex' "
+            "custom_title, title, originator FROM sessions WHERE agent='codex' "
             "AND first_timestamp IS NOT NULL"
         ).fetchall()
         conn.close()
@@ -63,6 +63,7 @@ def auto_link_codex_chains(window_sec: int = _WINDOW_SEC, recent_hours: int = _R
         items.append({
             "sid": r["session_id"], "cwd": cwd, "ft": ft, "lt": lt,
             "custom_title": r["custom_title"], "title": r["title"],
+            "originator": str(r["originator"] or ""),
         })
     items.sort(key=lambda x: x["ft"])
 
@@ -70,6 +71,13 @@ def auto_link_codex_chains(window_sec: int = _WINDOW_SEC, recent_hours: int = _R
     done: list[tuple[str, str, str]] = []
     for s in items:
         if (now - s["ft"]).total_seconds() > recent_hours * 3600:
+            continue
+        # Only ever treat a genuine exec continuation as the "exec" side of a
+        # plan→exec chain. A codex-tui session is a HUMAN opening a chat — two
+        # interactive chats in the same cwd within five minutes are unrelated,
+        # and linking them stole the predecessor's group and title (the
+        # recurring wrong-group / renamed-chat bug).
+        if "exec" not in s["originator"].lower():
             continue
         if meta.get_group(s["sid"]):
             continue  # already linked

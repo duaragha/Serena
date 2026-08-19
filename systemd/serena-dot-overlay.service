@@ -21,7 +21,7 @@ Environment=SERENA_CALL_POCKET_VOICE=anna
 Environment=HF_HOME=%h/.cache/serena/pocket-tts
 EnvironmentFile=-%h/.config/serena/desk.env
 Environment=SERENA_DESK_BARGE_IN=1
-Environment=SERENA_DESK_BARGE_THINKING_SUSTAIN_MS=160
+Environment=SERENA_DESK_BARGE_THINKING_SUSTAIN_MS=480
 Environment=SERENA_DESK_BARGE_SUSTAIN_MS=320
 ConfigurationDirectory=serena-overlay serena
 ConfigurationDirectoryMode=0700

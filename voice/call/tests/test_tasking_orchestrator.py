@@ -144,35 +144,12 @@ def test_explicit_task_submission_uses_exact_call_and_turn(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_spoken_build_request_is_queued_for_serenas_private_coding_work(tmp_path) -> None:
-    async def scenario() -> None:
-        dispatcher = StubDispatcher()
-        session = CallSession(FakeSocket(), _runtime(tmp_path, dispatcher))
-        session.call_id = "call-live"
-        session.telemetry = session.runtime.make_telemetry(session.call_id)
+def test_spoken_build_request_has_no_pre_brain_enqueue_method(tmp_path) -> None:
+    dispatcher = StubDispatcher()
+    session = CallSession(FakeSocket(), _runtime(tmp_path, dispatcher))
 
-        accepted = await session._submit_live_work(
-            3,
-            "fix the voice pacing",
-            context=["the answer pauses between sentences"],
-        )
-
-        assert accepted == "voice-item-1"
-        assert dispatcher.live_submissions == [
-            (
-                "fix the voice pacing",
-                "call-live",
-                "call-live:3",
-                ["the answer pauses between sentences"],
-            )
-        ]
-        metrics = [
-            json.loads(line)
-            for line in (tmp_path / "metrics.jsonl").read_text().splitlines()
-        ]
-        assert metrics[-1]["event"] == "voice_inbox.accepted"
-
-    asyncio.run(scenario())
+    assert not hasattr(session, "_submit_live_work")
+    assert dispatcher.live_submissions == []
 
 
 def test_spoken_code_panel_command_is_applied_before_reply(tmp_path) -> None:

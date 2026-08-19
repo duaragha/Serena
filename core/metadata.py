@@ -13,7 +13,11 @@ single file into per-session files on first access.
 """
 
 import json
+import os
+import socket
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.config import METADATA_DIR, METADATA_PATH
@@ -134,6 +138,228 @@ def set_resident_work(session_id: str, resident: bool = True) -> None:
     else:
         entry.pop("resident_work", None)
     _save_one(session_id, entry)
+
+
+def get_work_project_root(session_id: str) -> str | None:
+    """Return the exact Git root bound to one interactive work session."""
+
+    value = _load_one(session_id).get("work_project_root")
+    clean = str(value or "").strip()
+    return clean or None
+
+
+def set_work_project_root(session_id: str, project_root: str | Path) -> str:
+    """Immutably bind one session to one canonical Git repository root.
+
+    A linked group is presentation metadata, not project identity. In
+    particular, old linked threads can contain workers from several projects,
+    so this writes only the named session and refuses to silently retarget it.
+    """
+
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        raise ValueError("session id is required")
+
+    from core.coding_job_contract import validate_repository_root
+
+    canonical = str(validate_repository_root(project_root))
+    entry = _load_one(session_id)
+    existing = str(entry.get("work_project_root") or "").strip()
+    if existing and existing != canonical:
+        raise ValueError(
+            f"session {session_id[:8]} is already bound to a different project"
+        )
+    if existing == canonical:
+        return canonical
+    entry["work_project_root"] = canonical
+    _save_one(session_id, entry)
+    return canonical
+
+
+def set_fleet_worker(
+    session_id: str,
+    *,
+    run_id: str,
+    leg_id: str,
+    phase: str,
+    provider: str,
+    model: str,
+    effort: str,
+    origin_session_id: str | None = None,
+    worker_key: str | None = None,
+    worker_label: str | None = None,
+    assignment: str | None = None,
+    worker_group_id: str | None = None,
+) -> dict:
+    """Permanently identify a real session as a Fleet worker.
+
+    The marker remains after the external runtime lease ends. Interactive
+    linked-chat resolution can therefore distinguish a finished worker from
+    the user's original Claude/Codex sibling.
+    """
+
+    marker = {
+        "run_id": str(run_id),
+        "leg_id": str(leg_id),
+        "phase": str(phase),
+        "provider": str(provider),
+        "model": str(model),
+        "effort": str(effort),
+    }
+    if origin_session_id:
+        marker["origin_session_id"] = str(origin_session_id)
+    if worker_key:
+        marker["worker_key"] = str(worker_key)
+    if worker_label:
+        marker["worker_label"] = str(worker_label)
+    if assignment:
+        marker["assignment"] = str(assignment)
+    if worker_group_id:
+        marker["worker_group_id"] = str(worker_group_id)
+    entry = _load_one(session_id)
+    entry["fleet_worker"] = marker
+    _save_one(session_id, entry)
+    return marker
+
+
+def surface_fleet_worker(
+    session_id: str,
+    *,
+    run_id: str,
+    leg_id: str,
+    phase: str,
+    provider: str,
+    model: str,
+    effort: str,
+    worker_key: str,
+    worker_group_id: str,
+    title: str,
+    worker_label: str | None = None,
+    assignment: str | None = None,
+    origin_session_id: str | None = None,
+    pid: int | None = None,
+    lease_seconds: float = 24 * 60 * 60,
+) -> bool:
+    """Apply one complete Fleet metadata state in a single file write.
+
+    Reconciliation calls omit ``pid`` so a completed transcript never regains
+    a live-runtime lease. The authoritative Fleet group is assigned directly;
+    ordinary linked-chat groups are never merged into it.
+    """
+
+    marker = {
+        "run_id": str(run_id),
+        "leg_id": str(leg_id),
+        "phase": str(phase),
+        "provider": str(provider),
+        "model": str(model),
+        "effort": str(effort),
+        "worker_key": str(worker_key),
+        "worker_group_id": str(worker_group_id),
+    }
+    if worker_label:
+        marker["worker_label"] = str(worker_label)
+    if assignment:
+        marker["assignment"] = str(assignment)
+    if origin_session_id:
+        marker["origin_session_id"] = str(origin_session_id)
+    entry = _load_one(session_id)
+    before = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+    entry["resident_work"] = True
+    entry["custom_title"] = str(title)
+    entry["fleet_worker"] = marker
+    entry["group"] = str(worker_group_id)
+    if pid is not None:
+        now = time.time()
+        entry["external_runtime"] = {
+            "kind": "fleet-worker",
+            "pid": int(pid),
+            "host": socket.gethostname(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "lease_expires_at": now + max(30.0, float(lease_seconds)),
+        }
+    after = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+    if after == before:
+        return False
+    _save_one(session_id, entry)
+    return True
+
+
+def set_external_runtime(
+    session_id: str,
+    *,
+    kind: str,
+    pid: int,
+    lease_seconds: float,
+) -> dict:
+    """Claim a session that is currently owned by a non-interactive process."""
+
+    now = time.time()
+    runtime = {
+        "kind": str(kind),
+        "pid": int(pid),
+        "host": socket.gethostname(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "lease_expires_at": now + max(30.0, float(lease_seconds)),
+    }
+    entry = _load_one(session_id)
+    entry["external_runtime"] = runtime
+    _save_one(session_id, entry)
+    return runtime
+
+
+def clear_external_runtime(
+    session_id: str,
+    *,
+    pid: int | None = None,
+    host: str | None = None,
+) -> bool:
+    """Release an external owner without clearing a newer owner's claim."""
+
+    entry = _load_one(session_id)
+    runtime = entry.get("external_runtime")
+    if not isinstance(runtime, dict):
+        return False
+    if pid is not None and runtime.get("pid") != int(pid):
+        return False
+    if host is not None and runtime.get("host") != host:
+        return False
+    entry.pop("external_runtime", None)
+    _save_one(session_id, entry)
+    return True
+
+
+def get_external_runtime(session_id: str) -> dict | None:
+    runtime = _load_one(session_id).get("external_runtime")
+    return dict(runtime) if isinstance(runtime, dict) else None
+
+
+def external_runtime_active(session_id: str) -> bool:
+    """Return whether another process still owns this session's transcript."""
+
+    runtime = get_external_runtime(session_id)
+    if not runtime:
+        return False
+    try:
+        pid = int(runtime.get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+
+    if runtime.get("host") == socket.gethostname():
+        try:
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            return True
+        except (ProcessLookupError, OSError):
+            return False
+
+    try:
+        return float(runtime.get("lease_expires_at") or 0) > time.time()
+    except (TypeError, ValueError):
+        return False
 
 
 def set_done(session_id: str, done: bool, done_at: str | None = None) -> None:

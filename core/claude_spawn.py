@@ -57,26 +57,13 @@ def _looks_like_uuid(value: str) -> bool:
 
 def _find_existing_linked_claude(codex_sid: str) -> str | None:
     """Return Codex's linked Claude sibling, if one already exists."""
-    try:
-        from core import metadata as meta
-        from core.indexer import get_session
-    except ImportError:
-        return None
+    from core.linked_sessions import find_linked_session
 
-    gid = meta.get_group(codex_sid)
-    if not gid:
-        return None
-    for member in meta.list_group_members(gid):
-        if member == codex_sid:
-            continue
-        session = get_session(member)
-        if session and (session.get("agent") or "").lower() == "claude":
-            return member
-        # A newly linked Claude may exist before the background index catches
-        # up. The on-disk UUID is authoritative enough for this lookup.
-        if find_claude_jsonl(member) is not None:
-            return member
-    return None
+    return find_linked_session(
+        codex_sid,
+        "claude",
+        fallback_match=lambda sid: find_claude_jsonl(sid) is not None,
+    )
 
 
 def _resolve_codex_cwd(codex_sid: str, fallback: str = "") -> str:

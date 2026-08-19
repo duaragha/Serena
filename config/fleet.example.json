@@ -1,0 +1,159 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "phases": [
+      "discover",
+      "execute",
+      "verify",
+      "finalize"
+    ],
+    "session_mode": "persistent_by_worker",
+    "minimum_workers_per_phase": 1,
+    "no_silent_fallback": true,
+    "capacity_handoff": "automatic",
+    "max_parallel_workers": 4,
+    "max_parallel_writers": 2,
+    "mcp_read_access": {
+      "enabled": true,
+      "servers": [
+        "context7",
+        "google-ads",
+        "google-analytics",
+        "google-merchant",
+        "frameworth-shopify",
+        "amazon-seller-central",
+        "Railway"
+      ]
+    }
+  },
+  "profiles": {
+    "coding": {
+      "workers": [
+        {
+          "provider": "codex",
+          "model": "gpt-5.6-sol",
+          "effort": "xhigh"
+        },
+        {
+          "provider": "claude",
+          "model": "claude-opus-5",
+          "effort": "high"
+        }
+      ],
+      "phases": {
+        "discover": [
+          {
+            "provider": "codex",
+            "model": "gpt-5.6-terra",
+            "effort": "high"
+          },
+          {
+            "provider": "claude",
+            "model": "claude-sonnet-5",
+            "effort": "high"
+          }
+        ],
+        "execute": [
+          {
+            "provider": "codex",
+            "model": "gpt-5.6-sol",
+            "effort": "xhigh"
+          },
+          {
+            "provider": "claude",
+            "model": "claude-opus-5",
+            "effort": "high"
+          }
+        ],
+        "verify": [
+          {
+            "provider": "codex",
+            "model": "gpt-5.6-terra",
+            "effort": "xhigh"
+          },
+          {
+            "provider": "claude",
+            "model": "claude-sonnet-5",
+            "effort": "xhigh"
+          }
+        ],
+        "finalize": [
+          {
+            "provider": "codex",
+            "model": "gpt-5.6-sol",
+            "effort": "xhigh"
+          },
+          {
+            "provider": "claude",
+            "model": "claude-opus-5",
+            "effort": "high"
+          }
+        ]
+      }
+    },
+    "research": {
+      "workers": [
+        {
+          "provider": "codex",
+          "model": "gpt-5.6-terra",
+          "effort": "high"
+        },
+        {
+          "provider": "claude",
+          "model": "claude-sonnet-5",
+          "effort": "high"
+        }
+      ],
+      "phases": {
+        "discover": [
+          {
+            "provider": "codex",
+            "model": "gpt-5.6-terra",
+            "effort": "high"
+          },
+          {
+            "provider": "claude",
+            "model": "claude-sonnet-5",
+            "effort": "high"
+          }
+        ],
+        "execute": [
+          {
+            "provider": "codex",
+            "model": "gpt-5.6-terra",
+            "effort": "high"
+          },
+          {
+            "provider": "claude",
+            "model": "claude-sonnet-5",
+            "effort": "high"
+          }
+        ],
+        "verify": [
+          {
+            "provider": "codex",
+            "model": "gpt-5.6-terra",
+            "effort": "xhigh"
+          },
+          {
+            "provider": "claude",
+            "model": "claude-sonnet-5",
+            "effort": "xhigh"
+          }
+        ],
+        "finalize": [
+          {
+            "provider": "codex",
+            "model": "gpt-5.6-terra",
+            "effort": "high"
+          },
+          {
+            "provider": "claude",
+            "model": "claude-sonnet-5",
+            "effort": "high"
+          }
+        ]
+      }
+    }
+  }
+}

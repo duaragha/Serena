@@ -10,10 +10,12 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 from core.brain_lifetime import write_json_atomic
+from core.daypart import DAYPARTS, TimeContext, current_daypart
 from voice.call.brain import BrainBackend
 from voice.call.tts import AsyncTTSBackend
 
@@ -23,8 +25,9 @@ DEFAULT_CACHE_PATH = (
 MAX_GREETING_BYTES = 2 * 1024 * 1024
 MAX_GREETING_AGE_SECONDS = 12 * 60 * 60
 # Every serving-voice change bumps this schema so a cached greeting cannot
-# speak in a retired voice before the warmed runtime takes over.
-SCHEMA_VERSION = 4
+# speak in a retired voice before the warmed runtime takes over.  Version 5
+# added the day-part a greeting was written for.
+SCHEMA_VERSION = 5
 
 
 class GreetingRuntime(Protocol):
@@ -41,6 +44,10 @@ class GreetingAudio:
     pcm: bytes
     text: str
     created_at: float
+    # The part of day this line was written for.  Empty means unknown, which
+    # only happens for the local tone and for caches written before greetings
+    # could hear the clock.
+    daypart: str = ""
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -49,6 +56,7 @@ class GreetingAudio:
             "pcm_b64": base64.b64encode(self.pcm).decode("ascii"),
             "text": self.text,
             "created_at": self.created_at,
+            "daypart": self.daypart,
         }
 
     @classmethod
@@ -61,6 +69,7 @@ class GreetingAudio:
             pcm = base64.b64decode(str(value["pcm_b64"]), validate=True)
             text = str(value["text"]).strip()
             created_at = float(value["created_at"])
+            daypart = str(value.get("daypart") or "")
         except (KeyError, TypeError, ValueError):
             return None
         if (
@@ -71,9 +80,10 @@ class GreetingAudio:
             or len(pcm) % 2
             or not text
             or not 0 < created_at <= time.time() + 60
+            or (daypart and daypart not in DAYPARTS)
         ):
             return None
-        return cls(greeting_id, sample_rate, pcm, text, created_at)
+        return cls(greeting_id, sample_rate, pcm, text, created_at, daypart)
 
 
 class DeskGreetingPool:
@@ -88,8 +98,10 @@ class DeskGreetingPool:
         max_age_seconds: float = MAX_GREETING_AGE_SECONDS,
         refill_after_take_seconds: float = 60.0,
         tts_factory: Callable[[], AsyncTTSBackend] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.runtime = runtime
+        self.clock = clock
         self.path = Path(path).expanduser()
         self.target_size = max(1, min(int(target_size), 4))
         self.max_age_seconds = max(60.0, float(max_age_seconds))
@@ -107,11 +119,12 @@ class DeskGreetingPool:
     @property
     def status(self) -> dict[str, object]:
         with self._lock:
-            self._discard_expired_locked()
+            self._discard_stale_locked()
             return {
                 "ready": bool(self._items),
                 "cached": len(self._items),
                 "target": self.target_size,
+                "daypart": self._daypart(),
                 "refilling": self._refilling,
                 "refill_scheduled": bool(
                     self._refill_timer is not None
@@ -120,9 +133,12 @@ class DeskGreetingPool:
                 "last_error": self._last_error or None,
             }
 
+    def _daypart(self) -> str:
+        return current_daypart(self.clock)
+
     def start_refill(self) -> None:
         with self._lock:
-            self._discard_expired_locked()
+            self._discard_stale_locked()
             timer = self._refill_timer
             self._refill_timer = None
             if timer is not None and timer is not threading.current_thread():
@@ -139,7 +155,7 @@ class DeskGreetingPool:
 
     def schedule_refill(self) -> None:
         with self._lock:
-            self._discard_expired_locked()
+            self._discard_stale_locked()
             if self._refilling or len(self._items) >= self.target_size:
                 return
             timer = self._refill_timer
@@ -168,7 +184,7 @@ class DeskGreetingPool:
 
     def take(self) -> GreetingAudio | None:
         with self._lock:
-            self._discard_expired_locked()
+            self._discard_stale_locked()
             item = self._items.pop(0) if self._items else None
             if item is not None:
                 self._persist_locked()
@@ -205,7 +221,7 @@ class DeskGreetingPool:
                 await tts.warm()
             while True:
                 with self._lock:
-                    self._discard_expired_locked()
+                    self._discard_stale_locked()
                     if len(self._items) >= self.target_size:
                         self._last_error = ""
                         return
@@ -223,12 +239,16 @@ class DeskGreetingPool:
         tts = tts or self.runtime.tts
         greeting_id = uuid.uuid4().hex
         request_id = uuid.uuid4().hex
+        moment = TimeContext.now(self.clock)
         prompt = (
-            f'<desk-wake-greeting id="{greeting_id}">\n'
+            f'<desk-wake-greeting id="{greeting_id}" {moment.attributes()}>\n'
             'Raghav has just said "hey Serena" at his desk and is listening. '
-            "Give one fresh, short spoken greeting in your normal voice. Lead "
-            "him into speaking, but do not ask an open-ended question, mention "
-            "the time of day, describe the automation, or include stage directions.\n"
+            "Give one fresh, short spoken greeting in your normal voice. Those "
+            "attributes are the real system clock, so let the part of day color "
+            "the wording however it lands: vary it every time, never reach for a "
+            "stock phrase, and never recite the clock back to him. Lead him into "
+            "speaking, but do not ask an open-ended question, describe the "
+            "automation, or include stage directions.\n"
             "</desk-wake-greeting>"
         )
         deltas: list[str] = []
@@ -270,7 +290,9 @@ class DeskGreetingPool:
         pcm = b"".join(chunks)
         if sample_rate is None or not pcm or len(pcm) % 2:
             raise RuntimeError("desk TTS returned no valid PCM")
-        return GreetingAudio(greeting_id, sample_rate, pcm, text, time.time())
+        return GreetingAudio(
+            greeting_id, sample_rate, pcm, text, time.time(), moment.daypart
+        )
 
     def _load(self) -> list[GreetingAudio]:
         try:
@@ -283,15 +305,28 @@ class DeskGreetingPool:
             return []
         items = [GreetingAudio.from_json(value) for value in payload.get("items", [])]
         now = time.time()
+        daypart = self._daypart()
         return [
             item
             for item in items
-            if item is not None and now - item.created_at <= self.max_age_seconds
+            if item is not None
+            and now - item.created_at <= self.max_age_seconds
+            and item.daypart == daypart
         ][: self.target_size]
 
-    def _discard_expired_locked(self) -> None:
+    def _discard_stale_locked(self) -> None:
+        """Drop greetings that aged out or were written for another part of day.
+
+        A line warmed at noon must never play back at two in the morning now
+        that the clock colors the wording.
+        """
         cutoff = time.time() - self.max_age_seconds
-        retained = [item for item in self._items if item.created_at >= cutoff]
+        daypart = self._daypart()
+        retained = [
+            item
+            for item in self._items
+            if item.created_at >= cutoff and item.daypart == daypart
+        ]
         if len(retained) != len(self._items):
             self._items = retained
             self._persist_locked()

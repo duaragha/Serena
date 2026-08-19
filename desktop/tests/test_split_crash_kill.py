@@ -19,15 +19,15 @@ Run:  uv run --with pytest pytest desktop/tests/test_split_crash_kill.py -v
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
-from gi.repository import GLib, Gtk, Vte  # noqa: E402
-
 import pytest  # noqa: E402
+from gi.repository import GLib, Gtk, Vte  # noqa: E402
 
 # Make the `desktop` package importable and import the real app module.
 DESKTOP_DIR = Path(__file__).resolve().parent.parent
@@ -94,6 +94,8 @@ class _SplitHarness:
         self._runtime_stop_reasons: dict[str, str] = {}
         self._runtime_wake_after_stop: set[str] = set()
         self._runtime_closed_vtes: set[int] = set()
+        self._runtime_work_reservations: dict[str, str] = {}
+        self._runtime_lock = threading.Lock()
         self._runtime_focus_sid = None
         self._split_pinned = False
 

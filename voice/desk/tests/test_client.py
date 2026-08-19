@@ -260,7 +260,75 @@ def _client(
     # These exercise behaviour after the room has been measured; run() is not
     # called here, so the calibration that normally sets this never happens.
     client.noise_calibrated = True
+    client.barge_in_safe = True
     return client, playback, overlay, fetcher, metrics
+
+
+def test_muted_microphone_cannot_wake_or_open_a_voice_call(monkeypatch) -> None:
+    """OpenWhispr dictation must not accidentally wake Serena in parallel."""
+
+    microphone = _Microphone()
+    factory_calls = 0
+    stop = threading.Event()
+
+    def factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        return _Transport()
+
+    client, _playback, overlay, _fetcher, metrics = _client(
+        [0.99], microphone, factory
+    )
+    client.input_muted = lambda: True
+    monkeypatch.setattr(client, "_calibrate_microphone", lambda: None)
+
+    thread = threading.Thread(target=client.run, args=(stop,), daemon=True)
+    thread.start()
+    time.sleep(0.15)
+    stop.set()
+    thread.join(timeout=1)
+
+    assert thread.is_alive() is False
+    assert factory_calls == 0
+    assert "idle" in overlay.states
+    assert any(event == "desk.microphone_muted" for event, _ in metrics.rows)
+
+
+def test_muting_during_a_conversation_stops_microphone_delivery() -> None:
+    """The mute button must cut an already-listening turn, not only future wakes."""
+
+    microphone = _Microphone()
+    transport = _Transport(microphone)
+    client, _playback, _overlay, _fetcher, _metrics = _client(
+        [], microphone, lambda: transport
+    )
+    client.input_muted = lambda: True
+
+    client._run_conversation(transport, threading.Event())
+
+    assert transport.generation == 1
+    assert transport.sent == []
+
+
+def test_dc_wedged_microphone_cannot_cancel_a_valid_reply(monkeypatch) -> None:
+    """A raw AMD DMIC offset once looked like speech and cancelled every answer."""
+
+    from voice.desk import client as client_module
+
+    microphone = _Microphone()
+    rng = np.random.default_rng(7)
+    for _ in range(12):
+        samples = np.clip(-8_300 + rng.normal(0, 300, 1_280), -32_768, 32_767)
+        microphone.frames.put(samples.astype("<i2").tobytes())
+    client, _playback, _overlay, _fetcher, _metrics = _client(
+        [], microphone, lambda: _Transport()
+    )
+    monkeypatch.setattr(client_module, "NOISE_CALIBRATION_SECONDS", 0.0)
+
+    client._calibrate_microphone()
+
+    assert client.noise_calibrated is True
+    assert client.barge_in_safe is False
 
 
 def test_background_frames_do_not_create_network_or_fetch_greeting() -> None:
@@ -423,6 +491,39 @@ def test_late_brain_delta_does_not_downgrade_active_playback_to_thinking() -> No
     assert outcome["output_rate"] == 24_000
 
 
+def test_visible_desk_turn_text_reaches_overlay_without_broker_metadata() -> None:
+    microphone = _Microphone()
+    transport = _Transport()
+    client, _playback, overlay, _fetcher, _metrics = _client(
+        [], microphone, lambda: transport
+    )
+
+    controls = [
+        {"type": "stt.result", "generation": 0, "text": "what did you say"},
+        {
+            "type": "brain.done",
+            "generation": 0,
+            "text": "the visible reply",
+            "meta": {"session_id": "private", "tool_result": "never forward"},
+            "backend": "private-backend",
+        },
+    ]
+    for control in controls:
+        client._handle_event(
+            transport,
+            TransportEvent("control", control),
+            phase="thinking",
+            expected_output_sequence=0,
+            output_rate=None,
+            first_output_written=False,
+        )
+
+    assert overlay.events == [
+        {"type": "transcription", "text": "what did you say"},
+        {"type": "response", "text": "the visible reply"},
+    ]
+
+
 def test_server_code_panel_control_reaches_overlay() -> None:
     microphone = _Microphone()
     transport = _Transport()
@@ -457,7 +558,7 @@ def test_missing_model_fails_before_microphone_construction(
         raise AssertionError("microphone opened before model validation")
 
     monkeypatch.setattr(
-        "voice.desk.client.SoundDeviceMicrophone", microphone_should_not_construct
+        "voice.desk.client.PipeWireMicrophone", microphone_should_not_construct
     )
     with pytest.raises(WakeWordConfigurationError, match="refusing to substitute"):
         main(["--token-file", str(token), "--model", str(tmp_path / "missing.onnx")])
@@ -963,5 +1064,172 @@ def test_barge_in_stands_down_when_the_room_was_never_measured() -> None:
     source = (Path(__file__).resolve().parents[1] / "client.py").read_text(
         encoding="utf-8"
     )
-    assert "if self.noise_calibrated" in source
+    assert "if self.barge_in_safe" in source
+    assert "MAX_SAFE_BARGE_IN_DC_OFFSET" in source
     assert "desk.barge_in_disabled" in source
+
+
+def test_a_muted_microphone_is_said_out_loud_not_beeped(monkeypatch) -> None:
+    """He opened her with the OS mic muted and got the fallback tone, which
+    reads as broken rather than as the actual fixable problem. Zero real
+    frames at calibration now plays "the mic's off" in her voice."""
+    from voice.desk import client as client_module
+
+    played: list[str] = []
+
+    class _Playback:
+        def play(self, greeting, **kwargs):
+            played.append(getattr(greeting, "greeting_id", "?"))
+
+        def __getattr__(self, name):
+            # The run loop touches more of playback than this test cares
+            # about; everything else is a harmless no-op.
+            return lambda *a, **k: None
+
+    class _Overlay:
+        def open(self): pass
+        def adopt_state(self): pass
+        def set_state(self, s): pass
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    class _Mic:
+        def __init__(self):
+            import queue as q
+            self.frames = q.Queue()
+            # silence only: what an OS-muted source actually produces
+            for _ in range(12):
+                self.frames.put(b"\x00\x00" * 800)
+        def start(self): pass
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    class _Metrics:
+        def record(self, *a, **k): pass
+
+    c = client_module.DeskClient.__new__(client_module.DeskClient)
+    c.playback = _Playback(); c.overlay = _Overlay(); c.microphone = _Mic()
+    c.metrics = _Metrics(); c.config = client_module.DeskConfig()
+    c.voice_activity_dbfs = c.config.voice_activity_dbfs
+    c.mic_silent = False
+    c.local_fallback = None
+    c.scorer = None
+    c.gate = None
+    import threading as t
+    c.session_stop = t.Event()
+    c._calibrate_microphone()
+    assert c.mic_silent is True
+
+    # the wake-handoff branch speaks the clip
+    monkeypatch.setattr(client_module.DeskClient, "_microphone_is_muted",
+                        lambda self, force=False: False, raising=False)
+    c._activate = lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not activate"))
+    c.run(t.Event(), start_awake=True)
+    assert played and played[0] in ("mic-off", "tone-fallback")
+
+
+def test_interrupting_her_is_scored_on_her_name_not_loudness() -> None:
+    """2026-08-11, twice in one night: the energy gate's bar moved with room
+    noise and "Serena" produced no interrupt at all. The wake model now
+    scores every mic frame while she speaks, no loudness prefilter, because
+    a wake model needs no prefilter; it IS the filter."""
+    from pathlib import Path as _P
+
+    source = _P(__file__).resolve().parents[1].joinpath("client.py").read_text()
+    loop = source.split("if self.barge_scorer is not None:", 1)[1]
+    head = loop[:1600]
+    assert "score_frame" in head
+    assert "self._barge_preroll.append(pcm)" in head
+    # the energy gate only survives as the no-scorer fallback
+    assert "barge_gate.feed" in loop
+    # and name-mode interruption is never disabled by barge_in_safe
+    assert "must not be disabled by barge_in_safe" in source
+
+
+def test_a_bare_name_turn_sends_her_back_to_listening() -> None:
+    """Saying just "Serena" stops her; the server answers with turn.listen
+    instead of a spoken reply, and the client must treat that as a completed
+    turn so she listens instead of resuming or stalling until the timeout."""
+    from voice.desk import client as client_module
+
+    c = client_module.DeskClient.__new__(client_module.DeskClient)
+
+    class _Playback:
+        finished = False
+        def finish(self): self.finished = True
+        def __getattr__(self, name): return lambda *a, **k: None
+
+    class _Metrics:
+        def record(self, *a, **k): pass
+
+    c.playback = _Playback(); c.metrics = _Metrics()
+
+    class _Transport:
+        call_id = "t"; generation = 1
+
+    event = client_module.TransportEvent(
+        kind="control",
+        payload={"type": "turn.listen", "generation": 1},
+    )
+    outcome = c._handle_event(
+        _Transport(), event, phase="thinking",
+        expected_output_sequence=0, output_rate=None, first_output_written=False,
+    )
+    assert outcome["turn_complete"] is True
+    assert c.playback.finished is True
+
+
+def test_a_thinking_sound_segment_keeps_the_output_sequence_contiguous() -> None:
+    """A filler that shifted the numbering would abort the call as a sequence gap.
+
+    The desk client is the component that actually enforces this: it raises
+    "desk output sequence gap" and tears the turn down. A pre-rendered thinking
+    sound shares the reply's generation counter, so replaying a real slow turn
+    here proves the acknowledgement frames cost the answer nothing.
+    """
+    microphone = _Microphone()
+    transport = _Transport()
+    client, _playback, _overlay, _fetcher, _metrics = _client(
+        [], microphone, lambda: transport
+    )
+
+    events = [
+        TransportEvent("control", {"type": "audio.start", "sample_rate": 24_000}),
+        TransportEvent(
+            "control",
+            {"type": "audio.segment", "kind": "acknowledgement", "sequence": 0},
+        ),
+        TransportEvent(
+            "audio",
+            AudioFrame(AudioHeader(AudioKind.TTS_PCM16, 0, 0, 24_000, 1), b"\x71\x00" * 8),
+        ),
+        TransportEvent(
+            "control", {"type": "audio.segment", "kind": "content", "sequence": 1}
+        ),
+        TransportEvent(
+            "audio",
+            AudioFrame(AudioHeader(AudioKind.TTS_PCM16, 0, 1, 24_000, 2), b"\x01\x00" * 8),
+        ),
+        TransportEvent("control", {"type": "audio.end", "last_sequence": 1}),
+    ]
+
+    phase = "thinking"
+    expected = 0
+    rate = None
+    written = False
+    for event in events:
+        outcome = client._handle_event(
+            transport,
+            event,
+            phase=phase,
+            expected_output_sequence=expected,
+            output_rate=rate,
+            first_output_written=written,
+        )
+        phase = outcome["phase"]
+        expected = outcome["expected_output_sequence"]
+        rate = outcome["output_rate"]
+        written = outcome["first_output_written"]
+
+    assert transport.gaps == []
+    assert outcome["turn_complete"] is True

@@ -18,14 +18,65 @@ const conversationHistoryListEl = document.getElementById('conversation-history-
 const conversationHistoryCountEl = document.getElementById('conversation-history-count');
 const dashboardEl = document.getElementById('dashboard');
 const overlayEl = document.getElementById('overlay');
+const voiceMuteEl = document.getElementById('voice-mute');
+const voiceMuteLabelEl = document.getElementById('voice-mute-label');
+const microphoneMuteEl = document.getElementById('microphone-mute');
+const microphoneMuteLabelEl = document.getElementById('microphone-mute-label');
 
 let responseTimeout = null;
 let responseFadeTimeout = null;
 let typewriterTimeout = null;
+let responseTracksVoice = false;
+let responseSpeechStarted = false;
 let reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
 const HISTORY_LIMIT = 12;
 const conversationHistory = [];
 let pendingUserText = '';
+let voiceMuted = false;
+let microphoneMuted = false;
+
+function showVoiceMuted(value) {
+  voiceMuted = Boolean(value);
+  if (!voiceMuteEl || !voiceMuteLabelEl) return;
+  voiceMuteEl.setAttribute('aria-pressed', String(voiceMuted));
+  voiceMuteEl.setAttribute(
+    'aria-label',
+    voiceMuted ? 'Unmute Serena voice' : 'Mute Serena voice',
+  );
+  voiceMuteEl.title = voiceMuted ? 'Unmute Serena voice' : 'Mute Serena voice';
+  voiceMuteLabelEl.textContent = voiceMuted ? 'muted' : 'mute';
+}
+
+if (voiceMuteEl && window.serena?.setVoiceMuted) {
+  voiceMuteEl.addEventListener('click', () => window.serena.setVoiceMuted(!voiceMuted));
+  voiceMuteEl.addEventListener('keydown', (event) => event.stopPropagation());
+  window.serena.onVoiceMuted?.(showVoiceMuted);
+  showVoiceMuted(false);
+}
+
+function showMicrophoneMuted(value) {
+  microphoneMuted = Boolean(value);
+  if (!microphoneMuteEl || !microphoneMuteLabelEl) return;
+  microphoneMuteEl.setAttribute('aria-pressed', String(microphoneMuted));
+  microphoneMuteEl.setAttribute(
+    'aria-label',
+    microphoneMuted ? 'Unmute Serena microphone' : 'Mute Serena microphone',
+  );
+  microphoneMuteEl.title = microphoneMuted
+    ? 'Unmute Serena microphone'
+    : 'Mute Serena microphone';
+  microphoneMuteLabelEl.textContent = microphoneMuted ? 'mic off' : 'mic';
+}
+
+if (microphoneMuteEl && window.serena?.setMicrophoneMuted) {
+  microphoneMuteEl.addEventListener(
+    'click',
+    () => window.serena.setMicrophoneMuted(!microphoneMuted),
+  );
+  microphoneMuteEl.addEventListener('keydown', (event) => event.stopPropagation());
+  window.serena.onMicrophoneMuted?.(showMicrophoneMuted);
+  showMicrophoneMuted(false);
+}
 
 // --- Mouse passthrough handling ---
 // The overlay is click-through by default. When the mouse enters an
@@ -60,6 +111,24 @@ window.serena.onStateChange((state) => {
     window.serena.setState(state);
   }
 
+  if (state === 'speaking' && !responseEl.classList.contains('hidden')) {
+    // The state-file watcher and the response socket are independent. If the
+    // response wins that race, let the later speaking event take ownership
+    // before the text-only fallback clock can dismiss it.
+    clearTimeout(responseTimeout);
+    responseTimeout = null;
+    responseTracksVoice = true;
+    responseSpeechStarted = true;
+  } else if (responseTracksVoice) {
+    if (
+      responseSpeechStarted
+      || state === 'idle'
+      || state === 'listening'
+      || state === 'offline'
+    ) {
+      finishResponseDisplay();
+    }
+  }
 });
 
 window.serena.onAmplitude((value) => {
@@ -69,48 +138,72 @@ window.serena.onAmplitude((value) => {
 // --- Transcription display ---
 
 window.serena.onTranscription((text) => {
+  resetResponseDisplay();
   pendingUserText = String(text || '').trim();
   transcriptionEl.textContent = text;
   transcriptionEl.classList.remove('hidden');
-
-  // Clear previous response when new transcription starts
-  responseEl.classList.add('hidden');
-  responseEl.textContent = '';
 });
 
 // --- Response display ---
 
 function showResponseText(text) {
-  clearTimeout(responseTimeout);
-  clearTimeout(responseFadeTimeout);
-  clearTimeout(typewriterTimeout);
+  resetResponseDisplay();
   responseEl.classList.remove('hidden');
-  responseEl.classList.remove('fade-out');
   typewriterEffect(responseEl, text);
   appendCompletedTurn(pendingUserText, String(text || '').trim());
   pendingUserText = '';
 
-  // Fade out after a delay
-  responseTimeout = setTimeout(() => {
-    clearTimeout(typewriterTimeout);
-    transcriptionEl.classList.add('hidden');
-    responseEl.classList.add('fade-out');
-    responseFadeTimeout = setTimeout(() => {
-      responseEl.classList.add('hidden');
-      responseEl.classList.remove('fade-out');
-    }, 500);
-  }, 8000);
+  const voiceState = window._serenaVoiceState;
+  responseTracksVoice = voiceState === 'thinking' || voiceState === 'speaking';
+  responseSpeechStarted = voiceState === 'speaking';
+  if (!responseTracksVoice) {
+    // Keep the old bounded display for text-only errors and previews, which
+    // have no playback completion state to dismiss them.
+    responseTimeout = setTimeout(finishResponseDisplay, 8000);
+  }
 }
 
-function clearTranscriptionCards() {
+function finishResponseDisplay() {
+  if (
+    responseEl.classList.contains('hidden')
+    || responseEl.classList.contains('fade-out')
+  ) {
+    return;
+  }
   clearTimeout(responseTimeout);
   clearTimeout(responseFadeTimeout);
   clearTimeout(typewriterTimeout);
+  responseTimeout = null;
+  responseTracksVoice = false;
+  responseSpeechStarted = false;
   transcriptionEl.classList.add('hidden');
+  responseEl.classList.add('fade-out');
+  responseFadeTimeout = setTimeout(() => {
+    responseEl.classList.add('hidden');
+    responseEl.classList.remove('fade-out');
+    responseEl.textContent = '';
+    responseFadeTimeout = null;
+  }, 500);
+}
+
+function resetResponseDisplay() {
+  clearTimeout(responseTimeout);
+  clearTimeout(responseFadeTimeout);
+  clearTimeout(typewriterTimeout);
+  responseTimeout = null;
+  responseFadeTimeout = null;
+  typewriterTimeout = null;
+  responseTracksVoice = false;
+  responseSpeechStarted = false;
   responseEl.classList.add('hidden');
   responseEl.classList.remove('fade-out');
-  transcriptionEl.textContent = '';
   responseEl.textContent = '';
+}
+
+function clearTranscriptionCards() {
+  resetResponseDisplay();
+  transcriptionEl.classList.add('hidden');
+  transcriptionEl.textContent = '';
 }
 
 window.serena.onResponse(showResponseText);
@@ -178,21 +271,10 @@ Object.defineProperty(window._serenaTranscription, '_reducedMotion', {
 
 function typewriterEffect(el, text) {
   clearTimeout(typewriterTimeout);
-  el.textContent = '';
-  if (reducedMotion?.matches) {
-    el.textContent = text;
-    return;
-  }
-  let i = 0;
-  const speed = 20; // ms per character
-  function type() {
-    if (i < text.length) {
-      el.textContent += text.charAt(i);
-      i++;
-      typewriterTimeout = setTimeout(type, speed);
-    }
-  }
-  type();
+  // The response is already complete when this event arrives. Revealing it at
+  // 20 ms per character added ten seconds to a 500-character reply and could
+  // still be typing after playback ended.
+  el.textContent = String(text || '');
 }
 
 // --- Dashboard ---
@@ -273,8 +355,23 @@ window.serena.onCodeDone((data) => {
   if (fn) fn(data);
 });
 
+window.serena.onCodeSnapshot((data) => {
+  const fn = window.serena.codePanelOnSnapshot;
+  if (fn) fn(data);
+});
+
+window.serena.onCodeControlResult((data) => {
+  const fn = window.serena.codePanelOnControlResult;
+  if (fn) fn(data);
+});
+
 window.serena.onToggleCodePanel(() => {
   const fn = window.serena.codePanelOnToggle;
+  if (fn) fn();
+});
+
+window.serena.onShowCodePanel(() => {
+  const fn = window.serena.codePanelOnShow;
   if (fn) fn();
 });
 
@@ -295,14 +392,84 @@ window.serena.onFocusMode((enabled) => {
 (() => {
   const bar = document.getElementById('type-bar');
   const input = document.getElementById('type-input');
+  const attachmentEl = document.getElementById('typed-attachment');
+  const attachmentPreview = document.getElementById('typed-attachment-preview');
+  const attachmentRemove = document.getElementById('typed-attachment-remove');
+  const errorEl = document.getElementById('type-error');
+  const imageHelpers = window.SerenaTypedImages;
   if (!bar || !input || !window.serena || !window.serena.sendTyped) return;
 
+  const supportsImages = Boolean(
+    attachmentEl && attachmentPreview && attachmentRemove && imageHelpers,
+  );
+
   let busy = false;
+  let attachment = null;
+  let pendingSubmission = null;
+
+  const showError = (message = '') => {
+    if (!errorEl) return;
+    errorEl.textContent = message;
+    errorEl.classList.toggle('hidden', !message);
+  };
+
+  const setAttachment = (image, previewUrl = '') => {
+    attachment = image;
+    if (!supportsImages) return;
+    attachmentPreview.src = previewUrl;
+    attachmentEl.classList.toggle('hidden', !image);
+  };
 
   const setBusy = (value) => {
     busy = value;
     bar.classList.toggle('busy', value);
-    input.placeholder = value ? 'thinking…' : 'type to serena';
+    input.placeholder = value
+      ? 'thinking…'
+      : supportsImages ? 'type or paste an image' : 'type a message';
+  };
+
+  if (supportsImages) {
+    attachmentRemove.addEventListener('click', () => {
+      setAttachment(null);
+      showError();
+      input.focus();
+    });
+
+    input.addEventListener('paste', (event) => {
+      const items = Array.from(event.clipboardData?.items || []);
+      const imageItem = items.find(
+        (item) => item.kind === 'file' && String(item.type || '').startsWith('image/'),
+      );
+      if (!imageItem) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const file = imageItem.getAsFile();
+      const checked = imageHelpers.validateClipboardFile(file);
+      if (!checked.ok) {
+        showError(checked.error);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onerror = () => showError('that clipboard image could not be read.');
+      reader.onload = () => {
+        const result = imageHelpers.attachmentFromDataUrl(reader.result, file);
+        if (!result.ok) {
+          showError(result.error);
+          return;
+        }
+        setAttachment(result.image, String(reader.result));
+        showError();
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  const clearAcceptedSubmission = () => {
+    if (!pendingSubmission) return;
+    if (input.value.trim() === pendingSubmission.text) input.value = '';
+    if (attachment === pendingSubmission.image) setAttachment(null);
+    pendingSubmission = null;
+    showError();
   };
 
   input.addEventListener('keydown', (event) => {
@@ -310,14 +477,33 @@ window.serena.onFocusMode((enabled) => {
     event.stopPropagation();
     if (event.key !== 'Enter' || event.shiftKey) return;
     const text = input.value.trim();
-    if (!text || busy) return;
-    window.serena.sendTyped(text);
-    input.value = '';
+    if ((!text && !attachment) || busy) return;
+    showError();
     setBusy(true);
+    pendingSubmission = {
+      text,
+      image: attachment,
+    };
+    try {
+      window.serena.sendTyped({ text, image: attachment });
+    } catch (error) {
+      pendingSubmission = null;
+      setBusy(false);
+      showError(error?.message || 'that message could not be sent.');
+    }
   });
 
   // She has answered (or failed); take the bar back.
-  window.serena.onResponse(() => setBusy(false));
+  window.serena.onTypedInputAccepted?.(() => clearAcceptedSubmission());
+  window.serena.onResponse(() => {
+    clearAcceptedSubmission();
+    setBusy(false);
+  });
+  window.serena.onTypedInputError?.((message) => {
+    pendingSubmission = null;
+    setBusy(false);
+    showError(message);
+  });
 
   // Safety net: never strand the bar if a turn dies without a response.
   window.serena.onStateChange((state) => {

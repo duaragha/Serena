@@ -13,7 +13,7 @@ Override the target with SERENA_URL.
 
 import os
 
-URL = os.environ.get("SERENA_URL", "https://raghavsgamingpc.tail4d6220.ts.net:8444/")
+URL = os.environ.get("SERENA_URL", "https://pc.tail4d6220.ts.net:8444/")
 
 
 def main() -> None:

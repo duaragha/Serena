@@ -25,6 +25,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from mcp.types import ToolAnnotations
 
 from core.config import DB_PATH
+from core.security_policy import bounded_output, build_child_environment
 
 _PROJECTS = Path(
     os.environ.get("SERENA_PROJECTS_DIR")
@@ -55,6 +56,27 @@ _REMOTE_READ_ONLY = ToolAnnotations(
     openWorldHint=True,
 )
 
+
+def _namespaced_system_owner(resolved: Path, owner_uid: int) -> bool:
+    """Recognize read-only system mounts whose root uid is unmapped."""
+
+    if owner_uid != 65534 or not Path("/proc/self/uid_map").is_file():
+        return False
+    try:
+        uid_map = Path("/proc/self/uid_map").read_text(encoding="ascii").split()
+    except OSError:
+        return False
+    if uid_map == ["0", "0", "4294967295"]:
+        return False
+    system_roots = (Path("/usr/bin"), Path("/usr/local/bin"), Path("/bin"))
+    if not any(resolved.is_relative_to(root.resolve()) for root in system_roots):
+        return False
+    try:
+        return not resolved.parent.stat().st_mode & 0o022
+    except OSError:
+        return False
+
+
 def _trusted_system_executable(candidates: tuple[Path, ...]) -> str | None:
     """Resolve only an administrator-owned, non-writable system binary."""
 
@@ -66,8 +88,12 @@ def _trusted_system_executable(candidates: tuple[Path, ...]) -> str | None:
             continue
         if not resolved.is_file():
             continue
-        if os.name != "nt" and (metadata.st_uid != 0 or metadata.st_mode & 0o022):
-            continue
+        if os.name != "nt":
+            trusted_owner = metadata.st_uid == 0 or _namespaced_system_owner(
+                resolved, metadata.st_uid
+            )
+            if not trusted_owner or metadata.st_mode & 0o022:
+                continue
         return str(resolved)
     return None
 
@@ -108,16 +134,16 @@ def _subprocess_group_options() -> dict[str, object]:
 
 async def _run_ro(cmd: list[str], cwd: str | None = None, timeout: float = 20) -> str:
     """Run a read-only command, return combined output (clipped)."""
-    env = os.environ.copy()
-    env.update(
-        {
+    env = build_child_environment(
+        os.environ,
+        plain={
             "GIT_OPTIONAL_LOCKS": "0",
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_PAGER": "cat",
             "GH_PROMPT_DISABLED": "1",
             "GH_PAGER": "cat",
             "PAGER": "cat",
-        }
+        },
     )
     proc: asyncio.subprocess.Process | None = None
     communication: asyncio.Task[tuple[bytes, bytes | None]] | None = None
@@ -132,7 +158,7 @@ async def _run_ro(cmd: list[str], cwd: str | None = None, timeout: float = 20) -
             asyncio.shield(communication), timeout=timeout
         )
         text = out.decode("utf-8", errors="replace").strip()
-        return text[:4000] if text else "(no output)"
+        return str(bounded_output(text, limit=4_000)["text"]) if text else "(no output)"
     except asyncio.TimeoutError:
         await _terminate_and_reap(proc, communication)
         return f"(timed out after {timeout}s)"
@@ -392,7 +418,10 @@ def _recall_chat_index(query: str, limit: int = 10) -> str:
       "conversations on this machine. Read-only.",
       {"query": str}, annotations=_LOCAL_READ_ONLY)
 async def recall_chats(args):
-    out = await asyncio.to_thread(_recall_chat_index, args.get("query", ""))
+    # This is a bounded, immutable SQLite read. Keeping it in this handler
+    # avoids executor-shutdown stalls when the SDK invokes the tool in a
+    # short-lived event loop.
+    out = _recall_chat_index(args.get("query", ""))
     return {"content": [{"type": "text", "text": out}]}
 
 
@@ -495,6 +524,25 @@ def _top(
 
 
 def _search_memory(query: str) -> str:
+    from memory.v2 import MemoryV2Store
+
+    if MemoryV2Store.authority_is_active():
+        v2 = MemoryV2Store()
+        result = v2.retrieve_with_receipt(query, limit=_MEMORY_HITS, surface="private")
+        hits = result["hits"]
+        if not hits:
+            return f"nothing in memory about {query!r}"
+        lines = []
+        for hit in hits:
+            record = hit["record"]
+            content = " ".join(str(record.get("content") or "").split())[:400]
+            lines.append(
+                f"- [{record['record_id']}] ({record['record_type']}) {content}"
+                f"  [score {float(hit['score']):.3f}]"
+            )
+        lines.append(f"retrieval receipt: {result['receipt']['receipt_id']}")
+        return "\n".join(lines)[:4000]
+
     from memory.store import _ago, list_memories
 
     terms = _terms(query)

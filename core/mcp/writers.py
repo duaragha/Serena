@@ -8,8 +8,16 @@ the config file safely.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+from pathlib import Path
+
+from core.security_policy import (
+    SUBSCRIPTION_ENV_ALLOWLIST,
+    build_child_environment,
+    redact_credentials,
+)
 
 
 def _bin(name: str) -> str:
@@ -17,13 +25,47 @@ def _bin(name: str) -> str:
 
 
 def _run(argv: list[str]) -> tuple[bool, str]:
+    environment: dict[str, str] = {}
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+        native_cli = Path(argv[0]).name.lower() in {
+            "claude",
+            "claude.exe",
+            "codex",
+            "codex.exe",
+        }
+        environment = build_child_environment(
+            os.environ,
+            preserve_subscription=native_cli,
+        )
+        options = {}
+        descriptor = environment.get("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "")
+        if os.name != "nt" and descriptor.isdigit():
+            try:
+                os.fstat(int(descriptor))
+            except OSError:
+                environment.pop("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", None)
+            else:
+                options["pass_fds"] = (int(descriptor),)
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=environment,
+            **options,
+        )
     except subprocess.TimeoutExpired:
         return False, "timed out after 20s"
-    except FileNotFoundError as e:
+    except OSError as e:
         return False, str(e)
-    out = (proc.stdout or "") + (proc.stderr or "")
+    out = redact_credentials(
+        (proc.stdout or "") + (proc.stderr or ""),
+        secret_values=[
+            environment.get(name, "")
+            for name in SUBSCRIPTION_ENV_ALLOWLIST
+            if name.endswith("_TOKEN")
+        ],
+    )
     return proc.returncode == 0, out.strip()
 
 
@@ -40,8 +82,18 @@ def render_to_claude(server: dict) -> tuple[bool, str]:
         # pointing at Serena's multiplexer endpoint. Claude opens a normal
         # HTTP MCP connection; Serena fans out to the single shared subprocess.
         from core.mcp.multiplex import shared_url
-        argv = [_bin("claude"), "mcp", "add", "-s", "user", "--transport", "http",
-                name, shared_url(name)]
+
+        argv = [
+            _bin("claude"),
+            "mcp",
+            "add",
+            "-s",
+            "user",
+            "--transport",
+            "http",
+            name,
+            shared_url(name),
+        ]
         return _run(argv)
     # === MCP MULTIPLEXER END ===
 
@@ -52,7 +104,7 @@ def render_to_claude(server: dict) -> tuple[bool, str]:
     # The `=` form binds the value tightly to the flag.
     for k, v in (server.get("env") or {}).items():
         argv += [f"--env={k}={v}"]
-    for var in (server.get("secrets") or []):
+    for var in server.get("secrets") or []:
         argv += [f"--env={var}=" + "${" + var + "}"]
 
     if transport == "http":
@@ -81,13 +133,14 @@ def render_to_codex(server: dict) -> tuple[bool, str]:
 
     if is_shared:
         from core.mcp.multiplex import shared_url
+
         argv = [_bin("codex"), "mcp", "add", name, "--url", shared_url(name)]
         return _run(argv)
 
     argv = [_bin("codex"), "mcp", "add"]
     for k, v in (server.get("env") or {}).items():
         argv += ["--env", f"{k}={v}"]
-    for var in (server.get("secrets") or []):
+    for var in server.get("secrets") or []:
         argv += ["--env", f"{var}=" + "${" + var + "}"]
 
     if transport == "http":
@@ -141,7 +194,7 @@ def remove_everywhere(name: str) -> dict:
     c_ok, c_msg = remove_from_codex(name)
     return {
         "claude": {"ok": a_ok, "message": a_msg, "action": "removed"},
-        "codex":  {"ok": c_ok, "message": c_msg, "action": "removed"},
+        "codex": {"ok": c_ok, "message": c_msg, "action": "removed"},
     }
 
 
@@ -152,7 +205,9 @@ def _master_config_hash() -> str:
     can skip the slow shell-out loop (12+ servers × 2 agents × ~1s each)."""
     import hashlib
     from pathlib import Path
+
     from core.mcp.config import CONFIG_PATH
+
     h = hashlib.sha256()
     for p in (CONFIG_PATH, Path.home() / ".claude.json", Path.home() / ".codex" / "config.toml"):
         try:
@@ -168,6 +223,7 @@ def _master_config_hash() -> str:
 
 def _hash_cache_path():
     from pathlib import Path
+
     p = Path.home() / ".local" / "share" / "chats"
     p.mkdir(parents=True, exist_ok=True)
     return p / "last-mcp-sync.hash"
@@ -187,6 +243,7 @@ def sync_all_on_startup(force: bool = False) -> dict:
     Pass `force=True` to bypass the cache.
     """
     from core.mcp.config import list_servers
+
     cache = _hash_cache_path()
     current_hash = _master_config_hash()
     if not force:

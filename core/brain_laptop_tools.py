@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from mcp.types import ToolAnnotations
@@ -29,6 +31,7 @@ _ACTIVE_TURN: dict[str, object] | None = None
 # is one instruction, not two unrelated utterances.
 _RECENT_TURNS: list[dict[str, object]] = []
 _RECENT_TURNS_LIMIT = 8
+_PREVIOUS_USER_TURN_KEY = "_previous_user_turn"
 
 _LOCAL_READ_ONLY = ToolAnnotations(
     readOnlyHint=True,
@@ -46,14 +49,22 @@ _LOCAL_BROKERED_ACTION = ToolAnnotations(
 
 def set_current_turn(payload: Mapping[str, object]):
     global _ACTIVE_TURN
-    _ACTIVE_TURN = dict(payload)
     import time as _time
+
+    bound_payload = dict(payload)
+    # This is broker-owned context, never caller-supplied authority. Only the
+    # immediately preceding genuine user turn is exposed so an explicit retry
+    # cannot reach farther back through conversation history.
+    bound_payload.pop(_PREVIOUS_USER_TURN_KEY, None)
+    if _RECENT_TURNS:
+        bound_payload[_PREVIOUS_USER_TURN_KEY] = dict(_RECENT_TURNS[-1])
 
     text = " ".join(str(payload.get("text") or "").split())
     if text:
         _RECENT_TURNS.append({"at": _time.time(), "text": text})
         del _RECENT_TURNS[:-_RECENT_TURNS_LIMIT]
-    return _CURRENT_TURN.set(dict(payload))
+    _ACTIVE_TURN = bound_payload
+    return _CURRENT_TURN.set(bound_payload)
 
 
 def reset_current_turn(token) -> None:
@@ -91,13 +102,38 @@ async def laptop_context(_args):
     annotations=_LOCAL_BROKERED_ACTION,
 )
 async def laptop_action(args):
-    result = await asyncio.to_thread(
-        execute_laptop_action,
-        str(args.get("action") or ""),
-        str(args.get("target") or ""),
-        origin=current_turn(),
-    )
+    action = str(args.get("action") or "")
+    target = str(args.get("target") or "")
+    # The broker's own audit stays the authoritative record of what ran. This
+    # only tracks the obligation to return a result, so a call that dies with
+    # the process is visible afterwards instead of vanishing.
+    with _tool_call(action, target):
+        result = await asyncio.to_thread(
+            execute_laptop_action,
+            action,
+            target,
+            origin=current_turn(),
+        )
     return {"content": [{"type": "text", "text": str(result)}]}
+
+
+@contextmanager
+def _tool_call(action: str, target: str):
+    """Own the promise to return this tool call's result, best effort."""
+
+    try:
+        from core.surface_journal import journal
+
+        entry = journal("tool")
+    except Exception:
+        yield
+        return
+    call_id = f"laptop.{action or 'unknown'}.{uuid.uuid4().hex[:16]}"
+    try:
+        with entry.track(call_id, summary=f"run the {action or 'laptop'} action"):
+            yield
+    except Exception:
+        raise
 
 
 LAPTOP_TOOLS = (laptop_context, laptop_action)

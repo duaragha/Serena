@@ -1,0 +1,129 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const http = require('node:http');
+const net = require('node:net');
+const path = require('node:path');
+const test = require('node:test');
+const {
+  backendLaunch,
+  findFreePort,
+  normalizeExternalUrl,
+  waitForChildExit,
+  waitForHealth,
+} = require('../runtime');
+
+const desktopDir = path.resolve(__dirname, '..');
+
+test('findFreePort returns a reusable loopback port', async (t) => {
+  let port;
+  try {
+    port = await findFreePort();
+  } catch (error) {
+    if (error.code === 'EPERM') {
+      t.skip('sandbox forbids opening loopback listeners');
+      return;
+    }
+    throw error;
+  }
+  assert.ok(Number.isInteger(port) && port > 0);
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
+  await new Promise((resolve) => server.close(resolve));
+});
+
+test('waitForHealth accepts only a valid sidecar health payload', async (t) => {
+  const server = http.createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ ok: true, pid: 1234 }));
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+  } catch (error) {
+    if (error.code === 'EPERM') {
+      t.skip('sandbox forbids opening loopback listeners');
+      return;
+    }
+    throw error;
+  }
+  const port = server.address().port;
+  const child = new EventEmitter();
+  const health = await waitForHealth(child, `http://127.0.0.1:${port}/api/health`, {
+    timeoutMs: 1000,
+    intervalMs: 10,
+  });
+  assert.deepEqual(health, { ok: true, pid: 1234 });
+  await new Promise((resolve) => server.close(resolve));
+});
+
+test('external URL normalization rejects privileged protocols', () => {
+  assert.equal(normalizeExternalUrl('https://example.com/docs'), 'https://example.com/docs');
+  assert.equal(normalizeExternalUrl('http://127.0.0.1:1234/a'), 'http://127.0.0.1:1234/a');
+  for (const candidate of ['javascript:alert(1)', 'file:///tmp/secret', 'data:text/html,x', 'https://bad host']) {
+    assert.equal(normalizeExternalUrl(candidate), null);
+  }
+});
+
+test('waitForChildExit distinguishes graceful exit from timeout', async () => {
+  const graceful = new EventEmitter();
+  graceful.exitCode = null;
+  graceful.signalCode = null;
+  setImmediate(() => {
+    graceful.exitCode = 0;
+    graceful.emit('exit', 0, null);
+  });
+  assert.equal(await waitForChildExit(graceful, 100), true);
+
+  const stuck = new EventEmitter();
+  stuck.exitCode = null;
+  stuck.signalCode = null;
+  assert.equal(await waitForChildExit(stuck, 5), false);
+  assert.equal(stuck.listenerCount('exit'), 0);
+});
+
+test('backend launch uses the repo venv in dev and bundled sidecar in production', () => {
+  const dev = backendLaunch({
+    isPackaged: false,
+    appDir: '/repo/desktop-electron',
+    resourcesPath: '/app/resources',
+    port: 43210,
+  });
+  assert.equal(dev.command, '/repo/.venv/bin/python');
+  assert.equal(dev.args[0], '/repo/desktop-electron/sidecar.py');
+  assert.equal(dev.cwd, '/repo');
+
+  const packaged = backendLaunch({
+    isPackaged: true,
+    appDir: '/app/resources/app.asar',
+    resourcesPath: '/app/resources',
+    port: 43210,
+  });
+  assert.equal(packaged.command, '/app/resources/sidecar/serena-web-sidecar');
+  assert.equal(packaged.cwd, '/app/resources');
+});
+
+test('main and preload retain the required Electron security contract', () => {
+  const main = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+  const preload = fs.readFileSync(path.join(desktopDir, 'preload.js'), 'utf8');
+  const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
+
+  assert.match(main, /requestSingleInstanceLock\(\)/);
+  assert.match(main, /contextIsolation:\s*true/);
+  assert.match(main, /nodeIntegration:\s*false/);
+  assert.match(main, /sandbox:\s*true/);
+  assert.match(main, /setWindowOpenHandler/);
+  assert.match(main, /new Tray\(/);
+  assert.match(preload, /contextBridge\.exposeInMainWorld\('serenaDesktop'/);
+  assert.match(preload, /getVersion/);
+  assert.match(preload, /notify/);
+  assert.match(preload, /openExternal/);
+  assert.deepEqual(packageJson.build.linux.target, ['AppImage', 'deb']);
+});

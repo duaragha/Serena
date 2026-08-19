@@ -166,6 +166,113 @@ _INV_TYPE_MAP = {
     "task": "task", "loop": "loop", "feedback": "feedback",
     "user": "user", "project": "project", "reference": "reference",
 }
+_V2_TYPE_MAP = {
+    "task": "commitment",
+    "ledger": "commitment",
+    "loop": "commitment",
+    "feedback": "correction",
+    "user": "semantic_fact",
+    "project": "semantic_fact",
+    "reference": "procedure",
+    "general": "episode",
+}
+
+
+def _stage_v2_pull(
+    by_locket_id: dict[int, dict],
+    local_by_locket: dict[int, dict],
+    *,
+    dry_run: bool,
+) -> dict[str, int]:
+    """Turn phone changes into reviewable v2 proposals, never legacy rewrites."""
+
+    detected = {"created": 0, "updated": 0, "deleted": 0, "proposed": 0}
+    if dry_run:
+        store = None
+    else:
+        from memory.v2 import MemoryV2Store
+
+        store = MemoryV2Store()
+
+    def source(lid: int, content: str) -> dict:
+        from memory.v2 import source_receipt
+
+        return source_receipt(
+            kind="locket_phone_sync",
+            locator=f"locket:{lid}",
+            source_text=content,
+            surface="phone",
+        )
+
+    for lid, legacy in local_by_locket.items():
+        row = by_locket_id.get(lid)
+        target_id = f"legacy:{legacy['type']}:{legacy['id']}"
+        if row is None:
+            detected["deleted"] += 1
+            if store is not None and store.get_record(target_id) is not None:
+                store.create_proposal(
+                    operation="forget",
+                    target_record_id=target_id,
+                    source=source(lid, legacy["content"]),
+                )
+                detected["proposed"] += 1
+            continue
+        remote_content = str(row.get("content") or "")
+        if remote_content == legacy["content"]:
+            continue
+        detected["updated"] += 1
+        if store is None:
+            continue
+        current = store.get_record(target_id)
+        if current is None:
+            continue
+        store.create_proposal(
+            operation="update",
+            target_record_id=target_id,
+            candidate={
+                "record_type": current.record_type,
+                "content": remote_content,
+                "confidence": current.confidence,
+                "sensitivity": current.sensitivity,
+                "project": current.project,
+                "people": list(current.people),
+                "valid_from": current.valid_from,
+                "valid_until": current.valid_until,
+                "retention_until": current.retention_until,
+            },
+            source=source(lid, remote_content),
+        )
+        detected["proposed"] += 1
+
+    for lid, row in by_locket_id.items():
+        if lid in local_by_locket or row.get("source") != "app":
+            continue
+        legacy_type = _INV_TYPE_MAP.get(str(row.get("type") or ""))
+        if legacy_type is None:
+            continue
+        detected["created"] += 1
+        if store is None:
+            continue
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        store.create_proposal(
+            operation="add",
+            candidate={
+                "record_type": _V2_TYPE_MAP.get(legacy_type, "reference"),
+                "content": content,
+                "confidence": 0.75,
+                "sensitivity": "personal",
+            },
+            source=source(lid, content),
+        )
+        detected["proposed"] += 1
+    if store is not None:
+        try:
+            store.flush_control_outbox()
+        except Exception:
+            pass
+    return detected
 
 
 def _remote_rows(include_archived: bool = True) -> list[dict] | None:
@@ -324,6 +431,31 @@ def pull(dry_run: bool = False) -> dict:
                 local_by_locket[int(lid)] = m
             except ValueError:
                 pass
+
+    from memory.v2 import MemoryV2Store
+
+    if MemoryV2Store.authority_is_active():
+        result.update(_stage_v2_pull(by_locket_id, local_by_locket, dry_run=dry_run))
+        result["authority"] = "memory-v2"
+        result["ok"] = True
+        if not dry_run:
+            try:
+                from core.locket_sync_state import record_success
+
+                record_success(
+                    "memory",
+                    {
+                        "created": result["created"],
+                        "updated": result["updated"],
+                        "deleted": result["deleted"],
+                        "proposed": result["proposed"],
+                        "remote": result.get("remote", 0),
+                        "authority": "memory-v2",
+                    },
+                )
+            except Exception:
+                pass
+        return result
 
     # 1. Deletions + edits driven from the phone.
     for lid, lm in list(local_by_locket.items()):

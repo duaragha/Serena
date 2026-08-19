@@ -15,6 +15,7 @@ from core.coding_job_contract import CodingJobBrief, capture_git_snapshot
 from core.voice_inbox import VoiceInboxStore
 from core.voice_work_supervisor import (
     VoiceWorkSupervisor,
+    configured_job_concurrency,
     resident_worker_available,
     verify_claude_subscription,
     verify_codex_subscription,
@@ -69,6 +70,7 @@ def _accepted_item(
             "commit",
             "-qm",
             "baseline",
+            "--allow-empty",
         ],
         check=True,
     )
@@ -88,6 +90,202 @@ def _append_rollout(path, *events) -> None:
     with path.open("a", encoding="utf-8") as handle:
         for event in events:
             handle.write(json.dumps(event) + "\n")
+
+
+def test_concurrency_configuration_is_bounded(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("SERENA_CODING_JOB_CONCURRENCY", raising=False)
+    assert configured_job_concurrency() == 2
+    assert configured_job_concurrency("4") == 4
+    with pytest.raises(ValueError, match="between 1 and 4"):
+        configured_job_concurrency(0)
+    with pytest.raises(ValueError, match="between 1 and 4"):
+        configured_job_concurrency(5)
+    monkeypatch.setenv("SERENA_CODING_JOB_CONCURRENCY", "typo")
+    assert configured_job_concurrency() == 2
+    monkeypatch.setenv("SERENA_CODING_JOB_CONCURRENCY", "99")
+    assert configured_job_concurrency() == 2
+    assert "using 2" in capsys.readouterr().out
+
+
+def test_scheduler_runs_independent_projects_in_parallel(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = VoiceInboxStore(tmp_path / "voice.sqlite3")
+    repos = [tmp_path / "weather", tmp_path / "serena"]
+    for index, repo in enumerate(repos):
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        _accepted_item(
+            store,
+            repo,
+            item_id=f"parallel-job-{index}",
+            call_id=f"parallel-call-{index}",
+            turn_id=f"parallel-turn-{index}",
+        )
+
+    monkeypatch.setattr(supervisor_module, "verify_codex_subscription", lambda **_kwargs: None)
+    supervisor = VoiceWorkSupervisor(
+        store=store,
+        marker_path=tmp_path / "worker.json",
+        notifier=lambda _message: None,
+        overlay_sender=lambda _message: None,
+        max_concurrency=2,
+    )
+    both_started = threading.Event()
+    release = threading.Event()
+    entered: list[str] = []
+    lock = threading.Lock()
+
+    def run_item(item, target_sid):
+        assert store.acknowledge_started(
+            item.item_id,
+            target_sid=target_sid,
+            cwd=str(item.brief["project_root"]),
+        )
+        with lock:
+            entered.append(str(item.brief["project_root"]))
+            if len(entered) == 2:
+                both_started.set()
+        release.wait(3)
+
+    monkeypatch.setattr(supervisor, "_run_item", run_item)
+    runner = threading.Thread(target=supervisor.run)
+    runner.start()
+    try:
+        assert both_started.wait(2), "two independent jobs never entered active work"
+        assert set(entered) == {str(repo.resolve()) for repo in repos}
+        assert store.working_count() == 2
+        assert {
+            store.job_snapshot(f"parallel-job-{index}")["work"]["state"]
+            for index in range(2)
+        } == {"working"}
+    finally:
+        supervisor.request_stop()
+        release.set()
+        runner.join(timeout=3)
+    assert not runner.is_alive()
+
+
+def test_stopping_the_supervisor_terminates_every_active_job_process(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    supervisor = VoiceWorkSupervisor(
+        store=VoiceInboxStore(tmp_path / "voice.sqlite3"),
+        marker_path=tmp_path / "worker.json",
+        max_concurrency=2,
+    )
+    terminated: list[tuple[int, int]] = []
+
+    class Process:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(
+        supervisor_module.os,
+        "killpg",
+        lambda pid, sig: terminated.append((pid, sig)),
+    )
+    supervisor._set_active_process("first", Process(101))
+    supervisor._set_active_process("second", Process(202))
+
+    supervisor.request_stop()
+
+    assert set(terminated) == {
+        (101, supervisor_module.signal.SIGTERM),
+        (202, supervisor_module.signal.SIGTERM),
+    }
+
+
+def test_scheduler_skips_a_conflicting_checkout_and_never_exceeds_capacity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = VoiceInboxStore(tmp_path / "voice.sqlite3")
+    shared = tmp_path / "shared"
+    independent = tmp_path / "independent"
+    for repo in (shared, independent):
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    jobs = [
+        _accepted_item(
+            store,
+            shared,
+            item_id="shared-first",
+            call_id="shared-first-call",
+            turn_id="shared-first-turn",
+        ),
+        _accepted_item(
+            store,
+            shared,
+            item_id="shared-second",
+            call_id="shared-second-call",
+            turn_id="shared-second-turn",
+        ),
+        _accepted_item(
+            store,
+            independent,
+            item_id="independent-third",
+            call_id="independent-call",
+            turn_id="independent-turn",
+        ),
+    ]
+
+    monkeypatch.setattr(supervisor_module, "verify_codex_subscription", lambda **_kwargs: None)
+    supervisor = VoiceWorkSupervisor(
+        store=store,
+        marker_path=tmp_path / "worker.json",
+        notifier=lambda _message: None,
+        overlay_sender=lambda _message: None,
+        max_concurrency=2,
+    )
+    releases = {job.item_id: threading.Event() for job in jobs}
+    first_wave = threading.Event()
+    second_shared_started = threading.Event()
+    lock = threading.Lock()
+    active_roots: set[str] = set()
+    entered: list[str] = []
+    conflicts: list[str] = []
+    max_active = 0
+
+    def run_item(item, _target_sid):
+        nonlocal max_active
+        root = str(item.brief["project_root"])
+        with lock:
+            if root in active_roots:
+                conflicts.append(root)
+            active_roots.add(root)
+            entered.append(item.item_id)
+            max_active = max(max_active, len(active_roots))
+            if len(entered) == 2:
+                first_wave.set()
+            if item.item_id == "shared-second":
+                second_shared_started.set()
+        releases[item.item_id].wait(3)
+        with lock:
+            active_roots.remove(root)
+
+    monkeypatch.setattr(supervisor, "_run_item", run_item)
+    runner = threading.Thread(target=supervisor.run)
+    runner.start()
+    try:
+        assert first_wave.wait(2)
+        assert set(entered[:2]) == {"shared-first", "independent-third"}
+        assert "shared-second" not in entered[:2]
+        releases["shared-first"].set()
+        assert second_shared_started.wait(2)
+        assert conflicts == []
+        assert max_active == 2
+    finally:
+        supervisor.request_stop()
+        for event in releases.values():
+            event.set()
+        runner.join(timeout=3)
+    assert not runner.is_alive()
 
 
 def test_subscription_guard_strips_metered_environment(monkeypatch) -> None:
@@ -161,6 +359,31 @@ def test_persisted_resume_uses_the_same_codex_session_and_pinned_identity(tmp_pa
     assert "--skip-git-repo-check" not in command
     assert command[command.index("-m") + 1] == "gpt-5.6-sol"
     assert 'model_reasoning_effort="xhigh"' in command
+
+
+def test_private_launch_commands_use_the_model_frozen_by_shared_policy(tmp_path) -> None:
+    codex = VoiceWorkSupervisor._codex_command(
+        "/fake/codex",
+        tmp_path,
+        model="gpt-5.6-terra",
+        effort="high",
+    )
+    claude = VoiceWorkSupervisor._claude_implement_command(
+        "/fake/claude",
+        model="claude-sonnet-5",
+        effort="high",
+    )
+
+    assert codex[codex.index("-m") + 1] == "gpt-5.6-terra"
+    assert 'model_reasoning_effort="high"' in codex
+    assert claude[claude.index("--model") + 1] == "claude-sonnet-5"
+    assert claude[claude.index("--effort") + 1] == "high"
+    assert supervisor_module._codex_identity_error(
+        "gpt-5.6-terra",
+        "high",
+        requested_model="gpt-5.6-terra",
+        requested_effort="high",
+    ) == ""
 
 
 def test_isolated_supervisor_store_never_broadcasts_into_live_overlay(
@@ -271,7 +494,7 @@ def test_reused_attempt_closes_when_durable_setup_fails(tmp_path, monkeypatch) -
     assert attempt["last_error"] == "attempt setup failed"
 
 
-def test_dead_committed_reuse_route_fails_fast_and_releases_next_job(
+def test_dead_committed_reuse_route_recovers_privately_and_releases_next_job(
     tmp_path, monkeypatch
 ) -> None:
     """A dead exact owner must not hold the resident queue for six hours."""
@@ -304,6 +527,13 @@ def test_dead_committed_reuse_route_fails_fast_and_releases_next_job(
         target_sid="headless-voice-before-restart",
         cwd=str(weather_repo),
     )
+    attempt_id, _number = store.start_attempt(
+        first.item_id,
+        provider="codex",
+        model="gpt-5.6-sol",
+        effort="high",
+    )
+    assert store.set_attempt_session(attempt_id, sid)
     assert store.set_work_session(first.item_id, sid)
     assert store.requeue_work_item(first.item_id, error="resident worker restarted")
     assert store.prepare_route_dispatch(first.item_id, "committed-weather-digest")
@@ -367,13 +597,14 @@ def test_dead_committed_reuse_route_fails_fast_and_releases_next_job(
     supervisor._run_item(resumed, "headless-voice-after-restart")
 
     snapshot = store.job_snapshot(first.item_id)
-    assert snapshot["work"]["state"] == "failed"
+    assert snapshot["work"]["state"] == "resume_queued"
     assert "bridge is unavailable" in snapshot["work"]["last_error"]
+    assert snapshot["route"]["mode"] == "private"
     assert snapshot["route"]["state"] == "uncertain"
     assert snapshot["attempts"][-1]["state"] == "failed"
     assert snapshot["attempts"][-1]["finished_at"] is not None
     overlay = store.overlay_snapshot(first.item_id)
-    assert overlay["state"] == "failed"
+    assert overlay["state"] == "resume_queued"
     assert overlay["progress"]["attempt_state"] == "failed"
     assert overlay["progress"]["route_state"] == "uncertain"
 
@@ -435,7 +666,7 @@ def test_reused_chat_attempt_uses_live_owner_and_captures_exact_turn(
             rollout,
             {
                 "type": "turn_context",
-                "payload": {"model": "gpt-5.6-sol", "effort": "max"},
+                "payload": {"model": "gpt-5.6-sol", "effort": "high"},
             },
             {"type": "event_msg", "payload": {"type": "user_message", "message": prompt}},
             {
@@ -528,6 +759,148 @@ def test_reused_chat_attempt_uses_live_owner_and_captures_exact_turn(
         }
     ]
     assert store.route_record(item.item_id)["state"] == "completed"
+    assert {
+        attempt["requested_effort"]
+        for attempt in store.job_snapshot(item.item_id)["attempts"]
+    } == {"high"}
+
+
+def test_busy_automatic_reuse_route_is_requeued_privately_instead_of_failed(
+    tmp_path, monkeypatch
+) -> None:
+    store = VoiceInboxStore(tmp_path / "voice.sqlite3")
+    repo = tmp_path / "serena"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    route = {
+        "mode": "reuse",
+        "preference": "auto",
+        "project_root": str(repo.resolve()),
+        "session_id": "019fcaaa-1111-7222-8333-busy00000002",
+        "group_id": "g_busy",
+        "bridge_port": 45678,
+        "title": "busy chat",
+        "reason": "automatic exact-project reuse",
+        "effort": "high",
+    }
+    queued = _accepted_item(store, repo, item_id="busy-fallback-job", work_route=route)
+    target = "headless-voice-busy-fallback"
+    item = store.claim_next(target)
+    assert item is not None
+    notices: list[str] = []
+    supervisor = VoiceWorkSupervisor(
+        provider_chooser=_codex_available(),
+        store=store,
+        marker_path=tmp_path / "worker.json",
+        notifier=notices.append,
+        overlay_sender=lambda _message: None,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_run_reused_codex_attempt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("runtime has an active turn")
+        ),
+    )
+
+    supervisor._run_item(item, target)
+
+    snapshot = store.job_snapshot(queued.item_id)
+    assert snapshot["queue"]["state"] == "queued"
+    assert snapshot["work"]["state"] == "failed"
+    assert snapshot["work"]["session_id"] == ""
+    assert snapshot["route"]["mode"] == "private"
+    recovery_events = [
+        event for event in snapshot["events"]
+        if event["kind"] == "automatic_recovery.queued"
+    ]
+    assert len(recovery_events) == 1
+    assert recovery_events[0]["payload"]["kind"] == "route"
+    assert recovery_events[0]["payload"]["private_route"] is True
+    assert notices == [
+        "that coding attempt hit a recoverable failure. "
+        "i queued a bounded continuation instead of abandoning it."
+    ]
+
+
+def test_recovery_attempt_receives_the_durable_failure_context(
+    tmp_path, monkeypatch
+) -> None:
+    clock = [5_000.0]
+    monkeypatch.setattr(supervisor_module.time, "time", lambda: clock[0])
+    store = VoiceInboxStore(tmp_path / "voice.sqlite3")
+    repo = tmp_path / "serena"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    queued = _accepted_item(store, repo, item_id="recovery-prompt-job")
+    first_target = "headless-voice-recovery-first"
+    first = store.claim_next(first_target)
+    assert first is not None
+    assert store.acknowledge_started(
+        queued.item_id,
+        target_sid=first_target,
+        cwd=str(repo),
+    )
+    assert store.set_work_session(queued.item_id, "persisted-recovery-session")
+    recovery = store.queue_automatic_recovery(
+        queued.item_id,
+        error="Codex exited with status 1",
+        kind="provider",
+        max_recoveries=3,
+    )
+    assert recovery["queued"] is True
+
+    clock[0] += 2.0
+    target = "headless-voice-recovery-second"
+    item = store.claim_next(target)
+    assert item is not None
+    prompts: list[str] = []
+    supervisor = VoiceWorkSupervisor(
+        provider_chooser=_codex_available(),
+        store=store,
+        marker_path=tmp_path / "worker.json",
+        notifier=lambda _message: None,
+        overlay_sender=lambda _message: None,
+    )
+
+    def cancel_after_capture(_item, _cwd, prompt, **_kwargs):
+        prompts.append(prompt)
+        return {
+            "attempt_no": 2,
+            "session_id": "persisted-recovery-session",
+            "message": "",
+            "control": {"action": "cancel", "control_id": ""},
+        }
+
+    monkeypatch.setattr(supervisor, "_run_codex_attempt", cancel_after_capture)
+    supervisor._run_item(item, target)
+
+    assert len(prompts) == 1
+    assert "bounded automatic continuation of the same logical coding job" in prompts[0]
+    assert "recovery 1 of 3" in prompts[0]
+    assert "Codex exited with status 1" in prompts[0]
+    assert store.latest_automatic_recovery(queued.item_id)["state"] == "cancelled"
+
+
+def test_every_implementation_prompt_prefers_scoped_tests_and_labels_python_proof(
+    tmp_path,
+) -> None:
+    store = VoiceInboxStore(tmp_path / "voice.sqlite3")
+    repo = tmp_path / "serena"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    item = _accepted_item(store, repo, item_id="scoped-proof")
+
+    private = supervisor_module._private_prompt(item).casefold()
+    reused = supervisor_module._reused_prompt(item).casefold()
+    assert "whole suite only" in private
+    assert "full suite only" in reused
+    assert "scoped run that exits zero" in private
+    assert "scoped run that exits zero" in reused
+    assert "serena_evidence_kind=live" in private
+    assert "serena_evidence_kind=live" in reused
+    assert "never put the marker on tests or static inspection" in private
+    assert "never put that marker on tests or static inspection" in reused
 
 
 def test_opus_5_review_identity_never_accepts_another_generation() -> None:
@@ -543,6 +916,15 @@ def test_opus_5_review_identity_never_accepts_another_generation() -> None:
     assert "--fallback-model" not in command
     assert "--safe-mode" in command
     assert "--no-session-persistence" in command
+
+    sonnet = VoiceWorkSupervisor._claude_review_command(
+        "/fake/claude",
+        "33333333-3333-4333-8333-333333333333",
+        model="claude-sonnet-5",
+        effort="high",
+    )
+    assert sonnet[sonnet.index("--model") + 1] == "claude-sonnet-5"
+    assert sonnet[sonnet.index("--effort") + 1] == "high"
 
 
 def test_opus_review_is_verified_without_creating_a_sidebar_chat(
@@ -714,7 +1096,9 @@ def test_steering_before_thread_started_waits_for_resumable_verified_identity(
                     "type": "thread.settings",
                     "settings": {
                         "model": "gpt-5.6-sol",
-                        "reasoning_effort": "xhigh",
+                        # An unjudged job is an ordinary job, so this is the
+                        # tier the accepted brief really froze.
+                        "reasoning_effort": "high",
                     },
                 }
             )
@@ -847,7 +1231,7 @@ def test_resident_worker_runs_codex_and_persists_result(tmp_path, monkeypatch) -
             json.dumps(
                 {
                     "type": "thread.settings",
-                    "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "xhigh"},
+                    "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
                 }
             ),
             json.dumps(
@@ -941,7 +1325,9 @@ def test_resident_worker_runs_codex_and_persists_result(tmp_path, monkeypatch) -
     assert captured["commands"][0][-1] == "-"
     assert "--skip-git-repo-check" not in captured["commands"][0]
     assert captured["commands"][0][captured["commands"][0].index("-m") + 1] == "gpt-5.6-sol"
-    assert 'model_reasoning_effort="xhigh"' in captured["commands"][0]
+    # Ordinary work runs at high. It used to run at the ceiling no matter what
+    # it was, which bought maximum deliberation over routine orientation.
+    assert 'model_reasoning_effort="high"' in captured["commands"][0]
     assert "--ignore-user-config" in captured["commands"][0]
     assert titles and titles[0][0] == session_id
     assert residents == [session_id]
@@ -970,3 +1356,313 @@ def test_resident_worker_runs_codex_and_persists_result(tmp_path, monkeypatch) -
     snapshot = store.job_snapshot(queued.item_id)
     assert snapshot is not None
     assert snapshot["reviews"][-1]["state"] == "skipped"
+
+
+def _warm_supervisor(tmp_path, store):
+    return VoiceWorkSupervisor(
+        provider_chooser=_codex_available(),
+        store=store,
+        marker_path=tmp_path / "worker.json",
+        claude_bin="/fake/claude",
+    )
+
+
+def test_a_warm_claude_session_is_reused_only_when_every_guard_holds(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A cold worker re-reads the tree it was already told about.
+
+    On 2026-08-05 a job looked at code three seconds in and did not edit
+    anything until 457 seconds in, spending ninety Bash calls relearning a
+    layout. Resuming a session that already read this repository skips that.
+    Every refusal below is free, because the caller just starts cold.
+    """
+
+    store = VoiceInboxStore(tmp_path / "voice.sqlite3")
+    repo = tmp_path / "serena"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _accepted_item(store, repo, item_id="warm-job")
+    item = store.claim_next("headless-voice-warm")
+    assert item is not None
+    supervisor = _warm_supervisor(tmp_path, store)
+
+    bound: dict[str, str] = {}
+
+    class FakeMetadata:
+        @staticmethod
+        def set_work_project_root(session_id, project_root):
+            if session_id == "owned-elsewhere":
+                raise ValueError("session is already bound to a different project")
+            bound[session_id] = str(project_root)
+            return str(project_root)
+
+    class FakeBridge:
+        @staticmethod
+        def find_claude_jsonl(session_id):
+            return None if session_id == "deleted-session" else tmp_path / "x.jsonl"
+
+    monkeypatch.setitem(__import__("sys").modules, "core.metadata", FakeMetadata)
+    monkeypatch.setitem(__import__("sys").modules, "core.claude_bridge", FakeBridge)
+
+    # Nothing warm on record yet, so the job starts cold rather than guessing.
+    assert supervisor._warm_claude_session(item, repo) == ""
+
+    store.enqueue_accepted(
+        CodingJobBrief.create(
+            item_id="warm-job-earlier",
+            exact_request="earlier work",
+            triggering_request=f"earlier work in {repo}",
+            project_root=repo,
+            initial_git=capture_git_snapshot(
+                repo, item_id="warm-job-earlier", label="baseline"
+            ),
+        ).to_dict(),
+        call_id="call-earlier",
+        turn_id="call-earlier:1",
+    )
+    earlier = store.claim_next("headless-voice-earlier")
+    assert earlier is not None and earlier.item_id == "warm-job-earlier"
+    assert store.acknowledge_started(
+        earlier.item_id,
+        target_sid="headless-voice-earlier",
+        cwd=str(repo),
+    )
+    attempt_id, _no = store.start_attempt(
+        earlier.item_id, provider="claude", model="claude-opus-5", effort="high"
+    )
+    store.set_attempt_session(attempt_id, "warm-claude-session")
+    store.finish_attempt(attempt_id, state="completed", exit_code=0)
+    store.record_evidence(earlier.item_id, {"complete": True})
+    assert store.finish_work_item(earlier.item_id)
+
+    assert supervisor._warm_claude_session(item, repo) == "warm-claude-session"
+    # Reuse goes through the same immutable binding a reused Codex chat does.
+    assert bound["warm-claude-session"] == str(repo)
+
+    # A session id with no transcript left on disk would fail --resume outright.
+    assert supervisor._warm_claude_session(
+        item, repo, preferred_session_id="deleted-session"
+    ) == ""
+    # A session another project already owns is never retargeted.
+    assert supervisor._warm_claude_session(
+        item, repo, preferred_session_id="owned-elsewhere"
+    ) == ""
+    # And a path that is not a validated Git root reuses nothing at all.
+    assert supervisor._warm_claude_session(item, tmp_path / "not-a-repo") == ""
+
+
+def test_ordinary_work_implements_at_high_and_hard_work_at_the_ceiling(
+    tmp_path,
+) -> None:
+    """Effort is a property of the job, read from the brief it was accepted on."""
+
+    store = VoiceInboxStore(tmp_path / "voice.sqlite3")
+    repo = tmp_path / "serena"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _accepted_item(store, repo, item_id="ordinary-job")
+    item = store.claim_next("headless-voice-effort")
+    assert item is not None
+    supervisor = _warm_supervisor(tmp_path, store)
+
+    assert supervisor._implement_effort(item) == "high"
+    command = VoiceWorkSupervisor._claude_implement_command("/fake/claude", effort="high")
+    assert command[command.index("--effort") + 1] == "high"
+
+    tampered = item.__class__(
+        item_id=item.item_id,
+        request=item.request,
+        call_id=item.call_id,
+        turn_id=item.turn_id,
+        state=item.state,
+        created_at=item.created_at,
+        brief={**(item.brief or {}), "complexity": "hard"},
+    )
+    # The accepted policy wins over a later field mutation. A model must not
+    # silently change depth after the job was frozen.
+    assert supervisor._implement_effort(tampered) == "high"
+    legacy_hard = item.__class__(
+        item_id=item.item_id,
+        request=item.request,
+        call_id=item.call_id,
+        turn_id=item.turn_id,
+        state=item.state,
+        created_at=item.created_at,
+        brief={
+            key: value
+            for key, value in {**(item.brief or {}), "complexity": "hard"}.items()
+            if key != "model_policy"
+        },
+    )
+    assert supervisor._implement_effort(legacy_hard) == "xhigh"
+    assert 'model_reasoning_effort="xhigh"' in VoiceWorkSupervisor._codex_command(
+        "/fake/codex", repo, effort="xhigh"
+    )
+
+
+def test_claude_implementation_records_the_identity_it_reported(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = VoiceInboxStore(tmp_path / "voice.sqlite3")
+    repo = tmp_path / "serena"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _accepted_item(store, repo, item_id="claude-identity-job")
+    target = "headless-voice-claude-identity"
+    item = store.claim_next(target)
+    assert item is not None
+    assert store.acknowledge_started(item.item_id, target_sid=target, cwd=str(repo))
+    session_id = "017f7b19-2f0d-7eb3-8270-6a6ed90b5dcc"
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "system", "session_id": session_id}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "session_id": session_id,
+                    "effort": "high",
+                    "message": {"model": "claude-opus-5", "content": []},
+                }
+            ),
+            json.dumps({"type": "result", "result": "done"}),
+        ]
+    )
+
+    class FakeClaudeProcess:
+        returncode = 0
+
+        def communicate(self, _prompt, timeout=None):
+            return stdout, ""
+
+    monkeypatch.setattr(
+        supervisor_module, "verify_claude_subscription", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        supervisor_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: FakeClaudeProcess(),
+    )
+    supervisor = _warm_supervisor(tmp_path, store)
+
+    result = supervisor._run_claude_attempt(
+        item,
+        repo,
+        "continue",
+        commands=[],
+        effort="high",
+    )
+
+    assert result["session_id"] == session_id
+    attempt = store.job_snapshot(item.item_id)["attempts"][-1]
+    assert attempt["reported_model"] == "claude-opus-5"
+    assert attempt["reported_effort"] == "high"
+    assert attempt["state"] == "completed"
+    assert "model mismatch" in supervisor_module._claude_implement_identity_error(
+        "claude-sonnet-5", "high", requested_effort="high"
+    )
+    assert "effort mismatch" in supervisor_module._claude_implement_identity_error(
+        "claude-opus-5", "xhigh", requested_effort="high"
+    )
+
+
+@pytest.mark.parametrize(
+    ("previous_provider", "next_provider"),
+    [("codex", "claude"), ("claude", "codex")],
+)
+def test_restart_never_resumes_a_session_across_providers(
+    tmp_path,
+    monkeypatch,
+    previous_provider,
+    next_provider,
+) -> None:
+    from core.coding_provider import choose_providers
+
+    store = VoiceInboxStore(tmp_path / "voice.sqlite3")
+    repo = tmp_path / "serena"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    queued = _accepted_item(store, repo, item_id=f"{previous_provider}-resume-job")
+    original_target = "headless-voice-before-provider-change"
+    original = store.claim_next(original_target)
+    assert original is not None
+    assert store.acknowledge_started(
+        queued.item_id,
+        target_sid=original_target,
+        cwd=str(repo),
+    )
+    persisted_session = f"persisted-{previous_provider}-session"
+    attempt_id, _number = store.start_attempt(
+        queued.item_id,
+        provider=previous_provider,
+        model="model",
+        effort="high",
+    )
+    assert store.set_attempt_session(attempt_id, persisted_session)
+    assert store.set_work_session(queued.item_id, persisted_session)
+    store.finish_attempt(attempt_id, state="completed", exit_code=0)
+    assert store.requeue_work_item(queued.item_id, error="supervisor restarted")
+    target = "headless-voice-after-provider-change"
+    resumed = store.claim_next(target)
+    assert resumed is not None
+
+    capacity = {
+        "codex": {
+            "provider": "codex",
+            "status": "available" if next_provider == "codex" else "exhausted",
+            "usable": next_provider == "codex",
+            "reason": "test",
+        },
+        "claude": {
+            "provider": "claude",
+            "status": "available",
+            "usable": True,
+            "reason": "test",
+        },
+    }
+    captured: list[str] = []
+
+    def stop_after_capture(*_args, resume_session_id="", **_kwargs):
+        captured.append(resume_session_id)
+        raise RuntimeError("stop after provider-safe resume check")
+
+    supervisor = VoiceWorkSupervisor(
+        provider_chooser=lambda: choose_providers(capacity),
+        store=store,
+        marker_path=tmp_path / "worker.json",
+        notifier=lambda _message: None,
+        overlay_sender=lambda _message: None,
+    )
+    monkeypatch.setattr(supervisor, "_run_codex_attempt", stop_after_capture)
+    monkeypatch.setattr(supervisor, "_run_claude_attempt", stop_after_capture)
+    if next_provider == "claude":
+        monkeypatch.setattr(
+            supervisor,
+            "_warm_claude_session",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("provider mismatch must start cold")
+            ),
+        )
+
+    supervisor._run_item(resumed, target)
+
+    assert captured == [""]
+    events = store.job_snapshot(queued.item_id)["events"]
+    assert any(event["kind"] == "provider_resume_fallback" for event in events)
+
+
+def test_the_effort_gate_still_fails_a_job_whose_policy_disagrees(tmp_path) -> None:
+    """Retargeted, not relaxed. A frozen effort that does not match the tier
+    the brain judged is still a hard failure, so nothing can pick its own."""
+
+    from pathlib import Path
+
+    source = Path("core/voice_work_supervisor.py").read_text(encoding="utf-8")
+    body = source.split("def _run_item", 1)[1].split("validate_repository_root", 1)[0]
+    assert 'brief.get("codex_effort") != implement_effort' in body
+    assert 'raise RuntimeError("accepted coding job has an invalid Codex model policy")' in body
+    assert "with_implement_effort(implement_effort)" in body
+    assert "route_effort != implement_effort" in source
+    assert '"route_effort_fallback"' in source

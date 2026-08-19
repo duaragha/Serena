@@ -30,13 +30,14 @@ def _capacity(codex: bool | None, claude: bool | None) -> dict:
     return out
 
 
-def test_both_healthy_keeps_one_model_writing_and_another_reviewing() -> None:
-    """A reviewer sharing the author's blind spots is decoration."""
+def test_both_healthy_uses_the_normal_lane_models() -> None:
     plan = choose_providers(_capacity(True, True))
     assert plan.usable
     assert plan.implement_provider == "codex"
-    assert plan.review_provider == "claude"
-    assert not plan.same_provider_reviews_itself
+    assert plan.implement_model == "gpt-5.6-sol"
+    assert plan.review_provider == "codex"
+    assert plan.review_model == "gpt-5.6-luna"
+    assert plan.implement_model != plan.review_model
 
 
 def test_the_live_situation_routes_everything_to_claude() -> None:
@@ -117,3 +118,21 @@ def test_the_supervisor_asks_capacity_before_spending_a_turn() -> None:
     assert "provider_assignment" in gate
     # And the choice is refused loudly, not silently downgraded.
     assert "raise RuntimeError(assignment.reason)" in gate
+
+
+def test_the_session_is_bound_before_the_attempt_is_closed() -> None:
+    """set_attempt_session only updates a row while it is still running.
+
+    Calling it after finish_attempt wrote nothing at all, so the session id
+    was lost, the repair pass resumed nothing, and a fresh Claude with no
+    memory of the work was handed the whole prompt a second time. Watched
+    live on 2026-08-05: attempt #1 ran eighteen minutes, then attempt #2
+    started from scratch in the same second.
+    """
+    from pathlib import Path
+
+    source = Path("core/voice_work_supervisor.py").read_text(encoding="utf-8")
+    body = source.split("def _run_claude_attempt", 1)[1].split("\n    def ", 1)[0]
+    bind = body.index("set_attempt_session")
+    close = body.index('state="completed"')
+    assert bind < close, "the session must be bound while the attempt is still running"

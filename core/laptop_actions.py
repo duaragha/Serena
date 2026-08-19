@@ -183,6 +183,31 @@ def _authority_denial(action: str, target: str, origin: Mapping[str, object]) ->
     return None
 
 
+def _global_stop_denial() -> str | None:
+    """Refuse everything while Serena's global stop is engaged.
+
+    This broker keeps every check it already had. The one thing it gains is
+    that a single stop somewhere else now reaches it too, so "stop, all of it"
+    does not have to be repeated per surface. Deliberately quiet on failure:
+    if the authority store cannot be read at all, that is reported as a stop
+    rather than as permission, but a plain absence of the module leaves this
+    broker exactly as strict as it was before.
+    """
+
+    try:
+        from core.action_authority import default_authority
+
+        state = default_authority().lock_state()
+    except ImportError:
+        return None
+    except Exception:
+        return "Serena's action authority could not be consulted"
+    if state.get("engaged"):
+        reason = str(state.get("reason") or "a global stop is engaged")
+        return f"every action is stopped right now: {reason}"
+    return None
+
+
 def _command_for(action: str, target: str) -> list[str]:
     if action in {"volume_up", "volume_down", "mute", "unmute", "toggle_mute"}:
         pactl = _trusted_executable("pactl")
@@ -273,7 +298,7 @@ def execute_laptop_action(
     denial = (
         f"{action!r} is outside the reversible laptop allowlist"
         if action not in LOW_RISK_ACTIONS
-        else _authority_denial(action, target, origin)
+        else _global_stop_denial() or _authority_denial(action, target, origin)
     )
     if denial:
         result = LaptopActionResult(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.metadata
 import math
 import os
@@ -10,6 +11,7 @@ import queue
 import signal
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -30,15 +32,18 @@ from voice.call.wakeword import (
 from voice.call.wakeword_calibration import load_acceptance_manifest
 from voice.desk.duplex import BargeInGate, speech_level_dbfs
 from voice.desk.io import (
+    DEFAULT_PIPEWIRE_WAKE_TARGET,
     DEFAULT_STATE_PATH,
     GreetingFetcher,
     OverlayPublisher,
+    PipeWireMicrophone,
     SoundDeviceMicrophone,
     SoundDevicePlayback,
     WakeGreetingHandoff,
     consume_wake_greeting_handoff,
     fallback_tone,
 )
+from voice.desk.input_mute import read_voice_input_muted
 from voice.desk.transport import DeskTransport, MicFramePacker, TransportEvent
 
 SAMPLE_DTYPE = "<i2"
@@ -302,6 +307,8 @@ NOISE_SETTLING_FRAMES = 3
 NOISE_FLOOR_PERCENTILE = 75.0
 NOISE_FLOOR_MARGIN_DB = 8.0
 NOISE_FLOOR_CEILING_DBFS = -30.0
+MAX_SAFE_BARGE_IN_DC_OFFSET = 2_000.0
+INPUT_MUTE_POLL_SECONDS = 0.1
 
 
 def is_real_audio(frame: bytes) -> bool:
@@ -410,8 +417,16 @@ class DeskClient:
         metrics: DeskMetrics | None = None,
         local_fallback=None,
         session_stop: threading.Event | None = None,
+        input_muted: Callable[[], bool] | None = None,
+        barge_scorer: "WakeScorer | None" = None,
+        barge_name_threshold: float = 0.55,
     ) -> None:
         self.scorer = scorer
+        # Interrupting her requires her NAME, not just noise. Energy alone
+        # kept reading her own speaker bleed as him talking; the wake model
+        # only fires on "serena", which her own replies do not contain.
+        self.barge_scorer = barge_scorer
+        self.barge_name_threshold = float(barge_name_threshold)
         self.gate = gate
         self.microphone = microphone
         self.playback = playback
@@ -422,12 +437,28 @@ class DeskClient:
         self.metrics = metrics or DeskMetrics()
         self.local_fallback = local_fallback
         self.session_stop = session_stop or threading.Event()
+        self.mic_silent = False
+        self.input_muted = input_muted or read_voice_input_muted
+        self._input_muted_cached = False
+        self._input_mute_checked_at = float("-inf")
         # Replaced by the measured room floor once the microphone is running.
         self.voice_activity_dbfs = self.config.voice_activity_dbfs
         self.noise_calibrated = False
+        self.barge_in_safe = False
+
+    def _microphone_is_muted(self, *, force: bool = False) -> bool:
+        now = time.monotonic()
+        if force or now - self._input_mute_checked_at >= INPUT_MUTE_POLL_SECONDS:
+            self._input_muted_cached = bool(self.input_muted())
+            self._input_mute_checked_at = now
+        return self._input_muted_cached
 
     def _session_should_stop(self, service_stop: threading.Event) -> bool:
-        return service_stop.is_set() or self.session_stop.is_set()
+        return (
+            service_stop.is_set()
+            or self.session_stop.is_set()
+            or self._microphone_is_muted()
+        )
 
     def _wait_for_session_stop(
         self, service_stop: threading.Event, timeout: float
@@ -471,7 +502,14 @@ class DeskClient:
             except queue.Empty:
                 continue
         floor, offset = measure_noise_floor(frames)
+        # No real frames after the extended wait means nothing is arriving at
+        # all: OS mute, the hardware mute key, or a wedged driver. Distinct
+        # from a quiet room, which still carries noise-floor energy.
+        self.mic_silent = not any(is_real_audio(frame) for frame in frames)
         self.noise_calibrated = math.isfinite(floor)
+        self.barge_in_safe = (
+            self.noise_calibrated and abs(offset) <= MAX_SAFE_BARGE_IN_DC_OFFSET
+        )
         self.voice_activity_dbfs = calibrate_voice_threshold(
             frames, self.config.voice_activity_dbfs
         )
@@ -481,6 +519,7 @@ class DeskClient:
             threshold_dbfs=round(self.voice_activity_dbfs, 2),
             floor_dbfs=None if not math.isfinite(floor) else round(floor, 2),
             dc_offset=round(offset, 1),
+            barge_in_safe=self.barge_in_safe,
             frames=len(frames),
             real_frames=sum(1 for frame in frames if is_real_audio(frame)),
             waited_ms=round((time.monotonic() - started) * 1000, 1),
@@ -500,6 +539,21 @@ class DeskClient:
         self.metrics.record("desk.started", network_preconnected=False)
         try:
             if start_awake:
+                if self._microphone_is_muted(force=True) or self.mic_silent:
+                    # Say it instead of beeping. He opened her with the OS mic
+                    # muted and got the fallback tone, which reads as broken
+                    # rather than as the actual fixable problem.
+                    self.metrics.record(
+                        "desk.microphone_muted",
+                        phase="wake_handoff",
+                        hardware_silent=self.mic_silent,
+                    )
+                    from voice.desk.io import mic_off_audio
+
+                    with contextlib.suppress(Exception):
+                        self.playback.play(mic_off_audio())
+                    self.overlay.set_state("idle")
+                    return
                 self.session_stop.clear()
                 self.metrics.record("wake.handoff_received")
                 self._activate(
@@ -508,7 +562,25 @@ class DeskClient:
                     greeting_handoff=consume_wake_greeting_handoff(),
                 )
                 return
+            was_muted = False
             while not stop.is_set():
+                muted = self._microphone_is_muted(force=True)
+                if muted:
+                    if not was_muted:
+                        self.metrics.record("desk.microphone_muted", phase="idle")
+                        self.overlay.set_state("idle")
+                        self.scorer.reset()
+                        self.gate.reset()
+                        self.microphone.drain()
+                    was_muted = True
+                    stop.wait(INPUT_MUTE_POLL_SECONDS)
+                    continue
+                if was_muted:
+                    self.metrics.record("desk.microphone_unmuted")
+                    self.scorer.reset()
+                    self.gate.reset()
+                    self.microphone.drain()
+                    was_muted = False
                 try:
                     pcm = self.microphone.frames.get(timeout=0.25)
                 except queue.Empty:
@@ -737,13 +809,36 @@ class DeskClient:
         # better failure than never answering, so barge-in sits this one out.
         barge_gate: BargeInGate | None = (
             BargeInGate(voice_activity_dbfs=self.voice_activity_dbfs)
-            if self.noise_calibrated
+            if self.barge_in_safe
             else None
         )
         if barge_gate is not None and not barge_gate.enabled:
             barge_gate = None
-        if not self.noise_calibrated:
-            self.metrics.record("desk.barge_in_disabled", reason="noise floor unmeasured")
+        if self.barge_scorer is not None and os.environ.get(
+            "SERENA_DESK_BARGE_IN", "1"
+        ).strip().lower() not in {"0", "false", "off"}:
+            # Name-scored interruption works regardless of room loudness and
+            # DC health, so it must not be disabled by barge_in_safe, which
+            # exists to protect the ENERGY gate from an unmeasured floor.
+            from collections import deque
+
+            self._barge_preroll = deque(maxlen=12)
+            with contextlib.suppress(Exception):
+                self.barge_scorer.reset()
+            if barge_gate is None:
+                barge_gate = BargeInGate(voice_activity_dbfs=self.voice_activity_dbfs)
+                if not barge_gate.enabled:
+                    barge_gate = None
+        else:
+            self.barge_scorer = None
+            self._barge_preroll = None
+        if not self.barge_in_safe:
+            reason = (
+                "noise floor unmeasured"
+                if not self.noise_calibrated
+                else "microphone DC offset is unsafe"
+            )
+            self.metrics.record("desk.barge_in_disabled", reason=reason)
         # After a barge-in cancels a generation, its already-in-flight TTS
         # frames may still arrive; drop them until the next audio.start.
         discard_stale_audio = False
@@ -849,7 +944,7 @@ class DeskClient:
                     elapsed_ms=round(elapsed * 1_000, 3),
                 )
                 return
-            if barge_gate is None:
+            if barge_gate is None and self.barge_scorer is None:
                 time.sleep(0.01)
                 continue
             try:
@@ -858,16 +953,38 @@ class DeskClient:
                 )
             except queue.Empty:
                 continue
-            playback_amplitude = (
-                float(getattr(self.playback, "last_amplitude", 0.0))
-                if phase == "speaking"
-                else 0.0
-            )
-            if not barge_gate.feed(
-                pcm, phase=phase, playback_amplitude=playback_amplitude
-            ):
-                continue
-            barged_frames = barge_gate.trigger_frames
+            if self.barge_scorer is not None:
+                # Her name is the interrupt, scored directly on every frame,
+                # exactly as the idle wake path does all day. The energy gate
+                # is gone from this path: on 2026-08-11 a louder room raised
+                # its bar past his voice and "Serena" produced no candidate
+                # at all, so the name check never even ran. A wake model
+                # needs no loudness prefilter; it IS the filter.
+                self._barge_preroll.append(pcm)
+                try:
+                    name_score = self.barge_scorer.score_frame(
+                        np.frombuffer(pcm, dtype=SAMPLE_DTYPE)
+                    )
+                except Exception:
+                    name_score = 0.0
+                if name_score < self.barge_name_threshold:
+                    continue
+                self.metrics.record(
+                    "desk.barge_name_confirmed", score=round(float(name_score), 4)
+                )
+                barged_frames = list(self._barge_preroll)
+                self._barge_preroll.clear()
+            else:
+                playback_amplitude = (
+                    float(getattr(self.playback, "last_amplitude", 0.0))
+                    if phase == "speaking"
+                    else 0.0
+                )
+                if not barge_gate.feed(
+                    pcm, phase=phase, playback_amplitude=playback_amplitude
+                ):
+                    continue
+                barged_frames = barge_gate.trigger_frames
             self.playback.finish()
             transport.cancel()
             packer.reset()
@@ -890,7 +1007,11 @@ class DeskClient:
             output_rate = None
             first_output_written = False
             discard_stale_audio = True
-            barge_gate.reset()
+            if barge_gate is not None:
+                barge_gate.reset()
+            if self.barge_scorer is not None:
+                with contextlib.suppress(Exception):
+                    self.barge_scorer.reset()
 
     def _handle_event(
         self,
@@ -956,6 +1077,25 @@ class DeskClient:
         if isinstance(generation, int) and generation not in {0, transport.generation}:
             return result
 
+        # The Electron overlay needs the visible sides of a desk voice turn,
+        # not the private control envelope around them. Reduce both controls to
+        # the same text-only events used by typed turns. OverlayPublisher and
+        # the bridge each validate the size again before forwarding.
+        if kind in {"stt.result", "brain.done"}:
+            text = control.get("text")
+            limit = 4_000 if kind == "stt.result" else 32_000
+            if isinstance(text, str):
+                text = text.strip()
+                if text and len(text) <= limit:
+                    self.overlay.send_event(
+                        {
+                            "type": (
+                                "transcription" if kind == "stt.result" else "response"
+                            ),
+                            "text": text,
+                        }
+                    )
+
         if kind == "code.panel":
             action = str(control.get("action") or "")
             if action == "open":
@@ -991,6 +1131,13 @@ class DeskClient:
                 expected_output_sequence - 1
             ) & 0xFFFF_FFFF:
                 raise RuntimeError("desk audio.end did not match received PCM")
+            self.playback.finish()
+            result["turn_complete"] = True
+            return result
+        if kind == "turn.listen":
+            # The server judged the turn needs no spoken reply, e.g. he only
+            # said her name to stop her. Same reset as a finished turn, minus
+            # any audio: straight back to listening.
             self.playback.finish()
             result["turn_complete"] = True
             return result
@@ -1055,6 +1202,12 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument("--input-device")
+    parser.add_argument(
+        "--pipewire-target",
+        default=os.environ.get(
+            "SERENA_DESK_PIPEWIRE_TARGET", DEFAULT_PIPEWIRE_WAKE_TARGET
+        ),
+    )
     parser.add_argument("--output-device")
     parser.add_argument("--overlay-url", default="ws://127.0.0.1:8765")
     parser.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH)
@@ -1090,6 +1243,7 @@ def main(argv: list[str] | None = None) -> int:
         frozen = load_manifest_wake_config(
             args.manifest,
             requested_device=input_device,
+            validate_device=False,
         )
         spec = frozen.spec
         gate = frozen.gate
@@ -1111,7 +1265,7 @@ def main(argv: list[str] | None = None) -> int:
         state_path=args.state_path,
         websocket_url=args.overlay_url,
     )
-    microphone = SoundDeviceMicrophone(device=input_device)
+    microphone = PipeWireMicrophone(target=args.pipewire_target)
     playback = SoundDevicePlayback(
         overlay,
         device=_device_selector(args.output_device),
@@ -1150,6 +1304,15 @@ def main(argv: list[str] | None = None) -> int:
         metrics=metrics,
         local_fallback=local_fallback,
         session_stop=session_stop,
+        # A second scorer instance, dedicated to mid-conversation "serena"
+        # detection, so barge state never entangles with idle-wake state.
+        barge_scorer=OpenWakeWordScorer(frozen.spec),
+        # 0.6 of the wake threshold: the model is trained on "hey serena" and
+        # scores a bare mid-conversation "Serena" lower, which rejected his
+        # real interrupts twice on 2026-08-11 (desk.barge_name_rejected). The
+        # energy candidate already prefilters, so this bar can sit lower than
+        # the cold-wake one without waking to the television.
+        barge_name_threshold=max(0.3, frozen.gate.threshold * 0.6),
     )
 
     client.run(stop, start_awake=args.start_awake)

@@ -2,7 +2,7 @@
   "name": "serena-overlay",
   "version": "0.1.0",
   "description": "Serena desktop overlay: always-on voice AI assistant",
-  "main": "main.js",
+  "main": "coding-main.js",
   "scripts": {
     "start": "electron .",
     "start:x11": "electron . --ozone-platform=x11",

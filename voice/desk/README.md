@@ -11,9 +11,15 @@ local TTS runtime as `/ws/call` after a valid `hey serena` trigger.
   microphone audio is never persisted and never leaves the machine.
 - After a wake, the client starts the authenticated `/ws/desk` connection and
   fetches one already-synthesized greeting from `/desk/greeting` in parallel.
+- Greetings are warmed against the real local clock, bucketed into morning,
+  afternoon, evening, or late-night. A warmed line is only served inside the
+  part of day it was written for; when the bucket turns over, the pool drops
+  what it holds and warms fresh ones. The bucket is a signal, not a script, so
+  the wording still varies every wake.
 - A last-good assistant greeting is stored locally. If both the brain host and
   that cache are unavailable, the immediate fallback is an honest local
-  two-tone cue. The cue is not reported as Serena's voice.
+  two-tone cue. The cue is not reported as Serena's voice. A cached line from
+  another part of day is skipped in favor of the cue.
 - A dropped remote session reconnects twice with short bounded backoff. A local
   cue marks a successful reconnect so Raghav knows to repeat an interrupted
   turn.

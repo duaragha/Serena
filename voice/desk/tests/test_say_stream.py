@@ -157,6 +157,18 @@ def test_playback_starts_on_the_first_chunk_not_the_last(players) -> None:
     assert made[0].fed
 
 
+def test_muted_clause_never_synthesises_or_opens_the_player(players, monkeypatch) -> None:
+    made, log = players
+    backend = _Backend()
+    monkeypatch.setattr(say, "read_voice_output_muted", lambda: True)
+
+    asyncio.run(say.speak_clause(backend, "keep this reply silent"))
+
+    assert backend.spoken == []
+    assert made == []
+    assert log == []
+
+
 def test_a_clause_that_makes_no_audio_is_reported_not_swallowed(players, capsys) -> None:
     """Silence nobody logs looks exactly like her giving up mid-sentence."""
     made, _log = players
@@ -209,6 +221,61 @@ def test_the_engine_is_warmed_before_anyone_is_waiting(monkeypatch) -> None:
 
     assert warmed is backend
     assert backend.warms == 1
+
+
+def test_a_committed_done_only_reply_still_reaches_tts(monkeypatch) -> None:
+    """Voice deltas wait behind the durable transcript commit.
+
+    The resident daemon can therefore return only response.done. The visible
+    answer and the spoken answer must still be the same text.
+    """
+    class _Writer:
+        def __init__(self) -> None:
+            self.request = b""
+            self.closed = False
+
+        def write(self, payload: bytes) -> None:
+            self.request += payload
+
+        async def drain(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    writer = _Writer()
+    clauses: list[str] = []
+
+    async def on_sentence(clause: str) -> None:
+        clauses.append(clause)
+
+    async def scenario() -> str:
+        reader = asyncio.StreamReader()
+        reader.feed_data(
+            b'{"type":"response.start","request_id":"typed"}\n'
+            b'{"type":"response.done","request_id":"typed",'
+            b'"say":"the committed reply"}\n'
+        )
+        reader.feed_eof()
+
+        async def open_connection(_path: str):
+            return reader, writer
+
+        monkeypatch.setattr(say.asyncio, "open_unix_connection", open_connection)
+        return await say.stream_turn(
+            "typed input",
+            call_id="desk-typed-test",
+            turn_id="desk-typed-test:1",
+            timeout=1.0,
+            on_sentence=on_sentence,
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result == "the committed reply"
+    assert clauses == ["the committed reply"]
+    assert b'"protocol": "voice"' in writer.request
+    assert writer.closed is True
 
 
 def test_the_player_is_only_done_when_the_speaker_process_is(monkeypatch) -> None:

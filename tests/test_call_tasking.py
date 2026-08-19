@@ -138,24 +138,20 @@ def test_task_parser_rejects_non_go_language(text: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "text,expected",
+    "text",
     [
-        ("fix the voice pacing", "fix the voice pacing"),
-        ("hey Serena, build the spoken work bridge", "build the spoken work bridge"),
-        ("can you please update the desktop loop", "update the desktop loop"),
-        ("go ahead and test the live call", "test the live call"),
-        ("go ahead and do it", "do it"),
-        (
-            "send this to my coding session: review the current diff",
-            "review the current diff",
-        ),
-        ("tell Codex to fix the voice glossary", "fix the voice glossary"),
+        "fix the voice pacing",
+        "hey Serena, build the spoken work bridge",
+        "can you please update the desktop loop",
+        "go ahead and test the live call",
+        "go ahead and do it",
+        "send this to my coding session: review the current diff",
+        "tell Codex to fix the voice glossary",
+        "start with 381",
     ],
 )
-def test_live_work_parser_accepts_direct_build_language(text: str, expected: str) -> None:
-    intent = parse_live_work_intent(text)
-    assert intent is not None
-    assert intent.request == expected
+def test_pre_brain_regex_never_accepts_coding_language(text: str) -> None:
+    assert parse_live_work_intent(text) is None
 
 
 @pytest.mark.parametrize(
@@ -187,11 +183,12 @@ def test_code_panel_parser_matches_spoken_controls(text: str, action: str) -> No
     assert intent.action == action
 
 
-def test_live_work_delivery_carries_recent_voice_context(tmp_path: Path) -> None:
+def test_call_dispatcher_never_enqueues_coding_before_the_brain(tmp_path: Path) -> None:
     inbox = VoiceInboxStore(tmp_path / "voice.sqlite3")
     inbox.renew_resident_lease("test-worker", pid=os.getpid())
     dispatcher = CallTaskDispatcher(
         store=WorkJobStore(tmp_path / "jobs.sqlite3"),
+        artifacts=_registry(tmp_path),
         voice_inbox=inbox,
         recover=False,
     )
@@ -203,18 +200,16 @@ def test_live_work_delivery_carries_recent_voice_context(tmp_path: Path) -> None
         context=["the response pauses between every sentence"],
     )
 
-    assert item is not None
-    claimed = inbox.claim_next("headless-voice-test")
-    assert claimed is not None
-    assert "the response pauses between every sentence" in claimed.prompt
-    assert "Current spoken request: do it" in claimed.prompt
+    assert item is None
+    assert inbox.pending_count() == 0
 
 
-def test_live_work_delivery_keeps_serenas_previous_spoken_answer(tmp_path: Path) -> None:
+def test_conversation_context_does_not_restore_pre_brain_coding_authority(tmp_path: Path) -> None:
     inbox = VoiceInboxStore(tmp_path / "voice.sqlite3")
     inbox.renew_resident_lease("test-worker", pid=os.getpid())
     dispatcher = CallTaskDispatcher(
         store=WorkJobStore(tmp_path / "jobs.sqlite3"),
+        artifacts=_registry(tmp_path),
         voice_inbox=inbox,
         recover=False,
     )
@@ -229,17 +224,16 @@ def test_live_work_delivery_keeps_serenas_previous_spoken_answer(tmp_path: Path)
         ],
     )
 
-    assert item is not None
-    claimed = inbox.claim_next("headless-voice-test")
-    assert claimed is not None
-    assert "Serena: test whether a spoken command reaches a coding pane." in claimed.prompt
+    assert item is None
+    assert inbox.pending_count() == 0
 
 
-def test_desk_work_queues_private_resident_workspace(tmp_path: Path) -> None:
+def test_desk_dispatcher_also_defers_coding_to_the_brain(tmp_path: Path) -> None:
     inbox = VoiceInboxStore(tmp_path / "voice.sqlite3")
     inbox.renew_resident_lease("test-worker", pid=os.getpid())
     dispatcher = CallTaskDispatcher(
         store=WorkJobStore(tmp_path / "jobs.sqlite3"),
+        artifacts=_registry(tmp_path),
         voice_inbox=inbox,
         recover=False,
     )
@@ -250,27 +244,26 @@ def test_desk_work_queues_private_resident_workspace(tmp_path: Path) -> None:
         turn_id="desk-live-test:1",
     )
 
-    assert item is not None
-    assert item.state == "queued"
-    assert inbox.pending_count() == 1
-    claimed = inbox.claim_next("headless-voice-test")
-    assert claimed is not None
-    assert "fix the voice routing in serena" in claimed.prompt
+    assert item is None
+    assert inbox.pending_count() == 0
 
 
-def test_live_work_does_not_claim_it_started_without_private_runtime(tmp_path: Path) -> None:
+def test_retired_live_work_dispatcher_never_checks_or_claims_runtime(tmp_path: Path) -> None:
     dispatcher = CallTaskDispatcher(
         store=WorkJobStore(tmp_path / "jobs.sqlite3"),
+        artifacts=_registry(tmp_path),
         voice_inbox=VoiceInboxStore(tmp_path / "voice.sqlite3"),
         recover=False,
     )
 
-    with pytest.raises(RuntimeError, match="private coding runtime is not available"):
+    assert (
         dispatcher.submit_live_work_if_explicit(
             "fix the voice routing in serena",
             call_id="desk-offline-test",
             turn_id="desk-offline-test:1",
         )
+        is None
+    )
 
 
 def test_dispatch_is_idempotent_and_artifact_is_resolvable(tmp_path: Path) -> None:
@@ -1132,36 +1125,29 @@ def test_task_acceptance_does_not_merge_reused_call_lifecycles(
 
 
 @pytest.mark.parametrize(
-    "text,expected",
+    "text",
     [
         # Natural spoken imperatives that silently never became jobs before:
         # they were not refused, they never reached the inbox at all.
-        ("go fix the phev deep link", "fix the phev deep link"),
-        ("let's fix the phev deep link", "fix the phev deep link"),
-        ("start working on the deep link", "start working on the deep link"),
-        ("get started on the konpeki launch", "get started on the konpeki launch"),
-        ("keep going on the voice work", "keep going on the voice work"),
-        ("look into the trash purge bug", "look into the trash purge bug"),
-        ("sort out the deep link", "sort out the deep link"),
-        ("take care of the phev notification", "take care of the phev notification"),
-        ("clean up the voice stack", "clean up the voice stack"),
-        ("tackle the wake word threshold", "tackle the wake word threshold"),
-        (
-            "jump into the locket repo and fix the macros screen",
-            "jump into the locket repo and fix the macros screen",
-        ),
-        ("alright, continue the voice work", "continue the voice work"),
+        "go fix the phev deep link",
+        "let's fix the phev deep link",
+        "start working on the deep link",
+        "get started on the konpeki launch",
+        "keep going on the voice work",
+        "look into the trash purge bug",
+        "sort out the deep link",
+        "take care of the phev notification",
+        "clean up the voice stack",
+        "tackle the wake word threshold",
+        "jump into the locket repo and fix the macros screen",
+        "alright, continue the voice work",
         # Passive, target-first phrasing.
-        ("i need the trash purge bug fixed", "the trash purge bug fixed"),
-        ("i need the deep link working", "the deep link working"),
+        "i need the trash purge bug fixed",
+        "i need the deep link working",
     ],
 )
-def test_live_work_parser_accepts_natural_spoken_imperatives(
-    text: str, expected: str
-) -> None:
-    intent = parse_live_work_intent(text)
-    assert intent is not None
-    assert intent.request == expected
+def test_natural_imperatives_also_wait_for_brain_judgment(text: str) -> None:
+    assert parse_live_work_intent(text) is None
 
 
 @pytest.mark.parametrize(

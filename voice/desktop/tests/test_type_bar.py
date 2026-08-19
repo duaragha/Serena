@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from voice.brain_bridge import parse_client_message
+from voice.brain_bridge import new_typed_call_id, parse_client_message
 
 DESKTOP = Path(__file__).resolve().parents[1]
 
@@ -50,6 +50,49 @@ def test_malformed_typed_messages_are_rejected(payload: dict) -> None:
 def test_amplitude_still_works_alongside_typing() -> None:
     out = parse_client_message(json.dumps({"type": "amplitude", "value": 0.5}))
     assert out is not None and json.loads(out)["type"] == "amplitude"
+
+
+@pytest.mark.parametrize("kind", ["transcription", "response"])
+def test_desk_turn_text_is_accepted_without_its_private_envelope(kind: str) -> None:
+    out = parse_client_message(json.dumps({"type": kind, "text": "  visible words  "}))
+    assert out is not None
+    assert json.loads(out) == {"type": kind, "text": "visible words"}
+
+    assert parse_client_message(
+        json.dumps(
+            {
+                "type": kind,
+                "text": "visible words",
+                "meta": {"tool_result": "private"},
+            }
+        )
+    ) is None
+
+
+def test_typed_turn_ids_cannot_collide_within_one_second() -> None:
+    first = new_typed_call_id()
+    second = new_typed_call_id()
+    assert first.startswith("desk-typed-")
+    assert second.startswith("desk-typed-")
+    assert first != second
+
+
+def test_overlay_history_is_collapsed_bounded_and_text_only() -> None:
+    html = (DESKTOP / "renderer" / "index.html").read_text(encoding="utf-8")
+    css = (DESKTOP / "renderer" / "styles.css").read_text(encoding="utf-8")
+    app = (DESKTOP / "renderer" / "app.js").read_text(encoding="utf-8")
+
+    history_tag = html.split('id="conversation-history"', 1)[0].rsplit("<details", 1)[1]
+    assert " open" not in history_tag
+    assert 'id="conversation-history-list"' in html
+    assert "max-height: 260px" in css and "overflow-y: auto" in css
+    assert "const HISTORY_LIMIT = 12" in app
+    assert "conversationHistory.splice" in app
+    assert "body.textContent = text" in app
+    history_renderer = app.split("function renderConversationHistory", 1)[1].split(
+        "function typewriterEffect", 1
+    )[0]
+    assert ".innerHTML" not in history_renderer
 
 
 def test_overlay_survives_a_finished_conversation() -> None:
@@ -143,6 +186,53 @@ def test_the_overlay_and_python_agree_on_the_settings_file() -> None:
     assert "'.config', 'serena'" in main
 
 
+def test_the_voice_mute_button_is_persistent_and_wired_to_laptop_playback() -> None:
+    from voice.desk.output_mute import DEFAULT_OUTPUT_MUTE_PATH
+
+    html = (DESKTOP / "renderer" / "index.html").read_text(encoding="utf-8")
+    css = (DESKTOP / "renderer" / "styles.css").read_text(encoding="utf-8")
+    app = (DESKTOP / "renderer" / "app.js").read_text(encoding="utf-8")
+    preload = (DESKTOP / "preload.js").read_text(encoding="utf-8")
+    main = (DESKTOP / "main.js").read_text(encoding="utf-8")
+    playback = (DESKTOP.parent / "desk" / "io.py").read_text(encoding="utf-8")
+    typed = (DESKTOP.parent / "desk" / "say.py").read_text(encoding="utf-8")
+
+    assert 'id="voice-mute"' in html and 'aria-pressed="false"' in html
+    assert "#voice-mute" in css and '[aria-pressed="true"]' in css
+    assert "setVoiceMuted" in app and "onVoiceMuted" in app
+    assert "set-voice-muted" in preload and "voice-muted" in preload
+    assert f"'{DEFAULT_OUTPUT_MUTE_PATH.name}'" in main
+    assert "set-voice-muted" in main and "voice-muted" in main
+    assert "read_voice_output_muted" in playback
+    assert "read_voice_output_muted" in typed
+
+
+def test_the_microphone_mute_is_serena_only_and_wired_end_to_end() -> None:
+    """Muting Serena must leave the system source available to OpenWhispr."""
+
+    from voice.desk.input_mute import DEFAULT_INPUT_MUTE_PATH
+
+    html = (DESKTOP / "renderer" / "index.html").read_text(encoding="utf-8")
+    css = (DESKTOP / "renderer" / "styles.css").read_text(encoding="utf-8")
+    app = (DESKTOP / "renderer" / "app.js").read_text(encoding="utf-8")
+    preload = (DESKTOP / "preload.js").read_text(encoding="utf-8")
+    main = (DESKTOP / "main.js").read_text(encoding="utf-8")
+    client = (DESKTOP.parent / "desk" / "client.py").read_text(encoding="utf-8")
+    listener = (DESKTOP.parent / "desk" / "wake_listener.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="microphone-mute"' in html and 'aria-pressed="false"' in html
+    assert "#microphone-mute" in css and 'mic off' in app
+    assert "setMicrophoneMuted" in app and "onMicrophoneMuted" in app
+    assert "set-microphone-muted" in preload and "microphone-muted" in preload
+    assert f"'{DEFAULT_INPUT_MUTE_PATH.name}'" in main
+    assert "set-microphone-muted" in main and "microphone-muted" in main
+    assert "read_voice_input_muted" in client
+    assert "read_voice_input_muted" in listener
+    assert "pactl" not in main and "wpctl" not in main
+
+
 def test_the_dot_goes_idle_only_after_the_last_word_is_played(monkeypatch) -> None:
     """Live she went idle the instant the reply text finished appearing.
 
@@ -217,6 +307,41 @@ def test_an_interrupted_turn_does_not_drop_the_dot_on_its_replacement(monkeypatc
     assert states == []
 
 
+def test_typed_turn_retries_the_brain_socket_while_it_warms(monkeypatch) -> None:
+    import asyncio
+
+    from voice.desk import say
+    from voice import brain_bridge
+
+    attempts = 0
+
+    async def stream_turn(_text, *, call_id, turn_id, timeout, on_sentence=None):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ConnectionRefusedError(111, "Connection refused")
+        return "ready after startup"
+
+    async def speak_stream(queue) -> None:
+        while await queue.get() is not None:
+            pass
+
+    async def broadcast(_message, *, exclude=None) -> None:
+        return None
+
+    monkeypatch.setattr(say, "stream_turn", stream_turn)
+    monkeypatch.setattr(say, "speak_stream", speak_stream)
+    monkeypatch.setattr(say, "set_state", lambda _state: None)
+    monkeypatch.setattr(brain_bridge, "broadcast", broadcast)
+    monkeypatch.setattr(brain_bridge, "_typed_turn", None)
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(brain_bridge.asyncio, "sleep", lambda _seconds: real_sleep(0))
+
+    asyncio.run(brain_bridge.run_typed_turn("wait for the brain"))
+
+    assert attempts == 2
+
+
 def test_her_voice_is_warmed_before_the_first_typed_message() -> None:
     """Cold, the first PCM landed about seven seconds after the first clause.
 
@@ -285,3 +410,34 @@ def test_cancellation_during_close_still_kills_the_speaker() -> None:
     body = source.split("async def speak_clause", 1)[1].split("\nclass ", 1)[0]
     inner_try = body.split("try:", 2)[2].split("except asyncio.CancelledError:")[0]
     assert "await player.close()" in inner_try
+
+
+def test_coding_panel_shows_durable_job_evidence_and_controls() -> None:
+    panel = (DESKTOP / "renderer" / "code-panel.js").read_text(encoding="utf-8")
+    preload = (DESKTOP / "preload.js").read_text(encoding="utf-8")
+    main = (DESKTOP / "main.js").read_text(encoding="utf-8")
+
+    for label in (
+        "project",
+        "brief",
+        "progress",
+        "changes",
+        "tests",
+        "live proof",
+        "evidence",
+    ):
+        assert f"'{label}'" in panel
+    for control in ("status", "cancel", "steer", "resume"):
+        assert f"'{control}'" in panel
+    assert "sendCodeControl" in preload
+    assert "showCodePanel" in preload
+    assert "case 'code_snapshot'" in main
+    assert "code-control-result" in main
+    assert "currentCodeSnapshot = msg.snapshot" in main
+    assert "event.sender.send('code-snapshot', currentCodeSnapshot)" in main
+    assert "ipcMain.on('show-code-panel', showCodePanel)" in main
+    assert "codePanelAvailable" in main
+    assert "code-panel__reopen" in panel
+    assert "if (data.snapshot) {" in (DESKTOP / "renderer" / "index.html").read_text(
+        encoding="utf-8"
+    )

@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const WebSocket = require('ws');
+const { normaliseTypedPayload } = require('./typed-images.js');
 
 // NOTE: GNOME system tray requires the AppIndicator extension.
 // Install via: sudo apt install gnome-shell-extension-appindicator
@@ -15,6 +16,13 @@ const WS_URL = 'ws://localhost:8765';
 // One file, read by every process that speaks as her (this overlay's bridge,
 // the desk conversation, the phone host), so the slider moves all of them.
 const VOICE_SPEED_PATH = path.join(os.homedir(), '.config', 'serena', 'voice_speed');
+const VOICE_MUTED_PATH = path.join(os.homedir(), '.config', 'serena', 'voice_muted');
+const MICROPHONE_MUTED_PATH = path.join(
+  os.homedir(), '.config', 'serena', 'microphone_muted',
+);
+const CODE_PANEL_WIDTH_PATH = path.join(
+  os.homedir(), '.config', 'serena', 'coding_pane_width',
+);
 const MIN_VOICE_SPEED = 0.5;
 const MAX_VOICE_SPEED = 2.0;
 
@@ -45,10 +53,90 @@ function writeVoiceSpeed(value) {
   }
   return speed;
 }
+
+function readVoiceMuted() {
+  try {
+    return ['1', 'true', 'yes', 'on', 'muted'].includes(
+      fs.readFileSync(VOICE_MUTED_PATH, 'utf8').trim().toLowerCase(),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeVoiceMuted(value) {
+  const muted = Boolean(value);
+  const temporary = `${VOICE_MUTED_PATH}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(VOICE_MUTED_PATH), { recursive: true });
+    fs.writeFileSync(temporary, muted ? '1\n' : '0\n', 'utf8');
+    fs.renameSync(temporary, VOICE_MUTED_PATH);
+  } catch (error) {
+    console.error('[serena] could not save voice mute:', error.message);
+  }
+  return muted;
+}
+
+function readMicrophoneMuted() {
+  try {
+    return ['1', 'true', 'yes', 'on', 'muted'].includes(
+      fs.readFileSync(MICROPHONE_MUTED_PATH, 'utf8').trim().toLowerCase(),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeMicrophoneMuted(value) {
+  const muted = Boolean(value);
+  const temporary = `${MICROPHONE_MUTED_PATH}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(MICROPHONE_MUTED_PATH), { recursive: true });
+    fs.writeFileSync(temporary, muted ? '1\n' : '0\n', { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temporary, MICROPHONE_MUTED_PATH);
+    fs.chmodSync(MICROPHONE_MUTED_PATH, 0o600);
+  } catch (error) {
+    console.error('[serena] could not save microphone mute:', error.message);
+  }
+  return muted;
+}
 const RECONNECT_INTERVAL_MS = 3000;
 const WINDOW_WIDTH = 500;
 const WINDOW_HEIGHT = 600;
+const MIN_WINDOW_HEIGHT = 360;
 const IDLE_HIDE_DELAY_MS = 1800;
+// Keep these aligned with code-panel.js. The main process owns the actual
+// window bounds while the renderer owns the accessible resize interaction.
+const DEFAULT_CODE_PANEL_WIDTH = 450;
+const MIN_CODE_PANEL_WIDTH = 300;
+const MAX_CODE_PANEL_WIDTH = 720;
+
+function clampCodePanelWidth(value) {
+  const width = Number(value);
+  if (!Number.isFinite(width)) return DEFAULT_CODE_PANEL_WIDTH;
+  return Math.round(Math.min(Math.max(width, MIN_CODE_PANEL_WIDTH), MAX_CODE_PANEL_WIDTH));
+}
+
+function readCodePanelWidth() {
+  try {
+    return clampCodePanelWidth(fs.readFileSync(CODE_PANEL_WIDTH_PATH, 'utf8').trim());
+  } catch {
+    return DEFAULT_CODE_PANEL_WIDTH;
+  }
+}
+
+function writeCodePanelWidth(value) {
+  const width = clampCodePanelWidth(value);
+  const temporary = `${CODE_PANEL_WIDTH_PATH}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(CODE_PANEL_WIDTH_PATH), { recursive: true });
+    fs.writeFileSync(temporary, `${width}\n`, 'utf8');
+    fs.renameSync(temporary, CODE_PANEL_WIDTH_PATH);
+  } catch (error) {
+    console.error('[serena] could not save coding pane width:', error.message);
+  }
+  return width;
+}
 
 let win = null;
 let tray = null;
@@ -56,11 +144,75 @@ let ws = null;
 let reconnectTimer = null;
 let currentState = 'idle';
 let focusModeEnabled = false;
+let voiceMuted = readVoiceMuted();
+let microphoneMuted = readMicrophoneMuted();
 let dashboardVisible = false;
 let codePanelVisible = false;
+let codePanelAvailable = false;
+let codePanelDismissed = false;
+// The job whose drawer he closed, or null when he closed it with nothing on it.
+let codePanelDismissedJob = null;
+let codePanelWidth = readCodePanelWidth();
+let codePanelWidthApplied = 0;
+let currentCodeSnapshot = null;
 let idlePinnedVisible = false;
 let idleHideTimer = null;
 let isQuitting = false;
+
+// The coding drawer is optional viewing history, so it only takes the screen
+// for a job that is genuinely mid-flight. A queued, finished, cancelled, or
+// long-dead job updates in place; snapshots also arrive on every bridge
+// reconnect and after every control press, and those must not reopen a drawer
+// Raghav closed.
+const RUNNING_JOB_STATES = new Set(['working', 'resume_queued']);
+
+function isRunningJob(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return false;
+  return RUNNING_JOB_STATES.has(String(snapshot.state || ''));
+}
+
+function shouldOpenForSnapshot(snapshot) {
+  if (!isRunningJob(snapshot)) return false;
+  if (codePanelVisible) return false;
+  if (!codePanelDismissed) return true;
+  // Closed with nothing on it: no snapshot may reopen it, only a job start.
+  if (codePanelDismissedJob === null) return false;
+  // He closed this job's drawer. Only a different job may open it again.
+  return String(snapshot.item_id || '') !== codePanelDismissedJob;
+}
+
+// Give the drawer its own room and take it back afterwards. The window grows
+// leftward so it keeps the corner it was parked in, and a width he chose by
+// hand survives, because the change is a delta rather than a fixed size.
+function applyCodePanelLayout() {
+  if (!win || win.isDestroyed()) return;
+  const bounds = win.getBounds();
+  const area = screen.getDisplayMatching(bounds).workArea;
+  const baseWidth = Math.max(WINDOW_WIDTH, bounds.width - codePanelWidthApplied);
+  const availableForPanel = Math.max(
+    MIN_CODE_PANEL_WIDTH,
+    area.width - baseWidth,
+  );
+  const desiredWidth = codePanelVisible
+    ? Math.min(codePanelWidth, availableForPanel)
+    : 0;
+  if (desiredWidth === codePanelWidthApplied) return;
+  const delta = desiredWidth - codePanelWidthApplied;
+  const width = Math.min(area.width, Math.max(WINDOW_WIDTH, bounds.width + delta));
+  const x = Math.max(area.x, bounds.x + bounds.width - width);
+  if (!codePanelVisible) win.setMinimumSize?.(WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
+  win.setBounds({ x, y: bounds.y, width, height: bounds.height });
+  codePanelWidthApplied = desiredWidth;
+  if (codePanelVisible) {
+    win.setMinimumSize?.(WINDOW_WIDTH + desiredWidth, MIN_WINDOW_HEIGHT);
+  }
+}
+
+function setCodePanelWidth(value) {
+  codePanelWidth = writeCodePanelWidth(value);
+  applyCodePanelLayout();
+  sendToRenderer('code-panel-width', codePanelWidthApplied || codePanelWidth);
+}
 
 function requestActiveSessionClose() {
   if (process.platform !== 'linux' || currentState === 'idle') return;
@@ -106,6 +258,8 @@ function createWindow() {
   win = new BrowserWindow({
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
+    minWidth: WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     x: x + screenW - WINDOW_WIDTH - 20,
     y: y + screenH - WINDOW_HEIGHT - 20,
     title: 'Serena',
@@ -144,9 +298,19 @@ function createWindow() {
 
   // Renderer can still send set-ignore-mouse events, but no-op now
   // The overlay's type bar. Same turn a spoken one makes; the bridge runs it.
-  ipcMain.on('typed-message', (_event, text) => {
-    const clean = String(text || '').trim();
-    if (clean) wsSend({ type: 'typed', text: clean.slice(0, 4000) });
+  ipcMain.on('typed-message', (event, payload) => {
+    const checked = normaliseTypedPayload(payload);
+    if (!checked.ok) {
+      event.sender.send('typed-input-error', checked.error);
+      return;
+    }
+    if (!wsSend({ type: 'typed', ...checked.payload })) {
+      event.sender.send(
+        'typed-input-error',
+        'serena is reconnecting. your message is still here.',
+      );
+      return;
+    }
   });
 
   ipcMain.on('set-ignore-mouse', (_event, _ignore) => {
@@ -179,6 +343,18 @@ function updateTrayMenu() {
       click: () => toggleOverlay(),
     },
     {
+      label: 'Mute Voice',
+      type: 'checkbox',
+      checked: voiceMuted,
+      click: (menuItem) => setVoiceMuted(menuItem.checked),
+    },
+    {
+      label: 'Mute Microphone',
+      type: 'checkbox',
+      checked: microphoneMuted,
+      click: (menuItem) => setMicrophoneMuted(menuItem.checked),
+    },
+    {
       label: 'Focus Mode',
       type: 'checkbox',
       checked: focusModeEnabled,
@@ -202,9 +378,12 @@ function updateTrayMenu() {
       label: 'Code Output',
       type: 'checkbox',
       checked: codePanelVisible,
+      enabled: codePanelAvailable,
       click: (menuItem) => {
-        codePanelVisible = menuItem.checked;
-        sendToRenderer('toggle-code-panel', null);
+        // Same two doors the drawer's own buttons use, so unchecking it here
+        // counts as him closing it and stays closed.
+        if (menuItem.checked) showCodePanel();
+        else hideCodePanel();
       },
     },
     { type: 'separator' },
@@ -257,6 +436,8 @@ function showOverlay(interactive = false) {
 
 function scheduleIdleHide() {
   clearIdleHideTimer();
+  // A drawer he can reopen is not a reason to pin the overlay open forever;
+  // only one that is actually on screen is.
   if (idlePinnedVisible || dashboardVisible || codePanelVisible) return;
   idleHideTimer = setTimeout(() => {
     idleHideTimer = null;
@@ -334,7 +515,9 @@ function clearReconnectTimer() {
 function wsSend(message) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(message));
+    return true;
   }
+  return false;
 }
 
 // --- Message handling ---
@@ -362,14 +545,50 @@ function handleBackendMessage(msg) {
       sendToRenderer('response', msg.text);
       break;
 
+    case 'typed_input_accepted':
+      sendToRenderer('typed-input-accepted', null);
+      break;
+
+    case 'typed_input_error':
+      sendToRenderer(
+        'typed-input-error',
+        String(msg.error || 'that message could not be accepted.'),
+      );
+      break;
+
     case 'dashboard':
       sendToRenderer('dashboard-data', msg.data);
       break;
 
     case 'code_start':
+      // A real job starting is the one event allowed to take the screen, so it
+      // also clears an earlier dismissal.
       codePanelVisible = true;
-      sendToRenderer('code-start', { project: msg.project, status: msg.status });
+      codePanelAvailable = true;
+      codePanelDismissed = false;
+      codePanelDismissedJob = null;
+      if (msg.snapshot) currentCodeSnapshot = msg.snapshot;
+      sendToRenderer('code-start', {
+        item_id: msg.item_id,
+        project: msg.project,
+        status: msg.status,
+        snapshot: msg.snapshot,
+      });
+      applyCodePanelLayout();
       showOverlay(false);
+      updateTrayMenu();
+      break;
+
+    case 'code_snapshot':
+      codePanelAvailable = true;
+      currentCodeSnapshot = msg.snapshot;
+      sendToRenderer('code-snapshot', msg.snapshot);
+      if (shouldOpenForSnapshot(msg.snapshot)) {
+        codePanelVisible = true;
+        sendToRenderer('show-code-panel', null);
+        applyCodePanelLayout();
+        showOverlay(false);
+      }
       updateTrayMenu();
       break;
 
@@ -378,11 +597,20 @@ function handleBackendMessage(msg) {
       break;
 
     case 'code_event':
-      sendToRenderer('code-event', msg.event);
+      sendToRenderer('code-event', {
+        ...(msg.event || {}),
+        ...(msg.item_id ? { item_id: String(msg.item_id) } : {}),
+      });
       break;
 
     case 'code_done':
-      sendToRenderer('code-done', { summary: msg.summary });
+      codePanelAvailable = true;
+      if (msg.snapshot) currentCodeSnapshot = msg.snapshot;
+      sendToRenderer('code-done', { summary: msg.summary, snapshot: msg.snapshot });
+      break;
+
+    case 'code_control_result':
+      sendToRenderer('code-control-result', msg);
       break;
 
     case 'toggle_code_panel':
@@ -411,21 +639,80 @@ ipcMain.on('toggle-dashboard', () => {
 
 function hideCodePanel() {
   codePanelVisible = false;
+  codePanelDismissed = true;
+  codePanelDismissedJob = currentCodeSnapshot
+    ? String(currentCodeSnapshot.item_id || '')
+    : null;
   sendToRenderer('hide-code-panel', null);
+  applyCodePanelLayout();
   if (currentState === 'idle') scheduleIdleHide();
   updateTrayMenu();
 }
 
 ipcMain.on('hide-code-panel', hideCodePanel);
 
+function showCodePanel() {
+  if (!codePanelAvailable) return;
+  codePanelVisible = true;
+  codePanelDismissed = false;
+  codePanelDismissedJob = null;
+  sendToRenderer('show-code-panel', null);
+  applyCodePanelLayout();
+  sendToRenderer('code-panel-width', codePanelWidthApplied || codePanelWidth);
+  showOverlay(false);
+  updateTrayMenu();
+}
+
+ipcMain.on('show-code-panel', showCodePanel);
+ipcMain.on('set-code-panel-width', (_event, width) => setCodePanelWidth(width));
+
+ipcMain.on('code-control', (_event, payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  const action = String(payload.action || '').toLowerCase();
+  const itemId = String(payload.item_id || '').slice(0, 100);
+  if (!itemId || !['status', 'cancel', 'steer', 'resume'].includes(action)) return;
+  const message = { type: 'code_control', item_id: itemId, action };
+  if (action === 'steer') {
+    const text = String(payload.text || '').trim().slice(0, 4000);
+    if (!text) return;
+    message.text = text;
+  }
+  wsSend(message);
+});
+
 ipcMain.on('renderer-ready', (event) => {
   event.sender.send('state-change', currentState);
   event.sender.send('voice-speed', readVoiceSpeed());
+  voiceMuted = readVoiceMuted();
+  event.sender.send('voice-muted', voiceMuted);
+  microphoneMuted = readMicrophoneMuted();
+  event.sender.send('microphone-muted', microphoneMuted);
+  event.sender.send('code-panel-width', codePanelWidthApplied || codePanelWidth);
+  // A reload restores the drawer's contents, but only reopens it if it was
+  // open when the renderer went away.
+  if (currentCodeSnapshot) event.sender.send('code-snapshot', currentCodeSnapshot);
+  if (codePanelVisible) event.sender.send('show-code-panel', null);
 });
 
 ipcMain.on('set-voice-speed', (_event, value) => {
   writeVoiceSpeed(value);
 });
+
+function setVoiceMuted(value) {
+  voiceMuted = writeVoiceMuted(value);
+  sendToRenderer('voice-muted', voiceMuted);
+  updateTrayMenu();
+}
+
+ipcMain.on('set-voice-muted', (_event, value) => setVoiceMuted(value));
+
+function setMicrophoneMuted(value) {
+  microphoneMuted = writeMicrophoneMuted(value);
+  sendToRenderer('microphone-muted', microphoneMuted);
+  updateTrayMenu();
+}
+
+ipcMain.on('set-microphone-muted', (_event, value) => setMicrophoneMuted(value));
 
 // --- App lifecycle ---
 

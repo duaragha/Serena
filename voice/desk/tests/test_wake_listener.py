@@ -92,6 +92,41 @@ def test_background_audio_only_scores_local_wake_frames() -> None:
     assert microphone.closed is True
 
 
+def test_persistent_microphone_mute_suppresses_the_wake_listener() -> None:
+    """The lightweight listener must obey the same mute as the full client."""
+
+    stop = threading.Event()
+    microphone = _Microphone([b"\x01\x00" * 1_280, b"\x01\x00" * 1_280])
+    launches = 0
+    checks = 0
+    events: list[dict[str, object]] = []
+
+    def launch() -> None:
+        nonlocal launches
+        launches += 1
+
+    def input_muted() -> bool:
+        nonlocal checks
+        checks += 1
+        if checks >= 2:
+            stop.set()
+        return True
+
+    listener = WakeOnlyListener(
+        _Scorer([]),
+        WakeGate(0.5, patience_frames=1, cooldown_seconds=0),
+        microphone,
+        launch,
+        phrase_verifier=_Verifier([]),
+        event_sink=events.append,
+        input_muted=input_muted,
+    )
+
+    assert listener.run(stop) is False
+    assert launches == 0
+    assert any(row["event"] == "wake.microphone_muted" for row in events)
+
+
 def test_valid_wake_launches_full_app_once_and_releases_microphone() -> None:
     microphone = _Microphone([b"\0" * 2_560, b"\0" * 2_560])
     launches = 0

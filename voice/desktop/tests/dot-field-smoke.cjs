@@ -42,6 +42,9 @@ app.whenReady().then(async () => {
   window.webContents.on('render-process-gone', (_event, details) => {
     errors.push(`renderer process exited: ${details.reason}`);
   });
+  ipcMain.on('show-code-panel', () => {
+    window.webContents.send('show-code-panel', null);
+  });
 
   try {
     await window.loadURL(pathToFileURL(rendererPath).href);
@@ -103,6 +106,24 @@ app.whenReady().then(async () => {
     );
     assert.equal(textAfterOldClear, 'new response');
 
+    for (let index = 0; index < 13; index += 1) {
+      window.webContents.send('transcription', `question ${index}`);
+      window.webContents.send('response', `answer ${index}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const history = await window.webContents.executeJavaScript(`({
+      open: document.getElementById('conversation-history').open,
+      count: window._serenaConversationHistory.entries.length,
+      first: window._serenaConversationHistory.entries[0],
+      last: window._serenaConversationHistory.entries.at(-1),
+      rows: document.querySelectorAll('.conversation-turn').length,
+    })`);
+    assert.equal(history.open, false);
+    assert.equal(history.count, 12);
+    assert.equal(history.rows, 12);
+    assert.deepEqual(history.first, { user: 'question 1', assistant: 'answer 1' });
+    assert.deepEqual(history.last, { user: 'question 12', assistant: 'answer 12' });
+
     window.webContents.send('code-start', { project: 'serena' });
     window.webContents.send('code-event', {
       kind: 'bash',
@@ -129,14 +150,27 @@ app.whenReady().then(async () => {
     assert.equal(readyStatus, 'ready');
     window.webContents.send('hide-code-panel', null);
     await new Promise((resolve) => setTimeout(resolve, 25));
-    const panelHidden = await window.webContents.executeJavaScript(
-      '!window._serenaCodePanel.isVisible',
+    const collapsedPanel = await window.webContents.executeJavaScript(`({
+      hidden: !window._serenaCodePanel.isVisible,
+      reopenVisible: document.querySelector('.code-panel__reopen')
+        .classList.contains('code-panel__reopen--visible'),
+    })`);
+    assert.deepEqual(collapsedPanel, { hidden: true, reopenVisible: true });
+    await window.webContents.executeJavaScript(
+      "document.querySelector('.code-panel__reopen').click()",
     );
-    assert.equal(panelHidden, true);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const reopenedPanel = await window.webContents.executeJavaScript(`({
+      visible: window._serenaCodePanel.isVisible,
+      reopenHidden: !document.querySelector('.code-panel__reopen')
+        .classList.contains('code-panel__reopen--visible'),
+    })`);
+    assert.deepEqual(reopenedPanel, { visible: true, reopenHidden: true });
     assert.deepEqual(errors, []);
     console.log('dot-field smoke passed');
   } finally {
     ipcMain.removeAllListeners('renderer-ready');
+    ipcMain.removeAllListeners('show-code-panel');
     window.destroy();
     app.quit();
   }

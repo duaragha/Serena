@@ -12,8 +12,23 @@
     html, body {
       background: #080612;
     }
-    #widget {
+    /* The coding drawer is a column beside the app, never on top of it. Only
+       the drawer and the stage share this row; panels that mount themselves on
+       the body stay exactly where they were. */
+    #shell {
       position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: stretch;
+    }
+    #stage {
+      position: relative;
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+    }
+    #widget {
+      position: absolute;
       inset: 0;
       background:
         radial-gradient(circle at 72% 28%, rgba(116, 63, 174, 0.12), transparent 44%),
@@ -90,11 +105,24 @@
   </style>
 </head>
 <body>
+  <!-- The drawer is mounted into #shell beside #stage, so it makes room
+       rather than covering the conversation. -->
+  <div id="shell">
+  <!-- Everything that is not the coding drawer. The drawer sits beside this. -->
+  <div id="stage">
   <div id="widget">
     <!-- Header: state indicator at top of widget -->
     <div id="widget-header">
       <div id="state-dot"></div>
       <span id="state-label">offline</span>
+      <button id="voice-mute" type="button" aria-pressed="false"
+              aria-label="Mute Serena voice" title="Mute Serena voice">
+        <span id="voice-mute-label">mute</span>
+      </button>
+      <button id="microphone-mute" type="button" aria-pressed="false"
+              aria-label="Mute Serena microphone" title="Mute Serena microphone">
+        <span id="microphone-mute-label">mic</span>
+      </button>
     </div>
 
     <!-- Brain visualization fills the rest of the widget -->
@@ -124,10 +152,18 @@
     </details>
 
     <!-- Type bar: same turn as speaking, for when the mic is unusable -->
-    <div id="type-bar">
-      <input id="type-input" type="text" autocomplete="off" spellcheck="false"
-             maxlength="4000" placeholder="type to serena" />
-      <span id="type-hint">enter</span>
+    <div id="type-composer">
+      <div id="typed-attachment" class="hidden">
+        <img id="typed-attachment-preview" alt="Pasted image preview" />
+        <span>image attached</span>
+        <button id="typed-attachment-remove" type="button" aria-label="Remove pasted image">remove</button>
+      </div>
+      <div id="type-error" class="hidden" role="alert"></div>
+      <div id="type-bar">
+        <input id="type-input" type="text" autocomplete="off" spellcheck="false"
+               maxlength="4000" placeholder="type or paste an image" />
+        <span id="type-hint">enter</span>
+      </div>
     </div>
 
     <!-- How fast she talks. Applies to typed and spoken turns alike. -->
@@ -153,6 +189,8 @@
       </div>
     </div>
   </div>
+  </div>
+  </div>
 
   <script>
     /* Browser-only bridge used by local visual QA. Electron supplies the real one. */
@@ -168,12 +206,26 @@
         onDashboardData() {},
         onFocusMode() {},
         onToggleDashboard() {},
+        setVoiceMuted() {},
+        onVoiceMuted(callback) { callback(false); },
+        setMicrophoneMuted() {},
+        onMicrophoneMuted(callback) { callback(false); },
         onCodeStart() {},
         onCodeEvent() {},
         onCodeDone() {},
+        onCodeSnapshot() {},
+        onCodeControlResult() {},
+        sendTyped() {},
+        onTypedInputAccepted() {},
+        onTypedInputError() {},
         onToggleCodePanel() {},
         onHideCodePanel() {},
+        onShowCodePanel() {},
         hideCodePanel() {},
+        showCodePanel() {},
+        setCodePanelWidth() {},
+        onCodePanelWidth(callback) { callback(450); },
+        sendCodeControl() {},
         setIgnoreMouse() {},
         toggleDashboard() {},
         registerBrain(functions) {
@@ -183,7 +235,10 @@
           this.codePanelOnStart = functions.onStart;
           this.codePanelOnEvent = functions.onEvent;
           this.codePanelOnDone = functions.onDone;
+          this.codePanelOnSnapshot = functions.onSnapshot;
+          this.codePanelOnControlResult = functions.onControlResult;
           this.codePanelOnToggle = functions.onToggle;
+          this.codePanelOnShow = functions.onShow;
         },
         previewState(state) {
           preview.stateListener?.(state);
@@ -191,6 +246,7 @@
       };
     }
   </script>
+  <script src="../typed-images.js"></script>
   <script src="app.js"></script>
   <script type="module">
     import { BrainVisualizer } from './brain.js';
@@ -216,24 +272,47 @@
       brain.setState(previewState);
     }
 
-    // Code output panel
-    const codePanel = new CodePanel(document.body);
+    // Code output panel. It is a sibling of the stage inside the shell row, so
+    // opening it makes room instead of covering the conversation.
+    const codePanel = new CodePanel(document.getElementById('shell'));
+    window.serena.onCodePanelWidth?.((width) => codePanel.setWidth(width));
 
     // Register code panel callbacks via the preload bridge
     window.serena.registerCodePanel({
       onStart: (data) => {
-        codePanel.clear();
-        codePanel.setStatus(data.status || `working on ${data.project || 'project'}...`);
+        // In the coding app the collection owns selection. A second job may
+        // join the list without taking the detail pane away from the job he is
+        // currently watching. The plain overlay still starts with a clean pane.
+        if (!codePanel.__codingJobsInstalled) {
+          codePanel.clear();
+          codePanel.setStatus(data.status || `working on ${data.project || 'project'}...`);
+        }
+        if (data.snapshot) codePanel.renderSnapshot(data.snapshot);
         codePanel.show();
       },
       onEvent: (event) => {
         codePanel.addEvent(event);
       },
       onDone: (data) => {
-        codePanel.setStatus('done');
+        if (data.snapshot) {
+          codePanel.renderSnapshot(data.snapshot);
+        } else {
+          codePanel.setStatus('done');
+        }
+      },
+      onSnapshot: (data) => {
+        // Content only. Whether the drawer is on screen is the main process's
+        // call, and it sends show-code-panel when a live job earns it.
+        codePanel.renderSnapshot(data);
+      },
+      onControlResult: (data) => {
+        codePanel.controlResult(data);
       },
       onToggle: () => {
         codePanel.toggle();
+      },
+      onShow: () => {
+        codePanel.show();
       },
     });
     window.serena.onHideCodePanel(() => codePanel.hide());

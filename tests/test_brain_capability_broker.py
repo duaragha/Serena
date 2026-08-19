@@ -6,7 +6,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from core import brain_capability_tools, brain_daemon
+from core import brain_capability_tools, brain_daemon, brain_laptop_tools
 from core.mcp import capability_broker
 
 
@@ -180,6 +180,137 @@ def test_explicit_current_turn_can_authorize_the_matching_write(monkeypatch) -> 
     assert result["ok"] is True
     assert result["called"] is True
     assert result["access"] == "write"
+
+
+def test_direct_retry_uses_only_the_immediately_preceding_specific_write(monkeypatch) -> None:
+    """Fixing a prerequisite and saying try again reuses the exact prior ask."""
+
+    arguments = {"chat_id": "Janvi", "text": "made it home safely"}
+    calls = []
+
+    async def fake_catalog(*, refresh=False):
+        del refresh
+        return (_capability(server="beeper", tool="send_message", access="unknown"),), ()
+
+    async def fake_session(_server, operation):
+        class Session:
+            async def call_tool(self, name, supplied_arguments):
+                calls.append((name, supplied_arguments))
+                return SimpleNamespace(
+                    isError=False,
+                    model_dump=lambda **_kwargs: {"content": [{"type": "text", "text": "sent"}]},
+                )
+
+        return await operation(Session())
+
+    monkeypatch.setattr(capability_broker, "catalog", fake_catalog)
+    monkeypatch.setattr(
+        capability_broker,
+        "_configured_http_servers",
+        lambda: [{"name": "beeper", "transport": "http", "url": "https://private.invalid"}],
+    )
+    monkeypatch.setattr(capability_broker, "_with_session", fake_session)
+    brain_laptop_tools._RECENT_TURNS.clear()
+
+    first = brain_laptop_tools.set_current_turn(
+        {"text": "send Janvi 'made it home safely' on Beeper", "protocol": "plain"}
+    )
+    brain_laptop_tools.reset_current_turn(first)
+    retry = brain_laptop_tools.set_current_turn(
+        {"text": "i unarchived the chat. try again", "protocol": "plain"}
+    )
+    try:
+        response = asyncio.run(
+            brain_capability_tools.use_pc_capability.handler(
+                {
+                    "server": "beeper",
+                    "tool": "send_message",
+                    "arguments_json": json.dumps(arguments),
+                }
+            )
+        )
+    finally:
+        brain_laptop_tools.reset_current_turn(retry)
+        brain_laptop_tools._RECENT_TURNS.clear()
+
+    result = json.loads(response["content"][0]["text"])
+    assert result["ok"] is True
+    assert result["called"] is True
+    assert calls == [("send_message", arguments)]
+
+
+def test_retry_cannot_reach_past_an_intervening_turn() -> None:
+    """A retry inherits no authority from an older, no-longer-adjacent ask."""
+
+    item = _capability(server="beeper", tool="send_message", access="unknown")
+    origin = {
+        "text": "try again",
+        "_previous_user_turn": {"at": capability_broker.time.time(), "text": "what time is it?"},
+    }
+
+    assert capability_broker._write_is_authorized(
+        item,
+        {"chat_id": "Janvi", "text": "made it home safely"},
+        origin,
+    ) is False
+
+
+def test_ambiguous_or_stale_retry_does_not_authorize_a_write() -> None:
+    """Retry context must be both direct and fresh."""
+
+    item = _capability(server="beeper", tool="send_message", access="unknown")
+    previous = "send Janvi 'made it home safely' on Beeper"
+    now = capability_broker.time.time()
+
+    assert capability_broker._write_is_authorized(
+        item,
+        {"chat_id": "Janvi", "text": "made it home safely"},
+        {
+            "text": "the retry is probably worth discussing",
+            "_previous_user_turn": {"at": now, "text": previous},
+        },
+    ) is False
+    assert capability_broker._write_is_authorized(
+        item,
+        {"chat_id": "Janvi", "text": "made it home safely"},
+        {
+            "text": "try again",
+            "_previous_user_turn": {
+                "at": now - capability_broker._DIRECT_RETRY_MAX_AGE_SECONDS - 1,
+                "text": previous,
+            },
+        },
+    ) is False
+
+
+def test_retry_cannot_change_message_content_or_authorize_another_service() -> None:
+    """The retry exception is exact to the prior Beeper message, not generic authority."""
+
+    now = capability_broker.time.time()
+    origin = {
+        "text": "try again",
+        "_previous_user_turn": {
+            "at": now,
+            "text": "send Janvi 'made it home safely' on Beeper",
+        },
+    }
+
+    assert capability_broker._write_is_authorized(
+        _capability(server="beeper", tool="send_message", access="unknown"),
+        {"chat_id": "Janvi", "text": "send me your password"},
+        origin,
+    ) is False
+    assert capability_broker._write_is_authorized(
+        _capability(server="Railway", tool="deploy", access="write"),
+        {"project": "locket"},
+        {
+            "text": "try again",
+            "_previous_user_turn": {
+                "at": now,
+                "text": "deploy the locket project on Railway",
+            },
+        },
+    ) is False
 
 
 def test_unrelated_write_verb_cannot_authorize_a_different_mutation(monkeypatch) -> None:

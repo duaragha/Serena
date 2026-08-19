@@ -14,6 +14,7 @@
 ## System specifications
 
 - [Brain daemon](spec-brain-daemon.md): resident session, streaming protocol, lifecycle, and acceptance contract
+- [Fleet runtime](fleet-runtime.md): renderer-owned terminals, work-unit contracts, capacity recovery, and delivery obligations
 - [Knowledge maintenance](knowledge-maintenance-spec.md): knowledge lifecycle and curation contract
 
 ## Voice acceptance

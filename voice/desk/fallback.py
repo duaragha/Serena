@@ -204,6 +204,7 @@ class LocalColdResponder:
         if self._brain_override is not None:
             return self._brain_override(text).strip()
         from core.config import read_agent_context
+        from core.daypart import TimeContext
 
         state = ""
         try:
@@ -212,11 +213,16 @@ class LocalColdResponder:
             state = compact_active()
         except Exception:
             pass
+        moment = TimeContext.now()
         system = "\n\n".join(
             part
             for part in (
                 read_agent_context(),
                 state,
+                f"<current-time {moment.attributes()}>\n"
+                "This is the live local system clock. Use it when the hour or "
+                "the part of day matters, in your own words.\n"
+                "</current-time>",
                 "# Degraded desk voice\n"
                 "The home brain is unreachable. Answer this transcribed desk turn "
                 "as Serena in one to three short spoken sentences. Plain prose only. "

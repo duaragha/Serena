@@ -13,6 +13,10 @@ the "if i tell her to" part; everything else is hers.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
+from datetime import datetime
+from pathlib import Path
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from mcp.types import ToolAnnotations
@@ -32,13 +36,32 @@ _BROKERED_DELETE = ToolAnnotations(
     idempotentHint=True,
     openWorldHint=False,
 )
+_LOCAL_READ_ONLY = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
 
 _REFUSAL = (
     "NOT DONE. Reason: {reason}. Tell Raghav plainly that you could not do it "
     "and why. Do not say it is saved, changed, or deleted."
 )
 
-_MEMORY_TYPES = ("user", "feedback", "project", "reference", "task", "loop", "general")
+_V2_TYPES = (
+    "semantic_fact",
+    "episode",
+    "procedure",
+    "commitment",
+    "preference",
+    "correction",
+)
+_REVIEW_SIGNAL = re.compile(
+    r"\b(?:approve|accept|apply|reject|decline|roll\s*back|rollback|undo)\b",
+    re.IGNORECASE,
+)
+_MIGRATION_SIGNAL = re.compile(r"\b(?:migrate|migration|upgrade|import)\b", re.IGNORECASE)
+_EXPORT_SIGNAL = re.compile(r"\b(?:export|projection|project|markdown)\b", re.IGNORECASE)
 
 
 def _text(message: str) -> dict:
@@ -47,116 +70,62 @@ def _text(message: str) -> dict:
 
 @tool(
     "save_memory",
-    "Save one new memory about Raghav when he asks you to remember something "
-    "on a spoken turn. type is one of user, feedback, project, reference, "
-    "task, loop, general. Write the content as a complete standalone fact "
-    "with absolute dates. A broker independently re-reads his actual words, "
-    "so never claim it is saved unless this returns SAVED.",
+    "Deprecated fail-closed legacy write. Memory changes require a visible "
+    "Memory v2 proposal and explicit review through propose_memory_change and "
+    "review_memory_proposal; this tool never mutates memory.",
     {"content": str, "type": str},
     annotations=_BROKERED_WRITE,
 )
 async def save_memory(args):
     content = str(args.get("content") or "").strip()
-    mem_type = str(args.get("type") or "general").strip().lower()
-    if mem_type not in _MEMORY_TYPES:
-        mem_type = "general"
     if not content:
         return _text(_REFUSAL.format(reason="empty content"))
-    decision = authorize(
-        "save_memory", origin=current_turn(), destructive=False, detail=content[:200],
-        recent_texts=recent_turn_texts()
+    return _text(
+        _REFUSAL.format(
+            reason="direct legacy memory writes are disabled; create and review a Memory v2 proposal"
+        )
     )
-    if not decision.allowed:
-        return _text(_REFUSAL.format(reason=decision.reason))
-
-    def _save() -> int:
-        from memory.store import add_memory
-
-        return add_memory(content, mem_type)
-
-    memory_id = await asyncio.to_thread(_save)
-    return _text(f"SAVED. memory [{memory_id}] ({mem_type}).")
 
 
 @tool(
     "edit_memory",
-    "Rewrite an existing memory by id when Raghav asks you on a spoken turn "
-    "to correct, update, or change something you have saved. Look the id up "
-    "with search_memory first; the new content replaces the old entirely, so "
-    "carry forward anything still true. A broker independently re-reads his "
-    "actual words.",
+    "Deprecated fail-closed legacy write. Memory corrections require a visible "
+    "Memory v2 proposal and explicit review; this tool never mutates memory.",
     {"memory_id": int, "content": str},
     annotations=_BROKERED_WRITE,
 )
 async def edit_memory(args):
     content = str(args.get("content") or "").strip()
     try:
-        memory_id = int(args.get("memory_id"))
+        int(args.get("memory_id"))
     except (TypeError, ValueError):
         return _text(_REFUSAL.format(reason="no valid memory id"))
     if not content:
         return _text(_REFUSAL.format(reason="empty replacement content"))
-    decision = authorize(
-        "edit_memory",
-        origin=current_turn(),
-        destructive=True,
-        detail=f"[{memory_id}] {content[:160]}",
-        recent_texts=recent_turn_texts(),
+    return _text(
+        _REFUSAL.format(
+            reason="direct legacy memory writes are disabled; create and review a Memory v2 proposal"
+        )
     )
-    if not decision.allowed:
-        return _text(_REFUSAL.format(reason=decision.reason))
-
-    def _edit() -> bool:
-        from memory.store import get_memory, update_memory
-
-        if get_memory(memory_id) is None:
-            return False
-        update_memory(memory_id, content=content)
-        return True
-
-    if not await asyncio.to_thread(_edit):
-        return _text(_REFUSAL.format(reason=f"no memory with id {memory_id}"))
-    return _text(f"UPDATED. memory [{memory_id}] now holds the new content.")
 
 
 @tool(
     "delete_memory",
-    "Delete a memory by id when Raghav asks you on a spoken turn to forget "
-    "or remove it. Look the id up with search_memory first and tell him what "
-    "you are deleting. Permanent. A broker independently re-reads his actual "
-    "words, so never claim it is gone unless this returns DELETED.",
+    "Deprecated fail-closed legacy write. Forgetting requires a visible Memory "
+    "v2 proposal and explicit review; this tool never mutates memory.",
     {"memory_id": int},
     annotations=_BROKERED_DELETE,
 )
 async def delete_memory(args):
     try:
-        memory_id = int(args.get("memory_id"))
+        int(args.get("memory_id"))
     except (TypeError, ValueError):
         return _text(_REFUSAL.format(reason="no valid memory id"))
-    decision = authorize(
-        "delete_memory",
-        origin=current_turn(),
-        destructive=True,
-        detail=f"[{memory_id}]",
-        recent_texts=recent_turn_texts(),
+    return _text(
+        _REFUSAL.format(
+            reason="direct legacy memory writes are disabled; create and review a Memory v2 proposal"
+        )
     )
-    if not decision.allowed:
-        return _text(_REFUSAL.format(reason=decision.reason))
-
-    def _delete() -> tuple[bool, str]:
-        from memory.store import delete_memory as store_delete
-        from memory.store import get_memory
-
-        record = get_memory(memory_id)
-        if record is None:
-            return False, ""
-        summary = " ".join(str(record.get("content", "")).split())[:120]
-        return store_delete(memory_id), summary
-
-    deleted, summary = await asyncio.to_thread(_delete)
-    if not deleted:
-        return _text(_REFUSAL.format(reason=f"no memory with id {memory_id}"))
-    return _text(f"DELETED. memory [{memory_id}] ({summary!r}) is gone.")
 
 
 @tool(
@@ -233,12 +202,330 @@ async def delete_knowledge_topic(args):
     return _text(f"DELETED. knowledge topic {topic!r} is gone.")
 
 
+@tool(
+    "propose_memory_change",
+    "Create a visible Memory v2 proposal from the current spoken turn. This never "
+    "changes canonical memory. operation is add, supersede, contradict, forget, or "
+    "retain. For add/supersede/contradict provide complete candidate content and a "
+    "v2 record type. For every other operation provide target_record_id. retain also "
+    "requires retention_until as an ISO 8601 date or Unix timestamp. Return the proposal "
+    "and diff to Raghav before asking him to approve or reject it.",
+    {
+        "operation": str,
+        "record_type": str,
+        "content": str,
+        "target_record_id": str,
+        "confidence": str,
+        "sensitivity": str,
+        "retention_until": str,
+    },
+    annotations=_BROKERED_WRITE,
+)
+async def propose_memory_change(args):
+    origin = current_turn()
+    decision = authorize(
+        "propose_memory_change",
+        origin=origin,
+        destructive=False,
+        detail=str(args.get("content") or "")[:200],
+        recent_texts=recent_turn_texts(),
+    )
+    if not decision.allowed:
+        return _text(_REFUSAL.format(reason=decision.reason))
+    operation = str(args.get("operation") or "add").strip().lower()
+    record_type = str(args.get("record_type") or "episode").strip().lower()
+    content = str(args.get("content") or "").strip()
+    target = str(args.get("target_record_id") or "").strip()
+    if record_type not in _V2_TYPES:
+        return _text(_REFUSAL.format(reason="invalid Memory v2 record type"))
+    try:
+        confidence = float(str(args.get("confidence") or "0.75"))
+    except ValueError:
+        return _text(_REFUSAL.format(reason="confidence must be between zero and one"))
+    sensitivity = str(args.get("sensitivity") or "personal").strip().lower()
+    retention_until = str(args.get("retention_until") or "").strip()
+    retention_timestamp = None
+    if retention_until:
+        try:
+            retention_timestamp = float(retention_until)
+        except ValueError:
+            try:
+                retention_timestamp = datetime.fromisoformat(
+                    retention_until.replace("Z", "+00:00")
+                ).timestamp()
+            except ValueError:
+                return _text(
+                    _REFUSAL.format(
+                        reason="retention_until must be an ISO 8601 date or Unix timestamp"
+                    )
+                )
+
+    def _propose() -> dict:
+        from memory.v2 import MemoryV2Store, source_receipt
+
+        spoken = str(origin.get("text") or "")
+        locator = str(origin.get("turn_id") or origin.get("call_id") or "spoken-turn")
+        source = source_receipt(
+            kind="spoken_turn",
+            locator=locator,
+            source_text=spoken,
+            session_id=str(origin.get("call_id") or ""),
+            surface=str(origin.get("protocol") or "voice"),
+        )
+        candidate = None
+        if operation in {"add", "update", "supersede", "contradict", "retain"}:
+            candidate = {
+                "record_type": record_type,
+                "content": content,
+                "confidence": confidence,
+                "sensitivity": sensitivity,
+                "retention_until": retention_timestamp,
+            }
+        store = MemoryV2Store()
+        proposal = store.create_proposal(
+            operation=operation,
+            target_record_id=target or None,
+            candidate=candidate,
+            source=source,
+        )
+        try:
+            store.flush_control_outbox()
+        except Exception:
+            proposal["control_event_pending"] = True
+        return proposal
+
+    try:
+        proposal = await asyncio.to_thread(_propose)
+    except (KeyError, RuntimeError, ValueError) as exc:
+        return _text(_REFUSAL.format(reason=str(exc)))
+    return _text("PROPOSED, NOT APPLIED.\n" + json.dumps(proposal, indent=2, sort_keys=True))
+
+
+@tool(
+    "list_memory_proposals",
+    "List visible Memory v2 proposals and their before/after diffs. Read-only. "
+    "Use state proposed, approved, rejected, or rolled_back.",
+    {"state": str},
+    annotations=_LOCAL_READ_ONLY,
+)
+async def list_memory_proposals(args):
+    state = str(args.get("state") or "proposed").strip().lower()
+
+    def _list() -> list[dict]:
+        from memory.v2 import MemoryV2Store
+
+        return MemoryV2Store().proposals(state=state, limit=50)
+
+    try:
+        proposals = await asyncio.to_thread(_list)
+    except ValueError as exc:
+        return _text(f"NOT READ. Reason: {exc}.")
+    return _text(json.dumps(proposals, indent=2, sort_keys=True)[:12_000])
+
+
+@tool(
+    "review_memory_proposal",
+    "Approve, reject, or roll back one Memory v2 proposal only when Raghav "
+    "explicitly says that review action on the live spoken turn. Approval applies "
+    "the displayed diff transactionally. Rejection never changes canonical memory. "
+    "Rollback retracts the applied version and restores the prior state.",
+    {"proposal_id": str, "action": str, "reason": str},
+    annotations=_BROKERED_DELETE,
+)
+async def review_memory_proposal(args):
+    origin = current_turn()
+    recent = recent_turn_texts()
+    window = [str(origin.get("text") or ""), *recent]
+    if not any(_REVIEW_SIGNAL.search(text) for text in window):
+        return _text(
+            _REFUSAL.format(
+                reason="the recent conversation did not explicitly approve, reject, or undo a proposal"
+            )
+        )
+    decision = authorize(
+        "review_memory_proposal",
+        origin=origin,
+        destructive=False,
+        detail=str(args.get("proposal_id") or ""),
+        recent_texts=recent,
+    )
+    if not decision.allowed:
+        return _text(_REFUSAL.format(reason=decision.reason))
+    proposal_id = str(args.get("proposal_id") or "").strip()
+    action = str(args.get("action") or "").strip().lower()
+    reason = str(args.get("reason") or "reviewed on Raghav's spoken turn").strip()
+
+    def _review() -> dict:
+        from memory.v2 import MemoryV2Store
+
+        store = MemoryV2Store()
+        if action == "approve":
+            result = store.approve_proposal(proposal_id, reviewer="Raghav", reason=reason)
+        elif action == "reject":
+            result = store.reject_proposal(proposal_id, reviewer="Raghav", reason=reason)
+        elif action in {"rollback", "undo"}:
+            result = store.rollback_proposal(proposal_id, reviewer="Raghav", reason=reason)
+        else:
+            raise ValueError("action must be approve, reject, or rollback")
+        try:
+            store.flush_control_outbox()
+        except Exception:
+            result["control_event_pending"] = True
+        return result
+
+    try:
+        result = await asyncio.to_thread(_review)
+    except (KeyError, RuntimeError, ValueError) as exc:
+        return _text(_REFUSAL.format(reason=str(exc)))
+    return _text("REVIEW RECORDED.\n" + json.dumps(result, indent=2, sort_keys=True))
+
+
+@tool(
+    "search_memory_v2",
+    "Search approved Memory v2 records with literal and local semantic ranking. "
+    "Returns validity-filtered records plus an explanation of every score and a "
+    "durable receipt identifying exactly what was exposed. Read-only.",
+    {"query": str, "surface": str},
+    annotations=_LOCAL_READ_ONLY,
+)
+async def search_memory_v2(args):
+    query = str(args.get("query") or "").strip()
+    surface = str(args.get("surface") or "private").strip().lower()
+
+    def _search() -> dict:
+        from memory.v2 import MemoryV2Store
+
+        return MemoryV2Store().retrieve_with_receipt(query, surface=surface)
+
+    results = await asyncio.to_thread(_search)
+    return _text(json.dumps(results, indent=2, sort_keys=True)[:12_000])
+
+
+@tool(
+    "evaluate_memory_v2",
+    "Run and persist a local Memory v2 retrieval-quality evaluation. cases_json is "
+    "a JSON list of objects with name, query, and expected_record_ids. No network "
+    "or third-party memory service is used.",
+    {"cases_json": str, "limit": int},
+    annotations=_LOCAL_READ_ONLY,
+)
+async def evaluate_memory_v2(args):
+    try:
+        cases = json.loads(str(args.get("cases_json") or "[]"))
+        if not isinstance(cases, list):
+            raise ValueError("cases_json must be a JSON list")
+        limit = min(50, max(1, int(args.get("limit") or 8)))
+        from memory.v2 import MemoryV2Store
+
+        result = await asyncio.to_thread(MemoryV2Store().evaluate_retrieval, cases, limit=limit)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return _text(f"NOT EVALUATED. Reason: {exc}.")
+    return _text(json.dumps(result, indent=2, sort_keys=True)[:12_000])
+
+
+@tool(
+    "export_memory_v2",
+    "Create a crash-safe immutable legacy Markdown projection only when Raghav "
+    "explicitly asks to export or project Memory v2. Existing Markdown is never "
+    "overwritten or deleted; CURRENT changes atomically after a verified generation.",
+    {"output_dir": str},
+    annotations=_BROKERED_WRITE,
+)
+async def export_memory_v2(args):
+    origin = current_turn()
+    recent = recent_turn_texts()
+    window = [str(origin.get("text") or ""), *recent]
+    if not any(_EXPORT_SIGNAL.search(text) for text in window):
+        return _text(
+            _REFUSAL.format(reason="the recent conversation did not ask for a memory export")
+        )
+    decision = authorize(
+        "export_memory_v2",
+        origin=origin,
+        destructive=False,
+        detail="legacy Markdown projection",
+        recent_texts=recent,
+    )
+    if not decision.allowed:
+        return _text(_REFUSAL.format(reason=decision.reason))
+    configured = str(args.get("output_dir") or "").strip()
+    output = (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / ".local" / "state" / "serena" / "memory-legacy-projection"
+    )
+    try:
+        from memory.v2 import MemoryV2Store
+
+        result = await asyncio.to_thread(
+            MemoryV2Store().export_legacy_projection, output, actor="Raghav"
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _text(_REFUSAL.format(reason=str(exc)))
+    return _text("EXPORTED.\n" + json.dumps(result, indent=2, sort_keys=True))
+
+
+@tool(
+    "migrate_memory_v2",
+    "Import existing Markdown memories into Memory v2 without editing or deleting the "
+    "Markdown source. Run only when Raghav explicitly asks to migrate or upgrade memory.",
+    {},
+    annotations=_BROKERED_WRITE,
+)
+async def migrate_memory_v2(_args):
+    origin = current_turn()
+    recent = recent_turn_texts()
+    window = [str(origin.get("text") or ""), *recent]
+    if not any(_MIGRATION_SIGNAL.search(text) for text in window):
+        return _text(
+            _REFUSAL.format(reason="the recent conversation did not ask to migrate memory")
+        )
+    decision = authorize(
+        "migrate_memory_v2",
+        origin=origin,
+        destructive=False,
+        detail="legacy Markdown import",
+        recent_texts=recent,
+    )
+    if not decision.allowed:
+        return _text(_REFUSAL.format(reason=decision.reason))
+
+    def _migrate() -> dict:
+        from memory.v2 import MemoryV2Store
+
+        store = MemoryV2Store()
+        result = store.migrate_current_legacy_store()
+        result["projection"] = store.export_legacy_projection(
+            Path.home() / ".local" / "state" / "serena" / "memory-legacy-projection",
+            actor="Raghav",
+        )
+        result["activation"] = store.activate_authority(actor="Raghav")
+        try:
+            result["control_events_flushed"] = store.flush_control_outbox()
+        except Exception:
+            result["control_event_pending"] = True
+        return result
+
+    try:
+        result = await asyncio.to_thread(_migrate)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _text(_REFUSAL.format(reason=f"migration did not activate v2: {exc}"))
+    return _text(f"MIGRATED. {result['imported']} imported, {result['existing']} already present.")
+
+
 MEMORY_TOOLS = (
     save_memory,
     edit_memory,
     delete_memory,
     save_knowledge,
     delete_knowledge_topic,
+    propose_memory_change,
+    list_memory_proposals,
+    review_memory_proposal,
+    search_memory_v2,
+    evaluate_memory_v2,
+    export_memory_v2,
+    migrate_memory_v2,
 )
 MEMORY_TOOL_NAMES = [f"mcp__serena-memory__{item.name}" for item in MEMORY_TOOLS]
 

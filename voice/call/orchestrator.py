@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import itertools
 import os
+import re
 import secrets
 import threading
 import time
@@ -26,6 +27,7 @@ from .greeting import CallGreetingState
 from .hello_state import CallHelloState
 from .protocol import (
     FLAG_FINAL,
+    MAX_TTS_FRAME_MS,
     AudioFrame,
     AudioHeader,
     AudioKind,
@@ -45,7 +47,8 @@ from .tasking import (
     parse_code_panel_intent,
 )
 from .telemetry import DEFAULT_METRICS_PATH, CallTelemetry
-from .tts import AsyncTTSBackend, create_tts_backend
+from .thinking_sounds import ThinkingClip, ThinkingSoundPool, ensure_thinking_clips
+from .tts import AsyncTTSBackend, PCMChunk, create_tts_backend
 from .turn_taking import UNKNOWN, AdaptiveEouPolicy, assess_completeness
 
 _SESSION_IDS = itertools.count(1)
@@ -54,6 +57,19 @@ _MAX_PENDING_RTT_SAMPLES = 64
 _ADAPTIVE_PRE_ROLL_SAMPLES = 6_400  # ~400ms of 16kHz mic audio mirrored pre-speech
 DEFAULT_DESK_METRICS_PATH = Path.home() / ".config" / "serena" / "desk_metrics.jsonl"
 DEFAULT_DESK_GREETING_STATE = Path.home() / ".config" / "serena" / "desk_greeting_state.json"
+
+
+_BARE_NAME_CALL = re.compile(
+    r"^\s*(?:hey\s+|hi\s+|okay\s+|ok\s+)?"
+    r"(?:serena|serina|sirena|sarena|sarina|sereena)"
+    r"\s*[.!,?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_bare_name_call(text: str) -> bool:
+    """True when the whole utterance is just her name being called."""
+    return bool(_BARE_NAME_CALL.match(text or ""))
 
 
 def _reply_splitter(tts: object) -> IncrementalSentenceSplitter:
@@ -125,6 +141,22 @@ class _FlushEndpoint:
 class _TTSRequest:
     text: str
     kind: str
+    # A pre-rendered thinking sound carries its own audio.  Synthesising a
+    # filler live would spend TTS latency at the exact moment it exists to
+    # cover, so the worker plays these bytes instead of calling the engine.
+    clip: ThinkingClip | None = None
+
+
+async def _prerendered_chunks(clip: ThinkingClip):
+    """Yield a stored clip in the same frame sizes the engine streams."""
+
+    # Compute whole samples before converting to bytes. At 22.05 kHz the old
+    # byte-first formula produced 2,205-byte PCM16 frames, which the protocol
+    # correctly rejected and took the real answer down with the filler.
+    frame_samples = max(1, clip.sample_rate * MAX_TTS_FRAME_MS // 1_000)
+    frame_bytes = frame_samples * 2
+    for offset in range(0, len(clip.pcm), frame_bytes):
+        yield PCMChunk(clip.pcm[offset : offset + frame_bytes], clip.sample_rate)
 
 
 @dataclass(slots=True)
@@ -226,10 +258,26 @@ class CallRuntime:
             else:
                 self._warm_status[name] = "ready"
 
+        async def warm_tts() -> None:
+            await self.tts.warm()
+            if not str(getattr(self.tts, "name", "")).startswith("pocket-tts"):
+                return
+            # The deployed host had only mic-off.raw, so the feature stayed
+            # permanently silent despite passing synthetic tests. Provision
+            # the tiny clips from the already-warm local Pocket voice. Failure
+            # remains non-fatal because a missing filler must never lose a turn.
+            try:
+                await asyncio.wait_for(
+                    ensure_thinking_clips(backend=self.tts),
+                    timeout=min(30.0, self.warm_timeout),
+                )
+            except Exception:
+                return
+
         try:
             tasks = [
                 run_async("stt", self.stt.warm),
-                run_async("tts", self.tts.warm),
+                run_async("tts", warm_tts),
             ]
             if self.endpoint_warmer is not None:
                 tasks.append(
@@ -1469,19 +1517,22 @@ class CallSession:
         if not text:
             await self._error("no_speech", "no speech was transcribed", generation=generation)
             return
-        recent_context = list(self._recent_dialogue)
+        if _is_bare_name_call(text):
+            # "Serena." on its own is him stopping her, not a question. The
+            # old behaviour ran a brain turn on it, so interrupting her made
+            # her START TALKING AGAIN six seconds later (observed 2026-08-11
+            # 00:29, generations 3 through 5 in desk_metrics). Attention means
+            # shut up and listen.
+            self.telemetry.record("turn.bare_name_attention", generation=generation)
+            await self._send_control_for_generation(
+                generation, "turn.listen", generation=generation
+            )
+            return
         self._recent_dialogue.append(f"Raghav: {text}")
         panel_action = await self._apply_code_panel_intent(generation, text)
         task_job_id = None
-        live_task_id = None
         if panel_action is None:
             task_job_id = await self._submit_call_task(generation, text)
-            if task_job_id is None:
-                live_task_id = await self._submit_live_work(
-                    generation,
-                    text,
-                    context=recent_context,
-                )
         brain_text = text
         if panel_action:
             exact = (
@@ -1501,15 +1552,6 @@ class CallSession:
                 "Acknowledge it briefly. Tell Raghav the link will appear in the "
                 "call screen. Do not claim the draft is ready yet."
                 "</call-task-status>"
-            )
-        elif live_task_id:
-            brain_text += (
-                "\n\n<voice-work-status>"
-                f"spoken work request {live_task_id} is accepted by your own private "
-                "coding runtime. Reply with exactly this sentence and nothing else: "
-                "i've started coding in my own workspace. i'll update you "
-                "as i work."
-                "</voice-work-status>"
             )
         spoken_reply = await self._brain_to_tts(generation, brain_text)
         if spoken_reply:
@@ -1561,48 +1603,22 @@ class CallSession:
         )
         return job.job_id
 
-    async def _submit_live_work(
-        self,
-        generation: int,
-        text: str,
-        *,
-        context: list[str] | None = None,
-    ) -> str | None:
-        dispatcher = self.runtime.task_dispatcher
-        submit = getattr(dispatcher, "submit_live_work_if_explicit", None)
-        if not callable(submit):
-            return None
-        try:
-            item = await asyncio.to_thread(
-                submit,
-                text,
-                call_id=self.call_id,
-                turn_id=f"{self.call_id}:{generation}",
-                context=context or [],
-            )
-        except Exception as exc:
-            await self._error("task", str(exc), generation=generation)
-            return None
-        if item is None:
-            return None
-        self.telemetry.record(
-            "voice_inbox.accepted",
-            generation=generation,
-            item_id=item.item_id,
-            state=item.state,
-        )
-        return item.item_id
-
     async def _brain_to_tts(self, generation: int, text: str) -> str | None:
         splitter = _reply_splitter(self.runtime.tts)
         sentences: asyncio.Queue[_TTSRequest | None] = asyncio.Queue(maxsize=8)
         content_queued = asyncio.Event()
+        first_delta_received = asyncio.Event()
         tts_task = asyncio.create_task(
             self._tts_worker(generation, sentences),
             name=f"call-tts-{generation}",
         )
         backchannel_task = asyncio.create_task(
-            self._delayed_backchannel(generation, sentences, content_queued),
+            self._delayed_backchannel(
+                generation,
+                sentences,
+                content_queued,
+                first_delta_received,
+            ),
             name=f"call-backchannel-{generation}",
         )
         first_delta = True
@@ -1626,6 +1642,7 @@ class CallSession:
                 if not self._generation_active(generation):
                     return
                 if event.type == "delta":
+                    first_delta_received.set()
                     saw_delta = True
                     reply_parts.append(event.delta)
                     if first_delta:
@@ -1742,39 +1759,108 @@ class CallSession:
         await queue.put(_TTSRequest(sentence, "content"))
         self.telemetry.record("queue.depth", queue="tts", depth=queue.qsize())
 
+    @property
+    def _thinking_sounds(self) -> ThinkingSoundPool:
+        """One pool per call, so the no-repeat memory spans her whole session."""
+
+        pool = getattr(self, "_thinking_sound_pool", None)
+        if pool is None:
+            pool = ThinkingSoundPool()
+            self._thinking_sound_pool = pool
+        return pool
+
     async def _delayed_backchannel(
         self,
         generation: int,
         queue: asyncio.Queue[_TTSRequest | None],
         content_queued: asyncio.Event,
+        first_delta_received: asyncio.Event,
     ) -> None:
-        text = os.environ.get("SERENA_CALL_BACKCHANNEL_TEXT", "yeah.").strip()
+        """Cover a slow brain with one short sound, never on every turn.
+
+        Memory 414 records that Raghav rejected the automatic "yeah" on every
+        turn. This waits for the brain's first delta and speaks only when no
+        response has arrived by the deadline, so a fast turn stays silent. The
+        clip is queued behind the same generation-scoped worker as the reply,
+        which is what keeps sequence numbers contiguous and makes barge-in and
+        cancellation stop it for free.
+        """
+
+        pool = self._thinking_sounds
+        sample_rate = getattr(self.runtime.tts, "sample_rate", None)
+        # A positive legacy delay is an operator decision and still wins. The
+        # deployed service exports the old knob as zero to disable it; treating
+        # mere presence as an override disabled the new clip path too.
         try:
-            delay_ms = float(os.environ.get("SERENA_CALL_BACKCHANNEL_DELAY_MS", "0"))
+            legacy_delay_ms = float(
+                os.environ.get("SERENA_CALL_BACKCHANNEL_DELAY_MS", "0")
+            )
         except ValueError:
-            delay_ms = 0.0
-        delay_ms = max(0.0, min(delay_ms, 5_000.0))
-        if not text or delay_ms == 0:
+            legacy_delay_ms = 0.0
+        legacy_delay_ms = max(0.0, min(legacy_delay_ms, 5_000.0))
+        legacy_requested = legacy_delay_ms > 0
+        use_clip = (
+            not legacy_requested
+            and pool.enabled
+            and isinstance(sample_rate, int)
+            and sample_rate > 0
+            and bool(pool.clips)
+        )
+        text = ""
+        if use_clip:
+            delay_ms = pool.delay_ms
+        else:
+            text = os.environ.get("SERENA_CALL_BACKCHANNEL_TEXT", "yeah.").strip()
+            delay_ms = legacy_delay_ms
+            if not text:
+                return
+        # Zero means off for both knobs.  A filler with no gate in front of it
+        # is the every-turn behaviour that was already rejected once.
+        if delay_ms == 0:
             return
+        delta_wait = asyncio.create_task(first_delta_received.wait())
+        content_wait = asyncio.create_task(content_queued.wait())
         try:
-            await asyncio.wait_for(content_queued.wait(), timeout=delay_ms / 1_000)
+            ready, _pending = await asyncio.wait(
+                (delta_wait, content_wait),
+                timeout=delay_ms / 1_000,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if ready:
+                return
+        finally:
+            for waiter in (delta_wait, content_wait):
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(delta_wait, content_wait, return_exceptions=True)
+        if (
+            first_delta_received.is_set()
+            or content_queued.is_set()
+            or not self._generation_active(generation)
+        ):
             return
-        except TimeoutError:
-            pass
-        if content_queued.is_set() or not self._generation_active(generation):
-            return
-        await queue.put(_TTSRequest(text, "acknowledgement"))
+        clip = None
+        if use_clip:
+            # Chosen only now that it is really going to play, so a fast turn
+            # does not silently burn the clip that varies the next slow one.
+            clip = pool.take(sample_rate=sample_rate)
+            if clip is None:
+                return
+            text = clip.clip_id
+        await queue.put(_TTSRequest(text, "acknowledgement", clip=clip))
         self.telemetry.record(
             "backchannel.queued",
             generation=generation,
             delay_ms=round(delay_ms, 3),
             chars=len(text),
+            clip=clip.clip_id if clip is not None else "",
         )
         self.telemetry.stage(
             generation,
             "backchannel.queued",
             delay_ms=round(delay_ms, 3),
             chars=len(text),
+            clip=clip.clip_id if clip is not None else "",
         )
 
     async def _tts_worker(
@@ -1805,9 +1891,14 @@ class CallSession:
                     backend=getattr(self.runtime.tts, "name", "unknown"),
                 )
                 segment_started = False
-                async for chunk in self.runtime.tts.stream(
-                    request.text, generation=self._tts_generation(generation)
-                ):
+                source = (
+                    _prerendered_chunks(request.clip)
+                    if request.clip is not None
+                    else self.runtime.tts.stream(
+                        request.text, generation=self._tts_generation(generation)
+                    )
+                )
+                async for chunk in source:
                     if not self._generation_active(generation):
                         return
                     if output_sample_rate is None:

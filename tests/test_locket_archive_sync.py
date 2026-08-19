@@ -7,10 +7,12 @@ from unittest.mock import patch
 from core.locket_archive_sync import (
     CHUNK_SIZE,
     MAX_SESSION_PASSAGES,
+    _build_session,
     _cap_passages,
     chunk_recall_text,
     sanitize_recall_text,
 )
+from core.voice_transcripts import VOICE_SESSION_ID, VoiceTranscriptStore
 import memory.store as memory_store
 
 
@@ -57,6 +59,43 @@ class LocketArchiveSanitizerTests(unittest.TestCase):
         self.assertEqual(capped[0]["messagePosition"], 0)
         self.assertEqual(capped[-1]["messagePosition"], MAX_SESSION_PASSAGES + 4)
 
+    def test_permanent_voice_chat_uses_existing_archive_session_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "serena-main.jsonl"
+            VoiceTranscriptStore(path).append_turn(
+                user_text="archive only this question",
+                assistant_text="archive only this answer",
+                call_id="desk-call",
+                turn_id="desk-call:1",
+                surface="desk-voice",
+                model="sonnet",
+                brain_session_id="brain-session",
+                timestamp="2026-08-02T12:00:00Z",
+            )
+            payload = _build_session(
+                {
+                    "session_id": VOICE_SESSION_ID,
+                    "agent": "serena-voice",
+                    "display_title": "Serena",
+                    "project_dir": "serena-voice",
+                    "device": "desk-voice",
+                    "file_path": str(path),
+                    "first_timestamp": "2026-08-02T12:00:00Z",
+                    "last_timestamp": "2026-08-02T12:00:00Z",
+                }
+            )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["sessionId"], VOICE_SESSION_ID)
+        self.assertEqual(payload["agent"], "serena-voice")
+        self.assertEqual(
+            [(row["role"], row["content"]) for row in payload["passages"]],
+            [
+                ("user", "archive only this question"),
+                ("assistant", "archive only this answer"),
+            ],
+        )
+
 
 class MemoryProvenanceTests(unittest.TestCase):
     def test_capture_and_edit_preserve_source_session(self):
@@ -65,7 +104,11 @@ class MemoryProvenanceTests(unittest.TestCase):
             memory_store.MEMORY_DIR = Path(tmp)
             try:
                 with (
-                    patch.dict(os.environ, {"CODEX_THREAD_ID": "codex-session-42"}, clear=False),
+                    patch.dict(
+                        os.environ,
+                        {"CODEX_THREAD_ID": "codex-session-42", "CLAUDE_CODE_SESSION_ID": ""},
+                        clear=False,
+                    ),
                     patch("core.indexer.get_session", return_value={"display_title": "Recall work"}),
                     patch("memory.locket_mirror.mirror_add") as mirror_add,
                 ):

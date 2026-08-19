@@ -53,9 +53,23 @@ def test_he_asks_her_to_forget_or_fix_and_she_may(spoken: str) -> None:
         "tell me about the phev tracker",
     ],
 )
-def test_ordinary_conversation_authorizes_no_writes(spoken: str) -> None:
-    assert authority_denial("save_memory", _turn(spoken), destructive=False) is not None
+def test_ordinary_conversation_never_deletes(spoken: str) -> None:
+    """Deleting stays gated because it cannot be undone.
+
+    Saving deliberately is not. It costs nothing to undo, and the vocabulary
+    check refused him twice, most plainly when "let's take notes on X" died
+    because the list held "note" and not "notes".
+    """
     assert authority_denial("delete_memory", _turn(spoken), destructive=True) is not None
+
+
+def test_saving_trusts_her_judgement(tmp_path) -> None:
+    """If she decided something is worth keeping, she is right more often
+    than a list of approved words is."""
+    assert authority_denial("save_memory", _turn("that was a rough one today"),
+                            destructive=False) is None
+    # Grounding is untouched: no real spoken turn, no write.
+    assert authority_denial("save_memory", {}, destructive=False) is not None
 
 
 def test_asking_her_to_remember_does_not_authorize_deletion() -> None:
@@ -91,13 +105,18 @@ def test_the_write_tools_are_exposed_and_named_for_their_broker() -> None:
     from core.brain_memory_tools import MEMORY_TOOL_NAMES
 
     names = {name.rsplit("__", 1)[-1] for name in MEMORY_TOOL_NAMES}
-    assert names == {
+    assert {
         "save_memory",
         "edit_memory",
         "delete_memory",
         "save_knowledge",
         "delete_knowledge_topic",
-    }
+        "propose_memory_change",
+        "list_memory_proposals",
+        "review_memory_proposal",
+        "search_memory_v2",
+        "migrate_memory_v2",
+    }.issubset(names)
     assert all(name.startswith("mcp__serena-memory__") for name in MEMORY_TOOL_NAMES)
 
 

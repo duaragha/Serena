@@ -210,6 +210,26 @@ def test_playback_publishes_level_from_every_real_pcm_chunk(monkeypatch) -> None
     assert stream.started and stream.stopped and stream.closed
 
 
+def test_muted_playback_writes_silence_and_publishes_zero(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        SimpleNamespace(RawOutputStream=_RawOutputStream),
+    )
+    monkeypatch.setattr("voice.desk.io.read_voice_output_muted", lambda: True)
+    overlay = _Overlay()
+    playback = SoundDevicePlayback(overlay)
+    pcm = (16_000).to_bytes(2, "little", signed=True) * 480
+
+    playback.start(24_000)
+    first = playback.write(pcm)
+    playback.finish()
+
+    assert first is not None
+    assert _RawOutputStream.instances[-1].writes == [bytes(len(pcm))]
+    assert overlay.amplitudes == [0.0, 0.0, 0.0]
+
+
 def test_wake_greeting_handoff_is_runtime_only_and_single_use(
     tmp_path: Path,
 ) -> None:
@@ -259,6 +279,46 @@ def test_greeting_fetcher_uses_persisted_assistant_audio_when_server_fails(
     assert source == "local-fallback"
     assert restored.greeting_id == "last-good"
     assert restored.pcm == greeting.pcm
+
+
+def test_greeting_fetcher_refuses_a_greeting_from_another_part_of_day(
+    tmp_path: Path,
+) -> None:
+    from core.daypart import DAYPARTS, current_daypart
+
+    stale = next(name for name in DAYPARTS if name != current_daypart())
+    fallback_path = tmp_path / "last.json"
+    greeting = GreetingAudio("wrong-hour", 24_000, b"\x01\x00", "hi", 1.0, stale)
+    from core.brain_lifetime import write_json_atomic
+
+    write_json_atomic(
+        fallback_path,
+        {"version": FALLBACK_SCHEMA_VERSION, "greeting": greeting.to_json()},
+    )
+    fetcher = GreetingFetcher(
+        "http://127.0.0.1:1/desk/greeting",
+        "secret",
+        fallback_path=fallback_path,
+        timeout=0.2,
+    )
+
+    assert fetcher.load_fallback() is None
+    restored, source = fetcher.fetch()
+    assert source == "tone-fallback"
+    assert restored.greeting_id == "tone-fallback"
+
+    current = GreetingAudio(
+        "right-hour", 24_000, b"\x01\x00", "hi", 1.0, current_daypart()
+    )
+    write_json_atomic(
+        fallback_path,
+        {"version": FALLBACK_SCHEMA_VERSION, "greeting": current.to_json()},
+    )
+
+    kept, source = fetcher.fetch()
+
+    assert source == "local-fallback"
+    assert kept.greeting_id == "right-hour"
 
 
 def test_greeting_fetcher_rejects_retired_voice_cache(tmp_path: Path) -> None:

@@ -392,7 +392,10 @@ def memory_active():
 def memory_snooze(memory_id, days):
     """Defer a task/loop: hide it from the nudge rail for N days."""
     from memory.store import snooze_memory
-    if snooze_memory(memory_id, days):
+    result = snooze_memory(memory_id, days)
+    if isinstance(result, str):
+        console.print(f"[yellow]Snooze proposed, not applied: {result}[/yellow]")
+    elif result:
         console.print(f"[green]#{memory_id} snoozed for {days:g} days[/green]")
     else:
         console.print(f"[red]#{memory_id} not found[/red]")
@@ -412,8 +415,11 @@ MEMORY_TYPES = click.Choice(_MEMORY_TYPE_NAMES)
 def memory_add(content, mem_type):
     """Add a new memory."""
     from memory.store import add_memory
-    mid = add_memory(content, mem_type)
-    console.print(f"[green]Memory #{mid} saved ({mem_type})[/green]")
+    result = add_memory(content, mem_type)
+    if isinstance(result, str):
+        console.print(f"[yellow]Memory proposed, not applied: {result}[/yellow]")
+    else:
+        console.print(f"[green]Memory #{result} saved ({mem_type})[/green]")
 
 
 @memory.command("sync")
@@ -470,7 +476,10 @@ def memory_sync(dry_run, prune_stale_laptop, type_filter):
 def memory_remove(memory_id):
     """Remove a memory by ID."""
     from memory.store import delete_memory
-    if delete_memory(memory_id):
+    result = delete_memory(memory_id)
+    if isinstance(result, str):
+        console.print(f"[yellow]Forgetting proposed, not applied: {result}[/yellow]")
+    elif result:
         console.print(f"[green]Memory #{memory_id} deleted[/green]")
     else:
         console.print(f"[red]Memory #{memory_id} not found[/red]")
@@ -487,8 +496,11 @@ def memory_edit(memory_id, content, mem_type):
     if not get_memory(memory_id):
         console.print(f"[red]Memory #{memory_id} not found[/red]")
         return
-    update_memory(memory_id, content=content, mem_type=mem_type)
-    console.print(f"[green]Memory #{memory_id} updated[/green]")
+    result = update_memory(memory_id, content=content, mem_type=mem_type)
+    if isinstance(result, str):
+        console.print(f"[yellow]Edit proposed, not applied: {result}[/yellow]")
+    else:
+        console.print(f"[green]Memory #{memory_id} updated[/green]")
 
 
 @memory.command("search")
@@ -705,6 +717,98 @@ def retitle(all_, batch, limit, model):
     console.print(f"\n[green]Done. Retitled {done}. Failed {failed}.[/green]")
 
 
+@click.group()
+def coding():
+    """Inspect and steer Serena's private coding jobs."""
+
+
+main.add_command(coding)
+
+
+def _coding_origin() -> dict:
+    """A terminal control has its own auditable authority protocol."""
+    return {"text": "coding job control from the local terminal", "protocol": "cli"}
+
+
+def _coding_rows(limit: int):
+    from core.voice_inbox import get_default_voice_inbox
+
+    return get_default_voice_inbox().recent_jobs(limit=limit)
+
+
+@coding.command("list")
+@click.option("--limit", "-n", default=10, help="How many recent jobs to show (default 10).")
+def coding_list(limit):
+    """List recent coding jobs, newest first."""
+    jobs = _coding_rows(limit)
+    if not jobs:
+        console.print("[dim]no coding jobs on record[/dim]")
+        return
+    for job in jobs:
+        state = job["state"] or "queued"
+        colour = {
+            "working": "cyan",
+            "completed": "green",
+            "failed": "red",
+            "cancelled": "yellow",
+        }.get(state, "white")
+        console.print(
+            f"[{colour}]{job['item_id'][:8]}[/{colour}] "
+            f"{state:<13} {job['project'] or '?':<18} {job['request'][:70]}"
+        )
+
+
+@coding.command("status")
+@click.argument("reference", required=False, default="")
+@click.option("--json", "as_json", is_flag=True, help="Print the full durable snapshot as JSON.")
+def coding_status(reference, as_json):
+    """Show one job's state, changes, tests, evidence, and review."""
+    from core.coding_job_controls import job_status
+
+    result = job_status(reference)
+    if not result.ok:
+        console.print(f"[red]{result.reason}[/red]")
+        raise SystemExit(1)
+    if as_json:
+        import json as _json
+
+        console.print_json(_json.dumps(result.job))
+        return
+    console.print(result.spoken)
+
+
+@coding.command("cancel")
+@click.argument("reference", required=False, default="")
+def coding_cancel(reference):
+    """Stop a running coding job."""
+    _run_coding_control("cancel", reference, "")
+
+
+@coding.command("steer")
+@click.argument("text")
+@click.option("--job", "reference", default="", help="Job id prefix or project name.")
+def coding_steer(reference, text):
+    """Hand a correction to a running job's persisted Codex session."""
+    _run_coding_control("steer", reference, text)
+
+
+@coding.command("resume")
+@click.argument("reference", required=False, default="")
+def coding_resume(reference):
+    """Pick a stopped job back up in its persisted Codex session."""
+    _run_coding_control("resume", reference, "")
+
+
+def _run_coding_control(action: str, reference: str, text: str) -> None:
+    from core.coding_job_controls import control_job
+
+    result = control_job(action, reference=reference, text=text, origin=_coding_origin())
+    if not result.ok:
+        console.print(f"[red]{result.reason}[/red]")
+        raise SystemExit(1)
+    console.print(f"[green]{result.spoken}[/green]")
+
+
 @main.command()
 @click.option("--host", "-h", default="0.0.0.0", help="Host to bind (default 0.0.0.0)")
 @click.option("--port", "-p", default=8080, help="Port (default 8080)")
@@ -717,12 +821,56 @@ def web(host, port):
 @main.command()
 def desktop():
     """Launch the desktop shell (native GTK on Linux, pywebview elsewhere)."""
+    import os as _os
     import sys as _sys
+    _os.environ.setdefault("SERENA_CALL_RUNTIME", "lazy")
     if _sys.platform.startswith("linux"):
         from desktop.app_gtk import run
     else:
         from desktop.app import run
     run()
+
+
+@main.command(name="dev")
+@click.option(
+    "--no-hot-reload",
+    is_flag=True,
+    help="Serve the imported page instead of re-reading it from disk.",
+)
+def dev(no_hot_reload):
+    """Run the Electron app from source, with live UI reload.
+
+    The packaged AppImage bundles a frozen copy of the interface, so editing
+    ui/web.py cannot change what it shows. This runs the same Electron shell
+    unpackaged against this checkout: the page is re-read from disk per
+    request and the window refreshes itself moments after a save, without
+    restarting the backend, so terminals and live agent sessions survive.
+    """
+    import os as _os
+    import shutil as _shutil
+    import subprocess as _subprocess
+    from pathlib import Path as _Path
+
+    app_dir = _Path(__file__).resolve().parent / "desktop-electron"
+    if not (app_dir / "package.json").is_file():
+        raise SystemExit(f"the Electron app is missing at {app_dir}")
+    npm = _shutil.which("npm")
+    if npm is None:
+        raise SystemExit("npm is required to run the desktop app from source")
+    if not (app_dir / "node_modules").is_dir():
+        click.echo("installing Electron dependencies (first run only)…")
+        _subprocess.run([npm, "install"], cwd=str(app_dir), check=True)
+
+    env = dict(_os.environ)
+    env["SERENA_UI_HOTRELOAD"] = "0" if no_hot_reload else "1"
+    env.setdefault("SERENA_CALL_RUNTIME", "lazy")
+    if no_hot_reload:
+        click.echo("running from source (hot reload off)")
+    else:
+        click.echo("running from source — save ui/web.py and the window reloads itself")
+    raise SystemExit(
+        _subprocess.run([npm, "run", "dev"], cwd=str(app_dir), env=env).returncode
+    )
 
 
 @main.command(name="text")
@@ -1061,6 +1209,1157 @@ def gen_image(out, timeout, reasoning, prompt):
         pass
 
 
+@main.command(name="codex-exec")
+@click.option("--model", default=None, help="Codex model to use. Omit to use the active default from ~/.codex/config.toml.")
+@click.option("--effort", type=click.Choice(["none", "low", "medium", "high", "xhigh", "max"]), default=None,
+              help="Reasoning effort (maps to model_reasoning_effort). Omit for the config default.")
+@click.option("--cwd", "work_dir", default=None, type=click.Path(file_okay=False),
+              help="Directory to run in (default: ~/.cache/serena-headless-codex/work, created if missing).")
+@click.option(
+    "--timeout",
+    default=0,
+    type=click.IntRange(min=0),
+    help="Optional max seconds to wait for codex; 0 waits until the job finishes (default 0).",
+)
+@click.option("--danger-full-access", is_flag=True, default=False,
+              help="Run with sandbox_mode=danger-full-access instead of workspace-write.")
+@click.option("--visible", "-V", is_flag=True, default=False,
+              help="Keep the rollout on disk and surface the job as a real codex chat in Serena "
+                   "(drops --ephemeral, marks it resident work, gives it a title).")
+@click.option("--title", "custom_title", default=None,
+              help="Chat title when visible (default: '<model> <effort>: <prompt>').")
+@click.option("--link-to", "link_to", default=None, metavar="SID",
+              help="Link this job into the same group as SID (joins SID's existing group if it has "
+                   "one). Implies --visible.")
+@click.option("--link-current", is_flag=True, default=False,
+              help="Link to the launching Claude session detected from the process environment. "
+                   "Intended for Codex agents running inside Claude workflows; implies --visible.")
+@click.argument("prompt", nargs=-1)
+def codex_exec(model, effort, work_dir, timeout, danger_full_access, visible,
+               custom_title, link_to, link_current, prompt):
+    """Run a headless one-shot codex job and print the result as JSON.
+
+    Each call starts a fresh, real `codex exec` agent. The ordinary default is
+    ephemeral, so ad-hoc headless jobs do not clutter Serena's chat list.
+
+    With `--visible` (implied by `--link-to`) that flips: `--ephemeral` is
+    dropped so codex writes a normal rollout, and once the session id is known
+    the job is marked resident work + given a title, which is exactly what
+    core/codex_scanner.py needs to surface an `exec` session in the chat list.
+    `--link-to SID` additionally puts it in SID's group. A Codex agent inside
+    a Claude workflow must use `--link-current`: it detects the launching
+    Claude session, persists the real Codex rollout, and surfaces it as soon as
+    Codex emits `thread.started`, not after the job ends.
+
+    The prompt is the joined arguments; pass `-` (or nothing) to read it from
+    stdin. Output is ALWAYS a single JSON object on stdout:
+
+      {"ok", "result_text", "session_id", "exit_code", "error", "duration_s",
+       "visible", "group"[, "warnings"]}
+
+    Metadata/link/index side effects are best-effort: if one fails it lands in
+    "warnings" and the codex result is returned anyway.
+
+    The process exit code is 0 even when ok=false — the JSON carries the
+    failure so callers only ever parse one thing.
+
+    Examples:
+      chats codex-exec "summarize the diff in /tmp/patch.txt"
+      cat task.md | chats codex-exec --effort high --cwd /home/raghav/proj -
+      chats codex-exec --link-current --model gpt-5.6-sol --effort high "..."
+    """
+    import json
+    import os
+    import queue
+    import shutil
+    import signal
+    import subprocess
+    import sys
+    import threading
+    import time
+    from contextlib import suppress
+
+    started = time.monotonic()
+    warnings: list[str] = []
+    group_id: str | None = None
+
+    if link_current and link_to:
+        emit_payload = {
+            "ok": False,
+            "result_text": "",
+            "session_id": None,
+            "exit_code": -1,
+            "error": "use either --link-current or --link-to, not both",
+            "duration_s": round(time.monotonic() - started, 3),
+            "visible": True,
+            "group": None,
+        }
+        print(json.dumps(emit_payload))
+        return
+    if link_current:
+        link_to = _detect_claude_sid()
+        if not link_to:
+            warnings.append("could not detect launching claude session; rollout will be visible but unlinked")
+    # Linking only works for a persisted, indexable rollout.
+    visible = bool(visible or link_to or link_current)
+
+    def emit(ok, result_text="", session_id="", exit_code=-1, error=None):
+        # Plain print, no rich markup: this output is machine-parsed.
+        payload = {
+            "ok": bool(ok),
+            "result_text": result_text or "",
+            "session_id": session_id or None,
+            "exit_code": int(exit_code),
+            "error": error,
+            "duration_s": round(time.monotonic() - started, 3),
+            "visible": bool(visible),
+            "group": group_id or None,
+        }
+        if warnings:
+            payload["warnings"] = list(warnings)
+        print(json.dumps(payload))
+
+    if os.environ.get("SERENA_FLEET_WORKER", "").strip().lower() in {"1", "true", "on"}:
+        emit(False, error="nested Codex jobs are disabled inside Fleet workers")
+        return
+
+    text = " ".join(prompt).strip()
+    if not text or text == "-":
+        text = "" if sys.stdin.isatty() else sys.stdin.read().strip()
+    if not text:
+        emit(False, error="prompt is required")
+        return
+
+    first_line = " ".join(text.split())
+    title_text = (custom_title or "").strip()
+    if not title_text:
+        model_names = {
+            "gpt-5.6-sol": "Sol 5.6",
+            "gpt-5.6-terra": "Terra 5.6",
+            "gpt-5.6-luna": "Luna 5.6",
+        }
+        model_name = model_names.get(model or "", model or "Codex")
+        effort_name = f" {effort}" if effort else ""
+        title_text = f"{model_name}{effort_name}: {first_line[:40] or 'workflow job'}"
+
+    surfaced_sid = ""
+    external_runtime_claimed = False
+
+    def surface_session(sid: str) -> None:
+        """Expose and group the rollout immediately after thread.started."""
+        nonlocal external_runtime_claimed, group_id, surfaced_sid
+        if not visible or not sid or surfaced_sid == sid:
+            return
+        surfaced_sid = sid
+        try:
+            from core import metadata as _meta
+
+            _meta.set_resident_work(sid)
+            _meta.set_custom_title(sid, title_text)
+        except Exception as e:  # noqa: BLE001 - never fail the agent over metadata
+            warnings.append(f"could not mark session visible: {e}")
+        try:
+            from core import metadata as _meta
+
+            lease_seconds = float(timeout) + 60.0 if timeout else 24 * 60 * 60.0
+            _meta.set_external_runtime(
+                sid,
+                kind="codex-exec",
+                pid=proc.pid,
+                lease_seconds=max(lease_seconds, 120.0),
+            )
+            external_runtime_claimed = True
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"could not claim external runtime: {e}")
+        if link_to:
+            try:
+                from core import metadata as _meta
+
+                group_id = _meta.link_sessions([sid, link_to])
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"could not link to {link_to}: {e}")
+        try:
+            from core.indexer import update_index
+
+            update_index()
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"initial index refresh failed: {e}")
+
+    work = Path(work_dir).expanduser() if work_dir else Path.home() / ".cache" / "serena-headless-codex" / "work"
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        emit(False, error=f"could not create cwd {work}: {e}")
+        return
+
+    sandbox = "danger-full-access" if danger_full_access else "workspace-write"
+    argv = [
+        shutil.which("codex") or "codex", "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "-c", 'approval_policy="never"',
+        "-c", f'sandbox_mode="{sandbox}"',
+    ]
+    if not visible:
+        # Nothing persisted: no rollout file, so no cleanup dance and no
+        # stale trust entries in ~/.codex/config.toml. Under --visible we
+        # WANT the rollout — it's the only thing the scanner can index.
+        argv.insert(3, "--ephemeral")
+    if model:
+        argv += ["-c", f'model="{model}"']
+    if effort:
+        argv += ["-c", f'model_reasoning_effort="{effort}"']
+    argv += ["-C", str(work), "-"]
+
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=str(work),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            # Own process group so a timeout can kill codex AND anything it spawned.
+            start_new_session=True,
+        )
+    except (OSError, FileNotFoundError) as e:
+        emit(False, error=f"could not start codex: {e}")
+        return
+
+    session_id = ""
+    result_text = ""
+    error_detail = ""
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def handle_stdout(line: str) -> None:
+        nonlocal session_id, result_text, error_detail
+        stdout_lines.append(line)
+        try:
+            event = json.loads(line.strip())
+        except (json.JSONDecodeError, AttributeError):
+            return
+        if not isinstance(event, dict):
+            return
+        event_type = event.get("type")
+        if event_type == "thread.started":
+            session_id = str(event.get("thread_id") or "") or session_id
+            surface_session(session_id)
+        elif event_type == "item.completed":
+            item = event.get("item") or {}
+            if not isinstance(item, dict):
+                return
+            if item.get("type") == "agent_message":
+                result_text = str(item.get("text") or "").strip()
+            elif item.get("type") == "error":
+                error_detail = str(item.get("message") or "").strip() or error_detail
+        elif event_type == "turn.failed":
+            turn_error = event.get("error")
+            if isinstance(turn_error, dict):
+                error_detail = str(turn_error.get("message") or "").strip() or error_detail
+        elif event_type == "error":
+            error_detail = str(event.get("message") or "").strip() or error_detail
+
+    output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+    def drain_pipe(name: str, pipe) -> None:
+        try:
+            for line in iter(pipe.readline, ""):
+                output_queue.put((name, line))
+        finally:
+            output_queue.put((name, None))
+
+    readers = [
+        threading.Thread(target=drain_pipe, args=("stdout", proc.stdout), daemon=True),
+        threading.Thread(target=drain_pipe, args=("stderr", proc.stderr), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    finalized_session = False
+
+    def finalize_session() -> None:
+        nonlocal external_runtime_claimed, finalized_session
+        if finalized_session:
+            return
+        finalized_session = True
+        if external_runtime_claimed and session_id:
+            try:
+                from core import metadata as _meta
+
+                _meta.clear_external_runtime(session_id, pid=proc.pid)
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"could not release external runtime: {e}")
+            external_runtime_claimed = False
+        if visible and session_id:
+            try:
+                from core.indexer import update_index
+
+                update_index()
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"final index refresh failed: {e}")
+
+    try:
+        try:
+            proc.stdin.write(text)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+        deadline = time.monotonic() + timeout if timeout else None
+        open_pipes = len(readers)
+        while open_pipes:
+            remaining = deadline - time.monotonic() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            try:
+                queue_timeout = min(0.25, remaining) if remaining is not None else 0.25
+                source, line = output_queue.get(timeout=queue_timeout)
+            except queue.Empty:
+                continue
+            if line is None:
+                open_pipes -= 1
+            elif source == "stdout":
+                handle_stdout(line)
+            else:
+                stderr_lines.append(line)
+        if deadline is None:
+            proc.wait()
+        else:
+            proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGTERM)
+        with suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=5)
+        with suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with suppress(Exception):
+            proc.wait(timeout=5)  # reap so it doesn't sit as a zombie
+        emit(False, session_id=session_id, error=f"timeout after {timeout}s")
+        return
+    finally:
+        finalize_session()
+
+    stdout = "".join(stdout_lines)
+    stderr = "".join(stderr_lines)
+    if visible:
+        if not session_id:
+            warnings.append("codex reported no thread id; session not made visible")
+
+    code = proc.returncode if proc.returncode is not None else -1
+    if code != 0:
+        detail = error_detail or ((stderr or "").strip() or (stdout or "").strip())[-2000:]
+        detail = detail[-2000:]
+        emit(False, result_text, session_id, code,
+             f"codex exec exited with status {code}: {detail}" if detail else f"codex exec exited with status {code}")
+        return
+    if not result_text:
+        detail = f": {error_detail}" if error_detail else ""
+        emit(False, "", session_id, code, f"empty output{detail}")
+        return
+    emit(True, result_text, session_id, code, None)
+
+
+@main.group(name="fleet")
+def fleet_group():
+    """Run and inspect durable provider-routed workflows."""
+
+
+def _fleet_print(payload: object, *, as_json: bool = False) -> None:
+    """Keep Fleet CLI output useful to humans and stable for scripts."""
+    import json
+
+    if as_json:
+        click.echo(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return
+    if isinstance(payload, dict):
+        run_id = str(payload.get("run_id") or payload.get("id") or "")
+        status = str(payload.get("status") or payload.get("state") or "")
+        title = str(payload.get("title") or payload.get("task") or "").strip()
+        if run_id:
+            console.print(
+                f"[bold cyan]{run_id}[/bold cyan]"
+                + (f"  [bold]{status}[/bold]" if status else "")
+                + (f"  {title}" if title else "")
+            )
+            return
+    console.print(payload)
+
+
+def _fleet_call(function, *args, **kwargs):
+    try:
+        return function(*args, **kwargs)
+    except (KeyError, ValueError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@fleet_group.command(name="start")
+@click.option(
+    "--activity",
+    type=click.Choice(["auto", "coding", "research"]),
+    default="auto",
+    show_default=True,
+)
+@click.option(
+    "--provider",
+    "provider_mode",
+    type=click.Choice(["auto", "balanced", "codex", "claude"]),
+    default="auto",
+    show_default=True,
+    help="Provider routing. Auto may avoid a provider with a confirmed fresh usage limit.",
+)
+@click.option(
+    "--workers",
+    "worker_count",
+    type=click.IntRange(min=1, max=4),
+    default=None,
+    help="Exact persistent worker count (1-4). Omit for task-based scaling.",
+)
+@click.option("--cwd", "work_dir", type=click.Path(file_okay=False, path_type=Path), default=None)
+@click.option("--origin", "origin_session_id", default=None, help="Launching Serena session id.")
+@click.option("--origin-agent", type=click.Choice(["claude", "codex"]), default=None)
+@click.option("--dry-run", is_flag=True, help="Validate and materialize the workflow without model calls.")
+@click.option("--json", "as_json", is_flag=True, help="Print machine-readable JSON.")
+@click.argument("task", nargs=-1, required=True)
+def fleet_start(
+    activity,
+    provider_mode,
+    worker_count,
+    work_dir,
+    origin_session_id,
+    origin_agent,
+    dry_run,
+    as_json,
+    task,
+):
+    """Start a four-phase Fleet run and return immediately."""
+    import os
+
+    from core.fleet_supervisor import start_run
+
+    prompt = " ".join(task).strip()
+    if not origin_session_id:
+        if os.environ.get("CODEX_THREAD_ID"):
+            origin_session_id = _detect_codex_sid()
+            origin_agent = origin_agent or "codex"
+        elif os.environ.get("CLAUDE_CODE_SESSION_ID"):
+            origin_session_id = _detect_claude_sid()
+            origin_agent = origin_agent or "claude"
+    run = _fleet_call(
+        start_run,
+        prompt,
+        activity=activity,
+        provider_mode=provider_mode,
+        worker_count=worker_count,
+        cwd=str(work_dir.expanduser()) if work_dir else None,
+        origin_session_id=origin_session_id,
+        origin_agent=origin_agent,
+        dry_run=dry_run,
+    )
+    _fleet_print(run, as_json=as_json)
+
+
+@fleet_group.command(name="list")
+@click.option("--limit", default=20, type=click.IntRange(min=1, max=500), show_default=True)
+@click.option("--json", "as_json", is_flag=True)
+def fleet_list(limit, as_json):
+    """List recent Fleet runs."""
+    from core.fleet_supervisor import list_runs
+
+    runs = _fleet_call(list_runs, limit=limit)
+    if as_json:
+        _fleet_print(runs, as_json=True)
+        return
+    if not runs:
+        console.print("[dim]no fleet runs yet[/dim]")
+        return
+    from rich.table import Table
+
+    table = Table(box=None, show_header=True, header_style="bold")
+    table.add_column("run")
+    table.add_column("status")
+    table.add_column("activity")
+    table.add_column("phase")
+    table.add_column("task")
+    for run in runs:
+        table.add_row(
+            str(run.get("run_id") or run.get("id") or "")[:18],
+            str(run.get("status") or run.get("state") or ""),
+            str(run.get("activity") or ""),
+            str(run.get("current_phase") or ""),
+            str(run.get("title") or run.get("task") or "")[:64],
+        )
+    console.print(table)
+
+
+@fleet_group.command(name="status")
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True)
+def fleet_status(run_id, as_json):
+    """Show one Fleet run."""
+    from core.fleet_supervisor import get_run
+
+    run = _fleet_call(get_run, run_id)
+    if run is None:
+        raise click.ClickException(f"unknown Fleet run: {run_id}")
+    _fleet_print(run, as_json=as_json)
+
+
+@fleet_group.command(name="inspect")
+@click.argument("run_id")
+@click.option(
+    "--focus",
+    default="",
+    help="Work-unit id, worker key, or leg id to isolate.",
+)
+@click.option("--events", "event_limit", default=50, type=click.IntRange(min=1, max=100))
+@click.option("--json", "as_json", is_flag=True)
+def fleet_inspect(run_id, focus, event_limit, as_json):
+    """Inspect durable DAG, context-budget, and event evidence."""
+    import json
+
+    from core.fleet_supervisor import inspect_run
+
+    inspection = _fleet_call(
+        inspect_run,
+        run_id,
+        focus,
+        event_limit=event_limit,
+    )
+    if as_json:
+        _fleet_print(inspection, as_json=True)
+    else:
+        click.echo(json.dumps(inspection, indent=2, sort_keys=True, default=str))
+
+
+@fleet_group.command(name="wait")
+@click.argument("run_id")
+@click.option("--timeout", default=0.0, type=click.FloatRange(min=0), show_default=True)
+@click.option("--json", "as_json", is_flag=True)
+def fleet_wait(run_id, timeout, as_json):
+    """Wait for a run to reach a terminal state."""
+    from core.fleet_supervisor import wait_for_run
+
+    run = _fleet_call(wait_for_run, run_id, timeout=None if timeout == 0 else timeout)
+    _fleet_print(run, as_json=as_json)
+
+
+@fleet_group.command(name="stop")
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True)
+def fleet_stop(run_id, as_json):
+    """Cancel a queued or active run."""
+    from core.fleet_supervisor import stop_run
+
+    _fleet_print(_fleet_call(stop_run, run_id), as_json=as_json)
+
+
+@fleet_group.command(name="delete")
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True)
+def fleet_delete(run_id, as_json):
+    """Delete a terminal run and its Fleet-owned worker chats."""
+    from core.fleet_supervisor import delete_run
+
+    _fleet_print(_fleet_call(delete_run, run_id), as_json=as_json)
+
+
+@fleet_group.command(name="retry")
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True)
+def fleet_retry(run_id, as_json):
+    """Start a new attempt using an existing run's frozen policy."""
+    from core.fleet_supervisor import retry_run
+
+    _fleet_print(_fleet_call(retry_run, run_id), as_json=as_json)
+
+
+@fleet_group.command(name="handoff")
+@click.argument("run_id")
+@click.argument("leg_id")
+@click.argument("provider", type=click.Choice(["codex", "claude"]))
+@click.option("--json", "as_json", is_flag=True)
+def fleet_handoff(run_id, leg_id, provider, as_json):
+    """Continue one unfinished worker on the other native provider."""
+    from core.fleet_supervisor import handoff_leg
+
+    _fleet_print(
+        _fleet_call(handoff_leg, run_id, leg_id, provider),
+        as_json=as_json,
+    )
+
+
+@fleet_group.command(name="result")
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True)
+def fleet_result(run_id, as_json):
+    """Print a run's reconciled final result."""
+    from core.fleet_supervisor import get_result
+
+    result = _fleet_call(get_result, run_id)
+    if as_json:
+        _fleet_print(result, as_json=True)
+    else:
+        click.echo(str(result.get("result_text") or result.get("error") or ""))
+
+
+@fleet_group.command(name="steer")
+@click.argument("run_id")
+@click.argument("message", nargs=-1, required=True)
+@click.option("--json", "as_json", is_flag=True)
+def fleet_steer(run_id, message, as_json):
+    """Add context that future legs in an active run must consume."""
+    from core.fleet_supervisor import steer_run
+
+    _fleet_print(
+        _fleet_call(steer_run, run_id, " ".join(message).strip()),
+        as_json=as_json,
+    )
+
+
+@fleet_group.command(name="doctor")
+@click.option("--json", "as_json", is_flag=True)
+def fleet_doctor(as_json):
+    """Check worker binaries, policy, store, integrations, and service."""
+    from core.fleet_supervisor import doctor
+
+    report = _fleet_call(doctor)
+    _fleet_print(report, as_json=as_json)
+    if not report.get("ok"):
+        raise click.exceptions.Exit(1)
+
+
+@fleet_group.command(name="serve", hidden=True)
+def fleet_serve():
+    """Own the durable Fleet queue (normally run by systemd)."""
+    from core.fleet_supervisor import serve_forever
+
+    serve_forever()
+
+
+@fleet_group.command(name="mcp", hidden=True)
+def fleet_mcp():
+    """Serve Fleet tools over MCP stdio."""
+    from core.fleet_mcp import run_mcp_server
+
+    run_mcp_server()
+
+
+@fleet_group.command(name="read-mcp", hidden=True)
+def fleet_read_mcp():
+    """Serve Fleet's read-only account gateway over MCP stdio."""
+    from core.fleet_read_mcp import run_gateway
+
+    run_gateway()
+
+
+@fleet_group.command(name="read-tools")
+@click.option("--refresh", is_flag=True, help="Rebuild the catalog from the live servers.")
+@click.option("--json", "as_json", is_flag=True)
+def fleet_read_tools(refresh, as_json):
+    """Show which read-only account tools Fleet's Research and Review legs get."""
+    from core.fleet_read_mcp import (
+        allowed_servers,
+        catalog_tools,
+        load_catalog,
+        refresh_catalog,
+    )
+
+    summary = refresh_catalog(force=True) if refresh else None
+    catalog = load_catalog()
+    tools = catalog_tools(catalog)
+    payload = {
+        # NOT list(...): this module defines a `list` command that shadows the
+        # builtin at module scope.
+        "servers": [*allowed_servers()],
+        "catalog": str((catalog or {}).get("generated_at") or ""),
+        "tool_count": len(tools),
+        "tools": [f"{tool['server']}.{tool['tool']}" for tool in tools],
+        "server_status": (catalog or {}).get("servers", {}),
+        "refresh": summary,
+    }
+    if as_json:
+        _fleet_print(payload, as_json=True)
+        return
+    if summary and not summary["refreshed"]:
+        console.print(f"[yellow]not refreshed:[/yellow] {summary['reason']}")
+    if not tools:
+        console.print("[dim]no read tools are exposed; workers run with no MCP at all[/dim]")
+        return
+    for name, status in sorted((payload["server_status"] or {}).items()):
+        state = status.get("status")
+        detail = f"{status.get('exposed', 0)} read, {status.get('denied', 0)} denied"
+        if state != "ok":
+            detail = str(status.get("error") or state)
+        console.print(f"[bold]{name}[/bold]: {detail}")
+    console.print(f"[dim]{len(tools)} tools exposed to read-only Fleet legs[/dim]")
+
+
+# --- bounded extensibility and automation (plugins, schedules, notices) ---
+#
+# These exist so the approval gates are usable. An approval boundary nobody can
+# approve through is theatre, so install, enable, schedule, and notification
+# approval all have a real operator command here.
+
+
+def _emit_json(payload: object) -> None:
+    """cli.py imports json per-function by convention; keep that here."""
+    import json
+
+    click.echo(json.dumps(payload, indent=2, default=str))
+
+
+def _operator_call(function, *args, **kwargs):
+    """Turn a refused manifest or illegal transition into a readable message.
+
+    These commands are the approval boundary an operator actually uses, so a
+    rejection has to read like an answer, not a stack trace.
+    """
+    try:
+        return function(*args, **kwargs)
+    except (ValueError, RuntimeError, KeyError) as exc:
+        raise click.ClickException(str(exc).strip("'") or exc.__class__.__name__) from exc
+
+
+@main.group(name="plugin")
+def plugin_group():
+    """Inspect and approve Serena plugin manifests."""
+
+
+def _plugin_registry():
+    from core.serena_plugins import PluginRegistry
+
+    return PluginRegistry()
+
+
+@plugin_group.command(name="list")
+@click.option("--state", default=None, help="Filter by lifecycle state.")
+@click.option("--json", "as_json", is_flag=True)
+def plugin_list(state, as_json):
+    """List registered plugins and their lifecycle state."""
+    records = _plugin_registry().list(state=state)
+    if as_json:
+        _emit_json(records)
+        return
+    if not records:
+        click.echo("no plugins registered")
+        return
+    for record in records:
+        click.echo(
+            f"{record['plugin_id']:<28} {record['state']:<10} v{record['version']:<8} "
+            f"health={record['health_state']}"
+        )
+
+
+@plugin_group.command(name="stage")
+@click.argument("manifest_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--actor", required=True, help="Who is proposing this change.")
+@click.option("--reason", default="", help="Why this change is being proposed.")
+def plugin_stage(manifest_path, actor, reason):
+    """Stage a manifest as a pending, unapproved change."""
+    from pathlib import Path as _Path
+
+    staged = _operator_call(
+        _plugin_registry().stage,
+        _Path(manifest_path).read_text(encoding="utf-8"),
+        actor=actor,
+        reason=reason,
+    )
+    _emit_json(staged)
+
+
+@plugin_group.command(name="pending")
+@click.option("--json", "as_json", is_flag=True)
+def plugin_pending(as_json):
+    """Show staged plugin changes awaiting approval."""
+    stages = _plugin_registry().pending_stages()
+    if as_json:
+        _emit_json(stages)
+        return
+    if not stages:
+        click.echo("no staged plugin changes")
+        return
+    for stage in stages:
+        diff = stage.get("diff") or {}
+        flag = " ESCALATES PRIVILEGE" if diff.get("escalates_privilege") else ""
+        click.echo(f"{stage['stage_id']}  {stage['plugin_id']}  by {stage['actor']}{flag}")
+        if diff.get("added_scopes"):
+            click.echo(f"    adds scopes: {', '.join(diff['added_scopes'])}")
+
+
+@plugin_group.command(name="approve")
+@click.argument("stage_id")
+@click.option("--actor", required=True, help="Who is approving this change.")
+def plugin_approve(stage_id, actor):
+    """Approve a staged manifest, installing the plugin."""
+    _emit_json(_operator_call(_plugin_registry().approve_stage, stage_id, actor=actor))
+
+
+@plugin_group.command(name="reject")
+@click.argument("stage_id")
+@click.option("--actor", required=True)
+@click.option("--reason", default="")
+def plugin_reject(stage_id, actor, reason):
+    """Reject a staged manifest."""
+    _operator_call(_plugin_registry().reject_stage, stage_id, actor=actor, reason=reason)
+    click.echo("rejected")
+
+
+@plugin_group.command(name="set-state")
+@click.argument("plugin_id")
+@click.argument("state", type=click.Choice(["installed", "enabled", "disabled", "removed"]))
+@click.option("--actor", required=True)
+def plugin_set_state(plugin_id, state, actor):
+    """Move a plugin through its lifecycle."""
+    _emit_json(_operator_call(_plugin_registry().transition, plugin_id, state, actor=actor))
+
+
+@main.group(name="schedule")
+def schedule_group():
+    """Inspect and approve Serena's bounded schedules."""
+
+
+def _scheduler():
+    from core.scheduler_actions import register_all
+    from core.serena_scheduler import SerenaScheduler
+
+    return register_all(SerenaScheduler())
+
+
+@schedule_group.command(name="list")
+@click.option("--state", default=None)
+@click.option("--json", "as_json", is_flag=True)
+def schedule_list(state, as_json):
+    """List schedules and when they next run."""
+    records = _scheduler().list(state=state)
+    if as_json:
+        _emit_json(records)
+        return
+    if not records:
+        click.echo("no schedules registered")
+        return
+    for record in records:
+        click.echo(
+            f"{record['schedule_id'][:8]}  {record['action']:<24} {record['state']:<16} "
+            f"every {record['interval_seconds']}s  failures={record['consecutive_failures']}"
+        )
+
+
+@schedule_group.command(name="approve")
+@click.argument("schedule_id")
+@click.option("--actor", required=True)
+def schedule_approve(schedule_id, actor):
+    """Approve a schedule so it is allowed to run."""
+    _emit_json(_operator_call(_scheduler().approve, schedule_id, actor=actor))
+
+
+@schedule_group.command(name="pause")
+@click.argument("schedule_id")
+def schedule_pause(schedule_id):
+    """Pause a schedule without deleting it."""
+    _emit_json(_operator_call(_scheduler().set_state, schedule_id, "paused"))
+
+
+@schedule_group.command(name="resume")
+@click.argument("schedule_id")
+@click.option("--actor", required=True)
+def schedule_resume(schedule_id, actor):
+    """Reactivate a paused or disabled schedule."""
+    _emit_json(_operator_call(_scheduler().resume, schedule_id, actor=actor))
+
+
+@schedule_group.command(name="add")
+@click.argument("action")
+@click.option("--every", "interval_seconds", type=int, required=True,
+              help="Interval in seconds between runs.")
+@click.option("--actor", required=True)
+@click.option("--payload", default="", help="JSON object handed to the handler.")
+@click.option("--workdir", default="", help="Absolute project directory to run in.")
+@click.option("--once", "one_shot", is_flag=True, help="Retire after one success.")
+@click.option("--chain-to", multiple=True, help="Schedule id to wake on success.")
+@click.option("--join-of", multiple=True, help="Schedule id that must succeed first.")
+@click.option("--dedupe-key", default="")
+@click.option("--dedupe-window", "dedupe_window_seconds", type=int, default=0)
+@click.option("--no-approval", is_flag=True, help="Skip the approval gate.")
+def schedule_add(
+    action, interval_seconds, actor, payload, workdir, one_shot, chain_to,
+    join_of, dedupe_key, dedupe_window_seconds, no_approval,
+):
+    """Add a schedule for one already-reviewed action."""
+    import json
+
+    try:
+        parsed = json.loads(payload) if payload.strip() else {}
+    except json.JSONDecodeError as error:
+        raise click.ClickException(f"--payload must be JSON: {error}") from error
+    if not isinstance(parsed, dict):
+        raise click.ClickException("--payload must be a JSON object")
+    _emit_json(
+        _operator_call(
+            _scheduler().add_schedule,
+            action=action,
+            interval_seconds=interval_seconds,
+            actor=actor,
+            payload=parsed,
+            workdir=workdir or None,
+            one_shot=one_shot,
+            # `list` is a click command at this module's scope, so the builtin
+            # is not available here. Unpacking avoids calling that command.
+            chain_to=[*chain_to],
+            join_of=[*join_of],
+            dedupe_key=dedupe_key,
+            dedupe_window_seconds=dedupe_window_seconds,
+            requires_approval=not no_approval,
+        )
+    )
+
+
+@schedule_group.command(name="edit")
+@click.argument("schedule_id")
+@click.option("--actor", required=True)
+@click.option("--every", "interval_seconds", type=int, default=None)
+@click.option("--payload", default=None, help="Replacement JSON payload.")
+@click.option("--workdir", default=None)
+@click.option("--chain-to", multiple=True)
+@click.option("--join-of", multiple=True)
+def schedule_edit(schedule_id, actor, interval_seconds, payload, workdir, chain_to, join_of):
+    """Change a schedule's shape. The action itself is never editable."""
+    import json
+
+    parsed = None
+    if payload is not None:
+        try:
+            parsed = json.loads(payload) if payload.strip() else {}
+        except json.JSONDecodeError as error:
+            raise click.ClickException(f"--payload must be JSON: {error}") from error
+        if not isinstance(parsed, dict):
+            raise click.ClickException("--payload must be a JSON object")
+    _emit_json(
+        _operator_call(
+            _scheduler().edit,
+            schedule_id,
+            actor=actor,
+            interval_seconds=interval_seconds,
+            payload=parsed,
+            workdir=workdir,
+            chain_to=[*chain_to] if chain_to else None,
+            join_of=[*join_of] if join_of else None,
+        )
+    )
+
+
+@schedule_group.command(name="remove")
+@click.argument("schedule_id")
+@click.option("--actor", required=True)
+def schedule_remove(schedule_id, actor):
+    """Retire a schedule for good, keeping its history."""
+    _emit_json(_operator_call(_scheduler().remove, schedule_id, actor=actor))
+
+
+@schedule_group.command(name="run-now")
+@click.argument("schedule_id")
+def schedule_run_now(schedule_id):
+    """Run one active schedule immediately, without shifting its rotation."""
+    run = _operator_call(_scheduler().run_now, schedule_id)
+    click.echo(f"{'ok' if run.ok else 'FAILED'}  {run.action}  {run.detail[:100]}")
+
+
+@schedule_group.command(name="actions")
+def schedule_actions():
+    """List the reviewed actions a schedule is allowed to name."""
+    names = _scheduler().actions
+    if not names:
+        click.echo("no scheduler actions are registered")
+        return
+    for name in names:
+        click.echo(name)
+
+
+@schedule_group.command(name="history")
+@click.argument("schedule_id", required=False)
+@click.option("--limit", default=20)
+def schedule_history(schedule_id, limit):
+    """Show recent schedule runs."""
+    for entry in _scheduler().history(schedule_id, limit=limit):
+        status = "ok" if entry["ok"] else "FAILED"
+        click.echo(f"{entry['action']:<24} {status:<7} {entry['detail'][:80]}")
+
+
+@main.group(name="automation")
+def automation_group():
+    """Serena's resident bounded automation loop."""
+
+
+@automation_group.command(name="serve")
+@click.option("--interval", default=30.0, help="Seconds between passes.")
+@click.option("--passes", default=0, help="Stop after N passes. 0 runs forever.")
+def automation_serve(interval, passes):
+    """Run the resident loop that ticks schedules and delivers due notices."""
+    from core.automation_runtime import AutomationRuntime
+
+    runtime = AutomationRuntime(poll_seconds=interval)
+    ran = runtime.serve_forever(max_passes=passes)
+    click.echo(f"automation loop finished after {ran} passes")
+
+
+@automation_group.command(name="once")
+@click.option("--json", "as_json", is_flag=True)
+def automation_once(as_json):
+    """Run exactly one pass of the loop and report what it did."""
+    from core.automation_runtime import AutomationRuntime
+
+    report = AutomationRuntime().run_pass()
+    if as_json:
+        _emit_json(report.to_dict())
+        return
+    if report.capacity_held:
+        click.echo(f"held: {report.capacity_reason}")
+    click.echo(
+        f"ran={len(report.ran)} notices={report.notifications} "
+        f"published={sum(report.published.values())} errors={len(report.errors)}"
+    )
+    for error in report.errors:
+        click.echo(f"  error: {error}")
+
+
+@main.command(name="owed")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--limit", default=8)
+def owed(as_json, limit):
+    """What Serena still owes Raghav, and what she cannot confirm he got."""
+    from core.control_recovery import outstanding_debts
+
+    debts = outstanding_debts(limit=limit)
+    if as_json:
+        _emit_json(debts)
+        return
+    click.echo(debts["spoken"])
+    for item in debts["items"]:
+        click.echo(
+            f"  [{item['surface']}] {item['owes']} - {item['summary'][:60]} "
+            f"({item['waiting_for']}, attempts={item['attempts']})"
+        )
+    for item in debts["unconfirmed_items"]:
+        click.echo(f"  [?] {item['owes']} - {item['reason'] or 'never confirmed'}")
+
+
+@main.group(name="webhook")
+def webhook_group():
+    """Serena's authenticated signed webhook ingress."""
+
+
+def _ingress():
+    from core.webhook_ingress import default_ingress
+
+    return default_ingress()
+
+
+@webhook_group.command(name="routes")
+def webhook_routes():
+    """List the reviewed routes a signed request may reach."""
+    for name in _ingress().routes:
+        click.echo(name)
+
+
+@webhook_group.command(name="pending")
+def webhook_pending():
+    """Show verified deliveries held for approval."""
+    records = _ingress().pending()
+    if not records:
+        click.echo("no webhook deliveries awaiting approval")
+        return
+    for record in records:
+        click.echo(f"{record['delivery_id']}  {record['route']}  {record['reason'][:60]}")
+
+
+@webhook_group.command(name="approve")
+@click.argument("delivery_id")
+@click.option("--actor", required=True)
+def webhook_approve(delivery_id, actor):
+    """Release one held webhook delivery."""
+    _emit_json(_operator_call(_ingress().approve, delivery_id, actor=actor).to_dict())
+
+
+@webhook_group.command(name="history")
+@click.option("--route", default=None)
+@click.option("--decision", default=None)
+@click.option("--limit", default=20)
+def webhook_history(route, decision, limit):
+    """Show the durable audit trail of inbound webhook deliveries."""
+    records = _ingress().history(route=route, decision=decision, limit=limit)
+    if not records:
+        click.echo("no webhook deliveries recorded")
+        return
+    for record in records:
+        click.echo(
+            f"{record['decision']:<10} {record['status']:<4} {record['route']:<16} "
+            f"{record['reason'][:60]}"
+        )
+
+
+@main.group(name="notify")
+def notify_group():
+    """Inspect Serena's one notification authority."""
+
+
+def _authority():
+    from core.notification_authority import NotificationAuthority
+
+    return NotificationAuthority()
+
+
+@notify_group.command(name="history")
+@click.option("--channel", default=None)
+@click.option("--decision", default=None)
+@click.option("--limit", default=20)
+@click.option("--json", "as_json", is_flag=True)
+def notify_history(channel, decision, limit, as_json):
+    """Show recent notification decisions and delivery outcomes."""
+    records = _authority().history(channel=channel, decision=decision, limit=limit)
+    if as_json:
+        _emit_json(records)
+        return
+    if not records:
+        click.echo("no notifications recorded")
+        return
+    for record in records:
+        click.echo(
+            f"{record['decision']:<16} {record['channel']:<9} {record['kind']:<28} "
+            f"{record['summary'][:60]}"
+        )
+
+
+@notify_group.command(name="pending")
+def notify_pending():
+    """Show notices held for approval."""
+    records = _authority().pending_approvals()
+    if not records:
+        click.echo("no notifications awaiting approval")
+        return
+    for record in records:
+        click.echo(f"{record['notification_id']}  {record['kind']}  {record['summary'][:70]}")
+
+
+@notify_group.command(name="approve")
+@click.argument("notification_id")
+def notify_approve(notification_id):
+    """Release one held notice for delivery."""
+    _emit_json(_operator_call(_authority().approve, notification_id).to_dict())
+
+
+@notify_group.command(name="flush")
+@click.option("--limit", default=20)
+def notify_flush(limit):
+    """Deliver notices whose quiet-hours or retry deadline has passed."""
+    results = _authority().deliver_due(limit=limit)
+    if not results:
+        click.echo("nothing due")
+        return
+    for result in results:
+        click.echo(f"{result.decision:<12} {result.notification_id}  {result.reason[:60]}")
+
+
 @main.command(name="ask-claude")
 @click.option("--sid", help="Target claude session id. If omitted, auto-detect linked claude sibling of the current codex chat.")
 @click.option("--from-sid", help="Your codex session id (auto-detected from env/proc if omitted)")
@@ -1076,7 +2375,9 @@ def ask_claude(sid, from_sid, timeout, port, prompt):
       chats ask-claude "thoughts on this approach?"          # auto-finds linked claude
       chats ask-claude --sid 572aa6c9 "thoughts on this?"    # explicit target
     """
-    import json, urllib.request, urllib.error, socket
+    import json, os, urllib.request, urllib.error, socket
+    if os.environ.get("SERENA_FLEET_WORKER", "").strip().lower() in {"1", "true", "on"}:
+        raise click.ClickException("linked-agent bridges are disabled inside Fleet workers")
     text = " ".join(prompt).strip()
     if not text:
         console.print("[red]prompt is required[/red]"); return
@@ -1145,6 +2446,9 @@ def ask_codex(sid, from_sid, timeout, port, prompt):
     """
     import os, json, urllib.request, urllib.error, socket
     from pathlib import Path
+
+    if os.environ.get("SERENA_FLEET_WORKER", "").strip().lower() in {"1", "true", "on"}:
+        raise click.ClickException("linked-agent bridges are disabled inside Fleet workers")
 
     text = " ".join(prompt).strip()
     if not text:
@@ -1317,25 +2621,10 @@ def _find_linked_sibling(my_sid: str, target_agent: str) -> str | None:
     try:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from core import metadata as meta_sync
+        from core.linked_sessions import find_linked_session
     except ImportError:
         return None
-    gid = meta_sync.get_group(my_sid)
-    if not gid:
-        return None
-    members = meta_sync.list_group_members(gid)
-    try:
-        from core.indexer import get_session
-    except ImportError:
-        return None
-    target_agent = target_agent.lower()
-    for m in members:
-        if m == my_sid:
-            continue
-        s = get_session(m)
-        if s and (s.get("agent") or "").lower() == target_agent:
-            return m
-    return None
+    return find_linked_session(my_sid, target_agent)
 
 
 def _detect_codex_sid() -> str | None:

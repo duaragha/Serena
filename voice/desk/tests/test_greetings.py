@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
+from core.daypart import current_daypart
 from voice.call.brain import BrainEvent
 from voice.call.tts import DeterministicTTSStub
 from voice.desk.greetings import SCHEMA_VERSION, DeskGreetingPool, GreetingAudio
@@ -74,9 +76,81 @@ def test_pool_generates_persists_and_refills_after_take(tmp_path: Path) -> None:
     assert restored.status["cached"] == 2
 
 
+def test_greeting_prompt_carries_the_real_clock_without_dictating_words(
+    tmp_path: Path,
+) -> None:
+    runtime = _Runtime()
+    pool = DeskGreetingPool(
+        runtime,
+        path=tmp_path / "cache.json",
+        target_size=1,
+        clock=lambda: datetime(2026, 8, 5, 23, 40).astimezone(),
+    )
+
+    asyncio.run(pool._refill())
+
+    prompt = runtime.brain.calls[0]["text"]
+    assert 'day-part="late-night"' in prompt
+    assert 'clock="11:40 pm"' in prompt
+    assert 'weekday="Wednesday"' in prompt
+    assert "never reach for a stock phrase" in prompt
+    assert "mention the time of day" not in prompt
+    assert "good evening" not in prompt.lower()
+    assert pool.status["daypart"] == "late-night"
+
+    cached = pool.take()
+    assert cached is not None
+    assert cached.daypart == "late-night"
+
+
+def test_pool_never_serves_a_greeting_written_for_another_part_of_day(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "desk-greetings.json"
+    hour = {"value": 9}
+    pool = DeskGreetingPool(
+        _Runtime(),
+        path=path,
+        target_size=1,
+        refill_after_take_seconds=0,
+        clock=lambda: datetime(2026, 8, 5, hour["value"], 0).astimezone(),
+    )
+    asyncio.run(pool._refill())
+    assert pool.status["cached"] == 1
+
+    hour["value"] = 23
+
+    assert pool.status["cached"] == 0
+    assert pool.take() is None
+    assert pool.wait(2)
+    assert pool.status["cached"] == 1
+    persisted = path.read_text(encoding="utf-8")
+
+    reloaded = DeskGreetingPool(
+        _Runtime(),
+        path=path,
+        target_size=1,
+        clock=lambda: datetime(2026, 8, 5, 9, 0).astimezone(),
+    )
+    assert reloaded.status["cached"] == 0
+
+    path.write_text(persisted, encoding="utf-8")
+    late = DeskGreetingPool(
+        _Runtime(),
+        path=path,
+        target_size=1,
+        clock=lambda: datetime(2026, 8, 5, 23, 30).astimezone(),
+    )
+    served = late.take()
+    assert served is not None
+    assert served.daypart == "late-night"
+
+
 def test_pool_discards_expired_audio(tmp_path: Path) -> None:
     path = tmp_path / "desk-greetings.json"
-    item = GreetingAudio("old", 24_000, b"\x01\x00", "old", time.time() - 120)
+    item = GreetingAudio(
+        "old", 24_000, b"\x01\x00", "old", time.time() - 120, current_daypart()
+    )
     from core.brain_lifetime import write_json_atomic
 
     write_json_atomic(path, {"version": SCHEMA_VERSION, "items": [item.to_json()]})

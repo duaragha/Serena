@@ -205,6 +205,10 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
 
 def parse_full(file_path: Path) -> list[Message]:
     """Full parse: extract all conversation turns for display."""
+    fp_str = str(file_path)
+    if "/.codex/sessions/" in fp_str or "\\.codex\\sessions\\" in fp_str:
+        return _parse_codex_full(file_path)
+
     messages = []
     # Track seen message IDs to deduplicate partial vs complete assistant responses
     seen_msg_ids: dict[str, int] = {}  # msg_id -> index in messages list
@@ -320,6 +324,47 @@ def parse_full(file_path: Path) -> list[Message]:
     except (OSError, PermissionError):
         pass
 
+    return messages
+
+
+def _parse_codex_full(file_path: Path) -> list[Message]:
+    """Extract readable user and assistant turns from a Codex rollout."""
+    messages: list[Message] = []
+    seen: set[tuple[str, str, str]] = set()
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("type") != "event_msg":
+                    continue
+
+                payload = record.get("payload") or {}
+                inner = payload.get("type")
+                if inner == "user_message":
+                    role = "user"
+                elif inner in ("agent_message", "assistant_message"):
+                    role = "assistant"
+                else:
+                    continue
+
+                text = payload.get("message") or payload.get("text") or ""
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                timestamp_str = record.get("timestamp", "")
+                key = (role, text, timestamp_str)
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    timestamp = datetime.now()
+                messages.append(Message(role=role, text=text, timestamp=timestamp))
+    except (OSError, PermissionError):
+        pass
     return messages
 
 

@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
+
+from core.security_policy import SecurityPolicyError, build_child_environment
 
 _SERVICE = "serena.mcp"
 _FALLBACK_PATH = Path.home() / ".config" / "serena" / "mcp-secrets.json"
@@ -23,6 +26,7 @@ _FALLBACK_PATH = Path.home() / ".config" / "serena" / "mcp-secrets.json"
 def _load_keyring():
     try:
         import keyring  # type: ignore
+
         return keyring
     except ImportError:
         return None
@@ -94,7 +98,7 @@ def delete_secret(server: str, var: str) -> None:
 def list_secret_names(server: str) -> list[str]:
     """List secret VAR names registered for a server (no values)."""
     prefix = f"{server}::"
-    return sorted(k[len(prefix):] for k in _load_fallback().keys() if k.startswith(prefix))
+    return sorted(k[len(prefix) :] for k in _load_fallback().keys() if k.startswith(prefix))
 
 
 def resolve_env(server: str, env: dict[str, str], secret_names: list[str]) -> dict[str, str]:
@@ -106,3 +110,67 @@ def resolve_env(server: str, env: dict[str, str], secret_names: list[str]) -> di
         if v is not None:
             out[var] = v
     return out
+
+
+def server_environment(
+    server: dict,
+    *,
+    inherited: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build one MCP child environment without ambient credential inheritance."""
+
+    name = str(server.get("name") or "")
+    secret_names = [str(item) for item in (server.get("secrets") or [])]
+    secrets = {
+        variable: value
+        for variable in secret_names
+        if (value := get_secret(name, variable)) is not None
+    }
+    missing = sorted(set(secret_names) - set(secrets))
+    if missing:
+        raise SecurityPolicyError(f"MCP environment secret is unavailable: {', '.join(missing)}")
+    plain = server.get("env") or {}
+    ambient = [
+        variable
+        for variable in (server.get("env_allowlist") or ())
+        if variable not in plain and variable not in secret_names
+    ]
+    return build_child_environment(
+        dict(os.environ if inherited is None else inherited),
+        plain=plain,
+        secrets=secrets,
+        inherit=ambient,
+    )
+
+
+def resolved_headers(server: dict, *, secret_getter=None) -> dict[str, str]:
+    """Resolve only declared secret placeholders immediately before a request."""
+
+    secret_getter = secret_getter or get_secret
+    name = str(server.get("name") or "")
+    secret_values = {
+        variable: secret_getter(name, variable) for variable in (server.get("secrets") or [])
+    }
+    headers: dict[str, str] = {}
+    for header, raw_value in (server.get("headers") or {}).items():
+        value = str(raw_value)
+        references = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", value))
+        missing = sorted(variable for variable in references if not secret_values.get(variable))
+        if missing:
+            raise SecurityPolicyError(f"MCP header secret is unavailable: {', '.join(missing)}")
+        for variable, secret in secret_values.items():
+            if secret:
+                value = value.replace("${" + str(variable) + "}", secret)
+        headers[str(header)] = value
+    if "Authorization" not in headers:
+        access_token = next(
+            (
+                value
+                for variable, value in secret_values.items()
+                if str(variable).endswith("_ACCESS_TOKEN") and value
+            ),
+            None,
+        )
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+    return headers
