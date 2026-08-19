@@ -65,6 +65,11 @@ class Terminal:
     input_draft: str = ""
     work_item_id: str | None = None
     started_at: float = field(default_factory=time.monotonic)
+    # Last time this runtime saw real traffic in either direction. Idle sleep
+    # measures from here, so a background agent that is still streaming output
+    # is never frozen mid-thought just because the user is looking elsewhere.
+    last_activity: float = field(default_factory=time.monotonic)
+    reclaimed: bool = False
     state_lock: threading.Lock = field(default_factory=threading.Lock)
     # Browser flow control + reattach state. Guarded by flow_lock, which is
     # deliberately separate from state_lock: the reader thread touches it on
@@ -331,6 +336,7 @@ def write_operator_prompt(tid: str, data: bytes, mode: str) -> dict[str, object]
 
 
 def _write_unchecked(term: Terminal, data: bytes) -> bool:
+    term.last_activity = time.monotonic()
     try:
         with term.write_lock:
             if _IS_WINDOWS and isinstance(data, (bytes, bytearray)):
@@ -528,8 +534,108 @@ def mark_turn_finished(tid: str) -> bool:
     return True
 
 
-def pause(tid: str, *, protected: bool = False, prewarm_seconds: float = 5.0) -> bool:
-    """Freeze an idle POSIX process group for a millisecond-scale resume."""
+def _cgroup_dir(pid: int) -> str | None:
+    """The unified-hierarchy cgroup holding this process, if there is one."""
+
+    try:
+        with open(f"/proc/{pid}/cgroup", encoding="utf-8") as handle:
+            for line in handle:
+                hierarchy, _, path = line.strip().partition(":")
+                if hierarchy == "0":
+                    _, _, rel = path.partition(":")
+                    candidate = os.path.join("/sys/fs/cgroup", (rel or path).lstrip("/"))
+                    return candidate if os.path.isdir(candidate) else None
+    except OSError:
+        return None
+    return None
+
+
+def _rss_mb(pid: int) -> float:
+    try:
+        with open(f"/proc/{pid}/statm", encoding="utf-8") as handle:
+            pages = int(handle.read().split()[1])
+        return pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+# Whether this machine lets us push a frozen runtime's pages out. The knob is
+# per-cgroup and usually root-owned, so the answer is the same for every
+# terminal and worth learning once instead of failing on every sweep.
+_reclaim_supported: bool | None = None
+
+
+def reclaim_memory(tid: str) -> float:
+    """Push a frozen runtime's cold pages out, and report the MB released.
+
+    A stopped process still holds its whole heap resident, which is most of
+    what an idle agent costs. Waking stays a SIGCONT because pages fault back
+    on demand, so this trades idle RSS for refault I/O rather than latency.
+
+    This only works when the runtime sits in a cgroup the user may write to.
+    The GTK shell got that for free because VTE spawned every pane into its own
+    transient systemd scope; a plain fork inherits the login session scope,
+    which is owned by root. Where that is the case this reports zero rather
+    than pretending, and the freeze alone still stops the process burning CPU.
+    """
+
+    global _reclaim_supported
+
+    term = get(tid)
+    if not term or _IS_WINDOWS:
+        return 0.0
+    with term.state_lock:
+        if term.runtime_state != "paused" or term.reclaimed:
+            return 0.0
+        try:
+            pid = term.proc.pid
+        except Exception:
+            return 0.0
+        cgroup = _cgroup_dir(pid)
+        if not cgroup:
+            return 0.0
+        if _reclaim_supported is False:
+            return 0.0
+        before = _rss_mb(pid)
+        try:
+            with open(os.path.join(cgroup, "memory.reclaim"), "w", encoding="utf-8") as handle:
+                handle.write("4G")
+        except PermissionError:
+            if _reclaim_supported is None:
+                print(
+                    "[runtime] memory reclaim unavailable: "
+                    f"{cgroup}/memory.reclaim is not writable by this user. "
+                    "Idle panes still freeze; their pages stay resident until "
+                    "the kernel swaps them under pressure.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            _reclaim_supported = False
+            return 0.0
+        except OSError:
+            # The knob is absent, or a partial pass returned EAGAIN; whatever
+            # was cold is already out either way.
+            pass
+        _reclaim_supported = True
+        term.reclaimed = True
+        return max(0.0, before - _rss_mb(pid))
+
+
+def pause(
+    tid: str,
+    *,
+    protected: bool = False,
+    prewarm_seconds: float = 5.0,
+    min_idle_seconds: float = 0.0,
+) -> bool:
+    """Freeze an idle POSIX process group for a millisecond-scale resume.
+
+    ``min_idle_seconds`` keeps a background runtime alive while it is still
+    producing output. Turn tracking already covers an agent mid-answer, but a
+    process can be busy without a turn being recorded, and freezing that one
+    stalls it silently until the user happens to look at the pane again.
+    """
+
     term = get(tid)
     if not term or _IS_WINDOWS:
         return False
@@ -540,6 +646,10 @@ def pause(tid: str, *, protected: bool = False, prewarm_seconds: float = 5.0) ->
             or term.work_item_id is not None
             or term.runtime_state == "paused"
             or time.monotonic() - term.started_at < prewarm_seconds
+            or (
+                min_idle_seconds > 0
+                and time.monotonic() - term.last_activity < min_idle_seconds
+            )
         ):
             return False
         try:
@@ -553,6 +663,8 @@ def pause(tid: str, *, protected: bool = False, prewarm_seconds: float = 5.0) ->
 def _resume_locked(term: Terminal) -> bool:
     if term.runtime_state != "paused":
         return True
+    term.last_activity = time.monotonic()
+    term.reclaimed = False
     if _IS_WINDOWS:
         term.runtime_state = "live"
         return True
@@ -570,6 +682,18 @@ def resume(tid: str) -> bool:
         return False
     with term.state_lock:
         return _resume_locked(term)
+
+
+def live_terminal_ids() -> list[str]:
+    """Every terminal the server currently owns.
+
+    Idle sleep has to sweep all of them. The client only ever named the focused
+    pane and its linked sibling, so every other pane a user had opened stayed
+    resident for the life of the app.
+    """
+
+    with _registry_lock:
+        return list(_terminals.keys())
 
 
 def get_runtime_state(tid: str) -> str:
@@ -608,6 +732,7 @@ def read_available(tid: str, max_bytes: int = 4096, timeout: float = 0.05) -> by
             return b""
         with term.buf_lock:
             if term.buf:
+                term.last_activity = time.monotonic()
                 head = bytes(term.buf[:max_bytes])
                 del term.buf[:max_bytes]
                 if not term.buf:
@@ -624,7 +749,12 @@ def read_available(tid: str, max_bytes: int = 4096, timeout: float = 0.05) -> by
         ready, _, _ = select.select([fd], [], [], timeout)
         if not ready:
             return b""
-        return os.read(fd, max_bytes)
+        chunk = os.read(fd, max_bytes)
+        if chunk:
+            # Output counts as activity: an agent still printing is working,
+            # even while the user is reading a different pane.
+            term.last_activity = time.monotonic()
+        return chunk
     except (OSError, EOFError):
         return None
 

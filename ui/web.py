@@ -6261,12 +6261,20 @@ async function _syncWebRuntimePolicy() {
   if (!focus) return;
   const siblingSid = _linkedSiblingSid(_webRuntimeFocusSid);
   const sibling = siblingSid ? termSessions.get(siblingSid) : null;
+  // Unsent input is the user's work in progress. Freezing a pane that holds a
+  // half-typed message is the one sleep the user would actually notice, so a
+  // draft protects its runtime the same way an in-flight turn does.
   const protectedTids = [];
+  const standbyTids = [];
   for (const [runtimeSid, runtime] of termSessions) {
     if ((window.__termDrafts && window.__termDrafts.get(runtimeSid)) || runtime.busy) {
       protectedTids.push(runtime.tid);
     }
+    if (runtimeSid !== _webRuntimeFocusSid) standbyTids.push(runtime.tid);
   }
+  // The sibling is named explicitly so it sleeps the moment focus leaves it;
+  // the rest are swept by the server once they have been quiet long enough.
+  if (sibling && !standbyTids.includes(sibling.tid)) standbyTids.push(sibling.tid);
   const pinned = Boolean(_gtkCurrentGroup && _gtkPinnedGroups.has(_gtkCurrentGroup));
   _webRuntimeSyncing = true;
   try {
@@ -6276,6 +6284,7 @@ async function _syncWebRuntimePolicy() {
       body: JSON.stringify({
         focus_tid: focus.tid,
         standby_tids: sibling ? [sibling.tid] : [],
+        all_open_tids: standbyTids,
         protected_tids: protectedTids,
         pin_both: pinned,
       }),
@@ -6298,10 +6307,13 @@ async function _syncWebRuntimePolicy() {
 function _scheduleWebRuntimePolicy() {
   _syncWebRuntimePolicy();
   if (_webRuntimePollTimer) clearInterval(_webRuntimePollTimer);
-  _webRuntimePollTimer = null;
-  if (_gtkSplitActive) {
-    _webRuntimePollTimer = setInterval(_syncWebRuntimePolicy, 2000);
-  }
+  // Poll whenever any terminal is open, not only in split view. Gating this on
+  // the split meant a single-pane session never swept at all, so every
+  // background runtime stayed awake for the life of the app.
+  _webRuntimePollTimer = setInterval(
+    _syncWebRuntimePolicy,
+    _gtkSplitActive ? 2000 : 15000,
+  );
 }
 
 function _markWebTurnStarted(sid) {
@@ -12038,6 +12050,13 @@ def api_terminal_runtime_migrate():
     return jsonify({"ok": True})
 
 
+# How long an unfocused pane must be quiet before it is frozen. The GTK shell
+# used the same knob and default.
+_RUNTIME_IDLE_SECONDS = max(
+    30, int(os.environ.get("SERENA_RUNTIME_IDLE_SECONDS", "600"))
+)
+
+
 @app.route("/api/terminal-runtime/sync", methods=["POST"])
 def api_terminal_runtime_sync():
     data = request.get_json(silent=True) or {}
@@ -12049,8 +12068,14 @@ def api_terminal_runtime_sync():
         str(tid).strip() for tid in (data.get("protected_tids") or []) if str(tid).strip()
     }
     pin_both = bool(data.get("pin_both"))
-    tids = ({focus_tid} if focus_tid else set()) | standby_tids
+    # Sweep every runtime the server owns, not just the panes the client named.
+    # The client used to send the focused pane and its linked sibling only, so
+    # every other terminal a user had opened was never a sleep candidate and
+    # stayed fully resident for as long as the app ran.
+    tids = set(pty_terminal.live_terminal_ids())
+    tids |= ({focus_tid} if focus_tid else set()) | standby_tids
     states = {}
+    reclaimed_mb = 0.0
 
     for tid in tids:
         terminal = pty_terminal.get(tid)
@@ -12062,15 +12087,27 @@ def api_terminal_runtime_sync():
         working = busy or active is True or tid in protected_tids
         if tid == focus_tid or pin_both:
             pty_terminal.resume(tid)
-        elif tid in standby_tids:
-            pty_terminal.pause(tid, protected=working)
+        else:
+            # A pane the user just switched away from sleeps immediately, since
+            # waking is a SIGCONT. One it never named has to prove it is idle
+            # first: a background agent can be mid-work without a recorded turn,
+            # and freezing that stalls it invisibly.
+            explicit = tid in standby_tids
+            if pty_terminal.pause(
+                tid,
+                protected=working,
+                min_idle_seconds=0.0 if explicit else _RUNTIME_IDLE_SECONDS,
+            ):
+                reclaimed_mb += pty_terminal.reclaim_memory(tid)
         states[tid] = {
             "state": pty_terminal.get_runtime_state(tid),
             "busy": busy,
             "working": working,
         }
 
-    return jsonify({"ok": True, "states": states})
+    return jsonify(
+        {"ok": True, "states": states, "reclaimed_mb": round(reclaimed_mb, 1)}
+    )
 
 
 @app.route("/api/voice-inbox/claim", methods=["POST"])

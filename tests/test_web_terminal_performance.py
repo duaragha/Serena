@@ -48,7 +48,12 @@ def test_terminal_page_keeps_accelerated_web_fallback_without_graphics():
     assert "@xterm/addon-image" not in web.HTML
     assert "sixel" not in web.HTML.lower()
     assert "renderer: rendererKind" in web.HTML
-    assert "setInterval(_syncWebRuntimePolicy, 2000)" in web.HTML
+    # The runtime sweep polls whenever a terminal is open, fast while a split is
+    # visible and slower otherwise. It used to run only in split view, which
+    # meant a single-pane session never put a background runtime to sleep.
+    assert "setInterval(" in web.HTML
+    assert "_syncWebRuntimePolicy," in web.HTML
+    assert "_gtkSplitActive ? 2000 : 15000" in web.HTML
 
 
 def test_renderer_acks_parsed_bytes_in_batches_instead_of_pausing_per_chunk():

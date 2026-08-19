@@ -275,10 +275,29 @@ def pause(
     *,
     protected: bool = False,
     prewarm_seconds: float = 5.0,
+    min_idle_seconds: float = 0.0,
 ) -> bool:
-    """ConPTY has no safe SIGSTOP equivalent, so Windows stays live."""
-    del protected, prewarm_seconds
+    """ConPTY has no safe SIGSTOP equivalent, so Windows stays live.
+
+    The signature tracks the POSIX host exactly, because the idle sweep calls
+    both through the same contract and a parity test enforces it.
+    """
+    del protected, prewarm_seconds, min_idle_seconds
     return False
+
+
+def live_terminal_ids() -> list[str]:
+    """Every terminal this host owns, so the idle sweep can walk them all."""
+
+    with _registry_lock:
+        return list(_terminals.keys())
+
+
+def reclaim_memory(tid: str) -> float:
+    """Windows runtimes never freeze, so there are no cold pages to push out."""
+
+    del tid
+    return 0.0
 
 
 def resume(tid: str) -> bool:
