@@ -74,19 +74,19 @@ PHASE_MODEL_POLICY = {
     "research": {
         "discover": (
             ("codex", "gpt-5.6-terra", "high"),
-            ("claude", "claude-sonnet-5", "high"),
+            ("claude", "claude-opus-5", "high"),
         ),
         "execute": (
             ("codex", "gpt-5.6-terra", "high"),
-            ("claude", "claude-sonnet-5", "high"),
+            ("claude", "claude-opus-5", "high"),
         ),
         "verify": (
             ("codex", "gpt-5.6-terra", "xhigh"),
-            ("claude", "claude-sonnet-5", "xhigh"),
+            ("claude", "claude-opus-5", "high"),
         ),
         "finalize": (
             ("codex", "gpt-5.6-terra", "high"),
-            ("claude", "claude-sonnet-5", "high"),
+            ("claude", "claude-opus-5", "high"),
         ),
     },
 }

@@ -12676,6 +12676,17 @@ def _shutdown_server():
     os._exit(0)
 
 
+@app.get("/api/health")
+def api_health():
+    """Liveness probe shared by every entry point.
+
+    The desktop shell polls this to decide whether to attach to an already
+    running server (mobile_host) or spawn its own sidecar, so it has to live
+    on the app rather than on one launcher.
+    """
+    return jsonify({"ok": True, "pid": os.getpid()})
+
+
 # ---------------------------------------------------------------------------
 # Server entry point
 # ---------------------------------------------------------------------------

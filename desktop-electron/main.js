@@ -15,6 +15,7 @@ const {
 const {
   LOOPBACK_HOST,
   backendLaunch,
+  findExistingBackend,
   findFreePort,
   normalizeExternalUrl,
   terminateProcessTree,
@@ -236,6 +237,22 @@ async function startBackend() {
   startingBackend = true;
   let child = null;
   try {
+    // Attach to the persistent mobile_host server when it is already up
+    // rather than running a second copy of the same Flask UI.
+    const shared = await findExistingBackend({
+      enabled: process.env.SERENA_DESKTOP_SHARE_BACKEND !== '0',
+    });
+    if (shared && !quitting) {
+      backend = null;
+      backendUrl = shared.url;
+      console.log(`SERENA_BACKEND_SHARED ${shared.url} pid=${shared.pid}`);
+      if (!SMOKE_TEST) {
+        if (!mainWindow) createWindow(shared.url);
+        else mainWindow.loadURL(shared.url);
+        if (!tray) createTray();
+      }
+      return;
+    }
     const port = await findFreePort();
     const url = `http://${LOOPBACK_HOST}:${port}`;
     const launch = backendLaunch({
@@ -288,10 +305,12 @@ async function stopBackend() {
     clearTimeout(restartTimer);
     restartTimer = null;
   }
+  // `backend` is null when we attached to mobile_host: that server belongs
+  // to systemd and the phone, so quitting the app must leave it running.
   const child = backend;
   backend = null;
   backendUrl = null;
-  await terminateProcessTree(child);
+  if (child) await terminateProcessTree(child);
 }
 
 app.on('second-instance', () => showMainWindow());

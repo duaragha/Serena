@@ -102,6 +102,34 @@ function normalizeExternalUrl(value) {
   }
 }
 
+const SHARED_BACKEND_PORT = Number.parseInt(
+  process.env.SERENA_DESKTOP_SHARED_PORT || '8767',
+  10,
+);
+
+/**
+ * Look for a backend that is already serving the UI.
+ *
+ * mobile_host runs the same Flask app as a persistent service so the phone
+ * can reach Serena while the desktop app is closed. When it is up there is
+ * no reason to pay for a second copy, so the shell attaches to it instead.
+ * Returns null when nothing healthy answers, and the caller spawns its own.
+ */
+async function findExistingBackend(options = {}) {
+  const port = options.port ?? SHARED_BACKEND_PORT;
+  const host = options.host ?? LOOPBACK_HOST;
+  const timeoutMs = options.timeoutMs ?? 750;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  if (options.enabled === false) return null;
+  const url = `http://${host}:${port}`;
+  try {
+    const health = await requestHealth(`${url}/api/health`, timeoutMs);
+    return { url, pid: health.pid, owned: false };
+  } catch {
+    return null;
+  }
+}
+
 function backendLaunch({ isPackaged, appDir, resourcesPath, port }) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new TypeError('backend port must be an integer between 1 and 65535');
@@ -165,7 +193,9 @@ async function terminateProcessTree(child, graceMs = 2500) {
 
 module.exports = {
   LOOPBACK_HOST,
+  SHARED_BACKEND_PORT,
   backendLaunch,
+  findExistingBackend,
   findFreePort,
   normalizeExternalUrl,
   requestHealth,

@@ -30,7 +30,12 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.config/serena %h/.cache/serena %h/.local/share/chats %h/.local/state/serena -%h/.claude/projects/-home-raghav--cache-serena-headless-call-jobs
+# Claude writes transcripts under ~/.claude/projects and Codex writes
+# rollouts under ~/.codex/sessions. ProtectHome=read-only without these
+# left every agent spawned from this unit unable to save its own session:
+# the work happened, the record vanished. The narrow call-jobs path below
+# only ever covered one project.
+ReadWritePaths=%h/.config/serena %h/.cache/serena %h/.local/share/chats %h/.local/state/serena %h/.claude %h/.codex
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

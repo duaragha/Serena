@@ -9,9 +9,12 @@ ConPTY-backed PtyProcess plus a per-terminal reader thread feeding a queue,
 because the Windows handle is not selectable.
 """
 
+import errno
 import os
 import select
+import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -70,6 +73,11 @@ class Terminal:
     # is never frozen mid-thought just because the user is looking elsewhere.
     last_activity: float = field(default_factory=time.monotonic)
     reclaimed: bool = False
+    # Whether *this* runtime's cgroup accepts a reclaim write. None until it
+    # has been tried. Unlike `reclaimed` this survives a wake, because landing
+    # outside a user-owned cgroup is a property of how the child was spawned
+    # and does not change for the life of the process.
+    reclaim_supported: bool | None = None
     state_lock: threading.Lock = field(default_factory=threading.Lock)
     # Browser flow control + reattach state. Guarded by flow_lock, which is
     # deliberately separate from state_lock: the reader thread touches it on
@@ -120,6 +128,93 @@ def _windows_reader_loop(term: "Terminal") -> None:
         term.data_event.set()
 
 
+# ── user-owned cgroup placement ─────────────────────────────────────────────
+# memory.reclaim is only writable inside a cgroup this user owns. A plain fork
+# inherits the login session scope, which logind creates and the user does not
+# own, so reclaim_memory()'s write fails with EPERM there and every idle pane
+# keeps its whole heap resident. Asking the *user's own* systemd manager for a
+# transient scope puts each child under user@<uid>.service/app.slice instead,
+# which is user-owned and therefore writable.
+#
+# --scope is the mode that matters here: systemd-run moves its own process into
+# the new scope and then execs the target, so the pid ptyprocess hands back is
+# still the real agent pid, keeps its pgid, and keeps the pty as its
+# controlling terminal. pause()/resume()'s killpg and the RSS accounting need
+# no knowledge of any of this, and reclaim_memory() finds the writable knob on
+# its own because it already resolves the cgroup from /proc/<pid>/cgroup.
+#
+# The pid is stable from the moment spawn() returns, but for the few ms the
+# D-Bus round trip takes it is still systemd-run rather than the agent, and the
+# scope does not exist yet. Nothing has to wait for that: measured at 4-13ms
+# here, against pause()'s five second prewarm floor, and the cgroup is resolved
+# lazily at reclaim time rather than being cached at spawn.
+
+_SCOPE_PROBE_TIMEOUT = 5.0
+_scope_supported: bool | None = None
+_scope_probe_lock = threading.Lock()
+
+
+def _scope_argv(argv: list[str]) -> list[str]:
+    """Wrap *argv* so the user's systemd manager owns the child's cgroup."""
+
+    return [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        # Without this a scope that fails lingers in the user manager forever;
+        # panes are spawned and closed all day, so they have to clean up.
+        "--collect",
+        f"--unit=serena-pty-{uuid.uuid4().hex[:8]}",
+        "--",
+        *argv,
+    ]
+
+
+def _systemd_scope_supported() -> bool:
+    """Whether this machine can put a child in a user-owned transient scope.
+
+    Probed once with a throwaway unit rather than inferred from the presence of
+    $XDG_RUNTIME_DIR, because those variables can be set while the user bus is
+    unreachable. Inferring would push that failure onto a real agent spawn;
+    probing pays ~25ms once and then answers from cache.
+    """
+
+    global _scope_supported
+    with _scope_probe_lock:
+        if _scope_supported is not None:
+            return _scope_supported
+        _scope_supported = False
+        if _IS_WINDOWS or shutil.which("systemd-run") is None:
+            return _scope_supported
+        if not (
+            os.environ.get("XDG_RUNTIME_DIR")
+            or os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+        ):
+            return _scope_supported
+        try:
+            probe = subprocess.run(
+                _scope_argv(["true"]),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=_SCOPE_PROBE_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return _scope_supported
+        _scope_supported = probe.returncode == 0
+        if not _scope_supported:
+            print(
+                "[runtime] transient user scopes unavailable: "
+                f"{(probe.stderr or b'').decode(errors='replace').strip()[:200]}. "
+                "Panes still freeze when idle; their pages stay resident until "
+                "the kernel swaps them under pressure.",
+                file=sys.stderr,
+                flush=True,
+            )
+        return _scope_supported
+
+
 def spawn(
     argv: list[str],
     cwd: str,
@@ -153,7 +248,37 @@ def spawn(
         env.setdefault("PYTHONUTF8", "1")
         proc = _PtyProcess.spawn(argv, cwd=cwd, dimensions=(rows, cols), env=env)
     else:
-        proc = _PtyProcess.spawn(argv, cwd=cwd, dimensions=(rows, cols), env=env)
+        launch = argv
+        if _systemd_scope_supported():
+            # ptyprocess reports a missing binary by raising FileNotFoundError
+            # for argv[0], and the HTTP layer turns that into "<agent> CLI not
+            # found on PATH". Wrapping would put systemd-run — which certainly
+            # does exist — in that slot and downgrade the error to a pane that
+            # dies on its own, so keep the check pointed at the real command.
+            if shutil.which(argv[0], path=env.get("PATH")) is None:
+                raise FileNotFoundError(
+                    f"The command was not found or was not executable: {argv[0]}."
+                )
+            launch = _scope_argv(argv)
+        try:
+            proc = _PtyProcess.spawn(launch, cwd=cwd, dimensions=(rows, cols), env=env)
+        except Exception as exc:
+            if launch is argv:
+                raise
+            # The probe passed but this particular scope did not start. A pane
+            # that runs without reclaim beats no pane at all, so drop the
+            # wrapper for this spawn rather than failing the terminal. Say so:
+            # this child lands in the inherited cgroup, so it is the one case
+            # where an otherwise reclaimable machine has an unreclaimable pane,
+            # and silence here is a debugging dead end later.
+            print(
+                f"[runtime] transient scope spawn failed ({exc}); falling back "
+                "to a plain fork. This pane still freezes when idle, but its "
+                "pages stay resident.",
+                file=sys.stderr,
+                flush=True,
+            )
+            proc = _PtyProcess.spawn(argv, cwd=cwd, dimensions=(rows, cols), env=env)
     tid = uuid.uuid4().hex
     term = Terminal(
         id=tid,
@@ -559,10 +684,60 @@ def _rss_mb(pid: int) -> float:
         return 0.0
 
 
-# Whether this machine lets us push a frozen runtime's pages out. The knob is
-# per-cgroup and usually root-owned, so the answer is the same for every
-# terminal and worth learning once instead of failing on every sweep.
+# Whether this *machine* can ever push a frozen runtime's pages out. Only
+# reasons that hold for every cgroup on the box may set this, because one
+# terminal that missed its scope must not switch reclaim off for the panes
+# that did get one. Per-terminal refusals live on Terminal.reclaim_supported.
 _reclaim_supported: bool | None = None
+
+# EAGAIN is the kernel saying it reclaimed less than the 4G asked for, which is
+# the normal case and the one that does the work: measured here, a 4G request
+# against a 261MB process returned EAGAIN having released 254MB. It is the only
+# errno that still counts as a successful pass.
+_RECLAIM_PARTIAL_ERRNO = errno.EAGAIN
+
+# Nothing about a different cgroup changes these, so the first one to come back
+# settles it for the whole process: cgroupfs mounted read-only (sandboxes and
+# some containers), or a kernel with no memory.reclaim at all.
+_RECLAIM_MACHINE_ERRNOS = frozenset({errno.EROFS, errno.ENOENT, errno.ENODEV})
+
+# Everything else is scoped to the runtime that hit it. EPERM/EACCES mean this
+# child sits in a cgroup we do not own — exactly what spawn()'s plain-fork
+# fallback produces — and EINVAL means the kernel rejected the payload without
+# reclaiming anything (verified: a malformed write returns EINVAL with RSS
+# unchanged, so retrying a hardcoded literal forever would be pointless).
+_reported_reclaim_failures: set[str] = set()
+_reclaim_report_lock = threading.Lock()
+
+
+def _note_reclaim_failure(term: Terminal, cgroup: str, exc: OSError) -> None:
+    """Latch a failed reclaim at the narrowest scope the errno justifies."""
+
+    global _reclaim_supported
+
+    code = errno.errorcode.get(exc.errno or 0, str(exc.errno))
+    term.reclaim_supported = False
+    machine_wide = exc.errno in _RECLAIM_MACHINE_ERRNOS
+    if machine_wide:
+        _reclaim_supported = False
+    with _reclaim_report_lock:
+        if code in _reported_reclaim_failures:
+            return
+        _reported_reclaim_failures.add(code)
+    print(
+        f"[runtime] memory reclaim unavailable ({code}): writing "
+        f"{cgroup}/memory.reclaim failed. "
+        + (
+            "No runtime on this machine can be reclaimed."
+            if machine_wide
+            else "This runtime is not in a cgroup we own; panes that got their "
+            "own scope are unaffected."
+        )
+        + " Idle panes still freeze; their pages stay resident until the "
+        "kernel swaps them under pressure.",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def reclaim_memory(tid: str) -> float:
@@ -572,11 +747,11 @@ def reclaim_memory(tid: str) -> float:
     what an idle agent costs. Waking stays a SIGCONT because pages fault back
     on demand, so this trades idle RSS for refault I/O rather than latency.
 
-    This only works when the runtime sits in a cgroup the user may write to.
-    The GTK shell got that for free because VTE spawned every pane into its own
-    transient systemd scope; a plain fork inherits the login session scope,
-    which is owned by root. Where that is the case this reports zero rather
-    than pretending, and the freeze alone still stops the process burning CPU.
+    This only works when the runtime sits in a cgroup the user may write to,
+    which is why spawn() places each child in its own transient user scope. On
+    a machine without a reachable user systemd the child stays in the inherited
+    login session scope, which logind owns; this reports zero there rather than
+    pretending, and the freeze alone still stops the process burning CPU.
     """
 
     global _reclaim_supported
@@ -594,29 +769,25 @@ def reclaim_memory(tid: str) -> float:
         cgroup = _cgroup_dir(pid)
         if not cgroup:
             return 0.0
-        if _reclaim_supported is False:
+        # Two latches, deliberately separate. The global says the machine can
+        # never do this; the per-terminal one says this particular runtime is
+        # not in a cgroup we own, which is what spawn()'s plain-fork fallback
+        # leaves behind and must not cost the panes that did get a scope.
+        if _reclaim_supported is False or term.reclaim_supported is False:
             return 0.0
         before = _rss_mb(pid)
         try:
             with open(os.path.join(cgroup, "memory.reclaim"), "w", encoding="utf-8") as handle:
                 handle.write("4G")
-        except PermissionError:
-            if _reclaim_supported is None:
-                print(
-                    "[runtime] memory reclaim unavailable: "
-                    f"{cgroup}/memory.reclaim is not writable by this user. "
-                    "Idle panes still freeze; their pages stay resident until "
-                    "the kernel swaps them under pressure.",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            _reclaim_supported = False
-            return 0.0
-        except OSError:
-            # The knob is absent, or a partial pass returned EAGAIN; whatever
-            # was cold is already out either way.
-            pass
+        except OSError as exc:
+            # EAGAIN is the kernel reporting it freed less than the 4G asked
+            # for, which is the pass that actually does the work. Every other
+            # errno freed nothing, so it latches at whatever scope it applies.
+            if exc.errno != _RECLAIM_PARTIAL_ERRNO:
+                _note_reclaim_failure(term, cgroup, exc)
+                return 0.0
         _reclaim_supported = True
+        term.reclaim_supported = True
         term.reclaimed = True
         return max(0.0, before - _rss_mb(pid))
 

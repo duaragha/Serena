@@ -15,13 +15,10 @@ if not getattr(sys, "frozen", False):
 # the voice stack just to paint the first window.
 os.environ.setdefault("SERENA_CALL_RUNTIME", "lazy")
 
-from flask import jsonify  # noqa: E402
-from ui.web import app, run_web  # noqa: E402
-
-
-@app.get("/api/health")
-def electron_health():
-    return jsonify({"ok": True, "pid": os.getpid()})
+# `app` is re-exported so the sidecar's own tests (and anything embedding it)
+# can reach the Flask app; /api/health now lives in ui.web itself so the
+# long-running mobile_host serves it too.
+from ui.web import app, run_web  # noqa: E402,F401
 
 
 def main() -> None:
