@@ -14,11 +14,10 @@ from pathlib import Path
 from core.config import MEMORY_DIR
 
 
-MEMORY_TYPES = ["task", "ledger", "loop", "feedback", "user", "project", "reference", "general"]
+MEMORY_TYPES = ["task", "ledger", "feedback", "user", "project", "reference", "general"]
 _V2_TYPE_MAP = {
     "task": "commitment",
     "ledger": "commitment",
-    "loop": "commitment",
     "feedback": "correction",
     "user": "semantic_fact",
     "project": "semantic_fact",
@@ -26,18 +25,19 @@ _V2_TYPE_MAP = {
     "general": "episode",
 }
 
-# Order + human headers for the session digest. Tasks + open loops lead so
-# every chat opens like someone who remembers what we were doing, not a rules
-# dump. Tasks = Raghav's deliberate todo list (he owns + checks them off);
-# ledgers = structured current-state cards for active threads (one per thread,
-# updated in place — the thing either agent reads before answering and writes
-# after acting, so a handoff doesn't mean re-guessing where things stand);
-# loops = threads I auto-noted ("where we left off").
-TYPE_ORDER = ["task", "ledger", "loop", "user", "feedback", "project", "reference", "general"]
+# Order + human headers for the session digest. Tasks lead so every chat opens
+# like someone who remembers what we were doing, not a rules dump. Tasks =
+# anything owed, whether Raghav owns it or I do; ledgers = structured
+# current-state cards for active threads (one per thread, updated in place —
+# the thing either agent reads before answering and writes after acting, so a
+# handoff doesn't mean re-guessing where things stand).
+#
+# There is deliberately no "loop" type. Work in progress is a task. Memory is
+# for what we did, how things work, and who Raghav is, never for what is owed.
+TYPE_ORDER = ["task", "ledger", "user", "feedback", "project", "reference", "general"]
 TYPE_HEADERS = {
     "task": "Raghav's tasks — nudge him on these",
     "ledger": "Active ledgers — exact state of live threads",
-    "loop": "Open loops — where we left off",
     "user": "About Raghav",
     "feedback": "How to work with him",
     "project": "Projects & context",
@@ -473,7 +473,7 @@ def delete_memory(memory_id: int) -> bool | str:
     # retain their explicit hard-delete behavior.
     if existing:
         try:
-            if existing["type"] in {"task", "loop"}:
+            if existing["type"] == "task":
                 from memory.locket_mirror import mirror_archive
                 mirror_archive(existing["content"], existing.get("locket_id", ""))
             else:
@@ -600,22 +600,14 @@ def search_memories(query: str) -> list[dict]:
 
 
 def format_loops() -> str:
-    """Just the open loops, freshest first, with age. Empty string if none.
+    """Retired. Always empty.
 
-    Injected every turn by the UserPromptSubmit hook so I stay grounded on
-    what's live even after a long chat compacts the session digest away.
+    The "loop" memory type is gone: a parallel backlog of half-tracked threads
+    grew to 69 entries, most of them either already shipped or actively wrong,
+    and a rail that size stops being read. Anything owed is a task now. Kept as
+    a no-op so older callers and the `chats memory loops` command do not break.
     """
-    loops = [m for m in _scan_all() if m["type"] == "loop" and not _is_snoozed(m)]
-    if not loops:
-        return ""
-    loops.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
-    lines = ["[open loops — where we left off. pick these up without making him re-explain; "
-             "drop a natural callback when one's relevant:]"]
-    for m in loops:
-        age = _ago(m.get("updated_at", ""))
-        suffix = f"  ({age})" if age else ""
-        lines.append(f"- [{m['id']}] {m['content'].strip()}{suffix}")
-    return "\n".join(lines)
+    return ""
 
 
 def format_ledgers() -> str:
@@ -662,10 +654,10 @@ def format_tasks() -> str:
 
 
 def format_active() -> str:
-    """Tasks + open loops together — the per-turn payload injected by the
+    """Tasks + ledgers — the per-turn payload injected by the
     UserPromptSubmit hook so I stay grounded on what's live every single turn,
     even deep into a long chat after the session digest compacts away."""
-    parts = [format_tasks(), format_ledgers(), format_loops()]
+    parts = [format_tasks(), format_ledgers()]
     return "\n\n".join(p for p in parts if p)
 
 
@@ -673,7 +665,7 @@ def format_for_claude() -> str:
     memories = list_memories()
     if not memories:
         return ('No memories yet. Save one with '
-                '`chats memory add "..." --type loop|user|feedback|project|reference`.')
+                '`chats memory add "..." --type task|user|feedback|project|reference`.')
     by_type: dict[str, list[dict]] = {}
     for m in memories:
         by_type.setdefault(m["type"], []).append(m)
@@ -685,9 +677,6 @@ def format_for_claude() -> str:
         if not mems or t in rendered:
             continue
         rendered.add(t)
-        # Open loops lead, freshest first, with age so I pick up the thread.
-        if t == "loop":
-            mems = sorted(mems, key=lambda m: m.get("updated_at", ""), reverse=True)
         lines.append(f"\n## {TYPE_HEADERS.get(t, t.title())}")
         if t == "ledger":
             mems = sorted(mems, key=lambda m: m.get("updated_at", ""), reverse=True)
@@ -701,9 +690,5 @@ def format_for_claude() -> str:
                         lines.append(f"    {f}: {v}")
             continue
         for m in mems:
-            content = m["content"].strip()
-            if t == "loop":
-                age = _ago(m.get("updated_at", ""))
-                content = f"{content}  ({age})" if age else content
-            lines.append(f"- [{m['id']}] {content}")
+            lines.append(f"- [{m['id']}] {m['content'].strip()}")
     return "\n".join(lines)

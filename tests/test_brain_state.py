@@ -86,6 +86,9 @@ def test_compact_and_ledger_rendering_from_snapshot() -> None:
             {"id": 8, "type": "loop", "content": "week-long wake audit"}
         ),
     )
+    # "loop" is a retired memory type. A stray record of that kind must be
+    # dropped from the digest rather than rendered, so a leftover from an old
+    # snapshot cannot resurrect the open-loops rail.
     state = brain_state.ActiveState(records=records, source="snapshot")
 
     compact = brain_state.compact_active(state)
@@ -96,7 +99,7 @@ def test_compact_and_ledger_rendering_from_snapshot() -> None:
     assert "risk=phone offline" in compact
     assert "next=calibrate wake word" in compact
     assert "test the physical phone" in compact
-    assert "week-long wake audit" in compact
+    assert "week-long wake audit" not in compact
     assert "facts: voice is local" in ledger
     assert "risk: phone offline" in ledger
 

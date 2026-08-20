@@ -3,7 +3,7 @@
 The laptop memory files remain the source of truth. A brain running on another
 machine reads an atomic, validated snapshot instead of a deployment-time copy
 of ``memory/``. This module deliberately carries only active ledgers, tasks,
-and loops. It never carries chat text, credentials, or raw voice data.
+and ledgers. It never carries chat text, credentials, or raw voice data.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ DEFAULT_SNAPSHOT_PATH = (
     Path.home() / ".config" / "serena" / "canonical_state.json"
 )
 MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
-_ACTIVE_TYPES = {"task", "ledger", "loop"}
+_ACTIVE_TYPES = {"task", "ledger"}
 _LEDGER_FIELDS = ("goal", "facts", "decision", "promise", "risk", "next_action")
 _RECORD_FIELDS = (
     "id",
@@ -246,13 +246,12 @@ def _clip(value: str, length: int = 140) -> str:
 
 
 def compact_active(state: ActiveState | None = None) -> str:
-    """Render the same bounded task, ledger, and loop digest on every host."""
+    """Render the same bounded task and ledger digest on every host."""
     state = state or active_state()
     if state.error:
         return f"# Canonical state unavailable\n{state.error}"
     tasks: list[str] = []
     ledgers: list[str] = []
-    loops: list[str] = []
     for record in state.records:
         kind = record["type"]
         if kind == "task":
@@ -266,15 +265,11 @@ def compact_active(state: ActiveState | None = None) -> str:
                 f"risk={_clip(record.get('risk', ''), 140)} | "
                 f"next={_clip(record.get('next_action', ''), 140)}"
             )
-        elif kind == "loop":
-            loops.append(f"- [{record['id']}] {_clip(record['content'])}")
     sections: list[str] = []
     if ledgers:
         sections.append("# Active ledgers (live thread state)\n" + "\n".join(ledgers))
     if tasks:
         sections.append("# His open tasks\n" + "\n".join(tasks[:15]))
-    if loops:
-        sections.append("# Open loops\n" + "\n".join(loops[:10]))
     return "\n\n".join(sections)
 
 

@@ -7,8 +7,9 @@ Personality lives in Persona.md — this file is purely the how-to.
 
 Memories persist what you've learned about Raghav across sessions. They're injected at session start (you don't need to fetch them manually).
 
-- `chats memory add "..." --type task` — Raghav's deliberate todo list. Surfaced on every chat open + every turn. STEER him on the top one: tell him to do it or give a strict this-or-that, never open-ended. If he defers ("later"/"not now"), run `chats memory snooze <id>` so it goes quiet ~a week and a different task surfaces. Done = `chats memory remove <id>`.
-- `chats memory add "..." --type loop` — open loops: what we're in the middle of, waiting on, or owe a follow-up. These lead the session digest so every chat opens with "where we left off." Close them (`chats memory remove <id>`) when done.
+**Memory is not a todo list.** It holds what we did, how things work, and who he is. Anything *owed* (work in progress, a follow-up, something you're waiting on) is a **task**, never a memory. There is no "loop" type; it was removed deliberately after the open-loops rail grew to 69 half-tracked entries, most already shipped or plain wrong. If you catch yourself wanting to note "where we left off", that's a task.
+
+- `chats memory add "..." --type task` — anything owed, whether he owns it or you do: his todo list, work you're mid-way through, a follow-up you're waiting on. Surfaced on every chat open + every turn. STEER him on the top one: tell him to do it or give a strict this-or-that, never open-ended. If he defers ("later"/"not now"), run `chats memory snooze <id>` so it goes quiet ~a week and a different task surfaces. Done = `chats memory remove <id>`. Write them so a cold reader could act: what's already done, what's left, the exact file/ID/command, and what would make it wrong.
 - `chats memory add "what you learned" --type user` — who he is, how he works, preferences, style
 - `chats memory add "what you learned" --type feedback` — what worked or didn't in YOUR approach
 - `chats memory add "..." --type project` — ongoing work, decisions, constraints
@@ -23,9 +24,9 @@ Save immediately when you detect:
 - **Personal facts**: job/relationship/goal/schedule changes → `--type user`
 - **Tool/workflow choices**: "use this library", "deploy to X" → `--type reference`
 - **Repeated friction**: same correction twice → that's a pattern → `--type feedback`
-- **Open loops**: starting something multi-session, waiting on him/an external thing, or "let's pick this up later" → `--type loop`. When it resolves, remove it so the digest stays current.
+- **Anything owed**: starting something multi-session, waiting on him or an external thing, or "let's pick this up later" → `--type task`, NOT a memory. Remove it when it resolves.
 
-Never save: things already in memory (check first), one-off debugging state, anything he says not to remember.
+Never save: things already in memory (check first), one-off debugging state, anything he says not to remember, and anything that is really a task. Outstanding work belongs in `--type task` where he can be nudged on it.
 
 Don't announce it, don't ask permission — just run `chats memory add` alongside your response. If he objects, remove it. Default to capture, not miss.
 
@@ -87,7 +88,33 @@ and Claude workers do not pass through Codex.
   explicit Codex-only, Claude-only, or balanced request is authoritative. A
   fresh confirmed usage limit may make automatic routing use only the available
   provider; the frozen run policy records what was requested, selected, and why.
-- Fleet's coding matrix is fixed by phase, and effort is set per model rather than per phase: Research uses `gpt-5.6-terra` high and Sonnet 5 high; Code uses `gpt-5.6-sol` xhigh and Opus 5 high; Review uses `gpt-5.6-terra` xhigh and Sonnet 5 xhigh; Fix uses `gpt-5.6-sol` xhigh and Opus 5 high. Fix sits on the same rung as Code because repairing a reviewer-found defect in someone else's code is not the easier job. Opus stops at high because its DeepSWE v1.1 score is flat from high to xhigh while cost rises ~50%; Sol still climbs across those rungs, so it keeps xhigh (`knowledge/llm-api-pricing/opus5-vs-sol-effort-levels.md`). Pure research runs keep the research pair for Research, Analyze, and Refine, and use the review pair for Review.
+- Fleet runs one locked model per phase and every agent in that phase runs it:
+  Research `gpt-5.6-luna` max, Code `claude-opus-5` high, Review `gpt-5.6-sol`
+  high, Fix `claude-opus-5` high. Workers are Agent A/B/C/D; the provider is a
+  property of the phase, not of the worker, so an agent moves between Codex and
+  Claude as the run advances. No chat may change its model or effort. Raghav
+  raises a leg to xhigh, max or ultra by asking for it on that run, and names
+  where it applies.
+- Those picks come from DeepSWE v1.1: Opus 5 high 73% at $6.08 (xhigh is the
+  same score for 50% more, max buys one point for double), Sol high 69% at
+  $3.47 over 37 turns (the leanest of the top tier), Luna max 67% at $0.61.
+  Sonnet is gone from Fleet entirely: at 48% for $7.43 over 147 turns it lost to
+  `claude-opus-5` medium (69%, $3.29, 52 turns) on score, cost and speed at once.
+  Research is the one slot the coding benchmark cannot justify, and it rests on
+  a direct measurement instead (see `knowledge/openai-models/`).
+- `no-claude:` and `no-codex:` pin a run to one provider when the other is
+  exhausted. Codex-only runs Luna max, Sol xhigh, Sol high, Sol xhigh.
+  Claude-only runs Opus 5 medium, high, medium, high. These are a deliberate
+  downgrade, recorded in the frozen policy, never chosen silently. A provider
+  that dies mid-run hands its unfinished phases to the other provider's stack
+  the same way.
+- Fix continues the session Code worked in: same provider, same agent, and a
+  fixer repairing code it wrote is a benefit. Review never continues an earlier
+  session even though it lands on the same provider as Research, because a
+  reviewer that sat through the research cannot independently disagree with it.
+  Research must end with a `Read map` of the `path:start-end` regions it opened,
+  since Code starts in a fresh session on another provider and would otherwise
+  hunt for what Research already found.
 - Coding phases are Research, Code, Review, Fix. Research workflows use
   Research, Analyze, Review, Refine. Every selected agent participates in every
   phase, each phase waits for the full roster, and later phases resume the same
@@ -175,7 +202,7 @@ contract so Serena's `/workflows` display can show the real worker:
 - `gpt-5.6-terra` -> label starts `terra5.6-<effort>:`
 - `gpt-5.6-luna` -> label starts `luna5.6-<effort>:`
 
-For example, a Terra/high research leg is `terra5.6-high:research`. Never label
+For example, a Luna/max research leg is `luna5.6-max:research`. Never label
 a Codex-backed leg as Sonnet, and never use a generic `codex:` label when an
 explicit model was assigned. The family/version in the label must match
 `codex_flags.model`; the effort in the label must match `codex_flags.effort`.

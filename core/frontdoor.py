@@ -1,7 +1,7 @@
 """Serena front-door brain, paneless one-shot turns for the app landing.
 
 The Serena app opens on Serena herself, not on a pane picker. She greets
-with a take (pulled from ledger/tasks/loops via the injected memory digest),
+with a take (pulled from ledger/tasks via the injected memory digest),
 Raghav says what he's working on, and she decides whether a coding pane is
 needed, and which agent(s), then the UI spawns it seeded with context.
 
@@ -47,7 +47,7 @@ sees when he opens the app, before any coding pane exists. Your job here:
 1. Greet like yourself and LEAD. The greeting shape: an actual hello first,
    his name, matched to the time of day ("morning raghav", "hey you, late
    one?"), THEN one work steer pulled from the memory digest (an active
-   ledger, a stale task, an open loop). Never open-ended "what do you want
+   ledger, a stale task, an overdue one). Never open-ended "what do you want
    to work on?", and keep the whole thing to 2-3 sentences. Don't open the
    visit with his heaviest personal threads (relationship, identity, family)
    uninvited. Those stay available if he brings them up, they're just not
@@ -79,7 +79,7 @@ or, when spawning:
                    " relevant ledger state, and the first concrete move>"}}
 
 Rules for spawn: agents is ["claude"], ["codex"], or ["claude","codex"].
-cwd must be an absolute path, take it from the ledger/task/loop context or
+cwd must be an absolute path, take it from the ledger/task context or
 his known project layout (~/Documents/Projects/...); use his home dir only
 if genuinely unknown. seed is written as Raghav-to-Serena, it lands as the
 pane's first message, and it must carry the SPECIFIC known state from the
@@ -93,7 +93,7 @@ spawn on a guess; when unsure, ask a strict this-or-that first.
 
 
 def _compact_active() -> str:
-    """Tasks + ledgers + loops, clipped hard. The full format_active() runs
+    """Tasks + ledgers, clipped hard. The full format_active() runs
     ~60KB and the hook recall payload runs far bigger, both made turns take
     50-70s; this stays ~5-10KB so a turn lands in seconds. Full detail lives
     one spawn away, the PANE gets the real digest via hooks, the front door
@@ -107,7 +107,7 @@ def _compact_active() -> str:
         s = " ".join((s or "").split())
         return s if len(s) <= n else s[: n - 1] + "…"
 
-    tasks, ledgers, loops = [], [], []
+    tasks, ledgers = [], []
     for m in _scan_all():
         if _is_snoozed(m):
             continue
@@ -118,15 +118,11 @@ def _compact_active() -> str:
                 f"- {m.get('ledger_key', '?')}: goal={clip(m.get('goal', ''), 100)}"
                 f" | next={clip(m.get('next_action', ''), 100)}"
             )
-        elif m["type"] == "loop":
-            loops.append(f"- [{m['id']}] {clip(m['content'])}")
     out = []
     if ledgers:
         out.append("# Active ledgers (live thread state)\n" + "\n".join(ledgers))
     if tasks:
         out.append("# His open tasks\n" + "\n".join(tasks[:15]))
-    if loops:
-        out.append("# Open loops\n" + "\n".join(loops[:10]))
     return "\n\n".join(out)
 
 
