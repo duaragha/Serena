@@ -281,6 +281,14 @@ Three files repeat the same owner/repo and a test keeps them identical:
 `--config` makes electron-builder ignore the package.json block, so it cannot be
 inherited), and `updates.js` for the runtime check.
 
+The installed AppImage lives at `~/Applications/Serena.AppImage`, and the
+missing version in that filename is load-bearing. electron-updater writes the
+new build to the SAME path only when the current name has no version in it;
+otherwise it drops `Serena-0.3.0-x86_64.AppImage` alongside the old one and the
+`.desktop` entry keeps launching the version you already had. Do not rename it
+to something versioned, and do not point the launcher into `dist/`, which is
+build output that a rebuild overwrites.
+
 Before installing a new build, archive the current one so a bad update is
 recoverable, because a broken Serena is also the tool you would fix it with:
 

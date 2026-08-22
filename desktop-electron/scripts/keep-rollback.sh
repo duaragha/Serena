@@ -15,6 +15,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE="${SERENA_ROLLBACK_DIR:-$HOME/.local/share/serena/rollback}"
 KEEP="${SERENA_ROLLBACK_KEEP:-3}"
+# The INSTALLED app, which is the one an update overwrites. It is deliberately
+# named without a version: electron-updater writes the new build to a fresh path
+# when the current filename carries one, which would leave the launcher pointing
+# at the old build forever.
+INSTALLED="${SERENA_APPIMAGE:-$HOME/Applications/Serena.AppImage}"
 
 mkdir -p "$ARCHIVE"
 
@@ -22,8 +27,8 @@ if [[ "${1:-}" == "--list" ]]; then
   if compgen -G "$ARCHIVE/*" >/dev/null; then
     ls -1t "$ARCHIVE"
     echo
-    echo "Roll back by running one directly, or reinstall it:"
-    echo "  cp $ARCHIVE/<file> $ROOT/dist/ && chmod +x $ROOT/dist/<file>"
+    echo "Roll back by restoring one over the installed app:"
+    echo "  install -m 755 $ARCHIVE/<file> $INSTALLED"
   else
     echo "No archived builds yet."
   fi
@@ -32,6 +37,7 @@ fi
 
 archived=0
 for artifact in \
+  "$INSTALLED" \
   "$ROOT/dist/Serena-"*.AppImage \
   "$ROOT/dist/windows/Serena-Setup-"*.exe
 do
