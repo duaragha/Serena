@@ -78,141 +78,34 @@ Both auto-detect your own sid, find the opposite-agent linked sibling via Serena
 
 ## Serena Fleet
 
-Use `/fleet <task>` in Claude Code and `$fleet <task>` in Codex. Both commands
-call the same local `serena-fleet` MCP server and durable supervisor. Fleet
-launches each provider directly, so Codex workers do not pass through Claude
-and Claude workers do not pass through Codex.
+`/fleet <task>` in Claude Code, `$fleet <task>` in Codex. Both call the same
+local `serena-fleet` MCP server and durable supervisor, which launches each
+provider directly.
 
-- Fleet chooses one to four durable chats from the task's independent
-  workstreams. Automatic routing uses both providers when available, but an
-  explicit Codex-only, Claude-only, or balanced request is authoritative. A
-  fresh confirmed usage limit may make automatic routing use only the available
-  provider; the frozen run policy records what was requested, selected, and why.
-- Fleet runs one locked model per phase and every agent in that phase runs it:
-  Research `gpt-5.6-luna` max, Code `claude-opus-5` high, Review `gpt-5.6-sol`
-  high, Fix `claude-opus-5` high. Workers are Agent A/B/C/D; the provider is a
-  property of the phase, not of the worker, so an agent moves between Codex and
-  Claude as the run advances. No chat may change its model or effort. Raghav
-  raises a leg to xhigh, max or ultra by asking for it on that run, and names
-  where it applies.
-- Those picks come from DeepSWE v1.1: Opus 5 high 73% at $6.08 (xhigh is the
-  same score for 50% more, max buys one point for double), Sol high 69% at
-  $3.47 over 37 turns (the leanest of the top tier), Luna max 67% at $0.61.
-  Sonnet is gone from Fleet entirely: at 48% for $7.43 over 147 turns it lost to
-  `claude-opus-5` medium (69%, $3.29, 52 turns) on score, cost and speed at once.
-  Research is the one slot the coding benchmark cannot justify, and it rests on
-  a direct measurement instead (see `knowledge/openai-models/`).
-- `no-claude:` and `no-codex:` pin a run to one provider when the other is
-  exhausted. Codex-only runs Luna max, Sol xhigh, Sol high, Sol xhigh.
-  Claude-only runs Opus 5 medium, high, medium, high. These are a deliberate
-  downgrade, recorded in the frozen policy, never chosen silently. A provider
-  that dies mid-run hands its unfinished phases to the other provider's stack
-  the same way.
-- Fix continues the session Code worked in: same provider, same agent, and a
-  fixer repairing code it wrote is a benefit. Review never continues an earlier
-  session even though it lands on the same provider as Research, because a
-  reviewer that sat through the research cannot independently disagree with it.
-  Research must end with a `Read map` of the `path:start-end` regions it opened,
-  since Code starts in a fresh session on another provider and would otherwise
-  hunt for what Research already found.
-- Coding phases are Research, Code, Review, Fix. Research workflows use
-  Research, Analyze, Review, Refine. Every selected agent participates in every
-  phase, each phase waits for the full roster, and later phases resume the same
-  native chats. Read-only work runs across the full roster; coding writes use
-  isolated worktrees so non-overlapping declared ownership can run concurrently.
-  Overlapping scopes serialize, and validated patches integrate one at a time.
-  Each selected agent produces four agent steps, so one to four agents produce
-  4, 8, 12, or 16 steps.
-- Non-writing legs (Research and Review, and every phase of a research run)
-  get authenticated read-only access to Raghav's real accounts and docs through
-  Fleet's own MCP gateway, so a research leg can check a claim against the
-  account instead of reasoning off a stale repo note. Access is decided per
-  tool, deny-by-default: only read-classified tools are exposed, credential
-  reads are refused, and the classification is re-checked at call time. Write
-  legs keep zero MCP. `chats fleet read-tools` shows what is exposed and what
-  each server denied; `defaults.mcp_read_access` in the Fleet config picks the
-  servers.
-- Research depth is proportional to how far the task reaches outside the
-  checkout. Research runs, and coding tasks touching dependencies, versions,
-  external APIs, standards, or security advisories, carry the full mandate:
-  at least three recorded provider searches and five direct sources across
-  three domains per worker. Local coding work carries a proportionate mandate:
-  at least one recorded search and two sources across two domains. Both depths
-  still require authoritative evidence, access dates, current best practices,
-  recent developments, and an explicit statement of how the findings affect
-  that work unit. Missing web activity or source evidence fails the Research
-  leg instead of silently advancing.
-- Review reports machine-readable findings, not just prose: each carries the
-  unit_id it was found in, a severity of blocker, major, or minor, a summary,
-  and evidence. An empty list is a valid, checkable statement that the reviewer
-  found nothing. Fleet routes findings to the owning worker's Fix leg and skips
-  a fixer with nothing assigned to it, keeping one reporter so the run still
-  ends with a real final response.
-- Integration re-runs each worker's own declared verification against the
-  combined checkout before accepting its patch, so a change that passed alone
-  and breaks alongside a peer is rejected at the merge instead of surviving to
-  Review. Only commands on Fleet's test allowlist run; a repository-wide gate
-  can still be forced with `SERENA_FLEET_INTEGRATION_TEST_COMMAND`.
+Fleet picks one to four durable worker chats from the task's independent
+workstreams and runs each through four phases: Research, Code, Review, Fix for
+coding, or Research, Analyze, Review, Refine for research. Every selected agent
+runs every phase, so a run is 4, 8, 12 or 16 agent steps.
 
-`/fleet` or `$fleet` with no task lists recent runs. The same commands support
-`status`, `wait`, `result`, `cancel`, `retry`, `handoff`, and `steer`. `handoff`
-moves one unfinished logical worker to Claude or Codex. The replacement uses
-the locked model for the current phase, re-reads the shared checkout, receives
-the prior attempt's bounded output and error, and stays in that worker slot for
-every unfinished phase. Native session ids never cross providers. Auto and
-balanced runs do this automatically only for confirmed usage exhaustion when
-the other provider has capacity; an explicit provider-only run waits for a
-user-requested handoff. The Fleet tab in
-Serena is the visual source of truth for phase progress and actual model
-identity. Worker chats open read-only and the launching chat remains the run's
-origin.
+- Provider is a property of the PHASE, not the worker, and the model for each
+  phase is a locked contract the server refuses to let a chat change.
+- `no-claude:` / `no-codex:` pin a run to one provider when the other is out.
+- No task lists recent runs. Also `status`, `wait`, `result`, `cancel`,
+  `retry`, `handoff`, `steer`.
+- The Fleet tab in Serena is the visual source of truth for phase progress and
+  actual model identity.
 
-Voice Serena reads that same durable Fleet store. Ask "how is Fleet going" or
-name a project, task, or short run id and she reports the real phase, agent-step
-progress, actual model identity, and errors. She can start Fleet only when the
-current spoken turn explicitly names Fleet, and can cancel, retry, or steer a
-resolved run on that same live authority. Ordinary coding requests still use
-the single coding-job path. When a real run completes or fails, the Fleet
-supervisor sends one bounded notice to the desktop voice bridge and Serena says
-it aloud after the current conversation finishes. Telegram is only the fallback
-when the local voice bridge is unavailable or playback fails. Alerts never
-contain worker transcripts or tool traffic.
+**Do not recreate Fleet** with native subagents, `chats ask-*`, or Claude's
+legacy `/workflows` relay.
 
-Do not recreate Fleet with native subagents, `chats ask-*`, or Claude's legacy
-`/workflows` relay. That older workflow path remains separate.
+Everything else about Fleet is enforced by the server, so it is documentation
+rather than instruction and lives where it can be read on demand:
 
-For ordinary spoken coding work, Serena searches the durable Chats index for
-the most recent safe exact-project Sol session. The coding app does not need to
-be open. A live exact-project pane is preferred when it is idle; otherwise the
-supervisor resumes the frozen historical session id under external ownership.
-Only when no valid project session exists do I create a new private chat.
-The coding pane or panel, coding app, Chats app, voice-work display, dot
-overlay, brain daemon, and Fleet tab are my surfaces in
-`/home/raghav/Documents/Projects/serena`, unless Raghav explicitly names a
-different project. They never require a repo clarification.
+- Runtime, phase matrix, worker identity, read-only MCP access, writer
+  isolation, completion and review contracts: `docs/fleet-runtime.md`
+- Why each phase locks the model it does, with the benchmark numbers:
+  `knowledge/openai-models/fleet-phase-model-picks.md`
 
-## Codex Agents in Claude Workflows
-
-Claude workflow agents with `agentType: "codex"` are Sonnet relay processes,
-but the model doing the actual work is selected by the first-line
-`codex_flags.model` value. Keep the workflow label and that model flag as one
-contract so Serena's `/workflows` display can show the real worker:
-
-- `gpt-5.6-sol` -> label starts `sol5.6-<effort>:`
-- `gpt-5.6-terra` -> label starts `terra5.6-<effort>:`
-- `gpt-5.6-luna` -> label starts `luna5.6-<effort>:`
-
-For example, a Luna/max research leg is `luna5.6-max:research`. Never label
-a Codex-backed leg as Sonnet, and never use a generic `codex:` label when an
-explicit model was assigned. The family/version in the label must match
-`codex_flags.model`; the effort in the label must match `codex_flags.effort`.
-
-This is a real Codex agent inside Claude's workflow, not a second-opinion
-bridge turn. The relay must invoke `chats codex-exec --link-current`, which
-persists the Codex rollout and links it into the launching chat's Serena group
-as soon as Codex emits `thread.started`. Do not replace workflow Codex agents
-with `chats ask-codex`; that command talks to the already-open sibling and is a
-different workflow.
 
 ## Image Generation — `chats gen-image`, NOT the linked codex
 
@@ -235,6 +128,27 @@ Proactive pings to Raghav's phone via the Serena telegram bot (@serena_pa_ai_bot
 - His replies go to the LOCKET webhook brain (phone Serena with his tracker data), NOT back to your session. If you need an answer back in the terminal, say so in the text and have him come to the chat.
 - Don't spam: one text per event. Nagging isn't dominant, it's annoying.
 
+## Reaching the PC
+
+The PC is `pc` on the tailnet, `pc.tail4d6220.ts.net`. It used to be
+`raghavsgamingpc`; that name is dead as an ADDRESS, but the Windows hostname is
+still `RaghavsGamingPC`, which is why `core/machine_context.py` still maps that
+string and must not be "corrected".
+
+Docker on the PC is **not** Docker Desktop any more. It lives in the VirtualBox
+`Docker-Ubuntu` VM, so reach it through the VM and never through a docker
+context:
+
+```bash
+ssh docker-pc "ssh -o BatchMode=yes docker-ubuntu-vm bash -s" < script.sh
+ssh docker-vm docker logs <container>          # when already inside
+```
+
+Quoting through Windows cmd mangles braces and quotes, so pipe a script on
+stdin rather than inlining the command. The VM sees this Projects tree at
+`/mnt/projects` over Syncthing, so an edit here reaches the build context
+without copying.
+
 ## Which machine am I on
 
 A `SessionStart` hook runs `core/machine_context.py` and prints a short banner
@@ -256,3 +170,115 @@ Install it on a machine by adding to `~/.claude/settings.json`:
                  "timeout": 5 } ] }
 ]
 ```
+
+## Diagnosing her voice
+
+Where the evidence actually is, because two of these look alive and are not:
+
+- `~/.local/state/serena/voice-chats/serena-main.jsonl` is the gold mine. Both
+  sides of every spoken turn verbatim, plus the model that answered it. It
+  cracked three separate bugs open in one read: the wrong model serving voice,
+  a reply whose second sentence never played, and whisper mangling his words.
+- `~/.local/state/serena/desk_metrics.jsonl` is the live client-side telemetry.
+- `~/.local/state/serena/call_metrics.jsonl` is DEAD, nothing has written to it
+  since 2026-07-17. Do not draw conclusions from it.
+- `journalctl --user -u serena-wake-listener` carries the wake events, which is
+  where a 100% failure rate of the cold-start greeting was hiding.
+
+Known-failing tests, so "did I break this" is a comparison and not a guess. As
+of 2026-08-21 `voice/desk/tests voice/call/tests -p no:randomly` is 429 passed,
+3 failed, and those three are pre-existing:
+`test_awake_handoff_starts_one_session_without_scoring_another_wake`,
+`test_import_does_not_load_heavy_model_modules`, `test_tts_backend_selection`.
+Also `tests/test_plugin_runtime.py` passes 70/70 alone but fails under a full
+sweep on file-descriptor exhaustion, which is the runner and not the code.
+
+Measure before concluding, and measure more than once. On 2026-08-21 a single
+sample produced two confident and wrong root causes in one night: a latency
+metric declared broken that was accurate, and a remote TTS declared unreliable
+that answered 15 of 15 calls in 0.10s. Both would have died against a five-run
+baseline. State the sample size out loud when reporting a cause.
+
+## Never restart the host you are running in
+
+Chat panes are children of `serena-mobile-host`, so restarting it kills every
+open terminal including the one issuing the command. The `systemctl restart`
+then never returns and the pane hangs on a command that cannot finish. Worse,
+each pane now lives in its own systemd scope, so a host restart no longer kills
+the child, it strands it: the process keeps running with nobody holding the
+other end of its PTY, unreachable and still holding memory. One survived 22
+hours that way.
+
+So an agent does not restart `serena-mobile-host` or `serena-desk` mid-work. A
+`PreToolUse` hook (`~/.claude/hooks/block-host-restart.sh`) refuses it, the loop
+form included, and `pkill`-ing the host process too. Reading status, logs or the
+unit files is untouched.
+
+Restarts happen at the END of a stretch of work, and Raghav calls it. When he
+has asked for one, use the detached helper rather than a bare systemctl:
+
+```bash
+SERENA_ALLOW_HOST_RESTART=1 scripts/serena-host-restart.sh serena-mobile-host.service
+```
+
+A bare restart is issued from a pane that lives inside the unit being
+restarted, so the shell is killed partway through and the caller gets SIGKILL
+instead of a result. It sometimes completes anyway and sometimes leaves the
+restart half applied, and there is no way to tell which. The helper runs the
+restart in its own transient systemd unit, outside the target's cgroup, so it
+survives the pane dying and writes the outcome to
+`~/.local/state/serena/host-restart.log`. Read that log after the new host is
+up to confirm what happened. It honours SERENA_ALLOW_HOST_RESTART itself, so
+it is not a way around the rule.
+
+The bare form still works when he has asked for it:
+
+```bash
+SERENA_ALLOW_HOST_RESTART=1 systemctl --user restart serena-mobile-host
+```
+
+A starting host reaps pane scopes whose owner is gone, so a restart cleans up
+what a previous one stranded. Panes owned by a host that is still alive are left
+alone.
+
+## Updating the desktop app
+
+The app updates itself on both platforms through the same code path. The menu
+bar carries **About → Check for Updates…** and **About Serena**, which report
+the version and which platform build is running, as native dialogs.
+
+Updates are deliberately manual and never silent. Serena IS the terminal, so an
+update landing mid-turn is worse than a stale version: nothing downloads until
+asked, and the swap happens on restart.
+
+Publishing a release, from a clean checkout on either machine:
+
+```bash
+# bump desktop-electron/package.json, then
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+One tag builds and publishes both the AppImage and the NSIS installer to the
+same GitHub Release, which is the feed electron-updater reads. The tag must
+match the package version or the workflow refuses.
+
+Before installing a new build, archive the current one so a bad update is
+recoverable, because a broken Serena is also the tool you would fix it with:
+
+```bash
+cd desktop-electron
+npm run rollback:keep     # archive the current artifact
+npm run rollback:list     # show what can be rolled back to
+```
+
+Windows signing is optional and free. `windows/make-signing-cert.ps1` creates a
+self-signed certificate, which is what gives electron-updater its real
+guarantee: an update must be signed with the same key as the install. A paid
+certificate would only remove the SmartScreen prompt, which matters for
+strangers downloading the app and not for two personal machines. Keep the .pfx
+backed up and out of the repo; losing it means installs signed with it can no
+longer be updated.
+
+Two builds legitimately cannot update themselves and say so instead of failing
+quietly: a development run, and a Linux AppImage that was extracted rather than
+launched as a file, since electron-updater rewrites the AppImage in place.

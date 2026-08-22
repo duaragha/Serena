@@ -21,6 +21,8 @@ const {
   terminateProcessTree,
   waitForHealth,
 } = require('./runtime');
+const appMenu = require('./menu');
+const updates = require('./updates');
 
 const SMOKE_TEST = process.argv.includes('--smoke-test');
 const BACKEND_STABLE_MS = 30000;
@@ -78,6 +80,29 @@ function senderIsTrusted(event) {
   } catch {
     return false;
   }
+}
+
+function registerUpdateIpc() {
+  // The renderer gets the same three operations the menu uses, so an in-page
+  // About panel and the native menu can never disagree about state.
+  ipcMain.handle('updates:describe', (event) => {
+    if (!senderIsTrusted(event)) throw new Error('untrusted IPC sender');
+    return updates.describe();
+  });
+  ipcMain.handle('updates:check', async (event) => {
+    if (!senderIsTrusted(event)) throw new Error('untrusted IPC sender');
+    return updates.check();
+  });
+  ipcMain.handle('updates:download', async (event) => {
+    if (!senderIsTrusted(event)) throw new Error('untrusted IPC sender');
+    return updates.download((progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('updates:progress', progress);
+    });
+  });
+  ipcMain.handle('updates:install', (event) => {
+    if (!senderIsTrusted(event)) throw new Error('untrusted IPC sender');
+    return updates.install();
+  });
 }
 
 function registerDesktopIpc() {
@@ -333,6 +358,10 @@ process.on('SIGINT', () => app.quit());
 if (gotSingleInstanceLock) {
   app.whenReady().then(() => {
     registerDesktopIpc();
+    registerUpdateIpc();
+    // The menu needs a live window reference, not the one that existed at
+    // startup: the window is recreated when reopened from the tray.
+    appMenu.install(() => mainWindow);
     startBackend().catch((error) => {
       console.error('[desktop] initial backend start failed:', error.message);
     });

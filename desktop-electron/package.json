@@ -8,12 +8,16 @@
   "private": true,
   "scripts": {
     "dev": "electron . --dev",
-    "test": "node --test tests/*.test.js",
+    "test": "node --test tests/*.test.js tests/*.test.cjs",
     "build:sidecar": "bash scripts/build-sidecar.sh",
     "clean:intermediate": "bash scripts/clean-intermediate.sh",
     "dist:appimage": "npm run build:sidecar && electron-builder --linux AppImage",
     "dist:linux": "npm run build:sidecar && electron-builder --linux AppImage deb",
-    "smoke:appimage": "node tests/smoke-appimage.js"
+    "smoke:appimage": "node tests/smoke-appimage.js",
+    "release:linux": "npm run build:sidecar && electron-builder --linux AppImage --publish always",
+    "release:win": "powershell -ExecutionPolicy Bypass -File windows/build-win.ps1 -Publish",
+    "rollback:keep": "bash scripts/keep-rollback.sh",
+    "rollback:list": "bash scripts/keep-rollback.sh --list"
   },
   "devDependencies": {
     "electron": "43.1.1",
@@ -31,7 +35,9 @@
       "preload.js",
       "runtime.js",
       "package.json",
-      "build/icon.png"
+      "build/icon.png",
+      "menu.js",
+      "updates.js"
     ],
     "extraResources": [
       {
@@ -64,7 +70,15 @@
     },
     "win": {
       "icon": "build/icon.ico"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "duaragha",
+        "repo": "Serena",
+        "releaseType": "release"
+      }
+    ]
   },
   "dependencies": {
     "electron-updater": "^6.8.9"

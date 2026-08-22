@@ -46,8 +46,4 @@ nsis:
   differentialPackage: true
   packElevateHelper: true
 
-publish:
-  - provider: github
-    owner: duaragha
-    repo: Serena
-    releaseType: release
+# publish lives in package.json so both platforms share one feed.
