@@ -262,16 +262,24 @@ One tag builds and publishes both the AppImage and the NSIS installer to the
 same GitHub Release, which is the feed electron-updater reads. The tag must
 match the package version or the workflow refuses.
 
-That Release lives in **`duaragha/serena-releases`**, a public repo holding
-nothing but artifacts, not in `duaragha/Serena`, which is private. An app
-reading a private feed has to carry a GitHub token inside every install, so
-anyone holding the app would hold read access to the source. A separate public
-repo keeps the source private and ships no credential.
+`duaragha/Serena` is **public** as of 2026-08-22, and the update channel is the
+reason. A private repo's release assets need an Authorization header to
+download, so the app would have to carry a GitHub token: baked into the artifact
+where it can never be rotated, or placed in a file on every machine. Public
+releases are read anonymously, so no credential exists anywhere in the update
+path and the workflow publishes with its own `GITHUB_TOKEN`.
 
-The workflow therefore authenticates with `RELEASES_TOKEN`, a fine-grained PAT
-scoped to `serena-releases` with contents: write, stored as a secret on the
-private repo. The built-in `GITHUB_TOKEN` cannot write to another repository,
-which is why the workflow itself only needs `contents: read`.
+The history was scanned before flipping it. The only key-shaped strings are
+obvious fixtures in `tests/test_fleet_context.py`. `Persona.md` was committed
+twice early on, but that version predates anything personal and it has been
+gitignored since. Persona, memory content, knowledge content and every `.env`
+stay untracked; if that ever changes, the repo is public and the leak is
+immediate.
+
+Three files repeat the same owner/repo and a test keeps them identical:
+`desktop-electron/package.json`, `windows/electron-builder.win.yml` (passing
+`--config` makes electron-builder ignore the package.json block, so it cannot be
+inherited), and `updates.js` for the runtime check.
 
 Before installing a new build, archive the current one so a bad update is
 recoverable, because a broken Serena is also the tool you would fix it with:

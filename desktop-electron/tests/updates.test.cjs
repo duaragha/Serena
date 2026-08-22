@@ -209,24 +209,36 @@ test('About states the version and the platform it is for', async () => {
   assert.match(box.detail, /Windows build/);
 });
 
-test('the update feed points at a repo the app can read without a credential', () => {
-  // Serena's own repo is private. Reading a private feed means embedding a
-  // GitHub token in every install, so anyone holding the app would hold read
-  // access to the source. Artifacts live in a separate public repo instead.
+test('the feed carries no credential, because the repository is public', () => {
+  // A private feed can only be read with a GitHub token, and that token would
+  // have to live either inside the artifact, where it can never be rotated, or
+  // in a file on every machine. Public releases are fetched anonymously.
   for (const [name, feed] of Object.entries(feeds())) {
     assert.equal(feed.provider, 'github', `${name}: wrong provider`);
-    assert.equal(feed.repo, 'serena-releases', `${name}: the feed must not be the private source repo`);
+    assert.equal(feed.repo, 'Serena', `${name}: wrong repository`);
     assert.ok(!('token' in feed), `${name}: no credential may be baked into the feed config`);
-    assert.ok(!feed.private, `${name}: a private feed would require shipping a token`);
+    assert.ok(!feed.private, `${name}: a private feed would require a credential`);
   }
 });
 
 test('both platforms publish to the same feed', () => {
   // Passing --config makes electron-builder ignore package.json's build block,
-  // so the Windows feed is a copy rather than an inheritance. Left to drift, it
-  // falls back to the git remote, which is the PRIVATE repo.
+  // so the Windows feed is a copy rather than an inheritance. Left to drift it
+  // falls back to whatever the git remote happens to be.
   const { linux, windows } = feeds();
   assert.deepEqual(windows, linux, 'the two platforms must publish to one feed');
+});
+
+test('the runtime feed matches what the builds publish to', () => {
+  // updates.js is a third copy of the same three values. If it disagrees, the
+  // app checks a repository nothing is ever published to and reports "no
+  // releases" forever.
+  const { api } = loadUpdates({ updater: fakeUpdater() });
+  const { linux } = feeds();
+
+  assert.equal(api.FEED.owner, linux.owner);
+  assert.equal(api.FEED.repo, linux.repo);
+  assert.ok(!('token' in api.FEED) && !api.FEED.private, 'the runtime feed must stay anonymous');
 });
 
 test('the Windows build packages the modules the app requires at startup', () => {

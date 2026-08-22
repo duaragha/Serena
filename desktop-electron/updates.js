@@ -20,6 +20,20 @@ const { app, dialog } = require('electron');
 
 const FEED_HOST = 'github.com';
 
+/**
+ * The release feed.
+ *
+ * duaragha/Serena is public, which is the whole reason this file carries no
+ * credential. A private feed would have to be read with a GitHub token, and a
+ * token has to live either inside the artifact, where it cannot be rotated, or
+ * in a file on every machine. Public releases are fetched anonymously.
+ */
+const FEED = Object.freeze({
+  provider: 'github',
+  owner: 'duaragha',
+  repo: 'Serena',
+});
+
 let updater = null;
 let inFlight = null;
 let downloaded = null;
@@ -78,6 +92,7 @@ function describe() {
     node: process.versions.node,
     chrome: process.versions.chrome,
     channelHost: FEED_HOST,
+    feed: `${FEED.owner}/${FEED.repo}`,
     blocker: updateBlocker(),
   };
 }
@@ -253,6 +268,7 @@ async function showAbout(parentWindow) {
 }
 
 module.exports = {
+  FEED,
   check,
   checkInteractively,
   describe,

@@ -10,10 +10,9 @@ on:
     tags:
       - "v*"
 
-# Releases land in duaragha/serena-releases, not here, so this workflow needs
-# no write access to its own repository.
+# Releases land on this repository, which is what publishing a tag needs.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   linux:
@@ -58,9 +57,9 @@ jobs:
       - name: Build and publish the AppImage
         working-directory: desktop-electron
         env:
-          # Scoped to serena-releases only; GITHUB_TOKEN cannot write to
-          # another repository.
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          # Publishing into this same repository, so the job's own token is
+          # enough and no personal token has to be stored.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release:linux
 
       - uses: actions/upload-artifact@v4
@@ -120,7 +119,7 @@ jobs:
       - name: Build and publish the installer
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Signing is optional: without a certificate the build still ships,
           # it just cannot prove the publisher. See
           # windows/make-signing-cert.ps1 for the free self-signed route.

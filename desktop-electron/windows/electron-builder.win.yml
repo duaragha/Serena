@@ -50,13 +50,14 @@ nsis:
 
 # Passing --config makes electron-builder read THIS file and ignore the "build"
 # block in package.json, so the feed has to be repeated here rather than
-# inherited. A test asserts the two stay identical: if they drift, one platform
-# quietly stops seeing updates, or worse, publishes into the private repo.
+# inherited. A test asserts this and package.json stay identical: left to drift,
+# one platform quietly stops seeing updates.
 #
-# serena-releases is public and holds only artifacts. Pointing the feed at the
-# private source repo would mean shipping a GitHub token inside every install.
+# No token appears here, and none should. The repository is public, so releases
+# are read anonymously; making the feed private would mean shipping a credential
+# in every install.
 publish:
   - provider: github
     owner: duaragha
-    repo: serena-releases
+    repo: Serena
     releaseType: release
