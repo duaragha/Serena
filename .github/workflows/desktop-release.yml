@@ -76,6 +76,10 @@ jobs:
     name: NSIS installer
     runs-on: windows-latest
     timeout-minutes: 60
+    # Both jobs publish into the same GitHub Release. Run in parallel and they
+    # race to create it, and the loser gets a 422 on a tag that already exists.
+    # Linux goes first and Windows uploads into the release it made.
+    needs: linux
 
     steps:
       - uses: actions/checkout@v4
