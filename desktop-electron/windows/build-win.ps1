@@ -48,7 +48,7 @@ Assert-LastExitCode "Serena dependency installation"
 Assert-LastExitCode "Windows dependency installation"
 
 Write-Host "[windows] running the mocked ConPTY contract tests"
-& $Python -m pytest (Join-Path $RepoRoot "tests\test_pty_windows.py") -q
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_windows_pty_backend.py") -q
 Assert-LastExitCode "Windows PTY tests"
 
 if (Test-Path -LiteralPath $SidecarDist) {

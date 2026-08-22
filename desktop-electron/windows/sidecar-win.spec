@@ -33,7 +33,6 @@ hiddenimports = sorted(
         + [
             "flask_sock",
             "simple_websocket",
-            "ui.pty_windows",
             "ui.web",
             "voice.call.browser_auth",
             "voice.call.orchestrator",

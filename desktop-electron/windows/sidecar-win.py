@@ -1,4 +1,11 @@
-"""Windows entrypoint for the packaged Serena Flask sidecar."""
+"""Windows entrypoint for the packaged Serena Flask sidecar.
+
+Deliberately thin. ui.pty_terminal drives the terminals on both platforms: it
+carries its own ConPTY branch and is what ui.web is written against, so there is
+nothing here to substitute. An earlier version swapped in a Windows-only host
+that implemented 16 of the 29 functions web.py calls, and opening any chat threw
+AttributeError on the first one it reached.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +19,6 @@ if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 os.environ.setdefault("SERENA_CALL_RUNTIME", "lazy")
-
-pty_windows = import_module("ui.pty_windows")
-pty_windows.activate_backend()
 
 flask = import_module("flask")
 web = import_module("ui.web")
