@@ -21,7 +21,8 @@
   },
   "devDependencies": {
     "electron": "43.1.1",
-    "electron-builder": "26.0.12"
+    "electron-builder": "26.0.12",
+    "js-yaml": "^4.1.0"
   },
   "build": {
     "appId": "ai.serena.desktop",
@@ -75,7 +76,7 @@
       {
         "provider": "github",
         "owner": "duaragha",
-        "repo": "Serena",
+        "repo": "serena-releases",
         "releaseType": "release"
       }
     ]

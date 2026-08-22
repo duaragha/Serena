@@ -12,8 +12,19 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const fs = require('node:fs');
+const yaml = require('js-yaml');
 
 const ROOT = path.resolve(__dirname, '..');
+const WIN_CONFIG = path.join(ROOT, 'windows', 'electron-builder.win.yml');
+
+function feeds() {
+  const linux = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).build.publish;
+  const windows = yaml.load(fs.readFileSync(WIN_CONFIG, 'utf8')).publish;
+  for (const [name, feed] of [['linux', linux], ['windows', windows]]) {
+    assert.ok(Array.isArray(feed) && feed.length === 1, `${name}: expected exactly one feed`);
+  }
+  return { linux: linux[0], windows: windows[0] };
+}
 
 function loadUpdates({ packaged = true, platform = 'linux', appImage = '/tmp/Serena.AppImage', updater } = {}) {
   const source = fs.readFileSync(path.join(ROOT, 'updates.js'), 'utf8');
@@ -196,4 +207,39 @@ test('About states the version and the platform it is for', async () => {
   const box = dialogCalls.at(-1);
   assert.match(box.message, /Serena 0\.1\.0/);
   assert.match(box.detail, /Windows build/);
+});
+
+test('the update feed points at a repo the app can read without a credential', () => {
+  // Serena's own repo is private. Reading a private feed means embedding a
+  // GitHub token in every install, so anyone holding the app would hold read
+  // access to the source. Artifacts live in a separate public repo instead.
+  for (const [name, feed] of Object.entries(feeds())) {
+    assert.equal(feed.provider, 'github', `${name}: wrong provider`);
+    assert.equal(feed.repo, 'serena-releases', `${name}: the feed must not be the private source repo`);
+    assert.ok(!('token' in feed), `${name}: no credential may be baked into the feed config`);
+    assert.ok(!feed.private, `${name}: a private feed would require shipping a token`);
+  }
+});
+
+test('both platforms publish to the same feed', () => {
+  // Passing --config makes electron-builder ignore package.json's build block,
+  // so the Windows feed is a copy rather than an inheritance. Left to drift, it
+  // falls back to the git remote, which is the PRIVATE repo.
+  const { linux, windows } = feeds();
+  assert.deepEqual(windows, linux, 'the two platforms must publish to one feed');
+});
+
+test('the Windows build packages the modules the app requires at startup', () => {
+  // main-win.js requires ../main, which requires ./menu and ./updates. A file
+  // missing from this list is not a build error; it is a crash on launch of the
+  // installed app, on the machine that cannot easily be debugged.
+  const win = yaml.load(fs.readFileSync(WIN_CONFIG, 'utf8'));
+  const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+
+  const required = [...main.matchAll(/require\('\.\/([\w-]+)'\)/g)].map((m) => `${m[1]}.js`);
+  assert.ok(required.includes('menu.js') && required.includes('updates.js'), 'sanity: main.js requires both modules');
+
+  for (const file of required) {
+    assert.ok(win.files.includes(file), `${file} is required at startup but not packaged for Windows`);
+  }
 });

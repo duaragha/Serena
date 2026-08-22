@@ -262,6 +262,17 @@ One tag builds and publishes both the AppImage and the NSIS installer to the
 same GitHub Release, which is the feed electron-updater reads. The tag must
 match the package version or the workflow refuses.
 
+That Release lives in **`duaragha/serena-releases`**, a public repo holding
+nothing but artifacts, not in `duaragha/Serena`, which is private. An app
+reading a private feed has to carry a GitHub token inside every install, so
+anyone holding the app would hold read access to the source. A separate public
+repo keeps the source private and ships no credential.
+
+The workflow therefore authenticates with `RELEASES_TOKEN`, a fine-grained PAT
+scoped to `serena-releases` with contents: write, stored as a secret on the
+private repo. The built-in `GITHUB_TOKEN` cannot write to another repository,
+which is why the workflow itself only needs `contents: read`.
+
 Before installing a new build, archive the current one so a bad update is
 recoverable, because a broken Serena is also the tool you would fix it with:
 
