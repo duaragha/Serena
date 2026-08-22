@@ -10,13 +10,16 @@ because the Windows handle is not selectable.
 """
 
 import errno
+import glob
 import os
+import re
 import select
 import shutil
 import signal
 import subprocess
 import sys
 import threading
+from contextlib import suppress
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -103,6 +106,49 @@ MIN_COLS = 10
 MIN_ROWS = 4
 
 
+def _terminal_environment(environ: dict[str, str]) -> dict[str, str]:
+    """Restore user CLI directories omitted by long-running service hosts.
+
+    Electron attaches to ``serena-mobile-host`` when it is available. That
+    systemd service can inherit its PATH before the login shell exports
+    ``~/.local/bin`` or the active NVM directory, leaving Claude or Codex
+    installed but invisible to every terminal launched from the app.
+    """
+
+    env = dict(environ)
+    home = env.get("HOME") or env.get("USERPROFILE") or os.path.expanduser("~")
+    user_dirs = [
+        os.path.join(home, ".local", "bin"),
+        os.path.join(home, ".claude", "local"),
+        os.path.join(home, ".cargo", "bin"),
+    ]
+    if not _IS_WINDOWS:
+        user_dirs.extend(
+            sorted(
+                glob.glob(os.path.join(home, ".nvm", "versions", "node", "*", "bin")),
+                reverse=True,
+            )
+        )
+    user_dirs.extend(
+        [
+            os.path.join(home, ".bun", "bin"),
+            os.path.join(home, "bin"),
+        ]
+    )
+
+    existing = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry]
+    merged: list[str] = []
+    seen: set[str] = set()
+    for entry in [*(path for path in user_dirs if os.path.isdir(path)), *existing]:
+        key = os.path.normcase(os.path.normpath(entry))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(entry)
+    env["PATH"] = os.pathsep.join(merged)
+    return env
+
+
 def _windows_reader_loop(term: "Terminal") -> None:
     proc = term.proc
     while True:
@@ -165,10 +211,86 @@ def _scope_argv(argv: list[str]) -> list[str]:
         # Without this a scope that fails lingers in the user manager forever;
         # panes are spawned and closed all day, so they have to clean up.
         "--collect",
-        f"--unit=serena-pty-{uuid.uuid4().hex[:8]}",
+        # The owning host's pid is in the unit name on purpose. A scope is NOT
+        # in the host's cgroup, so when the host restarts systemd leaves these
+        # children running while the PTY master they were talking to is gone.
+        # From the user's side the terminal "died"; in reality it leaked and
+        # kept its memory. Stamping the owner lets a fresh host identify which
+        # scopes are unreachable garbage and which belong to a live sibling.
+        f"--unit=serena-pty-{os.getpid()}-{uuid.uuid4().hex[:8]}",
+        # systemd derives a unit's description from the command line when none
+        # is given, and an agent's argv carries the whole system prompt. That
+        # put thousands of characters into the journal on every single pane
+        # spawn; 109 spawns in one day helped push it to 2.4GB.
+        "--description=Serena terminal pane",
         "--",
         *argv,
     ]
+
+
+# systemd appends ".scope" itself, so the same pattern has to read both the
+# name we pass to --unit and the name that comes back from list-units.
+_SCOPE_UNIT = re.compile(r"^serena-pty-(\d+)-[0-9a-f]+(?:\.scope)?$")
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def reap_orphaned_scopes() -> list[str]:
+    """Stop pane scopes whose owning host is gone, and report what was stopped.
+
+    A pane talks to its host through a PTY master fd that only that host holds.
+    When the host dies the child survives in its own scope with nothing on the
+    other end, so it can never be reattached: it is unreachable, invisible in
+    the UI, and still holding its memory. One was found 22 hours old. Panes
+    belonging to a host that is still running are left strictly alone, so a
+    second host starting up cannot kill a sibling's terminals.
+    """
+
+    if _IS_WINDOWS or shutil.which("systemctl") is None:
+        return []
+    try:
+        listing = subprocess.run(
+            ["systemctl", "--user", "list-units", "--type=scope", "--no-pager", "--plain"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    reaped: list[str] = []
+    for line in listing.stdout.splitlines():
+        unit = line.split()[0] if line.split() else ""
+        match = _SCOPE_UNIT.match(unit)
+        if not match or _process_alive(int(match.group(1))):
+            continue
+        with suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["systemctl", "--user", "stop", unit],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+            reaped.append(unit)
+    if reaped:
+        print(
+            f"[runtime] reaped {len(reaped)} orphaned pane scope(s) left by a "
+            "previous host",
+            file=sys.stderr,
+            flush=True,
+        )
+    return reaped
 
 
 def _systemd_scope_supported() -> bool:
@@ -238,7 +360,7 @@ def spawn(
     # env from pythonw.exe has no TERM, so apps fall back to plain ASCII
     # rendering — claude's TUI then can't position its statusline/input bar
     # correctly + may skip the alt-screen switch entirely.
-    env = dict(os.environ if env is None else env)
+    env = _terminal_environment(dict(os.environ if env is None else env))
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("COLORTERM", "truecolor")
     env.setdefault("COLUMNS", str(cols))

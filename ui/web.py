@@ -1332,6 +1332,19 @@ body.pane-dragging * {
   color: var(--text-dim);
   font-size: 10px;
 }
+.term-machine {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-family: var(--mono);
+  letter-spacing: 0.3px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: var(--text-dim);
+  border: 1px solid var(--border, #2a2a35);
+  opacity: 0.85;
+}
+.term-machine.linux { color: #c9a6ff; border-color: #4a3a6a; }
+.term-machine.windows { color: #7fb8ff; border-color: #2f4a6a; }
 .session-date {
   flex-shrink: 0;
   font-size: 10px;
@@ -6114,12 +6127,28 @@ function setTermStatus(text, cls) {
   if (cls) el.classList.add(cls);
 }
 
+function _machineBadge() {
+  // Chats sync between the Linux laptop and the Windows PC, and a resumed pane
+  // looks identical on either. Naming the host here settles at a glance which
+  // machine the work in front of you is actually running on.
+  const machine = (window.SERENA && window.SERENA.machine) || {};
+  const os = String(machine.os || '').split(' ')[0] || 'unknown';
+  const badge = document.createElement('span');
+  badge.className = 'term-machine ' + os.toLowerCase();
+  badge.textContent = machine.name ? `${os} · ${machine.name}` : os;
+  badge.title = machine.name
+    ? `running on Raghav's ${machine.name} (${machine.os})`
+    : `running on ${machine.os || 'this machine'}`;
+  return badge;
+}
+
 function _renderOpenSessionIds(sids) {
   const root = document.getElementById('termSessionIds');
   if (!root) return;
   root.replaceChildren();
   const unique = [...new Set((sids || []).filter(Boolean))];
   root.classList.toggle('hidden', unique.length === 0);
+  if (unique.length) root.appendChild(_machineBadge());
   for (const sid of unique) {
     const session = _findClientSession(sid);
     const runtime = termSessions.get(sid);
@@ -10240,6 +10269,21 @@ _HOT_RELOAD_SCRIPT = """<script>
 """
 
 
+def _host_machine() -> dict[str, str]:
+    """Name and OS of the machine serving this window."""
+
+    try:
+        from core.machine_context import describe
+
+        facts = describe()
+        return {"name": facts["machine"], "os": facts["os"]}
+    except Exception:
+        system = {"linux": "Linux", "win32": "Windows", "darwin": "macOS"}.get(
+            sys.platform, sys.platform
+        )
+        return {"name": "", "os": system}
+
+
 @app.route("/")
 def index():
     # Inject the user's home dir + slug pattern at runtime so JS slug-decoders
@@ -10251,7 +10295,17 @@ def index():
         home_slug = "-" + home.lstrip("/").replace("/", "-")  # Linux/macOS: -home-bob, -Users-bob
     boot = (
         '<script>window.SERENA = '
-        + json.dumps({"home": home, "homeSlug": home_slug, "platform": sys.platform})
+        + json.dumps(
+            {
+                "home": home,
+                "homeSlug": home_slug,
+                "platform": sys.platform,
+                # Which box this window is actually running on. Agents already
+                # get this through the SessionStart hook; the header shows the
+                # same answer so a glance settles it too.
+                "machine": _host_machine(),
+            }
+        )
         + ';</script>\n'
     )
     if ui_hot_reload_enabled():
@@ -12097,7 +12151,12 @@ def api_terminal_runtime_sync():
                 tid,
                 protected=working,
                 min_idle_seconds=0.0 if explicit else _RUNTIME_IDLE_SECONDS,
-            ):
+            ) and not explicit:
+                # Reclaim ONLY on the idle path, never when the user just
+                # switched tabs. Pushing a pane's pages to swap the moment it
+                # loses focus means switching back faults hundreds of MB in
+                # from disk, so moving between panes stalls the whole app.
+                # GTK reclaimed from its idle sweep alone for this reason.
                 reclaimed_mb += pty_terminal.reclaim_memory(tid)
         states[tid] = {
             "state": pty_terminal.get_runtime_state(tid),
@@ -12694,6 +12753,14 @@ def api_health():
 def run_web(host="0.0.0.0", port=8080, open_browser=False):
     """Start the web server."""
     global _browser_pid
+
+    # A previous host leaves its panes running in their own scopes with nobody
+    # holding the other end of their PTY. They are unreachable, so clear them
+    # before serving; panes owned by a host that is still alive are untouched.
+    try:
+        pty_terminal.reap_orphaned_scopes()
+    except Exception:
+        pass
 
     print("Updating session index...")
     update_index()

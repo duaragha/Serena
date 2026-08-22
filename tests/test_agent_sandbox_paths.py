@@ -1,16 +1,19 @@
-"""An agent Serena spawns must be able to save its own session.
+"""Agents Serena spawns must not be fenced out of their own files.
 
-The units that serve the chat UI run with ProtectHome=read-only and a narrow
-ReadWritePaths whitelist. Claude writes transcripts under ~/.claude/projects and
-Codex writes rollouts under ~/.codex/sessions, and neither was on that list, so
-every agent started from those surfaces did its work and then silently failed to
-record any of it. The whitelist even carried a hand-added carve-out for a single
-~/.claude/projects subfolder, which is the same bug patched once for one case.
+The units that serve the chat UI used to run ProtectHome=read-only with a
+whitelist of Serena's own state directories. Claude writes transcripts under
+~/.claude/projects and Codex writes rollouts under ~/.codex/sessions, so every
+agent started from those surfaces did its work and then silently failed to
+record any of it. The whitelist had even grown a hand-added carve-out for one
+~/.claude/projects subfolder: the same bug, found once, patched for one chat.
+
+A whitelist could only ever list the paths someone had already been bitten by,
+so the filesystem sandbox is gone rather than extended. ProtectControlGroups is
+out too, because idle panes reclaim their own memory through cgroup knobs.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -24,51 +27,56 @@ AGENT_SPAWNING_UNITS = (
     "serena-desk.service",
 )
 
+# Directives that stop an agent reading or writing what it legitimately needs.
+BLOCKING_DIRECTIVES = (
+    "ProtectSystem=",
+    "ProtectHome=",
+    "ReadWritePaths=",
+    "PrivateTmp=",
+    "ProtectControlGroups=",
+)
 
-def _read_write_paths(unit: Path) -> str:
-    for line in unit.read_text(encoding="utf-8").splitlines():
-        if line.startswith("ReadWritePaths="):
-            return line
-    return ""
 
-
-@pytest.mark.parametrize("name", AGENT_SPAWNING_UNITS)
-def test_agent_state_directories_are_writable(name):
+def _unit(name: str) -> Path:
     unit = SYSTEMD / name
     if not unit.is_file():
         pytest.skip(f"{name} is not part of this checkout")
-
-    paths = _read_write_paths(unit)
-    assert paths, f"{name} declares no ReadWritePaths"
-    assert "%h/.claude" in paths, f"{name} cannot write Claude transcripts"
-    assert "%h/.codex" in paths, f"{name} cannot write Codex rollouts"
+    return unit
 
 
 @pytest.mark.parametrize("name", AGENT_SPAWNING_UNITS)
-def test_no_single_project_carve_outs_remain(name):
-    """A per-project exception only ever fixes the one chat someone noticed."""
+def test_no_filesystem_sandbox_fences_the_agents(name):
+    text = _unit(name).read_text(encoding="utf-8")
 
-    unit = SYSTEMD / name
-    if not unit.is_file():
-        pytest.skip(f"{name} is not part of this checkout")
-
-    paths = _read_write_paths(unit)
-    assert not re.search(r"%h/\.claude/projects/\S+", paths), (
-        "a single project path cannot cover transcripts, which are written per "
-        "working directory; whitelist %h/.claude instead"
-    )
+    for directive in BLOCKING_DIRECTIVES:
+        offenders = [
+            line
+            for line in text.splitlines()
+            if line.strip().startswith(directive)
+        ]
+        assert not offenders, (
+            f"{name} reintroduces {directive.rstrip('=')}, which is how agents "
+            f"lost the ability to save their own transcripts: {offenders}"
+        )
 
 
 @pytest.mark.parametrize("name", AGENT_SPAWNING_UNITS)
-def test_the_sandbox_is_still_a_sandbox(name):
-    """Fixing the hole must not turn the whole home directory writable."""
+def test_kernel_hardening_that_costs_nothing_is_kept(name):
+    """Dropping the fence is not a reason to drop everything else."""
 
-    unit = SYSTEMD / name
-    if not unit.is_file():
-        pytest.skip(f"{name} is not part of this checkout")
+    text = _unit(name).read_text(encoding="utf-8")
 
-    text = unit.read_text(encoding="utf-8")
-    assert "ProtectSystem=strict" in text
-    assert "ProtectHome=read-only" in text
-    paths = _read_write_paths(unit)
-    assert paths.strip() != "ReadWritePaths=%h", "that would remove the sandbox entirely"
+    for directive in (
+        "NoNewPrivileges=true",
+        "ProtectKernelTunables=true",
+        "ProtectKernelModules=true",
+    ):
+        assert directive in text, f"{name} lost {directive}"
+
+
+@pytest.mark.parametrize("name", AGENT_SPAWNING_UNITS)
+def test_the_unit_still_starts_the_right_thing(name):
+    text = _unit(name).read_text(encoding="utf-8")
+
+    assert "ExecStart=" in text
+    assert "Restart=" in text

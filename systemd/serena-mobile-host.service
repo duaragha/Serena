@@ -9,7 +9,17 @@ Type=simple
 WorkingDirectory=%h/Documents/Projects/serena
 Environment=PYTHONUNBUFFERED=1
 Environment=SERENA_CALL_TRUST_IDMAPPED_SYSTEM=1
-Environment=SERENA_CALL_TTS_BACKEND=pocket
+# Remote on purpose: the PC hosts the voice so the phone and laptop can
+# reach Serena while this machine is off. Measured 2026-08-21 the remote
+# is 0.10s p50 over 15 runs, so it is not slow, it STALLS occasionally.
+# The guard is the first-audio deadline below, not moving off the PC.
+Environment=SERENA_CALL_TTS_BACKEND=remote
+# Give up on a stalled remote in 1.5s and speak locally instead. The
+# inference timeout is 60s, which left him in silence for nearly a
+# minute while her finished reply sat on screen.
+Environment=SERENA_CALL_TTS_REMOTE_FIRST_AUDIO_TIMEOUT=1.5
+Environment=SERENA_CALL_TTS_REMOTE_URL=https://pc.tail4d6220.ts.net:8812
+Environment=SERENA_CALL_TTS_REMOTE_FALLBACK=1
 Environment=SERENA_CALL_POCKET_PYTHON=%h/Documents/Projects/serena/.venv-pocket/bin/python
 Environment=SERENA_CALL_POCKET_VOICE=anna
 Environment=HF_HOME=%h/.cache/serena/pocket-tts
@@ -27,18 +37,15 @@ RestartSec=3
 TimeoutStopSec=30
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-# Claude writes transcripts under ~/.claude/projects and Codex writes
-# rollouts under ~/.codex/sessions. ProtectHome=read-only without these
-# left every agent spawned from this unit unable to save its own session:
-# the work happened, the record vanished. The narrow call-jobs path below
-# only ever covered one project.
-ReadWritePaths=%h/.config/serena %h/.cache/serena %h/.local/share/chats %h/.local/state/serena %h/.claude %h/.codex
+# No filesystem sandbox. These units spawn real agent CLIs that write
+# transcripts, rollouts, worktrees and project files all over the home
+# directory, so a read-only root with a whitelist could only ever be a
+# list of paths someone had already been bitten by. ProtectControlGroups
+# is out too: idle panes reclaim their own memory through cgroup knobs.
+# The kernel-level hardening below stays, since none of it restricts what
+# an agent may read or write.
 ProtectKernelTunables=true
 ProtectKernelModules=true
-ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

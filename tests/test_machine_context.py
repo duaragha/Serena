@@ -94,3 +94,34 @@ def test_the_codex_instructions_no_longer_hardcode_one_machines_paths():
     assert "machine_context.py --text" in text, "codex must be told to locate itself"
     # The synced file cannot claim the laptop's paths are the truth.
     assert "- `/home/raghav/Documents/Projects/serena/Persona.md`" not in text
+
+
+def test_the_window_reports_its_host_machine_to_the_page():
+    """The same answer agents get from the hook, visible in the header."""
+
+    from ui import web
+
+    facts = web._host_machine()
+    assert facts["os"], "the page must be able to name the OS"
+
+    body = web.app.test_client().get("/").get_data(as_text=True)
+    assert '"machine":' in body.replace(" ", "")
+    # A badge with no renderer, or a renderer never called, shows nothing.
+    assert "_machineBadge" in body
+    assert "root.appendChild(_machineBadge())" in body
+
+
+def test_the_host_badge_survives_a_broken_machine_lookup(monkeypatch):
+    """A cosmetic badge must never be able to break the page."""
+
+    import core.machine_context as machine_context
+    from ui import web
+
+    monkeypatch.setattr(
+        machine_context, "describe", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    facts = web._host_machine()
+
+    assert facts["os"], "the fallback must still name an OS"
+    assert facts["name"] == ""

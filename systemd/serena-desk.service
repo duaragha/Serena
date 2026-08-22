@@ -23,18 +23,15 @@ RestartSec=2
 TimeoutStopSec=10
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-# Claude writes transcripts under ~/.claude/projects and Codex writes
-# rollouts under ~/.codex/sessions. ProtectHome=read-only without these
-# left every agent spawned from this unit unable to save its own session:
-# the work happened, the record vanished. The narrow call-jobs path below
-# only ever covered one project.
-ReadWritePaths=%h/.config/serena %h/.cache/serena %h/.local/state/serena %h/.claude %h/.codex
+# No filesystem sandbox. These units spawn real agent CLIs that write
+# transcripts, rollouts, worktrees and project files all over the home
+# directory, so a read-only root with a whitelist could only ever be a
+# list of paths someone had already been bitten by. ProtectControlGroups
+# is out too: idle panes reclaim their own memory through cgroup knobs.
+# The kernel-level hardening below stays, since none of it restricts what
+# an agent may read or write.
 ProtectKernelTunables=true
 ProtectKernelModules=true
-ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

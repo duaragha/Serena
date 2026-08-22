@@ -310,6 +310,32 @@ def test_a_missing_agent_binary_still_raises_file_not_found():
         )
 
 
+def test_terminal_environment_restores_user_cli_paths(tmp_path):
+    """Electron's service host must find CLIs installed outside system PATH."""
+
+    local_bin = tmp_path / ".local" / "bin"
+    nvm_bin = tmp_path / ".nvm" / "versions" / "node" / "v24.0.0" / "bin"
+    local_bin.mkdir(parents=True)
+    nvm_bin.mkdir(parents=True)
+    claude = local_bin / "claude"
+    codex = nvm_bin / "codex"
+    for binary in (claude, codex):
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+
+    env = pty_terminal._terminal_environment(
+        {"HOME": str(tmp_path), "PATH": "/usr/local/bin:/usr/bin:/bin"}
+    )
+
+    assert pty_terminal.shutil.which("claude", path=env["PATH"]) == str(claude)
+    assert pty_terminal.shutil.which("codex", path=env["PATH"]) == str(codex)
+    assert env["PATH"].split(os.pathsep)[-3:] == [
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+
+
 def test_spawning_falls_back_to_a_plain_fork_when_the_scope_fails(monkeypatch):
     """A pane without reclaim beats no pane at all."""
 
@@ -485,3 +511,49 @@ def test_one_unscoped_pane_does_not_disable_reclaim_for_the_others(monkeypatch):
     finally:
         pty_terminal.kill(scoped)
         pty_terminal.kill(unscoped)
+
+
+def test_a_pane_scope_names_the_host_that_owns_it():
+    """Without the owner, a fresh host cannot tell garbage from a live sibling."""
+
+    if pty_terminal._IS_WINDOWS:
+        pytest.skip("scopes are POSIX only")
+
+    argv = pty_terminal._scope_argv(["claude", "--resume", "abc"])
+    unit = next(a for a in argv if a.startswith("--unit="))
+
+    assert str(os.getpid()) in unit
+    assert pty_terminal._SCOPE_UNIT.match(unit.split("=", 1)[1])
+
+
+def test_the_reaper_only_stops_scopes_whose_host_is_gone(monkeypatch):
+    """A second host starting must never kill a live sibling's terminals."""
+
+    if pty_terminal._IS_WINDOWS:
+        pytest.skip("scopes are POSIX only")
+
+    dead_pid = 999_999_999  # far above any live pid on this machine
+    listing = (
+        f"serena-pty-{os.getpid()}-aaaaaaaa.scope loaded active running mine\n"
+        f"serena-pty-{dead_pid}-bbbbbbbb.scope loaded active running orphan\n"
+        "some-other.scope loaded active running unrelated\n"
+    )
+    stopped: list[str] = []
+
+    class _Result:
+        stdout = listing
+
+    def fake_run(argv, **kwargs):
+        if "list-units" in argv:
+            return _Result()
+        if "stop" in argv:
+            stopped.append(argv[-1])
+        return _Result()
+
+    monkeypatch.setattr(pty_terminal.shutil, "which", lambda _n: "/usr/bin/systemctl")
+    monkeypatch.setattr(pty_terminal.subprocess, "run", fake_run)
+
+    reaped = pty_terminal.reap_orphaned_scopes()
+
+    assert reaped == [f"serena-pty-{dead_pid}-bbbbbbbb.scope"]
+    assert stopped == reaped, "only the orphan may be stopped"
