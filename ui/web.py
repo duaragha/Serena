@@ -6142,6 +6142,15 @@ function _machineBadge() {
   return badge;
 }
 
+function _visibleRuntimeSids() {
+  // A linked pair shows both sides; anything else shows the one pane in front
+  // of you. Unlinked chats used to fall through to nothing, so a solo claude or
+  // codex pane reported neither its machine nor its session id.
+  if (_gtkSplitActive && _gtkSplitSids) return _gtkSplitSids;
+  const focused = window.__nativeTerminalBridge ? _gtkCodeSid : activeTermSid;
+  return focused ? [focused] : [];
+}
+
 function _renderOpenSessionIds(sids) {
   const root = document.getElementById('termSessionIds');
   if (!root) return;
@@ -6253,6 +6262,7 @@ function _hideAllTermPanes() {
   for (const child of container.children) child.classList.add('hidden');
   activeTermSid = null;
   _webRuntimeFocusSid = null;
+  _renderOpenSessionIds([]);
   _setWebTerminalFocus(null);
   _reportWebRuntimeContext(null);
   if (_webRuntimePollTimer) clearInterval(_webRuntimePollTimer);
@@ -6326,7 +6336,7 @@ async function _syncWebRuntimePolicy() {
       runtime.busy = !!info.busy;
       _gtkRuntimeStates.set(runtimeSid, info.state || 'live');
     }
-    if (_gtkSplitActive) _refreshGtkRuntimeStatus();
+    _refreshGtkRuntimeStatus();
   } catch(e) {
   } finally {
     _webRuntimeSyncing = false;
@@ -6490,6 +6500,7 @@ function _activateTermPane(sid) {
   const local = _findClientSession(sid);
   _gtkSplitActive = split;
   _gtkSplitSids = split ? [leftSid, rightSid] : null;
+  _renderOpenSessionIds(_visibleRuntimeSids());
   _reportWebRuntimeContext(sid);
   _gtkCurrentGroup = split
     ? ((local && local.group) || ('pending:' + [leftSid, rightSid].sort().join(':')))
@@ -7496,8 +7507,10 @@ function toggleGtkPinBoth() {
 }
 
 function _refreshGtkRuntimeStatus() {
+  _renderOpenSessionIds(_visibleRuntimeSids());
+  // Below is split-only: one status line summarising BOTH runtimes. A single
+  // pane keeps the live/cwd line its own websocket handlers already maintain.
   if (!_gtkSplitActive || !_gtkSplitSids) return;
-  _renderOpenSessionIds(_gtkSplitSids);
   const labels = _gtkSplitSids.map(sid => {
     const session = _findClientSession(sid);
     const runtime = termSessions.get(sid);
@@ -7521,8 +7534,7 @@ function _migrateGtkRuntimeState(oldSid, newSid) {
   if (_gtkSplitSids) {
     _gtkSplitSids = _gtkSplitSids.map(sid => sid === oldSid ? newSid : sid);
   }
-  if (_gtkSplitActive) _refreshGtkRuntimeStatus();
-  else if (_gtkCodeSid) _renderOpenSessionIds([_gtkCodeSid]);
+  _refreshGtkRuntimeStatus();
 }
 
 window.onGtkRuntimeState = function(sid, state) {

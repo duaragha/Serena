@@ -137,8 +137,10 @@ def test_gtk_terminal_path_is_untouched_by_the_xterm_work():
 
 
 def test_open_terminal_status_shows_copyable_session_ids():
+    # What the row contains lives here; that it renders for unlinked panes too
+    # is covered by tests/test_terminal_identity_row.py.
     assert 'id="termSessionIds"' in web.HTML
-    assert "_renderOpenSessionIds(_gtkSplitSids)" in web.HTML
+    assert "_renderOpenSessionIds(_visibleRuntimeSids())" in web.HTML
     assert "navigator.clipboard.writeText(sid)" in web.HTML
 
 
