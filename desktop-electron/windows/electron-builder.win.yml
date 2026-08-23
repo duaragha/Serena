@@ -17,6 +17,7 @@ files:
   - menu.js
   - updates.js
   - releases.js
+  - logging.js
   - windows/main-win.js
   - package.json
 

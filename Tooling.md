@@ -310,6 +310,16 @@ Two builds legitimately cannot update themselves and say so instead of failing
 quietly: a development run, and a Linux AppImage that was extracted rather than
 launched as a file, since electron-updater rewrites the AppImage in place.
 
+When something goes wrong with the desktop app, read
+`desktop-electron`'s backend log before guessing. A packaged Windows app has no
+console, so the Python sidecar's stdout went nowhere: a backend that died left
+no exit code, no traceback, and a window stranded on a dead port whose only
+symptom was "Failed to fetch" in the renderer. Everything the sidecar prints and
+every decision the shell makes about it (ready, exited, restarting) now lands in
+`logs/backend.log` under the app's user data, reachable from **About → Open Log
+Folder**. On Linux that is `~/.config/Serena/logs/backend.log`; on Windows,
+`%APPDATA%\Serena\logs\backend.log`.
+
 The app announces a new release itself, as a native notification, one per
 platform. `desktop-electron/releases.js` polls the releases API every fifteen
 minutes and fires when a platform's installer AND its channel file are both on

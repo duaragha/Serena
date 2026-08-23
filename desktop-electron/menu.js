@@ -6,7 +6,8 @@
  * Electron's default menu is fine but has no About and no way to update, so
  * the app looked like it had no version and no upgrade path. This keeps the
  * familiar File / Edit / View / Window layout and adds an About menu holding
- * exactly two things: "Check for Updates…" and "About Serena".
+ * "Check for Updates…", "About Serena", and a way to reach the log file, which
+ * on Windows is the only record a backend crash leaves.
  *
  * Reload and DevTools are deliberately kept: the UI is served from a local
  * Flask app, and reloading the window is the cheapest way to pick up a change
@@ -16,6 +17,7 @@
 const { Menu, app, shell } = require('electron');
 
 const updates = require('./updates');
+const logging = require('./logging');
 
 function aboutSubmenu(getWindow) {
   return [
@@ -36,6 +38,16 @@ function aboutSubmenu(getWindow) {
         updates.showAbout(getWindow()).catch((error) => {
           console.error('[menu] about failed:', error && error.message);
         });
+      },
+    },
+    {
+      // A packaged Windows app has no console, so this file is the only place
+      // a backend crash is recorded. Reaching it should not require knowing
+      // where Electron hides its user data.
+      label: 'Open Log Folder',
+      click: () => {
+        const file = logging.logPath();
+        if (file) shell.showItemInFolder(file);
       },
     },
   ];

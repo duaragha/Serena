@@ -16,6 +16,7 @@ function loadMenu(platform = 'linux') {
   const source = fs.readFileSync(path.join(ROOT, 'menu.js'), 'utf8');
   const built = [];
   const electron = {
+    shell: { openExternal: async () => {}, showItemInFolder: () => { calls.revealed += 1; } },
     Menu: {
       buildFromTemplate: (tpl) => {
         built.push(tpl);
@@ -24,9 +25,8 @@ function loadMenu(platform = 'linux') {
       setApplicationMenu: () => {},
     },
     app: { getName: () => 'Serena' },
-    shell: { openExternal: async () => {} },
   };
-  const calls = { about: 0, check: 0 };
+  const calls = { about: 0, check: 0, revealed: 0 };
   const updates = {
     checkInteractively: async () => {
       calls.check += 1;
@@ -42,6 +42,7 @@ function loadMenu(platform = 'linux') {
     require: (name) => {
       if (name === 'electron') return electron;
       if (name === './updates') return updates;
+      if (name === './logging') return { logPath: () => '/tmp/serena/logs/backend.log' };
       throw new Error(`unexpected require: ${name}`);
     },
     console: { error() {} },
@@ -116,4 +117,17 @@ test('installing the menu builds it once from the template', () => {
   api.install(() => null);
   assert.equal(built.length, 1);
   assert.ok(labels(built[0]).includes('About'));
+});
+
+test('About offers a way to reach the log file', () => {
+  // On Windows this file is the only record a backend crash leaves, and it
+  // lives somewhere nobody would find by hand.
+  const { api, calls } = loadMenu();
+  const about = find(api.template(() => null), 'About');
+
+  const item = about.submenu.find((entry) => /log/i.test(entry.label || ''));
+  assert.ok(item, 'no way to open the logs');
+
+  item.click();
+  assert.equal(calls.revealed, 1, 'the log entry is not wired to the file');
 });

@@ -24,6 +24,7 @@ const {
 const appMenu = require('./menu');
 const updates = require('./updates');
 const releases = require('./releases');
+const logging = require('./logging');
 
 const SMOKE_TEST = process.argv.includes('--smoke-test');
 const BACKEND_STABLE_MS = 30000;
@@ -56,8 +57,7 @@ function backendHealthUrl(url) {
 }
 
 function writeBackendLog(stream, chunk) {
-  const output = stream === 'stderr' ? process.stderr : process.stdout;
-  output.write(`[backend:${stream}] ${chunk}`);
+  logging.backend(stream, chunk);
 }
 
 function showMainWindow() {
@@ -242,7 +242,7 @@ function scheduleBackendRestart(reason) {
   if (quitting || restartTimer) return;
   const delay = restartDelayMs();
   restartAttempt += 1;
-  console.error(`[desktop] backend unavailable (${reason}); restarting in ${delay}ms`);
+  logging.note(`backend unavailable (${reason}); restart #${restartAttempt} in ${delay}ms`);
   restartTimer = setTimeout(() => {
     restartTimer = null;
     startBackend().catch((error) => scheduleBackendRestart(error.message));
@@ -255,6 +255,7 @@ function handleBackendExit(child, code, signal) {
   backendUrl = null;
   if (quitting) return;
   if (Date.now() - backendStartedAt >= BACKEND_STABLE_MS) restartAttempt = 0;
+  logging.note(`backend exited after ${Date.now() - backendStartedAt}ms: code=${code} signal=${signal}`);
   scheduleBackendRestart(`exit code=${code}, signal=${signal}`);
 }
 
@@ -271,6 +272,7 @@ async function startBackend() {
     if (shared && !quitting) {
       backend = null;
       backendUrl = shared.url;
+      logging.note(`attached to a shared backend at ${shared.url} pid=${shared.pid}`);
       console.log(`SERENA_BACKEND_SHARED ${shared.url} pid=${shared.pid}`);
       if (!SMOKE_TEST) {
         if (!mainWindow) createWindow(shared.url);
@@ -308,6 +310,7 @@ async function startBackend() {
     const health = await waitForHealth(child, backendHealthUrl(url));
     if (backend !== child || quitting) return;
     backendUrl = url;
+    logging.note(`backend ready at ${url} pid=${health.pid}`);
     console.log(`SERENA_BACKEND_READY ${url} pid=${health.pid}`);
     if (!SMOKE_TEST) {
       if (!mainWindow) createWindow(url);
@@ -358,6 +361,10 @@ process.on('SIGINT', () => app.quit());
 
 if (gotSingleInstanceLock) {
   app.whenReady().then(() => {
+    // Before anything else: a crash with no log is what made the last one take
+    // an afternoon to find.
+    logging.configure(() => app.getPath('userData'));
+    logging.note(`Serena ${app.getVersion()} starting on ${process.platform}`);
     registerDesktopIpc();
     registerUpdateIpc();
     // The menu needs a live window reference, not the one that existed at

@@ -39,7 +39,8 @@
       "build/icon.png",
       "menu.js",
       "updates.js",
-      "releases.js"
+      "releases.js",
+      "logging.js"
     ],
     "extraResources": [
       {
