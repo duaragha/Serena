@@ -38,7 +38,8 @@
       "package.json",
       "build/icon.png",
       "menu.js",
-      "updates.js"
+      "updates.js",
+      "releases.js"
     ],
     "extraResources": [
       {

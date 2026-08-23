@@ -309,3 +309,14 @@ longer be updated.
 Two builds legitimately cannot update themselves and say so instead of failing
 quietly: a development run, and a Linux AppImage that was extracted rather than
 launched as a file, since electron-updater rewrites the AppImage in place.
+
+The app announces a new release itself, as a native notification, one per
+platform. `desktop-electron/releases.js` polls the releases API every fifteen
+minutes and fires when a platform's installer AND its channel file are both on
+the release. Both halves matter: the Linux job creates the release and uploads
+the AppImage, the Windows job adds the installer minutes later, so announcing on
+the tag alone fires once, too early, and points a machine at an artifact that is
+not there yet. It reports both platforms rather than only the one it runs on,
+because whoever cut the release is waiting on both from one screen. What has
+already been announced lives in `announced-builds.json` under the app's user
+data, so a restart does not replay it.

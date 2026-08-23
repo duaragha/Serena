@@ -23,6 +23,7 @@ const {
 } = require('./runtime');
 const appMenu = require('./menu');
 const updates = require('./updates');
+const releases = require('./releases');
 
 const SMOKE_TEST = process.argv.includes('--smoke-test');
 const BACKEND_STABLE_MS = 30000;
@@ -362,6 +363,9 @@ if (gotSingleInstanceLock) {
     // The menu needs a live window reference, not the one that existed at
     // startup: the window is recreated when reopened from the tray.
     appMenu.install(() => mainWindow);
+    // Say when each platform's build lands. A tagged release publishes Linux
+    // first and Windows minutes later, so both are worth hearing about.
+    releases.start();
     startBackend().catch((error) => {
       console.error('[desktop] initial backend start failed:', error.message);
     });
