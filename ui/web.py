@@ -11960,12 +11960,18 @@ def _ensure_resumable(sid: str, cwd: str) -> None:
         cd._canonicalize_session(sid)  # bring every existing copy to the union
         slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
         target = cd._projects_root() / slug / f"{sid}.jsonl"
-        if target.exists():
-            return  # canonicalize already refreshed it (it's a slug-copy)
         copies = [p for p in cd._slug_copies(sid) if p.exists()]
         if not copies:
             return
         src = max(copies, key=lambda p: p.stat().st_size)
+        if src == target:
+            return
+        # Presence is not enough. A copy left empty or short by an interrupted
+        # rewrite still satisfies exists(), and claude then resumes against
+        # nothing and exits on the spot. Re-stage unless this copy is already
+        # at least as complete as the best one we have.
+        if target.exists() and target.stat().st_size >= src.stat().st_size:
+            return
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, target)
     except Exception:

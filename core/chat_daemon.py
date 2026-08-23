@@ -166,6 +166,33 @@ def _slug_copies(sid: str) -> list[Path]:
     return out
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Replace a session file without ever exposing a partial one.
+
+    Opening a transcript "w" truncates it before the new bytes land, and these
+    files run to tens of megabytes. Anything reading during that window sees an
+    empty or half-written session: on the PC that surfaced as a chat that opens,
+    reports live, then dies, because `claude -r` found nothing to resume and
+    exited. A failed write left the file at zero bytes permanently.
+
+    Writing beside the target and renaming means a reader sees either the old
+    file or the new one. os.replace is atomic on POSIX and on Windows.
+    """
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        # Leave the existing file alone; a stale copy beats a truncated one.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def _canonicalize_session(sid: str) -> Path | None:
     """Union all slug-copies of a session by record uuid and propagate the
     merged content to every copy. This keeps the copies eventually-consistent
@@ -213,11 +240,7 @@ def _canonicalize_session(sid: str) -> Path | None:
     union_text = "\n".join(union) + "\n"
     for p in copies:
         if len(data[p]) != len(union):  # out of date → bring up to the union
-            try:
-                with p.open("w", encoding="utf-8") as f:
-                    f.write(union_text)
-            except OSError:
-                pass
+            _atomic_write(p, union_text)
     return base_path
 
 
