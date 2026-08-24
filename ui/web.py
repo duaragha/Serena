@@ -6127,6 +6127,66 @@ function setTermStatus(text, cls) {
   if (cls) el.classList.add(cls);
 }
 
+function _decodeOsc52(payload) {
+  // Base64 in, UTF-8 out. atob yields one byte per char, so the bytes have to
+  // be reassembled before decoding or anything non-ASCII arrives mangled.
+  const binary = atob(payload);
+  const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+function _copyPlainText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  // Older WebKitGTK builds expose no async clipboard in this context.
+  return new Promise((resolve, reject) => {
+    const scratch = document.createElement('textarea');
+    scratch.value = text;
+    scratch.setAttribute('readonly', '');
+    scratch.style.position = 'fixed';
+    scratch.style.opacity = '0';
+    document.body.appendChild(scratch);
+    scratch.select();
+    const ok = document.execCommand('copy');
+    scratch.remove();
+    ok ? resolve() : reject(new Error('execCommand copy was refused'));
+  });
+}
+
+/**
+ * Let programs inside the terminal reach the system clipboard.
+ *
+ * A TUI that cannot see a native clipboard copies by emitting OSC 52 and
+ * trusting the terminal to do the rest. xterm.js does not handle that sequence
+ * on its own, so those bytes were being dropped: Claude Code reported "sent N
+ * chars via OSC 52" and nothing ever arrived.
+ */
+function _installClipboardBridge(term) {
+  if (!term.parser || !term.parser.registerOscHandler) return;
+  term.parser.registerOscHandler(52, (data) => {
+    const semi = String(data).indexOf(';');
+    if (semi < 0) return false;
+    const payload = String(data).slice(semi + 1);
+
+    // OSC 52 can also READ the clipboard. Answering that would let anything
+    // running in a pane, including a command someone else's chat pasted,
+    // exfiltrate whatever is on the clipboard. Never reply.
+    if (payload === '?') return true;
+
+    let text;
+    try {
+      text = _decodeOsc52(payload);
+    } catch (e) {
+      return false;
+    }
+    _copyPlainText(text)
+      .then(() => showToast('copied ' + text.length + ' chars', { variant: 'success' }))
+      .catch((e) => showToast('clipboard refused the copy: ' + e.message, { variant: 'error' }));
+    return true;
+  });
+}
+
 function _machineBadge() {
   // Chats sync between the Linux laptop and the Windows PC, and a resumed pane
   // looks identical on either. Naming the host here settles at a glance which
@@ -6636,6 +6696,7 @@ async function startLiveTerminal(sid, opts) {
   // Reconnect swaps the socket out, so every sender reads the current one off
   // `state` instead of closing over the socket it was created with.
   const _liveSocket = () => (state && state.ws) || null;
+  _installClipboardBridge(term);
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   try {
