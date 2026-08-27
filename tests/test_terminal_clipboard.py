@@ -121,3 +121,24 @@ def test_the_bridge_is_installed_on_every_terminal() -> None:
     calls = web.HTML.count("  _installClipboardBridge(term);")
     assert calls == 1, f"expected exactly one call site, found {calls}"
     assert web.HTML.count("function _installClipboardBridge(") == 1
+
+
+def test_a_spawn_failure_says_whether_the_backend_is_reachable() -> None:
+    """"Failed to fetch" alone cost days of guessing.
+
+    The distinction that matters is whether the backend is gone or whether one
+    request failed, and the renderer can answer that itself in the moment.
+    """
+    body = _extract("_describeSpawnFailure")
+
+    assert "/api/health" in body, "the message must be based on an actual probe"
+    assert "location.origin" in body, "a dead window should name the origin nobody is serving"
+    # Both outcomes have to be distinguishable to whoever reads the screenshot.
+    assert "the backend is up" in body
+    assert "server is gone" in body
+
+
+def test_the_spawn_catch_path_uses_it() -> None:
+    start = web.HTML.index("Failed to spawn terminal: ' + e.message")
+    window = web.HTML[start : start + 400]
+    assert "_describeSpawnFailure" in window, "the refined message is never shown"

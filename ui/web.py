@@ -6127,6 +6127,26 @@ function setTermStatus(text, cls) {
   if (cls) el.classList.add(cls);
 }
 
+async function _describeSpawnFailure(error) {
+  // "Failed to fetch" names the symptom and nothing else. The question it
+  // leaves open is the only one that matters: is the backend gone, or did this
+  // one request fail? Answer it in the message rather than making someone
+  // reproduce it with devtools open.
+  const base = 'Failed to spawn terminal: ' + (error && error.message ? error.message : error);
+  let reachable = false;
+  try {
+    const probe = await fetch('/api/health', { cache: 'no-store' });
+    reachable = probe.ok;
+  } catch (e) {
+    reachable = false;
+  }
+  if (reachable) {
+    return base + ' · the backend is up, so this request failed on its own — try again';
+  }
+  return base + ' · nothing is answering on ' + location.origin +
+    ' — this window is showing a page whose server is gone. Reopen Serena.';
+}
+
 function _decodeOsc52(payload) {
   // Base64 in, UTF-8 out. atob yields one byte per char, so the bytes have to
   // be reassembled before decoding or anything non-ASCII arrives mangled.
@@ -6885,6 +6905,8 @@ async function startLiveTerminal(sid, opts) {
     spawnResp = await r.json();
   } catch(e) {
     setTermStatus('Failed to spawn terminal: ' + e.message, 'error');
+    // Refine it once we know whether the backend is reachable at all.
+    _describeSpawnFailure(e).then((detail) => setTermStatus(detail, 'error')).catch(() => {});
     mount.remove();
     if (activeTermSid === sid) activeTermSid = null;
     _termStarting.delete(sid);

@@ -317,8 +317,11 @@ no exit code, no traceback, and a window stranded on a dead port whose only
 symptom was "Failed to fetch" in the renderer. Everything the sidecar prints and
 every decision the shell makes about it (ready, exited, restarting) now lands in
 `logs/backend.log` under the app's user data, reachable from **About → Open Log
-Folder**. On Linux that is `~/.config/Serena/logs/backend.log`; on Windows,
-`%APPDATA%\Serena\logs\backend.log`.
+Folder**. The directory is named after the package `name`, not the product name,
+so it is `serena-desktop` and not `Serena`: `~/.config/serena-desktop/logs/` on
+Linux, `%APPDATA%\serena-desktop\logs\` on Windows. The same directory holds
+`announced-builds.json`, which is how to check whether the release notifier
+actually fired.
 
 The app announces a new release itself, as a native notification, one per
 platform. `desktop-electron/releases.js` polls the releases API every fifteen
