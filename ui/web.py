@@ -71,6 +71,38 @@ def _is_serena_voice_session(session: dict | None) -> bool:
 _INDEX_REFRESH_LOCK = threading.Lock()
 _INDEX_REFRESH_PROC: subprocess.Popen | None = None
 _TERMINAL_SPAWN_LOCK = threading.Lock()
+_CONPTY_SPAWN_RETRY_DELAY_SECONDS = 0.12
+_CONPTY_TRANSIENT_SEMAPHORE_ERROR = "HRESULT(0x800700BB)"
+
+
+def _is_pywinpty_panic(error: BaseException) -> bool:
+    error_type = type(error)
+    return (
+        error_type.__module__ == "pyo3_runtime"
+        and error_type.__name__ == "PanicException"
+    )
+
+
+def _is_transient_conpty_spawn_panic(error: BaseException) -> bool:
+    return (
+        _is_pywinpty_panic(error)
+        and _CONPTY_TRANSIENT_SEMAPHORE_ERROR in str(error)
+    )
+
+
+def _spawn_terminal_with_recovery(*args, **kwargs) -> str:
+    try:
+        return pty_terminal.spawn(*args, **kwargs)
+    except BaseException as error:
+        if not _is_transient_conpty_spawn_panic(error):
+            raise
+        print(
+            "[terminal] transient ConPTY semaphore failure; retrying once",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(_CONPTY_SPAWN_RETRY_DELAY_SECONDS)
+        return pty_terminal.spawn(*args, **kwargs)
 
 
 def _launch_index_refresh_process() -> subprocess.Popen:
@@ -12157,7 +12189,7 @@ def api_spawn_terminal():
         try:
             from core.billing import strip_metered_auth_env
 
-            tid = pty_terminal.spawn(
+            tid = _spawn_terminal_with_recovery(
                 argv,
                 cwd=cwd,
                 cols=cols,
@@ -12170,6 +12202,13 @@ def api_spawn_terminal():
             return jsonify({"error": f"{agent} CLI not found on PATH"}), 500
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+        except BaseException as e:
+            # Rust panics raised by pywinpty inherit directly from BaseException.
+            # Keep those local to this request; control-flow exceptions still
+            # need to retain their normal process semantics.
+            if not _is_pywinpty_panic(e):
+                raise
+            return jsonify({"error": f"Windows terminal startup failed: {e}"}), 500
 
         # Register while the spawn lock is still held. A retry that arrives
         # after a lost HTTP response must receive this PTY, never create one.
