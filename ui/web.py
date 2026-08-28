@@ -70,6 +70,7 @@ def _is_serena_voice_session(session: dict | None) -> bool:
 
 _INDEX_REFRESH_LOCK = threading.Lock()
 _INDEX_REFRESH_PROC: subprocess.Popen | None = None
+_TERMINAL_SPAWN_LOCK = threading.Lock()
 
 
 def _launch_index_refresh_process() -> subprocess.Popen:
@@ -6133,18 +6134,39 @@ async function _describeSpawnFailure(error) {
   // one request fail? Answer it in the message rather than making someone
   // reproduce it with devtools open.
   const base = 'Failed to spawn terminal: ' + (error && error.message ? error.message : error);
-  let reachable = false;
-  try {
-    const probe = await fetch('/api/health', { cache: 'no-store' });
-    reachable = probe.ok;
-  } catch (e) {
-    reachable = false;
-  }
+  const reachable = await _terminalBackendReachable();
   if (reachable) {
-    return base + ' · the backend is up, so this request failed on its own — try again';
+    return base + ' · the backend is up, but the retry also failed; try again';
   }
   return base + ' · nothing is answering on ' + location.origin +
-    ' — this window is showing a page whose server is gone. Reopen Serena.';
+    '. This window is showing a page whose server is gone. Reopen Serena.';
+}
+
+async function _terminalBackendReachable() {
+  try {
+    const probe = await fetch('/api/health', { cache: 'no-store' });
+    return probe.ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function _spawnTerminalRequest(body) {
+  const requestOnce = async () => {
+    const response = await fetch('/api/spawn-terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return await response.json();
+  };
+  try {
+    return await requestOnce();
+  } catch (firstError) {
+    if (!await _terminalBackendReachable()) throw firstError;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    return await requestOnce();
+  }
 }
 
 function _decodeOsc52(payload) {
@@ -6897,12 +6919,7 @@ async function startLiveTerminal(sid, opts) {
           rows: term.rows,
           cols: term.cols,
         };
-    const r = await fetch('/api/spawn-terminal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    spawnResp = await r.json();
+    spawnResp = await _spawnTerminalRequest(body);
   } catch(e) {
     setTermStatus('Failed to spawn terminal: ' + e.message, 'error');
     // Refine it once we know whether the backend is reachable at all.
@@ -12070,6 +12087,7 @@ def api_spawn_terminal():
     cols = int(data.get("cols") or 100)
     rows = int(data.get("rows") or 30)
     seed = str(data.get("seed") or "")
+    runtime_sid = client_session_id or None
 
     if session_id:
         session = get_session(session_id)
@@ -12087,6 +12105,7 @@ def api_spawn_terminal():
             }), 409
         cwd = resolve_session_cwd(_get_session_cwd(session))
         sid = session["session_id"]
+        runtime_sid = sid
         ensure_session_visible(sid, session.get("project_dir", ""), cwd)
         # Resume the right agent based on stored agent value
         agent = (session.get("agent") or "claude").lower()
@@ -12122,30 +12141,42 @@ def api_spawn_terminal():
             argv = [sys.executable, _mask, "--"] + argv
     # === MODEL MASK END ===
 
-    try:
-        runtime_sid = sid if session_id else (client_session_id or None)
-        from core.billing import strip_metered_auth_env
-
-        tid = pty_terminal.spawn(
-            argv,
-            cwd=cwd,
-            cols=cols,
-            rows=rows,
-            session_id=runtime_sid,
-            agent=agent,
-            env=strip_metered_auth_env(os.environ),
+    with _TERMINAL_SPAWN_LOCK:
+        existing_tid = (
+            pty_terminal.tid_for_session(runtime_sid) if runtime_sid else None
         )
-    except FileNotFoundError:
-        return jsonify({"error": f"{agent} CLI not found on PATH"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        if existing_tid:
+            return jsonify({
+                "ok": True,
+                "terminal_id": existing_tid,
+                "cwd": cwd,
+                "agent": agent,
+                "reused": True,
+            })
 
-    # Map sid → live PTY so the ask-codex / ask-claude bridges can feed this
-    # terminal server-side (the Windows equivalent of the GTK VTE lookup).
-    if runtime_sid:
-        pty_terminal.register_session(runtime_sid, tid)
-    if seed:
-        pty_terminal.mark_turn_started(tid)
+        try:
+            from core.billing import strip_metered_auth_env
+
+            tid = pty_terminal.spawn(
+                argv,
+                cwd=cwd,
+                cols=cols,
+                rows=rows,
+                session_id=runtime_sid,
+                agent=agent,
+                env=strip_metered_auth_env(os.environ),
+            )
+        except FileNotFoundError:
+            return jsonify({"error": f"{agent} CLI not found on PATH"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+        # Register while the spawn lock is still held. A retry that arrives
+        # after a lost HTTP response must receive this PTY, never create one.
+        if runtime_sid:
+            pty_terminal.register_session(runtime_sid, tid)
+        if seed:
+            pty_terminal.mark_turn_started(tid)
 
     return jsonify({
         "ok": True,

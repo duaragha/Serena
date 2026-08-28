@@ -130,8 +130,10 @@ def test_a_spawn_failure_says_whether_the_backend_is_reachable() -> None:
     request failed, and the renderer can answer that itself in the moment.
     """
     body = _extract("_describeSpawnFailure")
+    probe = _extract("_terminalBackendReachable")
 
-    assert "/api/health" in body, "the message must be based on an actual probe"
+    assert "_terminalBackendReachable" in body
+    assert "/api/health" in probe, "the message must be based on an actual probe"
     assert "location.origin" in body, "a dead window should name the origin nobody is serving"
     # Both outcomes have to be distinguishable to whoever reads the screenshot.
     assert "the backend is up" in body
