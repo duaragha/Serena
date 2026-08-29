@@ -18,6 +18,7 @@ files:
   - updates.js
   - releases.js
   - logging.js
+  - backend-control.js
   - windows/main-win.js
   - package.json
 

@@ -12906,6 +12906,67 @@ def _shutdown_server():
     os._exit(0)
 
 
+# When this process started. Compared against the source tree so the desktop
+# shell can tell whether the server it is talking to predates the code on disk.
+_PROCESS_STARTED_AT = time.time()
+_FRESHNESS_ROOTS = ("core", "ui", "memory", "voice")
+_FRESHNESS_CACHE: dict[str, float] = {}
+
+
+def _newest_source_mtime() -> float:
+    """Newest .py mtime in the tree this process was imported from.
+
+    Serena runs from a checkout that changes under her. A restart of the desktop
+    app does not reload this process, so a fix can sit on disk for hours while
+    every request is still served by the old code. Nothing surfaced that, which
+    is exactly how an afternoon gets spent on a bug that was already fixed.
+    """
+    now = time.time()
+    cached_at = _FRESHNESS_CACHE.get("checked_at", 0.0)
+    if now - cached_at < 5.0:
+        return _FRESHNESS_CACHE.get("newest", 0.0)
+
+    root = Path(__file__).resolve().parent.parent
+    newest = 0.0
+    for name in _FRESHNESS_ROOTS:
+        directory = root / name
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*.py"):
+            # Virtualenvs and caches live under these roots and churn on their
+            # own; only first-party source counts as a reason to restart.
+            parts = path.parts
+            if any(part in {"__pycache__", "site-packages"} or part.startswith(".venv") for part in parts):
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > newest:
+                newest = mtime
+    _FRESHNESS_CACHE["checked_at"] = now
+    _FRESHNESS_CACHE["newest"] = newest
+    return newest
+
+
+@app.get("/api/backend-freshness")
+def api_backend_freshness():
+    """Whether this process is running the code currently on disk."""
+    newest = _newest_source_mtime()
+    return jsonify({
+        "ok": True,
+        "pid": os.getpid(),
+        # The packaged shell has no idea where the checkout lives; a frozen
+        # build is not even running from one. Say so rather than making it guess.
+        "source_root": str(Path(__file__).resolve().parent.parent),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "started_at": _PROCESS_STARTED_AT,
+        "newest_source_mtime": newest,
+        "stale": bool(newest > _PROCESS_STARTED_AT),
+        "stale_by_seconds": max(0.0, newest - _PROCESS_STARTED_AT),
+    })
+
+
 @app.get("/api/health")
 def api_health():
     """Liveness probe shared by every entry point.

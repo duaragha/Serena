@@ -1,6 +1,6 @@
 {
   "name": "serena-desktop",
-  "version": "0.2.7",
+  "version": "0.2.11",
   "description": "Serena desktop shell",
   "main": "main.js",
   "author": "Raghav",
@@ -40,7 +40,8 @@
       "menu.js",
       "updates.js",
       "releases.js",
-      "logging.js"
+      "logging.js",
+      "backend-control.js"
     ],
     "extraResources": [
       {

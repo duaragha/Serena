@@ -242,6 +242,17 @@ So an agent does not restart `serena-mobile-host` or `serena-desk` mid-work. A
 form included, and `pkill`-ing the host process too. Reading status, logs or the
 unit files is untouched.
 
+The tray menu now carries **Restart Backend**, which runs that same helper and
+reloads the window once the new server answers. It is there because the app
+usually ATTACHES to the long-lived `serena-mobile-host` rather than owning a
+server, so restarting the app reloads no Python at all: a fix can sit on disk
+for hours while every request is served by the process that started before it.
+The menu entry says how far behind the running server is, from
+`/api/backend-freshness`, which compares the process start time against the
+newest first-party `.py` mtime. Restarting still ends open panes and cycles the
+voice pipeline that shares the unit, so it stays an explicit choice rather than
+something tied to closing the window.
+
 Restarts happen at the END of a stretch of work, and Raghav calls it. When he
 has asked for one, use the detached helper rather than a bare systemctl:
 

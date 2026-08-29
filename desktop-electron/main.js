@@ -1,10 +1,12 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const http = require('node:http');
 const path = require('node:path');
 const {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -25,9 +27,17 @@ const appMenu = require('./menu');
 const updates = require('./updates');
 const releases = require('./releases');
 const logging = require('./logging');
+const backendControl = require('./backend-control');
 
 const SMOKE_TEST = process.argv.includes('--smoke-test');
 const BACKEND_STABLE_MS = 30000;
+// A freshly installed frozen sidecar can spend well over 30 seconds in the
+// first Windows Defender scan. Killing it at the generic timeout only repeats
+// that cold start and delays the window further; once warmed, startup remains
+// fast. Linux/dev launches keep the tighter failure signal.
+const BACKEND_READY_TIMEOUT_MS = process.platform === 'win32' && app.isPackaged
+  ? 90000
+  : 30000;
 // A dev run is a separate app: it serves this checkout on its own port and is
 // expected to sit beside the installed build while the UI is being worked on.
 // Sharing the packaged app's lock made `--dev` exit instantly with no output,
@@ -203,6 +213,87 @@ function trayIcon() {
   ).resize({ width: 22, height: 22 });
 }
 
+let backendFreshness = { reachable: false, stale: false };
+let restartingBackend = false;
+
+function getJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, { timeout: 4000 }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`HTTP ${response.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.once('timeout', () => request.destroy(new Error('timed out')));
+    request.once('error', reject);
+  });
+}
+
+async function refreshBackendFreshness() {
+  backendFreshness = await backendControl.freshness(backendUrl, getJson);
+  updateTrayMenu();
+  return backendFreshness;
+}
+
+/**
+ * Restart the server this window is talking to.
+ *
+ * Two shapes. When the shell spawned the backend it owns the process and can
+ * simply cycle it. When it attached to the long-lived systemd server it must go
+ * through the helper, because a bare systemctl restart is issued from inside
+ * the unit being restarted and gets killed partway through.
+ */
+async function restartBackend() {
+  if (restartingBackend) return { ok: false, reason: 'already restarting' };
+  restartingBackend = true;
+  updateTrayMenu();
+  const url = backendUrl;
+  try {
+    if (backend) {
+      logging.note('restarting the backend this shell owns');
+      await stopBackend();
+      await startBackend();
+      return { ok: true, owned: true };
+    }
+
+    const root = backendFreshness.sourceRoot || (await refreshBackendFreshness()).sourceRoot;
+    const launch = backendControl.sharedRestartCommand(root);
+    logging.note(`restarting ${backendControl.SHARED_UNIT} via ${launch.args[0]}`);
+    await new Promise((resolve, reject) => {
+      const child = spawn(launch.command, launch.args, {
+        env: { ...process.env, ...launch.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      child.stdout.on('data', (chunk) => logging.note(`restart: ${chunk}`));
+      child.stderr.on('data', (chunk) => logging.note(`restart: ${chunk}`));
+      child.once('error', reject);
+      child.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(`helper exited ${code}`))));
+    });
+
+    const back = await backendControl.waitForBackend(url, getJson);
+    if (!back.ok) throw new Error(`server did not come back: ${back.reason}`);
+    logging.note(`backend restarted, now pid=${back.pid}`);
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+    return { ok: true, owned: false, pid: back.pid };
+  } catch (error) {
+    logging.note(`backend restart failed: ${error.message}`);
+    return { ok: false, reason: error.message };
+  } finally {
+    restartingBackend = false;
+    refreshBackendFreshness().catch(() => {});
+  }
+}
+
 function updateTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -213,6 +304,26 @@ function updateTrayMenu() {
         if (mainWindow.isVisible()) mainWindow.hide();
         else showMainWindow();
         updateTrayMenu();
+      },
+    },
+    {
+      // Named for what it costs, because it ends open panes and the voice
+      // pipeline shares the unit.
+      label: restartingBackend
+        ? 'Restarting Backend…'
+        : (backendControl.staleLabel(backendFreshness) || 'Restart Backend'),
+      enabled: !restartingBackend,
+      click: () => {
+        restartBackend().then((result) => {
+          if (!result.ok && result.reason !== 'already restarting') {
+            dialog.showMessageBox(mainWindow || undefined, {
+              type: 'error',
+              title: 'Restart failed',
+              message: 'The backend could not be restarted.',
+              detail: String(result.reason || '').slice(0, 500),
+            }).catch(() => {});
+          }
+        });
       },
     },
     { type: 'separator' },
@@ -307,7 +418,9 @@ async function startBackend() {
     child.stderr.on('data', (chunk) => writeBackendLog('stderr', chunk));
     child.once('exit', (code, signal) => handleBackendExit(child, code, signal));
 
-    const health = await waitForHealth(child, backendHealthUrl(url));
+    const health = await waitForHealth(child, backendHealthUrl(url), {
+      timeoutMs: BACKEND_READY_TIMEOUT_MS,
+    });
     if (backend !== child || quitting) return;
     backendUrl = url;
     logging.note(`backend ready at ${url} pid=${health.pid}`);
@@ -373,6 +486,9 @@ if (gotSingleInstanceLock) {
     // Say when each platform's build lands. A tagged release publishes Linux
     // first and Windows minutes later, so both are worth hearing about.
     releases.start();
+    // Cheap and local. The point is that the menu can say the server is behind
+    // before a fix appears not to work.
+    setInterval(() => refreshBackendFreshness().catch(() => {}), 60_000).unref();
     startBackend().catch((error) => {
       console.error('[desktop] initial backend start failed:', error.message);
     });
