@@ -119,14 +119,22 @@ When Raghav asks for an image, run `chats gen-image "<his prompt>"`. Do NOT rout
 
 Wait for it (timeout 600s; usually 20-60s), report the saved path. Multiple images → multiple separate calls, never batch into one prompt.
 
-## Texting Raghav — `chats text`
+## Personal project delivery
 
-Proactive pings to Raghav's phone via the Serena telegram bot (@serena_pa_ai_bot). Use from ANY session when something's worth interrupting him for: a long build finished, a deploy broke, a check-in he asked for, or you just need him to look at something.
+For implementation work Raghav has authorized in a personal-project repo,
+finishing includes delivery by default. Branch from current `main`, use an
+isolated worktree when needed to preserve his dirty checkout, stage only files
+that belong to the task, run the relevant checks, commit, push, open a PR,
+squash-merge it to `main`, and delete the branch. Do the full path without
+asking permission at every hop, and use the reachable host and `gh` yourself.
+Non-trivial changes need a clean typecheck/build before merging; never merge
+code known to be broken.
 
-- `chats text "message here"` — sends as the bot, prints `sent`
-- Credentials: `~/.config/serena/telegram.env` (laptop) — also on Railway for Locket's server-side pushes
-- His replies go to the LOCKET webhook brain (phone Serena with his tracker data), NOT back to your session. If you need an answer back in the terminal, say so in the text and have him come to the chat.
-- Don't spam: one text per event. Nagging isn't dominant, it's annoying.
+This does not turn a read-only, review, or diagnostic request into an
+implementation or delivery task. It does not apply to Frameworth work, to a
+repo or task with an explicit no-commit/no-push/no-merge boundary, or to
+unrelated changes already in the checkout. Never commit directly to `main` and
+never sweep his pre-existing files into the task commit.
 
 ## Reaching the PC
 
@@ -170,6 +178,26 @@ Install it on a machine by adding to `~/.claude/settings.json`:
                  "timeout": 5 } ] }
 ]
 ```
+
+## Reading a Codex chat
+
+Codex records a turn differently between its own versions, and Serena reads both
+through `core/codex_records.py`. Up to 0.146 a turn was an `event_msg` whose
+payload type was `user_message` or `agent_message`. From 0.150 those events are
+gone and the turn is a `response_item` message with a role. Reading only the old
+shape made every new Codex chat index as zero messages, open as an empty
+transcript, and hang `chats ask-codex` waiting for an event that never arrives.
+
+Two traps if this changes again. Older rollouts carry BOTH shapes for the same
+turn, so accepting both doubles every historical chat; the events win where they
+exist. And the new shape exposes what Codex injects into the user slot
+(AGENTS.md, `<environment_context>`, attached-file listings) which the old events
+hid, so it is filtered: otherwise every chat is titled "AGENTS.md instructions".
+
+The `codex exec --json` STDOUT stream is a DIFFERENT serialization from the rollout
+file and still uses snake_case `agent_message`. Fleet and the voice supervisor
+read that stream, not the rollout, and were never affected. Check a live run
+before "fixing" them.
 
 ## Diagnosing her voice
 

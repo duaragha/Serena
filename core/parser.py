@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from core import codex_records
+
 
 @dataclass
 class Message:
@@ -331,40 +333,16 @@ def _parse_codex_full(file_path: Path) -> list[Message]:
     """Extract readable user and assistant turns from a Codex rollout."""
     messages: list[Message] = []
     seen: set[tuple[str, str, str]] = set()
-    try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if record.get("type") != "event_msg":
-                    continue
-
-                payload = record.get("payload") or {}
-                inner = payload.get("type")
-                if inner == "user_message":
-                    role = "user"
-                elif inner in ("agent_message", "assistant_message"):
-                    role = "assistant"
-                else:
-                    continue
-
-                text = payload.get("message") or payload.get("text") or ""
-                if not isinstance(text, str) or not text.strip():
-                    continue
-                timestamp_str = record.get("timestamp", "")
-                key = (role, text, timestamp_str)
-                if key in seen:
-                    continue
-                seen.add(key)
-                try:
-                    timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                except (ValueError, AttributeError):
-                    timestamp = datetime.now()
-                messages.append(Message(role=role, text=text, timestamp=timestamp))
-    except (OSError, PermissionError):
-        pass
+    for role, text, timestamp_str in codex_records.read_messages(file_path):
+        key = (role, text, timestamp_str)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            timestamp = datetime.now()
+        messages.append(Message(role=role, text=text, timestamp=timestamp))
     return messages
 
 
@@ -421,32 +399,5 @@ def parse_messages_for_search(file_path: Path) -> list[tuple[str, str, str]]:
 
 
 def _parse_codex_messages_for_search(file_path: Path) -> list[tuple[str, str, str]]:
-    """Codex .jsonl uses event_msg envelope with payload.type. Extract user/agent
-    text for FTS indexing."""
-    results: list[tuple[str, str, str]] = []
-    try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") != "event_msg":
-                    continue
-                payload = obj.get("payload") or {}
-                inner = payload.get("type")
-                ts = obj.get("timestamp", "")
-                if inner == "user_message":
-                    text = payload.get("message") or payload.get("text") or ""
-                    if isinstance(text, str) and text.strip():
-                        results.append(("user", text, ts))
-                elif inner in ("agent_message", "assistant_message"):
-                    text = payload.get("message") or payload.get("text") or ""
-                    if isinstance(text, str) and text.strip():
-                        results.append(("assistant", text, ts))
-    except (OSError, PermissionError):
-        pass
-    return results
+    """Codex turns for FTS indexing, in whichever format the rollout used."""
+    return codex_records.read_messages(file_path)

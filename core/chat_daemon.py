@@ -1,12 +1,12 @@
-"""Headless chat protocol for the Serena mobile app.
+"""Headless chat protocol for Serena's mobile clients.
 
 Speaks the WebSocket protocol defined in `mobile/src/types.ts`. Reuses the
 existing index (`list_sessions` / `get_session`) for listing + history, and
 drives claude/codex in non-interactive print mode for live replies.
 
 Wired into the Flask app at `/ws/chat` (see ui/web.py) and served headless via
-`chats serve`. Auth is a shared token (query string on the WS handshake, since
-browsers can't set headers on a WebSocket).
+`chats serve`. Remote clients authenticate with the private shared token. The
+desktop coding app resumes chats through its interactive terminal instead.
 """
 
 from __future__ import annotations
@@ -17,13 +17,31 @@ import re
 import secrets
 import shutil
 import subprocess
+import threading
+import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
+
+from core import codex_records
+from core.process_launch import platform_launch_argv
 
 CONFIG_DIR = Path.home() / ".config" / "serena"
 TOKEN_FILE = CONFIG_DIR / "chat_token"
 CHAT_PROMPT_DIR = CONFIG_DIR / "chat-prompts"
+_MOBILE_QUERY: ContextVar[str] = ContextVar("serena_mobile_memory_query", default="")
+_PENDING_SESSION_TTL_SECONDS = 60 * 60
+_MAX_PENDING_SESSIONS = 32
+_pending_sessions: dict[str, dict] = {}
+_pending_sessions_lock = threading.Lock()
+_active_turns: set[str] = set()
+_active_turns_lock = threading.Lock()
+_chat_turn_executor = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="serena-chat-turn",
+)
 
 
 # ── auth ──────────────────────────────────────────────────────────────────
@@ -77,6 +95,99 @@ def _cwd_of(row: dict) -> str | None:
     return row.get("cwd") or row.get("last_cwd") or row.get("project_dir") or None
 
 
+def _pending_summary(record: dict) -> dict:
+    return {
+        "id": record["id"],
+        "title": record["title"],
+        "agent": record["agent"],
+        "updated": record["updated"],
+        "preview": "",
+        "starred": False,
+        "pending": True,
+        "cwd": record["cwd"],
+    }
+
+
+def _expire_pending_sessions_locked(now: float) -> None:
+    for sid, record in list(_pending_sessions.items()):
+        if now - record["created_monotonic"] > _PENDING_SESSION_TTL_SECONDS:
+            _pending_sessions.pop(sid, None)
+
+
+def create_pending_session(
+    agent: str,
+    *,
+    cwd: str | None = None,
+    title: str | None = None,
+) -> dict:
+    """Reserve a real Claude session id before its first headless turn."""
+
+    normalized_agent = str(agent or "claude").strip().lower()
+    if normalized_agent == "serena":
+        normalized_agent = "claude"
+    if normalized_agent != "claude":
+        raise ValueError("new headless chats currently use Serena; open Code for Codex")
+
+    from core.config import resolve_session_cwd
+
+    now = time.monotonic()
+    record = {
+        "id": str(uuid.uuid4()),
+        "title": (str(title or "").strip() or "New chat")[:160],
+        "agent": normalized_agent,
+        "cwd": resolve_session_cwd(cwd),
+        "updated": int(time.time() * 1000),
+        "created_monotonic": now,
+    }
+    with _pending_sessions_lock:
+        _expire_pending_sessions_locked(now)
+        if len(_pending_sessions) >= _MAX_PENDING_SESSIONS:
+            oldest = min(
+                _pending_sessions,
+                key=lambda item: _pending_sessions[item]["created_monotonic"],
+            )
+            _pending_sessions.pop(oldest, None)
+        _pending_sessions[record["id"]] = record
+    return _pending_summary(record)
+
+
+def _get_pending_session(sid: str) -> dict | None:
+    now = time.monotonic()
+    with _pending_sessions_lock:
+        _expire_pending_sessions_locked(now)
+        record = _pending_sessions.get(sid)
+        return dict(record) if record else None
+
+
+def _drop_pending_session(sid: str) -> None:
+    with _pending_sessions_lock:
+        _pending_sessions.pop(sid, None)
+
+
+def _claim_turn(sid: str) -> bool:
+    with _active_turns_lock:
+        if sid in _active_turns:
+            return False
+        _active_turns.add(sid)
+        return True
+
+
+def _release_turn(sid: str) -> None:
+    with _active_turns_lock:
+        _active_turns.discard(sid)
+
+
+def _mark_turn_finished(sid: str) -> None:
+    """Persist background completion even when its browser has moved away."""
+
+    try:
+        from core import chat_attention
+
+        chat_attention.mark(sid)
+    except Exception:
+        pass
+
+
 # ── protocol payloads (read paths — no agent cost) ──────────────────────────
 def list_sessions_payload(limit: int = 200) -> dict:
     from core.indexer import list_sessions
@@ -89,10 +200,12 @@ def list_sessions_payload(limit: int = 200) -> dict:
         all_meta = {}
 
     out = []
+    indexed_ids: set[str] = set()
     for r in list_sessions(limit=limit):
         sid = r.get("session_id")
         if not sid:
             continue
+        indexed_ids.add(sid)
         summary = {
             "id": sid,
             "title": _title_of(r),
@@ -105,44 +218,29 @@ def list_sessions_payload(limit: int = 200) -> dict:
         if gid:
             summary["group"] = gid
         out.append(summary)
+    now = time.monotonic()
+    with _pending_sessions_lock:
+        _expire_pending_sessions_locked(now)
+        pending = [
+            _pending_summary(record)
+            for sid, record in _pending_sessions.items()
+            if sid not in indexed_ids
+        ]
+    pending.sort(key=lambda item: item["updated"], reverse=True)
+    out = pending + out
     return {"type": "sessions", "sessions": out}
 
 
 def _codex_messages(path: Path, sid: str) -> list[dict]:
-    """Parse a codex rollout (.jsonl) into chat messages. Codex uses a different
-    schema than claude: conversational turns are `event_msg` records whose
-    payload.type is user_message / agent_message, text in payload.message|text."""
-    out = []
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for i, raw in enumerate(fh):
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    obj = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") != "event_msg":
-                    continue
-                payload = obj.get("payload") or {}
-                inner = payload.get("type")
-                if inner == "user_message":
-                    role = "user"
-                elif inner in ("agent_message", "assistant_message"):
-                    role = "assistant"
-                else:
-                    continue
-                text = payload.get("message") or payload.get("text") or ""
-                if not isinstance(text, str) or not text.strip():
-                    continue
-                out.append(
-                    {"id": f"{sid}-{i}", "role": role, "text": text.strip(),
-                     "ts": _epoch_ms(obj.get("timestamp"))}
-                )
-    except OSError:
-        pass
-    return out
+    """Parse a codex rollout (.jsonl) into chat messages.
+
+    Codex records a turn differently from claude, and differently between its
+    own versions; core.codex_records reconciles both shapes.
+    """
+    return [
+        {"id": f"{sid}-{i}", "role": role, "text": text.strip(), "ts": _epoch_ms(ts)}
+        for i, (role, text, ts) in enumerate(codex_records.read_messages(path))
+    ]
 
 
 def _slug_copies(sid: str) -> list[Path]:
@@ -376,6 +474,7 @@ def _agent_command(
     sid: str,
     *,
     prompt_path: Path | None = None,
+    is_new: bool = False,
 ) -> list[str]:
     if agent == "codex":
         # codex exec resume <id>: appends the turn to the rollout IN PLACE
@@ -390,9 +489,10 @@ def _agent_command(
             "-",
         ]
     # Claude print mode reads the user turn from stdin and streams JSON events.
+    session_flag = "--session-id" if is_new else "--resume"
     cmd = [
         "claude", "-p",
-        "--resume", sid,
+        session_flag, sid,
         "--output-format", "stream-json",
         "--verbose",
     ]
@@ -414,8 +514,8 @@ def _knowledge_index() -> str:
     content is too large to inject every turn, so we list what's available and
     where to read it; claude can pull specific topics on demand."""
     try:
-        from knowledge.reader import list_topics
         from core.config import KNOWLEDGE_DIR
+        from knowledge.reader import list_topics
 
         topics = list_topics()
         if not topics:
@@ -435,10 +535,31 @@ def _knowledge_index() -> str:
         return ""
 
 
+def _mobile_memory_context(query: str) -> str:
+    """Return active state plus a bounded query-aware canonical memory pack."""
+
+    try:
+        from core.brain_state import active_state, compact_active
+        from memory.retrieval import pack_memory_context
+
+        active = active_state()
+        return pack_memory_context(
+            query,
+            active_state=compact_active(active),
+            active_records=active.records,
+            surface="mobile",
+            max_characters=7_000,
+            max_tokens=1_800,
+            max_records=5,
+            active_max_characters=1_200,
+        ).text
+    except Exception:
+        return ""
+
+
 def _injected_context() -> str:
-    """Persona + Tooling (who she is) + Memory (who Raghav is, live tasks/loops)
-    + Knowledge index. Assembled fresh each turn since a mobile `--resume` is a
-    cold process with no SessionStart/per-prompt hooks to inject these."""
+    """Persona, bounded canonical memory, and the knowledge index for Claude."""
+
     parts = []
     try:
         from core.config import read_agent_context
@@ -446,19 +567,20 @@ def _injected_context() -> str:
         parts.append(read_agent_context())  # persona + tooling
     except Exception:
         pass
-    try:
-        from memory.store import format_for_claude, format_active
-
-        parts.append(format_for_claude())  # user/feedback/project/reference + tasks/loops
-        active = format_active()
-        if active.strip():
-            parts.append("# Live now\n" + active)
-    except Exception:
-        pass
+    memory_context = _mobile_memory_context(_MOBILE_QUERY.get())
+    if memory_context:
+        parts.append(memory_context)
     k = _knowledge_index()
     if k:
         parts.append(k)
     return "\n\n".join(p for p in parts if p and p.strip())
+
+
+def _codex_turn_input(text: str) -> str:
+    """Prefix Codex stdin with the same private bounded memory context."""
+
+    memory_context = _mobile_memory_context(text)
+    return memory_context + "\n\n" + text if memory_context else text
 
 
 def _extract_full_text(agent: str, obj: dict) -> str:
@@ -516,49 +638,81 @@ def _orig_session_file(sid: str) -> Path | None:
         return None
 
 
-def run_agent(sid: str, agent: str, text: str, cwd: str | None, emit) -> None:
+def run_agent(
+    sid: str,
+    agent: str,
+    text: str,
+    cwd: str | None,
+    emit,
+    *,
+    is_new: bool = False,
+) -> bool:
     """Spawn the agent in print mode and stream its reply as protocol events.
 
     Resumes any chat regardless of origin OS by staging the session under a
-    fixed resumable cwd (see _RESUME_CWD), then syncing the continued file back.
+    resumable cwd, then syncing the continued file back. New chats run directly
+    in the selected project and materialize the caller-reserved UUID.
     """
     message_id = "a" + uuid.uuid4().hex[:12]
     emit({"type": "message_start", "sessionId": sid, "messageId": message_id, "role": "assistant"})
 
-    orig_file = _orig_session_file(sid)
+    orig_file = None if is_new else _orig_session_file(sid)
     staged: Path | None = None
-    # The session's recorded cwd (a Windows/laptop path) generally doesn't exist
-    # in the container. codex resumes by id (cwd-agnostic) → None (container
-    # default). claude is cwd-scoped → we stage the session under _RESUME_CWD.
+    # A session's recorded cwd may belong to the other OS. Codex resumes by id;
+    # Claude is cwd-scoped, so stage it under a known local cwd when necessary.
     run_cwd: str | None = None
 
-    if agent == "claude" and orig_file and orig_file.exists():
+    if is_new:
+        from core.config import resolve_session_cwd
+
+        run_cwd = resolve_session_cwd(cwd)
+
+    if not is_new and agent == "claude" and orig_file and orig_file.exists():
         try:
-            os.makedirs(_RESUME_CWD, exist_ok=True)
-            staged_dir = _projects_root() / _claude_slug(_RESUME_CWD)
+            if os.name == "nt":
+                from core.config import resolve_session_cwd
+
+                resume_cwd = resolve_session_cwd(cwd)
+            else:
+                resume_cwd = _RESUME_CWD
+            os.makedirs(resume_cwd, exist_ok=True)
+            staged_dir = _projects_root() / _claude_slug(resume_cwd)
             staged_dir.mkdir(parents=True, exist_ok=True)
             staged = staged_dir / orig_file.name
-            shutil.copy2(orig_file, staged)
-            run_cwd = _RESUME_CWD
+            if staged.resolve() == orig_file.resolve():
+                staged = None
+            else:
+                shutil.copy2(orig_file, staged)
+            run_cwd = resume_cwd
         except OSError:
             staged = None
             run_cwd = None
 
     sent = ""
+    success = False
     prompt_path = (
-        CHAT_PROMPT_DIR / f"mobile-{uuid.uuid4().hex}.md"
+        CHAT_PROMPT_DIR / f"chat-{uuid.uuid4().hex}.md"
         if agent == "claude"
         else None
     )
     try:
-        command = _agent_command(
-            agent,
-            sid,
-            prompt_path=prompt_path,
-        )
+        query_token = _MOBILE_QUERY.set(text)
+        try:
+            command = _agent_command(
+                agent,
+                sid,
+                prompt_path=prompt_path,
+                is_new=is_new,
+            )
+        finally:
+            _MOBILE_QUERY.reset(query_token)
+        turn_input = _codex_turn_input(text) if agent == "codex" else text
+        child_env = os.environ.copy()
+        command = platform_launch_argv(command, child_env)
         proc = subprocess.Popen(
             command,
             cwd=run_cwd,
+            env=child_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -566,7 +720,7 @@ def run_agent(sid: str, agent: str, text: str, cwd: str | None, emit) -> None:
             bufsize=1,
         )
         assert proc.stdin is not None
-        proc.stdin.write(text)
+        proc.stdin.write(turn_input)
         proc.stdin.close()
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -586,9 +740,21 @@ def run_agent(sid: str, agent: str, text: str, cwd: str | None, emit) -> None:
             if delta:
                 sent = full
                 emit({"type": "chunk", "sessionId": sid, "messageId": message_id, "delta": delta})
-        proc.wait(timeout=600)
+        exit_code = proc.wait(timeout=600)
+        success = exit_code == 0
+        if not success:
+            emit({
+                "type": "error",
+                "sessionId": sid,
+                "message": f"agent exited with code {exit_code}",
+            })
     except Exception as e:
-        emit({"type": "error", "message": f"agent run failed: {e}"})
+        success = False
+        emit({
+            "type": "error",
+            "sessionId": sid,
+            "message": f"agent run failed: {e}",
+        })
     finally:
         if prompt_path is not None:
             prompt_path.unlink(missing_ok=True)
@@ -607,13 +773,16 @@ def run_agent(sid: str, agent: str, text: str, cwd: str | None, emit) -> None:
 
     # Propagate the new turn to every slug-copy so the PC desktop (which may
     # read a different slug) sees it too.
-    if agent == "claude":
+    if agent == "claude" and not is_new:
         try:
             _canonicalize_session(sid)
         except Exception:
             pass
 
+    if success:
+        _mark_turn_finished(sid)
     emit({"type": "message_done", "sessionId": sid, "messageId": message_id})
+    return success
 
 
 # ── dispatch ────────────────────────────────────────────────────────────────
@@ -634,13 +803,97 @@ def handle_client_message(raw: str, emit) -> None:
         from core.indexer import get_session
 
         sid = msg.get("sessionId", "")
+        text = msg.get("text", "")
         row = get_session(sid) or {}
-        run_agent(sid, _agent_of(row), msg.get("text", ""), _cwd_of(row), emit)
+        pending = _get_pending_session(sid) if not row else None
+        if not sid or not isinstance(text, str) or not text.strip():
+            emit({
+                "type": "error",
+                "sessionId": sid,
+                "message": "sessionId and text are required",
+            })
+            return
+        if not row and not pending:
+            emit({"type": "error", "sessionId": sid, "message": "session not found"})
+            return
+        if not _claim_turn(sid):
+            emit({
+                "type": "error",
+                "sessionId": sid,
+                "message": "that chat already has an active turn",
+            })
+            return
+        agent = pending["agent"] if pending else _agent_of(row)
+        cwd = pending["cwd"] if pending else _cwd_of(row)
+        try:
+            success = run_agent(
+                sid,
+                agent,
+                text,
+                cwd,
+                emit,
+                is_new=bool(pending),
+            )
+        finally:
+            _release_turn(sid)
+        if success:
+            if pending:
+                from core import metadata
+
+                metadata.set_custom_title(sid, pending["title"])
+            try:
+                from core.indexer import update_index
+
+                update_index(skip_if_running=True)
+            except Exception:
+                pass
+            if pending and get_session(sid):
+                _drop_pending_session(sid)
+            emit(list_sessions_payload())
     elif mtype == "new_session":
-        # A session id is minted by the first real agent turn; wiring a fresh
-        # spawn is a follow-up. For now the UI gets a clear error.
-        emit({"type": "error", "message": "new_session not wired yet"})
+        try:
+            session = create_pending_session(
+                msg.get("agent", "claude"),
+                cwd=msg.get("cwd"),
+                title=msg.get("title"),
+            )
+        except ValueError as exc:
+            emit({"type": "error", "message": str(exc)})
+            return
+        emit({"type": "session_created", "session": session})
+        emit({"type": "history", "sessionId": session["id"], "messages": []})
     elif mtype == "stop":
         pass  # v1: turns run to completion
     else:
         emit({"type": "error", "message": f"unknown message type: {mtype}"})
+
+
+def dispatch_client_message(raw: str, emit) -> Future | None:
+    """Handle control messages inline and agent turns concurrently.
+
+    A single mobile WebSocket carries every conversation. Running a ``send``
+    inline blocks that socket until the agent exits, which prevents a second
+    chat from starting and makes navigation look like it killed the first
+    turn. Per-session admission still lives in ``_claim_turn``; this executor
+    only lets different session ids make progress at the same time.
+    """
+
+    try:
+        message = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        handle_client_message(raw, emit)
+        return None
+    if message.get("type") == "send":
+        def run_turn() -> None:
+            try:
+                handle_client_message(raw, emit)
+            except Exception as exc:
+                emit({
+                    "type": "error",
+                    "sessionId": message.get("sessionId", ""),
+                    "message": str(exc),
+                })
+
+        return _chat_turn_executor.submit(run_turn)
+    handle_client_message(raw, emit)
+    return None

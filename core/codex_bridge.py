@@ -29,6 +29,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from core import codex_records
+
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
 _DEFAULT_TIMEOUT = 300.0  # seconds — codex turns can be long
@@ -265,17 +267,24 @@ def _collect_response(jsonl: Path, start_index: int, timeout: float) -> dict[str
         events = _read_jsonl_lines(jsonl, last_seen)
         for ev in events:
             last_seen += 1
+            # Codex 0.150 stopped emitting user_message/agent_message events;
+            # the turn is a response_item now. Accept either, and dedupe by
+            # text because older versions write both for the same reply.
+            turn = codex_records.message_of(ev)
+            if turn is not None:
+                _shape, role, text = turn
+                if role == "user":
+                    saw_user_msg = True
+                else:
+                    chunk = _strip_trailing_blocks(text)
+                    if chunk.strip() and chunk not in response_parts:
+                        response_parts.append(chunk)
+                continue
             if ev.get("type") != "event_msg":
                 continue
             payload = ev.get("payload") or {}
             kind = payload.get("type")
-            if kind == "user_message":
-                saw_user_msg = True
-            elif kind in ("agent_message", "assistant_message"):
-                text = payload.get("message") or payload.get("text") or ""
-                if isinstance(text, str) and text.strip():
-                    response_parts.append(_strip_trailing_blocks(text))
-            elif kind in ("task_complete", "task_completed"):
+            if kind in ("task_complete", "task_completed"):
                 finished_reason = "complete"
                 break
             elif kind == "error":
@@ -290,7 +299,7 @@ def _collect_response(jsonl: Path, start_index: int, timeout: float) -> dict[str
         return {
             "ok": False,
             "response": "",
-            "message": "Prompt didn't reach the codex session (user_message never appeared in JSONL)",
+            "message": "Prompt didn't reach the codex session (no user turn appeared in the rollout)",
         }
 
     if finished_reason is None:
@@ -654,28 +663,30 @@ def _collect_work_response(
         events, end_index = _read_indexed_events(jsonl, last_seen)
         last_seen = max(last_seen, end_index)
         for event in events:
+            # Either rollout shape carries the turn; see core.codex_records.
+            turn = codex_records.message_of(event)
+            if turn is not None:
+                _shape, role, text = turn
+                if role == "user":
+                    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    if digest != prompt_sha256:
+                        return {
+                            "ok": False,
+                            "response": "",
+                            "message": "another prompt entered the reserved transcript slice",
+                            "finished": False,
+                        }
+                    saw_prompt = True
+                elif saw_prompt:
+                    chunk = _strip_trailing_blocks(text)
+                    if chunk.strip() and chunk not in response_parts:
+                        response_parts.append(chunk)
+                continue
             if event.get("type") != "event_msg":
                 continue
             payload = event.get("payload") or {}
             kind = payload.get("type")
-            if kind == "user_message":
-                message = payload.get("message")
-                digest = hashlib.sha256(
-                    (message if isinstance(message, str) else "").encode("utf-8")
-                ).hexdigest()
-                if digest != prompt_sha256:
-                    return {
-                        "ok": False,
-                        "response": "",
-                        "message": "another prompt entered the reserved transcript slice",
-                        "finished": False,
-                    }
-                saw_prompt = True
-            elif saw_prompt and kind in {"agent_message", "assistant_message"}:
-                text = payload.get("message") or payload.get("text") or ""
-                if isinstance(text, str) and text.strip():
-                    response_parts.append(_strip_trailing_blocks(text))
-            elif saw_prompt and kind in _WORK_FINISHED:
+            if saw_prompt and kind in _WORK_FINISHED:
                 cancelled = kind not in {"task_complete", "task_completed"}
                 return {
                     "ok": not cancelled,

@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from core import codex_records
 from core import metadata as meta_sync
 from core.parser import SessionMeta
 
@@ -139,9 +140,12 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
     sid = m.group(1)
 
     session_meta: dict | None = None
-    first_user_msg: str | None = None
     last_ts: datetime | None = None
-    msg_count = 0
+    # Both rollout shapes are collected and resolved at the end: a file that
+    # carries the old events AND the new items would otherwise count every
+    # turn twice. See core.codex_records.
+    event_turns: list[tuple[str, str]] = []
+    item_turns: list[tuple[str, str]] = []
     raw_count = 0
     last_turn_model: str | None = None
     last_total_usage: dict | None = None  # cumulative; codex emits a fresh snapshot each turn
@@ -175,23 +179,27 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
                         last_turn_model = str(payload["model"])
                 elif kind == "event_msg":
                     payload = obj.get("payload") or {}
-                    inner_kind = payload.get("type")
-                    if inner_kind == "user_message" and first_user_msg is None:
-                        text = payload.get("message") or payload.get("text") or ""
-                        if isinstance(text, str) and text.strip():
-                            first_user_msg = text.strip()[:500]
-                    if inner_kind in ("user_message", "agent_message", "assistant_message"):
-                        msg_count += 1
-                    if inner_kind == "token_count":
+                    if payload.get("type") == "token_count":
                         info = payload.get("info") or {}
                         usage = info.get("total_token_usage") if isinstance(info, dict) else None
                         if isinstance(usage, dict):
                             last_total_usage = usage
+
+                found = codex_records.message_of(obj)
+                if found is not None:
+                    shape, role, text = found
+                    (event_turns if shape == "event" else item_turns).append((role, text))
     except OSError:
         return None
 
     if session_meta is None:
         return None
+
+    turns = event_turns or item_turns
+    msg_count = len(turns)
+    first_user_msg = codex_records.first_typed_message(
+        [(role, text, "") for role, text in turns]
+    )[:500] or None
 
     cwd = session_meta.get("cwd") or ""
     project_dir = _slugify_cwd(cwd) if cwd else "codex"
