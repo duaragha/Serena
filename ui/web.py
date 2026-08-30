@@ -5543,6 +5543,25 @@ function _resetTermKeyboardSelection(state, clearVisible = false) {
 // the race by hooking the document-level keydown event in the CAPTURE phase
 // (runs before any element handler + before browser default). Scoped: only
 // fires when focus is inside the active xterm.js terminal.
+// What to send when the user asks for a newline without submitting.
+//
+// A browser terminal cannot deliver Shift+Enter, so Serena synthesises it. A
+// bare LF is what the Linux side has always sent, and it works there. It does
+// not on Windows, and the usual remedy makes it worse: the documented fix for
+// Claude Code is ESC followed by CR, and ConPTY eats the ESC. What reaches the
+// app is a lone carriage return, which is Enter, so the prompt submits.
+// Measured against a real child through ConPTY:
+//   LF       '\n'          arrives intact
+//   ESC+CR   '\x1b\r'      arrives as '\r'   <- submits instead
+//   ESC+LF   '\x1b\n'      arrives as '\n'
+//   CSI-u    '\x1b[13;2u'  arrives intact   <- the one that works
+// CSI-u is the modern encoding for a modified key, and Claude Code asks for
+// that protocol at startup. It is sent only where LF is known to fail, so a
+// plain shell on Linux keeps getting the newline it understands.
+const _TERM_NEWLINE = (navigator.userAgent || '').includes('Windows')
+  ? '\x1b[13;2u'
+  : '\n';
+
 function _installTermKeyCapture() {
   if (window.__termKeyCaptureInstalled) return;
   window.__termKeyCaptureInstalled = true;
@@ -5567,7 +5586,7 @@ function _installTermKeyCapture() {
     if (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && k === 'enter') {
       _resetTermKeyboardSelection(s, true);
       window.__termDrafts.set(sid, (window.__termDrafts.get(sid) || '') + '\n');
-      try { ws.send('\n'); } catch (_) {}
+      try { ws.send(_TERM_NEWLINE); } catch (_) {}
       e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
       return;
     }
@@ -6906,7 +6925,7 @@ async function startLiveTerminal(sid, opts) {
     const action = _matchBinding(e);
     if (!action) return true;
     if (action === 'term-newline') {
-      try { ws.send('\n'); } catch (_) {}
+      try { ws.send(_TERM_NEWLINE); } catch (_) {}
       e.preventDefault(); return false;
     }
     if (action === 'term-delete-word') {
