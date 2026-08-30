@@ -157,6 +157,38 @@ stdin rather than inlining the command. The VM sees this Projects tree at
 `/mnt/projects` over Syncthing, so an edit here reaches the build context
 without copying.
 
+## Never edit the repo from the PC
+
+Diagnose there, run tests there, read logs there. Do not write repo files there.
+
+The PC's checkout holds stale copies of some files, and Syncthing propagates
+whichever side was touched most recently. Editing anything in the repo from
+Windows can therefore push an ancient version over the laptop's current one and
+destroy uncommitted work. On 2026-08-30 it took out seven files, including
+`cli.py` (2769 to 484 lines) and `core/indexer.py` (2065 to 744). The app stopped
+importing entirely, because `ui/web.py` imports `get_usage_stats` and the stale
+indexer no longer had it, and only kept serving because the running process held
+older code in memory. Three functions another chat had in progress and never
+committed were lost outright; there is no `.stversions` on either machine.
+
+Editing on Windows also rewrites files with CRLF, which turns every later diff
+into a whole-file rewrite.
+
+To spot a clobber, compare top-level definitions against the committed file:
+
+```bash
+diff <(git show HEAD:core/indexer.py | grep -oE '^def [a-z_]+' | sort -u) \
+     <(grep -oE '^def [a-z_]+' core/indexer.py | sort -u)
+```
+
+A file missing definitions while adding none has been overwritten by an older
+copy, and `git checkout HEAD -- <file>` is safe. Real in-progress work always
+adds something, so anything with additions is somebody's edit and must be left
+alone.
+
+Make edits on the laptop over ssh (`ssh laptop`), and commit from the laptop.
+The PC's git HEAD is still `7b2d85e` and is not usable for committing.
+
 ## Which machine am I on
 
 A `SessionStart` hook runs `core/machine_context.py` and prints a short banner
@@ -372,3 +404,17 @@ not there yet. It reports both platforms rather than only the one it runs on,
 because whoever cut the release is waiting on both from one screen. What has
 already been announced lives in `announced-builds.json` under the app's user
 data, so a restart does not replay it.
+
+## Cross-machine artifact storage
+
+Final files and user-facing outputs must live inside the active machine's
+synced `Projects` root so they are available on both the Linux laptop and the
+Windows PC. Use the relevant project repository when one exists. When there is
+no natural project, use `<Projects root>/_artifacts/<project>/`.
+
+Do not hand off a final artifact from `Documents`, `Downloads`, `/tmp`, a home
+directory, or an app-specific cache. Temporary files may be created there while
+working, but copy the finished output into `Projects` before reporting it. Use
+`machine_context.py` at session start to resolve the current root rather than
+hardcoding the Linux or Windows path. Report the synced relative path and
+verify that the final file exists before opening or delivering it.
