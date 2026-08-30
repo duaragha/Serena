@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import types
@@ -147,7 +148,10 @@ def test_locked_cli_writers_publish_valid_max_and_preserve_other_provider(tmp_pa
     assert state["schema_version"] == SCHEMA_VERSION
     assert state["claude"]["five_hour"]["used_percentage"] == 81
     assert state["codex"]["five_hour"]["used_percentage"] == 27
-    assert state_file.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        # Windows has no POSIX mode bits: chmod there only toggles read-only,
+        # and access is governed by the ACL on the user's profile instead.
+        assert state_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_materialized_state_drops_chat_specific_fields():
@@ -209,3 +213,82 @@ import core.usage_aggregator
 
     result = subprocess.run([sys.executable, "-c", script], cwd=repo, check=False)
     assert result.returncode == 0
+
+
+# --- Claude's numbers only ever exist in the statusline payload -------------
+#
+# Codex writes its usage into session files the app can read at any time.
+# Claude's arrive on stdin when Claude Code renders the status line and are gone
+# when that process exits. The Linux statusline had been taping them into the
+# state file with jq all along; the Windows one only rendered, so the app showed
+# Claude as "waiting" forever on that machine.
+
+def test_a_statusline_render_becomes_an_observation() -> None:
+    from core.usage_aggregator import observation_from_statusline
+
+    observation = observation_from_statusline(
+        {
+            "rate_limits": {
+                "five_hour": {"used_percentage": 12.4, "resets_at": 1788060000},
+                "seven_day": {"used_percentage": 8, "resets_at": 1788602400},
+            },
+            "model": {"display_name": "Opus 5 (1M context)"},
+            "version": "2.1.251",
+        },
+        observed_at=1788056103,
+    )
+
+    assert observation["provider"] == "claude"
+    assert observation["source"] == "claude-statusline"
+    assert observation["observed_at"] == 1788056103
+    assert observation["windows"]["five_hour"]["used_percentage"] == 12.4
+    assert observation["windows"]["seven_day"]["resets_at"] == 1788602400
+    # The parenthetical is context size, not a different model.
+    assert observation["model"] == "Opus 5"
+
+
+def test_a_render_without_rate_limits_is_not_an_observation() -> None:
+    """Otherwise an ordinary render would erase real numbers with nothing."""
+    from core.usage_aggregator import observation_from_statusline
+
+    assert observation_from_statusline({"model": {"display_name": "Opus 5"}}) is None
+    assert observation_from_statusline({"rate_limits": {}}) is None
+    assert observation_from_statusline({"rate_limits": {"five_hour": {}}}) is None
+    assert observation_from_statusline(None) is None
+
+
+def test_a_half_reported_window_still_counts() -> None:
+    """A percentage with no reset, or the reverse, is still worth recording."""
+    from core.usage_aggregator import observation_from_statusline
+
+    observation = observation_from_statusline(
+        {"rate_limits": {"five_hour": {"used_percentage": 3}}}
+    )
+
+    assert observation["windows"] == {"five_hour": {"used_percentage": 3}}
+
+
+def test_recording_writes_state_the_app_can_read(tmp_path) -> None:
+    from core.usage_aggregator import record_statusline
+
+    state_file = tmp_path / "live-usage.json"
+    payload = {
+        "rate_limits": {"five_hour": {"used_percentage": 4, "resets_at": 1788160000}},
+        "model": {"display_name": "Opus 5"},
+    }
+
+    assert record_statusline(payload, state_file) is True
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["claude"]["five_hour"]["used_percentage"] == 4
+    assert state["claude"]["source"] == "claude-statusline"
+
+
+def test_recording_never_takes_the_status_line_down(tmp_path) -> None:
+    """It runs inside the status line; an exception there breaks every render."""
+    from core.usage_aggregator import record_statusline
+
+    unwritable = tmp_path / "nope" / "\0bad" / "live-usage.json"
+
+    assert record_statusline({"rate_limits": {"five_hour": {"used_percentage": 1}}}, unwritable) is False
+    assert record_statusline(object(), tmp_path / "x.json") is False

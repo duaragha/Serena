@@ -7,6 +7,7 @@ import json
 import math
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -260,11 +261,19 @@ def _atomic_write(path: Path, state: dict[str, Any]) -> None:
             os.fsync(fh.fileno())
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, path)
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        if not _IS_WINDOWS:
+            # Fsyncing the directory is what makes the rename durable on POSIX.
+            # Windows cannot open a directory as a file at all: this raised
+            # PermissionError AFTER the replace had already landed, so every
+            # write appeared to fail while actually succeeding. The CLI turned
+            # that into exit 2 and the statusline tap reported nothing written.
+            # os.replace is atomic on Windows and there is no directory handle
+            # to flush.
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     finally:
         try:
             os.unlink(tmp_name)
@@ -315,6 +324,82 @@ def locked_materialize(path: Path | str, observation: dict[str, Any]) -> dict[st
         finally:
             _unlock_file(lock)
     return state
+
+
+def observation_from_statusline(
+    payload: Any, *, observed_at: float | int | None = None
+) -> dict[str, Any] | None:
+    """Turn Claude Code's statusline payload into an observation.
+
+    Claude's rate limits are only ever visible here. Unlike Codex, which writes
+    its usage into session files that can be read at any time, nothing on disk
+    records how much of Claude's window is gone: the numbers arrive on stdin
+    when Claude Code renders the status line, and are lost if nobody keeps them.
+
+    Returns None when the payload carries no window, so a render that happens to
+    have no rate-limit block never overwrites real numbers with nothing.
+    """
+    if not isinstance(payload, dict):
+        return None
+    limits = payload.get("rate_limits")
+    if not isinstance(limits, dict):
+        return None
+
+    windows: dict[str, Any] = {}
+    for name in WINDOWS:
+        window = limits.get(name)
+        if not isinstance(window, dict):
+            continue
+        used = _number(window.get("used_percentage"))
+        resets_at = _epoch(window.get("resets_at"))
+        if used is None and resets_at is None:
+            continue
+        entry: dict[str, Any] = {}
+        if used is not None:
+            entry["used_percentage"] = used
+        if resets_at is not None:
+            entry["resets_at"] = resets_at
+        windows[name] = entry
+    if not windows:
+        return None
+
+    model = payload.get("model")
+    if isinstance(model, dict):
+        model_name = model.get("display_name") or model.get("id") or ""
+    else:
+        model_name = model or ""
+
+    observation: dict[str, Any] = {
+        "provider": "claude",
+        "source": "claude-statusline",
+        "observed_at": int(observed_at if observed_at is not None else time.time()),
+        "windows": windows,
+    }
+    if model_name:
+        observation["model"] = str(model_name).split(" (")[0]
+    version = payload.get("version")
+    if version:
+        observation["version"] = str(version)
+    return observation
+
+
+def default_state_file() -> Path:
+    """Where the app looks for live usage, on either platform."""
+    from core.config import DATA_DIR
+
+    return Path(DATA_DIR) / "live-usage.json"
+
+
+def record_statusline(payload: Any, state_file: Path | str | None = None) -> bool:
+    """Persist one statusline render. Never raises: a status line must still draw."""
+    try:
+        observation = observation_from_statusline(payload)
+        if observation is None:
+            return False
+        locked_materialize(state_file or default_state_file(), observation)
+        return True
+    except Exception:
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
