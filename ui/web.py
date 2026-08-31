@@ -12161,7 +12161,13 @@ def api_spawn_terminal():
         # Resume the right agent based on stored agent value
         agent = (session.get("agent") or "claude").lower()
         if agent == "codex":
-            argv = ["codex", "resume", sid]
+            # --cd settles the working root up front. Without it, resuming a
+            # session whose recorded cwd is not the one we spawn in (which is
+            # every chat that started on the other machine) stops on codex's
+            # "Choose working directory" prompt and waits. The pane looks like
+            # it never opened. This is the same path the process already runs
+            # in, so it changes nothing except who answers the question.
+            argv = ["codex", "resume", sid, "--cd", cwd]
         else:
             # claude -r is cwd-scoped: it looks for the session under
             # projects/<slug-of-cwd>/. On a headless/cross-OS daemon the cwd
