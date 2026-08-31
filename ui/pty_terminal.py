@@ -65,9 +65,14 @@ class Terminal:
     session_id: str | None = None
     agent: str = ""
     cwd: str = ""
+    pty_backend: str = ""
     runtime_state: str = "live"
     runtime_busy: bool = False
     turn_file_version: tuple[int, int] | None = None
+    # The transcript size/mtime last seen by the idle sweep. Separate from
+    # turn_file_version, which belongs to the busy lease: this one exists only
+    # to notice that the child wrote something while nobody was attached.
+    activity_file_version: tuple[int, int] | None = None
     input_draft: str = ""
     work_item_id: str | None = None
     started_at: float = field(default_factory=time.monotonic)
@@ -752,6 +757,17 @@ def refresh_turn_state(
     if not term:
         return False
     with term.state_lock:
+        # A transcript that grew is the child saying it is still working, and
+        # when nobody is attached it is the ONLY thing that says so:
+        # last_activity is otherwise touched only by our own reads, and reads
+        # stop the moment the user looks at another pane. An agent left to think
+        # for longer than the idle window therefore looked idle and was frozen
+        # mid-turn, which is exactly what the field's own comment promises will
+        # never happen.
+        if file_version is not None and file_version != term.activity_file_version:
+            if term.activity_file_version is not None:
+                term.last_activity = time.monotonic()
+            term.activity_file_version = file_version
         if (
             term.runtime_busy
             and active is False

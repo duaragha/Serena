@@ -335,7 +335,10 @@ def test_xterm_editing_shortcuts_reach_the_pty_before_widget_shortcuts():
     web_source = (root / "ui" / "web.py").read_text(encoding="utf-8")
     gtk_source = (root / "desktop" / "app_gtk.py").read_text(encoding="utf-8")
 
-    assert r"ws.send('\n')" in web_source
+    # The newline is chosen per platform now: a bare LF on POSIX, and the CSI-u
+    # form on Windows, where ConPTY eats the escape prefix the usual remedy uses.
+    # See tests/test_terminal_newline.py.
+    assert "ws.send(_TERM_NEWLINE)" in web_source
     assert r"ws.send('\x17')" in web_source
     assert "function _extendTermKeyboardSelection(state, key)" in web_source
     assert "term.select(start % cols, Math.floor(start / cols), end - start);" in web_source
