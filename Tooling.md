@@ -157,6 +157,29 @@ stdin rather than inlining the command. The VM sees this Projects tree at
 `/mnt/projects` over Syncthing, so an edit here reaches the build context
 without copying.
 
+## Launching a GUI app on Windows, from a pane
+
+Always detach it. `Start-Process app.exe`, or `start "" app.exe` from cmd. Never
+just run the executable.
+
+A Windows console is a shared object, not a file descriptor. A process started
+from one attaches to that console and writes straight into its screen buffer for
+the rest of its life, even after the shell that launched it exits. The agent TUI
+drawing in that pane has no idea, so the app's log lines shred the display
+mid-line: `Waiting for background terminalhu51changes':` is the TUI and someone
+else's stderr interleaving character by character.
+
+It looks like Claude or Codex is broken. It is neither, and it hits both equally
+because it has nothing to do with the agent: it is whatever pane the app was
+launched from. It happened twice, with OpenWhispr and with Unified Inbox, both
+times because a chat restarted the app itself with a plain `.exe` invocation.
+
+To confirm: find the app's root process and look at its parent. A parent that is
+`gone` (an exited shell) with the GUI app still alive is the signature.
+
+POSIX has no equivalent. A child there gets file descriptors, and each pane is
+its own PTY, so an app cannot reach back into a terminal it was not given.
+
 ## Never edit the repo from the PC
 
 Diagnose there, run tests there, read logs there. Do not write repo files there.
