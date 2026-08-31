@@ -1,0 +1,26 @@
+# Serena is edited from a Linux laptop and a Windows PC that share one working
+# tree over Syncthing. Without this, a file written on Windows comes back with
+# CRLF, which turns every later diff into a whole-file rewrite and, worse, makes
+# shell scripts unrunnable: `#!/usr/bin/env bash\r` fails with
+# "/usr/bin/env: 'bash\r': No such file or directory".
+#
+# It happened on 2026-08-30 and took the host-restart helper with it.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.woff binary
+*.woff2 binary
+*.onnx binary
+*.bin binary
+*.pyc binary
+*.AppImage binary
+*.exe binary
+*.dll binary
+*.pfx binary
