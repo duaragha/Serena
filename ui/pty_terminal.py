@@ -930,11 +930,23 @@ def reclaim_memory(tid: str) -> float:
         return max(0.0, before - _rss_mb(pid))
 
 
+# How long a runtime is allowed to start before it may be frozen.
+#
+# An agent CLI is not usable the moment it is spawned. Codex reaches its input
+# line in under a second but keeps bringing up MCP servers for another twelve,
+# and an unreachable one costs thirty seconds of timeout on top. The linked
+# sibling in a split is named standby the instant focus is elsewhere, which
+# means zero idle tolerance, so with the old five-second window a Codex pane was
+# routinely SIGSTOPped part-way through its own startup. It then rendered
+# nothing and never finished, which reads exactly like "the chat will not open".
+_PREWARM_SECONDS = 60.0
+
+
 def pause(
     tid: str,
     *,
     protected: bool = False,
-    prewarm_seconds: float = 5.0,
+    prewarm_seconds: float = _PREWARM_SECONDS,
     min_idle_seconds: float = 0.0,
 ) -> bool:
     """Freeze an idle POSIX process group for a millisecond-scale resume.

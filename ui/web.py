@@ -6464,8 +6464,8 @@ async function _syncWebRuntimePolicy() {
     }
     if (runtimeSid !== _webRuntimeFocusSid) standbyTids.push(runtime.tid);
   }
-  // The sibling is named explicitly so it sleeps the moment focus leaves it;
-  // the rest are swept by the server once they have been quiet long enough.
+  // The sibling is still named so the server sweeps it, but it no longer
+  // sleeps on sight: every unfocused pane must prove it has been quiet first.
   if (sibling && !standbyTids.includes(sibling.tid)) standbyTids.push(sibling.tid);
   const pinned = Boolean(_gtkCurrentGroup && _gtkPinnedGroups.has(_gtkCurrentGroup));
   _webRuntimeSyncing = true;
@@ -12338,16 +12338,21 @@ def api_terminal_runtime_sync():
         if tid == focus_tid or pin_both:
             pty_terminal.resume(tid)
         else:
-            # A pane the user just switched away from sleeps immediately, since
-            # waking is a SIGCONT. One it never named has to prove it is idle
-            # first: a background agent can be mid-work without a recorded turn,
-            # and freezing that stalls it invisibly.
-            explicit = tid in standby_tids
+            # EVERY unfocused pane has to prove it has been quiet, the linked
+            # sibling included. The sibling used to sleep the instant focus left
+            # it, on the theory that waking is only a SIGCONT. That froze Codex
+            # part-way through a startup which takes twelve seconds on a good
+            # day and thirty more behind one unreachable MCP server. A pane
+            # stopped mid-start paints nothing and stays that way until someone
+            # clicks it, which is what "Codex will not open" always was. The
+            # cost of the fix is a few more minutes of resident memory for a
+            # pane you just left; the cost of the optimisation was a chat that
+            # looked broken.
             if pty_terminal.pause(
                 tid,
                 protected=working,
-                min_idle_seconds=0.0 if explicit else _RUNTIME_IDLE_SECONDS,
-            ) and not explicit:
+                min_idle_seconds=_RUNTIME_IDLE_SECONDS,
+            ):
                 # Reclaim ONLY on the idle path, never when the user just
                 # switched tabs. Pushing a pane's pages to swap the moment it
                 # loses focus means switching back faults hundreds of MB in
