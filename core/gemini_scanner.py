@@ -138,41 +138,15 @@ def parse_gemini_metadata(file_path: Path) -> SessionMeta | None:
     for source in (reversed(typed), reversed(mine)):
         for entry in source:
             workspace = (entry.get("workspace") or "").strip()
-            if workspace and workspace not in ("/home/raghav", "C:/Users/ragha", "C:\\Users\\ragha"):
+            if workspace:
                 cwd = workspace
                 break
         if cwd:
             break
 
-    # If workspace was generic home or empty, resolve the real project from transcript or prompts
-    if not cwd or cwd in ("/home/raghav", "C:/Users/ragha", "C:\\Users\\ragha"):
-        transcript_file = GEMINI_ROOT / "brain" / conversation_id / ".system_generated" / "logs" / "transcript.jsonl"
-        counts: dict[str, int] = {}
-        if transcript_file.exists():
-            try:
-                with open(transcript_file, encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        for m in re.findall(r"/home/raghav/Documents/Projects/([a-zA-Z0-9_\-]+)", line):
-                            counts[m] = counts.get(m, 0) + 1
-            except OSError:
-                pass
-        if counts:
-            top_proj = max(counts.items(), key=lambda x: x[1])[0]
-            cwd = str(Path.home() / "Documents" / "Projects" / top_proj)
-        else:
-            found = False
-            for entry in typed:
-                disp = entry.get("display", "")
-                m = re.search(r"/home/raghav/Documents/Projects/([a-zA-Z0-9_\-]+)", disp)
-                if m:
-                    cwd = str(Path.home() / "Documents" / "Projects" / m.group(1))
-                    found = True
-                    break
-            if not found:
-                cwd = str(Path.home() / "Documents" / "Projects" / "serena")
-
     from core.config import claude_project_dir_for
     from core.codex_scanner import _current_device_tag
+
 
 
     return SessionMeta(
