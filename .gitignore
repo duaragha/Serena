@@ -61,3 +61,7 @@ node_modules/
 *.log
 *.bak-*
 chats/.serena-handoff.md
+
+# Local Claude Code settings (permission allowlists, machine paths).
+# Repo is PUBLIC and these are per-machine, never shared.
+.claude/
