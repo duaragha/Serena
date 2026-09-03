@@ -29,14 +29,14 @@ These paths are required product source and belong in Git.
 | `core/` | control plane, resident brain, state, tools, tasking, bridges, and runtime services |
 | `chats/` | Claude and Codex session parsing, export, titles, watcher, and handoff code |
 | `ui/` | Flask application, web front door, and browser terminal transport |
-| `desktop/` | Linux GTK and cross-platform desktop shells |
-| `mobile/src/` | Serena phone application source |
+| `apps/mobile/src/` | Serena phone application source |
+| `apps/desktop/` | Serena desktop client (Electron) |
 | `voice/call/` | phone and browser voice transport, local STT, local TTS, VAD, telemetry, and acceptance harnesses |
 | `voice/desk/` | wake-only listener and desk conversation client |
 | `voice/desktop/` | dot-field display and private coding activity surface |
 | `voice/brain_bridge.py` | shared voice and display state bridge |
 | `systemd/` | canonical user-service definitions |
-| `tests/`, `desktop/tests/`, `voice/*/tests/`, `mobile/test/` | automated acceptance and regression coverage |
+| `tests/`, `apps/desktop/tests/`, `voice/*/tests/`, `apps/mobile/test/` | automated acceptance and regression coverage |
 | `static/` | application icons and packaged static assets |
 | `docs/` | current architecture, operations, and acceptance documentation |
 | `memory/*.py`, `knowledge/*.py` | storage and retrieval implementation |
@@ -79,8 +79,9 @@ These paths may be removed once the owning process is stopped. Bootstrap recreat
 | `.venv-pocket/` | isolated Pocket TTS environment |
 | `voice/.venv-wake/` | wake-word and desk audio environment |
 | `voice/models/` | local Whisper and Kokoro model cache |
-| `mobile/node_modules/` | mobile JavaScript dependencies |
-| `mobile/dist/` | built mobile web client |
+| `apps/mobile/node_modules/` | mobile JavaScript dependencies |
+| `apps/mobile/dist/` | built mobile web client |
+| `apps/desktop/node_modules/` | desktop JavaScript dependencies |
 | `voice/desktop/node_modules/` | Electron display dependencies |
 | `build/`, `*.egg-info/`, Python and test caches | generated packaging and test output |
 
@@ -222,7 +223,7 @@ This verification never imports live private data, changes installed services, s
 6. Run the bootstrap doctor.
 7. Install the user services.
 8. Authenticate Claude and Codex through their first-party subscription login flows.
-9. Build the mobile client with `npm ci && npm run build` inside `mobile/`.
+9. Build the mobile client with `npm ci && npm run build` inside `apps/mobile/`.
 10. Run the normal tests and the real-hardware acceptance procedures.
 
 Source reconstruction is automated. Subscription login, iPhone permissions, wake-word acceptance, and the physical call gate remain deliberate real-world actions.

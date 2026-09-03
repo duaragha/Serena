@@ -32,11 +32,11 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: desktop-electron/package-lock.json
+          cache-dependency-path: apps/desktop/package-lock.json
 
       - name: Refuse a tag that disagrees with the app version
         run: |
-          expected="v$(node -p "require('./desktop-electron/package.json').version")"
+          expected="v$(node -p "require('./apps/desktop/package.json').version")"
           if [ "$GITHUB_REF_NAME" != "$expected" ]; then
             echo "tag $GITHUB_REF_NAME does not match package version $expected" >&2
             exit 1
@@ -49,13 +49,13 @@ jobs:
           ./.venv/bin/python -m pip install --disable-pip-version-check pyinstaller
 
       - name: Prove the update surface before shipping it
-        working-directory: desktop-electron
+        working-directory: apps/desktop
         run: |
           npm ci
           node --test tests/updates.test.cjs tests/menu.test.cjs
 
       - name: Build and publish the AppImage
-        working-directory: desktop-electron
+        working-directory: apps/desktop
         env:
           # Publishing into this same repository, so the job's own token is
           # enough and no personal token has to be stored.
@@ -68,8 +68,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            desktop-electron/dist/Serena-*.AppImage
-            desktop-electron/dist/latest-linux.yml
+            apps/desktop/dist/Serena-*.AppImage
+            apps/desktop/dist/latest-linux.yml
 
   windows:
     name: NSIS installer
@@ -95,12 +95,12 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: desktop-electron/package-lock.json
+          cache-dependency-path: apps/desktop/package-lock.json
 
       - name: Refuse a tag that disagrees with the app version
         shell: pwsh
         run: |
-          $expected = "v$((Get-Content desktop-electron/package.json -Raw | ConvertFrom-Json).version)"
+          $expected = "v$((Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version)"
           if ($env:GITHUB_REF_NAME -ne $expected) {
             throw "tag $env:GITHUB_REF_NAME does not match package version $expected"
           }
@@ -110,7 +110,7 @@ jobs:
         run: python -m venv .venv
 
       - name: Prove the update surface before shipping it
-        working-directory: desktop-electron
+        working-directory: apps/desktop
         shell: pwsh
         run: |
           npm ci
@@ -125,7 +125,7 @@ jobs:
           # windows/make-signing-cert.ps1 for the free self-signed route.
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-        run: .\desktop-electron\windows\build-win.ps1 -Publish
+        run: .\apps\desktop\windows\build-win.ps1 -Publish
 
       - uses: actions/upload-artifact@v4
         with:
@@ -133,5 +133,5 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            desktop-electron/dist/windows/Serena-Setup-*.exe
-            desktop-electron/dist/windows/latest.yml
+            apps/desktop/dist/windows/Serena-Setup-*.exe
+            apps/desktop/dist/windows/latest.yml

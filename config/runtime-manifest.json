@@ -55,8 +55,10 @@
     ".venv",
     ".venv-pocket",
     "voice/.venv-wake",
-    "mobile/node_modules",
-    "mobile/dist",
+    "apps/mobile/node_modules",
+    "apps/mobile/dist",
+    "apps/desktop/node_modules",
+    "apps/desktop/dist",
     "voice/desktop/node_modules",
     "build",
     "serena.egg-info"

@@ -22,11 +22,11 @@ on:
       - master
     paths:
       - ".github/workflows/windows-desktop.yml"
-      - "desktop-electron/windows/**"
-      - "desktop-electron/*.js"
-      - "desktop-electron/package.json"
-      - "desktop-electron/package-lock.json"
-      - "desktop-electron/sidecar.py"
+      - "apps/desktop/windows/**"
+      - "apps/desktop/*.js"
+      - "apps/desktop/package.json"
+      - "apps/desktop/package-lock.json"
+      - "apps/desktop/sidecar.py"
       - "requirements-windows.txt"
       - "pyproject.toml"
       - "ui/**"
@@ -34,11 +34,11 @@ on:
   pull_request:
     paths:
       - ".github/workflows/windows-desktop.yml"
-      - "desktop-electron/windows/**"
-      - "desktop-electron/*.js"
-      - "desktop-electron/package.json"
-      - "desktop-electron/package-lock.json"
-      - "desktop-electron/sidecar.py"
+      - "apps/desktop/windows/**"
+      - "apps/desktop/*.js"
+      - "apps/desktop/package.json"
+      - "apps/desktop/package-lock.json"
+      - "apps/desktop/sidecar.py"
       - "requirements-windows.txt"
       - "pyproject.toml"
       - "ui/**"
@@ -74,14 +74,14 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: desktop-electron/package-lock.json
+          cache-dependency-path: apps/desktop/package-lock.json
 
       # The same guard the release job runs. It asserts, among other things,
       # that windows/electron-builder.win.yml and package.json still describe
       # one identical update feed; left to drift, one platform quietly stops
       # seeing updates and nothing fails until a user is already stranded.
       - name: Prove the update surface
-        working-directory: desktop-electron
+        working-directory: apps/desktop
         shell: pwsh
         run: |
           npm ci
@@ -97,7 +97,7 @@ jobs:
       # polls /api/health, then builds the NSIS installer.
       - name: Build the installer
         shell: pwsh
-        run: .\desktop-electron\windows\build-win.ps1
+        run: .\apps\desktop\windows\build-win.ps1
 
       - uses: actions/upload-artifact@v4
         with:
@@ -105,5 +105,5 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           path: |
-            desktop-electron/dist/windows/Serena-Setup-*.exe
-            desktop-electron/dist/windows/latest.yml
+            apps/desktop/dist/windows/Serena-Setup-*.exe
+            apps/desktop/dist/windows/latest.yml

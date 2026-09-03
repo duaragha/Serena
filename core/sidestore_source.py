@@ -166,7 +166,12 @@ def sidestore_icon():
     # The silky S — same art the app icons are generated from. dist/ first:
     # in the container only mobile/dist is mounted (assets/ isn't shipped).
     root = Path(__file__).resolve().parent.parent
-    for icon in (root / "mobile" / "dist" / "favicon.png", root / "mobile" / "assets" / "icon.png"):
+    for icon in (
+        root / "apps" / "mobile" / "dist" / "favicon.png",
+        root / "apps" / "mobile" / "assets" / "icon.png",
+        root / "mobile" / "dist" / "favicon.png",
+        root / "mobile" / "assets" / "icon.png",
+    ):
         if icon.is_file():
             return send_file(str(icon), mimetype="image/png")
     return jsonify({"error": "no icon"}), 404

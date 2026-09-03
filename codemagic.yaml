@@ -7,8 +7,8 @@ workflows:
       xcode: latest
       node: latest
       vars:
-        MOBILE_DIR: "$CM_BUILD_DIR/mobile"
-        XCODE_PROJECT: "$CM_BUILD_DIR/mobile/ios/App/App.xcodeproj"
+        MOBILE_DIR: "$CM_BUILD_DIR/apps/mobile"
+        XCODE_PROJECT: "$CM_BUILD_DIR/apps/mobile/ios/App/App.xcodeproj"
         XCODE_SCHEME: "App"
         IOS_DERIVED_DATA: "$CM_BUILD_DIR/build/ios-derived"
         IPA_OUTPUT_DIR: "$CM_BUILD_DIR/build/ios/ipa"

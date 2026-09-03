@@ -141,7 +141,10 @@ function backendLaunch({ isPackaged, appDir, resourcesPath, port, platform = pro
       cwd: resourcesPath,
     };
   }
-  const repoRoot = path.resolve(appDir, '..');
+  let repoRoot = path.resolve(appDir, '..');
+  if (path.basename(repoRoot) === 'apps') {
+    repoRoot = path.resolve(repoRoot, '..');
+  }
   const python = platform === 'win32'
     ? path.join(repoRoot, '.venv', 'Scripts', 'python.exe')
     : path.join(repoRoot, '.venv', 'bin', 'python');

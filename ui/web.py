@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import subprocess
+import shutil
 import sys
 import threading
 import time
@@ -512,6 +513,7 @@ html, body {
 }
 .live-usage-chip.claude { color: #f29b6f; }
 .live-usage-chip.codex { color: #9dc5ff; }
+.live-usage-chip.gemini { color: #67d9a0; }
 .live-usage-chip.waiting { color: var(--text-dim); opacity: 0.75; }
 .live-usage-chip.stale { opacity: 0.58; }
 .live-usage-dial {
@@ -604,6 +606,7 @@ html, body {
 }
 .live-usage-name.claude { color: #ff9f72; }
 .live-usage-name.codex { color: #a7caff; }
+.live-usage-name.gemini { color: #67d9a0; }
 .live-usage-meta {
   color: #b4a8b8;
   font-size: 9px;
@@ -707,6 +710,7 @@ html, body {
 }
 .usage-alert-name.claude { color: #ff9f72; }
 .usage-alert-name.codex { color: #a7caff; }
+.usage-alert-name.gemini { color: #67d9a0; }
 .usage-alert-level {
   color: #f4eef5;
   font-size: 11px;
@@ -975,6 +979,7 @@ body.pane-dragging * {
 .agent-filter-btn .agent-icon svg { width: 100%; height: 100%; }
 .agent-filter-btn.claude.active { color: #C15F3C; border-color: rgba(193,95,60,0.7); background: rgba(193,95,60,0.10); }
 .agent-filter-btn.codex.active  { color: #b07cff; border-color: rgba(176,124,255,0.7); background: rgba(176,124,255,0.10); }
+.agent-filter-btn.gemini.active { color: #67d9a0; border-color: rgba(103,217,160,0.7); background: rgba(103,217,160,0.10); }
 
 /* ── Project Sidebar ── */
 .project-sidebar {
@@ -1081,6 +1086,7 @@ body.pane-dragging * {
 .agent-icon svg { width: 14px; height: 14px; display: block; }
 .agent-icon.claude { color: #C15F3C; }   /* Anthropic crail orange */
 .agent-icon.codex  { color: #b07cff; }   /* purple to differentiate cleanly from claude orange */
+.agent-icon.gemini { color: #67d9a0; }   /* green, clear of claude orange and codex purple */
 .agent-icon.serena { color: #f472b6; }
 .group-header.serena-header {
   color: #f9a8d4;
@@ -1541,6 +1547,7 @@ body.pane-dragging * {
 }
 .term-session-id.claude { color: #ff967d; }
 .term-session-id.codex { color: #8cb4ff; }
+.term-session-id.gemini { color: #67d9a0; }
 .runtime-pin {
   display: inline-flex;
   align-items: center;
@@ -2509,6 +2516,9 @@ body.pane-dragging * {
           <button class="agent-filter-btn codex" id="filterCodex" onclick="toggleAgentFilter('codex')">
             <span class="agent-icon codex"></span>Codex
           </button>
+          <button class="agent-filter-btn gemini" id="filterGemini" onclick="toggleAgentFilter('gemini')">
+            <span class="agent-icon gemini"></span>Gemini
+          </button>
         </div>
       </div>
       <div class="selection-info hidden" id="selectionInfo">
@@ -3379,7 +3389,7 @@ function liveUsageWindowHtml(label, data) {
 
 function liveUsageCompactHtml(name, cls, svc) {
   const pct = usagePressure(svc);
-  const initial = cls === 'codex' ? 'x' : name[0];
+  const initial = cls === 'codex' ? 'x' : name[0];   // 'c' is claude's, so codex takes x
   if (!svc || !svc.available || pct == null) {
     return '<span class="live-usage-chip waiting">'
       + '<span class="live-usage-dial" style="--pct:0"><span>' + esc(initial) + '</span></span>'
@@ -3465,6 +3475,7 @@ function checkUsageAlerts(data) {
   const services = [
     ['claude', 'claude', data && data.claude],
     ['codex', 'codex', data && data.codex],
+    ['gemini', 'gemini', data && data.gemini],
   ];
   services.forEach(([name, cls, svc]) => {
     const state = usageAlertState[name] || (usageAlertState[name] = { lastPct: null });
@@ -3489,15 +3500,18 @@ function renderLiveUsage(data) {
   liveUsageData = data || {};
   const c = (data && data.claude) || {};
   const x = (data && data.codex) || {};
+  const g = (data && data.gemini) || {};
   const stateUpdatedAt = data && data.state_updated_at;
   el.innerHTML = '<div class="live-usage-compact">'
     + '<span class="live-usage-label">limits</span>'
     + liveUsageCompactHtml('claude', 'claude', c)
     + liveUsageCompactHtml('codex', 'codex', x)
+    + liveUsageCompactHtml('gemini', 'gemini', g)
     + '</div>'
     + '<div class="live-usage-popover">'
     + liveUsageServiceHtml('claude', 'claude', c, stateUpdatedAt)
     + liveUsageServiceHtml('codex', 'codex', x, stateUpdatedAt)
+    + liveUsageServiceHtml('gemini', 'gemini', g, stateUpdatedAt)
     + '</div>';
   _syncNativeUsagePopover();
 }
@@ -4492,11 +4506,13 @@ function toggleParentExpansion(sid) {
 // Currentcolor lets CSS pick the tint.
 const _CLAUDE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="m3.127 10.604 3.135-1.76.053-.153-.053-.085H6.11l-.525-.032-1.791-.048-1.554-.065-1.505-.08-.38-.081L0 7.832l.036-.234.32-.214.455.04 1.009.069 1.513.105 1.097.064 1.626.17h.259l.036-.105-.089-.065-.068-.064-1.566-1.062-1.695-1.121-.887-.646-.48-.327-.243-.306-.104-.67.435-.48.585.04.15.04.593.456 1.267.981 1.654 1.218.242.202.097-.068.012-.049-.109-.181-.9-1.626-.96-1.655-.428-.686-.113-.411a2 2 0 0 1-.068-.484l.496-.674L4.446 0l.662.089.279.242.411.94.666 1.48 1.033 2.014.302.597.162.553.06.17h.105v-.097l.085-1.134.157-1.392.154-1.792.052-.504.25-.605.497-.327.387.186.319.456-.045.294-.19 1.23-.37 1.93-.243 1.29h.142l.161-.16.654-.868 1.097-1.372.484-.545.565-.601.363-.287h.686l.505.751-.226.775-.707.895-.585.759-.839 1.13-.524.904.048.072.125-.012 1.897-.403 1.024-.186 1.223-.21.553.258.06.263-.218.536-1.307.323-1.533.307-2.284.54-.028.02.032.04 1.029.098.44.024h1.077l2.005.15.525.346.315.424-.053.323-.807.411-3.631-.863-.872-.218h-.12v.073l.726.71 1.331 1.202 1.667 1.55.084.383-.214.302-.226-.032-1.464-1.101-.565-.497-1.28-1.077h-.084v.113l.295.432 1.557 2.34.08.718-.112.234-.404.141-.444-.08-.911-1.28-.94-1.44-.759-1.291-.093.053-.448 4.821-.21.246-.484.186-.403-.307-.214-.496.214-.98.258-1.28.21-1.016.19-1.263.112-.42-.008-.028-.092.012-.953 1.307-1.448 1.957-1.146 1.227-.274.109-.477-.247.045-.44.266-.39 1.586-2.018.956-1.25.617-.723-.004-.105h-.036l-4.212 2.736-.75.096-.324-.302.04-.496.154-.162 1.267-.871z"/></svg>';
 const _CODEX_SVG  = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M14.949 6.547a3.94 3.94 0 0 0-.348-3.273 4.11 4.11 0 0 0-4.4-1.934 A4.1 4.1 0 0 0 8.423.2 4.15 4.15 0 0 0 6.305.086a4.1 4.1 0 0 0-1.891.948 4.04 4.04 0 0 0-1.158 1.753 4.1 4.1 0 0 0-1.563.679A4 4 0 0 0 .554 4.72a3.99 3.99 0 0 0 .502 4.731 3.94 3.94 0 0 0 .346 3.274 4.11 4.11 0 0 0 4.402 1.933c.382.425.852.764 1.377.995.526.231 1.095.35 1.67.346 1.78.002 3.358-1.132 3.901-2.804a4.1 4.1 0 0 0 1.563-.68 4 4 0 0 0 1.14-1.253 3.99 3.99 0 0 0-.506-4.716m-6.097 8.406a3.05 3.05 0 0 1-1.945-.694l.096-.054 3.23-1.838a.53.53 0 0 0 .265-.455v-4.49l1.366.778q.02.011.025.035v3.722c-.003 1.653-1.361 2.992-3.037 2.996m-6.53-2.75a2.95 2.95 0 0 1-.36-2.01l.095.057L5.29 12.09a.53.53 0 0 0 .527 0l3.949-2.246v1.555a.05.05 0 0 1-.022.041L6.473 13.3c-1.454.826-3.311.335-4.15-1.098m-.85-6.94A3.02 3.02 0 0 1 3.07 3.949v3.785a.51.51 0 0 0 .262.451l3.93 2.237-1.366.779a.05.05 0 0 1-.048 0L2.585 9.342a2.98 2.98 0 0 1-1.113-4.094zm11.216 2.571L8.747 5.576l1.362-.776a.05.05 0 0 1 .048 0l3.265 1.86a3 3 0 0 1 1.173 1.207 2.96 2.96 0 0 1-.27 3.2 3.05 3.05 0 0 1-1.36.997V8.279a.52.52 0 0 0-.276-.445m1.36-2.015-.097-.057-3.226-1.855a.53.53 0 0 0-.53 0L6.249 6.153V4.598a.04.04 0 0 1 .019-.04L9.533 2.7a3.07 3.07 0 0 1 3.257.139c.474.325.843.778 1.066 1.303.223.526.289 1.103.191 1.664zM5.503 8.575 4.139 7.8a.05.05 0 0 1-.026-.037V4.049c0-.57.166-1.127.476-1.607s.752-.864 1.275-1.105a3.08 3.08 0 0 1 3.234.41l-.096.054-3.23 1.838a.53.53 0 0 0-.265.455zm.742-1.577 1.758-1 1.762 1v2l-1.755 1-1.762-1z"/></svg>';
+const _GEMINI_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c.28 3.02 1.35 5.1 2.9 6.36C12.1 7.34 13.8 7.83 16 8c-2.2.17-3.9.66-5.1 1.64C9.35 10.9 8.28 12.98 8 16c-.28-3.02-1.35-5.1-2.9-6.36C3.9 8.66 2.2 8.17 0 8c2.2-.17 3.9-.66 5.1-1.64C6.65 5.1 7.72 3.02 8 0Z"/></svg>';
 const _SERENA_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M8 9.5a3 3 0 0 0 3-3v-3a3 3 0 0 0-6 0v3a3 3 0 0 0 3 3Z"/><path d="M3.5 6.5a.5.5 0 0 1 1 0 3.5 3.5 0 0 0 7 0 .5.5 0 0 1 1 0 4.5 4.5 0 0 1-4 4.473V13h2a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1h2v-2.027a4.5 4.5 0 0 1-4-4.473Z"/></svg>';
 
 function _agentBadge(agent) {
   const normalized = String(agent || 'claude').toLowerCase();
   if (normalized === 'codex') return '<span class="agent-icon codex" title="Codex">' + _CODEX_SVG + '</span>';
+  if (normalized === 'gemini') return '<span class="agent-icon gemini" title="Gemini">' + _GEMINI_SVG + '</span>';
   if (normalized === 'serena-voice') return '<span class="agent-icon serena" title="Serena">' + _SERENA_SVG + '</span>';
   return '<span class="agent-icon claude" title="Claude">' + _CLAUDE_SVG + '</span>';
 }
@@ -5314,8 +5330,8 @@ function _codeTermAgents() {
   const me = src.find(x => x && x.session_id === currentSessionId);
   const agents = [];
   if (me) agents.push((me.agent || 'claude').toLowerCase());
-  const sib = _linkedSiblingSid(currentSessionId);
-  if (sib) {
+  for (const sib of _linkedGroupSids(currentSessionId)) {
+    if (sib === currentSessionId) continue;
     const s = src.find(x => x && x.session_id === sib);
     if (s) agents.push((s.agent || 'claude').toLowerCase());
   }
@@ -6155,7 +6171,8 @@ async function loadReadTranscript(sid, force) {
         const defaultAgentLabel = data.agent === 'serena-voice' ? 'Serena' : 'Claude';
         const roleLabel = m.role === 'user'
           ? 'You'
-          : (data.agent === 'codex' ? 'Codex' : defaultAgentLabel);
+          : (data.agent === 'codex' ? 'Codex'
+             : data.agent === 'gemini' ? 'Gemini' : defaultAgentLabel);
         html += '<div class="msg">'
           + '<div class="msg-role ' + m.role + '">' + roleLabel + '</div>'
           + '<div class="msg-body">' + linkifyPaths(esc(m.text)) + '</div>'
@@ -6211,12 +6228,15 @@ function setConvMode(mode) {
     } else {
       startLiveTerminal(currentSessionId);
     }
-    // Linked claude↔codex pair: bring the sibling up in the background so the
-    // split view shows both — and so the ask-codex/ask-claude bridge has a
-    // live PTY to feed on this machine.
+    // Bring every other member of the linked group up in the background, so
+    // the square shows all of them — and so the ask-codex/ask-claude bridges
+    // have a live PTY to feed on this machine. Opening only one was fine while
+    // a group was always a pair; a claude+codex+gemini thread needs all three.
     if (!window.__nativeTerminalBridge) {
-      const _sib = _linkedSiblingSid(currentSessionId);
-      if (_sib && !termSessions.has(_sib)) startLiveTerminal(_sib, { background: true });
+      for (const memberSid of _linkedGroupSids(currentSessionId)) {
+        if (memberSid === currentSessionId) continue;
+        if (!termSessions.has(memberSid)) startLiveTerminal(memberSid, { background: true });
+      }
     }
     syncCodeView();
   } else {
@@ -6482,6 +6502,49 @@ function _hideAllTermPanes() {
   }
 }
 
+// Quadrant order, so a square always reads the same way regardless of which
+// pane you clicked to open it: claude top-left, codex top-right, gemini
+// bottom-left, anything else bottom-right.
+const _AGENT_QUAD_ORDER = ['claude', 'codex', 'gemini'];
+
+function _agentOf(sid) {
+  const local = _findClientSession(sid);
+  const runtime = termSessions.get(sid);
+  return String((local && local.agent) || (runtime && runtime.agent) || 'claude').toLowerCase();
+}
+
+/**
+ * Every live member of this chat's linked group, in quadrant order.
+ *
+ * The pair case used to be the only case, so the split asked for "the sibling"
+ * and got exactly one. A group can hold three now, and asking for one of three
+ * silently drops whichever the lookup did not happen to pick.
+ */
+function _linkedGroupSids(sid) {
+  const pending = _pendingTermPartners.get(sid);
+  const src = (sessionSource.length ? sessionSource : sessions);
+  const me = src.find(x => x && x.session_id === sid);
+
+  let ids = [];
+  if (me && me.group) {
+    ids = _siblingsInGroup(me.group, sid)
+      .filter(s => !s.external_runtime_active && !s.fleet_worker && !(s.metadata && s.metadata.fleet_worker))
+      .map(s => s.session_id);
+  } else if (pending) {
+    ids = [pending];
+  }
+
+  // Only panes that actually exist can be laid out.
+  const live = [sid, ...ids].filter((id, i, all) =>
+    id && all.indexOf(id) === i && (id === sid || termSessions.has(id)));
+
+  return live.sort((a, b) => {
+    const ai = _AGENT_QUAD_ORDER.indexOf(_agentOf(a));
+    const bi = _AGENT_QUAD_ORDER.indexOf(_agentOf(b));
+    return (ai < 0 ? _AGENT_QUAD_ORDER.length : ai) - (bi < 0 ? _AGENT_QUAD_ORDER.length : bi);
+  });
+}
+
 function _linkedSiblingSid(sid) {
   // The other half of a linked claude↔codex pair, if any.
   const pending = _pendingTermPartners.get(sid);
@@ -6589,17 +6652,57 @@ function _fitVisibleWebTerms() {
   return true;
 }
 
+// A linked thread of three or more runs as a square instead of slivers.
+// Three panes side by side leaves each about a third of the width, which is
+// not enough columns for an agent TUI to lay out its own input box, so past
+// two the panes stack into quadrants: claude, codex, gemini, and one spare.
+const _QUAD_MIN_PANES = 3;
+
+function _isQuadSplit() {
+  return Boolean(_gtkSplitSids && _gtkSplitSids.length >= _QUAD_MIN_PANES);
+}
+
+function _clearPaneGeometry(mount) {
+  mount.style.left = '';
+  mount.style.right = '';
+  mount.style.top = '';
+  mount.style.bottom = '';
+}
+
 function _applyWebSplitGeometry(container) {
   if (!_gtkSplitActive || !_gtkSplitSids) return;
+
+  if (_isQuadSplit()) {
+    // Fixed halves rather than a draggable ratio: the divider only ever knew
+    // about columns, and a square whose quadrants drift is worse than one that
+    // stays put. The gap matches the 6px the two-pane layout leaves.
+    const cells = [
+      { left: '8px',            right: 'calc(50% + 3px)', top: '6px',              bottom: 'calc(50% + 3px)' },
+      { left: 'calc(50% + 3px)', right: '8px',            top: '6px',              bottom: 'calc(50% + 3px)' },
+      { left: '8px',            right: 'calc(50% + 3px)', top: 'calc(50% + 3px)',  bottom: '2px' },
+      { left: 'calc(50% + 3px)', right: '8px',            top: 'calc(50% + 3px)',  bottom: '2px' },
+    ];
+    _gtkSplitSids.slice(0, 4).forEach((sid, index) => {
+      const runtime = termSessions.get(sid);
+      if (!runtime || !runtime.mount) return;
+      Object.assign(runtime.mount.style, cells[index]);
+    });
+    return;
+  }
+
   const pct = (_gtkSplitRatio * 100).toFixed(3) + '%';
   const [leftSid, rightSid] = _gtkSplitSids;
   const left = termSessions.get(leftSid);
   const right = termSessions.get(rightSid);
   if (left) {
+    left.mount.style.top = '';
+    left.mount.style.bottom = '';
     left.mount.style.left = '8px';
     left.mount.style.right = 'calc(100% - ' + pct + ' + 3px)';
   }
   if (right) {
+    right.mount.style.top = '';
+    right.mount.style.bottom = '';
     right.mount.style.left = 'calc(' + pct + ' + 3px)';
     right.mount.style.right = '8px';
   }
@@ -6609,8 +6712,9 @@ function _applyWebSplitGeometry(container) {
 
 function _layoutWebSplitDivider(container, split) {
   let divider = container.querySelector('.term-split-divider');
-  if (!split) {
+  if (!split || _isQuadSplit()) {
     if (divider) divider.classList.add('hidden');
+    if (_isQuadSplit()) _applyWebSplitGeometry(container);
     return;
   }
   if (!divider) {
@@ -6673,32 +6777,17 @@ function _activateTermPane(sid) {
   if (!container) return;
   // Linked pair with both terminals alive -> side-by-side split. Keep Claude
   // on the left and Codex on the right even when focus changes.
-  const sibSid = _linkedSiblingSid(sid);
-  const split = !!(sibSid && termSessions.has(sibSid));
-  let leftSid = sid;
-  let rightSid = sibSid;
-  if (split) {
-    const mine = _findClientSession(sid);
-    const sibling = _findClientSession(sibSid);
-    const mineAgent = ((mine && mine.agent) || (termSessions.get(sid) || {}).agent || 'claude').toLowerCase();
-    const siblingAgent = ((sibling && sibling.agent) || (termSessions.get(sibSid) || {}).agent || 'claude').toLowerCase();
-    if (mineAgent === 'codex' && siblingAgent === 'claude') {
-      leftSid = sibSid;
-      rightSid = sid;
-    }
-  }
+  const members = _linkedGroupSids(sid);
+  const split = members.length >= 2;
+  const shown = new Set(split ? members : [sid]);
   for (const child of container.children) {
     if (child.classList.contains('term-split-divider')) continue;
-    const isMain = child.dataset.sid === sid;
-    const isSib = split && child.dataset.sid === sibSid;
-    child.classList.toggle('hidden', !(isMain || isSib));
+    const visible = shown.has(child.dataset.sid);
+    child.classList.toggle('hidden', !visible);
     child.classList.toggle('runtime-focused', child.dataset.sid === sid);
-    if (isMain || isSib) {
+    if (visible) {
       child.style.visibility = '';  // clear background-spawn invisibility
-      if (!split) {
-        child.style.left = '';
-        child.style.right = '';
-      }
+      if (!split) _clearPaneGeometry(child);
     }
   }
   activeTermSid = sid;
@@ -6706,17 +6795,17 @@ function _activateTermPane(sid) {
   _setWebTerminalFocus(sid);
   const local = _findClientSession(sid);
   _gtkSplitActive = split;
-  _gtkSplitSids = split ? [leftSid, rightSid] : null;
+  _gtkSplitSids = split ? members : null;
   _renderOpenSessionIds(_visibleRuntimeSids());
   _reportWebRuntimeContext(sid);
   _gtkCurrentGroup = split
-    ? ((local && local.group) || ('pending:' + [leftSid, rightSid].sort().join(':')))
+    ? ((local && local.group) || ('pending:' + members.slice().sort().join(':')))
     : null;
   _layoutWebSplitDivider(container, split);
   _syncRuntimePinButton();
   const s = termSessions.get(sid);
   if (!s) return;
-  const visibleRuntimes = (split ? [sid, sibSid] : [sid])
+  const visibleRuntimes = (split ? members : [sid])
     .map(runtimeSid => termSessions.get(runtimeSid))
     .filter(Boolean);
   for (const runtime of visibleRuntimes) _armWebTerminalTail(runtime);
@@ -9613,15 +9702,19 @@ function toggleAgentFilter(agent) {
   _agentFilter = (_agentFilter === agent) ? null : agent;
   const c = document.getElementById('filterClaude');
   const x = document.getElementById('filterCodex');
+  const g = document.getElementById('filterGemini');
   if (c) c.classList.toggle('active', _agentFilter === 'claude');
   if (x) x.classList.toggle('active', _agentFilter === 'codex');
+  if (g) g.classList.toggle('active', _agentFilter === 'gemini');
   renderSessionList();
 }
 function _initAgentFilterIcons() {
   const c = document.querySelector('#filterClaude .agent-icon');
   const x = document.querySelector('#filterCodex .agent-icon');
+  const g = document.querySelector('#filterGemini .agent-icon');
   if (c) c.innerHTML = _CLAUDE_SVG;
   if (x) x.innerHTML = _CODEX_SVG;
+  if (g) g.innerHTML = _GEMINI_SVG;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -10115,6 +10208,9 @@ function showPrompt({ title = 'Enter value', body = '', placeholder = '', defaul
         + '</button>'
         + '<button type="button" class="agent-pill' + (defaultAgent === 'codex' ? ' active' : '') + '" data-agent="codex">'
           + '<span class="agent-icon codex">' + _CODEX_SVG + '</span>Codex'
+        + '</button>'
+        + '<button type="button" class="agent-pill' + (defaultAgent === 'gemini' ? ' active' : '') + '" data-agent="gemini">'
+          + '<span class="agent-icon gemini">' + _GEMINI_SVG + '</span>Gemini'
         + '</button>';
       picker.style.display = '';
       const pills = picker.querySelectorAll('.agent-pill');
@@ -10722,6 +10818,9 @@ def _latest_codex_usage() -> dict:
     return out
 
 
+from core.gemini_usage_reader import read_gemini_usage
+
+
 def _read_live_usage_state() -> dict:
     path = DATA_DIR / "live-usage.json"
     try:
@@ -10757,6 +10856,16 @@ def _live_usage_payload() -> dict:
         if not codex.get("available") and codex_state:
             codex = codex_state
 
+        # Antigravity keeps quota in memory and prints it on request, so unlike
+        # the other two there is no file to read; the reader shells out and
+        # caches. It must never delay this response, hence its own try.
+        try:
+            gemini = _normalize_usage_service(read_gemini_usage(now=now), now)
+            gemini = _mark_usage_freshness(gemini, gemini.get("updated_at"), now)
+        except Exception as exc:
+            print(f"[live-usage] gemini read failed: {exc}", flush=True)
+            gemini = {"available": False, "source": "gemini-cli-usage"}
+
         payload = {
             "ok": True,
             "updated_at": now,
@@ -10764,6 +10873,7 @@ def _live_usage_payload() -> dict:
             "stale_after_seconds": _LIVE_USAGE_STALE_AFTER,
             "claude": claude or {"available": False, "source": "claude-statusline"},
             "codex": codex,
+            "gemini": gemini,
         }
         _LIVE_USAGE_CACHE["at"] = now
         _LIVE_USAGE_CACHE["data"] = payload
@@ -11246,7 +11356,9 @@ def serve_mobile_app(subpath: str = ""):
     disclosed by this unauthenticated static route. Assets are served as-is."""
     from flask import Response, send_file
 
-    dist = (Path(__file__).resolve().parent.parent / "mobile" / "dist").resolve()
+    dist = (Path(__file__).resolve().parent.parent / "apps" / "mobile" / "dist").resolve()
+    if not dist.exists():
+        dist = (Path(__file__).resolve().parent.parent / "mobile" / "dist").resolve()
     # static asset (js/css/svg/png) — serve directly
     if subpath and subpath != "index.html":
         target = (dist / subpath).resolve()
@@ -12165,6 +12277,26 @@ def _persona_args() -> list[str]:
     return []
 
 
+def _gemini_argv(*, conversation: str | None = None, seed: str = "") -> list[str]:
+    """Launch Antigravity, which is what Gemini is for individuals now.
+
+    Google retired Google-account sign-in for the standalone gemini CLI and
+    migrated everyone to the Antigravity suite, so the binary is `agy`. Serena
+    keeps calling the agent "gemini" because that is the product; only the
+    executable changed. `gemini` is installed as an alias for it, and either
+    name is accepted here so a machine with only one of them still works.
+    """
+    binary = shutil.which("agy") or shutil.which("gemini") or "agy"
+    argv = [binary, "--dangerously-skip-permissions"]
+    if conversation:
+        argv += ["--conversation", conversation]
+    if seed:
+        # -i runs the prompt and stays interactive, which is what a seeded new
+        # chat means here. --print would answer once and exit.
+        argv += ["-i", seed]
+    return argv
+
+
 def _ensure_resumable(sid: str, cwd: str) -> None:
     """Guarantee `claude -r <sid>` can find the session from `cwd`. claude maps
     cwd -> projects/<slug>/ and looks for <sid>.jsonl there. On the headless
@@ -12229,7 +12361,12 @@ def api_spawn_terminal():
         ensure_session_visible(sid, session.get("project_dir", ""), cwd)
         # Resume the right agent based on stored agent value
         agent = (session.get("agent") or "claude").lower()
-        if agent == "codex":
+        if agent == "gemini":
+            # Antigravity owns its own transcripts, so resuming is by its
+            # conversation id and nothing has to be staged first. The id is the
+            # session id: Serena indexes each conversation file by its stem.
+            argv = _gemini_argv(conversation=sid)
+        elif agent == "codex":
             # --cd settles the working root up front. Without it, resuming a
             # session whose recorded cwd is not the one we spawn in (which is
             # every chat that started on the other machine) stops on codex's
@@ -12247,7 +12384,9 @@ def api_spawn_terminal():
     else:
         raw_cwd = (data.get("cwd") or "").strip()
         cwd = resolve_session_cwd(raw_cwd)
-        if agent == "codex":
+        if agent == "gemini":
+            argv = _gemini_argv(seed=seed)
+        elif agent == "codex":
             argv = ["codex"]  # fresh codex session
             if seed:
                 argv.append(seed)

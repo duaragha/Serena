@@ -61,9 +61,10 @@ def test_the_windows_build_requires_numpy():
     requirements = (REPO / "requirements-windows.txt").read_text(encoding="utf-8")
     assert "numpy" in requirements
 
-    spec = (REPO / "desktop-electron" / "windows" / "sidecar-win.spec").read_text(
-        encoding="utf-8"
-    )
+    spec_path = REPO / "apps" / "desktop" / "windows" / "sidecar-win.spec"
+    if not spec_path.is_file():
+        spec_path = REPO / "desktop-electron" / "windows" / "sidecar-win.spec"
+    spec = spec_path.read_text(encoding="utf-8")
     # A bare hidden import bundles a hollow numpy that fails on its compiled
     # extensions, which is the failure the Linux build already hit.
     assert 'collect_all("numpy")' in spec

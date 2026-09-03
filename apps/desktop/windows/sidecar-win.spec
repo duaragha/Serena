@@ -8,7 +8,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 WINDOWS_DIR = Path(SPECPATH).resolve()
 DESKTOP_DIR = WINDOWS_DIR.parent
-REPO_ROOT = DESKTOP_DIR.parent
+REPO_ROOT = DESKTOP_DIR.parent.parent if DESKTOP_DIR.parent.name == "apps" else DESKTOP_DIR.parent
 ENTRYPOINT = WINDOWS_DIR / "sidecar-win.py"
 
 # collect_submodules runs while evaluating the spec, before Analysis applies

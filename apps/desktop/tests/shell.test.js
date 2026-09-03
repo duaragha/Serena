@@ -90,9 +90,9 @@ test('waitForChildExit distinguishes graceful exit from timeout', async () => {
 });
 
 test('backend launch uses the repo venv in dev and bundled sidecar in production', () => {
-  const appDir = path.join(path.parse(desktopDir).root, 'repo', 'desktop-electron');
+  const appDir = path.join(path.parse(desktopDir).root, 'repo', 'apps', 'desktop');
   const resourcesPath = path.join(path.parse(desktopDir).root, 'app', 'resources');
-  const repoRoot = path.resolve(appDir, '..');
+  const repoRoot = path.resolve(appDir, '..', '..');
   const linuxDev = backendLaunch({
     isPackaged: false,
     appDir,

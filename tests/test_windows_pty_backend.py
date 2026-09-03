@@ -21,7 +21,11 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 WEB = REPO / "ui" / "web.py"
 HOST = REPO / "ui" / "pty_terminal.py"
-SIDECAR = REPO / "desktop-electron" / "windows" / "sidecar-win.py"
+SIDECAR = (
+    REPO / "apps" / "desktop" / "windows" / "sidecar-win.py"
+    if (REPO / "apps" / "desktop").exists()
+    else REPO / "desktop-electron" / "windows" / "sidecar-win.py"
+)
 
 
 def _module(path: Path) -> ast.Module:
@@ -207,8 +211,8 @@ def test_windows_native_executable_does_not_gain_a_shell(monkeypatch):
 def test_web_switches_xterm_to_the_spawned_windows_backend():
     source = WEB.read_text(encoding="utf-8")
 
-    assert "spawnResp.pty_backend" in source
-    assert "{ backend: 'winpty' }" in source
+    assert "windowsPty" in source
+    assert "convertEol: _isWin" in source
 
 
 def test_windows_children_do_not_inherit_a_dumb_parent_terminal():

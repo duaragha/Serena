@@ -31,7 +31,8 @@ services:
       - "C:/Users/ragha/Projects/serena/memory:/data/memory"
       - "C:/Users/ragha/Projects/serena/knowledge:/data/knowledge:ro"
       # built phone/desktop client — daemon serves it at /app for the laptop
-      - "C:/Users/ragha/Projects/serena/mobile/dist:/app/mobile/dist:ro"
+      - "C:/Users/ragha/Projects/serena/apps/mobile/dist:/app/apps/mobile/dist:ro"
+      - "C:/Users/ragha/Projects/serena/apps/mobile/dist:/app/mobile/dist:ro"
       # rebuilt session index (sqlite) — kept in a named volume, not the host
       - "serena-data:/data"
     restart: unless-stopped

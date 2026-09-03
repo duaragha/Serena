@@ -25,16 +25,16 @@ All agents (Claude, Codex, Gemini) must maintain strict git discipline:
 5. **Sync with Origin**: When a complete user request or work session is finished, push commits to `origin` (`git push origin <branch>`) so Syncthing and GitHub remain in sync across machines.
 
 ## Electron Desktop Releases (Serena & Unified Inbox)
-Both **Serena** (`desktop-electron/`) and **Unified Inbox** (`personal_projects/unified-inbox/apps/desktop/`) have built-in auto-updaters powered by GitHub Releases. Whenever an agent makes changes affecting either desktop app, a new release MUST be cut immediately so the installed app can auto-update.
+Both **Serena** (`apps/desktop/`) and **Unified Inbox** (`personal_projects/unified-inbox/apps/desktop/`) have built-in auto-updaters powered by GitHub Releases. Whenever an agent makes changes affecting either desktop app, a new release MUST be cut immediately so the installed app can auto-update.
 
-### 1. Serena Desktop (`desktop-electron/`)
-- **When**: Any changes to `desktop-electron/`, `ui/`, or core desktop services.
+### 1. Serena Desktop (`apps/desktop/`)
+- **When**: Any changes to `apps/desktop/`, `ui/`, or core desktop services.
 - **Workflow**:
-  1. Test the build/tests: `cd desktop-electron && npm test`
-  2. Bump the patch version in `desktop-electron/package.json` (e.g. `0.2.11` -> `0.2.12`).
+  1. Test the build/tests: `cd apps/desktop && npm test`
+  2. Bump the patch version in `apps/desktop/package.json` (e.g. `0.2.11` -> `0.2.12`).
   3. Commit the bump:
      ```bash
-     git add desktop-electron/package.json
+     git add apps/desktop/package.json
      git commit -m "chore(release): bump desktop version to vX.Y.Z"
      ```
   4. Tag and push to trigger GitHub Actions release build:
@@ -409,7 +409,7 @@ asked, and the swap happens on restart.
 Publishing a release, from a clean checkout on either machine:
 
 ```bash
-# bump desktop-electron/package.json, then
+# bump apps/desktop/package.json, then
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
@@ -432,7 +432,7 @@ stay untracked; if that ever changes, the repo is public and the leak is
 immediate.
 
 Three files repeat the same owner/repo and a test keeps them identical:
-`desktop-electron/package.json`, `windows/electron-builder.win.yml` (passing
+`apps/desktop/package.json`, `windows/electron-builder.win.yml` (passing
 `--config` makes electron-builder ignore the package.json block, so it cannot be
 inherited), and `updates.js` for the runtime check.
 
@@ -448,7 +448,7 @@ Before installing a new build, archive the current one so a bad update is
 recoverable, because a broken Serena is also the tool you would fix it with:
 
 ```bash
-cd desktop-electron
+cd apps/desktop
 npm run rollback:keep     # archive the current artifact
 npm run rollback:list     # show what can be rolled back to
 ```
@@ -466,7 +466,7 @@ quietly: a development run, and a Linux AppImage that was extracted rather than
 launched as a file, since electron-updater rewrites the AppImage in place.
 
 When something goes wrong with the desktop app, read
-`desktop-electron`'s backend log before guessing. A packaged Windows app has no
+`apps/desktop`'s backend log before guessing. A packaged Windows app has no
 console, so the Python sidecar's stdout went nowhere: a backend that died left
 no exit code, no traceback, and a window stranded on a dead port whose only
 symptom was "Failed to fetch" in the renderer. Everything the sidecar prints and
@@ -479,7 +479,7 @@ Linux, `%APPDATA%\serena-desktop\logs\` on Windows. The same directory holds
 actually fired.
 
 The app announces a new release itself, as a native notification, one per
-platform. `desktop-electron/releases.js` polls the releases API every fifteen
+platform. `apps/desktop/releases.js` polls the releases API every fifteen
 minutes and fires when a platform's installer AND its channel file are both on
 the release. Both halves matter: the Linux job creates the release and uploads
 the AppImage, the Windows job adds the installer minutes later, so announcing on

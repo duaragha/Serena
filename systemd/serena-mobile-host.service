@@ -2,7 +2,7 @@
 Description=Serena same-origin mobile chat and call host
 After=network-online.target serena-brain.service
 Wants=network-online.target serena-brain.service
-ConditionPathExists=%h/Documents/Projects/serena/mobile/dist/index.html
+ConditionPathExists=%h/Documents/Projects/serena/apps/mobile/dist/index.html
 
 [Service]
 Type=simple

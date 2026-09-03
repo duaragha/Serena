@@ -855,7 +855,9 @@ def dev(no_hot_reload):
     import subprocess as _subprocess
     from pathlib import Path as _Path
 
-    app_dir = _Path(__file__).resolve().parent / "desktop-electron"
+    app_dir = _Path(__file__).resolve().parent / "apps" / "desktop"
+    if not (app_dir / "package.json").is_file():
+        app_dir = _Path(__file__).resolve().parent / "desktop-electron"
     if not (app_dir / "package.json").is_file():
         raise SystemExit(f"the Electron app is missing at {app_dir}")
     npm = _shutil.which("npm")

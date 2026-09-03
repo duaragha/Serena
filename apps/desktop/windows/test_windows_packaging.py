@@ -24,7 +24,7 @@ yaml = pytest.importorskip("yaml")
 
 WINDOWS_DIR = Path(__file__).resolve().parent
 DESKTOP_DIR = WINDOWS_DIR.parent
-REPO_ROOT = DESKTOP_DIR.parent
+REPO_ROOT = DESKTOP_DIR.parent.parent if DESKTOP_DIR.parent.name == "apps" else DESKTOP_DIR.parent
 
 BUILDER_YML = WINDOWS_DIR / "electron-builder.win.yml"
 SPEC_FILE = WINDOWS_DIR / "sidecar-win.spec"
@@ -158,6 +158,9 @@ def test_spec_keeps_numpy_whole(spec_calls):
 
 def test_spec_bundles_the_legacy_winpty_agent(spec_calls):
     """The frozen host's stable backend is unusable without its helper exe."""
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("winpty is only available to collect_all on Windows")
     datas = spec_calls["Analysis"]["kwargs"]["datas"]
     assert any(
         Path(source).name == "winpty-agent.exe" and str(destination).replace("\\", "/") == "winpty"
@@ -336,7 +339,8 @@ def test_validation_workflow_runs_when_the_frozen_surface_changes(workflow):
     paths = triggers["pull_request"]["paths"]
     # A change to any of these can break the freeze, and the failure must not
     # wait for a release tag.
-    for required in ("desktop-electron/windows/**", "ui/**", "core/**", "requirements-windows.txt"):
+    expected_desktop = "apps/desktop/windows/**" if "apps/desktop/windows/**" in paths else "desktop-electron/windows/**"
+    for required in (expected_desktop, "ui/**", "core/**", "requirements-windows.txt"):
         assert required in paths
     # GitHub does not expand YAML anchors, so the push filter has to repeat the
     # list rather than alias it. Assert it really did.
