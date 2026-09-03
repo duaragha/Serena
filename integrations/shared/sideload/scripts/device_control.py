@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Sanitized, screenshot-gated control of a connected iPhone.
 
 The helper uses pymobiledevice3's no-root CoreDevice userspace tunnel. It never
