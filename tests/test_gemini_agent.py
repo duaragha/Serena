@@ -217,3 +217,73 @@ def test_the_indexer_actually_calls_the_scanner() -> None:
     assert 'if agent == "gemini"' in inspect.getsource(indexer._discovered_session_id), (
         "without an id rule the conversation is dropped before it is parsed"
     )
+
+
+# --- handing work to Gemini --------------------------------------------------
+
+def test_the_menu_offers_every_agent_in_both_directions() -> None:
+    """Two hardcoded rows each meant a third agent was simply unreachable."""
+    page = _page()
+
+    assert "const _HANDOFF_AGENTS = ['claude', 'codex', 'gemini']" in page
+    assert "'Hand off → ' + _agentLabel(agent)" in page
+    assert "'Fork context → ' + _agentLabel(agent)" in page
+    assert "targetAgent === 'claude' ? 'Claude' : 'Codex'" not in page, (
+        "a Gemini handoff would report itself as Codex"
+    )
+
+
+def test_the_handoff_endpoint_accepts_gemini() -> None:
+    page = _page()
+    start = page.index("def api_handoff(")
+    body = page[start : page.index("@app.route", start + 10)]
+
+    assert '("claude", "codex", "gemini")' in body
+
+
+def test_gemini_can_receive_a_context_fork() -> None:
+    from chats.context_fork import build_context_fork
+
+    with pytest.raises(ValueError) as bad:
+        build_context_fork("", "gemini")
+    assert "target agent" not in str(bad.value), "gemini was rejected as a destination"
+
+
+def test_gemini_cannot_be_briefed_FROM_and_says_why() -> None:
+    """Its transcript is undecoded protobuf, so there is nothing to summarise.
+
+    Failing with "No messages to summarize" would read as an empty chat rather
+    than a limitation, and send Raghav looking for a bug that is not there.
+    """
+    from unittest.mock import patch
+
+    from chats import handoff
+
+    session = {
+        "session_id": "9984a527-b5fa-4226-a9e3-e55661c8d9f1",
+        "agent": "gemini",
+        "file_path": __file__,  # any file that exists
+        "cwd": "/home/raghav",
+        "title": "restructure the parser",
+    }
+    with patch.object(handoff, "get_session", return_value=session):
+        result = handoff.build_handoff_briefing(session["session_id"])
+
+    assert result["ok"] is False
+    assert "gemini" in result["error"].lower()
+    assert "claude or codex" in result["error"].lower(), "no way out is offered"
+
+
+def test_a_menu_row_is_a_label_not_a_sentence() -> None:
+    """A sibling row carried the linked chat's whole title.
+
+    An untitled chat falls back to its first message, so the context menu grew
+    wider than the chat list it was opened from.
+    """
+    page = _page()
+
+    assert "_menuLabel(sib.display_title" in page, "sibling rows are still untruncated"
+    start = page.index("function _menuLabel(")
+    body = page[start : page.index("\nfunction ", start + 10)]
+    assert "44" in body, "no default length"
+    assert "…" in body, "a silent cut reads as the real title"

@@ -4730,14 +4730,22 @@ function showSessionContextMenu(evt, idx) {
     // (reuse the linked one if it exists; spin one up if it doesn't). Handing off
     // to the agent you're already on just refocuses it — no dup, no nag.
     items.push({ sep: true });
-    items.push({ label: 'Hand off → Claude', action: () => handoffSession(sid, 'claude') });
-    items.push({ label: 'Hand off → Codex',  action: () => handoffSession(sid, 'codex') });
+    for (const agent of _HANDOFF_AGENTS) {
+      items.push({
+        label: 'Hand off → ' + _agentLabel(agent),
+        action: () => handoffSession(sid, agent),
+      });
+    }
   }
   // === HANDOFF FEATURE END ===
   if (!inMultiSelect && !isReadOnlyTranscript && s.group) {
     items.push({ sep: true });
-    items.push({ label: 'Fork context → Claude', action: () => forkLinkedContext(sid, 'claude') });
-    items.push({ label: 'Fork context → Codex', action: () => forkLinkedContext(sid, 'codex') });
+    for (const agent of _HANDOFF_AGENTS) {
+      items.push({
+        label: 'Fork context → ' + _agentLabel(agent),
+        action: () => forkLinkedContext(sid, agent),
+      });
+    }
   }
   // === GROUP FEATURE START === (remove this block to unwire the menu items)
   if (!isReadOnlyTranscript) {
@@ -4756,7 +4764,7 @@ function showSessionContextMenu(evt, idx) {
         const sibs = _siblingsInGroup(s.group, sid);
         for (const sib of sibs.slice(0, 6)) {
           items.push({
-            label: '↳ ' + (sib.display_title || 'Untitled'),
+            label: '↳ ' + _menuLabel(sib.display_title || 'Untitled'),
             action: () => {
               const i = sessions.findIndex(x => x.session_id === sib.session_id);
               if (i >= 0) { setFocus(i, true); openConv(sib.session_id); }
@@ -6368,6 +6376,28 @@ function _installClipboardBridge(term) {
  * Clicking the other half of the pair you are already viewing is not a switch
  * away from the split, so that case leaves the layout alone.
  */
+// Every agent a chat can be handed to, in the order the quadrants read.
+const _HANDOFF_AGENTS = ['claude', 'codex', 'gemini'];
+
+function _agentLabel(agent) {
+  const name = String(agent || '').toLowerCase();
+  return name ? name.charAt(0).toUpperCase() + name.slice(1) : 'Agent';
+}
+
+/**
+ * A menu row is a label, not a paragraph.
+ *
+ * Sibling rows carry the linked chat's whole title, and an AI-written title
+ * runs to a full sentence -- "Serena: In the Serena project, fix the
+ * just-added Open live terminal..." pushed the context menu wider than the
+ * chat list it was opened from.
+ */
+function _menuLabel(text, limit) {
+  const clean = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+  const max = limit || 44;
+  return clean.length > max ? clean.slice(0, max - 1).trimEnd() + '…' : clean;
+}
+
 function _resetIdentityRowForSwitch(sid, showReadView) {
   if (_gtkSplitSids && _gtkSplitSids.includes(sid)) return;
   _gtkSplitActive = false;
@@ -8440,7 +8470,7 @@ async function handoffSession(srcSid, targetAgent) {
   // === GROUP FEATURE === (land on the thread's chat of the requested agent)
   if (targetChat) {
     const targetSid = targetChat.session_id;
-    const targetLabel = targetAgent === 'claude' ? 'Claude' : 'Codex';
+    const targetLabel = _agentLabel(targetAgent);
     if (targetSid === briefSid) {
       // Target and brief-source are the same single chat — nothing to carry over;
       // just open it.
@@ -8542,7 +8572,7 @@ async function handoffSession(srcSid, targetAgent) {
     settleMs: 2500,
   });
   toast.update(ok
-    ? 'Handed off to ' + (targetAgent === 'claude' ? 'Claude' : 'Codex')
+    ? 'Handed off to ' + _agentLabel(targetAgent)
     : 'Started ' + targetAgent + ', but handoff may not have landed',
     ok ? 'success' : 'error');
 }
@@ -8630,7 +8660,7 @@ async function forkLinkedContext(srcSid, targetAgent) {
     });
   }
   _startPseudoReconciler();
-  toast.update('Started standalone ' + (targetAgent === 'claude' ? 'Claude' : 'Codex') + ' context fork', 'success');
+  toast.update('Started standalone ' + _agentLabel(targetAgent) + ' context fork', 'success');
 }
 
 // Voice coding jobs are executed only by the resident work supervisor. The
@@ -12906,8 +12936,10 @@ def api_handoff():
     data = request.get_json(silent=True) or {}
     src_sid = (data.get("source_sid") or "").strip()
     target_agent = (data.get("target_agent") or "").strip().lower()
-    if not src_sid or target_agent not in ("claude", "codex"):
-        return jsonify({"error": "source_sid and target_agent (claude|codex) required"}), 400
+    if not src_sid or target_agent not in ("claude", "codex", "gemini"):
+        return jsonify(
+            {"error": "source_sid and target_agent (claude|codex|gemini) required"}
+        ), 400
 
     res = build_handoff_briefing(src_sid)
     if not res.get("ok"):
@@ -12937,7 +12969,7 @@ def api_handoff():
             f"\"Next step\" section."
         )
     else:
-        # Codex: no @-attach; ask it to Read the file via tool use.
+        # Codex and Gemini: no @-attach; ask them to Read the file via tool use.
         prompt = (
             f"Read {briefing_filename} — it's a handoff briefing from a prior "
             f"{src_agent} session. Acknowledge what you see, re-read the files "

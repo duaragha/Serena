@@ -54,6 +54,19 @@ def build_handoff_briefing(session_id: str) -> dict:
     cwd = session.get("cwd") or session.get("last_cwd") or ""
     title = session.get("display_title") or session.get("title") or "Untitled chat"
 
+    if agent == "gemini":
+        # Antigravity keeps its transcript as protobuf blobs in a SQLite table
+        # with no published schema, so there is nothing here to summarise. The
+        # other direction works fine: a briefing built from Claude or Codex is
+        # just text, and Gemini reads it like any other agent.
+        return {
+            "ok": False,
+            "error": (
+                "Gemini transcripts cannot be read yet, so there is nothing to brief from "
+                "this side. Hand off from the Claude or Codex chat in this thread instead."
+            ),
+        }
+
     if agent == "codex":
         msgs = _parse_codex(file_path)
     else:

@@ -27,8 +27,11 @@ def build_context_fork(
     target = str(target_agent or "").strip().lower()
     if not source_id:
         raise ValueError("source session id is required")
-    if target not in {"claude", "codex"}:
-        raise ValueError("target agent must be claude or codex")
+    # Gemini can receive a fork -- the bundle is plain text. It cannot be a
+    # SOURCE, because Antigravity's transcript is undecoded protobuf, which is
+    # why the member scan below still looks for Claude and Codex only.
+    if target not in {"claude", "codex", "gemini"}:
+        raise ValueError("target agent must be claude, codex or gemini")
 
     source = get_session(source_id)
     if source is None:
@@ -56,7 +59,11 @@ def build_context_fork(
             latest_by_agent[agent] = member
 
     if set(latest_by_agent) != {"claude", "codex"}:
-        raise ValueError("the linked thread needs both a Claude chat and a Codex chat")
+        raise ValueError(
+            "the linked thread needs both a Claude chat and a Codex chat "
+            "(a Gemini chat can receive a fork but cannot contribute one: its "
+            "transcript is not readable)"
+        )
 
     sources = [latest_by_agent["claude"], latest_by_agent["codex"]]
     rendered, message_count = _render_context(sources, group_id=group_id)
