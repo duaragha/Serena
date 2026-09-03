@@ -47,7 +47,7 @@ Never install an update by hand via SSH or manual copying. Both desktop apps sel
   - Logs: `~/.config/serena-desktop/logs/backend.log` (Linux) or `%APPDATA%\serena-desktop\logs\` (Windows).
   - Release check: `apps/desktop/releases.js` polls every 15 minutes. It announces only when both the installer and its channel file are present.
 
-### 2. Unified Inbox Desktop (`personal_projects/unified-inbox/apps/desktop/`)
+### 2. Unified Inbox Desktop (`personal_projects/unified/apps/desktop/`)
 - **Architecture**: Private source repo, public releases repo (`duaragha/unified-inbox-releases`).
 - **When**: Any changes to `apps/desktop/` or its dependent core packages.
 - **Workflow**:
