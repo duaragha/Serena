@@ -378,10 +378,11 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
 
 def _discovered_session_id(agent: str, file_path: Path) -> str | None:
     if agent == "gemini":
-        # Antigravity names each conversation file after its id, which is also
-        # what `agy --conversation <id>` takes to reopen it.
+        if file_path.name == "transcript.jsonl":
+            return file_path.parent.parent.parent.name
         return file_path.stem
     if agent == "codex":
+
         match = _CODEX_FILE_RE.match(file_path.name)
         return match.group(1) if match else None
     if agent == "serena-voice":

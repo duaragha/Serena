@@ -57,7 +57,8 @@ def canonical_subpath(project_dir: str, cwd: str | None) -> str | None:
     if "serena-knowledge" in txt or "/serena/knowledge" in txt:
         return "Projects/serena/knowledge"
     if "serena" in txt:
-        return "Projects/serena/core"
+        return "Projects/serena"
+
         
     if "cybersec-tracker" in txt:
         return "Projects/cybersec-tracker"
@@ -125,13 +126,14 @@ def sync_mirrors() -> dict[str, int]:
             target_dir.mkdir(parents=True, exist_ok=True)
             if fp and os.path.exists(fp):
                 src = Path(fp)
-                dest = target_dir / f"{sid}.jsonl"
+                dest = target_dir / (f"{sid}.db" if src.suffix == ".db" else f"{sid}.jsonl")
                 if not dest.exists():
                     try:
                         dest.symlink_to(src)
                         stats["gemini"] += 1
                     except OSError:
                         pass
+
                         
     return stats
 

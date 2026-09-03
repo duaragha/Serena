@@ -40,13 +40,20 @@ AGENT = "gemini"
 
 def _conversation_files() -> dict[str, Path]:
     """Every conversation on disk, keyed by id. The stem IS the id."""
-    if not CONVERSATIONS_DIR.is_dir():
-        return {}
     found: dict[str, Path] = {}
-    for path in CONVERSATIONS_DIR.iterdir():
-        if path.is_file() and path.suffix in {".db", ".pb"}:
-            found[path.stem] = path
+    if CONVERSATIONS_DIR.is_dir():
+        for path in CONVERSATIONS_DIR.iterdir():
+            if path.is_file() and path.suffix in {".db", ".pb"}:
+                found[path.stem] = path
+    brain_dir = GEMINI_ROOT / "brain"
+    if brain_dir.is_dir():
+        for path in brain_dir.iterdir():
+            if path.is_dir() and path.name not in found:
+                t = path / ".system_generated" / "logs" / "transcript.jsonl"
+                if t.is_file():
+                    found[path.name] = t
     return found
+
 
 
 def _history_entries() -> list[dict]:
@@ -93,9 +100,14 @@ def scan_gemini_sessions() -> Iterator[tuple[str, Path]]:
 
 def parse_gemini_metadata(file_path: Path) -> SessionMeta | None:
     """Build a session row for one conversation, from history plus the file."""
-    conversation_id = Path(file_path).stem
+    fp = Path(file_path)
+    if fp.name == "transcript.jsonl":
+        conversation_id = fp.parent.parent.parent.name
+    else:
+        conversation_id = fp.stem
     if not conversation_id:
         return None
+
 
     mine = [e for e in _history_entries() if e.get("conversationId") == conversation_id]
 
@@ -116,6 +128,8 @@ def parse_gemini_metadata(file_path: Path) -> SessionMeta | None:
     if stamps:
         last_timestamp = max(last_timestamp, max(stamps))
 
+    import re
+
     # A slash command is recorded with whatever directory it was typed in,
     # which is often not where the conversation's work happens. Take the
     # workspace from the most recent real prompt, and only fall back to a
@@ -124,14 +138,42 @@ def parse_gemini_metadata(file_path: Path) -> SessionMeta | None:
     for source in (reversed(typed), reversed(mine)):
         for entry in source:
             workspace = (entry.get("workspace") or "").strip()
-            if workspace:
+            if workspace and workspace not in ("/home/raghav", "C:/Users/ragha", "C:\\Users\\ragha"):
                 cwd = workspace
                 break
         if cwd:
             break
 
+    # If workspace was generic home or empty, resolve the real project from transcript or prompts
+    if not cwd or cwd in ("/home/raghav", "C:/Users/ragha", "C:\\Users\\ragha"):
+        transcript_file = GEMINI_ROOT / "brain" / conversation_id / ".system_generated" / "logs" / "transcript.jsonl"
+        counts: dict[str, int] = {}
+        if transcript_file.exists():
+            try:
+                with open(transcript_file, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        for m in re.findall(r"/home/raghav/Documents/Projects/([a-zA-Z0-9_\-]+)", line):
+                            counts[m] = counts.get(m, 0) + 1
+            except OSError:
+                pass
+        if counts:
+            top_proj = max(counts.items(), key=lambda x: x[1])[0]
+            cwd = str(Path.home() / "Documents" / "Projects" / top_proj)
+        else:
+            found = False
+            for entry in typed:
+                disp = entry.get("display", "")
+                m = re.search(r"/home/raghav/Documents/Projects/([a-zA-Z0-9_\-]+)", disp)
+                if m:
+                    cwd = str(Path.home() / "Documents" / "Projects" / m.group(1))
+                    found = True
+                    break
+            if not found:
+                cwd = str(Path.home() / "Documents" / "Projects" / "serena")
+
     from core.config import claude_project_dir_for
     from core.codex_scanner import _current_device_tag
+
 
     return SessionMeta(
         session_id=conversation_id,
