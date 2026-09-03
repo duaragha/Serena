@@ -3872,12 +3872,15 @@ const _VACUUM_DIRS = new Set([
 function _normCwd(cwd) {
   if (!cwd) return '';
   const p = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
-  // Reduce to `Projects/<rest>` regardless of OS home layout (Linux
-  // `/home/<u>/Documents/Projects/…`, Windows `C:/Users/<u>/Projects/…`), so
-  // the same project collapses into one node under a shared `Projects` root.
+  if (/^Projects\//i.test(p)) return p;
+  const idx = p.search(/\/Projects\//i);
+  if (idx >= 0) {
+    return p.slice(idx + 1);
+  }
   const m = p.match(/(?:\/home\/[^/]+|[A-Za-z]:\/Users\/[^/]+)(?:\/Documents)?\/(Projects\/.+)$/i);
   return m ? m[1] : '';
 }
+
 
 function _isVacuumPath(path) {
   // With keys, "vacuum" simply means no project key — home dir, the Projects
@@ -11082,8 +11085,23 @@ def _walk_slug_match(current: Path, remaining: list[str]) -> str | None:
 def _slug_to_real_path(slug: str) -> str | None:
     """Best-effort mapping of a claude project slug to an existing directory.
 
-    Returns ``None`` for Windows slugs (``C--…``) when running on Linux and
-    for slugs whose components no longer exist on disk."""
+    Resolves Linux slugs (-home-...) and cross-machine Windows slugs (C--Users-...)
+    to the matching project checkout on the current machine."""
+    if re.match(r"^[A-Za-z]--Users-[^-]+-Projects-", slug):
+        m = re.match(r"^[A-Za-z]--Users-[^-]+-Projects-(.+)$", slug)
+        if m:
+            tail = m.group(1).split("-")
+            for base in (Path.home() / "Documents" / "Projects", Path.home() / "Projects"):
+                if base.is_dir():
+                    res = _walk_slug_match(base, tail)
+                    if res:
+                        return res
+            # Fallback to alias if full-tracker or similar renamed project
+            from core.projects import canonical_cwd
+            candidate = canonical_cwd(f"~/Documents/Projects/{m.group(1).replace('-', '/')}")
+            if candidate and os.path.isdir(candidate):
+                return candidate
+
     if not slug.startswith("-"):
         return None
     parts = slug[1:].split("-")
@@ -11093,6 +11111,7 @@ def _slug_to_real_path(slug: str) -> str | None:
     if not root.is_dir():
         return None
     return _walk_slug_match(root, parts[1:])
+
 
 
 def _resolve_project_cwd(project_dir: str, stored_cwd: str | None) -> str | None:

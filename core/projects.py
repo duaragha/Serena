@@ -33,7 +33,32 @@ DEFAULT_ALIASES: dict[str, str] = {
     "~/Documents/Projects/personal_projects/full_tracker": (
         "~/Documents/Projects/personal_projects/locket"
     ),
+    "~/Documents/Projects/personal-projects/full-tracker": (
+        "~/Documents/Projects/personal_projects/locket"
+    ),
+    "~/Documents/Projects/personal_projects/full-tracker": (
+        "~/Documents/Projects/personal_projects/locket"
+    ),
+    "~/Documents/Projects/personal_projects/unified-inbox": (
+        "~/Documents/Projects/personal_projects/unified"
+    ),
+    "~/Documents/Projects/personal-projects/unified-inbox": (
+        "~/Documents/Projects/personal_projects/unified"
+    ),
+    "C:/Users/ragha/Projects/personal_projects/full_tracker": (
+        "~/Documents/Projects/personal_projects/locket"
+    ),
+    "C:/Users/ragha/Projects/personal-projects/full-tracker": (
+        "~/Documents/Projects/personal_projects/locket"
+    ),
+    "C:/Users/ragha/Projects/personal_projects/unified-inbox": (
+        "~/Documents/Projects/personal_projects/unified"
+    ),
+    "C:/Users/ragha/Projects/personal_projects/vantage": (
+        "~/Documents/Projects/personal_projects/vantage"
+    ),
 }
+
 
 _alias_cache: dict[str, object] = {"mtime": None, "aliases": None}
 
@@ -92,6 +117,7 @@ def canonical_cwd(cwd: str | None) -> str:
     path = _normalise(cwd or "")
     if not path:
         return ""
+
     aliases = load_aliases()
     for _hop in range(8):
         moved = False
@@ -107,6 +133,7 @@ def canonical_cwd(cwd: str | None) -> str:
     return path
 
 
+
 def project_key(project_dir: str | None, cwd: str | None) -> str:
     """The stable identity a chat should be grouped under.
 
@@ -118,7 +145,14 @@ def project_key(project_dir: str | None, cwd: str | None) -> str:
     resolved = canonical_cwd(cwd)
     if resolved:
         return resolved
-    return _normalise(project_dir or "") or ""
+    pdir = _normalise(project_dir or "")
+    if pdir.startswith("C--Users-") and "-Projects-" in pdir:
+        m = re.match(r"^[A-Za-z]--Users-[^-]+-Projects-(.+)$", pdir)
+        if m:
+            sub = m.group(1).replace("personal-projects-", "personal_projects/").replace("personal_projects-", "personal_projects/").replace("-", "/")
+            return canonical_cwd(f"~/Documents/Projects/{sub}")
+    return pdir
+
 
 
 # --------------------------------------------------------------------------
@@ -135,6 +169,8 @@ def project_key(project_dir: str | None, cwd: str | None) -> str:
 WORKSPACE_ROOTS = (
     "~/Documents/Projects",
     "~/Projects",
+    "C:/Users/ragha/Projects",
+    "C:/Users/ragha/Documents/Projects",
 )
 
 # Serena's own runtime state. These hold real transcripts, but they are the
@@ -142,6 +178,7 @@ WORKSPACE_ROOTS = (
 MACHINERY_PREFIXES = (
     "~/.local/state/serena",
     "~/.config/serena",
+    "~/.cache/serena-headless",
     "~/.cache/serena-headless-codex",
     "~/.cache/serena-headless-brain",
     "~/.claude",
@@ -159,13 +196,14 @@ def is_machinery(cwd: str | None) -> bool:
     path = _normalise(cwd or "")
     if not path:
         return False
-    if "/fleet-worktrees/" in path:
+    if "/fleet-worktrees/" in path or "cache-serena-headless" in path:
         return True
     for prefix in MACHINERY_PREFIXES:
         root = _normalise(prefix)
         if root and (path == root or path.startswith(root + "/")):
             return True
     return False
+
 
 
 def _is_repo(path: str) -> bool:

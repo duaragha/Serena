@@ -365,7 +365,15 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
     _repair_custom_title_groups(conn)
     conn.commit()
     conn.close()
+
+    try:
+        from core.project_mirror import sync_mirrors
+        sync_mirrors()
+    except Exception:
+        pass
+
     return new_count, updated_count
+
 
 
 def _discovered_session_id(agent: str, file_path: Path) -> str | None:
@@ -474,7 +482,11 @@ def _repair_custom_title_groups(conn: sqlite3.Connection) -> int:
 
 def _is_internal_project(project_dir: str | None) -> bool:
     value = (project_dir or "").casefold()
-    return "serena-headless-brain" in value or "-tmp-serena-" in value
+    return (
+        "serena-headless" in value
+        or "-tmp-serena-" in value
+        or "cache-serena-headless" in value
+    )
 
 
 def _hide_internal_sessions(conn: sqlite3.Connection) -> None:
@@ -483,10 +495,12 @@ def _hide_internal_sessions(conn: sqlite3.Connection) -> None:
         """
         UPDATE sessions
         SET is_teammate = 1
-        WHERE project_dir LIKE '%serena-headless-brain%'
+        WHERE project_dir LIKE '%serena-headless%'
            OR project_dir LIKE '%-tmp-serena-%'
+           OR project_dir LIKE '%cache-serena-headless%'
         """
     )
+
 
 
 def _apply_synced_meta(conn: sqlite3.Connection, session_id: str, synced: dict):
