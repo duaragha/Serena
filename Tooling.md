@@ -481,6 +481,23 @@ per-path, because Windows cannot represent one (it needs Developer Mode or
 admin), so the PC writes a plain file and Syncthing carries that over the
 laptop's symlink: konpeki's `apps/admin/templates` is the live example.
 
+Every ignore pattern for derived content carries Syncthing's `(?d)` prefix, and
+it is load-bearing. Without it Syncthing refuses to delete a directory that
+still holds ignored files and loops forever on `directory has been deleted on a
+remote device but contains ignored files`. That is what made both stuck cases
+unclearable: five errors on `mcp_servers` whose source had been wiped down to
+`__pycache__`/`build`/`node_modules`, and 425 on `frameworth/.worktrees` once
+`.git` went back to being ignored. `(?d)` says "you may delete these when the
+parent goes", which is right for bytecode, venvs, `node_modules`, build output
+and `.git`. It is deliberately NOT applied to the path exclusions that mean
+"keep this here, just do not sync it" — `/mcp_servers`,
+`/personal_projects/unified-inbox` and konpeki's symlink — because there the
+whole point is that the files survive.
+
+Trailing whitespace in `.stignore` is worth stripping too; several patterns had
+accumulated long runs of spaces, which is a silent way to make a pattern not
+match what you think it matches.
+
 Two Windows artifacts fake a dirty tree, and both cost hours before. Every repo
 cloned on the PC carried a LOCAL `core.filemode = true` overriding the global,
 so files showed modified on an exec bit Windows cannot store: konpeki reported
