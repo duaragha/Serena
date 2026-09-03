@@ -52,12 +52,28 @@ FINDING_SEVERITIES = frozenset({"blocker", "major", "minor"})
 # the same vocabulary the single-job coding contract uses, kept local so an
 # edit there cannot silently loosen the Fleet gate.
 _REAL_TEST = re.compile(
-    r"(?:^|[\s'\"])(?:[^\s'\"]*/)?(?:pytest|python[0-9.]*\s+-m\s+(?:pytest|unittest)|npm\s+(?:run\s+)?test|"
+    r"(?:^|[\s'\"])(?:[^\s'\"]*/)?(?:pytest|"
+    # Every `python -m` form the gate will re-run, plus a worker's own script
+    # when its name says it verifies something. Without these a worker could
+    # satisfy the re-run and still be told nothing looked like a real test.
+    r"python[0-9.]*\s+-m\s+(?:pytest|unittest|doctest|json\.tool|py_compile|ruff)|"
+    r"python[0-9.]*\s+[^\s'\"]*(?:test|check|verify|preflight)[^\s'\"]*\.py|"
+    r"npm\s+(?:run\s+)?test|"
     r"pnpm\s+(?:run\s+)?test|yarn\s+test|bun\s+test|cargo\s+test|"
     r"go\s+test|swift\s+test|gradle\w*\s+.*test|node\s+--test|"
     r"node(?:\s+--[a-z0-9-]+(?:=[^\s'\"]+)?)\s+[^\s'\"]*(?:test|spec)[^\s'\"]*\.(?:[cm]?js|tsx?)|"
     r"node\s+(?:--[a-z0-9-]+(?:=[^\s'\"]+)?\s+)*-(?:e|-eval|eval)\s+.*\bassert\b|"
+    # git diff --check with any refs, not only the bare form. It is the most
+    # declared verification in the fleet and was not counted as one.
+    r"git\s+(?:-C\s+\S+\s+)?diff\s+(?:[^\s'\"]+\s+)*--check\b|"
     r"git\s+diff\s+--no-index\s+--check\b|"
+    r"git\s+(?:-C\s+\S+\s+)?merge-base\s+--is-ancestor\b|"
+    # A syntax check is a check. node --check was declared ~96 times and never
+    # counted, because the pattern demanded "test" in the filename.
+    r"node\s+--check\b|"
+    # An assertion, not a browse: the quiet/silent forms exit non-zero on a
+    # mismatch, which is what makes them a check.
+    r"(?:^|[\s'\"])(?:grep|rg|cmp|diff)\s+(?:-[A-Za-z]*[qs]|--quiet|--silent)|"
     r"ruff\s+check|mypy|pyright|tsc\b|eslint\b|vitest\b|jest\b|biome\s+check)",
     re.IGNORECASE,
 )
@@ -70,12 +86,8 @@ MIN_RESEARCH_DOMAINS = 3
 MIN_AUTHORITATIVE_SOURCES = 2
 MAX_RESEARCH_ACCESS_AGE_DAYS = 7
 
-# Research depth is proportional to how far the work unit reaches outside the
-# checkout. "full" is the original mandate and stays the default for anything
-# unrecognised. "proportionate" still demands real, dated, attributable
-# evidence, just not five sources to fix a local defect. The qualitative
-# requirements (best practices, recent developments, impact statement) hold at
-# both depths; only the counts move.
+# Every Research worker must perform substantial current online research. The
+# fallback remains full so an old or malformed snapshot cannot weaken the gate.
 RESEARCH_DEPTH_THRESHOLDS = {
     "full": {
         "searches": MIN_RESEARCH_SEARCHES,
@@ -83,13 +95,6 @@ RESEARCH_DEPTH_THRESHOLDS = {
         "domains": MIN_RESEARCH_DOMAINS,
         "authoritative": MIN_AUTHORITATIVE_SOURCES,
         "best_practices": 2,
-    },
-    "proportionate": {
-        "searches": 1,
-        "sources": 2,
-        "domains": 2,
-        "authoritative": 1,
-        "best_practices": 1,
     },
 }
 DEFAULT_RESEARCH_DEPTH = "full"
@@ -142,13 +147,27 @@ class CompletionVerdict:
     evidence: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def terminal_stop(self) -> bool:
+        """True when honest evidence says the assigned work did not finish."""
+
+        return self.enforced and self.accepted and any(
+            unit.claimed_status in {"blocked", "stopped"} for unit in self.units
+        )
+
+    @property
+    def completion_allowed(self) -> bool:
+        return not self.enforced or (self.accepted and not self.terminal_stop)
+
+    @property
     def blocked(self) -> bool:
-        return self.enforced and not self.accepted
+        return self.enforced and not self.completion_allowed
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "accepted": self.accepted,
+            "completion_allowed": self.completion_allowed,
+            "terminal_stop": self.terminal_stop,
             "enforced": self.enforced,
             "reason": self.reason,
             "envelope_present": self.envelope_present,
@@ -160,6 +179,14 @@ class CompletionVerdict:
     def summary(self) -> str:
         if not self.enforced:
             return self.reason
+        if self.terminal_stop:
+            stopped = [
+                f"{unit.unit_id} {unit.claimed_status}: {unit.stop_condition}"
+                for unit in self.units
+                if unit.claimed_status in {"blocked", "stopped"}
+            ]
+            detail = "; ".join(stopped[:6])
+            return f"work stopped before completion: {detail}" if detail else self.reason
         if self.accepted:
             return "completion evidence satisfied the work-unit contract"
         listed = "; ".join(self.failures[:6])
@@ -592,10 +619,30 @@ def _evaluate_unit(
                         "worker-reported test exits disagreed with Fleet observations: "
                         + "; ".join(mismatched[:4])
                     )
+                # 126 is Fleet declining to run a command, not the command
+                # failing. Reporting it as an unclean exit sent workers to
+                # debug a script that was already passing, so it says so now.
+                refused = sorted(
+                    command
+                    for command, code in observed_test_results.items()
+                    if command in claimed_results and code == 126
+                )
+                if refused:
+                    # Naming the shapes matters more than naming the command.
+                    # "declare a test Fleet can run" sent workers guessing, and
+                    # a wrong guess costs a whole attempt.
+                    forms = _accepted_verification_forms()
+                    failures.append(
+                        "Fleet refused to re-run this verification command, so it "
+                        "cannot be accepted as evidence: "
+                        + "; ".join(refused[:4])
+                        + ". Declare one of these instead: "
+                        + " | ".join(forms)
+                    )
                 observed_failures = sorted(
                     command
                     for command, code in observed_test_results.items()
-                    if command in claimed_results and code != 0
+                    if command in claimed_results and code not in {0, 126}
                 )
                 if observed_failures:
                     failures.append(
@@ -764,9 +811,13 @@ def _research_evidence_failures(
             f"Research requires sources from at least {min_domains} domains"
         )
     if authoritative < min_authoritative:
+        # Generated from the same set the check above uses. This message used to
+        # hardcode "standards", which is not a value the validator accepts, so a
+        # worker fixing a rejection was told to use the one word guaranteed to
+        # reject it again.
         failures.append(
             "Research requires at least "
-            f"{min_authoritative} official, primary, standards, or research sources"
+            f"{min_authoritative} {', '.join(sorted(AUTHORITATIVE_SOURCE_TYPES))} sources"
         )
     if len(_text_list(value.get("best_practices"))) < min_best_practices:
         failures.append(
@@ -818,6 +869,21 @@ def _bounded(payload: dict[str, Any], limit: int = 32_000) -> dict[str, Any]:
     return {"truncated": True, "preview": encoded[:limit]}
 
 
+def _accepted_verification_forms() -> list[str]:
+    """The gate's own list of runnable command shapes.
+
+    Imported lazily: the gate imports this module, so a module-level import
+    here would be circular.
+    """
+
+    try:
+        from core.fleet_completion_gate import accepted_verification_forms
+
+        return accepted_verification_forms()
+    except Exception:
+        return []
+
+
 def render_evidence_instructions(
     units: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
     assignment_ids: list[str] | tuple[str, ...],
@@ -848,7 +914,7 @@ def render_evidence_instructions(
         "status": "completed",
         "acceptance": [
             {
-                "criterion": "the first acceptance criterion, quoted",
+                "criterion": "the first acceptance criterion, copied verbatim",
                 "met": True,
                 "evidence": "what you actually observed that proves it",
             }
@@ -863,7 +929,13 @@ def render_evidence_instructions(
         "stop_condition": "",
     }
     if phase == "discover":
-        source_types = ("official", "primary", "research", "reputable_secondary", "community")
+        # Built from the validator's own set so the example cannot drift out of
+        # it. Authoritative types lead, both because the contract requires
+        # MIN_AUTHORITATIVE_SOURCES of them and so a truncated example still
+        # satisfies the rule it is demonstrating.
+        source_types = tuple(sorted(AUTHORITATIVE_SOURCE_TYPES)) + tuple(
+            sorted(RESEARCH_SOURCE_TYPES - AUTHORITATIVE_SOURCE_TYPES)
+        )
         unit_example["online_research"] = {
             "search_queries": [
                 "current official guidance for the assigned work unit",
@@ -912,6 +984,15 @@ def render_evidence_instructions(
         "- blocked or stopped requires the stop condition that actually triggered.",
         "- completed requires every acceptance criterion answered with met true and "
         "concrete evidence, and constraints_respected true.",
+        # The gate matches criterion text exactly. Workers were specialising the
+        # contract's generic wording to their own unit ("the requested ads-side
+        # advance" for "the requested behavior"), which reads like filling in a
+        # template and cost real legs a whole attempt. Say the rule instead of
+        # letting them discover it from a rejection.
+        "- copy each criterion string EXACTLY as the contract above states it. "
+        "Do not reword, specialise, shorten, or merge them, and answer each one "
+        "exactly once. Put your unit-specific detail in evidence, not in the "
+        "criterion text.",
         "- completed is rejected when a declared dependency is not itself complete.",
     ]
     if writes:
@@ -919,6 +1000,13 @@ def render_evidence_instructions(
             "- changed_paths must list every file you changed. Undeclared changes "
             "found in the working tree reject the leg.",
             "- changed files must be covered by an active path claim.",
+            "- stay on the reserved Serena Fleet branch for normal local integration. "
+            "If the task requires stacking on an unmerged dependency PR, create a "
+            "dedicated branch from that dependency, commit only your own suffix, push "
+            "it with an upstream, open the stacked PR, and leave the worktree clean at "
+            "the pushed HEAD. In changed_paths declare the exact `git diff --name-only "
+            "<dependency-head>..HEAD` result. Fleet verifies that bounded published "
+            "suffix and records it without copying dependency commits into the shared tree.",
             "- changed code requires at least one real test command with its exit code, "
             "and the last run of each recorded command must exit 0.",
             "- every tests entry needs \"command\" and an integer \"exit_code\".",
@@ -928,6 +1016,13 @@ def render_evidence_instructions(
             "pipes, ';', '&&', redirection, or cd — a command Fleet cannot re-run "
             "counts as a failed test. Allowed prefixes: `env -u NAME`, "
             "PYTHONDONTWRITEBYTECODE=1, PYTHONPATH=. .",
+        ]
+        # The accepted shapes used to live only inside the validator, so a
+        # worker had to guess and lost an attempt for every wrong guess. They
+        # are rendered from the validator's own sets here.
+        lines += [
+            "- Fleet will only re-run these shapes, so declare one of them:",
+            *(f"    {form}" for form in _accepted_verification_forms()),
         ]
     else:
         lines += [
@@ -944,9 +1039,12 @@ def render_evidence_instructions(
             f"- cite at least {MIN_RESEARCH_SOURCES} unique direct http(s) sources across "
             f"at least {MIN_RESEARCH_DOMAINS} domains, each accessed within "
             f"{MAX_RESEARCH_ACCESS_AGE_DAYS} days.",
-            f"- at least {MIN_AUTHORITATIVE_SOURCES} sources must be official, primary, "
-            "standards, or research evidence. Every source needs title, publisher, "
-            "accessed_at, source_type, currency, finding, and relevance.",
+            f"- source_type must be exactly one of: "
+            f"{', '.join(sorted(RESEARCH_SOURCE_TYPES))}. Anything else is rejected.",
+            f"- at least {MIN_AUTHORITATIVE_SOURCES} sources must be "
+            f"{', '.join(sorted(AUTHORITATIVE_SOURCE_TYPES))}. Every source needs "
+            "title, publisher, accessed_at, source_type, currency, finding, and "
+            "relevance.",
             "- report at least two current best practices, at least one recent "
             "technology or ecosystem development, and how the research changes your work.",
         ]

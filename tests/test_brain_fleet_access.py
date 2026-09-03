@@ -414,7 +414,8 @@ def test_completed_fleet_run_sends_one_bounded_alert_and_records_delivery(
     assert completed["state"] == "completed"
     assert len(messages) == 1
     assert "finished" in messages[0]
-    assert "8/8 agent steps" in messages[0]
+    # A plain task with no explicit workstreams is one agent across four phases.
+    assert "4/4 agent steps" in messages[0]
     assert "private worker transcript" not in messages[0]
     events = fleet_supervisor._store().events(run["run_id"], limit=2_000)
     assert len([event for event in events if event["type"] == "run.notification.delivered"]) == 1

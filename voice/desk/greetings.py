@@ -94,9 +94,9 @@ class DeskGreetingPool:
         runtime: GreetingRuntime,
         *,
         path: Path = DEFAULT_CACHE_PATH,
-        target_size: int = 2,
+        target_size: int = 4,
         max_age_seconds: float = MAX_GREETING_AGE_SECONDS,
-        refill_after_take_seconds: float = 60.0,
+        refill_after_take_seconds: float = 10.0,
         tts_factory: Callable[[], AsyncTTSBackend] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -243,12 +243,18 @@ class DeskGreetingPool:
         prompt = (
             f'<desk-wake-greeting id="{greeting_id}" {moment.attributes()}>\n'
             'Raghav has just said "hey Serena" at his desk and is listening. '
-            "Give one fresh, short spoken greeting in your normal voice. Those "
-            "attributes are the real system clock, so let the part of day color "
-            "the wording however it lands: vary it every time, never reach for a "
-            "stock phrase, and never recite the clock back to him. Lead him into "
-            "speaking, but do not ask an open-ended question, describe the "
-            "automation, or include stage directions.\n"
+            "Give one short, ordinary spoken greeting in your normal voice. "
+            "Those attributes are the real system clock, so the part of day may "
+            "color the wording, but never recite the clock back to him.\n"
+            "Keep it plain. Ordinary is the target, not clever. On 2026-08-21 a "
+            "push to 'vary it every time and never reach for a stock phrase' "
+            "produced 'handsome weasel', an invented pet name he had to ask "
+            "about. Never invent a nickname, a pet name, or a term of "
+            "endearment here. 'hey', 'late one', 'morning' are all correct "
+            "answers, and repeating one is fine.\n"
+            "At most eight words. Lead him into speaking, but do not ask an "
+            "open-ended question, describe the automation, or include stage "
+            "directions.\n"
             "</desk-wake-greeting>"
         )
         deltas: list[str] = []

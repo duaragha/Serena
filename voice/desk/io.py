@@ -26,6 +26,9 @@ MIC_SAMPLE_RATE = 16_000
 WAKE_FRAME_SAMPLES = 1_280
 WAKE_FRAME_BYTES = WAKE_FRAME_SAMPLES * 2
 DEFAULT_STATE_PATH = Path.home() / ".config" / "serena" / "voice_state"
+# One daypart. Past that the cached line is describing a different evening.
+FALLBACK_MAX_AGE_SECONDS = 6 * 60 * 60
+
 DEFAULT_FALLBACK_PATH = (
     Path.home() / ".cache" / "serena" / "desk-last-greeting.json"
 )
@@ -356,6 +359,14 @@ class GreetingFetcher:
         # him with the wrong half of the clock.  The tone is better than that.
         if greeting is not None and greeting.daypart not in ("", current_daypart()):
             return None
+        # And a last-good line has an expiry. The pool held one greeting, so
+        # every wake after the first 503'd and replayed this file, which is how
+        # a single odd greeting ("handsome weasel", 2026-08-21) became the thing
+        # she said every time. Stale enough is worse than the plain tone.
+        if greeting is not None:
+            age = time.time() - float(greeting.created_at or 0.0)
+            if age > FALLBACK_MAX_AGE_SECONDS:
+                return None
         return greeting
 
 

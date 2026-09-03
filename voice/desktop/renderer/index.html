@@ -8,36 +8,23 @@
   <title>Serena</title>
   <link rel="stylesheet" href="styles.css">
   <style>
-    /* Main widget fills the OS window. */
+    /* Main widget — fills the proper OS window */
     html, body {
-      background: #080612;
-    }
-    /* The coding drawer is a column beside the app, never on top of it. Only
-       the drawer and the stage share this row; panels that mount themselves on
-       the body stay exactly where they were. */
-    #shell {
-      position: fixed;
-      inset: 0;
-      display: flex;
-      align-items: stretch;
-    }
-    #stage {
-      position: relative;
-      flex: 1 1 auto;
-      min-width: 0;
-      overflow: hidden;
+      background: #0a0a1a;
     }
     #widget {
-      position: absolute;
+      position: fixed;
       inset: 0;
-      background:
-        radial-gradient(circle at 72% 28%, rgba(116, 63, 174, 0.12), transparent 44%),
-        radial-gradient(circle at 25% 78%, rgba(223, 74, 157, 0.075), transparent 46%),
-        linear-gradient(160deg, #0d0918 0%, #080611 52%, #05040b 100%);
+      background: radial-gradient(
+        ellipse at center,
+        #0e1428 0%,
+        #06070f 100%
+      );
       overflow: hidden;
       display: flex;
       flex-direction: column;
     }
+    /* Subtle inner top-light highlight for that premium feel */
     #widget::before {
       content: "";
       position: absolute;
@@ -46,33 +33,26 @@
       background: linear-gradient(
         90deg,
         transparent 0%,
-        rgba(207, 142, 255, 0.34) 44%,
-        rgba(255, 184, 105, 0.2) 60%,
+        rgba(120, 180, 255, 0.4) 50%,
         transparent 100%
       );
       pointer-events: none;
     }
+    /* Header with state indicator */
     #widget-header {
       padding: 14px 18px;
       display: flex;
       align-items: center;
       gap: 10px;
-      border-bottom: 1px solid rgba(215, 174, 255, 0.06);
-      background: linear-gradient(180deg, rgba(17, 11, 28, 0.52), rgba(9, 7, 16, 0.12));
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
       z-index: 2;
     }
+    /* Brain takes the rest of the widget */
     #brain-container {
       flex: 1;
       position: relative;
       min-height: 0;
       z-index: 0;
-    }
-    #brain-container::after {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background: radial-gradient(circle at 50% 48%, transparent 42%, rgba(3, 2, 8, 0.52) 100%);
-      pointer-events: none;
     }
     #brain-container canvas {
       -webkit-app-region: no-drag;
@@ -80,6 +60,7 @@
       width: 100% !important;
       height: 100% !important;
     }
+    /* Overlay sits on top of brain, inside the widget */
     #overlay {
       position: absolute;
       inset: 0;
@@ -90,39 +71,22 @@
       flex-direction: column;
       justify-content: flex-end;
     }
+    /* Make interactive elements receive clicks */
     #overlay > * {
       pointer-events: auto;
     }
+    /* Hide the original state-indicator — now lives in header */
     #overlay #state-indicator {
       display: none;
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      #state-dot.pulse {
-        animation: none;
-      }
     }
   </style>
 </head>
 <body>
-  <!-- The drawer is mounted into #shell beside #stage, so it makes room
-       rather than covering the conversation. -->
-  <div id="shell">
-  <!-- Everything that is not the coding drawer. The drawer sits beside this. -->
-  <div id="stage">
   <div id="widget">
     <!-- Header: state indicator at top of widget -->
     <div id="widget-header">
       <div id="state-dot"></div>
       <span id="state-label">offline</span>
-      <button id="voice-mute" type="button" aria-pressed="false"
-              aria-label="Mute Serena voice" title="Mute Serena voice">
-        <span id="voice-mute-label">mute</span>
-      </button>
-      <button id="microphone-mute" type="button" aria-pressed="false"
-              aria-label="Mute Serena microphone" title="Mute Serena microphone">
-        <span id="microphone-mute-label">mic</span>
-      </button>
     </div>
 
     <!-- Brain visualization fills the rest of the widget -->
@@ -142,37 +106,6 @@
       <div id="response" class="text-block hidden"></div>
     </div>
 
-    <!-- Completed turns stay readable after the transient cards fade. -->
-    <details id="conversation-history" class="hidden">
-      <summary>
-        <span>recent conversation</span>
-        <span id="conversation-history-count">0 turns</span>
-      </summary>
-      <div id="conversation-history-list" role="log" aria-label="Recent conversation"></div>
-    </details>
-
-    <!-- Type bar: same turn as speaking, for when the mic is unusable -->
-    <div id="type-composer">
-      <div id="typed-attachment" class="hidden">
-        <img id="typed-attachment-preview" alt="Pasted image preview" />
-        <span>image attached</span>
-        <button id="typed-attachment-remove" type="button" aria-label="Remove pasted image">remove</button>
-      </div>
-      <div id="type-error" class="hidden" role="alert"></div>
-      <div id="type-bar">
-        <input id="type-input" type="text" autocomplete="off" spellcheck="false"
-               maxlength="4000" placeholder="type or paste an image" />
-        <span id="type-hint">enter</span>
-      </div>
-    </div>
-
-    <!-- How fast she talks. Applies to typed and spoken turns alike. -->
-    <div id="speed-bar">
-      <span class="speed-label">speed</span>
-      <input id="speed-range" type="range" min="0.5" max="2" step="0.05" value="1" />
-      <span id="speed-value">1.0&times;</span>
-    </div>
-
     <!-- Dashboard panel (hidden by default) -->
     <div id="dashboard" class="hidden">
       <div class="dashboard-section">
@@ -189,139 +122,67 @@
       </div>
     </div>
   </div>
-  </div>
-  </div>
 
-  <script>
-    /* Browser-only bridge used by local visual QA. Electron supplies the real one. */
-    if (!window.serena) {
-      const preview = { stateListener: null };
-      window.serena = {
-        onStateChange(callback) {
-          preview.stateListener = callback;
-        },
-        onAmplitude() {},
-        onTranscription() {},
-        onResponse() {},
-        onDashboardData() {},
-        onFocusMode() {},
-        onToggleDashboard() {},
-        setVoiceMuted() {},
-        onVoiceMuted(callback) { callback(false); },
-        setMicrophoneMuted() {},
-        onMicrophoneMuted(callback) { callback(false); },
-        onCodeStart() {},
-        onCodeEvent() {},
-        onCodeDone() {},
-        onCodeSnapshot() {},
-        onCodeControlResult() {},
-        sendTyped() {},
-        onTypedInputAccepted() {},
-        onTypedInputError() {},
-        onToggleCodePanel() {},
-        onHideCodePanel() {},
-        onShowCodePanel() {},
-        hideCodePanel() {},
-        showCodePanel() {},
-        setCodePanelWidth() {},
-        onCodePanelWidth(callback) { callback(450); },
-        sendCodeControl() {},
-        setIgnoreMouse() {},
-        toggleDashboard() {},
-        registerBrain(functions) {
-          Object.assign(this, functions);
-        },
-        registerCodePanel(functions) {
-          this.codePanelOnStart = functions.onStart;
-          this.codePanelOnEvent = functions.onEvent;
-          this.codePanelOnDone = functions.onDone;
-          this.codePanelOnSnapshot = functions.onSnapshot;
-          this.codePanelOnControlResult = functions.onControlResult;
-          this.codePanelOnToggle = functions.onToggle;
-          this.codePanelOnShow = functions.onShow;
-        },
-        previewState(state) {
-          preview.stateListener?.(state);
-        },
-      };
+  <script src="app.js"></script>
+  <!-- Import map so unmodified Three.js addons (which import from 'three')
+       resolve locally with no CDN, honoring the strict CSP. -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./three.min.js",
+        "three/addons/": "./three-addons/"
+      }
     }
   </script>
-  <script src="../typed-images.js"></script>
-  <script src="app.js"></script>
   <script type="module">
+    import * as THREE from 'three';
+    window.THREE = THREE;
+
     import { BrainVisualizer } from './brain.js';
+    import { TranscriptionDisplay } from './transcription.js';
     import { Dashboard } from './dashboard.js';
     import { NotificationManager } from './notifications.js';
     import { CodePanel } from './code-panel.js';
 
     const container = document.getElementById('brain-container');
     const brain = new BrainVisualizer(container);
+    const transcription = new TranscriptionDisplay(container);
     const dashboard = new Dashboard(document.body);
     const notifications = new NotificationManager(document.body);
 
     // Register brain visualization callbacks via the preload bridge
     window.serena.registerBrain({
       setState: (state) => brain.setState(state),
-      setAmplitude: (value) => brain.setAmplitude(value),
+      showUserText: (text) => transcription.showUserText(text),
+      showResponseText: (text) => transcription.showResponseText(text),
+      clearText: () => transcription.clear(),
     });
-    brain.setState(window._serenaVoiceState || 'idle');
 
-    const previewState = new URLSearchParams(window.location.search).get('state');
-    if (previewState) {
-      window.serena.previewState?.(previewState);
-      brain.setState(previewState);
-    }
-
-    // Code output panel. It is a sibling of the stage inside the shell row, so
-    // opening it makes room instead of covering the conversation.
-    const codePanel = new CodePanel(document.getElementById('shell'));
-    window.serena.onCodePanelWidth?.((width) => codePanel.setWidth(width));
+    // Code output panel
+    const codePanel = new CodePanel(document.body);
 
     // Register code panel callbacks via the preload bridge
     window.serena.registerCodePanel({
       onStart: (data) => {
-        // In the coding app the collection owns selection. A second job may
-        // join the list without taking the detail pane away from the job he is
-        // currently watching. The plain overlay still starts with a clean pane.
-        if (!codePanel.__codingJobsInstalled) {
-          codePanel.clear();
-          codePanel.setStatus(data.status || `working on ${data.project || 'project'}...`);
-        }
-        if (data.snapshot) codePanel.renderSnapshot(data.snapshot);
+        codePanel.clear();
+        codePanel.setStatus(`working on ${data.project || 'project'}...`);
         codePanel.show();
       },
       onEvent: (event) => {
         codePanel.addEvent(event);
       },
       onDone: (data) => {
-        if (data.snapshot) {
-          codePanel.renderSnapshot(data.snapshot);
-        } else {
-          codePanel.setStatus('done');
-        }
-      },
-      onSnapshot: (data) => {
-        // Content only. Whether the drawer is on screen is the main process's
-        // call, and it sends show-code-panel when a live job earns it.
-        codePanel.renderSnapshot(data);
-      },
-      onControlResult: (data) => {
-        codePanel.controlResult(data);
+        codePanel.setStatus('done');
       },
       onToggle: () => {
         codePanel.toggle();
       },
-      onShow: () => {
-        codePanel.show();
-      },
     });
-    window.serena.onHideCodePanel(() => codePanel.hide());
 
     // Store references for dashboard/notifications (accessible via closure)
     window._serenaDashboard = dashboard;
     window._serenaNotifications = notifications;
     window._serenaCodePanel = codePanel;
-    window._serenaBrain = brain;
   </script>
 </body>
 </html>

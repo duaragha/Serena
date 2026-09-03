@@ -40,6 +40,9 @@ from core.fleet_dag import (
     project_run as project_work_unit_run,
 )
 from core.fleet_dag import (
+    repair_review_phase_ownership as repair_work_unit_review_ownership,
+)
+from core.fleet_dag import (
     reset_leg_for_retry as reset_work_unit_leg_for_retry,
 )
 from core.work_jobs import process_start_token
@@ -520,6 +523,15 @@ class FleetStore:
                 not resume_sid
                 and resume_kind != "provider_handoff"
                 and _session_mode(run["policy_json"]) == "persistent_by_worker"
+                # Review never continues an earlier session. Because the phase
+                # matrix alternates providers, Review lands on the same provider
+                # as Research and would otherwise resume the very chat that did
+                # the research, inheriting its conclusions. A reviewer that sat
+                # through the work cannot independently disagree with it, and
+                # that disagreement is the whole point of the phase. Code and
+                # Fix still share their session: the fixer repairing code it
+                # wrote is a benefit, not a conflict.
+                and str(leg["phase"]) != "verify"
             ):
                 # A durable worker deliberately changes model and effort between
                 # Fleet phases. Identity is the stable ordinal plus provider;
@@ -655,6 +667,25 @@ class FleetStore:
                 (str(leg_id), int(before_attempt_number)),
             ).fetchone()
         return str(row["error"]) if row else None
+
+    def attempt_event_logs(self, run_id: str, leg_id: str) -> list[str]:
+        """Every recorded provider stream for one leg, oldest attempt first.
+
+        Evidence a leg produced does not belong to the attempt that happened to
+        emit it. A retry resumes the same native session, so work done on the
+        first attempt has to keep counting on the second.
+        """
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT a.event_log_path FROM fleet_attempts a "
+                "JOIN fleet_legs l ON l.leg_id = a.leg_id "
+                "WHERE l.run_id = ? AND a.leg_id = ? "
+                "AND a.event_log_path IS NOT NULL AND a.event_log_path != '' "
+                "ORDER BY a.attempt_number",
+                (str(run_id), str(leg_id)),
+            ).fetchall()
+        return [str(row["event_log_path"]) for row in rows]
 
     def mark_attempt_process(self, attempt_id: str, pid: int, event_log_path: str = "") -> None:
         token = process_start_token(int(pid)) or f"pid:{int(pid)}"
@@ -841,6 +872,64 @@ class FleetStore:
     def cancel_run(self, run_id: str, error: str = "cancelled by user") -> dict[str, Any]:
         return self._finish_run(run_id, "cancelled", error=error)
 
+    def force_cancel_run(
+        self, run_id: str, *, min_stall_seconds: float = 600.0, reason: str = ""
+    ) -> dict[str, Any]:
+        """Drive a wedged run to cancelled without waiting for its supervisor.
+
+        Cancel is a request: the supervisor is the only thing that converges a
+        run to a terminal state. When that supervisor is alive but cannot make
+        progress -- the case that prompted this was ENOSPC, where it could not
+        write the state transition at all -- the run cannot be cancelled and
+        cannot be retried, because retry demands a terminal state. There was no
+        way out except starting a second Fleet.
+
+        This is deliberately narrow. It refuses while any worker process is
+        still alive, so it can never strand real work, and it refuses until the
+        run has been silent for ``min_stall_seconds``, so a merely slow
+        supervisor is left alone.
+        """
+
+        now = time.time()
+        with self._connect() as connection:
+            row = self._require_run(connection, run_id)
+            state = str(row["state"])
+            if state in TERMINAL_RUN_STATES:
+                raise ValueError(f"run is already {state}")
+            live = connection.execute(
+                "SELECT a.pid, a.process_token FROM fleet_attempts a "
+                "JOIN fleet_legs l ON l.leg_id = a.leg_id "
+                "WHERE l.run_id = ? AND a.state = 'running' AND a.pid IS NOT NULL",
+                (str(run_id),),
+            ).fetchall()
+            alive = [
+                int(attempt["pid"])
+                for attempt in live
+                if _process_alive(attempt["pid"], attempt["process_token"])
+            ]
+            if alive:
+                raise ValueError(
+                    "refusing to force a run with live worker processes "
+                    f"({', '.join(str(pid) for pid in alive)}). Cancel it normally, "
+                    "or stop those processes first."
+                )
+            idle_for = now - float(row["updated_at"] or now)
+            if idle_for < float(min_stall_seconds):
+                raise ValueError(
+                    f"run last changed {idle_for:.0f}s ago; force needs "
+                    f"{float(min_stall_seconds):.0f}s of silence so a slow "
+                    "supervisor is not cut off mid-step"
+                )
+        detail = str(reason or "").strip() or "supervisor never converged"
+        return self._finish_run(
+            run_id,
+            "cancelled",
+            error=(
+                f"force-cancelled after {idle_for:.0f}s with no progress and no "
+                f"live workers: {detail}"
+            ),
+        )
+
     def request_cancel(self, run_id: str) -> dict[str, Any]:
         now = time.time()
         with self._connect() as connection:
@@ -908,6 +997,113 @@ class FleetStore:
                 raise ValueError("a dry-run plan cannot be retried")
             if row["state"] not in {"failed", "cancelled"}:
                 raise ValueError("only failed or cancelled Fleet runs can be retried")
+            running_attempts = connection.execute(
+                "SELECT a.pid, a.process_token FROM fleet_attempts a "
+                "JOIN fleet_legs l ON l.leg_id = a.leg_id "
+                "WHERE l.run_id = ? AND a.state = 'running' AND a.pid IS NOT NULL",
+                (run_id,),
+            ).fetchall()
+            live_pids = sorted(
+                {
+                    int(attempt["pid"])
+                    for attempt in running_attempts
+                    if _process_alive(attempt["pid"], attempt["process_token"])
+                }
+            )
+            if live_pids:
+                raise ValueError(
+                    "refusing to retry a terminal Fleet run while worker processes "
+                    f"are still alive ({', '.join(str(pid) for pid in live_pids)})"
+                )
+
+            try:
+                policy = json.loads(str(row["policy_json"] or "{}"))
+            except json.JSONDecodeError as exc:
+                raise ValueError("Fleet policy snapshot is not valid JSON") from exc
+            remapped_review_legs = repair_work_unit_review_ownership(
+                connection,
+                run_id=run_id,
+                policy=policy,
+                now=now,
+            )
+            stale_review_legs = _stale_review_legs(
+                connection,
+                run_id=run_id,
+                policy=policy,
+            )
+
+            unfinished_legs = [
+                str(item["leg_id"])
+                for item in connection.execute(
+                    "SELECT leg_id FROM fleet_legs "
+                    "WHERE run_id = ? AND state != 'completed' ORDER BY phase_index, ordinal",
+                    (run_id,),
+                ).fetchall()
+            ]
+            legacy_stop_legs: list[str] = []
+            seen_legs: set[str] = set()
+            evidence_rows = connection.execute(
+                "SELECT leg_id, payload_json FROM fleet_events "
+                "WHERE run_id = ? AND type = 'leg.completion_evidence_accepted' "
+                "AND leg_id IS NOT NULL ORDER BY event_seq DESC",
+                (run_id,),
+            ).fetchall()
+            for event in evidence_rows:
+                leg_id = str(event["leg_id"])
+                if leg_id in seen_legs:
+                    continue
+                seen_legs.add(leg_id)
+                try:
+                    payload = json.loads(str(event["payload_json"] or "{}"))
+                except json.JSONDecodeError:
+                    continue
+                units = payload.get("units") if isinstance(payload, dict) else None
+                stopped = any(
+                    isinstance(unit, dict)
+                    and str(unit.get("claimed_status") or "") in {"blocked", "stopped"}
+                    for unit in units or []
+                )
+                if not stopped:
+                    continue
+                unfinished = connection.execute(
+                    "SELECT 1 FROM fleet_work_unit_phases p "
+                    "JOIN fleet_work_units u "
+                    "ON u.run_id = p.run_id AND u.unit_id = p.unit_id "
+                    "WHERE p.leg_id = ? AND u.state != 'completed' LIMIT 1",
+                    (leg_id,),
+                ).fetchone()
+                if unfinished is not None:
+                    legacy_stop_legs.append(leg_id)
+
+            phase_by_leg = {
+                str(item["leg_id"]): str(item["phase"])
+                for item in connection.execute(
+                    "SELECT leg_id, phase FROM fleet_legs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchall()
+            }
+            for leg_id in unfinished_legs:
+                reset_work_unit_leg_for_retry(
+                    connection,
+                    leg_id=leg_id,
+                    now=now,
+                    reset_completed_descendants=phase_by_leg.get(leg_id) == "verify",
+                )
+            for leg_id in stale_review_legs:
+                reset_work_unit_leg_for_retry(
+                    connection,
+                    leg_id=leg_id,
+                    now=now,
+                    include_completed=True,
+                    reset_completed_descendants=True,
+                )
+            for leg_id in legacy_stop_legs:
+                reset_work_unit_leg_for_retry(
+                    connection,
+                    leg_id=leg_id,
+                    now=now,
+                    include_completed=True,
+                )
             connection.execute(
                 """
                 UPDATE fleet_runs SET state = 'queued', cancel_requested = 0,
@@ -944,7 +1140,12 @@ class FleetStore:
                 connection,
                 run_id=run_id,
                 event_type="run.retried",
-                payload={"state": "queued"},
+                payload={
+                    "state": "queued",
+                    "legacy_stopped_legs_reopened": legacy_stop_legs,
+                    "legacy_review_legs_remapped": remapped_review_legs,
+                    "stale_review_legs_reopened": stale_review_legs,
+                },
             )
             return self._snapshot(connection, run_id)
 
@@ -1914,14 +2115,33 @@ class FleetStore:
             }
         return list(latest.values())
 
-    def events(self, run_id: str, *, after: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+    def events(
+        self,
+        run_id: str,
+        *,
+        after: int = 0,
+        limit: int = 500,
+        latest: bool = False,
+    ) -> list[dict[str, Any]]:
         with self._connect() as connection:
             self._require_run(connection, run_id)
-            rows = connection.execute(
-                "SELECT * FROM fleet_events WHERE run_id = ? AND event_seq > ? "
-                "ORDER BY event_seq LIMIT ?",
-                (run_id, max(0, int(after)), min(2_000, max(1, int(limit)))),
-            ).fetchall()
+            bounded = min(2_000, max(1, int(limit)))
+            if latest and int(after) <= 0:
+                rows = list(
+                    reversed(
+                        connection.execute(
+                            "SELECT * FROM fleet_events WHERE run_id = ? "
+                            "ORDER BY event_seq DESC LIMIT ?",
+                            (run_id, bounded),
+                        ).fetchall()
+                    )
+                )
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM fleet_events WHERE run_id = ? AND event_seq > ? "
+                    "ORDER BY event_seq LIMIT ?",
+                    (run_id, max(0, int(after)), bounded),
+                ).fetchall()
             return [self._event_dict(row) for row in rows]
 
     def has_event(self, run_id: str, event_type: str, *, leg_id: str | None = None) -> bool:
@@ -2800,6 +3020,108 @@ class FleetStore:
         if os.name != "nt":
             with suppress(OSError):
                 self.path.chmod(0o600)
+
+
+def _stale_review_legs(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    policy: dict[str, Any],
+) -> list[str]:
+    """Completed reviews whose target Code output was not ready at dispatch.
+
+    This is a retry-time backstop for legacy DAG snapshots. It deliberately
+    uses timestamps, not the reviewer's prose: a review that started before the
+    target's successful Code attempt could not have received that final output
+    in its immutable context receipt.
+    """
+
+    phases = policy.get("phases") if isinstance(policy, dict) else None
+    if not isinstance(phases, list):
+        return []
+    code = next(
+        (item for item in phases if isinstance(item, dict) and item.get("name") == "execute"),
+        None,
+    )
+    review = next(
+        (item for item in phases if isinstance(item, dict) and item.get("name") == "verify"),
+        None,
+    )
+    if code is None or review is None:
+        return []
+    code_index = int(code.get("index") or 0)
+    review_index = int(review.get("index") or 0)
+    code_legs = {
+        int(row["ordinal"]): str(row["leg_id"])
+        for row in connection.execute(
+            "SELECT leg_id, ordinal FROM fleet_legs "
+            "WHERE run_id = ? AND phase_index = ?",
+            (run_id, code_index),
+        ).fetchall()
+    }
+    review_legs = {
+        int(row["ordinal"]): (str(row["leg_id"]), str(row["state"]))
+        for row in connection.execute(
+            "SELECT leg_id, ordinal, state FROM fleet_legs "
+            "WHERE run_id = ? AND phase_index = ?",
+            (run_id, review_index),
+        ).fetchall()
+    }
+    code_by_unit: dict[str, str] = {}
+    for ordinal, worker in enumerate(code.get("workers") or []):
+        if not isinstance(worker, dict) or ordinal not in code_legs:
+            continue
+        for raw_id in worker.get("assignment_ids") or []:
+            unit_id = str(raw_id).strip()
+            if unit_id:
+                code_by_unit[unit_id] = code_legs[ordinal]
+
+    stale: list[str] = []
+    for ordinal, worker in enumerate(review.get("workers") or []):
+        if not isinstance(worker, dict) or ordinal not in review_legs:
+            continue
+        review_leg_id, review_state = review_legs[ordinal]
+        targets = [
+            str(item).strip()
+            for item in worker.get("review_target_ids") or []
+            if str(item).strip()
+        ]
+        if review_state != "completed" or not targets:
+            continue
+        review_attempt = connection.execute(
+            "SELECT started_at FROM fleet_attempts WHERE leg_id = ? "
+            "ORDER BY attempt_number DESC LIMIT 1",
+            (review_leg_id,),
+        ).fetchone()
+        review_started = (
+            float(review_attempt["started_at"])
+            if review_attempt is not None and review_attempt["started_at"] is not None
+            else None
+        )
+        ready = review_started is not None
+        for target in targets:
+            code_leg_id = code_by_unit.get(target)
+            code_attempt = (
+                connection.execute(
+                    "SELECT state, completed_at FROM fleet_attempts WHERE leg_id = ? "
+                    "ORDER BY attempt_number DESC LIMIT 1",
+                    (code_leg_id,),
+                ).fetchone()
+                if code_leg_id
+                else None
+            )
+            if (
+                code_attempt is None
+                or str(code_attempt["state"] or "") != "completed"
+                or code_attempt["completed_at"] is None
+                or review_started is None
+                or float(code_attempt["completed_at"]) > review_started
+            ):
+                ready = False
+                break
+        if not ready:
+            stale.append(review_leg_id)
+    return sorted(stale)
 
 
 def _phase_state(states: list[str]) -> str:

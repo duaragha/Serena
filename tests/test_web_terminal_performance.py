@@ -8,8 +8,7 @@ import pytest
 
 from core import indexer
 from core.indexer import _dedupe_discovered
-from ui import pty_terminal
-from ui import web
+from ui import pty_terminal, web
 
 
 class _FakeProcess:
@@ -91,6 +90,21 @@ def test_renderer_forces_resize_on_reattach_and_dedupes_otherwise():
     assert "_sendResizeForSid(state.sid, true);" in web.HTML
 
 
+def test_renderer_refits_both_panes_after_window_resize_or_reveal():
+    assert "function _queueVisibleWebTermFit(delay, force)" in web.HTML
+    assert "window.addEventListener('resize', () => _queueVisibleWebTermFit(100, true));" in web.HTML
+    assert "function _fitVisibleWebTerms(force)" in web.HTML
+    assert "_sendResizeForSid(sid, !!force);" in web.HTML
+    assert "runtime.term.refresh(0, runtime.term.rows - 1);" in web.HTML
+    assert "activeTermSid !== sid" in web.HTML
+    assert "_fitVisibleWebTerms(true);" in web.HTML
+
+
+def test_windows_newline_mode_follows_the_spawned_pty_backend():
+    assert "convertEol: false," in web.HTML
+    assert "term.options.convertEol = spawnResp.pty_backend === 'conpty';" in web.HTML
+
+
 def test_window_focus_returns_the_keyboard_to_the_active_pane():
     assert "function _bindWebTerminalWindowFocus()" in web.HTML
     assert "window.addEventListener('focus', refocus);" in web.HTML
@@ -99,6 +113,18 @@ def test_window_focus_returns_the_keyboard_to_the_active_pane():
     assert "_bindWebTerminalWindowFocus();" in web.HTML
     # Never steal focus from a text field or an open modal.
     assert "el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable" in web.HTML
+
+
+def test_conversations_resume_in_code_and_desktop_chat_is_absent():
+    assert '<button class="view-tab active" id="viewLiveBtn"' in web.HTML
+    assert '>Read</button>' in web.HTML
+    assert '>Code</button>' in web.HTML
+    assert "let convMode = 'live';" in web.HTML
+    assert "const showReadView = opts.mode === 'read' || readOnly;" in web.HTML
+    assert "if (switching && convMode === 'live')" in web.HTML
+    assert 'id="convChatInput"' not in web.HTML
+    assert "async function sendChatMessage()" not in web.HTML
+    assert "/api/chat/socket-auth" not in web.HTML
 
 
 def test_webgl_renderer_is_probed_before_use_and_disposed_on_teardown():

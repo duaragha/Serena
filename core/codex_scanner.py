@@ -79,7 +79,7 @@ def _is_user_initiated(file_path: Path) -> bool:
     if source == "cli":
         return True
     match = _FILENAME_RE.match(file_path.name)
-    if source == "exec" and match:
+    if match:
         return bool(meta_sync.get_meta(match.group(1)).get("resident_work"))
     return False
 

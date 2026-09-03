@@ -226,3 +226,48 @@ def test_runtime_waits_for_an_inflight_partial_before_base_commit(
         session._reset_turn_mirror()
 
     asyncio.run(scenario())
+
+
+def test_interrupting_her_keeps_only_what_he_actually_heard() -> None:
+    """2026-08-20: cutting her off left _recent_dialogue with no record of the
+    reply at all, because the cancel path raised before the transcript line was
+    appended. She could restart an answer he had already heard most of. The
+    handbook's rule: keep the spoken prefix, mark where it stopped."""
+    import asyncio
+
+    from voice.call import orchestrator as orch
+
+    session = orch.CallSession.__new__(orch.CallSession)
+    session._recent_dialogue = []
+    session._spoken_sentences = {7: ["the deploy failed.", "it was the migration."]}
+
+    class _Telemetry:
+        def __init__(self): self.events = []
+        def record(self, event, **kw): self.events.append(event)
+
+    session.telemetry = _Telemetry()
+    session._record_truncated_reply(7)
+
+    assert session._recent_dialogue == [
+        "Serena: the deploy failed. it was the migration. (cut off here by Raghav)"
+    ]
+    assert "turn.reply_truncated" in session.telemetry.events
+    # the generation's buffer is consumed, never replayed into a later turn
+    assert 7 not in session._spoken_sentences
+
+
+def test_a_reply_he_never_heard_is_not_remembered_as_said() -> None:
+    """Truncation must not invent speech: interrupted before any audio left
+    the queue means she said nothing, and nothing is what gets recorded."""
+    from voice.call import orchestrator as orch
+
+    session = orch.CallSession.__new__(orch.CallSession)
+    session._recent_dialogue = []
+    session._spoken_sentences = {3: []}
+
+    class _Telemetry:
+        def record(self, event, **kw): pass
+
+    session.telemetry = _Telemetry()
+    session._record_truncated_reply(3)
+    assert session._recent_dialogue == []

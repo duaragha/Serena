@@ -24,6 +24,10 @@ def fleet_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SERENA_FLEET_DB_PATH", str(database))
     monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SERENA_FLEET_NO_AUTOSTART", "1")
+    # Most tests exercise scheduling against tiny temporary repositories. The
+    # disk preflight has dedicated coverage below and should not make unrelated
+    # tests depend on the laptop's momentary free-space watermark.
+    monkeypatch.setenv("SERENA_FLEET_MIN_FREE_BYTES", "0")
     # Most supervisor tests use a non-git tmp directory and exercise fake
     # provider scheduling rather than worktree enforcement. Isolation has its
     # own live-git supervisor coverage below.
@@ -81,6 +85,99 @@ def _successful_fake(calls: list[tuple[str, str, str, str | None]]):
         )
 
     return run
+
+
+def test_disk_headroom_scales_coding_runs_by_worker(monkeypatch, tmp_path):
+    monkeypatch.delenv("SERENA_FLEET_MIN_FREE_BYTES", raising=False)
+    monkeypatch.setattr(
+        supervisor.shutil,
+        "disk_usage",
+        lambda _path: type("DiskUsage", (), {"free": 4 * 1024**3})(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"4\.0 GiB free.*5\.0 GiB required for coding with 4 worker",
+    ):
+        supervisor._ensure_disk_headroom(
+            tmp_path,
+            activity="coding",
+            worker_count=4,
+        )
+
+
+def test_disk_headroom_override_can_disable_preflight(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERENA_FLEET_MIN_FREE_BYTES", "0")
+    monkeypatch.setattr(
+        supervisor.shutil,
+        "disk_usage",
+        lambda _path: (_ for _ in ()).throw(AssertionError("disk should not be read")),
+    )
+
+    supervisor._ensure_disk_headroom(
+        tmp_path,
+        activity="coding",
+        worker_count=4,
+    )
+
+
+def test_review_completion_fails_closed_when_target_code_receipt_is_stale():
+    leg = {
+        "phase": "verify",
+        "review_target_ids": ["ws-2"],
+    }
+    attempt = {"started_at": 100.0}
+    target_attempt = {"state": "completed", "completed_at": 101.0}
+    run = {
+        "phases": [
+            {
+                "name": "execute",
+                "legs": [
+                    {
+                        "assignment_ids": ["ws-2"],
+                        "current_attempt": target_attempt,
+                    }
+                ],
+            }
+        ]
+    }
+
+    assert "immutable context receipt is stale" in supervisor._review_target_readiness_failure(
+        run, leg, attempt
+    )
+    target_attempt["completed_at"] = 99.0
+    assert supervisor._review_target_readiness_failure(run, leg, attempt) == ""
+    target_attempt["state"] = "running"
+    assert "did not have a completed Code attempt" in supervisor._review_target_readiness_failure(
+        run, leg, attempt
+    )
+
+
+def test_sqlite_busy_retry_recovers_without_failing_the_leg(monkeypatch):
+    attempts = 0
+    sleeps: list[float] = []
+
+    def operation():
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise supervisor.sqlite3.OperationalError("database is locked")
+        return "acquired"
+
+    monkeypatch.setattr(supervisor.time, "sleep", sleeps.append)
+
+    assert supervisor._retry_sqlite_busy(operation) == "acquired"
+    assert attempts == 3
+    assert sleeps == [0.25, 0.5]
+
+
+def test_sqlite_busy_retry_does_not_hide_non_lock_errors():
+    with pytest.raises(supervisor.sqlite3.OperationalError, match="malformed"):
+        supervisor._retry_sqlite_busy(
+            lambda: (_ for _ in ()).throw(
+                supervisor.sqlite3.OperationalError("database disk image is malformed")
+            )
+        )
 
 
 def test_write_legs_run_isolated_and_integrate_before_review(fleet_env, monkeypatch):
@@ -233,30 +330,30 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
     monkeypatch.setenv("SERENA_FLEET_WORKSPACE_ROOT", str(fleet_env / "ordered-worktrees"))
     isolation = FleetIsolationStore()
     assert isolation.claim_paths(
-        run_id="run-order", worker_key="claude:a", paths=["alpha.txt"]
+        run_id="run-order", worker_key="agent:a", paths=["alpha.txt"]
     ).ok
     assert isolation.claim_paths(
-        run_id="run-order", worker_key="codex:b", paths=["beta.txt"]
+        run_id="run-order", worker_key="agent:b", paths=["beta.txt"]
     ).ok
     first = ensure_workspace(
-        isolation, run_id="run-order", worker_key="claude:a", cwd=root
+        isolation, run_id="run-order", worker_key="agent:a", cwd=root
     )
     second = ensure_workspace(
-        isolation, run_id="run-order", worker_key="codex:b", cwd=root
+        isolation, run_id="run-order", worker_key="agent:b", cwd=root
     )
     (Path(first.path) / "alpha.txt").write_text("alpha\n")
     (Path(second.path) / "beta.txt").write_text("beta\n")
     legs = [
         {
-            "leg_id": "leg-claude:a",
-            "worker_key": "claude:a",
+            "leg_id": "leg-agent:a",
+            "worker_key": "agent:a",
             "assignment_ids": ["ws-1"],
             "access_mode": "write",
             "state": "running",
         },
         {
-            "leg_id": "leg-codex:b",
-            "worker_key": "codex:b",
+            "leg_id": "leg-agent:b",
+            "worker_key": "agent:b",
             "assignment_ids": ["ws-2"],
             "access_mode": "write",
             "state": "running",
@@ -269,12 +366,12 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
             "work_units": [
                 {
                     "id": "ws-1",
-                    "owner_worker_key": "claude:a",
+                    "owner_worker_key": "agent:a",
                     "file_ownership": {"declared_paths": ["alpha.txt"]},
                 },
                 {
                     "id": "ws-2",
-                    "owner_worker_key": "codex:b",
+                    "owner_worker_key": "agent:b",
                     "file_ownership": {"declared_paths": ["beta.txt"]},
                 },
             ]
@@ -292,7 +389,7 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
             {"attempt_id": f"attempt-{worker_key}"},
         )
 
-    later = threading.Thread(target=integrate, args=("codex:b",))
+    later = threading.Thread(target=integrate, args=("agent:b",))
     later.start()
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -305,7 +402,7 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
     assert later.is_alive()
     assert isolation.integrations("run-order") == []
 
-    earlier = threading.Thread(target=integrate, args=("claude:a",))
+    earlier = threading.Thread(target=integrate, args=("agent:a",))
     earlier.start()
     threads = [later, earlier]
     for thread in threads:
@@ -314,13 +411,13 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
 
     assert all(getattr(result, "ok", False) for result in outcomes.values())
     assert [entry["worker_key"] for entry in isolation.integrations("run-order")] == [
-        "claude:a",
-        "codex:b",
+        "agent:a",
+        "agent:b",
     ]
     assert (root / "alpha.txt").read_text() == "alpha\n"
     assert (root / "beta.txt").read_text() == "beta\n"
-    isolation.release_claims("run-order", "claude:a")
-    isolation.release_claims("run-order", "codex:b")
+    isolation.release_claims("run-order", "agent:a")
+    isolation.release_claims("run-order", "agent:b")
 
 
 def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, monkeypatch):
@@ -338,22 +435,22 @@ def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, mon
     monkeypatch.setenv("SERENA_FLEET_WORKSPACE_ROOT", str(fleet_env / "failed-worktrees"))
     isolation = FleetIsolationStore()
     assert isolation.claim_paths(
-        run_id="run-failed-order", worker_key="codex:b", paths=["beta.txt"]
+        run_id="run-failed-order", worker_key="agent:b", paths=["beta.txt"]
     ).ok
     workspace = ensure_workspace(
-        isolation, run_id="run-failed-order", worker_key="codex:b", cwd=root
+        isolation, run_id="run-failed-order", worker_key="agent:b", cwd=root
     )
     (Path(workspace.path) / "beta.txt").write_text("beta\n")
     earlier = {
-        "leg_id": "leg-claude:a",
-        "worker_key": "claude:a",
+        "leg_id": "leg-agent:a",
+        "worker_key": "agent:a",
         "assignment_ids": ["ws-1"],
         "access_mode": "write",
         "state": "running",
     }
     later = {
-        "leg_id": "leg-codex:b",
-        "worker_key": "codex:b",
+        "leg_id": "leg-agent:b",
+        "worker_key": "agent:b",
         "assignment_ids": ["ws-2"],
         "access_mode": "write",
         "state": "running",
@@ -365,12 +462,12 @@ def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, mon
             "work_units": [
                 {
                     "id": "ws-1",
-                    "owner_worker_key": "claude:a",
+                    "owner_worker_key": "agent:a",
                     "file_ownership": {"declared_paths": ["alpha.txt"]},
                 },
                 {
                     "id": "ws-2",
-                    "owner_worker_key": "codex:b",
+                    "owner_worker_key": "agent:b",
                     "file_ownership": {"declared_paths": ["beta.txt"]},
                 },
             ]
@@ -385,7 +482,7 @@ def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, mon
             store,
             snapshot,
             later,
-            {"attempt_id": "attempt-codex:b"},
+            {"attempt_id": "attempt-agent:b"},
         )
 
     thread = threading.Thread(target=integrate_later)
@@ -406,10 +503,10 @@ def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, mon
     assert not thread.is_alive()
     assert getattr(outcome["result"], "ok", False)
     assert [entry["worker_key"] for entry in isolation.integrations("run-failed-order")] == [
-        "codex:b"
+        "agent:b"
     ]
     assert (root / "beta.txt").read_text() == "beta\n"
-    isolation.release_claims("run-failed-order", "codex:b")
+    isolation.release_claims("run-failed-order", "agent:b")
 
 
 def test_durable_declared_write_claim_blocks_only_the_other_worker(fleet_env, monkeypatch):
@@ -421,21 +518,21 @@ def test_durable_declared_write_claim_blocks_only_the_other_worker(fleet_env, mo
             "work_units": [
                 {
                     "id": "ws-1",
-                    "owner_worker_key": "claude:a",
+                    "owner_worker_key": "agent:a",
                     "file_ownership": {"declared_paths": ["core/shared.py"]},
                 },
                 {
                     "id": "ws-2",
-                    "owner_worker_key": "codex:a",
+                    "owner_worker_key": "agent:b",
                     "file_ownership": {"declared_paths": ["core/shared.py"]},
                 },
             ]
         },
     }
-    holder = {"worker_key": "claude:a", "assignment_ids": ["ws-1"]}
-    other = {"worker_key": "codex:a", "assignment_ids": ["ws-2"]}
+    holder = {"worker_key": "agent:a", "assignment_ids": ["ws-1"]}
+    other = {"worker_key": "agent:b", "assignment_ids": ["ws-2"]}
     assert isolation.claim_paths(
-        run_id=run["run_id"], worker_key="claude:a", paths=["core/shared.py"]
+        run_id=run["run_id"], worker_key="agent:a", paths=["core/shared.py"]
     ).ok
 
     assert not supervisor._writer_has_durable_claim_conflict(
@@ -524,9 +621,9 @@ def test_rejected_write_releases_claims_and_retry_unblocks_sibling(
 
     assert completed["state"] == "completed", completed.get("error")
     isolation = FleetIsolationStore()
-    assert rejected_worker in {"codex:a", "codex:b"}
+    assert rejected_worker in {"agent:a", "agent:b"}
     assert execute_calls.count(rejected_worker) == 2
-    sibling = "codex:b" if rejected_worker == "codex:a" else "codex:a"
+    sibling = "agent:b" if rejected_worker == "agent:a" else "agent:a"
     assert execute_calls.count(sibling) == 1
     assert isolation.active_claims(run["run_id"]) == []
     store = supervisor.FleetStore()
@@ -758,7 +855,9 @@ def test_single_codex_worker_reuses_one_chat_across_all_four_phases(
     requests: list[WorkerRequest] = []
 
     def fake(request, *, cancel_requested, on_event):
-        sid = request.resume_session_id or "solo-codex-session"
+        # A fresh session gets a distinct id, so the run's real chat count is
+        # observable rather than collapsed onto one hardcoded session.
+        sid = request.resume_session_id or f"solo-codex-session-{request.phase}"
         on_event("process.started", {"pid": os.getpid(), "event_log_path": "/fake"})
         on_event("session.started", {"session_id": sid})
         requests.append(request)
@@ -783,7 +882,10 @@ def test_single_codex_worker_reuses_one_chat_across_all_four_phases(
 
     assert completed["state"] == "completed"
     assert completed["agent_count"] == 1
-    assert completed["chat_count"] == 1
+    # Two chats, not one: every phase is Codex here, so Research and Code share
+    # a session, but Review refuses to continue it and opens its own, and Fix
+    # then continues Review's.
+    assert completed["chat_count"] == 2
     assert completed["progress"] == {"completed": 4, "total": 4}
     assert [request.phase for request in requests] == [
         "discover",
@@ -792,12 +894,14 @@ def test_single_codex_worker_reuses_one_chat_across_all_four_phases(
         "finalize",
     ]
     assert requests[0].resume_session_id is None
-    assert all(request.resume_session_id == "solo-codex-session" for request in requests[1:])
+    assert requests[1].resume_session_id == "solo-codex-session-discover"
+    assert requests[2].resume_session_id is None
+    assert requests[3].resume_session_id is not None
     assert [(request.model, request.effort) for request in requests] == [
-        ("gpt-5.6-terra", "high"),
+        ("gpt-5.6-luna", "max"),
         ("gpt-5.6-sol", "xhigh"),
-        ("gpt-5.6-terra", "xhigh"),
-        ("gpt-5.6-sol", "xhigh"),
+        ("gpt-5.6-sol", "high"),
+        ("gpt-5.6-sol", "max"),
     ]
     verify = requests[2]
     assert verify.review_target_ids == ()
@@ -805,7 +909,7 @@ def test_single_codex_worker_reuses_one_chat_across_all_four_phases(
     assert "Rotated review targets:" not in verify.prompt
 
 
-def test_finished_worker_advances_while_sibling_is_still_in_prior_phase(
+def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
     fleet_env,
     monkeypatch,
 ):
@@ -814,11 +918,15 @@ def test_finished_worker_advances_while_sibling_is_still_in_prior_phase(
     phase_names = ("discover", "execute", "verify", "finalize")
     completed_by_phase = {name: 0 for name in phase_names}
     completion_lock = threading.Lock()
-    codex_review_started = threading.Event()
+    agent_a_code_finished = threading.Event()
+    agent_b_code_started = threading.Event()
+    release_agent_b_code = threading.Event()
+    agent_a_review_started = threading.Event()
 
     def checked_fake(request, *, cancel_requested, on_event):
-        if request.phase == "execute" and request.provider == "claude":
-            assert codex_review_started.wait(timeout=3)
+        if request.phase == "execute" and request.worker_key == "agent:b":
+            agent_b_code_started.set()
+            assert release_agent_b_code.wait(timeout=3)
         if request.phase == "execute":
             assert "active co-implementer" in request.prompt
             assert "Do not turn this phase into review-only work" in request.prompt
@@ -832,8 +940,10 @@ def test_finished_worker_advances_while_sibling_is_still_in_prior_phase(
             cancel_requested=cancel_requested,
             on_event=on_event,
         )
-        if request.phase == "verify" and request.provider == "codex":
-            codex_review_started.set()
+        if request.phase == "execute" and request.worker_key == "agent:a":
+            agent_a_code_finished.set()
+        if request.phase == "verify" and request.worker_key == "agent:a":
+            agent_a_review_started.set()
         with completion_lock:
             completed_by_phase[request.phase] += 1
         return result
@@ -843,23 +953,58 @@ def test_finished_worker_advances_while_sibling_is_still_in_prior_phase(
         "implement a controlled test feature",
         activity="coding",
         cwd=str(fleet_env),
+        worker_count=2,
     )
-    completed = supervisor.run_supervisor(run["run_id"])
+    outcome: dict[str, dict] = {}
+    thread = threading.Thread(
+        target=lambda: outcome.setdefault(
+            "run", supervisor.run_supervisor(run["run_id"])
+        ),
+        daemon=True,
+    )
+    thread.start()
+    assert agent_a_code_finished.wait(timeout=3)
+    assert agent_b_code_started.wait(timeout=3)
+    # Agent A reviews Agent B's unit. Its own Code is done, but target Code is
+    # still live, so the review must remain undispatched.
+    assert not agent_a_review_started.wait(timeout=0.2)
+    release_agent_b_code.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    completed = outcome["run"]
     assert completed["state"] == "completed"
     assert completed["progress"] == {"completed": 8, "total": 8}
     assert completed["agent_count"] == 2
-    assert completed["chat_count"] == 2
+    # Three chats per agent: Research on Codex, Code and Fix sharing one Claude
+    # chat, and Review on its own Codex chat rather than resuming Research.
+    assert completed["chat_count"] == 6
     assert len(calls) == 8
-    assert codex_review_started.is_set()
-    for provider in ("codex", "claude"):
-        resumes = [resume for _phase, current, _access, resume in calls if current == provider]
-        assert resumes[0] is None
-        assert len(set(resumes[1:])) == 1
-        assert resumes[1] is not None
+    assert agent_a_review_started.is_set()
     assert completed_by_phase == {name: 2 for name in phase_names}
-    assert calls.index(next(call for call in calls if call[:2] == ("verify", "codex"))) < calls.index(
-        next(call for call in calls if call[:2] == ("verify", "claude"))
-    )
+
+    # Each phase runs one provider for every agent.
+    by_phase = {
+        name: [provider for phase, provider, _access, _resume in calls if phase == name]
+        for name in phase_names
+    }
+    assert by_phase == {
+        "discover": ["codex", "codex"],
+        "execute": ["claude", "claude"],
+        "verify": ["codex", "codex"],
+        "finalize": ["claude", "claude"],
+    }
+
+    # Session continuity follows the two rules: only Fix continues an earlier
+    # session, and Review deliberately starts clean even though it shares the
+    # Research provider.
+    resumes = {
+        name: [resume for phase, _provider, _access, resume in calls if phase == name]
+        for name in phase_names
+    }
+    assert resumes["discover"] == [None, None]
+    assert resumes["execute"] == [None, None]
+    assert resumes["verify"] == [None, None]
+    assert all(resume is not None for resume in resumes["finalize"])
     assert [access for phase, _provider, access, _resume in calls if phase == "execute"] == [
         "write",
         "write",
@@ -873,8 +1018,8 @@ def test_finished_worker_advances_while_sibling_is_still_in_prior_phase(
         "write",
     ]
     result = supervisor.get_result(run["run_id"])
-    assert "[codex / functional-fixer]" in result["result_text"]
-    assert "finalize:codex:functional-fixer" in result["result_text"]
+    assert "[claude / functional-fixer]" in result["result_text"]
+    assert "finalize:claude:functional-fixer" in result["result_text"]
     assert "[claude / hardening-fixer]" in result["result_text"]
     assert "finalize:claude:hardening-fixer" in result["result_text"]
 
@@ -949,48 +1094,52 @@ tasks:
     assert peak["execute"] == 2
     assert peak["finalize"] == 2
     assert len(set(started["execute"][:2])) == 2
-    assert set(started["execute"]) == {"codex:a", "claude:a", "codex:b", "claude:b"}
+    assert set(started["execute"]) == {"agent:a", "agent:b", "agent:c", "agent:d"}
 
-    discover_a = next(
-        request
-        for request in requests
-        if request.phase == "discover" and request.worker_key == "codex:a"
+    discover_requests = [request for request in requests if request.phase == "discover"]
+    assert len(discover_requests) == 4
+    assert all(
+        "extensive current online research" in request.prompt
+        and "at least 3 distinct provider web searches" in request.prompt
+        and "at least 5 unique direct http(s) sources" in request.prompt
+        and '"online_research"' in request.prompt
+        for request in discover_requests
     )
-    assert "extensive current online research" in discover_a.prompt
-    assert "at least 3 distinct provider web searches" in discover_a.prompt
-    assert "at least 5 unique direct http(s) sources" in discover_a.prompt
-    assert '"online_research"' in discover_a.prompt
 
     execute_a = next(
         request
         for request in requests
-        if request.phase == "execute" and request.worker_key == "codex:a"
+        if request.phase == "execute" and request.worker_key == "agent:a"
     )
-    assert execute_a.worker_label == "Codex A"
+    assert execute_a.worker_label == "Agent A"
     assert execute_a.assignment
     assert set(execute_a.assignment_ids) == {"ws-1"}
     assert "Durable work-unit contract:" in execute_a.prompt
-    assert "ws-1 [own], owner codex:a" in execute_a.prompt
+    assert "ws-1 [own], owner agent:a" in execute_a.prompt
     assert "Required evidence:" in execute_a.prompt
     assert "Stop conditions:" in execute_a.prompt
     assert "COMPLETION CONTRACT ENFORCEMENT" in execute_a.prompt
     assert "<serena-evidence>" in execute_a.prompt
     assert "Full Fleet roster:" in execute_a.prompt
     assert all(
-        label in execute_a.prompt for label in ("Codex A", "Claude A", "Codex B", "Claude B")
+        label in execute_a.prompt
+        for label in ("Agent A", "Agent B", "Agent C", "Agent D")
     )
-    assert "output-discover-codex:a" not in execute_a.prompt
+    # Code runs on the other provider in a fresh session, so it must be handed
+    # its own Research output too. The own-output trim only applies when a
+    # worker actually resumed a session that already contains it.
+    assert "output-discover-agent:a" in execute_a.prompt
 
     review_a = next(
         request
         for request in requests
-        if request.phase == "verify" and request.worker_key == "codex:a"
+        if request.phase == "verify" and request.worker_key == "agent:a"
     )
     assert set(review_a.review_target_ids) == {"ws-2"}
     assert "Rotated review targets:" in review_a.prompt
-    assert "ws-2, owned by Claude A" in review_a.prompt
-    assert "The completion envelope must contain only your Assignment ids: ws-1" in review_a.prompt
-    assert "Never substitute review_target_ids for assignment_ids" in review_a.prompt
+    assert "ws-2, owned by Agent B" in review_a.prompt
+    assert "The completion envelope must contain only the reviewed unit ids: ws-2" in review_a.prompt
+    assert "Never substitute your owned assignment_ids for the reviewed unit ids" in review_a.prompt
     assert "never omit the completion envelope" in review_a.prompt
     assert "not a user denial or a blocker" in review_a.prompt
     assert "cite the accepted prior receipt" in review_a.prompt
@@ -1015,17 +1164,20 @@ def test_resident_supervisor_expands_a_stale_unstarted_multitask_plan(
         dry_run=False,
         policy=stale,
     )
-    assert run["agent_count"] == 2
+    assert run["agent_count"] == 1
 
     calls: list[tuple[str, str, str, str | None]] = []
     monkeypatch.setattr(supervisor, "run_worker", _successful_fake(calls))
     completed = supervisor.run_supervisor(run["run_id"])
 
     assert completed["state"] == "completed"
-    assert completed["agent_count"] == 4
-    assert completed["chat_count"] == 4
-    assert completed["progress"] == {"completed": 16, "total": 16}
-    assert completed["policy"]["scaling"]["selected_workers"] == 4
+    # Three named workstreams give three agents, four phases each. The old plan
+    # padded to four so the codex/claude pairing stayed even.
+    assert completed["agent_count"] == 3
+    # Three chats per agent: Research, the shared Code/Fix chat, and Review's own.
+    assert completed["chat_count"] == 9
+    assert completed["progress"] == {"completed": 12, "total": 12}
+    assert completed["policy"]["scaling"]["selected_workers"] == 3
     assert any(event["type"] == "run.policy_refreshed" for event in store.events(run["run_id"]))
 
 
@@ -1065,12 +1217,58 @@ def test_resident_supervisor_replaces_a_complete_stale_model_plan(
         [(leg["model"], leg["effort"]) for leg in phase["legs"]]
         for phase in completed["phases"]
     ] == [
-        [("gpt-5.6-terra", "high"), ("claude-sonnet-5", "high")],
-        [("gpt-5.6-sol", "xhigh"), ("claude-opus-5", "high")],
-        [("gpt-5.6-terra", "xhigh"), ("claude-sonnet-5", "xhigh")],
-        [("gpt-5.6-sol", "xhigh"), ("claude-opus-5", "high")],
+        [("gpt-5.6-luna", "max")],
+        [("claude-opus-5", "medium")],
+        [("gpt-5.6-sol", "high")],
+        [("claude-opus-5", "high")],
     ]
     assert any(event["type"] == "run.policy_refreshed" for event in store.events(run["run_id"]))
+
+
+def test_scheduler_never_dispatches_after_run_becomes_terminal(fleet_env, monkeypatch):
+    both_research_started = threading.Barrier(2)
+    terminal_written = threading.Event()
+    calls: list[tuple[str, str]] = []
+    run_id = ""
+
+    def fake(request, *, cancel_requested, on_event):
+        del cancel_requested
+        calls.append((request.phase, request.worker_key))
+        on_event(
+            "process.started",
+            {"pid": os.getpid(), "event_log_path": f"/{request.attempt_id}.jsonl"},
+        )
+        on_event("session.started", {"session_id": f"session-{request.worker_key}"})
+        if request.phase != "discover":
+            raise AssertionError("a terminal run dispatched a downstream leg")
+        both_research_started.wait(timeout=3)
+        if request.worker_key == "agent:a":
+            supervisor._store().fail_run(run_id, "externally terminal during live siblings")
+            terminal_written.set()
+        else:
+            assert terminal_written.wait(timeout=3)
+        return WorkerResult(
+            True,
+            f"research:{request.worker_key}",
+            f"session-{request.worker_key}",
+            request.model,
+            request.effort,
+            0,
+        )
+
+    monkeypatch.setattr(supervisor, "run_worker", fake)
+    run = supervisor.start_run(
+        "tasks:\n- auth guard\n- cart contract",
+        activity="coding",
+        cwd=str(fleet_env),
+        worker_count=2,
+    )
+    run_id = str(run["run_id"])
+
+    finished = supervisor.run_supervisor(run_id)
+
+    assert finished["state"] == "failed"
+    assert {phase for phase, _worker in calls} == {"discover"}
 
 
 def test_parallel_siblings_receive_only_completed_prior_phase_context(
@@ -1080,6 +1278,8 @@ def test_parallel_siblings_receive_only_completed_prior_phase_context(
         "implement deterministic context",
         activity="coding",
         cwd=str(fleet_env),
+        # Two agents so there is a sibling whose context can be withheld.
+        worker_count=2,
     )
     store = supervisor._store()
     assert store.claim_run(run["run_id"])
@@ -1143,39 +1343,63 @@ def test_worker_prompt_names_the_actual_isolated_directory(fleet_env):
     assert f"Working directory: {isolated}" in prompt
     assert "Work only inside the exact isolated Working directory below" in prompt
     assert "Never cd to or edit the base checkout" in prompt
+    assert "Never use pkill, killall, or pattern-based process termination" in prompt
+    assert "stop only that exact process" in prompt
+    assert "Never block on one sleep or wait longer than 60 seconds" in prompt
+    assert "read remote CI once" in prompt
+    assert "never sleep or poll waiting for hosted CI" in prompt
+    assert "never rerun an unchanged full local gate" in prompt
+    assert "prove that every process and listener you started is gone" in prompt
+    assert "This boundary applies only to the current Research phase" in prompt
+    assert "Never stop or block merely because this phase cannot write" in prompt
+    assert "implementation belongs to the later Code phase" in prompt
 
 
 def test_persistent_worker_prompt_adds_only_the_peers_previous_phase_output(fleet_env):
+    """A worker that really resumed a session is not re-handed its own output.
+
+    Fix is the phase that continues an earlier session, because Code ran on the
+    same provider. Its own Review output is already in that session, so the
+    prompt carries only the peer's.
+    """
+
     run = supervisor.start_run(
         "implement bounded persistent context",
         activity="coding",
         cwd=str(fleet_env),
+        worker_count=2,
     )
     store = supervisor._store()
     assert store.claim_run(run["run_id"])
-    first_phase = run["phases"][0]
-    for leg in first_phase["legs"]:
-        attempt = store.begin_attempt(leg["leg_id"])
-        store.finish_attempt(
-            attempt["attempt_id"],
-            state="completed",
-            output_text=f"private-{leg['runtime']}-research",
-            session_id=f"durable-{leg['runtime']}",
-            actual_model=leg["model"],
-            actual_effort=leg["effort"],
-            exit_code=0,
-        )
+    for phase_index in (0, 1, 2):
+        phase_name = run["phases"][phase_index]["name"]
+        for leg in run["phases"][phase_index]["legs"]:
+            attempt = store.begin_attempt(leg["leg_id"])
+            store.finish_attempt(
+                attempt["attempt_id"],
+                state="completed",
+                output_text=f"private-{phase_name}-{_worker_suffix(leg)}",
+                session_id=f"durable-{leg['runtime']}-{_worker_suffix(leg)}",
+                actual_model=leg["model"],
+                actual_effort=leg["effort"],
+                exit_code=0,
+            )
     snapshot = store.get_run(run["run_id"])
     assert snapshot is not None
-    codex_leg = next(leg for leg in snapshot["phases"][1]["legs"] if leg["runtime"] == "codex")
-    attempt = store.begin_attempt(codex_leg["leg_id"])
+    fix_leg = snapshot["phases"][3]["legs"][0]
+    attempt = store.begin_attempt(fix_leg["leg_id"])
     assert attempt["resume_kind"] == "phase_continuation"
+    assert attempt["resume_source_phase"] == "execute"
     refreshed = store.get_run(run["run_id"])
     assert refreshed is not None
-    codex_live = next(leg for leg in refreshed["phases"][1]["legs"] if leg["runtime"] == "codex")
-    prompt = supervisor._worker_prompt(store, refreshed, codex_live, attempt)
-    assert "private-claude-research" in prompt
-    assert "private-codex-research" not in prompt
+    fix_live = refreshed["phases"][3]["legs"][0]
+    prompt = supervisor._worker_prompt(store, refreshed, fix_live, attempt)
+    assert "private-verify-b" in prompt
+    assert "private-verify-a" not in prompt
+
+
+def _worker_suffix(leg: dict) -> str:
+    return str(leg.get("worker_key") or "agent:a").split(":")[-1]
 
 
 def test_first_worker_is_immediately_assigned_the_reserved_group_and_reconciles(
@@ -1204,7 +1428,8 @@ def test_first_worker_is_immediately_assigned_the_reserved_group_and_reconciles(
     )
     group_id = run["worker_group_id"]
     legs = run["phases"][0]["legs"]
-    assert len(legs) == 4
+    # One agent per named workstream; the task names three.
+    assert len(legs) == 3
     session_ids = []
     for leg in legs:
         attempt = store.begin_attempt(leg["leg_id"])
@@ -1243,12 +1468,13 @@ def test_first_worker_is_immediately_assigned_the_reserved_group_and_reconciles(
             exit_code=0,
         )
 
-    codex_titles = {
+    # Sessions are named after the agent slot now, not the provider.
+    agent_titles = {
         metadata.get_meta(sid)["custom_title"]
         for sid in session_ids
-        if sid.startswith("codex-")
+        if sid.startswith("agent-")
     }
-    assert len(codex_titles) == 2
+    assert len(agent_titles) == 3
 
     metadata.set_group(session_ids[-1], "g_wrong")
     assert supervisor._reconcile_run_sessions(store, run) is True
@@ -1286,7 +1512,8 @@ def test_legacy_saved_policy_resumes_with_its_original_sequential_schedule(
 ):
     calls: list[tuple[str, str, str, str | None]] = []
     monkeypatch.setattr(supervisor, "run_worker", _successful_fake(calls))
-    legacy = build_policy("coding", config=builtin_config()).to_dict()
+    # A legacy snapshot carried two workers per phase, so build one that way.
+    legacy = build_policy("coding", config=builtin_config(), worker_count=2).to_dict()
     legacy_roles = {
         "discover": ("code-scout", "architecture-scout"),
         "execute": ("implementer", "review-and-fix"),
@@ -1322,7 +1549,9 @@ def test_controlled_promotion_resumes_codex_and_starts_opus_in_parallel(
     fleet_env,
     monkeypatch,
 ):
-    legacy = build_policy("coding", config=builtin_config()).to_dict()
+    legacy = build_policy(
+        "coding", config=builtin_config(), worker_count=2
+    ).to_dict()
     for phase in legacy["phases"]:
         phase.pop("display_name")
         phase["execution"] = "parallel" if phase["name"] == "discover" else "sequential"
@@ -1348,12 +1577,16 @@ def test_controlled_promotion_resumes_codex_and_starts_opus_in_parallel(
             actual_effort=leg["effort"],
             exit_code=0,
         )
-    execute_codex = run["phases"][1]["legs"][0]
-    interrupted = store.begin_attempt(execute_codex["leg_id"])
+    execute_first = run["phases"][1]["legs"][0]
+    interrupted = store.begin_attempt(execute_first["leg_id"])
     store.finish_attempt(
         interrupted["attempt_id"],
         state="cancelled",
-        session_id="resumable-codex-session",
+        session_id="resumable-execute-session",
+        # Code runs on Claude, whose sessions only become resumable once the
+        # provider confirmed them by reporting the model it actually ran.
+        actual_model=execute_first["model"],
+        actual_effort=execute_first["effort"],
         exit_code=-15,
     )
     store.add_steering(run["run_id"], supervisor.PARALLELIZE_CONTROL_MESSAGE)
@@ -1384,12 +1617,14 @@ def test_controlled_promotion_resumes_codex_and_starts_opus_in_parallel(
     completed = supervisor.run_supervisor(run["run_id"])
 
     assert completed["state"] == "completed"
-    assert sorted(provider for provider, _resume in execute_calls) == ["claude", "codex"]
-    assert ("codex", "resumable-codex-session") in execute_calls
+    # Code runs Claude for every agent, so both promoted legs are Claude and
+    # the interrupted one resumes its own session.
+    assert sorted(provider for provider, _resume in execute_calls) == ["claude", "claude"]
+    assert ("claude", "resumable-execute-session") in execute_calls
     promoted_execute = completed["phases"][1]
     assert promoted_execute["execution"] == "parallel"
     assert [leg["model"] for leg in promoted_execute["legs"]] == [
-        "gpt-5.6-sol",
+        "claude-opus-5",
         "claude-opus-5",
     ]
 
@@ -1406,8 +1641,8 @@ def test_failed_leg_retries_by_native_session_without_rerunning_completed_leg(
         sid = request.resume_session_id or f"session-{request.leg_id}"
         on_event("process.started", {"pid": os.getpid(), "event_log_path": "/fake"})
         on_event("session.started", {"session_id": sid})
-        attempts.append((request.phase, request.provider, request.resume_session_id))
-        if request.phase == "discover" and request.provider == "codex" and not failed:
+        attempts.append((request.phase, request.worker_key, request.resume_session_id))
+        if request.phase == "discover" and request.worker_key == "agent:a" and not failed:
             failed = True
             return WorkerResult(
                 False,
@@ -1429,16 +1664,19 @@ def test_failed_leg_retries_by_native_session_without_rerunning_completed_leg(
 
     monkeypatch.setattr(supervisor, "run_worker", fake)
     run = supervisor.start_run(
-        "research controlled sources", activity="research", cwd=str(fleet_env)
+        "research controlled sources",
+        activity="research",
+        cwd=str(fleet_env),
+        worker_count=2,
     )
     assert supervisor.run_supervisor(run["run_id"])["state"] == "failed"
     first_count = len(attempts)
-    assert first_count == 5
-    assert [phase for phase, provider, _resume in attempts if provider == "claude"] == [
+    assert first_count == 3
+    # Agent B's independent Research and Analyze finish. Rotated Review and
+    # Refine correctly wait because its peer reviewer has not recovered yet.
+    assert [phase for phase, worker, _resume in attempts if worker == "agent:b"] == [
         "discover",
         "execute",
-        "verify",
-        "finalize",
     ]
 
     retried = supervisor.retry_run(run["run_id"])
@@ -1448,14 +1686,14 @@ def test_failed_leg_retries_by_native_session_without_rerunning_completed_leg(
     assert len(attempts) == 9
     resumed = [
         resume
-        for phase, provider, resume in attempts[first_count:]
-        if phase == "discover" and provider == "codex"
+        for phase, worker, resume in attempts[first_count:]
+        if phase == "discover" and worker == "agent:a"
     ]
     assert resumed == [
         next(
             leg["current_attempt"]["session_id"]
             for leg in supervisor.get_run(run["run_id"])["phases"][0]["legs"]
-            if leg["provider"] == "codex"
+            if leg["worker_key"] == "agent:a"
         )
     ]
 
@@ -1464,27 +1702,27 @@ def test_live_row_retry_restarts_failed_leg_without_waiting_for_sibling(
     fleet_env,
     monkeypatch,
 ):
-    claude_failed = threading.Event()
-    claude_retried = threading.Event()
-    release_codex = threading.Event()
+    agent_a_failed = threading.Event()
+    agent_a_retried = threading.Event()
+    release_agent_b = threading.Event()
     calls: list[tuple[str, str, int]] = []
     counts: dict[tuple[str, str], int] = {}
 
     def fake(request, *, cancel_requested, on_event):
-        key = (request.phase, request.provider)
+        key = (request.phase, request.worker_key)
         counts[key] = counts.get(key, 0) + 1
         number = counts[key]
         sid = request.resume_session_id or f"session-{request.leg_id}"
         on_event("process.started", {"pid": os.getpid(), "event_log_path": "/fake"})
         on_event("session.started", {"session_id": sid})
-        calls.append((request.phase, request.provider, number))
-        if request.phase == "discover" and request.provider == "claude" and number == 1:
-            claude_failed.set()
+        calls.append((request.phase, request.worker_key, number))
+        if request.phase == "discover" and request.worker_key == "agent:a" and number == 1:
+            agent_a_failed.set()
             return WorkerResult(False, "partial", sid, request.model, request.effort, 1, "network")
-        if request.phase == "discover" and request.provider == "claude" and number == 2:
-            claude_retried.set()
-        if request.phase == "discover" and request.provider == "codex" and number == 1:
-            assert release_codex.wait(timeout=3)
+        if request.phase == "discover" and request.worker_key == "agent:a" and number == 2:
+            agent_a_retried.set()
+        if request.phase == "discover" and request.worker_key == "agent:b" and number == 1:
+            assert release_agent_b.wait(timeout=3)
         return WorkerResult(
             True,
             f"{request.phase}:{request.provider}",
@@ -1495,14 +1733,16 @@ def test_live_row_retry_restarts_failed_leg_without_waiting_for_sibling(
         )
 
     monkeypatch.setattr(supervisor, "run_worker", fake)
-    run = supervisor.start_run("research live retry", activity="research", cwd=str(fleet_env))
+    run = supervisor.start_run(
+        "research live retry", activity="research", cwd=str(fleet_env), worker_count=2
+    )
     outcome: dict[str, dict] = {}
     thread = threading.Thread(
         target=lambda: outcome.setdefault("run", supervisor.run_supervisor(run["run_id"])),
         daemon=True,
     )
     thread.start()
-    assert claude_failed.wait(timeout=3)
+    assert agent_a_failed.wait(timeout=3)
     deadline = time.monotonic() + 3
     failed_leg = None
     while time.monotonic() < deadline:
@@ -1511,7 +1751,7 @@ def test_live_row_retry_restarts_failed_leg_without_waiting_for_sibling(
             (
                 leg
                 for leg in snapshot["phases"][0]["legs"]
-                if leg["provider"] == "claude" and leg["state"] == "failed"
+                if leg["worker_key"] == "agent:a" and leg["state"] == "failed"
             ),
             None,
         )
@@ -1526,14 +1766,14 @@ def test_live_row_retry_restarts_failed_leg_without_waiting_for_sibling(
     )
     assert queued_leg["state"] == "queued"
     assert queued_leg["retry_requested"] is False
-    assert claude_retried.wait(timeout=3)
-    release_codex.set()
+    assert agent_a_retried.wait(timeout=3)
+    release_agent_b.set()
     thread.join(timeout=5)
     assert not thread.is_alive()
     assert outcome["run"]["state"] == "completed"
-    assert [call for call in calls if call[:2] == ("discover", "claude")] == [
-        ("discover", "claude", 1),
-        ("discover", "claude", 2),
+    assert [call for call in calls if call[:2] == ("discover", "agent:a")] == [
+        ("discover", "agent:a", 1),
+        ("discover", "agent:a", 2),
     ]
 
 
@@ -1573,49 +1813,23 @@ def test_doctor_reports_the_locked_phase_model_matrix(fleet_env, monkeypatch):
 
     assert report["ok"] is True
     policy = report["checks"]["policy"]
+    luna = [{"provider": "codex", "model": "gpt-5.6-luna", "effort": "max"}]
+    opus = [{"provider": "claude", "model": "claude-opus-5", "effort": "high"}]
+    opus_medium = [
+        {"provider": "claude", "model": "claude-opus-5", "effort": "medium"}
+    ]
+    sol = [{"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"}]
     assert policy["coding_phase_models"] == {
-        "Research": [
-            {"provider": "codex", "model": "gpt-5.6-terra", "effort": "high"},
-            {"provider": "claude", "model": "claude-sonnet-5", "effort": "high"},
-        ],
-        "Code": [
-            {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"},
-            {"provider": "claude", "model": "claude-opus-5", "effort": "high"},
-        ],
-        "Review": [
-            {"provider": "codex", "model": "gpt-5.6-terra", "effort": "xhigh"},
-            {
-                "provider": "claude",
-                "model": "claude-sonnet-5",
-                "effort": "xhigh",
-            },
-        ],
-        "Fix": [
-            {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"},
-            {"provider": "claude", "model": "claude-opus-5", "effort": "high"},
-        ],
+        "Research": luna,
+        "Code": opus_medium,
+        "Review": sol,
+        "Fix": opus,
     }
     assert policy["research_phase_models"] == {
-        "Research": [
-            {"provider": "codex", "model": "gpt-5.6-terra", "effort": "high"},
-            {"provider": "claude", "model": "claude-sonnet-5", "effort": "high"},
-        ],
-        "Analyze": [
-            {"provider": "codex", "model": "gpt-5.6-terra", "effort": "high"},
-            {"provider": "claude", "model": "claude-sonnet-5", "effort": "high"},
-        ],
-        "Review": [
-            {"provider": "codex", "model": "gpt-5.6-terra", "effort": "xhigh"},
-            {
-                "provider": "claude",
-                "model": "claude-sonnet-5",
-                "effort": "xhigh",
-            },
-        ],
-        "Refine": [
-            {"provider": "codex", "model": "gpt-5.6-terra", "effort": "high"},
-            {"provider": "claude", "model": "claude-sonnet-5", "effort": "high"},
-        ],
+        "Research": luna,
+        "Analyze": opus,
+        "Review": sol,
+        "Refine": opus,
     }
 
 
@@ -1624,14 +1838,21 @@ def test_confirmed_capacity_exhaustion_hands_the_same_slot_to_the_other_provider
     monkeypatch,
 ):
     calls: list[WorkerRequest] = []
-    failed_claude = False
+    failed_codex = False
 
     def fake(request, *, cancel_requested, on_event):
-        nonlocal failed_claude
+        nonlocal failed_codex
         calls.append(request)
         sid = request.resume_session_id or f"{request.provider}-{request.worker_key}-session"
-        if request.phase == "discover" and request.provider == "claude" and not failed_claude:
-            failed_claude = True
+        # Research runs on Codex for every agent now, so Codex is the provider
+        # that can exhaust there and Claude is the pickup.
+        if (
+            request.phase == "discover"
+            and request.provider == "codex"
+            and request.worker_key == "agent:a"
+            and not failed_codex
+        ):
+            failed_codex = True
             return WorkerResult(
                 False,
                 "mapped the parser and edited the safe edge",
@@ -1666,30 +1887,32 @@ def test_confirmed_capacity_exhaustion_hands_the_same_slot_to_the_other_provider
         request
         for request in calls
         if request.phase == "discover"
-        and request.provider == "codex"
-        and request.worker_key == "claude:a"
+        and request.provider == "claude"
+        and request.worker_key == "agent:a"
     )
     assert pickup.resume_session_id is None
-    assert "Take over this logical worker slot from claude" in pickup.prompt
+    assert "Take over this logical worker slot from codex" in pickup.prompt
     assert "mapped the parser and edited the safe edge" in pickup.prompt
     continued = [
         request
         for request in calls
-        if request.worker_key == "claude:a" and request.phase != "discover"
+        if request.worker_key == "agent:a" and request.phase != "discover"
     ]
-    assert [request.provider for request in continued] == ["codex", "codex", "codex"]
+    assert [request.provider for request in continued] == ["claude", "claude", "claude"]
+    # The handed-off agent finishes on the Claude escape-hatch stack.
     assert [request.model for request in continued] == [
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-sol",
+        "claude-opus-5",
+        "claude-opus-5",
+        "claude-opus-5",
     ]
-    assert all(
-        request.resume_session_id == "codex-claude:a-session" for request in continued
-    )
+    assert [request.effort for request in continued] == ["medium", "medium", "high"]
     assert completed["policy"]["provider_mode"] == "adaptive"
     assert completed["policy"]["handoffs"][0]["automatic"] is True
     assert completed["agent_count"] == 2
-    assert completed["chat_count"] == 3
+    # Agent A spends the whole run on Claude after the pickup, so it opens one
+    # chat there. Agent B keeps the pipeline: Codex research, a Claude chat for
+    # Code and Fix, and a separate Codex chat for Review.
+    assert completed["chat_count"] == 4
 
 
 def test_explicit_single_provider_parks_for_capacity_and_allows_user_handoff(
@@ -1994,7 +2217,9 @@ def test_delete_terminal_run_removes_worker_chats_but_preserves_origin(
     monkeypatch,
 ):
     store = supervisor._store()
-    policy = build_policy("research", config=builtin_config()).to_dict()
+    policy = build_policy(
+        "research", config=builtin_config(), worker_count=2
+    ).to_dict()
     run = store.create_run(
         task="delete this finished Fleet",
         activity="research",
@@ -2056,7 +2281,7 @@ def test_delete_terminal_run_refuses_unrecovered_worker_changes(fleet_env, monke
     isolation = FleetIsolationStore()
     workspace = isolation.record_workspace(
         run_id=run["run_id"],
-        worker_key="codex:a",
+        worker_key="agent:a",
         path=str(fleet_env / "delete-worktrees" / "manual"),
         branch="serena/fleet/delete/codex-a",
         base_head=subprocess.run(
@@ -2118,3 +2343,52 @@ def test_an_envelope_without_tests_leaves_the_integration_gate_empty(tmp_path):
         )
         == []
     )
+
+
+def test_a_stale_supervisor_refuses_the_run_instead_of_dispatching_old_code(
+    fleet_env,
+    monkeypatch,
+):
+    """A daemon holding pre-fix modules says so rather than failing like a worker.
+
+    A resident supervisor imports the gate and policy once and keeps them for
+    the life of the process, so a fix on disk is not a fix in the process. That
+    cost three separate incidents whose symptoms all looked like worker bugs.
+    """
+
+    dispatched: list[WorkerRequest] = []
+
+    def fake(request, *, cancel_requested, on_event):
+        dispatched.append(request)
+        raise AssertionError("a stale supervisor must not dispatch a worker")
+
+    monkeypatch.setattr(supervisor, "run_worker", fake)
+    monkeypatch.setattr(
+        supervisor, "_stale_fleet_modules", lambda: ["fleet_completion.py"]
+    )
+
+    run = supervisor.start_run(
+        "work that must not run on stale code",
+        activity="coding",
+        cwd=str(fleet_env),
+    )
+    outcome = supervisor.run_supervisor(run["run_id"])
+
+    assert outcome["state"] == "failed"
+    assert "running code older than what is on disk" in outcome["error"]
+    assert "systemctl --user restart serena-fleet.service" in outcome["error"]
+    assert "fleet_completion.py" in outcome["error"]
+    assert dispatched == []
+
+    store = supervisor._store()
+    assert any(
+        event["type"] == "supervisor.stale_code"
+        for event in store.events(run["run_id"])
+    )
+
+    # With the modules current again the same run is retryable and proceeds.
+    monkeypatch.setattr(supervisor, "_stale_fleet_modules", lambda: [])
+    calls: list[tuple[str, str, str, str | None]] = []
+    monkeypatch.setattr(supervisor, "run_worker", _successful_fake(calls))
+    supervisor.retry_run(run["run_id"])
+    assert supervisor.run_supervisor(run["run_id"])["state"] == "completed"

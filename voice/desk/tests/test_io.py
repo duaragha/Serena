@@ -260,7 +260,9 @@ def test_greeting_fetcher_uses_persisted_assistant_audio_when_server_fails(
     tmp_path: Path,
 ) -> None:
     fallback_path = tmp_path / "last.json"
-    greeting = GreetingAudio("last-good", 24_000, b"\x01\x00", "hi", 1.0)
+    # A real timestamp, not the epoch: this test is about the server being
+    # down, and a cached greeting also expires by age now.
+    greeting = GreetingAudio("last-good", 24_000, b"\x01\x00", "hi", time.time())
     from core.brain_lifetime import write_json_atomic
 
     write_json_atomic(
@@ -308,7 +310,7 @@ def test_greeting_fetcher_refuses_a_greeting_from_another_part_of_day(
     assert restored.greeting_id == "tone-fallback"
 
     current = GreetingAudio(
-        "right-hour", 24_000, b"\x01\x00", "hi", 1.0, current_daypart()
+        "right-hour", 24_000, b"\x01\x00", "hi", time.time(), current_daypart()
     )
     write_json_atomic(
         fallback_path,

@@ -45,10 +45,31 @@ _PATH_TOKEN = re.compile(
     r"(?=$|[\s`'\"),;:#\]\}])"
 )
 _OWNERSHIP_CLAUSE = re.compile(
-    r"\b(?:own|owns|owned)\s+(?:only\s+)?(?P<scope>.*?)"
+    r"\b(?:own|owns|owned|edit|edits|edited|editing|modify|modifies|modified|modifying|"
+    r"change|changes|changed|changing)\s+(?:only\s+)?(?P<scope>.*?)"
     r"(?=(?:\.\s+(?=[A-Z])|\n|$))",
     re.IGNORECASE,
 )
+_NEGATED_OWNERSHIP = re.compile(
+    r"(?:\bdo\s+not|\bdon't|\bnever|\bavoid|\bwithout|\bno)\s+$",
+    re.IGNORECASE,
+)
+
+
+def completion_unit_ids(worker: dict[str, Any], phase: str) -> list[str]:
+    """Return the logical units whose contract this phase must satisfy.
+
+    Research, implementation, and fix phases advance the worker's owned
+    assignments. Review is deliberately rotated, so its durable phase state
+    and evidence belong to the units in ``review_target_ids`` instead. A solo
+    worker has no rotated target and therefore self-reviews its assignments.
+    """
+
+    assignments = _ids(worker.get("assignment_ids"))
+    review_targets = _ids(worker.get("review_target_ids"))
+    if str(phase).strip().lower() == "verify" and review_targets:
+        return review_targets
+    return assignments
 
 
 def build_work_unit_contracts(
@@ -215,14 +236,25 @@ def extract_declared_paths(
     """Extract explicit repository paths without treating prose as ownership."""
 
     source = str(value or "")
-    ownership_scopes = [
-        match.group("scope").strip()
-        for match in _OWNERSHIP_CLAUSE.finditer(source)
-        if match.group("scope").strip()
-    ]
-    # An explicit ownership clause is authoritative. Paths mentioned later in
-    # commands, tests, or read-only verification are dependencies, not writes.
-    scan_source = "\n".join(ownership_scopes) if ownership_scopes else source
+    ownership_scopes: list[str] = []
+    for match in _OWNERSHIP_CLAUSE.finditer(source):
+        # Paths in "read X", "do not edit X", test commands, and dependency
+        # notes are not write ownership. Treating any repository-looking token
+        # as an exact claim made a task that merely said "Read CLAUDE.md" claim
+        # only that file, then reject every real implementation path after the
+        # worker had completed valid work. Unknown ownership is deliberately a
+        # repository-wide serialized claim, so false negatives are safe while
+        # false positives are not.
+        prefix = source[max(0, match.start() - 24) : match.start()]
+        scope = match.group("scope").strip()
+        if scope and not _NEGATED_OWNERSHIP.search(prefix):
+            ownership_scopes.append(scope)
+    if not ownership_scopes:
+        return []
+    # An explicit positive ownership clause is authoritative. Paths mentioned
+    # later in commands, tests, or read-only verification are dependencies,
+    # not writes.
+    scan_source = "\n".join(ownership_scopes)
     root = Path(cwd).expanduser().resolve() if cwd is not None else None
     paths: list[str] = []
     for match in _PATH_TOKEN.finditer(scan_source):

@@ -8,6 +8,7 @@ from core.action_authority import (
     BASIS_ORIGIN_TURN,
     TIER_CONSEQUENTIAL,
     TIER_IRREVERSIBLE,
+    TIER_SECRET,
     TIER_OBSERVE,
     TIER_REVERSIBLE,
     ActionAuthority,
@@ -117,7 +118,9 @@ def test_risk_words_escalate_but_never_downgrade():
     tier, level, _reason = classify_tier(
         effect="reversible", intent="rotate the production credential"
     )
-    assert tier == TIER_IRREVERSIBLE
+    # Rotating a credential is the credential tier as of 2026-08-20, above
+    # irreversible: it is precisely the action a voice must not authorise.
+    assert tier == TIER_SECRET
     assert level == "critical"
     # A caller cannot talk an irreversible action back down to a small one.
     tier, _level, _reason = classify_tier(
@@ -682,3 +685,55 @@ def test_a_dry_run_owes_nobody_a_control_plane_obligation(tmp_path, monkeypatch)
     request = _proved(live, dry_run=True)
     assert live.authorize(request).allowed is True
     assert control.obligations(state="open", surface="action") == []
+
+
+def test_a_spoken_yes_can_never_authorise_a_credential_action(tmp_path) -> None:
+    """Every tier below this one can be cleared by saying yes, and a voice
+    surface authenticates a VOICE: the one factor an attacker in the room, a
+    recording, or a TTS clone can supply. Credentials, OTPs, payment details
+    and security settings need Raghav at a keyboard."""
+    from core.action_authority import (
+        ActionAuthority,
+        TIER_SECRET,
+        build_request,
+    )
+
+    authority = ActionAuthority(path=tmp_path / "authority.sqlite3")
+    for source in ("voice", "desk"):
+        decision = authority.authorize(
+            build_request(
+                source=source,
+                effect="external",
+                intent="change the router admin password",
+                capability="net.router.admin",
+                target="router",
+            )
+        )
+        assert decision.allowed is False
+        assert decision.tier == TIER_SECRET
+        assert "cannot be authorised by voice" in decision.reason
+        # and it must not offer a voice confirmation as the way through
+        assert decision.requires_confirmation is False
+
+
+def test_ordinary_high_risk_work_is_still_approvable_out_loud(tmp_path) -> None:
+    """The credential tier is deliberately narrower than the critical risk
+    level. A database migration is critical and still perfectly fine to
+    approve by voice; only actions operating ON a secret are walled off."""
+    from core.action_authority import TIER_SECRET, classify_tier
+
+    tier, _risk, _why = classify_tier(
+        effect="external", intent="run the database migration on staging"
+    )
+    assert tier < TIER_SECRET
+
+
+def test_reading_about_a_password_is_still_only_a_read() -> None:
+    """Escalating every mention of the word would make her unable to discuss
+    her own security, which is a different failure, not a safer one."""
+    from core.action_authority import TIER_OBSERVE, classify_tier
+
+    tier, _risk, _why = classify_tier(
+        effect="read", intent="find where the password policy is documented"
+    )
+    assert tier == TIER_OBSERVE

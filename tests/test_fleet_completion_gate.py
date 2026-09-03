@@ -11,6 +11,7 @@ The completion gate is deliberately NOT stubbed here.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from core.fleet_completion_gate import (
     _dependency_states,
     _event_log_research_activity,
     _event_log_test_results,
+    _event_log_unsafe_process_cleanup,
     _git_no_index_check_paths,
     _leg_phase,
     _observed_test_results,
@@ -43,6 +45,12 @@ RESEARCH_CRITERIA = (
     "material findings are backed by repository evidence or attributable sources",
     "conflicts, uncertainty, and unresolved questions are explicit",
 )
+
+
+def _request_unit_ids(request):
+    if request.phase == "verify" and request.review_target_ids:
+        return request.review_target_ids
+    return request.assignment_ids
 
 
 def _online_research_evidence():
@@ -84,6 +92,10 @@ def gate_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SERENA_FLEET_DB_PATH", str(database))
     monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SERENA_FLEET_NO_AUTOSTART", "1")
+    # Completion-gate tests exercise recorded evidence, not the user's live MCP
+    # catalog. Keeping this unset made a nominal unit test open real remote
+    # connections and hang whenever one account service was slow.
+    monkeypatch.setenv("SERENA_FLEET_READ_MCP_SERVERS", "none")
     monkeypatch.delenv("SERENA_FLEET_INLINE", raising=False)
     monkeypatch.delenv("SERENA_FLEET_WORKER", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
@@ -114,7 +126,7 @@ def _evidence_text(request, *, status="completed", stop_condition="", prose=PROS
     """A compliant envelope for whatever units this leg actually owns."""
 
     units = []
-    for unit_id in request.assignment_ids:
+    for unit_id in _request_unit_ids(request):
         entry = {
             "id": unit_id,
             "status": status,
@@ -926,7 +938,7 @@ def test_a_worker_claiming_completed_while_stopping_is_rejected(gate_env, monkey
 
 
 def test_an_honest_stop_is_not_forced_to_fake_completion(gate_env, monkeypatch):
-    """Stopping truthfully must remain a first-class, accepted outcome."""
+    """An honest stop is accepted as evidence, never as completed work."""
 
     monkeypatch.setattr(
         supervisor,
@@ -943,8 +955,15 @@ def test_an_honest_stop_is_not_forced_to_fake_completion(gate_env, monkeypatch):
 
     finished = supervisor.run_supervisor(run["run_id"])
 
-    assert _legs(finished)[0]["state"] == "completed"
-    assert _events(run["run_id"], "leg.completion_evidence_accepted")
+    assert finished["state"] == "failed"
+    assert _legs(finished)[0]["state"] == "failed"
+    stopped = _events(run["run_id"], "leg.completion_evidence_stopped")
+    assert stopped
+    assert stopped[0]["payload"]["accepted"] is True
+    assert stopped[0]["payload"]["completion_allowed"] is False
+    assert stopped[0]["payload"]["terminal_stop"] is True
+    assert stopped[0]["payload"]["retryable"] is False
+    assert not _events(run["run_id"], "leg.completion_repair_requested")
 
 
 def test_a_rejected_leg_is_retryable_and_recovers_on_compliant_evidence(gate_env, monkeypatch):
@@ -985,7 +1004,7 @@ def test_a_read_only_worker_claiming_file_changes_is_rejected(gate_env, monkeypa
                 "tests": [],
                 "stop_condition": "",
             }
-            for unit_id in request.assignment_ids
+            for unit_id in _request_unit_ids(request)
         ]
         body = json.dumps({"schema_version": 1, "units": units})
         return f"{PROSE}\n\n{EVIDENCE_OPEN}\n{body}\n{EVIDENCE_CLOSE}"
@@ -1079,7 +1098,7 @@ def test_read_only_legs_may_record_informational_tests_without_exit_codes(gate_e
 
     def output(request):
         units = []
-        for unit_id in request.assignment_ids:
+        for unit_id in _request_unit_ids(request):
             entry = {
                 "id": unit_id,
                 "status": "completed",
@@ -1124,7 +1143,7 @@ def _coding_evidence_text(request, *, findings=None):
         if isinstance(unit, dict)
     }
     units = []
-    for unit_id in request.assignment_ids:
+    for unit_id in _request_unit_ids(request):
         criteria = (
             contracts.get(unit_id, {}).get("completion_contract", {}).get(
                 "acceptance_criteria"
@@ -1222,3 +1241,299 @@ def test_a_review_finding_keeps_its_owners_fix_leg_running(gate_env, monkeypatch
     assert finished["state"] == "completed", finished.get("error")
     assert len({worker for phase, worker in spawned if phase == "finalize"}) == 2
     assert _events(run["run_id"], "worker.finalize.skipped") == []
+
+
+def test_research_activity_survives_a_retry_in_the_same_session(gate_env, monkeypatch):
+    """A leg's searches keep counting on the attempt that follows them.
+
+    A retry resumes the same native session, so a worker that already searched
+    has no reason to search again: the results are still in its context. Fleet
+    used to read only the current attempt's stream, report zero, and reject the
+    leg for never searching. That made the retry unwinnable, and it killed two
+    Research legs in run 02566486 that had done a dozen searches between them.
+    """
+
+    from core.fleet_completion_gate import _leg_research_activity
+    from core.fleet_policy import build_policy, builtin_config
+    from core.fleet_store import FleetStore
+
+    # gate_env stubs the per-log counter to a constant so other tests need not
+    # build research streams. This one is about the counter, so restore it.
+    monkeypatch.setattr(
+        "core.fleet_completion_gate._event_log_research_activity",
+        _event_log_research_activity,
+    )
+
+    def write_log(name: str, queries: list[str]) -> Path:
+        path = gate_env / name
+        path.write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "stream": "stdout",
+                        "line": json.dumps(
+                            {
+                                "type": "item.completed",
+                                "item": {
+                                    "id": f"search-{index}",
+                                    "type": "web_search",
+                                    "action": {"type": "search", "queries": [query]},
+                                },
+                            }
+                        ),
+                    }
+                )
+                + "\n"
+                for index, query in enumerate(queries)
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    searched = write_log("attempt-one.jsonl", ["alpha", "beta", "gamma"])
+    retried = write_log("attempt-two.jsonl", [])
+    # The retry's own stream carries no searches at all.
+    assert _event_log_research_activity(str(retried)) == {"searches": 0, "fetches": 0}
+
+    store = FleetStore()
+    run = store.create_run(
+        task="prove research survives a retry",
+        activity="research",
+        cwd=str(gate_env),
+        origin_session_id=None,
+        origin_agent=None,
+        dry_run=False,
+        policy=build_policy("research", config=builtin_config()).to_dict(),
+    )
+    leg = run["phases"][0]["legs"][0]
+
+    first = store.begin_attempt(str(leg["leg_id"]))
+    store.mark_attempt_process(str(first["attempt_id"]), os.getpid(), str(searched))
+    store.finish_attempt(
+        str(first["attempt_id"]),
+        state="failed",
+        error="schema nit on the first pass",
+        session_id="durable-research-session",
+        actual_model=str(leg["model"]),
+        actual_effort=str(leg["effort"]),
+        exit_code=1,
+    )
+    second = store.begin_attempt(str(leg["leg_id"]))
+    store.mark_attempt_process(str(second["attempt_id"]), os.getpid(), str(retried))
+
+    logs = store.attempt_event_logs(str(run["run_id"]), str(leg["leg_id"]))
+    assert logs == [str(searched), str(retried)]
+
+    totals = _leg_research_activity(
+        str(run["run_id"]), str(leg["leg_id"]), str(retried)
+    )
+    assert totals["searches"] == 3
+
+
+def test_a_worker_can_verify_with_the_test_script_it_just_wrote(gate_env):
+    """`python <script>` is runnable when the script lives in the worktree.
+
+    A worker whose deliverable is a preflight check has no runner to declare.
+    Fleet used to refuse the command and record 126, which the verdict reported
+    as an unclean exit, so a script exiting zero failed the leg twice.
+    """
+
+    workspace = gate_env / "script-workspace"
+    (workspace / "scripts").mkdir(parents=True)
+    script = workspace / "scripts" / "preflight_test.py"
+    script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+
+    spec = _test_spec(f"{sys.executable} scripts/preflight_test.py", str(workspace))
+    assert spec is not None
+    assert spec[0][1:] == ["scripts/preflight_test.py"]
+
+    # The interpreter's own escape hatches and anything outside the worktree
+    # stay refused: the boundary is the binary, not the fact that it is Python.
+    assert _test_spec(f"{sys.executable} -c 'print(1)'", str(workspace)) is None
+    assert _test_spec(f"{sys.executable} /etc/hostname", str(workspace)) is None
+    assert _test_spec(f"{sys.executable} ../escape.py", str(workspace)) is None
+    assert _test_spec(f"{sys.executable} scripts/missing.py", str(workspace)) is None
+
+
+def test_every_declarable_verification_shape_is_one_fleet_can_rerun(gate_env):
+    """The gate, the "real test" check and the prompt must agree on one list.
+
+    A worker had to satisfy three separate rules that lived in three places and
+    were stated in none of them: the re-run allowlist, the real-test pattern,
+    and nothing in the prompt at all. Every wrong guess cost an attempt. This
+    pins all three to the same commands, including the two that were actually
+    seen failing in production.
+    """
+
+    from core.fleet_completion import _REAL_TEST
+    from core.fleet_completion_gate import accepted_verification_forms
+
+    workspace = gate_env / "shapes-workspace"
+    (workspace / "scripts").mkdir(parents=True)
+    (workspace / "scripts" / "gate.json").write_text("{}\n", encoding="utf-8")
+    (workspace / "scripts" / "preflight_test.py").write_text(
+        "raise SystemExit(0)\n", encoding="utf-8"
+    )
+
+    runnable = [
+        # The command from the failing Code leg: a JSON gate validated with the
+        # stdlib. Refused outright before, with 126 reported as a dirty exit.
+        f"{sys.executable} -m json.tool scripts/gate.json",
+        f"{sys.executable} scripts/preflight_test.py",
+        f"{sys.executable} -m pytest scripts/",
+    ]
+    for command in runnable:
+        assert _test_spec(command, str(workspace)) is not None, command
+        assert _REAL_TEST.search(command), command
+
+    # The boundary still holds: the interpreter's escapes, anything outside the
+    # worktree, and work that is not verification at all.
+    for command in (
+        f"{sys.executable} -c 'print(1)'",
+        f"{sys.executable} /etc/hostname",
+        f"{sys.executable} ../escape.py",
+    ):
+        assert _test_spec(command, str(workspace)) is None, command
+    assert not _REAL_TEST.search("echo ok")
+    assert not _REAL_TEST.search(f"{sys.executable} scripts/build_bundle.py")
+
+    # And the worker is told the list rather than having to guess it.
+    forms = accepted_verification_forms()
+    assert any("json.tool" in form for form in forms)
+    assert any("worktree" in form for form in forms)
+
+
+def test_provider_event_logs_reject_broad_process_cleanup_but_not_exact_pid(gate_env):
+    event_log = gate_env / "provider-events.jsonl"
+    events = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "input": {"command": 'pkill -f "shopify hydrogen"'},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "bash -lc 'cd /tmp && sudo killall node'",
+                "exit_code": 0,
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "kill 12345",
+                "exit_code": 0,
+            },
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "input": {"command": "rg -n 'pkill|killall' docs/"},
+                    }
+                ]
+            },
+        },
+    ]
+    event_log.write_text(
+        "".join(json.dumps({"line": json.dumps(event)}) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    assert _event_log_unsafe_process_cleanup(str(event_log)) == [
+        'pkill -f "shopify hydrogen"',
+        "cd /tmp && sudo killall node",
+    ]
+
+
+def test_provider_event_log_ignores_forbidden_spelling_inside_heredoc(gate_env):
+    event_log = gate_env / "heredoc-events.jsonl"
+    command = "python3 - <<'PY'\nprint('pkill -f node')\nPY"
+    event = {
+        "type": "item.completed",
+        "item": {
+            "type": "command_execution",
+            "command": command,
+            "exit_code": 0,
+        },
+    }
+    event_log.write_text(
+        json.dumps({"line": json.dumps(event)}) + "\n", encoding="utf-8"
+    )
+
+    assert _event_log_unsafe_process_cleanup(str(event_log)) == []
+
+
+def test_read_only_git_and_inspectors_are_runnable_and_writes_are_not(gate_env):
+    """The verification allowlist is a rule about capability, not a tool list.
+
+    Measured against every command any Fleet worker has ever declared, git was
+    refused 134 times and `git diff --check` -- the most common check in the
+    fleet -- was not even counted as a real test. The rule is that a command may
+    read and report but never write a file or execute another program, so git
+    and ripgrep are screened by flag rather than excluded, and awk, sed, find
+    and every shell stay out because a flag can make them execute.
+    """
+
+    from core.fleet_completion import _REAL_TEST
+
+    workspace = gate_env / "inspector-workspace"
+    workspace.mkdir()
+
+    runnable = [
+        "git diff --check",
+        "git diff --check origin/main...HEAD",
+        "git -C . merge-base --is-ancestor abc def",
+        "git status --porcelain",
+        "git log --oneline -5",
+        'grep -q -F "147866845353" AGENTS.md',
+        "cmp -s left.txt right.txt",
+    ]
+    for command in runnable:
+        assert _test_spec(command, str(workspace)) is not None, command
+
+    refused = [
+        # git subcommands that mutate, and the flags that turn a read into one
+        "git checkout main",
+        "git push origin main",
+        "git reset --hard",
+        "git -c core.pager=sh diff --check",
+        "git diff --check --output=/tmp/stolen",
+        # programmable text tools: awk has system(), sed has -i and e
+        'awk "/Deploy live only after/{exit 1}" AGENTS.md',
+        "sed -i s/a/b/ AGENTS.md",
+        "find . -exec rm {} ;",
+        "rg --pre sh needle",
+        # Fleet runs without a shell, so this compares literal text and would
+        # otherwise hand back an exit code that means nothing
+        'test -z "$(git status --porcelain)"',
+        "bash -c ls",
+        "gh pr list",
+    ]
+    for command in refused:
+        assert _test_spec(command, str(workspace)) is None, command
+
+    # The checks above must also register as verification, or a worker satisfies
+    # the re-run and is still told nothing looked like a real test.
+    for command in (
+        "git diff --check",
+        "git diff --check origin/main...HEAD",
+        "git merge-base --is-ancestor abc def",
+        "node --check assets/bundle.js",
+        'grep -q -F "needle" AGENTS.md',
+    ):
+        assert _REAL_TEST.search(command), command
+    assert not _REAL_TEST.search("git log --oneline")
+    assert not _REAL_TEST.search("echo ok")

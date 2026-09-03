@@ -14,6 +14,18 @@ A terminal run can be deleted from the dashboard, `chats fleet delete`, or `flee
 removes the Fleet database graph, its worker chats, event logs, and private worktrees. The chat that
 launched the Fleet is origin context rather than Fleet-owned data and is never deleted with the run.
 
+Before a real run is persisted, Fleet checks free space on the checkout and control-database
+filesystems. Coding runs reserve 1 GiB of control-plane headroom plus 1 GiB per selected worker;
+research reserves 1 GiB. This prevents isolated dependency installs from consuming the final bytes
+and leaving a run that cannot record its own failure. `SERENA_FLEET_MIN_FREE_BYTES` is the explicit
+operator override, including `0` to disable the check. A refusal happens before any worker is
+dispatched and tells the operator to reclaim disposable cache or inactive-worktree dependencies.
+
+Concurrent worker startup can briefly collide on SQLite's write lock. Fleet retries that narrow
+`database is locked` / `database table is locked` class with bounded backoff around attempt and
+lease setup. Other SQLite failures are never retried or hidden. A run already interrupted by ENOSPC
+stays on its original run id and resumes only through `fleet_retry` after space is restored.
+
 ## Terminal ownership
 
 The desktop defaults to `SERENA_TERMINAL_BACKEND=renderer`. One renderer owns terminal layout,
@@ -40,12 +52,20 @@ persisted workstream receives a durable work-unit contract containing:
   coding paths are unknown, or `read_only` ownership for research;
 - acceptance criteria, required evidence, constraints, and stop conditions.
 
+The parser accepts numbered, bulleted, or lettered entries under `tasks:`, `objectives:`, or
+`workstreams:` headings, including prose headings such as `Use four independent workstreams:`.
+When four explicit entries are present, all four slots bind to those entries and no synthetic
+integration worker is padded into the plan.
+
 `core/fleet_dag.py` materializes those contracts into durable work units, dependency edges, and one
-executor record per phase. Before every provider wave it selects only units whose same-phase
-dependencies completed. Waiting units stay `waiting_for_dependencies`; a failed prerequisite
-recursively moves its descendants to `blocked_dependency_failed` without launching their provider
-CLIs. After a wave, selection runs again so newly unblocked units advance in deterministic order.
-Provider handoffs keep the same work-unit and worker keys.
+executor record per phase. Research, Code, and Fix records follow the logical owner; Review records
+follow the rotated review target. A review therefore cannot start before the target's Code phase,
+and a target's Fix phase cannot start before its peer review. Before every provider wave Fleet
+selects only units whose same-phase dependencies completed. Waiting units stay
+`waiting_for_dependencies`; a failed prerequisite recursively moves its descendants to
+`blocked_dependency_failed` without launching their provider CLIs. After a wave, selection runs
+again so newly unblocked units advance in deterministic order. Provider handoffs keep the same
+work-unit and worker keys.
 
 Explicit repository paths in a workstream become enforced declared ownership at planning time.
 Before a write leg launches, the supervisor claims those paths and serializes proven overlap.
@@ -68,6 +88,44 @@ for updating Fleet's database to make its own result admissible. The planner may
 paths and run those writers concurrently. If it cannot prove ownership before launch, Fleet uses a
 repository-wide claim and serial execution. This keeps provider sandbox differences from changing
 whether identical work is accepted.
+
+## The phase matrix and worker identity
+
+Fleet runs one locked model per phase, and every agent in that phase runs it:
+Research `gpt-5.6-luna` max, Code `claude-opus-5` medium, Review `gpt-5.6-sol`
+high, Fix `claude-opus-5` high. `core/fleet_policy.py` holds it as a hard
+contract, `validate_config` refuses a config that drifts from it, and
+`policy_models_match_contract` re-checks every run before it starts.
+
+For coding runs, confirmed Claude exhaustion maps unfinished Code to
+`gpt-5.6-sol` xhigh and unfinished Fix to `gpt-5.6-sol` max. Review is already
+`gpt-5.6-sol` high and does not change. These are per-worker handoffs; healthy
+workers and completed phases keep their original routing.
+
+Workers are Agent A through Agent D. `worker_key` is `agent:a`, not
+`codex:a`: the provider is a property of the phase, not of the worker, so one
+agent moves between Codex and Claude as the run advances and keeps its name,
+assignment, workstream and evidence lineage the whole way. A phase is therefore
+single-provider when it is built, and stops being so only when one worker is
+handed to the other provider for capacity, which is legitimate.
+
+Two consequences fall out of alternating providers, both deliberate:
+
+- **Sessions cannot span a provider change.** Code opens a fresh Claude session
+  because Research ran on Codex. Fix continues Code's session, since both are
+  Claude and a fixer repairing code it wrote is a benefit. Review deliberately
+  does *not* continue Research even though both land on Codex, because a
+  reviewer that sat through the research cannot independently disagree with it.
+  That suppression is one condition in `fleet_store.py`'s continuation lookup.
+- **A dead provider blocks its phases.** `no-claude:` and `no-codex:` pin a run
+  to one provider's stack, and a mid-run exhaustion hands the unfinished phases
+  to the other provider's stack through the existing handoff path. Both are
+  recorded in the frozen policy; `no_silent_fallback` still holds.
+
+Because every phase starts cold on the other provider, Research must end with a
+`Read map` naming the `path:start-end` regions it actually opened. Rediscovery
+was the largest measured input-token cost on a real Research leg, and the map
+turns it into a lookup.
 
 ## Read access for non-writing legs
 
@@ -144,6 +202,15 @@ deliberately not used: it can leave conflict markers in the checkout, which is a
 rather than a refused merge. Every applied integration keeps a durable pre-integration snapshot ref
 and its own patch file, so `rollback_integration` can reverse it after the fact.
 
+A stacked pull request is an explicit second delivery mode. The worker leaves the reserved Fleet
+branch only when it needs an unmerged dependency, commits its own work as a contiguous suffix, pushes
+the new branch with an upstream, opens the stacked PR, and leaves the worktree clean. Fleet verifies
+the exact remote HEAD and finds the shortest bounded first-parent suffix whose diff equals the
+envelope's `changed_paths`. It records that patch as `published_branch` and never applies either the
+dependency or the worker suffix to the shared checkout. Dirty, unpublished, detached, unbounded, or
+mismatched switched branches fail closed. The delivered HEAD becomes the workspace baseline so a
+later Fix phase can update the same PR without replaying the dependency.
+
 Isolation is enabled by default for production write legs. The supervisor acquires claims before
 launch and integrates an accepted write result before recording the leg complete. Claim, integration,
 or test-gate failure leaves the leg failed and the base unchanged. Proven disjoint declared paths may
@@ -167,6 +234,8 @@ Operators can inspect the same durable projection through `chats fleet inspect`,
 `fleet_inspect` MCP tool, and `/api/fleet/runs/<id>/inspect`. A focus may be a work-unit id or worker
 key. The dashboard exposes per-phase execution state, dependency blocks, context receipts, isolation
 mode, claims, worktrees, integration results, and focus controls without changing chat navigation.
+Bounded inspection returns the newest events in chronological order; streaming callers that pass an
+`after` cursor retain the original forward-only behavior.
 
 ## Capacity recovery
 
@@ -230,7 +299,58 @@ dispatch. Voice, memory, tool, and chat stores do not yet stage events or expose
 handlers, so those surfaces remain partial and are skipped rather than falsely marked recovered.
 Their native journals stay authoritative throughout.
 
+## Voice access to Fleet
+
+Voice Serena reads the same durable Fleet store. Ask "how is Fleet going", or
+name a project, task, or short run id, and she reports the real phase, agent
+step progress, actual model identity, and errors.
+
+She may START a run only when the current spoken turn explicitly names Fleet,
+and may cancel, retry or steer a resolved run on that same live authority.
+Ordinary spoken coding requests still use the single coding-job path, not Fleet.
+
+When a real run completes or fails, the supervisor sends one bounded notice to
+the desktop voice bridge and she says it aloud after the current conversation
+finishes. Telegram is only the fallback when the local bridge is unavailable or
+playback fails. Alerts never contain worker transcripts or tool traffic.
+
+For ordinary spoken coding work she searches the durable Chats index for the
+most recent safe exact-project Sol session; the coding app does not need to be
+open. A live exact-project pane is preferred when idle, otherwise the
+supervisor resumes the frozen historical session id under external ownership. A
+new private chat is created only when no valid project session exists.
+
+The coding pane or panel, coding app, Chats app, voice-work display, dot
+overlay, brain daemon and Fleet tab are her own surfaces in
+`/home/raghav/Documents/Projects/serena` unless Raghav names a different
+project, so they never require a repo clarification.
+
 ## Completion contracts
+
+### Review findings and the integration gate
+
+Review reports machine-readable findings rather than prose. Each carries the
+`unit_id` it was found in, a severity of `blocker`, `major` or `minor`, a
+summary, and its evidence. An empty list is a valid and checkable statement
+that the reviewer found nothing, which prose cannot express. Fleet routes each
+finding to the owning worker's Fix leg and skips a fixer with nothing assigned
+to it, keeping one reporter so the run still ends with a real final response.
+
+Rotated Review advances the reviewed unit, not the reviewer's owned unit. Its
+DAG dependency therefore waits for that target's successful Code attempt. The
+completion gate independently checks that the Code attempt completed before
+Review started, because a later Code result cannot exist in Review's immutable
+context receipt. Exact retry atomically remaps legacy Review rows, reopens any
+stale completed Review, and reopens its completed Fix descendants. A stale
+snapshot can no longer move the wrong unit forward or preserve a Fix built from
+the wrong review.
+
+Integration re-runs each worker's own declared verification against the
+combined checkout before accepting its patch, so a change that passed alone and
+breaks alongside a peer is rejected at the merge instead of surviving to
+Review. Only commands on Fleet's test allowlist run. A repository-wide gate can
+be forced with `SERENA_FLEET_INTEGRATION_TEST_COMMAND`.
+
 
 A provider CLI exiting zero says the process ran, not that the work was done. `core/fleet_completion.py`
 validates the final worker message against the persisted work-unit contract, and
@@ -245,7 +365,8 @@ Completion is refused when the envelope is missing, unparseable, duplicated, or 
 contradicts itself. The enforced rules are:
 
 - a unit reported `completed` alongside a triggered stop condition is a contradiction;
-- `blocked` or `stopped` must name the stop condition that actually triggered;
+- `blocked` or `stopped` must name the stop condition that actually triggered. The evidence is
+  accepted as truthful, but the leg is recorded failed and no downstream phase is allowed to run;
 - `completed` requires the exact contract acceptance criteria, with no substitutions or duplicates,
   answered `met: true` with concrete evidence, and `constraints_respected: true`;
 - `completed` is refused while a declared dependency is incomplete or its state is unavailable;
@@ -253,6 +374,22 @@ contradicts itself. The enforced rules are:
 - a write leg may only change files covered by an active claim, must declare every path the working
   tree actually shows as changed, and must record a direct allowlisted test command. Fleet reruns that
   command without a shell in the worker workspace and rejects disagreement with the reported exit;
+- when a worker changes a Node manifest or lockfile, integration performs the lockfile-native install
+  with lifecycle scripts disabled before merged-tree checks. A failed check rolls the patch back and
+  resynchronises the old dependency graph, so neither stale nor half-updated `node_modules` can decide
+  a later worker's result;
+- every worker must stop only an exact PID or process group it started. The prompt forbids `pkill`,
+  `killall`, and pattern-based termination, and the completion gate rejects either broad command from
+  the provider event stream so unrelated dev servers, user processes, and sibling workers are not
+  silently killed;
+- a Research worker's read-only sandbox is phase separation, not a work-unit stop condition. It must
+  finish the research and implementation handoff for Code even when it cannot edit, commit, push, or
+  update GitHub itself. A genuinely unavailable source is recorded as a limitation, not confused
+  with missing write authority;
+- a worker never hides inside one sleep or wait longer than 60 seconds. Background-server checks use
+  bounded polling, resolve the actual listener or surviving child process group rather than trusting
+  a package-manager wrapper's `$!`, stop only that exact target, and prove no process or listener it
+  started remains;
 - an envelope with no readable prose answer fails the final-response obligation.
 
 A refused leg is recorded `failed` with the concrete reasons, emits a durable
@@ -261,6 +398,16 @@ existing retry path. It is never counted as success. Because a rejected contract
 exhaustion, it deliberately does not trigger automatic capacity handoff. If the gate itself raises,
 the leg fails closed and a retryable `leg.completion_gate_failed` event distinguishes evidence
 infrastructure failure from contradictory worker evidence.
+
+An honest stop emits `leg.completion_evidence_stopped` with `accepted: true` and
+`completion_allowed: false`; it is not auto-retried as though the worker merely formatted its
+receipt incorrectly. Retrying a terminal run is refused while any recorded worker process is still
+alive. A retry reopens unfinished DAG phases and also repairs legacy runs whose older supervisor
+mistakenly counted a `blocked` or `stopped` receipt as complete, or persisted Review against the
+reviewer's own unit. Healthy completed descendants are preserved; descendants of an unfinished or
+stale Review are reopened because their input was not valid. The scheduler rechecks the run state
+before every dispatch and drains existing workers without launching another leg if the run became
+terminal concurrently.
 
 Adversarial coverage lives in `tests/test_fleet_completion.py`, and live supervisor coverage, where
 the gate is not stubbed, lives in `tests/test_fleet_completion_gate.py`.

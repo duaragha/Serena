@@ -27,6 +27,9 @@ from core.brain_tools import (
 
 @pytest.fixture(autouse=True)
 def _legacy_authority_by_default(monkeypatch, request):
+    monkeypatch.setenv("SERENA_MEMORY_RETRIEVAL_CACHE", ":memory:")
+    monkeypatch.delenv("SERENA_MEMORY_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("SERENA_MEMORY_RETRIEVAL_ROLLOUT", raising=False)
     if request.node.name != "test_active_v2_is_the_normal_search_authority_with_a_receipt":
         monkeypatch.setattr("memory.v2.MemoryV2Store.authority_is_active", lambda *args: False)
 

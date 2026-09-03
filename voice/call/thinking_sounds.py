@@ -31,6 +31,13 @@ from .protocol import TTS_SAMPLE_RATES
 
 DEFAULT_CLIP_DIR = Path.home() / ".config" / "serena" / "audio"
 CLIP_GLOB = "thinking-*.raw"
+# A preamble is a different animal from a thinking sound and shares only the
+# plumbing. "hmm" covers a slow brain; "on it" is said because slow work was
+# just DISPATCHED, so it fires on a known event rather than on a timer, and it
+# carries meaning he can act on.
+PREAMBLE_PREFIX = "preamble"
+PREAMBLE_GLOB = "preamble-*.raw"
+PREAMBLE_PHRASES = ("on it.", "yeah, one sec.", "okay, starting that now.", "got it, working on it.")
 DEFAULT_SAMPLE_RATE = 24_000
 DEFAULT_DELAY_MS = 1_500.0
 MAX_DELAY_MS = 5_000.0
@@ -65,11 +72,11 @@ def _clip_sample_rate(path: Path) -> int:
     return int(match.group(2))
 
 
-def load_clips(directory: Path) -> tuple[ThinkingClip, ...]:
+def load_clips(directory: Path, glob: str = CLIP_GLOB) -> tuple[ThinkingClip, ...]:
     """Read and validate every installed clip, skipping anything unusable."""
 
     try:
-        paths = sorted(directory.glob(CLIP_GLOB))
+        paths = sorted(directory.glob(glob))
     except OSError:
         return ()
     clips: list[ThinkingClip] = []
@@ -99,7 +106,9 @@ class ThinkingSoundPool:
         directory: Path | None = None,
         env: Mapping[str, str] | None = None,
         rng: random.Random | None = None,
+        glob: str = CLIP_GLOB,
     ) -> None:
+        self.glob = glob
         environ = os.environ if env is None else env
         configured = str(environ.get(ENV_CLIP_DIR, "") or "").strip()
         self.directory = (
@@ -126,7 +135,7 @@ class ThinkingSoundPool:
     @property
     def clips(self) -> tuple[ThinkingClip, ...]:
         if self._clips is None:
-            self._clips = load_clips(self.directory) if self.enabled else ()
+            self._clips = load_clips(self.directory, self.glob) if self.enabled else ()
         return self._clips
 
     def take(self, *, sample_rate: int | None = None) -> ThinkingClip | None:
@@ -160,7 +169,9 @@ class ThinkingSoundPool:
 DEFAULT_PHRASES = ("hmm.", "mm.", "uh...", "hmm, okay.")
 
 
-def clip_path(directory: Path, name: str, sample_rate: int) -> Path:
+def clip_path(
+    directory: Path, name: str, sample_rate: int, prefix: str = "thinking"
+) -> Path:
     """Name a clip the way voice/desk/io.py names the mic-off render."""
 
     rate = (
@@ -168,7 +179,7 @@ def clip_path(directory: Path, name: str, sample_rate: int) -> Path:
         if sample_rate % 1_000 == 0
         else f"{sample_rate}hz"
     )
-    return directory / f"thinking-{name}-{rate}-mono-s16.raw"
+    return directory / f"{prefix}-{name}-{rate}-mono-s16.raw"
 
 
 async def render_clips(
@@ -176,6 +187,7 @@ async def render_clips(
     *,
     directory: Path = DEFAULT_CLIP_DIR,
     backend=None,
+    prefix: str = "thinking",
 ) -> list[Path]:
     """Render each phrase once in her serving voice and store the raw PCM.
 
@@ -201,7 +213,7 @@ async def render_clips(
             sample_rate = chunk.sample_rate
         if not pcm:
             raise RuntimeError(f"thinking clip {name!r} rendered no audio")
-        path = clip_path(directory, name, sample_rate)
+        path = clip_path(directory, name, sample_rate, prefix)
         path.write_bytes(pcm)
         written.append(path)
     return written
@@ -211,6 +223,9 @@ async def ensure_thinking_clips(
     *,
     directory: Path | None = None,
     backend=None,
+    phrases: tuple[str, ...] = DEFAULT_PHRASES,
+    prefix: str = "thinking",
+    glob: str = CLIP_GLOB,
 ) -> list[Path]:
     """Provision any missing defaults from the already-selected local voice."""
 
@@ -229,20 +244,34 @@ async def ensure_thinking_clips(
     sample_rate = int(getattr(engine, "sample_rate", DEFAULT_SAMPLE_RATE))
     if sample_rate not in TTS_SAMPLE_RATES:
         raise RuntimeError(f"thinking clip sample rate {sample_rate} is unsupported")
-    installed = {clip.clip_id for clip in load_clips(target)}
+    installed = {clip.clip_id for clip in load_clips(target, glob)}
     named = {
         re.sub(r"[^a-z0-9]+", "-", phrase.casefold()).strip("-")
         or f"clip{index}": phrase
-        for index, phrase in enumerate(DEFAULT_PHRASES, start=1)
+        for index, phrase in enumerate(phrases, start=1)
     }
     missing = {
         name: phrase
         for name, phrase in named.items()
-        if clip_path(target, name, sample_rate).stem not in installed
+        if clip_path(target, name, sample_rate, prefix).stem not in installed
     }
     if not missing:
         return []
-    return await render_clips(missing, directory=target, backend=engine)
+    return await render_clips(
+        missing, directory=target, backend=engine, prefix=prefix
+    )
+
+
+async def ensure_preamble_clips(*, directory: Path | None = None, backend=None):
+    """Provision the "on it" clips said when slow work is dispatched."""
+
+    return await ensure_thinking_clips(
+        directory=directory,
+        backend=backend,
+        phrases=PREAMBLE_PHRASES,
+        prefix=PREAMBLE_PREFIX,
+        glob=PREAMBLE_GLOB,
+    )
 
 
 def main() -> int:

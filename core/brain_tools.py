@@ -524,52 +524,23 @@ def _top(
 
 
 def _search_memory(query: str) -> str:
-    from memory.v2 import MemoryV2Store
-
-    if MemoryV2Store.authority_is_active():
-        v2 = MemoryV2Store()
-        result = v2.retrieve_with_receipt(query, limit=_MEMORY_HITS, surface="private")
-        hits = result["hits"]
-        if not hits:
-            return f"nothing in memory about {query!r}"
-        lines = []
-        for hit in hits:
-            record = hit["record"]
-            content = " ".join(str(record.get("content") or "").split())[:400]
-            lines.append(
-                f"- [{record['record_id']}] ({record['record_type']}) {content}"
-                f"  [score {float(hit['score']):.3f}]"
-            )
-        lines.append(f"retrieval receipt: {result['receipt']['receipt_id']}")
-        return "\n".join(lines)[:4000]
-
-    from memory.store import _ago, list_memories
-
-    terms = _terms(query)
-    if not terms:
+    if not _terms(query):
         return "(no search terms)"
-    records = list_memories()
-    weights = _weights(terms, [record.get("content", "") for record in records])
-    scored = [
-        (score, record)
-        for record, score in (
-            (record, _relevance(terms, weights, record.get("content", "")))
-            for record in records
-        )
-        if score > 0
-    ]
-    hits = _top(scored, _MEMORY_HITS, available=sum(weights.values()))
-    if not hits:
+    from memory.retrieval import retrieve_memory
+
+    result = retrieve_memory(query, limit=_MEMORY_HITS, surface="brain")
+    if not result.hits:
         return f"nothing in memory about {query!r}"
     lines = []
-    for _score, record in hits:
-        age = _ago(record.get("updated_at", ""))
-        suffix = f"  ({age})" if age else ""
-        content = " ".join(str(record.get("content", "")).split())[:400]
-        lines.append(f"- [{record.get('id')}] ({record.get('type')}) {content}{suffix}")
-    extra = len(scored) - len(hits)
-    if extra > 0:
-        lines.append(f"(+{extra} weaker matches, narrow the search)")
+    for hit in result.hits:
+        display_id = hit.legacy_id if hit.legacy_id is not None else hit.record_id
+        display_type = hit.legacy_type or hit.record_type
+        content = " ".join(hit.content.split())[:400]
+        lines.append(
+            f"- [{display_id}] ({display_type}) {content}  [score {hit.score:.3f}; "
+            f"source {hit.source_id}]"
+        )
+    lines.append(f"retrieval receipt: {result.receipt.get('receipt_id', '')}")
     return "\n".join(lines)[:4000]
 
 

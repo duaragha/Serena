@@ -394,11 +394,32 @@ html, body {
   line-height: 1.5;
 }
 
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #444; }
+/* ── Scrollbar ──
+   Wide enough to grab with a mouse, and always there.
+
+   A scroll wheel is not a given. On the PC the wheel is dead and there is no
+   trackpad to two-finger with, so the bar is not a hint that something can
+   scroll: it is the only way to scroll. That rules out the 6px transparent
+   sliver this used to be, and it rules out overlay scrollbars, which fade out
+   and cannot be grabbed until they decide to appear.
+
+   scrollbar-width/-color cover Gecko; the ::-webkit- rules cover the Chromium
+   in the Windows build and the WebKitGTK on Linux, so both platforms get the
+   same bar. */
+* { scrollbar-width: auto; scrollbar-color: #55555f #17171b; }
+::-webkit-scrollbar { width: 14px; height: 14px; }
+::-webkit-scrollbar-track { background: #17171b; }
+::-webkit-scrollbar-thumb {
+  background: #55555f;
+  /* The border is the track colour, so the thumb reads as an inset bar with a
+     comfortable hit area rather than a hairline. */
+  border: 3px solid #17171b;
+  border-radius: 7px;
+  min-height: 44px;
+}
+::-webkit-scrollbar-thumb:hover { background: #6f6f80; }
+::-webkit-scrollbar-thumb:active { background: var(--accent); }
+::-webkit-scrollbar-corner { background: #17171b; }
 
 /* ── Layout ── */
 #app { display: flex; flex-direction: column; height: 100%; }
@@ -1567,7 +1588,15 @@ body.pane-dragging * {
   height: 100% !important;
   width: 100% !important;
 }
-.term-pane .xterm-viewport { background-color: #000 !important; }
+.term-pane .xterm-viewport {
+  background-color: #000 !important;
+  /* xterm.js only shows a scrollbar when there is scrollback, so the control
+     appears and vanishes under the pointer. Pin it: a bar that is sometimes
+     absent is not usable as the primary way to move through a chat. */
+  overflow-y: scroll !important;
+  scrollbar-width: auto !important;
+  scrollbar-color: #55555f #17171b !important;
+}
 .term-pane.drop-active {
   outline: 2px dashed var(--accent);
   outline-offset: -6px;
@@ -3700,6 +3729,32 @@ function _maybeFollowSpawnedChat() {
 // ═══════════════════════════════════════════════════════════════
 // CHATS: Data Loading
 // ═══════════════════════════════════════════════════════════════
+async function _fetchSidebarSessions(params, dirs) {
+  const response = await fetch('/api/sessions?' + params);
+  const primary = await response.json();
+  if ((dirs && dirs.length) || primary.length !== 500) return primary;
+
+  // A backend started before the full-history fix still caps this endpoint at
+  // exactly 500 rows. Its title-search path has a separate 1,000-row ceiling;
+  // every local project slug contains Raghav's home path, so this broad query
+  // recovers the old rows without restarting the process and killing its PTYs.
+  const legacyResponse = await fetch('/api/search?q=a');
+  if (!legacyResponse.ok) return primary;
+  const legacyRows = await legacyResponse.json();
+  const merged = new Map(primary.map(session => [session.session_id, session]));
+  for (const session of legacyRows) {
+    if (merged.has(session.session_id)) continue;
+    const clean = { ...session };
+    delete clean.search_snippet;
+    merged.set(clean.session_id, clean);
+  }
+  return Array.from(merged.values()).sort((a, b) => {
+    const starred = Number(Boolean(b.starred)) - Number(Boolean(a.starred));
+    if (starred) return starred;
+    return String(b.last_timestamp || '').localeCompare(String(a.last_timestamp || ''));
+  });
+}
+
 async function loadSessions(projectOrDirs, opts) {
   // Accepts either a single project_dir string (legacy) or an array of dirs
   // for a merged chip that covers multiple OSes. opts.refresh forces a disk
@@ -3715,8 +3770,7 @@ async function loadSessions(projectOrDirs, opts) {
   if (dirs && dirs.length) params.set('projects', dirs.join(','));
   if (opts && opts.refresh) params.set('refresh', '1');
   try {
-    const r = await fetch('/api/sessions?' + params);
-    allSessions = await r.json();
+    allSessions = await _fetchSidebarSessions(params, dirs);
     // Note: /clear auto-migration was removed — it was merging unrelated chats.
     // New session files that appear during a live terminal just show up as their
     // own rows now; user can click them to continue, or mark the old one done.
@@ -7446,7 +7500,22 @@ function teardownLiveTerminal(sid) {
   }
 }
 
-window.addEventListener('beforeunload', () => teardownLiveTerminal());
+function detachLiveTerminalsForReload() {
+  // A page reload is a renderer disconnect, not an explicit terminal close.
+  // Closing only the sockets lets the backend retain each PTY for its bounded
+  // reconnect grace (and indefinitely while a turn is active). Calling the
+  // kill endpoint here used to strand SIGSTOP'd Codex children after reload.
+  for (const s of termSessions.values()) {
+    s.giveUp = true;
+    if (s.reconnectTimer) {
+      clearTimeout(s.reconnectTimer);
+      s.reconnectTimer = null;
+    }
+    try { if (s.ws && s.ws.readyState <= 1) s.ws.close(); } catch(e) {}
+  }
+}
+
+window.addEventListener('beforeunload', detachLiveTerminalsForReload);
 
 // ═══════════════════════════════════════════════════════════════
 // GTK BRIDGE (native Linux shell — VTE instead of xterm.js)
@@ -10730,15 +10799,15 @@ def api_sessions():
         seen: set[str] = set()
         merged: list[dict] = []
         for d in dirs:
-            for s in list_sessions(project=d, limit=500):
+            for s in list_sessions(project=d, limit=100_000):
                 if s["session_id"] in seen:
                     continue
                 seen.add(s["session_id"])
                 merged.append(s)
         merged.sort(key=lambda s: s.get("last_timestamp") or "", reverse=True)
-        sessions = merged[:500]
+        sessions = merged[:100_000]
     else:
-        sessions = list_sessions(limit=500)
+        sessions = list_sessions(limit=100_000)
 
     return jsonify(_decorate_sessions(_include_permanent_serena_session(sessions)))
 

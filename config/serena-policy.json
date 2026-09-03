@@ -6,42 +6,60 @@
       "runtime_model": "gpt-5.6-terra",
       "label": "terra 5.6",
       "strength": 1,
-      "aliases": ["terra", "terra 5.6"]
+      "aliases": [
+        "terra",
+        "terra 5.6"
+      ]
     },
     "gpt-5.6-sol": {
       "provider": "codex",
       "runtime_model": "gpt-5.6-sol",
       "label": "sol 5.6",
       "strength": 2,
-      "aliases": ["sol", "sol 5.6"]
+      "aliases": [
+        "sol",
+        "sol 5.6"
+      ]
     },
     "gpt-5.6-luna": {
       "provider": "codex",
       "runtime_model": "gpt-5.6-luna",
       "label": "luna 5.6",
       "strength": 2,
-      "aliases": ["luna", "luna 5.6"]
+      "aliases": [
+        "luna",
+        "luna 5.6"
+      ]
     },
     "claude-sonnet-5": {
       "provider": "claude",
       "runtime_model": "sonnet",
       "label": "sonnet 5",
       "strength": 2,
-      "aliases": ["sonnet", "sonnet 5"]
+      "aliases": [
+        "sonnet",
+        "sonnet 5"
+      ]
     },
     "claude-opus-5": {
       "provider": "claude",
       "runtime_model": "opus",
       "label": "opus 5",
       "strength": 3,
-      "aliases": ["opus", "opus 5"]
+      "aliases": [
+        "opus",
+        "opus 5"
+      ]
     },
     "claude-haiku-4-5": {
       "provider": "claude",
       "runtime_model": "haiku",
       "label": "haiku 4.5",
       "strength": 1,
-      "aliases": ["haiku", "haiku 4.5"]
+      "aliases": [
+        "haiku",
+        "haiku 4.5"
+      ]
     }
   },
   "risk_strength_floors": {
@@ -53,11 +71,35 @@
   "risk_rules": [
     {
       "level": "critical",
-      "terms": ["production", "credential", "secret", "authentication", "database migration", "delete data", "payment", "billing"]
+      "terms": [
+        "production",
+        "credential",
+        "secret",
+        "authentication",
+        "database migration",
+        "delete data",
+        "payment",
+        "billing"
+      ]
     },
     {
       "level": "high",
-      "terms": ["systemd", "service", "daemon", "restart", "kill", "deploy", "webhook", "udev", "driver", "firmware", "sudo", "permission", "voice brain", "brain routing"]
+      "terms": [
+        "systemd",
+        "service",
+        "daemon",
+        "restart",
+        "kill",
+        "deploy",
+        "webhook",
+        "udev",
+        "driver",
+        "firmware",
+        "sudo",
+        "permission",
+        "voice brain",
+        "brain routing"
+      ]
     }
   ],
   "profiles": {
@@ -79,62 +121,130 @@
         "high": "sensitive",
         "critical": "sensitive"
       },
-      "manual_models": ["gpt-5.6-terra", "gpt-5.6-sol", "claude-sonnet-5", "claude-opus-5"],
+      "manual_models": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "claude-sonnet-5",
+        "claude-opus-5"
+      ],
       "lanes": {
         "fast": {
           "rank": 0,
           "execute": [
-            {"model": "claude-haiku-4-5", "effort": "high"},
-            {"model": "gpt-5.6-terra", "effort": "high"},
-            {"model": "claude-sonnet-5", "effort": "high"}
+            {
+              "model": "claude-opus-5",
+              "effort": "low"
+            },
+            {
+              "model": "claude-haiku-4-5",
+              "effort": "high"
+            },
+            {
+              "model": "gpt-5.6-terra",
+              "effort": "high"
+            }
           ]
         },
         "reflex": {
           "rank": 0,
           "execute": [
-            {"model": "gpt-5.6-terra", "effort": "high"},
-            {"model": "claude-haiku-4-5", "effort": "high"},
-            {"model": "claude-sonnet-5", "effort": "high"}
+            {
+              "model": "claude-haiku-4-5",
+              "effort": "high"
+            },
+            {
+              "model": "gpt-5.6-terra",
+              "effort": "high"
+            }
           ]
         },
         "casual": {
           "rank": 1,
           "execute": [
-            {"model": "gpt-5.6-terra", "effort": "high"},
-            {"model": "claude-sonnet-5", "effort": "high"}
+            {
+              "model": "claude-opus-5",
+              "effort": "low"
+            },
+            {
+              "model": "gpt-5.6-terra",
+              "effort": "high"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "high"
+            }
           ]
         },
         "research": {
           "rank": 2,
           "execute": [
-            {"model": "gpt-5.6-terra", "effort": "high"},
-            {"model": "gpt-5.6-sol", "effort": "high"},
-            {"model": "claude-sonnet-5", "effort": "high"},
-            {"model": "claude-opus-5", "effort": "high"}
+            {
+              "model": "gpt-5.6-terra",
+              "effort": "high"
+            },
+            {
+              "model": "gpt-5.6-sol",
+              "effort": "high"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "high"
+            },
+            {
+              "model": "claude-opus-5",
+              "effort": "high"
+            }
           ]
         },
         "documents": {
           "rank": 2,
           "execute": [
-            {"model": "gpt-5.6-terra", "effort": "high"},
-            {"model": "claude-sonnet-5", "effort": "high"},
-            {"model": "gpt-5.6-sol", "effort": "high"}
+            {
+              "model": "gpt-5.6-terra",
+              "effort": "high"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "high"
+            },
+            {
+              "model": "gpt-5.6-sol",
+              "effort": "high"
+            }
           ]
         },
         "complex": {
           "rank": 3,
           "execute": [
-            {"model": "gpt-5.6-sol", "effort": "high"},
-            {"model": "claude-sonnet-5", "effort": "high"},
-            {"model": "claude-opus-5", "effort": "high"}
+            {
+              "model": "gpt-5.6-sol",
+              "effort": "high"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "high"
+            },
+            {
+              "model": "claude-opus-5",
+              "effort": "high"
+            }
           ]
         },
         "sensitive": {
           "rank": 4,
           "execute": [
-            {"model": "gpt-5.6-sol", "effort": "high"},
-            {"model": "claude-opus-5", "effort": "high"},
-            {"model": "claude-sonnet-5", "effort": "high"}
+            {
+              "model": "gpt-5.6-sol",
+              "effort": "high"
+            },
+            {
+              "model": "claude-opus-5",
+              "effort": "high"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "high"
+            }
           ]
         }
       }
@@ -151,68 +261,200 @@
         "high": "hard",
         "critical": "hard"
       },
-      "manual_models": ["gpt-5.6-terra", "gpt-5.6-sol", "claude-sonnet-5", "claude-opus-5"],
+      "manual_models": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "claude-sonnet-5",
+        "claude-opus-5"
+      ],
       "lanes": {
         "routine": {
           "rank": 1,
           "implement": [
-            {"model": "gpt-5.6-terra", "effort": "high"},
-            {"model": "claude-sonnet-5", "effort": "high"},
-            {"model": "gpt-5.6-sol", "effort": "high"}
+            {
+              "model": "gpt-5.6-terra",
+              "effort": "high"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "high"
+            },
+            {
+              "model": "gpt-5.6-sol",
+              "effort": "high"
+            }
           ],
           "review": [
-            {"model": "gpt-5.6-luna", "effort": "high"},
-            {"model": "claude-haiku-4-5", "effort": "high"},
-            {"model": "claude-opus-5", "effort": "high"}
+            {
+              "model": "gpt-5.6-luna",
+              "effort": "high"
+            },
+            {
+              "model": "claude-haiku-4-5",
+              "effort": "high"
+            },
+            {
+              "model": "claude-opus-5",
+              "effort": "high"
+            }
           ]
         },
         "normal": {
           "rank": 2,
           "implement": [
-            {"model": "gpt-5.6-sol", "effort": "high"},
-            {"model": "claude-sonnet-5", "effort": "high"},
-            {"model": "claude-opus-5", "effort": "high"},
-            {"model": "gpt-5.6-terra", "effort": "high"}
+            {
+              "model": "gpt-5.6-sol",
+              "effort": "high"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "high"
+            },
+            {
+              "model": "claude-opus-5",
+              "effort": "high"
+            },
+            {
+              "model": "gpt-5.6-terra",
+              "effort": "high"
+            }
           ],
           "review": [
-            {"model": "gpt-5.6-luna", "effort": "high"},
-            {"model": "claude-opus-5", "effort": "xhigh"},
-            {"model": "claude-haiku-4-5", "effort": "high"}
+            {
+              "model": "gpt-5.6-luna",
+              "effort": "high"
+            },
+            {
+              "model": "claude-opus-5",
+              "effort": "xhigh"
+            },
+            {
+              "model": "claude-haiku-4-5",
+              "effort": "high"
+            }
           ]
         },
         "hard": {
           "rank": 3,
           "implement": [
-            {"model": "gpt-5.6-sol", "effort": "xhigh"},
-            {"model": "claude-opus-5", "effort": "xhigh"},
-            {"model": "claude-sonnet-5", "effort": "xhigh"}
+            {
+              "model": "gpt-5.6-sol",
+              "effort": "xhigh"
+            },
+            {
+              "model": "claude-opus-5",
+              "effort": "xhigh"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "xhigh"
+            }
           ],
           "review": [
-            {"model": "claude-opus-5", "effort": "xhigh"},
-            {"model": "gpt-5.6-luna", "effort": "high"},
-            {"model": "claude-haiku-4-5", "effort": "high"}
+            {
+              "model": "claude-opus-5",
+              "effort": "xhigh"
+            },
+            {
+              "model": "gpt-5.6-luna",
+              "effort": "high"
+            },
+            {
+              "model": "claude-haiku-4-5",
+              "effort": "high"
+            }
           ]
         }
       }
     },
     "research": {
       "default_lane": "normal",
-      "activity_lanes": {"research": "normal", "synthesis": "hard"},
-      "risk_lanes": {"high": "hard", "critical": "hard"},
-      "manual_models": ["gpt-5.6-terra", "gpt-5.6-sol", "claude-sonnet-5", "claude-opus-5"],
+      "activity_lanes": {
+        "research": "normal",
+        "synthesis": "hard"
+      },
+      "risk_lanes": {
+        "high": "hard",
+        "critical": "hard"
+      },
+      "manual_models": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "claude-sonnet-5",
+        "claude-opus-5"
+      ],
       "lanes": {
-        "normal": {"rank": 1, "execute": [{"model": "gpt-5.6-terra", "effort": "high"}, {"model": "claude-sonnet-5", "effort": "high"}]},
-        "hard": {"rank": 2, "execute": [{"model": "gpt-5.6-sol", "effort": "high"}, {"model": "claude-opus-5", "effort": "high"}]}
+        "normal": {
+          "rank": 1,
+          "execute": [
+            {
+              "model": "gpt-5.6-terra",
+              "effort": "high"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "high"
+            }
+          ]
+        },
+        "hard": {
+          "rank": 2,
+          "execute": [
+            {
+              "model": "gpt-5.6-sol",
+              "effort": "high"
+            },
+            {
+              "model": "claude-opus-5",
+              "effort": "high"
+            }
+          ]
+        }
       }
     },
     "documents": {
       "default_lane": "normal",
-      "activity_lanes": {"documents": "normal", "sensitive": "hard"},
-      "risk_lanes": {"high": "hard", "critical": "hard"},
-      "manual_models": ["gpt-5.6-terra", "gpt-5.6-sol", "claude-sonnet-5", "claude-opus-5"],
+      "activity_lanes": {
+        "documents": "normal",
+        "sensitive": "hard"
+      },
+      "risk_lanes": {
+        "high": "hard",
+        "critical": "hard"
+      },
+      "manual_models": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "claude-sonnet-5",
+        "claude-opus-5"
+      ],
       "lanes": {
-        "normal": {"rank": 1, "execute": [{"model": "gpt-5.6-terra", "effort": "high"}, {"model": "claude-sonnet-5", "effort": "high"}]},
-        "hard": {"rank": 2, "execute": [{"model": "gpt-5.6-sol", "effort": "high"}, {"model": "claude-opus-5", "effort": "xhigh"}]}
+        "normal": {
+          "rank": 1,
+          "execute": [
+            {
+              "model": "gpt-5.6-terra",
+              "effort": "high"
+            },
+            {
+              "model": "claude-sonnet-5",
+              "effort": "high"
+            }
+          ]
+        },
+        "hard": {
+          "rank": 2,
+          "execute": [
+            {
+              "model": "gpt-5.6-sol",
+              "effort": "high"
+            },
+            {
+              "model": "claude-opus-5",
+              "effort": "xhigh"
+            }
+          ]
+        }
       }
     },
     "fleet": {
@@ -220,5 +462,20 @@
       "source": "core.fleet_policy.PHASE_MODEL_POLICY"
     }
   },
-  "audit_fields": ["profile", "activity", "complexity", "risk", "lane", "role", "provider", "model", "runtime_model", "effort", "manual_override", "fallback_reason", "reason", "policy_version"]
+  "audit_fields": [
+    "profile",
+    "activity",
+    "complexity",
+    "risk",
+    "lane",
+    "role",
+    "provider",
+    "model",
+    "runtime_model",
+    "effort",
+    "manual_override",
+    "fallback_reason",
+    "reason",
+    "policy_version"
+  ]
 }

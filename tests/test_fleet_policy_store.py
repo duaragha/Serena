@@ -16,6 +16,7 @@ from core.fleet_policy import (
     expected_model_matches,
     extract_explicit_workstreams,
     policy_from_snapshot,
+    policy_models_match_contract,
     resolve_activity,
     validate_config,
     validate_policy_snapshot,
@@ -26,7 +27,16 @@ from core.fleet_store import (
 )
 
 
-def _create(store: FleetStore, *, activity: str = "research", dry_run: bool = False):
+def _create(
+    store: FleetStore,
+    *,
+    activity: str = "research",
+    dry_run: bool = False,
+    worker_count: int = 2,
+):
+    # Two agents by default so peer, rotation and sibling behaviour still has a
+    # peer to exercise. A phase now runs one model, so worker count is an
+    # explicit choice rather than something the provider pairing forced.
     return store.create_run(
         task="line one\n\nline two",
         activity=activity,
@@ -34,7 +44,9 @@ def _create(store: FleetStore, *, activity: str = "research", dry_run: bool = Fa
         origin_session_id=None,
         origin_agent=None,
         dry_run=dry_run,
-        policy=build_policy(activity, config=builtin_config()).to_dict(),
+        policy=build_policy(
+            activity, config=builtin_config(), worker_count=worker_count
+        ).to_dict(),
     )
 
 
@@ -48,15 +60,18 @@ def test_policy_routes_exact_models_and_safe_coding_writers():
         "Review",
         "Fix",
     ]
-    assert all(len(phase.workers) >= 2 for phase in coding.phases)
+    # One locked model per phase; every agent in that phase runs it.
+    assert all(len(phase.workers) == 1 for phase in coding.phases)
     assert [
         [(worker.model, worker.effort) for worker in phase.workers]
         for phase in coding.phases
     ] == [
-        [("gpt-5.6-terra", "high"), ("claude-sonnet-5", "high")],
-        [("gpt-5.6-sol", "xhigh"), ("claude-opus-5", "high")],
-        [("gpt-5.6-terra", "xhigh"), ("claude-sonnet-5", "xhigh")],
-        [("gpt-5.6-sol", "xhigh"), ("claude-opus-5", "high")],
+        [("gpt-5.6-luna", "max")],
+        # Code runs medium and Fix runs high on purpose: Code's defects are
+        # caught by Review and repaired by Fix, Fix's are not caught by anything.
+        [("claude-opus-5", "medium")],
+        [("gpt-5.6-sol", "high")],
+        [("claude-opus-5", "high")],
     ]
     assert all(phase.execution == "parallel" for phase in coding.phases)
     assert all(worker.access_mode == "read_only" for worker in coding.phases[0].workers)
@@ -64,10 +79,10 @@ def test_policy_routes_exact_models_and_safe_coding_writers():
     assert all(worker.access_mode == "review" for worker in coding.phases[2].workers)
     assert all(worker.access_mode == "write" for worker in coding.phases[3].workers)
     assert [[worker.role for worker in phase.workers] for phase in coding.phases] == [
-        ["codebase-researcher", "architecture-risk-researcher"],
-        ["core-co-implementer", "integration-co-implementer"],
-        ["correctness-reviewer", "regression-reviewer"],
-        ["functional-fixer", "hardening-fixer"],
+        ["codebase-researcher"],
+        ["core-co-implementer"],
+        ["correctness-reviewer"],
+        ["functional-fixer"],
     ]
 
     research = build_policy("research", config=builtin_config())
@@ -75,10 +90,10 @@ def test_policy_routes_exact_models_and_safe_coding_writers():
         [(worker.model, worker.effort) for worker in phase.workers]
         for phase in research.phases
     ] == [
-        [("gpt-5.6-terra", "high"), ("claude-sonnet-5", "high")],
-        [("gpt-5.6-terra", "high"), ("claude-sonnet-5", "high")],
-        [("gpt-5.6-terra", "xhigh"), ("claude-sonnet-5", "xhigh")],
-        [("gpt-5.6-terra", "high"), ("claude-sonnet-5", "high")],
+        [("gpt-5.6-luna", "max")],
+        [("claude-opus-5", "high")],
+        [("gpt-5.6-sol", "high")],
+        [("claude-opus-5", "high")],
     ]
     assert all(phase.execution == "parallel" for phase in research.phases)
     assert all(
@@ -108,25 +123,31 @@ def test_provider_handoff_preserves_the_logical_slot_and_uses_each_phase_model()
 
     validate_policy_snapshot(replacement)
     assert replacement["provider_mode"] == "adaptive"
-    assert replacement["phases"][0]["workers"][1]["provider"] == "claude"
+    # Phase 0 ran before the handoff and keeps the pipeline's Codex research leg.
+    assert replacement["phases"][0]["workers"][1]["provider"] == "codex"
+    # Every unfinished phase moves to the Codex escape-hatch stack.
     assert [phase["workers"][1]["model"] for phase in replacement["phases"][1:]] == [
         "gpt-5.6-sol",
-        "gpt-5.6-terra",
+        "gpt-5.6-sol",
         "gpt-5.6-sol",
     ]
+    assert [phase["workers"][1]["effort"] for phase in replacement["phases"][1:]] == [
+        "xhigh",
+        "high",
+        "max",
+    ]
     assert all(
-        phase["workers"][1]["worker_key"] == "claude:a"
+        phase["workers"][1]["worker_key"] == "agent:b"
         for phase in replacement["phases"]
     )
-    assert replacement["phases"][1]["workers"][1]["worker_label"] == (
-        "Codex pickup for Claude A"
-    )
+    # The agent keeps its name through a handoff; only the runtime under it moves.
+    assert replacement["phases"][1]["workers"][1]["worker_label"] == "Agent B"
     assert replacement["handoffs"] == [
         {
             "phase_index": 1,
             "phase": "execute",
             "ordinal": 1,
-            "worker_key": "claude:a",
+            "worker_key": "agent:b",
             "from_provider": "claude",
             "to_provider": "codex",
             "reason": "Claude usage exhausted",
@@ -141,57 +162,61 @@ def test_cross_provider_attempt_never_resumes_a_foreign_session_and_carries_part
 ):
     store = FleetStore(tmp_path / "handoff.sqlite3")
     run = _create(store, activity="coding")
-    claude_leg = run["phases"][0]["legs"][1]
-    first = store.begin_attempt(claude_leg["leg_id"])
+    # Phase 0 is Codex for every agent now, so the provider under pressure
+    # there is Codex and the pickup provider is Claude.
+    exhausted_leg = run["phases"][0]["legs"][1]
+    first = store.begin_attempt(exhausted_leg["leg_id"])
     store.finish_attempt(
         first["attempt_id"],
         state="failed",
         output_text="edited parser.py and reached the focused test",
         error="rate_limit_reached",
-        session_id="claude-native-session",
-        actual_model="claude-sonnet-5",
-        actual_effort="high",
+        session_id="codex-native-session",
+        actual_model="gpt-5.6-luna",
+        actual_effort="max",
         exit_code=1,
     )
     replacement = build_provider_handoff_policy(
         run["policy"],
         phase_index=0,
         ordinal=1,
-        target_provider="codex",
-        reason="Claude usage exhausted",
+        target_provider="claude",
+        reason="Codex usage exhausted",
         automatic=True,
         requested_at=456.0,
     )
     store.apply_leg_handoff(
         run["run_id"],
-        claude_leg["leg_id"],
+        exhausted_leg["leg_id"],
         policy=replacement,
         start_phase_index=0,
-        target_provider="codex",
-        reason="Claude usage exhausted",
+        target_provider="claude",
+        reason="Codex usage exhausted",
         automatic=True,
     )
 
-    pickup = store.begin_attempt(claude_leg["leg_id"])
+    pickup = store.begin_attempt(exhausted_leg["leg_id"])
     refreshed = store.get_run(run["run_id"])
 
     assert pickup["resume_session_id"] is None
     assert pickup["resume_kind"] == "provider_handoff"
-    assert pickup["handoff_context"]["provider"] == "claude"
+    assert pickup["handoff_context"]["provider"] == "codex"
     assert "edited parser.py" in pickup["handoff_context"]["output_text"]
-    assert pickup["handoff_context"]["session_id"] == "claude-native-session"
-    assert refreshed["phases"][0]["legs"][1]["runtime"] == "codex"
-    assert all(phase["legs"][1]["runtime"] == "codex" for phase in refreshed["phases"])
+    assert pickup["handoff_context"]["session_id"] == "codex-native-session"
+    assert refreshed["phases"][0]["legs"][1]["runtime"] == "claude"
+    assert all(phase["legs"][1]["runtime"] == "claude" for phase in refreshed["phases"])
     assert refreshed["phases"][0]["legs"][1]["current_attempt"][
         "requested_provider"
-    ] == "codex"
+    ] == "claude"
 
 
 def test_live_handoff_interrupts_only_the_selected_owned_worker(tmp_path, monkeypatch):
     store = FleetStore(tmp_path / "live-handoff.sqlite3")
     run = _create(store, activity="research")
-    claude_leg = run["phases"][0]["legs"][1]
-    attempt = store.begin_attempt(claude_leg["leg_id"])
+    # Phase 0 is Codex for every agent now, so the provider under pressure
+    # there is Codex and the pickup provider is Claude.
+    exhausted_leg = run["phases"][0]["legs"][1]
+    attempt = store.begin_attempt(exhausted_leg["leg_id"])
     monkeypatch.setattr(store_module, "process_start_token", lambda _pid: "owned-birth")
     store.mark_attempt_process(attempt["attempt_id"], 4242)
     interrupted = []
@@ -203,16 +228,16 @@ def test_live_handoff_interrupts_only_the_selected_owned_worker(tmp_path, monkey
 
     pending = store.request_leg_handoff(
         run["run_id"],
-        claude_leg["leg_id"],
-        target_provider="codex",
-        reason="switch before Claude exhausts",
+        exhausted_leg["leg_id"],
+        target_provider="claude",
+        reason="switch before Codex exhausts",
     )
 
     live_leg = pending["phases"][0]["legs"][1]
     assert interrupted == [(4242, "owned-birth")]
     assert live_leg["state"] == "running"
     assert live_leg["handoff_requested"] is True
-    assert live_leg["handoff_target_provider"] == "codex"
+    assert live_leg["handoff_target_provider"] == "claude"
     assert pending["phases"][0]["legs"][0]["handoff_requested"] is False
 
 
@@ -233,7 +258,7 @@ def test_coding_opus_identity_is_generation_strict() -> None:
 
 def test_phase_model_policy_cannot_be_overridden_by_stale_config() -> None:
     config = builtin_config()
-    config["profiles"]["coding"]["phases"]["verify"][0]["model"] = "gpt-5.6-sol"
+    config["profiles"]["coding"]["phases"]["verify"][0]["model"] = "gpt-5.6-terra"
     with pytest.raises(ValueError, match="fixed model policy"):
         validate_config(config)
 
@@ -277,6 +302,22 @@ def test_explicit_workstream_parser_is_conservative():
         "build settings",
         "migrate data",
     )
+    assert extract_explicit_workstreams(
+        """Use four independent workstreams:
+A. fix auth
+B. build settings
+C. migrate data
+D. trim bundle
+
+Acceptance criteria:
+- full gate green
+"""
+    ) == (
+        "fix auth",
+        "build settings",
+        "migrate data",
+        "trim bundle",
+    )
     assert (
         extract_explicit_workstreams("requirements:\n- fix auth\n- build settings\n- migrate data")
         == ()
@@ -284,7 +325,7 @@ def test_explicit_workstream_parser_is_conservative():
     assert extract_explicit_workstreams("1. research\n2. code\n3. review\n4. fix") == ()
 
 
-def test_three_explicit_workstreams_select_four_balanced_durable_workers():
+def test_three_explicit_workstreams_select_three_durable_agents():
     policy = build_policy(
         "coding",
         "1. fix auth\n2. build settings\n3. migrate data",
@@ -293,49 +334,47 @@ def test_three_explicit_workstreams_select_four_balanced_durable_workers():
 
     assert policy.max_parallel_workers == 4
     assert policy.max_parallel_writers == 2
-    assert policy.scaling.selected_workers == 4
+    # One agent per workstream. The old rule rounded three up to four so the
+    # codex/claude pairing stayed even; there is no pairing to keep even now.
+    assert policy.scaling.selected_workers == 3
     assert policy.scaling.detected_workstreams == 3
     assert policy.scaling.capacity_limited is False
+    # One workstream per agent, and one agent per detected workstream. The old
+    # rule padded three up to four so the provider pairing stayed even.
     assert [workstream.workstream_id for workstream in policy.workstreams] == [
         "ws-1",
         "ws-2",
         "ws-3",
-        "ws-4",
     ]
-    assert policy.workstreams[-1].synthetic is True
-    assert policy.workstreams[-1].title == "integration and shared dependencies"
+    # No synthetic padding: every workstream here is one the task named.
+    assert all(not workstream.synthetic for workstream in policy.workstreams)
+    assert policy.workstreams[-1].title == "migrate data"
     units = {unit["id"]: unit for unit in policy.work_units}
-    assert set(units) == {"ws-1", "ws-2", "ws-3", "ws-4"}
-    assert units["ws-1"]["owner_worker_key"] == "codex:a"
-    assert units["ws-1"]["reviewer_worker_keys"] == ["claude:b"]
+    # Three named workstreams, three agents, one unit each. Nothing synthetic is
+    # appended now that the roster is not padded to an even provider pairing.
+    assert set(units) == {"ws-1", "ws-2", "ws-3"}
+    assert units["ws-1"]["owner_worker_key"] == "agent:a"
+    assert units["ws-1"]["reviewer_worker_keys"] == ["agent:c"]
     assert units["ws-1"]["dependency_ids"] == []
-    assert units["ws-4"]["owner_worker_key"] == "claude:b"
-    assert units["ws-4"]["reviewer_worker_keys"] == ["codex:b"]
-    assert units["ws-4"]["dependency_ids"] == ["ws-1", "ws-2", "ws-3"]
-    assert units["ws-4"]["dependency_mode"] == "phase_barrier"
-    assert units["ws-4"]["file_ownership"] == {
-        "mode": "repository_serialized",
-        "declared_paths": [],
-        "claim_required_before_write": True,
-        "claim_required_before_integration": True,
-    }
-    assert units["ws-4"]["completion_contract"]["required_evidence"]
-    assert units["ws-4"]["completion_contract"]["stop_conditions"]
+    assert units["ws-3"]["owner_worker_key"] == "agent:c"
+    assert units["ws-3"]["reviewer_worker_keys"] == ["agent:b"]
+    assert units["ws-3"]["completion_contract"]["required_evidence"]
+    assert units["ws-3"]["completion_contract"]["stop_conditions"]
 
-    expected_keys = ["codex:a", "claude:a", "codex:b", "claude:b"]
+    expected_keys = ["agent:a", "agent:b", "agent:c"]
     expected_models = [
-        ["gpt-5.6-terra", "claude-sonnet-5"] * 2,
-        ["gpt-5.6-sol", "claude-opus-5"] * 2,
-        ["gpt-5.6-terra", "claude-sonnet-5"] * 2,
-        ["gpt-5.6-sol", "claude-opus-5"] * 2,
+        ["gpt-5.6-luna"] * 3,
+        ["claude-opus-5"] * 3,
+        ["gpt-5.6-sol"] * 3,
+        ["claude-opus-5"] * 3,
     ]
-    # Effort is per model, not per phase: Opus peaks at high on DeepSWE while
-    # Sol keeps climbing to xhigh, so the coding rungs differ within a phase.
+    # Effort is named per model because the curves differ in shape; every agent
+    # in a phase shares the phase's one rung.
     expected_efforts = [
-        ["high", "high"] * 2,
-        ["xhigh", "high"] * 2,
-        ["xhigh", "xhigh"] * 2,
-        ["xhigh", "high"] * 2,
+        ["max"] * 3,
+        ["medium"] * 3,
+        ["high"] * 3,
+        ["high"] * 3,
     ]
     for phase, phase_models, phase_efforts in zip(
         policy.phases, expected_models, expected_efforts, strict=True
@@ -347,16 +386,37 @@ def test_three_explicit_workstreams_select_four_balanced_durable_workers():
             ("ws-1",),
             ("ws-2",),
             ("ws-3",),
-            ("ws-4",),
         ]
         assert [worker.review_target_ids for worker in phase.workers] == [
             ("ws-2",),
             ("ws-3",),
-            ("ws-4",),
             ("ws-1",),
         ]
         for worker in phase.workers:
             assert not set(worker.assignment_ids) & set(worker.review_target_ids)
+
+
+def test_independent_lettered_workstreams_do_not_create_synthetic_workers():
+    policy = build_policy(
+        "coding",
+        """Use four independent workstreams:
+A. fix auth
+B. build settings
+C. migrate data
+D. trim bundle
+""",
+        config=builtin_config(),
+        worker_count=4,
+    )
+
+    assert policy.scaling.detected_workstreams == 4
+    assert [worker.assignment for worker in policy.phases[0].workers] == [
+        "ws-1: fix auth",
+        "ws-2: build settings",
+        "ws-3: migrate data",
+        "ws-4: trim bundle",
+    ]
+    assert all(not workstream.synthetic for workstream in policy.workstreams)
 
 
 def test_more_than_four_workstreams_are_distributed_round_robin():
@@ -418,22 +478,22 @@ def test_exact_four_codex_workers_only_directive_builds_four_native_codex_slots(
     for phase in policy.phases:
         assert [worker.provider for worker in phase.workers] == ["codex"] * 4
         assert [worker.worker_key for worker in phase.workers] == [
-            "codex:a",
-            "codex:b",
-            "codex:c",
-            "codex:d",
+            "agent:a",
+            "agent:b",
+            "agent:c",
+            "agent:d",
         ]
     assert [
         [worker.model for worker in phase.workers] for phase in policy.phases
     ] == [
-        ["gpt-5.6-terra"] * 4,
+        ["gpt-5.6-luna"] * 4,
         ["gpt-5.6-sol"] * 4,
-        ["gpt-5.6-terra"] * 4,
+        ["gpt-5.6-sol"] * 4,
         ["gpt-5.6-sol"] * 4,
     ]
     assert [
         [worker.effort for worker in phase.workers] for phase in policy.phases
-    ] == [["high"] * 4, ["xhigh"] * 4, ["xhigh"] * 4, ["xhigh"] * 4]
+    ] == [["max"] * 4, ["xhigh"] * 4, ["high"] * 4, ["max"] * 4]
 
 
 @pytest.mark.parametrize(
@@ -442,12 +502,12 @@ def test_exact_four_codex_workers_only_directive_builds_four_native_codex_slots(
         (
             "no-claude: implement the fix",
             "codex",
-            ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-sol"],
+            ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol"],
         ),
         (
             "no-codex: implement the fix",
             "claude",
-            ["claude-sonnet-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-5"],
+            ["claude-opus-5", "claude-opus-5", "claude-opus-5", "claude-opus-5"],
         ),
     ],
 )
@@ -485,7 +545,7 @@ def test_single_provider_accepts_every_worker_count_from_one_through_four(count)
     assert policy.scaling.selected_workers == count
     assert all(
         [worker.worker_key for worker in phase.workers]
-        == [f"claude:{chr(ord('a') + index)}" for index in range(count)]
+        == [f"agent:{chr(ord('a') + index)}" for index in range(count)]
         for phase in policy.phases
     )
 
@@ -521,7 +581,7 @@ def test_mixed_alias_is_preserved_as_requested_and_canonicalized_to_balanced():
     )
     assert policy.requested_provider_mode == "mixed"
     assert policy.provider_mode == "balanced"
-    assert policy.scaling.selected_workers == 2
+    assert policy.scaling.selected_workers == 1
 
 
 def test_provider_capacity_routes_auto_to_the_only_usable_provider():
@@ -566,13 +626,17 @@ def test_provider_and_worker_directive_conflicts_fail_closed():
             config=builtin_config(),
             worker_count=2,
         )
-    with pytest.raises(ValueError, match="exactly two or four"):
+    # Three agents is legal now. A phase runs one model, so there is no pair to
+    # keep even and no reason to reject an odd count.
+    assert (
         build_policy(
             "coding",
             config=builtin_config(),
             provider_mode="balanced",
             worker_count=3,
-        )
+        ).scaling.selected_workers
+        == 3
+    )
 
 
 def test_provider_directive_parser_does_not_treat_product_adjectives_as_routing():
@@ -583,7 +647,7 @@ def test_provider_directive_parser_does_not_treat_product_adjectives_as_routing(
     ):
         policy = build_policy("research", task, config=builtin_config())
         assert policy.provider_mode == "balanced"
-        assert policy.scaling.selected_workers == 2
+        assert policy.scaling.selected_workers == 1
 
 
 def test_explicit_unavailable_provider_fails_without_silent_fallback():
@@ -636,6 +700,41 @@ def test_declared_paths_use_real_repository_tokens_and_ignore_prose(tmp_path):
     assert paths == ["core/shared.py", "docs"]
 
 
+def test_read_and_negated_paths_do_not_become_write_ownership(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("instructions\n")
+    (tmp_path / "core").mkdir()
+    (tmp_path / "core" / "shared.py").write_text("value = 1\n")
+
+    paths = extract_declared_paths(
+        "Read CLAUDE.md before acting. Do not edit core/shared.py. "
+        "Implement issue #107 and run the repository checks.",
+        cwd=tmp_path,
+    )
+
+    assert paths == []
+
+
+def test_read_only_path_reference_uses_repository_serialized_write_claim(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("instructions\n")
+    workstreams = [
+        {
+            "id": "ws-1",
+            "title": "implementation",
+            "description": "Read CLAUDE.md, then implement the requested fix.",
+        }
+    ]
+    workers = [{"worker_key": "agent:a", "assignment_ids": ["ws-1"]}]
+
+    units = build_work_unit_contracts("coding", workstreams, workers, cwd=tmp_path)
+
+    assert units[0]["file_ownership"] == {
+        "mode": "repository_serialized",
+        "declared_paths": [],
+        "claim_required_before_write": True,
+        "claim_required_before_integration": True,
+    }
+
+
 def test_overlapping_declared_paths_gain_a_deterministic_dependency(tmp_path):
     (tmp_path / "core").mkdir()
     (tmp_path / "core" / "shared.py").write_text("value = 1\n")
@@ -648,8 +747,8 @@ def test_overlapping_declared_paths_gain_a_deterministic_dependency(tmp_path):
         },
     ]
     workers = [
-        {"worker_key": "codex:a", "assignment_ids": ["ws-1"]},
-        {"worker_key": "claude:a", "assignment_ids": ["ws-2"]},
+        {"worker_key": "agent:a", "assignment_ids": ["ws-1"]},
+        {"worker_key": "agent:a", "assignment_ids": ["ws-2"]},
     ]
 
     units = build_work_unit_contracts("coding", workstreams, workers, cwd=tmp_path)
@@ -689,8 +788,8 @@ def test_shared_verification_path_is_not_treated_as_owned(tmp_path):
         },
     ]
     workers = [
-        {"worker_key": "codex:a", "assignment_ids": ["ws-1"]},
-        {"worker_key": "codex:b", "assignment_ids": ["ws-2"]},
+        {"worker_key": "agent:a", "assignment_ids": ["ws-1"]},
+        {"worker_key": "agent:b", "assignment_ids": ["ws-2"]},
     ]
 
     units = build_work_unit_contracts("coding", workstreams, workers, cwd=tmp_path)
@@ -721,13 +820,13 @@ def test_old_policy_snapshots_default_new_scaling_fields_without_resizing():
     restored = policy_from_snapshot(snapshot)
     assert restored.max_parallel_writers == 2
     assert restored.scaling.mode == "legacy"
-    assert restored.scaling.selected_workers == 2
+    assert restored.scaling.selected_workers == 1
     assert restored.scaling.requested_workers is None
     assert restored.requested_provider_mode == "auto"
     assert restored.provider_mode == "balanced"
     assert restored.workstreams == ()
     assert restored.work_units == ()
-    assert len(restored.phases[0].workers) == 2
+    assert len(restored.phases[0].workers) == 1
 
 
 def test_store_dry_run_is_a_durable_eight_leg_plan(tmp_path):
@@ -809,7 +908,8 @@ def test_cancel_wins_the_completion_race(tmp_path):
 def test_claude_retry_resumes_only_after_provider_init_confirmed_the_session(tmp_path):
     store = FleetStore(tmp_path / "fleet.sqlite3")
     run = _create(store)
-    claude_leg = next(leg for leg in run["phases"][0]["legs"] if leg["runtime"] == "claude")
+    # Code is the Claude phase in the pipeline; Research runs on Codex.
+    claude_leg = run["phases"][1]["legs"][0]
 
     first = store.begin_attempt(claude_leg["leg_id"])
     store.mark_attempt_session(first["attempt_id"], "assigned-but-never-created")
@@ -821,55 +921,83 @@ def test_claude_retry_resumes_only_after_provider_init_confirmed_the_session(tmp
         second["attempt_id"],
         state="failed",
         session_id="confirmed-session",
-        actual_model="claude-sonnet-5",
+        actual_model="claude-opus-5",
         exit_code=1,
     )
     third = store.begin_attempt(claude_leg["leg_id"])
     assert third["resume_session_id"] == "confirmed-session"
 
 
-def test_phase_legs_resume_the_same_two_native_worker_sessions(tmp_path):
+def test_code_and_fix_share_a_session_while_review_starts_clean(tmp_path):
+    """The two halves of the session rule, in one run.
+
+    Fix continues the session Code worked in: same provider, same agent, and the
+    fixer repairing code it wrote is a benefit. Review deliberately does not
+    continue Research even though both land on Codex, because a reviewer that
+    sat through the research cannot independently disagree with it.
+    """
+
     store = FleetStore(tmp_path / "fleet.sqlite3")
-    run = _create(store)
-    first_phase = run["phases"][0]
-    session_by_runtime = {
-        "codex": "codex-durable-session",
-        "claude": "claude-durable-session",
-    }
-    for leg in first_phase["legs"]:
+    run = _create(store, activity="coding")
+
+    def complete(leg, session_id):
         attempt = store.begin_attempt(leg["leg_id"])
-        assert attempt["resume_session_id"] is None
         store.finish_attempt(
             attempt["attempt_id"],
             state="completed",
-            session_id=session_by_runtime[leg["runtime"]],
+            session_id=session_id,
+            actual_model=leg["model"],
+            actual_effort=leg["effort"],
+            exit_code=0,
+        )
+        return attempt
+
+    for index, leg in enumerate(run["phases"][0]["legs"]):
+        opened = complete(leg, f"research-session-{index}")
+        assert opened["resume_session_id"] is None
+
+    for index, leg in enumerate(run["phases"][1]["legs"]):
+        opened = store.begin_attempt(leg["leg_id"])
+        # Research ran on Codex, so Code opens a fresh Claude session.
+        assert opened["resume_session_id"] is None
+        store.finish_attempt(
+            opened["attempt_id"],
+            state="completed",
+            session_id=f"code-session-{index}",
             actual_model=leg["model"],
             actual_effort=leg["effort"],
             exit_code=0,
         )
 
-    for leg in run["phases"][1]["legs"]:
-        attempt = store.begin_attempt(leg["leg_id"])
-        assert attempt["resume_session_id"] == session_by_runtime[leg["runtime"]]
-        assert attempt["resume_kind"] == "phase_continuation"
-        assert attempt["resume_source_phase"] == "discover"
+    for leg in run["phases"][2]["legs"]:
+        review = store.begin_attempt(leg["leg_id"])
+        assert leg["runtime"] == "codex"
+        assert review["resume_session_id"] is None
+        assert review["resume_kind"] is None
+
+    for index, leg in enumerate(run["phases"][3]["legs"]):
+        fix = store.begin_attempt(leg["leg_id"])
+        assert fix["resume_session_id"] == f"code-session-{index}"
+        assert fix["resume_kind"] == "phase_continuation"
+        assert fix["resume_source_phase"] == "execute"
 
 
 def test_claude_confirmed_lineage_survives_a_preinit_resumed_failure(tmp_path):
     store = FleetStore(tmp_path / "fleet.sqlite3")
     run = _create(store)
-    discover = next(leg for leg in run["phases"][0]["legs"] if leg["runtime"] == "claude")
-    first = store.begin_attempt(discover["leg_id"])
+    # Code and Fix are the Claude pair in the pipeline.
+    execute = run["phases"][1]["legs"][0]
+    first = store.begin_attempt(execute["leg_id"])
     store.finish_attempt(
         first["attempt_id"],
         state="completed",
         session_id="durable-claude",
-        actual_model=discover["model"],
-        actual_effort=discover["effort"],
+        actual_model=execute["model"],
+        actual_effort=execute["effort"],
         exit_code=0,
     )
-    execute = next(leg for leg in run["phases"][1]["legs"] if leg["runtime"] == "claude")
-    resumed = store.begin_attempt(execute["leg_id"])
+    finalize = run["phases"][3]["legs"][0]
+    resumed = store.begin_attempt(finalize["leg_id"])
     assert resumed["resume_session_id"] == "durable-claude"
     store.finish_attempt(
         resumed["attempt_id"],
@@ -878,7 +1006,7 @@ def test_claude_confirmed_lineage_survives_a_preinit_resumed_failure(tmp_path):
         exit_code=1,
     )
 
-    retry = store.begin_attempt(execute["leg_id"])
+    retry = store.begin_attempt(finalize["leg_id"])
     assert retry["resume_session_id"] == "durable-claude"
     assert retry["resume_kind"] == "retry"
 
@@ -1175,25 +1303,33 @@ def test_stale_recovery_fails_closed_when_live_worker_token_is_unverifiable(
     assert store.events(run["run_id"])[-1]["type"] == "run.recovery_blocked"
 
 
-def test_local_coding_work_gets_a_proportionate_research_mandate():
-    """A local defect must not pay the full external-citation quota."""
-
+def test_every_coding_work_unit_gets_the_full_research_mandate():
     local = build_policy(
         "coding",
         "fix the handoff gate in ui/web.py so the electron shell stops bouncing it",
         config=builtin_config(),
     )
-    assert local.research_depth == "proportionate"
-    assert local.to_dict()["research_depth"] == "proportionate"
-
-
-def test_outward_facing_coding_work_keeps_the_full_research_mandate():
     external = build_policy(
         "coding",
         "upgrade the pinned numpy dependency and fix the breaking API changes",
         config=builtin_config(),
     )
+    assert local.research_depth == "full"
+    assert local.to_dict()["research_depth"] == "full"
     assert external.research_depth == "full"
+
+
+def test_latest_events_returns_the_tail_in_chronological_order(tmp_path):
+    store = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _create(store, worker_count=1)
+    for index in range(5):
+        store.append_event(run["run_id"], f"test.event.{index}", {"index": index})
+
+    earliest = store.events(run["run_id"], limit=2)
+    latest = store.events(run["run_id"], limit=2, latest=True)
+
+    assert [event["type"] for event in earliest] == ["run.created", "test.event.0"]
+    assert [event["type"] for event in latest] == ["test.event.3", "test.event.4"]
 
     research = build_policy(
         "research",
@@ -1207,3 +1343,134 @@ def test_a_snapshot_written_before_depth_existed_keeps_the_full_mandate():
     snapshot = build_policy("coding", "fix a local typo", config=builtin_config()).to_dict()
     snapshot.pop("research_depth")
     assert policy_from_snapshot(snapshot).research_depth == "full"
+
+
+def test_editing_the_matrix_does_not_strand_runs_already_in_flight():
+    """A run keeps the contract it was created with, even after the matrix moves.
+
+    Fleet freezes a policy at run creation so the run stays reproducible, but
+    the contract check re-read the live matrix. Editing the matrix while a run
+    was in flight therefore invalidated it, and its next handoff or retry died
+    with "provider handoff violated Fleet's phase model contract" over a
+    contract Fleet itself had issued. That is exactly what killed run 8678bc11.
+    """
+
+    frozen = build_policy(
+        "coding", "tasks:\n- one\n- two", config=builtin_config(), worker_count=2
+    ).to_dict()
+    # Simulate the matrix moving under it: the run holds an effort no current
+    # matrix or escape-hatch stack names any more.
+    for phase in frozen["phases"]:
+        if phase["name"] == "execute":
+            for worker in phase["workers"]:
+                worker["effort"] = "xhigh"
+
+    assert policy_models_match_contract("coding", frozen) is False
+    assert policy_models_match_contract("coding", frozen, baseline=frozen) is True
+
+    # And the handoff that used to abort now rebuilds the slot.
+    replacement = build_provider_handoff_policy(
+        frozen,
+        phase_index=1,
+        ordinal=0,
+        target_provider="codex",
+        reason="claude exhausted",
+        automatic=True,
+    )
+    assert replacement["phases"][1]["workers"][0]["provider"] == "codex"
+    assert replacement["phases"][1]["workers"][0]["worker_key"] == "agent:a"
+
+    # Inventing a model is still refused.
+    invented = build_policy("coding", config=builtin_config()).to_dict()
+    invented["phases"][1]["workers"][0]["model"] = "not-a-real-model"
+    assert policy_models_match_contract("coding", invented, baseline=frozen) is False
+
+
+def test_one_provider_may_carry_both_its_pipeline_and_escape_hatch_spec():
+    """Keyed by provider alone, the second legal spec replaced the first."""
+
+    from core.fleet_policy import PHASE_MODEL_POLICY, PROVIDER_ONLY_POLICY
+
+    snapshot = build_policy("coding", config=builtin_config()).to_dict()
+    for phase in snapshot["phases"]:
+        name = phase["name"]
+        pipeline = PHASE_MODEL_POLICY["coding"][name][0]
+        hatch = PROVIDER_ONLY_POLICY[pipeline[0]]["coding"][name][0]
+        for spec in (pipeline, hatch):
+            for worker in phase["workers"]:
+                worker["provider"] = spec[0]
+                worker["runtime"] = spec[0]
+                worker["model"] = spec[1]
+                worker["effort"] = spec[2]
+            assert policy_models_match_contract("coding", snapshot), (name, spec)
+
+
+def test_a_wedged_run_can_be_forced_out_and_then_retried(tmp_path):
+    """The one case where "just retry it" had no answer.
+
+    Cancel is a request that only the supervisor converges, and retry demands a
+    terminal state. A supervisor that is alive but cannot make progress -- the
+    real case was ENOSPC, where it could not write the transition at all --
+    leaves a run that can be neither cancelled nor retried. Forcing is narrow on
+    purpose: never while a worker lives, never while the run is still moving.
+    """
+
+    store = FleetStore(tmp_path / "wedged.sqlite3")
+    run = _create(store, activity="coding")
+    run_id = str(run["run_id"])
+    assert store.claim_run(run_id)
+
+    leg = run["phases"][0]["legs"][0]
+    attempt = store.begin_attempt(str(leg["leg_id"]))
+    store.mark_attempt_process(str(attempt["attempt_id"]), os.getpid())
+
+    # A live worker is never cut off, however long the run has been quiet.
+    with pytest.raises(ValueError, match="live worker processes"):
+        store.force_cancel_run(run_id, min_stall_seconds=0)
+
+    store.finish_attempt(
+        str(attempt["attempt_id"]),
+        state="failed",
+        error="worker died",
+        exit_code=1,
+    )
+
+    # Nor is a supervisor that might simply be mid-step.
+    with pytest.raises(ValueError, match="force needs"):
+        store.force_cancel_run(run_id, min_stall_seconds=600)
+
+    forced = store.force_cancel_run(run_id, min_stall_seconds=0, reason="ENOSPC")
+    assert forced["state"] == "cancelled"
+    assert "no progress and no live workers" in forced["error"]
+    assert "ENOSPC" in forced["error"]
+
+    # Which is the point: it is retryable again without a second Fleet.
+    assert store.retry_run(run_id)["state"] == "queued"
+
+    # And a run that already reached a terminal state is left alone.
+    store.cancel_run(run_id)
+    with pytest.raises(ValueError, match="already cancelled"):
+        store.force_cancel_run(run_id, min_stall_seconds=0)
+
+
+def test_terminal_run_retry_refuses_a_still_live_worker(tmp_path):
+    store = FleetStore(tmp_path / "live-retry.sqlite3")
+    run = _create(store, activity="coding", worker_count=1)
+    run_id = str(run["run_id"])
+    assert store.claim_run(run_id)
+
+    leg = run["phases"][0]["legs"][0]
+    attempt = store.begin_attempt(str(leg["leg_id"]))
+    store.mark_attempt_process(str(attempt["attempt_id"]), os.getpid())
+    store.fail_run(run_id, "controlled terminal race")
+
+    with pytest.raises(ValueError, match="worker processes are still alive"):
+        store.retry_run(run_id)
+
+    store.finish_attempt(
+        str(attempt["attempt_id"]),
+        state="failed",
+        error="worker drained",
+        exit_code=1,
+    )
+    assert store.retry_run(run_id)["state"] == "queued"

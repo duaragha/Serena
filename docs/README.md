@@ -16,6 +16,8 @@
 - [Brain daemon](spec-brain-daemon.md): resident session, streaming protocol, lifecycle, and acceptance contract
 - [Fleet runtime](fleet-runtime.md): renderer-owned terminals, work-unit contracts, capacity recovery, and delivery obligations
 - [Knowledge maintenance](knowledge-maintenance-spec.md): knowledge lifecycle and curation contract
+- [Memory query and feedback](memory-query-and-feedback.md): deterministic query plans, privacy-safe receipts, relevance feedback, and correction proposals
+- [Memory retrieval and rollout](memory-retrieval.md): local dense embeddings, FTS5, private evaluation, shadow migration, canary, and rollback
 
 ## Voice acceptance
 

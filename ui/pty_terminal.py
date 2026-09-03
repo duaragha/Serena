@@ -19,19 +19,24 @@ import signal
 import subprocess
 import sys
 import threading
-from contextlib import suppress
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
+
+from core.process_launch import windows_launch_argv
 
 _IS_WINDOWS = sys.platform == "win32"
 
 if _IS_WINDOWS:
     try:
+        from winpty import Backend as _WinPtyBackend
         from winpty import PtyProcess as _PtyProcess
     except ImportError:
+        _WinPtyBackend = None
         _PtyProcess = None
 else:
+    _WinPtyBackend = None
     try:
         import ptyprocess as _ptyprocess_mod
         _PtyProcess = _ptyprocess_mod.PtyProcess
@@ -109,6 +114,136 @@ _web_split_sids: tuple[str, ...] = ()
 
 MIN_COLS = 10
 MIN_ROWS = 4
+_CONPTY_SPAWN_ATTEMPTS = 3
+_CONPTY_RETRY_SECONDS = 0.12
+_CONPTY_TRANSIENT_ERROR = "0x800700BB"
+
+
+def _windows_backend_selection() -> tuple[int, str]:
+    """Choose the Windows PTY implementation used for a new terminal.
+
+    ConPTY is the only backend whose live row and column changes match the
+    renderer. Legacy WinPTY changes its hidden console buffer but leaves the
+    child-visible window at the dimensions it had at spawn time, so Claude's
+    input/status area never follows a maximize or split resize. Frozen ConPTY
+    occasionally hits a transient named-semaphore race; spawn retries below
+    handle that and retain WinPTY only as the final availability fallback.
+    """
+    if not _IS_WINDOWS or _WinPtyBackend is None:
+        raise RuntimeError("Windows PTY backend is unavailable")
+
+    requested = (
+        os.environ.get("SERENA_WINDOWS_PTY_BACKEND")
+        or os.environ.get("PYWINPTY_BACKEND")
+        or ""
+    ).strip().lower()
+    if requested in {"1", "winpty", "legacy"}:
+        return _WinPtyBackend.WinPTY, "winpty"
+    if requested in {"0", "conpty"}:
+        return _WinPtyBackend.ConPTY, "conpty"
+    if requested:
+        raise ValueError(
+            "SERENA_WINDOWS_PTY_BACKEND must be 'conpty' or 'winpty'"
+        )
+    return _WinPtyBackend.ConPTY, "conpty"
+
+
+def _is_interactive_windows_agent(argv: list[str]) -> bool:
+    if not argv:
+        return False
+    command = os.path.splitext(os.path.basename(argv[0]))[0].lower()
+    return command in {"claude", "codex"} and "--version" not in argv
+
+
+def _is_transient_conpty_error(exc: BaseException) -> bool:
+    return _CONPTY_TRANSIENT_ERROR.lower() in str(exc).lower()
+
+
+def _windows_launch_argv(argv: list[str], env: dict[str, str]) -> list[str]:
+    """Run Windows batch shims through ``cmd.exe`` without losing argv[0].
+
+    npm exposes Codex as ``codex.cmd`` on Windows.  WinPTY cannot execute a
+    batch file with a separate argument string the way CreateProcess handles
+    an ``.exe``: ``codex resume <sid>`` became a shell whose command was only
+    ``resume <sid>``.  The hidden pane printed ``'resume' is not recognized``
+    and exited immediately.  Resolve the shim once, then give ``cmd /c`` one
+    correctly quoted command line.  Native executables stay untouched.
+    """
+    return windows_launch_argv(argv, env, which=shutil.which)
+
+
+def _spawn_windows_process(
+    argv: list[str],
+    *,
+    cwd: str,
+    rows: int,
+    cols: int,
+    env: dict[str, str],
+) -> tuple[object, str]:
+    """Spawn a Windows PTY, falling back when an opted-in ConPTY panics."""
+    interactive_agent = _is_interactive_windows_agent(argv)
+    argv = _windows_launch_argv(argv, env)
+    backend, backend_name = _windows_backend_selection()
+    attempts = _CONPTY_SPAWN_ATTEMPTS if backend_name == "conpty" else 1
+    last_error: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            proc = _PtyProcess.spawn(
+                argv,
+                cwd=cwd,
+                dimensions=(rows, cols),
+                env=env,
+                backend=backend,
+            )
+            # A second frozen-host failure mode returns a ConPTY object whose
+            # interactive child is already dead. Give the child one short
+            # startup window, then retry instead of returning a blank pane.
+            if (
+                backend_name == "conpty"
+                and getattr(sys, "frozen", False)
+                and interactive_agent
+            ):
+                time.sleep(_CONPTY_RETRY_SECONDS)
+                if not proc.isalive():
+                    raise RuntimeError("ConPTY child exited during startup")
+            return proc, backend_name
+        except FileNotFoundError:
+            raise
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
+            if backend_name != "conpty":
+                raise
+            last_error = exc
+            retryable = _is_transient_conpty_error(exc) or (
+                "child exited during startup" in str(exc).lower()
+            )
+            if retryable and attempt < attempts:
+                print(
+                    f"[terminal] transient ConPTY startup failure "
+                    f"({attempt}/{attempts}): {exc}; retrying",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(_CONPTY_RETRY_SECONDS)
+                continue
+            break
+
+    print(
+        f"[terminal] ConPTY startup failed ({last_error}); falling back to WinPTY",
+        file=sys.stderr,
+        flush=True,
+    )
+    return (
+        _PtyProcess.spawn(
+            argv,
+            cwd=cwd,
+            dimensions=(rows, cols),
+            env=env,
+            backend=_WinPtyBackend.WinPTY,
+        ),
+        "winpty",
+    )
 
 
 def _terminal_environment(environ: dict[str, str]) -> dict[str, str]:
@@ -366,15 +501,31 @@ def spawn(
     # rendering — claude's TUI then can't position its statusline/input bar
     # correctly + may skip the alt-screen switch entirely.
     env = _terminal_environment(dict(os.environ if env is None else env))
-    env.setdefault("TERM", "xterm-256color")
-    env.setdefault("COLORTERM", "truecolor")
-    env.setdefault("COLUMNS", str(cols))
-    env.setdefault("LINES", str(rows))
+    pty_backend = ""
     if _IS_WINDOWS:
+        # PowerShell, Git, and some parent Codex processes export TERM=dumb on
+        # Windows. This child is not attached to that parent terminal: it is
+        # attached to Serena's xterm.js renderer, so inheriting "dumb" makes
+        # Codex stop at an interactive warning and prevents its TUI from ever
+        # appearing. Describe the PTY Serena actually provides.
+        env["TERM"] = "xterm-256color"
+        env["COLORTERM"] = "truecolor"
+        env["COLUMNS"] = str(cols)
+        env["LINES"] = str(rows)
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
-        proc = _PtyProcess.spawn(argv, cwd=cwd, dimensions=(rows, cols), env=env)
+        proc, pty_backend = _spawn_windows_process(
+            argv,
+            cwd=cwd,
+            rows=rows,
+            cols=cols,
+            env=env,
+        )
     else:
+        env.setdefault("TERM", "xterm-256color")
+        env.setdefault("COLORTERM", "truecolor")
+        env.setdefault("COLUMNS", str(cols))
+        env.setdefault("LINES", str(rows))
         launch = argv
         if _systemd_scope_supported():
             # ptyprocess reports a missing binary by raising FileNotFoundError
@@ -415,6 +566,7 @@ def spawn(
         session_id=session_id,
         agent=(agent or "").lower(),
         cwd=cwd,
+        pty_backend=pty_backend,
     )
 
     if _IS_WINDOWS:
@@ -955,6 +1107,10 @@ def pause(
     producing output. Turn tracking already covers an agent mid-answer, but a
     process can be busy without a turn being recorded, and freezing that one
     stalls it silently until the user happens to look at the pane again.
+
+    ``prewarm_seconds`` covers the gap before any of that can help: a runtime
+    that has just been spawned has no recorded turn and, if its session is not
+    yet indexed, no transcript to read either.
     """
 
     term = get(tid)

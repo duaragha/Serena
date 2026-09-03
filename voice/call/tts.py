@@ -839,6 +839,14 @@ class RemotePocketTTSBackend(AsyncTTSBackend):
                 else os.environ.get("SERENA_CALL_MODEL_INFERENCE_TIMEOUT", "60")
             ),
         )
+        # How long a live turn waits for the FIRST remote audio chunk before
+        # giving up and speaking locally. Deliberately short: the remote is
+        # normally 0.10s (measured over 15 runs), so anything past a second is
+        # already a stall rather than slow synthesis.
+        self.first_audio_timeout = max(
+            0.5,
+            float(os.environ.get("SERENA_CALL_TTS_REMOTE_FIRST_AUDIO_TIMEOUT", "1.5")),
+        )
         self.provider = "remote"
         self.sample_rate = 24_000
         self.network_isolation = "tailnet"
@@ -902,6 +910,8 @@ class RemotePocketTTSBackend(AsyncTTSBackend):
             self._metadata = dict(meta)
             self.sample_rate = int(meta.get("sample_rate") or 24_000)
             self._warmed = True
+        # the container answered, so the local stand-in is dead weight
+        self._retire_local_delegate()
         text = str(
             os.environ.get("SERENA_CALL_POCKET_BACKCHANNEL", "yeah.")
         ).strip()
@@ -979,7 +989,33 @@ class RemotePocketTTSBackend(AsyncTTSBackend):
             failure: str | None = None
             try:
                 while True:
-                    message = await loop.run_in_executor(None, out.get)
+                    if emitted:
+                        message = await loop.run_in_executor(None, out.get)
+                    else:
+                        # Nothing has reached his ears yet, so the whole reply
+                        # is still recoverable by falling back locally. The
+                        # inference timeout is 60s, which is a sane ceiling for
+                        # a batch job and useless in a conversation: on
+                        # 2026-08-21 a stalled remote left him staring at her
+                        # finished text in silence for close to a minute. One
+                        # slow round trip is not worth waiting out when a local
+                        # engine answers in 0.03s.
+                        try:
+                            message = await asyncio.wait_for(
+                                loop.run_in_executor(None, out.get),
+                                timeout=self.first_audio_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            if not self._fallback_enabled:
+                                raise ModelProcessError(
+                                    "remote Pocket TTS produced no audio within "
+                                    f"{self.first_audio_timeout:.1f}s"
+                                )
+                            failure = (
+                                "no first audio within "
+                                f"{self.first_audio_timeout:.1f}s"
+                            )
+                            break
                     if message is None:
                         break
                     last = message
@@ -1028,6 +1064,27 @@ class RemotePocketTTSBackend(AsyncTTSBackend):
     @property
     def _fallback_enabled(self) -> bool:
         return _env_truthy("SERENA_CALL_TTS_REMOTE_FALLBACK", True)
+
+    def _retire_local_delegate(self) -> None:
+        """Drop the local engine once the container is serving again.
+
+        Without this a single unreachable moment at boot keeps the local
+        model resident for the whole session, which is exactly the memory
+        this backend exists to avoid.
+        """
+        with self._state_lock:
+            local = self._local
+            self._local = None
+        if local is None:
+            return
+        process = getattr(local, "_process", None)
+        if process is not None:
+            with suppress(Exception):
+                local._discard_process(process)
+        executor = getattr(local, "_model_executor", None)
+        if executor is not None:
+            with suppress(Exception):
+                executor.shutdown(wait=False)
 
     async def _fallback_stream(
         self, sentence: str, generation: int

@@ -542,6 +542,35 @@ def _notification_summary(value: str, *, limit: int = 1_200) -> str:
     return clean[: limit - 3].rstrip() + "..."
 
 
+_NARRATION_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+# Agent messages that are pure bookkeeping are not worth interrupting a quiet
+# room for. He asked for "I thought of doing this, so I did that", not a
+# read-out of every acknowledgement.
+_NARRATION_SKIP = re.compile(
+    r"^(?:ok|okay|sure|done|got it|understood|thanks|alright)\b[.!]?$",
+    re.IGNORECASE,
+)
+
+
+def _narration_line(text: str) -> str:
+    """One speakable sentence out of an agent message, or nothing.
+
+    Only the first sentence: the coding agent writes for a screen, and reading
+    a full paragraph aloud is the constant narration that makes this feature
+    unbearable rather than alive.
+    """
+
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return ""
+    first = _NARRATION_SENTENCE.split(clean, 1)[0].strip()
+    if not first or _NARRATION_SKIP.match(first):
+        return ""
+    if len(first) > 180:
+        first = first[:177].rstrip() + "..."
+    return first
+
+
 def _send_overlay_event(message: dict) -> None:
     payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8"
@@ -662,6 +691,52 @@ class VoiceWorkSupervisor:
     def _overlay(self, message: dict) -> None:
         with suppress(Exception):
             self.overlay_sender(message)
+
+    def _narrate_completion(self, item_id: str, snapshot: dict) -> None:
+        """Say how it ended, in one sentence, whatever the outcome."""
+
+        state = str(snapshot.get("state") or "").strip().lower()
+        summary = _narration_line(str(snapshot.get("summary") or ""))
+        if state in {"failed", "error"}:
+            line = summary or "that job failed"
+            kind = "blocker"
+        elif state in {"cancelled", "canceled"}:
+            # He stopped it himself, so he already knows. Announcing it back at
+            # him is the kind of narration that makes this feature tiresome.
+            return
+        else:
+            line = summary or "that job's done"
+            kind = "done"
+        with suppress(Exception):
+            from core.work_narration import append
+
+            append(line, job_id=item_id, kind=kind)
+
+    def _narrate(self, item_id: str, event: dict, overlay_event: dict) -> None:
+        """Offer one line to the voice session while the job runs.
+
+        Only the agent's own messages and its errors: those are the moments
+        where it decided something, which is what Raghav actually asked for.
+        Commands and file edits stay on the overlay where he can look at them,
+        because reading every bash line aloud is noise.
+
+        Offering is not speaking. The voice session decides whether the floor
+        is free, and routine lines are allowed to die unheard.
+        """
+        kind = str(overlay_event.get("kind") or "")
+        if kind not in {"text", "error"} and str(event.get("type") or "") != "error":
+            return
+        line = _narration_line(str(overlay_event.get("summary") or ""))
+        if not line:
+            return
+        with suppress(Exception):
+            from core.work_narration import append
+
+            append(
+                line,
+                job_id=item_id,
+                kind="blocker" if kind == "error" else "milestone",
+            )
 
     @staticmethod
     def _voice_journal():
@@ -1261,6 +1336,11 @@ class VoiceWorkSupervisor:
             )
         elif event_type == "code_done":
             message["summary"] = str(snapshot.get("summary") or "")[:2_000]
+            # Completion is one of the two things that must reach him however
+            # busy he is, so it is emitted here rather than from the live event
+            # stream: every finishing path already funnels through this call,
+            # including the ones that never produced an agent message.
+            self._narrate_completion(item_id, snapshot)
         self._overlay(message)
 
     @staticmethod
@@ -2268,6 +2348,7 @@ class VoiceWorkSupervisor:
                             "event": overlay_event,
                         }
                     )
+                    self._narrate(item.item_id, event, overlay_event)
                 event_type = str(event.get("type") or "")
                 if event_type == "thread.started":
                     session_id = str(event.get("thread_id") or session_id)

@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
+import time
 from importlib import import_module
 from pathlib import Path
 
@@ -20,17 +22,44 @@ if not getattr(sys, "frozen", False):
 
 os.environ.setdefault("SERENA_CALL_RUNTIME", "lazy")
 
-flask = import_module("flask")
+
+_STREAM_SINKS = []
+
+
+def _repair_standard_streams() -> None:
+    """Replace detached Windows console streams before Flask writes to them.
+
+    A ``console=False`` PyInstaller executable can inherit a Python stream whose
+    CRT descriptor exists while its Windows handle does not.  Flask/Click writes
+    the startup banner to that stream and aborts with ``OSError: [Errno 22]``.
+    Electron supplies real pipes, which must be preserved for backend logging;
+    only missing or unusable streams are replaced.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        try:
+            os.fstat(stream.fileno())
+        except (AttributeError, OSError, TypeError, ValueError):
+            # It intentionally stays open for the lifetime of the sidecar.
+            sink = open(  # noqa: SIM115
+                os.devnull, "w", encoding="utf-8", buffering=1
+            )
+            _STREAM_SINKS.append(sink)
+            setattr(sys, name, sink)
+
+
+_repair_standard_streams()
+
+# `app` is re-exported so tests and anything embedding this entry point can
+# reach the Flask app. /api/health is NOT declared here: ui.web owns it (as
+# `api_health`), so mobile_host serves the same probe. Declaring it again bound
+# a second view to the identical rule, and since ui.web registers first its
+# endpoint always won -- the copy here was unreachable code that read as though
+# it were the live probe. desktop-electron/sidecar.py made the same removal on
+# the Linux side.
 web = import_module("ui.web")
 app = web.app
-jsonify = flask.jsonify
 run_web = web.run_web
-
-
-@app.get("/api/health")
-def health() -> object:
-    """Report readiness to the Electron process without triggering app work."""
-    return jsonify(ok=True, pid=os.getpid())
 
 
 def _loopback_host(value: str) -> str:
@@ -46,11 +75,56 @@ def _port(value: str) -> int:
     return port
 
 
+def _pty_smoke() -> int:
+    """Exercise WinPTY plus the batch-shim launch path used by Codex."""
+    from ui import pty_terminal
+
+    marker = b"SERENA_PTY_OK"
+    with tempfile.TemporaryDirectory(
+        prefix="serena-pty-smoke-", ignore_cleanup_errors=True
+    ) as temp_dir:
+        # npm exposes Codex as codex.cmd. A path containing spaces also proves
+        # the wrapper's Windows quoting, not merely its extension detection.
+        command = Path(temp_dir) / "serena command shim.cmd"
+        command.write_text("@echo off\r\necho %1\r\n", encoding="ascii")
+        tid = pty_terminal.spawn(
+            [str(command), marker.decode("ascii")],
+            str(Path.home()),
+            cols=80,
+            rows=24,
+            agent="smoke",
+        )
+        spawned = pty_terminal.get(tid)
+        requested = os.environ.get("SERENA_WINDOWS_PTY_BACKEND", "").lower()
+        expected_backend = "winpty" if requested in {"1", "winpty", "legacy"} else "conpty"
+        backend_ok = bool(spawned and spawned.pty_backend == expected_backend)
+        output = bytearray()
+        saw_marker = False
+        deadline = time.monotonic() + 15
+        try:
+            while time.monotonic() < deadline:
+                chunk = pty_terminal.read_available(tid, max_bytes=65536, timeout=0.1)
+                if chunk:
+                    output.extend(chunk)
+                    if marker in output:
+                        saw_marker = True
+                if not pty_terminal.is_alive(tid) and not chunk:
+                    break
+            return 0 if saw_marker and backend_ok else 1
+        finally:
+            pty_terminal.kill(tid)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Serena Windows sidecar")
     parser.add_argument("--host", type=_loopback_host, default="127.0.0.1")
-    parser.add_argument("--port", type=_port, required=True)
+    parser.add_argument("--port", type=_port)
+    parser.add_argument("--pty-smoke", action="store_true")
     args = parser.parse_args()
+    if args.pty_smoke:
+        raise SystemExit(_pty_smoke())
+    if args.port is None:
+        parser.error("--port is required unless --pty-smoke is used")
     run_web(host=args.host, port=args.port, open_browser=False)
 
 

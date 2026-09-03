@@ -1,91 +1,63 @@
-# Python environments and generated files
-.venv/
-.venv-*/
-voice/.venv/
-voice/.venv-*/
-venv/
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
-.mypy_cache/
-.pyright/
+.venv/
+venv/
+
+# Build artifacts
 build/
 dist/
 *.egg
+uv.lock
 
-# JavaScript and native build output
-node_modules/
-mobile/dist/
-mobile/android/.gradle/
-mobile/android/app/build/
-mobile/ios/App/Pods/
-mobile/ios/App/DerivedData/
-
-# Large local model caches. Source records their required names and hashes.
-voice/models/
-
-# Local runtime, browser, Docker, and handoff state
-.docker-nocred/
-chats/.playwright-mcp/
-chats/.serena-handoff.md
-.serena_local/
-.mcp.json
-tmp*
-*.sqlite
-*.sqlite3
-*.sqlite3-shm
-*.sqlite3-wal
-*.jsonl
-*.log
-*.pid
-*.lock
-
-# Secrets and machine-local configuration
-Persona.md
-.codex/
-.claude/
-*.env
-*.key
-*.pem
-*.local.json
-*.local.toml
-config.local.*
-
-# Personal memory content. Code and documented schemas remain tracked.
-memory/**/*.md
-!memory/README.md
-memory/user/
-memory/feedback/
-memory/project/
-memory/general/
-memory/task/
-memory/loop/
-memory/ledger/
-memory/reference/
-memory/**/*sync-conflict*
-
-# Personal knowledge content. Reader code and documentation remain tracked.
-knowledge/*/
-!knowledge/**/__init__.py
-knowledge/**/*.md
-!knowledge/README.md
-
-# Personal reminder and dream runtime data
-reminders/
-dream/
-
-# Backups and editor noise
-*.old
-*.bak
-*sync-conflict*
+# OS / editor
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.swp
 
-# Local timestamped backups made while editing
+# ---- Data dirs: track code + index files, ignore user content ----
+
+# memory/: track code (*.py, __init__.py) but NOT the memory markdown files
+memory/**/*.md
+!memory/README.md
+memory/user/
+memory/feedback/
+memory/project/
+memory/general/
+
+# knowledge/: track code, don't track user's knowledge notes
+knowledge/*/
+!knowledge/**/__init__.py
+knowledge/**/*.md
+!knowledge/README.md
+
+# Voice: heavy models and runtime state
+voice/models/
+voice/__pycache__/
+
+# Legacy / backup files from the restructure
+*.old
+
+# --- added 2026-09-02 during repo repair ---
+# Persona.md is Raghav's personal assistant persona and this repo is PUBLIC.
+# It was NOT ignored and NOT tracked, so any `git add -A` would have published
+# it. Two old commits touch the path but neither exposes content, and it is
+# absent from origin/master HEAD, so nothing has leaked.
+Persona.md
+
+# venv that .venv/ did not match — 8,708 files, 292MB of the untracked noise
+.venv-wake/
+voice/.venv-wake/
+
+# node_modules under desktop-electron was untracked (5,324 files)
+node_modules/
+
+# local build/run noise
+*.log
 *.bak-*
-*.sync-conflict-*
+chats/.serena-handoff.md

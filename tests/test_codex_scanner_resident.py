@@ -43,3 +43,19 @@ def test_resident_exec_is_visible_but_generic_exec_stays_hidden(
     assert codex_scanner._is_user_initiated(path)
     monkeypatch.setattr(codex_scanner.meta_sync, "get_meta", lambda _sid: {})
     assert not codex_scanner._is_user_initiated(path)
+
+
+def test_resident_desktop_session_is_visible_but_unmarked_desktop_stays_hidden(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = _rollout(tmp_path, "vscode")
+    monkeypatch.setattr(
+        codex_scanner.meta_sync,
+        "get_meta",
+        lambda sid: {"resident_work": sid == SESSION_ID},
+    )
+
+    assert codex_scanner._is_user_initiated(path)
+    monkeypatch.setattr(codex_scanner.meta_sync, "get_meta", lambda _sid: {})
+    assert not codex_scanner._is_user_initiated(path)

@@ -28,7 +28,7 @@ export type ClientMsg =
   | { type: 'list_sessions' }
   | { type: 'open'; sessionId: string }
   | { type: 'send'; sessionId: string; text: string }
-  | { type: 'new_session'; agent: AgentKind }
+  | { type: 'new_session'; agent: AgentKind; cwd?: string; title?: string }
   | { type: 'stop'; sessionId: string };
 
 // server -> client
@@ -39,4 +39,4 @@ export type ServerMsg =
   | { type: 'chunk'; sessionId: string; messageId: string; delta: string }
   | { type: 'message_done'; sessionId: string; messageId: string }
   | { type: 'session_created'; session: SessionSummary }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; sessionId?: string };

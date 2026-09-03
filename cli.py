@@ -1221,8 +1221,8 @@ def gen_image(out, timeout, reasoning, prompt):
     type=click.IntRange(min=0),
     help="Optional max seconds to wait for codex; 0 waits until the job finishes (default 0).",
 )
-@click.option("--danger-full-access", is_flag=True, default=False,
-              help="Run with sandbox_mode=danger-full-access instead of workspace-write.")
+@click.option("--danger-full-access/--workspace-write", default=True,
+              help="Sandbox mode for the spawned Codex agent (default: danger-full-access).")
 @click.option("--visible", "-V", is_flag=True, default=False,
               help="Keep the rollout on disk and surface the job as a real codex chat in Serena "
                    "(drops --ephemeral, marks it resident work, gives it a title).")

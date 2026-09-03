@@ -38,10 +38,15 @@ explicitly asks for one to four agents, pass that exact number as `worker_count`
 it so Fleet scales from the task. Never bury an explicit provider restriction only inside `task`.
 
 Model routing is fixed server-side for every entrypoint. A provider handoff therefore selects the
-target provider, not an arbitrary model. Coding runs use Terra/Sonnet high for
-Research, Sol/Opus xhigh for Code, Terra/Sonnet xhigh for Review, and Sol/Opus high for Fix.
-Pure research runs keep Terra/Sonnet high for Research, Analyze, and Refine, with Terra/Sonnet
-xhigh for Review. Do not pass, imply, or silently substitute another phase model.
+target provider, not an arbitrary model. Coding runs use Luna max for Research, Opus medium for
+Code, Sol high for Review, and Opus high for Fix. On confirmed Claude exhaustion, an unfinished
+Code phase moves to Sol xhigh and an unfinished Fix phase moves to Sol max; Review is already Sol
+high. Pure research runs use Luna max for Research, Opus high for Analyze, Sol high for Review,
+and Opus high for Refine. Do not pass, imply, or silently substitute another phase model.
+
+Every Research worker must use native online search extensively, including for local coding work.
+Fleet requires observed searches plus current direct sources, authoritative evidence, best practices,
+recent technology, and a stated impact on the recommendation; repository reading is not a substitute.
 
 Do not wait for a newly started run unless Raghav explicitly asks to wait or babysit it. Auto and
 balanced runs may cross providers only after confirmed usage exhaustion and only when the target

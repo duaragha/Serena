@@ -32,6 +32,7 @@ _ACTIVE_TURN: dict[str, object] | None = None
 _RECENT_TURNS: list[dict[str, object]] = []
 _RECENT_TURNS_LIMIT = 8
 _PREVIOUS_USER_TURN_KEY = "_previous_user_turn"
+_TURN_SCOPE_KEY = "_turn_scope"
 
 _LOCAL_READ_ONLY = ToolAnnotations(
     readOnlyHint=True,
@@ -56,12 +57,15 @@ def set_current_turn(payload: Mapping[str, object]):
     # immediately preceding genuine user turn is exposed so an explicit retry
     # cannot reach farther back through conversation history.
     bound_payload.pop(_PREVIOUS_USER_TURN_KEY, None)
-    if _RECENT_TURNS:
+    turn_scope = _turn_scope(payload)
+    if _RECENT_TURNS and _RECENT_TURNS[-1].get(_TURN_SCOPE_KEY) == turn_scope:
         bound_payload[_PREVIOUS_USER_TURN_KEY] = dict(_RECENT_TURNS[-1])
 
     text = " ".join(str(payload.get("text") or "").split())
     if text:
-        _RECENT_TURNS.append({"at": _time.time(), "text": text})
+        _RECENT_TURNS.append(
+            {"at": _time.time(), "text": text, _TURN_SCOPE_KEY: turn_scope}
+        )
         del _RECENT_TURNS[:-_RECENT_TURNS_LIMIT]
     _ACTIVE_TURN = bound_payload
     return _CURRENT_TURN.set(bound_payload)
@@ -77,6 +81,17 @@ def current_turn() -> Mapping[str, object]:
     """The turn a brokered tool is running inside, contextvar or mirror."""
 
     return _CURRENT_TURN.get() or _ACTIVE_TURN or {}
+
+
+def _turn_scope(payload: Mapping[str, object]) -> str:
+    """Bind recent context to a stable local conversation when one exists."""
+
+    for key in ("call_id", "session_id"):
+        value = " ".join(str(payload.get(key) or "").split())[:256]
+        if value:
+            return f"{key}:{value}"
+    protocol = " ".join(str(payload.get("protocol") or "plain").split())[:64]
+    return f"protocol:{protocol or 'plain'}"
 
 
 @tool(
@@ -154,3 +169,19 @@ def recent_turn_texts(*, max_age_seconds: float = 240.0, limit: int = 6) -> list
     cutoff = _time.time() - max_age_seconds
     texts = [str(t["text"]) for t in _RECENT_TURNS if float(t["at"]) >= cutoff]
     return texts[-limit:]
+
+
+def previous_user_turn_text(*, max_age_seconds: float = 240.0) -> str:
+    """The immediately preceding bound user turn, never a process-global guess."""
+
+    import time as _time
+
+    previous = current_turn().get(_PREVIOUS_USER_TURN_KEY)
+    if not isinstance(previous, Mapping):
+        return ""
+    try:
+        if float(previous.get("at") or 0.0) < _time.time() - max_age_seconds:
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    return " ".join(str(previous.get("text") or "").split())

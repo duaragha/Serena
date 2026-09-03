@@ -49,7 +49,9 @@ SCHEMA_VERSION = 1
 CLAIM_MODES = frozenset({"write", "read"})
 CLAIM_STATES = frozenset({"active", "released", "transferred"})
 ISOLATION_MODES = frozenset({"worktree", "shared_fallback"})
-WORKSPACE_STATES = frozenset({"active", "integrated", "abandoned", "blocked"})
+WORKSPACE_STATES = frozenset(
+    {"active", "integrated", "delivered", "abandoned", "blocked"}
+)
 
 MAX_REASON_CHARS = 2_000
 MAX_CLAIM_PATHS = 500
@@ -144,9 +146,32 @@ class IntegrationResult:
     rollback_ref: str = ""
     patch_path: str = ""
     test_gate: dict[str, Any] = field(default_factory=dict)
+    delivery_mode: str = "local_patch"
+    delivery_branch: str = ""
+    delivery_head: str = ""
+    delivery_base: str = ""
+    applied: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedBranchDelivery:
+    """A clean, pushed commit suffix that belongs to a stacked PR branch.
+
+    A dependency branch may legitimately contain files this worker did not
+    author. Fleet must validate the worker's own contiguous commit suffix and
+    record that branch as the delivery instead of copying the dependency into
+    the shared checkout.
+    """
+
+    branch: str
+    head: str
+    base: str
+    remote: str
+    changed_paths: list[str]
+    patch: str
 
 
 def normalise_claim_path(value: object) -> str:
@@ -572,6 +597,7 @@ class FleetIsolationStore:
         worker_key: str,
         state: str,
         rollback_ref: str | None = None,
+        base_head: str | None = None,
         reason: str = "",
     ) -> Workspace:
         clean_state = str(state or "").strip().lower()
@@ -584,7 +610,8 @@ class FleetIsolationStore:
             connection.execute(
                 "UPDATE fleet_workspaces SET state = ?, updated_at = ?, "
                 "integrated_at = CASE WHEN ? = 'integrated' THEN ? ELSE integrated_at END, "
-                "rollback_ref = COALESCE(?, rollback_ref), reason = ? "
+                "rollback_ref = COALESCE(?, rollback_ref), "
+                "base_head = COALESCE(?, base_head), reason = ? "
                 "WHERE run_id = ? AND worker_key = ?",
                 (
                     clean_state,
@@ -592,6 +619,7 @@ class FleetIsolationStore:
                     clean_state,
                     now,
                     rollback_ref,
+                    str(base_head) if base_head else None,
                     _text(reason, MAX_REASON_CHARS),
                     _identifier(run_id, "run_id"),
                     _identifier(worker_key, "worker_key"),
@@ -607,8 +635,9 @@ class FleetIsolationStore:
                 INSERT INTO fleet_integrations(
                     run_id, worker_key, ok, reason, changed_paths_json,
                     unclaimed_paths_json, dirty_conflicts_json, rollback_ref,
-                    patch_path, test_gate_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    patch_path, test_gate_json, delivery_mode, delivery_branch,
+                    delivery_head, delivery_base, applied, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.run_id,
@@ -621,6 +650,11 @@ class FleetIsolationStore:
                     result.rollback_ref,
                     result.patch_path,
                     json.dumps(result.test_gate, separators=(",", ":"), default=str),
+                    result.delivery_mode,
+                    result.delivery_branch,
+                    result.delivery_head,
+                    result.delivery_base,
+                    1 if result.applied else 0,
                     time.time(),
                 ),
             )
@@ -643,6 +677,7 @@ class FleetIsolationStore:
                 with suppress(json.JSONDecodeError, TypeError):
                     entry[key.removesuffix("_json")] = json.loads(str(entry.pop(key) or "[]"))
             entry["ok"] = bool(entry.get("ok"))
+            entry["applied"] = bool(entry.get("applied"))
             entries.append(entry)
         return entries
 
@@ -725,12 +760,35 @@ class FleetIsolationStore:
                     rollback_ref TEXT,
                     patch_path TEXT,
                     test_gate_json TEXT,
+                    delivery_mode TEXT NOT NULL DEFAULT 'local_patch',
+                    delivery_branch TEXT,
+                    delivery_head TEXT,
+                    delivery_base TEXT,
+                    applied INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS fleet_integrations_run_idx
                     ON fleet_integrations(run_id, created_at);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(fleet_integrations)"
+                ).fetchall()
+            }
+            migrations = {
+                "delivery_mode": "TEXT NOT NULL DEFAULT 'local_patch'",
+                "delivery_branch": "TEXT",
+                "delivery_head": "TEXT",
+                "delivery_base": "TEXT",
+                "applied": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for name, declaration in migrations.items():
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE fleet_integrations ADD COLUMN {name} {declaration}"
+                    )
         if os.name != "nt":
             with suppress(OSError):
                 self.path.chmod(0o600)
@@ -757,7 +815,11 @@ def ensure_workspace(
     root = Path(check.repo_root)
     existing = store.get_workspace(run_id, worker_key)
     existing_usable = existing is not None and _workspace_is_usable(existing)
-    if existing is not None and existing.state == "active" and existing_usable:
+    if (
+        existing is not None
+        and existing.state in {"active", "delivered"}
+        and existing_usable
+    ):
         _share_base_venv(root, Path(existing.path))
         return existing
     if existing is not None and existing.state == "blocked" and existing_usable:
@@ -1085,12 +1147,191 @@ def _baseline_commit(
     return commit
 
 
-def workspace_changed_paths(workspace: Workspace) -> list[str]:
-    """Every path this worker actually changed, committed or not."""
+def _workspace_branch(workspace: Workspace) -> str:
+    result = _git(
+        Path(workspace.path),
+        "symbolic-ref",
+        "--quiet",
+        "--short",
+        "HEAD",
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _diff_paths(root: Path, base: str, head: str) -> list[str]:
+    result = _git(
+        root,
+        "diff",
+        "--name-only",
+        "-z",
+        f"{base}..{head}",
+        check=False,
+        text=False,
+    )
+    if result.returncode != 0:
+        raise IsolationError("could not inspect the published branch delta")
+    return sorted(
+        {
+            normalise_claim_path(part.decode("utf-8", errors="surrogateescape"))
+            for part in result.stdout.split(b"\0")
+            if part
+        }
+    )
+
+
+def _published_remote_head(root: Path, branch: str) -> tuple[str, str]:
+    """Return the configured remote and its exact branch head, or fail closed."""
+
+    valid = _git(root, "check-ref-format", "--branch", branch, check=False)
+    if valid.returncode != 0:
+        raise IsolationError("the delivery branch name is not a valid Git branch")
+    remote = _git(root, "config", "--get", f"branch.{branch}.remote", check=False)
+    merge = _git(root, "config", "--get", f"branch.{branch}.merge", check=False)
+    remote_name = remote.stdout.strip()
+    remote_ref = merge.stdout.strip()
+    if not remote_name or remote_name == "." or not remote_ref.startswith("refs/heads/"):
+        raise IsolationError(
+            "a stacked delivery branch must be pushed with an upstream before Fleet accepts it"
+        )
+    environment = dict(os.environ)
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        observed = subprocess.run(
+            ["git", "-C", str(root), "ls-remote", "--heads", remote_name, remote_ref],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=environment,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise IsolationError(f"could not verify the published delivery branch: {error}") from error
+    if observed.returncode != 0:
+        detail = observed.stderr.strip()[:300] or "remote lookup failed"
+        raise IsolationError(f"could not verify the published delivery branch: {detail}")
+    exact = [
+        line.split("\t", 1)[0].strip()
+        for line in observed.stdout.splitlines()
+        if line.rstrip().endswith("\t" + remote_ref)
+    ]
+    if len(exact) != 1:
+        raise IsolationError("the configured upstream branch is not published at the remote")
+    return remote_name, exact[0]
+
+
+def published_branch_delivery(
+    workspace: Workspace,
+    declared_paths: list[str] | tuple[str, ...] | None,
+) -> PublishedBranchDelivery | None:
+    """Validate a pushed non-Fleet branch and isolate its own commit suffix.
+
+    The shortest first-parent suffix whose tree delta exactly matches the
+    worker's declared paths is the worker-owned delivery. This permits a PR to
+    stack on another PR while excluding every dependency commit from both the
+    completion observation and the integration patch.
+    """
+
+    root = Path(workspace.path)
+    if not root.is_dir():
+        return None
+    branch = _workspace_branch(workspace)
+    if not branch or branch == workspace.branch:
+        return None
+    if branch.startswith("serena/fleet/"):
+        raise IsolationError("a switched Fleet branch cannot be treated as external delivery")
+    dirty = [path for path in _dirty_paths(root) if path != ".venv"]
+    if dirty:
+        raise IsolationError(
+            "a stacked delivery branch must be clean before Fleet can verify it: "
+            + ", ".join(dirty[:20])
+        )
+    declared = sorted(
+        {
+            normalise_claim_path(path)
+            for path in (declared_paths or [])
+            if str(path or "").strip()
+        }
+    )
+    if not declared:
+        raise IsolationError(
+            "a stacked delivery branch must declare its exact changed_paths"
+        )
+    head_result = _git(root, "rev-parse", "--verify", "HEAD^{commit}", check=False)
+    head = head_result.stdout.strip()
+    if head_result.returncode != 0 or not head:
+        raise IsolationError("the stacked delivery branch has no valid head commit")
+    history = _git(
+        root,
+        "rev-list",
+        "--first-parent",
+        "--max-count=65",
+        head,
+        check=False,
+    )
+    commits = [line.strip() for line in history.stdout.splitlines() if line.strip()]
+    base = ""
+    for candidate in commits[1:]:
+        if _diff_paths(root, candidate, head) == declared:
+            base = candidate
+            break
+    if not base:
+        raise IsolationError(
+            "the declared changed_paths are not the exact delta of a bounded "
+            "contiguous commit suffix on the stacked branch"
+        )
+    remote, remote_head = _published_remote_head(root, branch)
+    if remote_head != head:
+        raise IsolationError(
+            "the stacked delivery branch is not cleanly published at its current HEAD"
+        )
+    patch_result = _git(
+        root,
+        "diff",
+        "--binary",
+        base,
+        head,
+        "--",
+        *declared,
+        check=False,
+        text=False,
+    )
+    if patch_result.returncode != 0:
+        raise IsolationError("could not produce the stacked delivery patch")
+    patch = bytes(patch_result.stdout or b"").decode(
+        "utf-8", errors="surrogateescape"
+    )
+    if not patch or len(patch) > MAX_PATCH_CHARS:
+        raise IsolationError("the stacked delivery patch is empty or exceeds Fleet's limit")
+    return PublishedBranchDelivery(
+        branch=branch,
+        head=head,
+        base=base,
+        remote=remote,
+        changed_paths=declared,
+        patch=patch,
+    )
+
+
+def workspace_changed_paths(
+    workspace: Workspace,
+    declared_paths: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    """Every path this worker actually changed, committed or not.
+
+    When a worker deliberately leaves its reserved Fleet branch for a pushed
+    stacked PR, only a validated commit suffix may satisfy declared evidence.
+    Without declared paths this retains the broad baseline comparison, which
+    fails closed instead of silently guessing which dependency files are safe.
+    """
 
     root = Path(workspace.path)
     if not root.is_dir():
         return []
+    if declared_paths is not None:
+        delivery = published_branch_delivery(workspace, declared_paths)
+        if delivery is not None:
+            return list(delivery.changed_paths)
     changed: set[str] = set()
     committed = _git(
         root, "diff", "--name-only", "-z", f"{workspace.base_head}..HEAD", check=False, text=False
@@ -1117,7 +1358,7 @@ def unrecovered_workspaces(
 
     blockers: list[dict[str, Any]] = []
     for workspace in store.workspaces(run_id):
-        if workspace.state == "integrated":
+        if workspace.state in {"integrated", "delivered"}:
             continue
         changed = workspace_changed_paths(workspace)
         if changed:
@@ -1333,6 +1574,69 @@ def run_test_gates(
     }
 
 
+_NODE_DEPENDENCY_FILES = frozenset(
+    {
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+    }
+)
+
+
+def dependency_sync_command(
+    root: Path | str, changed_paths: list[str] | tuple[str, ...]
+) -> list[str] | None:
+    """Return a deterministic, script-free install when a Node graph changed.
+
+    Integration applies source and lockfile patches to the combined checkout,
+    but node_modules is intentionally outside git. Running a worker's checks
+    against the old dependency tree can therefore reject correct work or,
+    worse, validate the wrong version. The install is bounded to recognised
+    lockfiles and disables lifecycle scripts; arbitrary package-manager hooks
+    never become part of Fleet's integration authority.
+    """
+
+    checkout = Path(root)
+    changed = {str(path).replace("\\", "/").lstrip("./") for path in changed_paths}
+    if not changed.intersection(_NODE_DEPENDENCY_FILES):
+        return None
+    if not (checkout / "package.json").is_file():
+        return None
+    if (checkout / "package-lock.json").is_file() or (
+        checkout / "npm-shrinkwrap.json"
+    ).is_file():
+        return ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
+    if (checkout / "pnpm-lock.yaml").is_file():
+        return ["pnpm", "install", "--frozen-lockfile", "--ignore-scripts"]
+    if (checkout / "yarn.lock").is_file():
+        return ["yarn", "install", "--immutable", "--mode=skip-builds"]
+    # A manifest-only repository has no reproducible graph for Fleet to trust.
+    # Refuse to invent or rewrite its lockfile during integration.
+    return []
+
+
+def run_dependency_sync(
+    root: Path | str,
+    changed_paths: list[str] | tuple[str, ...],
+    *,
+    timeout: int = 900,
+) -> dict[str, Any]:
+    """Synchronise generated dependency state before merged-tree verification."""
+
+    command = dependency_sync_command(root, changed_paths)
+    if command is None:
+        return {"ran": False, "ok": True, "reason": "dependency graph unchanged"}
+    if not command:
+        return {
+            "ran": False,
+            "ok": False,
+            "reason": "package.json changed without a supported lockfile",
+        }
+    return run_test_gate(root, command, timeout=timeout)
+
+
 @contextmanager
 def repository_integration_lock(cwd: str | Path):
     """Serialize integration for one canonical repository across processes."""
@@ -1363,6 +1667,7 @@ def integrate_workspace(
     cwd: str | Path,
     test_gate: list[str] | None = None,
     declared_tests: list[list[str]] | None = None,
+    declared_paths: list[str] | tuple[str, ...] | None = None,
     apply_changes: bool = True,
 ) -> IntegrationResult:
     """Run the entire integration transaction under the repository mutex."""
@@ -1376,6 +1681,7 @@ def integrate_workspace(
                 cwd=cwd,
                 test_gate=test_gate,
                 declared_tests=declared_tests,
+                declared_paths=declared_paths,
                 apply_changes=apply_changes,
             )
     except RepositoryResolutionError as error:
@@ -1392,6 +1698,7 @@ def _integrate_workspace_locked(
     cwd: str | Path,
     test_gate: list[str] | None = None,
     declared_tests: list[list[str]] | None = None,
+    declared_paths: list[str] | tuple[str, ...] | None = None,
     apply_changes: bool = True,
 ) -> IntegrationResult:
     """Merge one worker's isolated work back, or refuse and say exactly why.
@@ -1412,6 +1719,45 @@ def _integrate_workspace_locked(
     except RepositoryResolutionError as error:
         return IntegrationResult(
             ok=False, run_id=run_id, worker_key=worker_key, reason=str(error)
+        )
+
+    current_branch = _workspace_branch(workspace)
+    if current_branch and current_branch != workspace.branch:
+        try:
+            delivery = published_branch_delivery(workspace, declared_paths)
+        except IsolationError as error:
+            result = IntegrationResult(
+                ok=False,
+                run_id=run_id,
+                worker_key=worker_key,
+                reason=f"refusing switched-branch integration: {error}",
+                delivery_mode="published_branch",
+                delivery_branch=current_branch,
+            )
+            store.record_integration(result)
+            store.mark_workspace(
+                run_id=run_id,
+                worker_key=worker_key,
+                state="blocked",
+                reason=result.reason,
+            )
+            return result
+        if delivery is None:
+            return IntegrationResult(
+                ok=False,
+                run_id=run_id,
+                worker_key=worker_key,
+                reason="the workspace branch changed but no published delivery was provable",
+            )
+        return _accept_published_delivery(
+            store,
+            workspace=workspace,
+            delivery=delivery,
+            run_id=run_id,
+            worker_key=worker_key,
+            test_gate=test_gate,
+            declared_tests=declared_tests,
+            apply_changes=apply_changes,
         )
 
     changed = workspace_changed_paths(workspace)
@@ -1604,16 +1950,27 @@ def _integrate_workspace_locked(
         )
         return result
 
+    dependency_sync = run_dependency_sync(root, changed)
     # An explicitly configured repository gate outranks everything. Otherwise
     # the worker's own declared verification runs against the merged tree, and
     # only a worker that declared nothing runnable falls back to the whitespace
     # check that used to be the entire gate.
-    if test_gate:
+    if not dependency_sync.get("ok", False):
+        gate = {
+            "ran": bool(dependency_sync.get("ran")),
+            "ok": False,
+            "reason": "dependency sync failed before integration verification",
+            "command": dependency_sync.get("command", []),
+            "exit_code": dependency_sync.get("exit_code"),
+            "output_tail": dependency_sync.get("output_tail", ""),
+        }
+    elif test_gate:
         gate = run_test_gate(root, test_gate)
     elif declared_tests:
         gate = run_test_gates(root, declared_tests)
     else:
         gate = run_test_gate(root, ["git", "diff", "--check", "--", *changed])
+    gate["dependency_sync"] = dependency_sync
     if not gate.get("ok", False):
         reverted = subprocess.run(
             ["git", "-C", str(root), "apply", "-R", "-"],
@@ -1624,6 +1981,10 @@ def _integrate_workspace_locked(
         )
         if reverted.returncode != 0:
             _restore_paths(root, captured)
+        # The install may have replaced node_modules before a later check
+        # failed. Restore the dependency tree to the now-restored manifest and
+        # lockfile so the combined checkout cannot poison the next worker.
+        gate["rollback_dependency_sync"] = run_dependency_sync(root, changed)
         result = IntegrationResult(
             ok=False,
             run_id=run_id,
@@ -1653,6 +2014,7 @@ def _integrate_workspace_locked(
         rollback_ref=rollback_ref,
         patch_path=patch_path,
         test_gate=gate,
+        applied=True,
     )
     store.record_integration(result)
     store.mark_workspace(
@@ -1662,6 +2024,162 @@ def _integrate_workspace_locked(
         rollback_ref=rollback_ref or None,
         reason=result.reason,
     )
+    return result
+
+
+def _accept_published_delivery(
+    store: FleetIsolationStore,
+    *,
+    workspace: Workspace,
+    delivery: PublishedBranchDelivery,
+    run_id: str,
+    worker_key: str,
+    test_gate: list[str] | None,
+    declared_tests: list[list[str]] | None,
+    apply_changes: bool,
+) -> IntegrationResult:
+    """Record a pushed stacked branch without applying dependency commits locally."""
+
+    changed = list(delivery.changed_paths)
+    protected = [path for path in changed if is_protected_path(path)]
+    if protected:
+        reason = "refusing a published branch containing protected paths: " + ", ".join(
+            protected[:20]
+        )
+        result = IntegrationResult(
+            ok=False,
+            run_id=run_id,
+            worker_key=worker_key,
+            reason=reason,
+            changed_paths=changed,
+            unclaimed_paths=protected,
+            delivery_mode="published_branch",
+            delivery_branch=delivery.branch,
+            delivery_head=delivery.head,
+            delivery_base=delivery.base,
+        )
+        store.record_integration(result)
+        store.mark_workspace(
+            run_id=run_id, worker_key=worker_key, state="blocked", reason=reason
+        )
+        return result
+    if not store.active_claims(run_id, worker_key=worker_key):
+        reason = "refusing published delivery because the supervisor ownership claim is missing"
+        result = IntegrationResult(
+            ok=False,
+            run_id=run_id,
+            worker_key=worker_key,
+            reason=reason,
+            changed_paths=changed,
+            unclaimed_paths=changed,
+            delivery_mode="published_branch",
+            delivery_branch=delivery.branch,
+            delivery_head=delivery.head,
+            delivery_base=delivery.base,
+        )
+        store.record_integration(result)
+        store.mark_workspace(
+            run_id=run_id, worker_key=worker_key, state="blocked", reason=reason
+        )
+        return result
+    unclaimed = store.unclaimed_paths(
+        run_id=run_id, worker_key=worker_key, paths=changed
+    )
+    patch_path = _persist_patch(store, run_id, worker_key, delivery.patch)
+    if unclaimed or not patch_path:
+        reason = (
+            "refusing published paths this worker never claimed: "
+            + ", ".join(unclaimed[:20])
+            if unclaimed
+            else "could not persist the published delivery patch"
+        )
+        result = IntegrationResult(
+            ok=False,
+            run_id=run_id,
+            worker_key=worker_key,
+            reason=reason,
+            changed_paths=changed,
+            unclaimed_paths=unclaimed,
+            patch_path=patch_path,
+            delivery_mode="published_branch",
+            delivery_branch=delivery.branch,
+            delivery_head=delivery.head,
+            delivery_base=delivery.base,
+        )
+        store.record_integration(result)
+        store.mark_workspace(
+            run_id=run_id, worker_key=worker_key, state="blocked", reason=reason
+        )
+        return result
+    dependency_sync = run_dependency_sync(Path(workspace.path), changed)
+    if not dependency_sync.get("ok", False):
+        gate = {
+            "ran": bool(dependency_sync.get("ran")),
+            "ok": False,
+            "reason": "dependency sync failed before published-branch verification",
+            "command": dependency_sync.get("command", []),
+            "exit_code": dependency_sync.get("exit_code"),
+            "output_tail": dependency_sync.get("output_tail", ""),
+        }
+    elif test_gate:
+        gate = run_test_gate(Path(workspace.path), test_gate)
+    elif declared_tests:
+        gate = run_test_gates(Path(workspace.path), declared_tests)
+    else:
+        gate = run_test_gate(
+            Path(workspace.path),
+            ["git", "diff", "--check", delivery.base, delivery.head, "--", *changed],
+        )
+    gate["dependency_sync"] = dependency_sync
+    if not gate.get("ok", False):
+        reason = "published delivery failed its test gate; the remote branch was left unchanged"
+        result = IntegrationResult(
+            ok=False,
+            run_id=run_id,
+            worker_key=worker_key,
+            reason=reason,
+            changed_paths=changed,
+            patch_path=patch_path,
+            test_gate=gate,
+            delivery_mode="published_branch",
+            delivery_branch=delivery.branch,
+            delivery_head=delivery.head,
+            delivery_base=delivery.base,
+        )
+        store.record_integration(result)
+        store.mark_workspace(
+            run_id=run_id, worker_key=worker_key, state="blocked", reason=reason
+        )
+        return result
+    reason = (
+        "validated a clean published branch delta; dependency commits were not "
+        "applied to the shared checkout"
+    )
+    if not apply_changes:
+        reason = "published branch validation passed in preview mode"
+    result = IntegrationResult(
+        ok=True,
+        run_id=run_id,
+        worker_key=worker_key,
+        reason=reason,
+        changed_paths=changed,
+        patch_path=patch_path,
+        test_gate=gate,
+        delivery_mode="published_branch",
+        delivery_branch=delivery.branch,
+        delivery_head=delivery.head,
+        delivery_base=delivery.base,
+        applied=False,
+    )
+    store.record_integration(result)
+    if apply_changes:
+        store.mark_workspace(
+            run_id=run_id,
+            worker_key=worker_key,
+            state="delivered",
+            base_head=delivery.head,
+            reason=reason,
+        )
     return result
 
 
@@ -1723,7 +2241,11 @@ def cleanup_workspace(
     store.mark_workspace(
         run_id=run_id,
         worker_key=worker_key,
-        state=workspace.state if workspace.state == "integrated" else "abandoned",
+        state=(
+            workspace.state
+            if workspace.state in {"integrated", "delivered"}
+            else "abandoned"
+        ),
         reason="worktree removed",
     )
     return removed.returncode == 0
@@ -1758,10 +2280,15 @@ def _workspace_patch(workspace: Workspace, changed: list[str]) -> str | None:
             *changed,
             env=environment,
             check=False,
+            text=False,
         )
         if diff.returncode != 0:
             return None
-        patch = diff.stdout
+        # Keep CR bytes in patch context. ``text=True`` enables Python's
+        # universal-newline translation and turns CRLF context into LF, after
+        # which plain ``git apply`` rejects an otherwise exact patch. Decode
+        # explicitly so binary patch payloads and quoted paths stay lossless.
+        patch = bytes(diff.stdout or b"").decode("utf-8", errors="surrogateescape")
         return patch if patch and len(patch) <= MAX_PATCH_CHARS else (patch or None)
     finally:
         with suppress(OSError):

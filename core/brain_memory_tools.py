@@ -21,7 +21,7 @@ from pathlib import Path
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from mcp.types import ToolAnnotations
 
-from core.brain_laptop_tools import current_turn, recent_turn_texts
+from core.brain_laptop_tools import current_turn, previous_user_turn_text, recent_turn_texts
 from core.memory_authority import authorize
 
 _BROKERED_WRITE = ToolAnnotations(
@@ -382,23 +382,209 @@ async def review_memory_proposal(args):
 
 @tool(
     "search_memory_v2",
-    "Search approved Memory v2 records with literal and local semantic ranking. "
-    "Returns validity-filtered records plus an explanation of every score and a "
-    "durable receipt identifying exactly what was exposed. Read-only.",
+    "Search the canonical memory authority with local ranking. The compatibility "
+    "name is retained while inactive v2 safely falls back to legacy Markdown. "
+    "Returns record and source ids, score explanations, and a receipt. Read-only.",
     {"query": str, "surface": str},
     annotations=_LOCAL_READ_ONLY,
 )
 async def search_memory_v2(args):
     query = str(args.get("query") or "").strip()
     surface = str(args.get("surface") or "private").strip().lower()
+    previous = previous_user_turn_text()
 
     def _search() -> dict:
-        from memory.v2 import MemoryV2Store
+        from memory.retrieval import retrieve_memory
 
-        return MemoryV2Store().retrieve_with_receipt(query, surface=surface)
+        return retrieve_memory(
+            query,
+            surface=surface,
+            recent_context=(previous,) if previous else (),
+        ).v2_compatibility_dict()
 
     results = await asyncio.to_thread(_search)
     return _text(json.dumps(results, indent=2, sort_keys=True)[:12_000])
+
+
+@tool(
+    "record_memory_feedback",
+    "Record feedback about one record returned by a persisted Memory v2 retrieval "
+    "receipt. Explicit irrelevant/not-relevant feedback creates a reversible ranking "
+    "example only. Explicit factual correction creates a visible proposal for review "
+    "and never changes canonical memory. Intent is verified against the current or "
+    "immediately previous genuine user turn; bare 'wrong' defaults to non-mutating "
+    "relevance feedback. corrected_content is required for factual correction.",
+    {
+        "receipt_id": str,
+        "record_id": str,
+        "corrected_content": str,
+        "reason": str,
+    },
+    annotations=_BROKERED_WRITE,
+)
+async def record_memory_feedback(args):
+    origin = current_turn()
+    previous = previous_user_turn_text()
+    utterances = tuple(
+        value for value in (str(origin.get("text") or ""), previous) if value
+    )
+    grounded_text = " ".join(utterances)
+    corrected_content = str(args.get("corrected_content") or "").strip()
+    from memory.feedback import classify_feedback
+
+    intent = next(
+        (
+            candidate
+            for text in utterances
+            if (candidate := classify_feedback(text, corrected_content=corrected_content))
+            is not None
+        ),
+        None,
+    )
+    if intent is None or intent.kind == "revoke":
+        return _text(
+            _REFUSAL.format(
+                reason="the current conversation did not explicitly mark a returned memory irrelevant or factually wrong"
+            )
+        )
+    if intent.kind == "factual_correction" and not corrected_content:
+        return _text(
+            _REFUSAL.format(
+                reason="a factual correction needs the complete corrected memory for review"
+            )
+        )
+    receipt_id = str(args.get("receipt_id") or "").strip()
+    record_id = str(args.get("record_id") or "").strip()
+    decision = authorize(
+        "record_memory_feedback",
+        origin=origin,
+        destructive=False,
+        detail=f"{receipt_id}:{record_id}",
+        recent_texts=[previous] if previous else [],
+    )
+    if not decision.allowed:
+        return _text(_REFUSAL.format(reason=decision.reason))
+
+    def _record() -> tuple[str, dict]:
+        from memory.v2 import MemoryV2Store, source_receipt
+
+        source = source_receipt(
+            kind="spoken_turn",
+            locator=str(origin.get("turn_id") or origin.get("call_id") or "spoken-turn"),
+            source_text=grounded_text,
+            session_id=str(origin.get("call_id") or ""),
+            surface=str(origin.get("protocol") or "voice"),
+        )
+        source["feedback_classifier_version"] = intent.classifier_version
+        source["feedback_classifier_rule"] = intent.rule
+        store = MemoryV2Store()
+        if intent.kind == "relevance":
+            result = store.record_relevance_feedback(
+                receipt_id,
+                record_id,
+                reason=str(args.get("reason") or grounded_text),
+                source=source,
+            )
+            return "RELEVANCE FEEDBACK RECORDED. Canonical memory unchanged.\n", result
+        result = store.propose_factual_correction(
+            receipt_id,
+            record_id,
+            corrected_content=corrected_content,
+            reason=str(args.get("reason") or grounded_text),
+            source=source,
+        )
+        return "CORRECTION PROPOSED, NOT APPLIED.\n", result
+
+    try:
+        prefix, result = await asyncio.to_thread(_record)
+    except (KeyError, RuntimeError, ValueError) as exc:
+        return _text(_REFUSAL.format(reason=str(exc)))
+    return _text(prefix + json.dumps(result, indent=2, sort_keys=True))
+
+
+@tool(
+    "list_memory_feedback",
+    "List auditable Memory v2 retrieval feedback. Relevance failures and factual "
+    "correction proposals are separate. state may be active or revoked; kind may be "
+    "relevance or factual_correction. Read-only.",
+    {"state": str, "kind": str},
+    annotations=_LOCAL_READ_ONLY,
+)
+async def list_memory_feedback(args):
+    state = str(args.get("state") or "").strip().lower() or None
+    kind = str(args.get("kind") or "").strip().lower() or None
+
+    def _list() -> list[dict]:
+        from memory.v2 import MemoryV2Store
+
+        return MemoryV2Store().retrieval_feedback(state=state, kind=kind, limit=100)
+
+    try:
+        feedback = await asyncio.to_thread(_list)
+    except ValueError as exc:
+        return _text(f"NOT READ. Reason: {exc}.")
+    return _text(json.dumps(feedback, indent=2, sort_keys=True)[:12_000])
+
+
+@tool(
+    "revoke_memory_feedback",
+    "Revoke one relevance-feedback example when the current or immediately previous "
+    "genuine user turn explicitly asks to undo that feedback. The audit row remains. "
+    "Factual corrections are instead accepted or rejected through proposal review.",
+    {"feedback_id": str},
+    annotations=_BROKERED_WRITE,
+)
+async def revoke_memory_feedback(args):
+    origin = current_turn()
+    previous = previous_user_turn_text()
+    utterances = tuple(
+        value for value in (str(origin.get("text") or ""), previous) if value
+    )
+    grounded_text = " ".join(utterances)
+    from memory.feedback import classify_feedback
+
+    intent = next(
+        (
+            candidate
+            for text in utterances
+            if (candidate := classify_feedback(text)) is not None
+        ),
+        None,
+    )
+    if intent is None or intent.kind != "revoke":
+        return _text(
+            _REFUSAL.format(
+                reason="the current conversation did not explicitly ask to revoke relevance feedback"
+            )
+        )
+    feedback_id = str(args.get("feedback_id") or "").strip()
+    decision = authorize(
+        "revoke_memory_feedback",
+        origin=origin,
+        destructive=False,
+        detail=feedback_id,
+        recent_texts=[previous] if previous else [],
+    )
+    if not decision.allowed:
+        return _text(_REFUSAL.format(reason=decision.reason))
+
+    def _revoke() -> dict:
+        from memory.v2 import MemoryV2Store, source_receipt
+
+        source = source_receipt(
+            kind="spoken_turn",
+            locator=str(origin.get("turn_id") or origin.get("call_id") or "spoken-turn"),
+            source_text=grounded_text,
+            session_id=str(origin.get("call_id") or ""),
+            surface=str(origin.get("protocol") or "voice"),
+        )
+        return MemoryV2Store().revoke_relevance_feedback(feedback_id, source=source)
+
+    try:
+        result = await asyncio.to_thread(_revoke)
+    except (KeyError, RuntimeError, ValueError) as exc:
+        return _text(_REFUSAL.format(reason=str(exc)))
+    return _text("RELEVANCE FEEDBACK REVOKED.\n" + json.dumps(result, indent=2, sort_keys=True))
 
 
 @tool(
@@ -523,6 +709,9 @@ MEMORY_TOOLS = (
     list_memory_proposals,
     review_memory_proposal,
     search_memory_v2,
+    record_memory_feedback,
+    list_memory_feedback,
+    revoke_memory_feedback,
     evaluate_memory_v2,
     export_memory_v2,
     migrate_memory_v2,

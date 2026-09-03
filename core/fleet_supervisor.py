@@ -11,11 +11,12 @@ import shlex
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -32,6 +33,7 @@ from core.fleet_capacity import read_fleet_capacity
 from core.fleet_completion import CompletionVerdict, render_evidence_instructions
 from core.fleet_completion_gate import evaluate_leg_completion
 from core.fleet_context import budget_context, redact_text, redact_value
+from core.fleet_contracts import completion_unit_ids
 from core.fleet_policy import (
     PHASE_MODEL_POLICY,
     PHASES,
@@ -73,6 +75,76 @@ _CAPACITY_EXHAUSTION_ERROR = re.compile(
     r"(?:subscription|account) limit (?:has been )?reached)",
     re.IGNORECASE,
 )
+
+_GIB = 1024**3
+_DEFAULT_CODING_DISK_BASE_BYTES = _GIB
+_DEFAULT_CODING_DISK_PER_WORKER_BYTES = _GIB
+_DEFAULT_RESEARCH_DISK_BYTES = _GIB
+_SQLITE_BUSY_RETRY_DELAYS = (0.25, 0.5, 1.0)
+
+
+def _required_disk_headroom(activity: str, worker_count: int) -> int:
+    """Return the minimum free bytes required before a Fleet run is persisted."""
+
+    override = os.environ.get("SERENA_FLEET_MIN_FREE_BYTES", "").strip()
+    if override:
+        try:
+            value = int(override)
+        except ValueError as exc:
+            raise ValueError("SERENA_FLEET_MIN_FREE_BYTES must be an integer") from exc
+        if value < 0:
+            raise ValueError("SERENA_FLEET_MIN_FREE_BYTES cannot be negative")
+        return value
+    if activity == "coding":
+        return _DEFAULT_CODING_DISK_BASE_BYTES + (
+            max(1, int(worker_count)) * _DEFAULT_CODING_DISK_PER_WORKER_BYTES
+        )
+    return _DEFAULT_RESEARCH_DISK_BYTES
+
+
+def _ensure_disk_headroom(cwd: Path, *, activity: str, worker_count: int) -> None:
+    """Fail before dispatch when isolated work would exhaust its filesystem."""
+
+    required = _required_disk_headroom(activity, worker_count)
+    if required == 0:
+        return
+    locations = [cwd, DEFAULT_DB_PATH.parent]
+    checked_devices: set[int] = set()
+    for location in locations:
+        resolved = location.resolve()
+        device = resolved.stat().st_dev
+        if device in checked_devices:
+            continue
+        checked_devices.add(device)
+        free = int(shutil.disk_usage(resolved).free)
+        if free < required:
+            free_gib = free / _GIB
+            required_gib = required / _GIB
+            raise RuntimeError(
+                "Fleet disk preflight refused dispatch: "
+                f"{free_gib:.1f} GiB free at {resolved}, "
+                f"{required_gib:.1f} GiB required for "
+                f"{activity} with {worker_count} worker(s). "
+                "Remove disposable caches or inactive worktree dependencies, "
+                "then retry the same run request."
+            )
+
+
+def _retry_sqlite_busy(operation: Callable[[], Any]) -> Any:
+    """Retry short Fleet control-plane lock collisions before failing a leg."""
+
+    for attempt, delay in enumerate((0.0, *_SQLITE_BUSY_RETRY_DELAYS)):
+        if delay:
+            time.sleep(delay)
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            locked = "database is locked" in str(exc).lower() or (
+                "database table is locked" in str(exc).lower()
+            )
+            if not locked or attempt == len(_SQLITE_BUSY_RETRY_DELAYS):
+                raise
+    raise AssertionError("unreachable SQLite retry loop")
 
 
 def _read_start_capacity() -> dict[str, Any]:
@@ -149,6 +221,12 @@ def start_run(
         worker_count=worker_count,
         provider_capacity=capacity,
     )
+    if not dry_run:
+        _ensure_disk_headroom(
+            resolved_cwd,
+            activity=resolved_activity,
+            worker_count=policy.scaling.selected_workers,
+        )
     resolved_origin_id, resolved_origin_agent = _resolve_origin(
         origin_session_id,
         origin_agent,
@@ -187,10 +265,18 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     return None
 
 
-def stop_run(run_id: str) -> dict[str, Any]:
-    """Request cooperative stop. Streaming workers observe it within 250ms."""
+def stop_run(run_id: str, *, force: bool = False) -> dict[str, Any]:
+    """Request cooperative stop. Streaming workers observe it within 250ms.
 
-    return _store().request_cancel(_require_id(run_id))
+    ``force`` is the way out of a run whose supervisor is alive but wedged, so
+    it can neither converge the cancel nor be retried. It refuses while any
+    worker is alive and until the run has gone quiet.
+    """
+
+    clean = _require_id(run_id)
+    if force:
+        return _store().force_cancel_run(clean)
+    return _store().request_cancel(clean)
 
 
 def delete_run(run_id: str) -> dict[str, Any]:
@@ -394,7 +480,11 @@ def inspect_run(run_id: str, focus: str = "", *, event_limit: int = 100) -> dict
         ]
         if not units and not workers:
             raise KeyError(f"unknown Fleet focus {wanted}")
-    events = store.events(clean_id, limit=min(500, max(1, int(event_limit))))
+    events = store.events(
+        clean_id,
+        limit=min(500, max(1, int(event_limit))),
+        latest=True,
+    )
     projection = {
         "run_id": clean_id,
         "state": run.get("state"),
@@ -813,6 +903,29 @@ def run_supervisor(run_id: str) -> dict[str, Any]:
             current_policy.to_dict(),
             control_message=PARALLELIZE_CONTROL_MESSAGE,
         )
+    stale_modules = _stale_fleet_modules()
+    if stale_modules:
+        # Third incident from this cause: a resident supervisor keeps serving a
+        # run with the gate and policy it imported at boot, so a fix on disk is
+        # not a fix in the process. The failures then look like worker bugs,
+        # which is where two days of debugging went. Say it plainly instead.
+        detail = ", ".join(stale_modules[:6])
+        with suppress(Exception):
+            store.append_event(
+                clean_id,
+                "supervisor.stale_code",
+                {"modules": stale_modules[:20], "started_at": _PROCESS_STARTED_AT},
+            )
+        return _terminal_outcome(
+            store,
+            store.fail_run(
+                clean_id,
+                "the Fleet supervisor is running code older than what is on disk "
+                f"({detail}). Restart it with `systemctl --user restart "
+                "serena-fleet.service`, then retry this run. Nothing was "
+                "dispatched, so no worker time was spent.",
+            ),
+        )
     if not store.claim_run(clean_id):
         return store.get_run(clean_id) or existing
     run = store.get_run(clean_id)
@@ -860,6 +973,40 @@ def run_supervisor(run_id: str) -> dict[str, Any]:
         if current and current["cancel_requested"]:
             return _terminal_outcome(store, store.cancel_run(clean_id))
         return _terminal_outcome(store, store.fail_run(clean_id, str(exc)))
+
+
+_PROCESS_STARTED_AT = time.time()
+
+
+def _stale_fleet_modules() -> list[str]:
+    """Fleet source files that changed after this process imported them.
+
+    A resident supervisor holds its modules for the life of the process, so
+    editing the gate on disk does nothing to a running daemon. Comparing the
+    files it actually loaded against their current mtime is enough to know, and
+    it costs one stat per module.
+    """
+
+    if os.environ.get("SERENA_FLEET_ALLOW_STALE_CODE", "").strip().lower() in {
+        "1",
+        "true",
+        "on",
+    }:
+        return []
+    stale: list[str] = []
+    for name, module in list(sys.modules.items()):
+        if not name.startswith("core.fleet"):
+            continue
+        source = getattr(module, "__file__", "") or ""
+        if not source.endswith(".py"):
+            continue
+        try:
+            changed_at = os.stat(source).st_mtime
+        except OSError:
+            continue
+        if changed_at > _PROCESS_STARTED_AT:
+            stale.append(Path(source).name)
+    return sorted(set(stale))
 
 
 def _refresh_read_mcp_catalog(store: FleetStore, run_id: str) -> None:
@@ -914,6 +1061,19 @@ def _run_work_unit_scheduler(
             if snapshot is None:
                 raise KeyError(f"unknown Fleet run {run_id}")
 
+            if snapshot["state"] in TERMINAL_RUN_STATES:
+                if running:
+                    done, _pending = wait_for_futures(
+                        set(running),
+                        timeout=POLL_SECONDS,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    for future in done:
+                        running.pop(future)
+                        future.result()
+                    continue
+                return _terminal_outcome(store, snapshot)
+
             if store.run_cancel_requested(run_id):
                 if running:
                     wait_for_futures(set(running))
@@ -926,6 +1086,8 @@ def _run_work_unit_scheduler(
 
             snapshot = store.get_run(run_id)
             assert snapshot is not None
+            if snapshot["state"] in TERMINAL_RUN_STATES:
+                continue
             if _isolation_enabled():
                 _release_orphaned_write_claims(store, snapshot)
             for phase in snapshot["phases"]:
@@ -947,6 +1109,9 @@ def _run_work_unit_scheduler(
 
             running_leg_ids = {
                 str(leg.get("leg_id") or "") for leg in running.values()
+            }
+            running_worker_keys = {
+                _worker_key(leg) for leg in running.values() if _worker_key(leg)
             }
             running_writers = sum(
                 1 for leg in running.values() if leg.get("access_mode") == "write"
@@ -984,6 +1149,20 @@ def _run_work_unit_scheduler(
                 if scheduled >= slots:
                     break
                 phase_index = int(leg["phase_index"])
+                worker_key = _worker_key(leg)
+                # Rotated Review advances the target unit, but it is still the
+                # reviewer's next turn. Keep each durable worker in phase order
+                # and never let two turns for the same worker run concurrently.
+                # Without both checks a fast target could launch Agent A's
+                # Review before Agent A had finished Research or Code.
+                if worker_key in running_worker_keys or any(
+                    _worker_key(prior_leg) == worker_key
+                    and str(prior_leg.get("state") or "") != "completed"
+                    for prior_phase in snapshot["phases"]
+                    if int(prior_phase["index"]) < phase_index
+                    for prior_leg in prior_phase["legs"]
+                ):
+                    continue
                 if (
                     leg["phase_execution"] == "sequential"
                     and phase_index in running_phase_indexes
@@ -1010,6 +1189,7 @@ def _run_work_unit_scheduler(
                 future = pool.submit(_execute_leg, store, run_id, leg)
                 running[future] = leg
                 running_phase_indexes.add(phase_index)
+                running_worker_keys.add(worker_key)
                 if leg.get("access_mode") == "write":
                     running_writers += 1
                     active_writer_legs.append(leg)
@@ -1889,6 +2069,7 @@ def _integrate_completed_workspace(
     leg: dict[str, Any],
     attempt: dict[str, Any],
     declared_tests: list[list[str]] | None = None,
+    declared_paths: list[str] | None = None,
 ) -> Any:
     """Queue one completed writer and wait for stable phase-order integration."""
 
@@ -1926,6 +2107,7 @@ def _integrate_completed_workspace(
             cwd=str(snapshot["cwd"]),
             test_gate=_integration_test_gate(),
             declared_tests=declared_tests,
+            declared_paths=declared_paths,
         )
         with suppress(Exception):
             store.append_event(
@@ -1947,6 +2129,7 @@ def _integrate_completed_workspace(
         "phase_name": phase_name,
         "cwd": str(snapshot["cwd"]),
         "declared_tests": declared_tests,
+        "declared_paths": declared_paths,
         "result": None,
         "error": None,
     }
@@ -2043,6 +2226,7 @@ def _drain_pending_integrations_locked(
                 cwd=str(current["cwd"]),
                 test_gate=_integration_test_gate(),
                 declared_tests=current.get("declared_tests"),
+                declared_paths=current.get("declared_paths"),
             )
             current["result"] = integration
             with suppress(Exception):
@@ -2156,17 +2340,17 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
     skipped = _skip_finalize_leg(store, run_id, leg)
     if skipped is not None:
         return skipped
-    supervision = FleetSupervisionStore(store.path)
-    supervision.reconcile_run(run_id)
-    supervision.fence_expired_leg(leg["leg_id"])
-    attempt = store.begin_attempt(leg["leg_id"])
+    supervision = _retry_sqlite_busy(lambda: FleetSupervisionStore(store.path))
+    _retry_sqlite_busy(lambda: supervision.reconcile_run(run_id))
+    _retry_sqlite_busy(lambda: supervision.fence_expired_leg(leg["leg_id"]))
+    attempt = _retry_sqlite_busy(lambda: store.begin_attempt(leg["leg_id"]))
     live: dict[str, Any] = {
         "pid": None,
         "session_id": attempt.get("resume_session_id"),
         "surfaced_session_id": None,
     }
     try:
-        lease = supervision.acquire(attempt["attempt_id"])
+        lease = _retry_sqlite_busy(lambda: supervision.acquire(attempt["attempt_id"]))
     except Exception as exc:
         result = WorkerResult(False, "", live.get("session_id"), None, None, -1, str(exc))
         store.finish_attempt(
@@ -2429,6 +2613,17 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
                 attempt,
                 declared_tests=_declared_integration_tests(
                     result.output_text, str(snapshot["cwd"])
+                ),
+                declared_paths=(
+                    sorted(
+                        {
+                            path
+                            for unit in (verdict.units if verdict is not None else ())
+                            for path in unit.changed_paths
+                        }
+                    )
+                    if verdict is not None
+                    else None
                 ),
             )
             if not integration.ok:
@@ -3004,7 +3199,7 @@ def _work_unit_contract_block(
     # it, so the worker is never gated on a rule it was not given.
     instructions = render_evidence_instructions(
         raw_units,
-        own_ids,
+        completion_unit_ids(leg, phase),
         access_mode=str(leg.get("access_mode") or "read"),
         phase=phase,
     )
@@ -3015,6 +3210,53 @@ def _work_unit_contract_block(
         + "\n\n".join(criteria)
         + ("\n\n" + instructions if instructions else "")
     )
+
+
+def _review_target_readiness_failure(
+    run: dict[str, Any],
+    leg: dict[str, Any],
+    attempt: dict[str, Any],
+) -> str:
+    """Fail closed when a rotated Review predates its target Code receipt."""
+
+    if str(leg.get("phase") or "") != "verify":
+        return ""
+    targets = _string_list(leg.get("review_target_ids"))
+    if not targets:
+        return ""
+    try:
+        review_started = float(attempt.get("started_at"))
+    except (TypeError, ValueError):
+        return "Review attempt has no trustworthy start timestamp"
+
+    execute_legs = [
+        item
+        for phase in run.get("phases") or []
+        if str(phase.get("name") or "") == "execute"
+        for item in phase.get("legs") or []
+    ]
+    for target in targets:
+        target_leg = next(
+            (
+                item
+                for item in execute_legs
+                if target in _string_list(item.get("assignment_ids"))
+            ),
+            None,
+        )
+        current = target_leg.get("current_attempt") if target_leg else None
+        if not isinstance(current, dict) or str(current.get("state") or "") != "completed":
+            return f"Review target {target} did not have a completed Code attempt at dispatch"
+        try:
+            code_completed = float(current.get("completed_at"))
+        except (TypeError, ValueError):
+            return f"Review target {target} has no trustworthy Code completion timestamp"
+        if code_completed > review_started:
+            return (
+                f"Review started before target {target} Code completed; "
+                "the immutable context receipt is stale"
+            )
+    return ""
 
 
 def _completion_verdict(
@@ -3033,6 +3275,23 @@ def _completion_verdict(
     """
 
     run_id = str(run.get("run_id") or "")
+    readiness_failure = _review_target_readiness_failure(run, leg, attempt)
+    if readiness_failure:
+        with suppress(Exception):
+            store.append_event(
+                run_id,
+                "leg.review_target_not_ready",
+                {"error": readiness_failure[:1_000], "retryable": True},
+                leg_id=leg["leg_id"],
+                attempt_id=attempt["attempt_id"],
+            )
+        return CompletionVerdict(
+            accepted=False,
+            enforced=True,
+            reason="review target Code output was not ready before dispatch",
+            envelope_present=False,
+            failures=(readiness_failure[:400],),
+        )
     try:
         verdict = evaluate_leg_completion(
             run,
@@ -3060,17 +3319,24 @@ def _completion_verdict(
     if not verdict.enforced:
         return verdict
     with suppress(Exception):
+        event_type = (
+            "leg.completion_evidence_stopped"
+            if verdict.terminal_stop
+            else "leg.completion_evidence_accepted"
+            if verdict.accepted
+            else "leg.completion_evidence_rejected"
+        )
         store.append_event(
             run_id,
-            "leg.completion_evidence_accepted"
-            if verdict.accepted
-            else "leg.completion_evidence_rejected",
+            event_type,
             {
                 "accepted": verdict.accepted,
+                "completion_allowed": verdict.completion_allowed,
+                "terminal_stop": verdict.terminal_stop,
                 "reason": verdict.reason,
                 "failures": list(verdict.failures[:12]),
                 "units": [unit.to_dict() for unit in verdict.units],
-                "retryable": True,
+                "retryable": not verdict.terminal_stop,
             },
             leg_id=leg["leg_id"],
             attempt_id=attempt["attempt_id"],
@@ -3196,9 +3462,29 @@ def _worker_prompt(
         ),
         "review": review_access,
         "verify": "Verify independently with relevant tests and inspection. Do not intentionally edit source files.",
-        "read_only": "Work read-only. Do not edit files or change external state.",
+        "read_only": (
+            "Work read-only. Do not edit files or change external state. This boundary applies "
+            "only to the current Research phase: implementation belongs to the later Code phase. "
+            "Never stop or block merely because this phase cannot write, commit, push, comment, "
+            "or mutate external state. Complete the research and implementation handoff with the "
+            "best available checkout, peer, and authenticated read evidence; record any genuinely "
+            "unavailable source as a limitation rather than treating phase separation as failure."
+        ),
     }[leg["access_mode"]]
     read_mcp = read_mcp_prompt_block(str(leg["access_mode"]))
+    # A worker whose phase moved it to the other provider starts in a session
+    # that saw none of the earlier work. Say so, and point it at the read map
+    # instead of letting it rediscover the checkout from scratch.
+    fresh_session_note = (
+        ""
+        if attempt.get("resume_session_id")
+        else (
+            "\nThis is a fresh session: nothing above happened in your context. "
+            "Use the prior phase's 'Read map' to open the exact regions it names "
+            "instead of searching the repository for them again. Re-read a file "
+            "before you change it, but do not redo the survey work already done."
+        )
+    )
     handoff_context = attempt.get("handoff_context") or {}
     if attempt.get("resume_kind") == "provider_handoff":
         source_provider = _clean_inline(handoff_context.get("provider"), limit=32) or "previous"
@@ -3285,7 +3571,7 @@ def _worker_prompt(
     )
     review_evidence_contract = ""
     if phase == "verify":
-        owned = ", ".join(assignment_ids) or "(shared)"
+        reviewed = ", ".join(completion_unit_ids(leg, phase)) or "(shared)"
         review_evidence_contract = (
             "\nReview evidence scope:\n"
             "- Inspect the rotated review targets above and report their findings in prose.\n"
@@ -3294,8 +3580,8 @@ def _worker_prompt(
             "(blocker, major, or minor), summary, and evidence. Report an empty "
             "list when you found nothing; Fleet routes these to the Fix phase and "
             "skips a fixer with nothing to fix.\n"
-            f"- The completion envelope must contain only your Assignment ids: {owned}.\n"
-            "- Never substitute review_target_ids for assignment_ids and never omit the "
+            f"- The completion envelope must contain only the reviewed unit ids: {reviewed}.\n"
+            "- Never substitute your owned assignment_ids for the reviewed unit ids and never omit the "
             "completion envelope, even when there are no findings.\n"
             "- Review is read-only, so report no changed paths.\n"
             "- You may rely on machine-accepted test receipts from the completed Code "
@@ -3343,6 +3629,10 @@ Hard constraints:
 - Fleet's supervisor owns path claims. Never edit Fleet databases or register/release claims yourself.
 - Preserve unrelated dirty work.
 - Never claim a model or test result you did not actually verify.
+- Never use pkill, killall, or pattern-based process termination. Record the exact PID or process group for any process you start and stop only that exact process.
+- Never block on one sleep or wait longer than 60 seconds; use bounded polling so the run remains observable.
+- After pushing a branch, read remote CI once. If checks are still pending, record that exact state and finish the leg; never sleep or poll waiting for hosted CI, and never rerun an unchanged full local gate solely to duplicate an existing receipt.
+- For a background server, verify the actual listener or surviving child process group after launch. Package-manager wrappers can exit or reparent children, so after stopping the recorded group, prove that every process and listener you started is gone; if a child survived, resolve and stop only its exact PID or process group.
 {workspace_constraint}- {access}
 - {resume}
 
@@ -3386,6 +3676,7 @@ Steering received for future work:
 
 Prior-phase peer outputs (the collaboration barrier):
 {context or "(no earlier phase output)"}
+{fresh_session_note}
 
 Provider handoff context:
 {handoff_block}
@@ -3425,25 +3716,31 @@ def _role_contract(
     solo: bool = False,
     research_depth: str = "full",
 ) -> str:
-    # The prompt must ask for exactly what the completion gate enforces. Telling
-    # a worker to run extensive external research while the gate accepts a
-    # proportionate receipt just buys search turns nothing reads.
-    proportionate = str(research_depth or "full").lower() == "proportionate"
+    # Kept in the signature for persisted-call compatibility. Full online
+    # research is now the only mandate, including legacy retries.
+    del research_depth
+    # The phase matrix moves every agent to a different provider between phases,
+    # so Code starts in a session that never saw Research. Prose alone makes it
+    # search the repository again for things Research already located, which was
+    # the single largest input-token cost measured on a real Research leg. The
+    # read map turns that rediscovery into a lookup.
+    read_map = (
+        "\n\nEnd your report with a section headed 'Read map': one line per file "
+        "region you actually opened, as `path:start-end` followed by what is "
+        "there and why the next phase will care. This is mandatory. The worker "
+        "that implements this unit runs on a different provider in a fresh "
+        "session and cannot see anything you did, so an unlisted file is a file "
+        "it has to hunt for again."
+    )
     coding_discovery = (
-        "Research the codebase, constraints, and risks without editing. Ground this work "
-        "unit in the checkout first: read the real code paths, tests, and history it "
-        "touches. Consult external sources only where the answer genuinely lives outside "
-        "this repository, and cite what you use. Produce attributable evidence and a "
-        "concrete implementation plan."
-        if proportionate
-        else "Research the codebase, constraints, and risks without editing. Also perform "
+        "Research the codebase, constraints, and risks without editing. Also perform "
         "extensive current online research for this exact work unit: official guidance, "
         "best practices, recent technology, alternatives, and known failure modes. "
         "Produce attributable evidence and a concrete implementation plan."
     )
     if activity == "coding":
         contracts = {
-            "discover": coding_discovery,
+            "discover": coding_discovery + read_map,
             "execute": "Code your assigned implementation slice now, using the prior-phase team handoff. Do not turn this phase into review-only work.",
             "verify": (
                 "Review your completed implementation in a distinct self-review pass. Give numbered "
@@ -3461,7 +3758,8 @@ def _role_contract(
                 "external state. Perform extensive current online research for this exact work "
                 "unit, including official guidance, best practices, recent technology, "
                 "alternatives, and known failure modes."
-            ),
+            )
+            + read_map,
             "execute": "Develop a rigorous answer from the gathered evidence in your response, using the prior-phase team handoff.",
             "verify": "Review claims and sources independently; report unsupported or overstated conclusions without editing files.",
             "finalize": "Refine the deliverable using the prior reviews and state remaining uncertainty precisely.",

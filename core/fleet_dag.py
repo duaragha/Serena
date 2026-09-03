@@ -13,6 +13,8 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
+from core.fleet_contracts import completion_unit_ids
+
 UNIT_TERMINAL_STATES = frozenset(
     {"completed", "failed", "blocked_dependency_failed", "cancelled"}
 )
@@ -166,7 +168,11 @@ def materialize_run(
         for ordinal, worker in enumerate(workers):
             if not isinstance(worker, dict) or ordinal not in leg_by_ordinal:
                 continue
-            for raw_id in worker.get("assignment_ids") or []:
+            # Review is rotated: the reviewer leg advances the target unit,
+            # not the reviewer's own implementation unit. This makes Review
+            # wait for the code it actually inspects and makes Fix wait for
+            # the peer review that can raise findings against it.
+            for raw_id in completion_unit_ids(worker, phase_name):
                 unit_id = str(raw_id).strip()
                 if not unit_id:
                     continue
@@ -189,6 +195,125 @@ def materialize_run(
                 )
                 inserted += 1
     return inserted
+
+
+def repair_review_phase_ownership(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    policy: dict[str, Any],
+    now: float | None = None,
+) -> list[str]:
+    """Remap legacy Review rows onto the units they actually review.
+
+    Early executor snapshots persisted every phase against the worker's owned
+    assignment. Review is rotated, so that let a reviewer run before the peer
+    Code output existed and then advanced the wrong unit into Fix. New runs are
+    materialized correctly by :func:`materialize_run`; this repairs an older
+    terminal run immediately before an exact retry.
+
+    The swap is refused while any Review leg is running. A retry already
+    refuses live worker processes, so callers can treat a non-empty result as a
+    complete atomic remap.
+    """
+
+    phases = policy.get("phases") if isinstance(policy, dict) else None
+    if not isinstance(phases, list):
+        return []
+    review = next(
+        (
+            item
+            for item in phases
+            if isinstance(item, dict) and str(item.get("name") or "") == "verify"
+        ),
+        None,
+    )
+    if review is None:
+        return []
+    phase_index = int(review.get("index") or 0)
+    workers = review.get("workers")
+    if not isinstance(workers, list) or not workers:
+        return []
+
+    legs = connection.execute(
+        "SELECT leg_id, ordinal, state FROM fleet_legs "
+        "WHERE run_id = ? AND phase_index = ? ORDER BY ordinal",
+        (run_id, phase_index),
+    ).fetchall()
+    leg_by_ordinal = {int(row["ordinal"]): str(row["leg_id"]) for row in legs}
+    if any(str(row["state"] or "") == "running" for row in legs):
+        return []
+
+    expected: list[tuple[str, str]] = []
+    for ordinal, worker in enumerate(workers):
+        if not isinstance(worker, dict) or ordinal not in leg_by_ordinal:
+            continue
+        for raw_id in completion_unit_ids(worker, "verify"):
+            unit_id = str(raw_id).strip()
+            if unit_id:
+                expected.append((unit_id, leg_by_ordinal[ordinal]))
+    if not expected:
+        return []
+    expected_units = [unit_id for unit_id, _leg_id in expected]
+    if len(expected_units) != len(set(expected_units)):
+        raise ValueError("Review policy maps more than one reviewer onto the same work unit")
+
+    rows = connection.execute(
+        "SELECT * FROM fleet_work_unit_phases "
+        "WHERE run_id = ? AND phase_index = ? ORDER BY unit_id",
+        (run_id, phase_index),
+    ).fetchall()
+    actual = {(str(row["unit_id"]), str(row["leg_id"])) for row in rows}
+    if actual == set(expected):
+        return []
+    if any(str(row["state"] or "") == "running" for row in rows):
+        return []
+
+    known_units = {
+        str(row["unit_id"])
+        for row in connection.execute(
+            "SELECT unit_id FROM fleet_work_units WHERE run_id = ?", (run_id,)
+        ).fetchall()
+    }
+    if set(expected_units) - known_units:
+        raise ValueError("Review policy references a work unit that was not materialized")
+    templates: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        templates.setdefault(str(row["leg_id"]), row)
+    missing = {leg_id for _unit_id, leg_id in expected} - set(templates)
+    if missing:
+        raise ValueError("Legacy Review phase is missing persisted worker rows")
+
+    at = float(time.time() if now is None else now)
+    connection.execute(
+        "DELETE FROM fleet_work_unit_phases WHERE run_id = ? AND phase_index = ?",
+        (run_id, phase_index),
+    )
+    for unit_id, leg_id in expected:
+        row = templates[leg_id]
+        connection.execute(
+            """
+            INSERT INTO fleet_work_unit_phases(
+                run_id, unit_id, phase_index, phase, leg_id, state, attempt_id,
+                blocked_by_json, failure_reason, started_at, completed_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                unit_id,
+                phase_index,
+                "verify",
+                leg_id,
+                str(row["state"]),
+                row["attempt_id"],
+                str(row["blocked_by_json"] or "[]"),
+                row["failure_reason"],
+                row["started_at"],
+                row["completed_at"],
+                at,
+            ),
+        )
+    return sorted({leg_id for _unit_id, leg_id in expected})
 
 
 def backfill_runs(connection: sqlite3.Connection) -> int:
@@ -307,6 +432,28 @@ def prepare_phase(
         hard_blocked = [unit_id for unit_id in unit_ids if unit_id in blocked_units]
         waiting = [unit_id for unit_id in unit_ids if unit_id in waiting_units]
         stored_leg_state = str(leg_records[0]["leg_state"] or "")
+        # A terminal leg is the durable source of truth for the phase it ran.
+        # A stale dependency reconciliation used to be able to overwrite the
+        # work-unit projection back to waiting after finish_attempt() had
+        # completed the leg. The scheduler would then see no runnable leg (the
+        # leg was already completed) and eventually fail the whole run with
+        # "phase did not complete". Heal that projection before considering
+        # dependency state, and never regress completed work.
+        if stored_leg_state == "completed":
+            attempt = connection.execute(
+                "SELECT attempt_id, error FROM fleet_attempts "
+                "WHERE leg_id = ? ORDER BY attempt_number DESC LIMIT 1",
+                (leg_id,),
+            ).fetchone()
+            mark_leg_finished(
+                connection,
+                leg_id=leg_id,
+                attempt_id=str(attempt["attempt_id"] if attempt is not None else ""),
+                state="completed",
+                error=str(attempt["error"] or "") if attempt is not None else None,
+                now=at,
+            )
+            continue
         dependency_block_only = all(
             str(record["state"])
             in {"blocked_dependency_failed", "waiting_for_dependencies"}
@@ -497,7 +644,8 @@ def mark_leg_finished(
         connection.execute(
             """
             UPDATE fleet_work_unit_phases
-            SET state = ?, attempt_id = ?, failure_reason = ?, completed_at = ?, updated_at = ?
+            SET state = ?, attempt_id = ?, blocked_by_json = '[]',
+                failure_reason = ?, completed_at = ?, updated_at = ?
             WHERE run_id = ? AND unit_id = ? AND phase_index = ?
             """,
             (
@@ -590,8 +738,10 @@ def reset_leg_for_retry(
     *,
     leg_id: str,
     now: float | None = None,
+    include_completed: bool = False,
+    reset_completed_descendants: bool = False,
 ) -> int:
-    """Reset a failed unit and its later phases without touching healthy siblings."""
+    """Reset one unit chain without replaying later phases already completed."""
 
     at = float(time.time() if now is None else now)
     rows = connection.execute(
@@ -610,7 +760,7 @@ def reset_leg_for_retry(
         start_index = int(row["phase_index"])
         phases = connection.execute(
             """
-            SELECT phase_index, leg_id
+            SELECT phase_index, leg_id, state
             FROM fleet_work_unit_phases
             WHERE run_id = ? AND unit_id = ? AND phase_index >= ?
             ORDER BY phase_index
@@ -619,6 +769,14 @@ def reset_leg_for_retry(
         ).fetchall()
         for phase in phases:
             index = int(phase["phase_index"])
+            was_completed = str(phase["state"] or "") == "completed"
+            reset_completed = (
+                include_completed and index == start_index
+            ) or (
+                reset_completed_descendants and index > start_index
+            )
+            if was_completed and not reset_completed:
+                continue
             connection.execute(
                 """
                 UPDATE fleet_work_unit_phases
@@ -638,12 +796,13 @@ def reset_leg_for_retry(
             connection.execute(
                 """
                 UPDATE fleet_legs SET state = ?, updated_at = ?
-                WHERE leg_id = ? AND state != 'completed'
+                WHERE leg_id = ? AND (state != 'completed' OR ?)
                 """,
                 (
                     "queued" if index == start_index else "waiting_for_dependencies",
                     at,
                     str(phase["leg_id"]),
+                    int(bool(reset_completed)),
                 ),
             )
         connection.execute(
@@ -680,7 +839,10 @@ def project_run(connection: sqlite3.Connection, run_id: str) -> list[dict[str, A
     evidence_rows = connection.execute(
         """
         SELECT attempt_id, payload_json FROM fleet_events
-        WHERE run_id = ? AND type = 'leg.completion_evidence_accepted'
+        WHERE run_id = ? AND type IN (
+            'leg.completion_evidence_accepted',
+            'leg.completion_evidence_stopped'
+        )
           AND attempt_id IS NOT NULL
         ORDER BY event_seq
         """,

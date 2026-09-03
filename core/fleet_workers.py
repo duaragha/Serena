@@ -25,6 +25,8 @@ from core.fleet_read_mcp import codex_flags as codex_read_mcp_flags
 
 MAX_EVENT_LINE_BYTES = 1024 * 1024
 MAX_CAPTURE_BYTES = 8 * 1024 * 1024
+MAX_TRUNCATED_EVENT_PREVIEW_CHARS = 8_000
+MAX_TRUNCATED_EVENT_RECEIPT_CHARS = 64_000
 DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60
 DEFAULT_EXIT_DRAIN_SECONDS = 2.0
 DEFAULT_STATE_DIR = Path.home() / ".local" / "state" / "serena" / "fleet"
@@ -608,6 +610,8 @@ def _stream_process(
         open_pipes = len(readers)
         stderr_parts: list[str] = []
         captured_bytes = 0
+        capture_limit_reported = False
+        event_line_limit_reported = False
         cancelled = False
         timed_out = False
         with log_path.open("a", encoding="utf-8") as log:
@@ -638,32 +642,55 @@ def _stream_process(
                     open_pipes -= 1
                     continue
                 encoded_size = len(line.encode("utf-8", errors="replace"))
+                clean_line = line.rstrip("\n")
                 if encoded_size > MAX_EVENT_LINE_BYTES:
-                    _terminate_process_group(process)
-                    stderr_parts.append("worker emitted an oversized event")
-                    continue
-                captured_bytes += encoded_size
-                if captured_bytes > MAX_CAPTURE_BYTES:
-                    _terminate_process_group(process)
-                    stderr_parts.append("worker output exceeded the Fleet capture limit")
-                    continue
-                log.write(
-                    json.dumps(
-                        {
-                            "at": time.time(),
-                            "stream": source,
-                            "line": redact_text(line.rstrip("\n"))[0],
-                        },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    + "\n"
+                    # Provider stream-json includes complete tool results in one
+                    # JSON line.  A verbose read or test can therefore cross the
+                    # log safety bound even though the worker is healthy.  Keep
+                    # parsing the original event, but persist only a bounded,
+                    # valid JSON receipt instead of killing the process.
+                    log_line = _truncated_event_receipt(clean_line, encoded_size)
+                    if not event_line_limit_reported:
+                        event_line_limit_reported = True
+                        on_event(
+                            "process.output_truncated",
+                            {
+                                "source": source,
+                                "reason": "event_line_limit",
+                                "original_bytes": encoded_size,
+                                "logged_as_receipt": True,
+                            },
+                        )
+                else:
+                    log_line = redact_text(clean_line)[0]
+                record = json.dumps(
+                    {"at": time.time(), "stream": source, "line": log_line},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 )
-                log.flush()
+                record_bytes = len(record.encode("utf-8", errors="replace")) + 1
+                if captured_bytes + record_bytes <= MAX_CAPTURE_BYTES:
+                    log.write(record + "\n")
+                    log.flush()
+                    captured_bytes += record_bytes
+                elif not capture_limit_reported:
+                    # The capture limit bounds Fleet-owned diagnostics, not the
+                    # provider turn itself.  Parsing must continue so a noisy
+                    # tool cannot turn a successful worker into a failed leg.
+                    capture_limit_reported = True
+                    on_event(
+                        "process.output_truncated",
+                        {
+                            "source": source,
+                            "reason": "capture_limit",
+                            "capture_limit_bytes": MAX_CAPTURE_BYTES,
+                            "logged_as_receipt": False,
+                        },
+                    )
                 if source == "stdout":
                     parse_stdout(line)
                 else:
-                    stderr_parts.append(line)
+                    stderr_parts.append(line[-8_000:])
         with suppress(subprocess.TimeoutExpired):
             process.wait(timeout=5)
         if process.poll() is None:
@@ -849,6 +876,136 @@ def _event_summary(event: dict[str, Any]) -> dict[str, Any]:
         if model:
             summary["model"] = model
     return summary
+
+
+def _truncated_event_receipt(line: str, original_bytes: int) -> str:
+    """Return bounded, valid JSON evidence for one oversized provider event."""
+
+    try:
+        event = json.loads(line)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        event = None
+    if not isinstance(event, dict):
+        preview = redact_text(line[:MAX_TRUNCATED_EVENT_PREVIEW_CHARS])[0]
+        return json.dumps(
+            {
+                "type": "serena.truncated_event",
+                "_serena_truncated": True,
+                "original_bytes": original_bytes,
+                "preview": preview,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    receipt: dict[str, Any] = {
+        "type": str(event.get("type") or "event"),
+        "_serena_truncated": True,
+        "original_bytes": original_bytes,
+        "summary": _event_summary(event),
+    }
+    receipt_budget = [MAX_TRUNCATED_EVENT_RECEIPT_CHARS]
+    for key in ("subtype", "session_id", "model", "effort", "is_error"):
+        value = event.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            receipt[key] = value
+
+    # Preserve the exact provider shapes consumed by Fleet's completion gate.
+    item = event.get("item")
+    if isinstance(item, dict):
+        receipt["item"] = _receipt_fields(
+            item,
+            "type",
+            "id",
+            "command",
+            "exit_code",
+            "status",
+            "action",
+            budget=receipt_budget,
+        )
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        receipt["payload"] = _receipt_fields(
+            payload,
+            "type",
+            "id",
+            "status",
+            "action",
+            budget=receipt_budget,
+        )
+    message = event.get("message")
+    if isinstance(message, dict):
+        compact_message = _receipt_fields(
+            message,
+            "model",
+            "usage",
+            budget=receipt_budget,
+        )
+        tool_uses = []
+        for block in message.get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            tool_uses.append(
+                _receipt_fields(
+                    block,
+                    "type",
+                    "id",
+                    "name",
+                    "input",
+                    budget=receipt_budget,
+                )
+            )
+        if tool_uses:
+            compact_message["content"] = tool_uses[:64]
+        receipt["message"] = compact_message
+    for key in ("error", "message", "result"):
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            receipt[key] = _receipt_value(value, receipt_budget)
+    encoded = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
+    return redact_text(encoded)[0]
+
+
+def _receipt_fields(
+    source: dict[str, Any],
+    *keys: str,
+    budget: list[int],
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {}
+    for key in keys:
+        if key not in source or budget[0] <= 0:
+            continue
+        receipt[key] = _receipt_value(source[key], budget)
+    return receipt
+
+
+def _receipt_value(value: Any, budget: list[int], *, depth: int = 0) -> Any:
+    if budget[0] <= 0 or depth >= 4:
+        return None
+    if isinstance(value, str):
+        limit = min(MAX_TRUNCATED_EVENT_PREVIEW_CHARS, budget[0])
+        clipped = value[:limit]
+        budget[0] -= len(clipped)
+        return clipped
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): _receipt_value(nested, budget, depth=depth + 1)
+            for key, nested in list(value.items())[:32]
+            if budget[0] > 0
+        }
+    if isinstance(value, list):
+        return [
+            _receipt_value(nested, budget, depth=depth + 1)
+            for nested in value[:32]
+            if budget[0] > 0
+        ]
+    text = str(value)
+    limit = min(MAX_TRUNCATED_EVENT_PREVIEW_CHARS, budget[0])
+    clipped = text[:limit]
+    budget[0] -= len(clipped)
+    return clipped
 
 
 def _reported_model(value: object) -> str | None:

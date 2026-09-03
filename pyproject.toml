@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "serena"
 version = "0.1.0"
-description = "Persistent personal assistant control plane for desktop, voice, memory, and coding work"
+description = "Serena — unified brain: chats, memory, knowledge, voice, reminders, dream"
 requires-python = ">=3.10"
 dependencies = [
     # chats (CLI, web, TUI)
@@ -13,20 +13,25 @@ dependencies = [
     "rich>=13.0",
     "textual>=3.0",
     "flask>=3.0",
-    "flask-sock>=0.7",
-    "mcp>=1.0,<2",
-    "claude-agent-sdk>=0.2.120,<0.3",
-    "waitress>=3.0; sys_platform == 'win32'",  # production WSGI server, replaces Flask dev server on Win
-    "ptyprocess>=0.7; sys_platform != 'win32'",
-    "pywinpty>=2.0; sys_platform == 'win32'",
     "watchdog>=4.0",
-    "psutil>=5.9,<8",
 ]
 
 [project.optional-dependencies]
-desktop = [
-    "pywebview[gtk]>=5.0; sys_platform == 'linux'",
-    "pywebview>=5.0; sys_platform != 'linux'",
+voice = [
+    "anthropic>=0.84.0",
+    "faster-whisper>=1.1.0",
+    "openwakeword>=0.6.0",
+    "piper-tts>=1.2.0",
+    "sounddevice>=0.5.0",
+    "apscheduler>=3.10.0",
+    "dbus-next>=0.2.3",
+    "feedparser>=6.0.0",
+    "psutil>=6.0.0",
+    "beautifulsoup4>=4.12.0",
+    "httpx>=0.28.0",
+    "websockets>=14.0",
+    "pyyaml>=6.0",
+    "numpy>=1.26.0",
 ]
 dev = [
     "pytest>=8.0",
@@ -36,31 +41,27 @@ dev = [
 
 [project.scripts]
 chats = "cli:main"
-
-# Windowless launcher for the desktop UI. `pip install -e .` generates
-# `chats-gui.exe` (pythonw-based wrapper on Windows, no console window).
-# Used by the Desktop / Start Menu shortcuts so launching Serena doesn't
-# pop a terminal alongside the app.
-[project.gui-scripts]
-chats-gui = "cli:main"
+serena = "voice.main:main"
 
 [tool.setuptools]
+# Multiple top-level packages — one per feature.
+# Each feature folder is its own importable package.
 packages = [
     "core",
     "chats",
     "memory",
     "knowledge",
     "ui",
-    "desktop",
     "voice",
-    "voice.call",
-    "voice.desk",
-    "voice.desktop",
+    "voice.brain",
+    "voice.daemon",
+    "voice.ipc",
+    "voice.tools",
+    "voice.voice",
+    "dream",
+    "reminders",
 ]
 py-modules = ["cli"]
-
-[tool.setuptools.package-data]
-"voice.call" = ["vocabulary.txt"]
 
 [tool.ruff]
 target-version = "py310"

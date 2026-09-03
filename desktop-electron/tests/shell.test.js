@@ -90,24 +90,39 @@ test('waitForChildExit distinguishes graceful exit from timeout', async () => {
 });
 
 test('backend launch uses the repo venv in dev and bundled sidecar in production', () => {
-  const dev = backendLaunch({
+  const appDir = path.join(path.parse(desktopDir).root, 'repo', 'desktop-electron');
+  const resourcesPath = path.join(path.parse(desktopDir).root, 'app', 'resources');
+  const repoRoot = path.resolve(appDir, '..');
+  const linuxDev = backendLaunch({
     isPackaged: false,
-    appDir: '/repo/desktop-electron',
-    resourcesPath: '/app/resources',
+    appDir,
+    resourcesPath,
     port: 43210,
+    platform: 'linux',
   });
-  assert.equal(dev.command, '/repo/.venv/bin/python');
-  assert.equal(dev.args[0], '/repo/desktop-electron/sidecar.py');
-  assert.equal(dev.cwd, '/repo');
+  assert.equal(linuxDev.command, path.join(repoRoot, '.venv', 'bin', 'python'));
+  assert.equal(linuxDev.args[0], path.join(appDir, 'sidecar.py'));
+  assert.equal(linuxDev.cwd, repoRoot);
+
+  const windowsDev = backendLaunch({
+    isPackaged: false,
+    appDir,
+    resourcesPath,
+    port: 43210,
+    platform: 'win32',
+  });
+  assert.equal(windowsDev.command, path.join(repoRoot, '.venv', 'Scripts', 'python.exe'));
+  assert.equal(windowsDev.args[0], path.join(appDir, 'sidecar.py'));
+  assert.equal(windowsDev.cwd, repoRoot);
 
   const packaged = backendLaunch({
     isPackaged: true,
-    appDir: '/app/resources/app.asar',
-    resourcesPath: '/app/resources',
+    appDir: path.join(resourcesPath, 'app.asar'),
+    resourcesPath,
     port: 43210,
   });
-  assert.equal(packaged.command, '/app/resources/sidecar/serena-web-sidecar');
-  assert.equal(packaged.cwd, '/app/resources');
+  assert.equal(packaged.command, path.join(resourcesPath, 'sidecar', 'serena-web-sidecar'));
+  assert.equal(packaged.cwd, resourcesPath);
 });
 
 test('main and preload retain the required Electron security contract', () => {

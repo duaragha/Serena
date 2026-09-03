@@ -47,7 +47,12 @@ from .tasking import (
     parse_code_panel_intent,
 )
 from .telemetry import DEFAULT_METRICS_PATH, CallTelemetry
-from .thinking_sounds import ThinkingClip, ThinkingSoundPool, ensure_thinking_clips
+from .thinking_sounds import (
+    PREAMBLE_GLOB,
+    ThinkingClip,
+    ThinkingSoundPool,
+    ensure_thinking_clips,
+)
 from .tts import AsyncTTSBackend, PCMChunk, create_tts_backend
 from .turn_taking import UNKNOWN, AdaptiveEouPolicy, assess_completeness
 
@@ -65,6 +70,15 @@ _BARE_NAME_CALL = re.compile(
     r"\s*[.!,?]*\s*$",
     re.IGNORECASE,
 )
+
+
+def _join_spoken(sentences: list[str]) -> str:
+    return " ".join(part.strip() for part in sentences if part.strip())
+
+
+def _reply_sentence_count(reply: str) -> int:
+    """How many sentences a finished reply was split into, for comparison."""
+    return len([part for part in re.split(r"(?<=[.!?])\s+", reply.strip()) if part])
 
 
 def _is_bare_name_call(text: str) -> bool:
@@ -490,6 +504,11 @@ class CallSession:
         self._workers: list[asyncio.Task[Any]] = []
         self._background: set[asyncio.Task[Any]] = set()
         self._turn_task: asyncio.Task[Any] | None = None
+        # Where we have read up to in the coding-job narration spool. Started
+        # at the end of the file on purpose: a new call must not open by
+        # reciting what a job said before he picked up.
+        self._narration_offset: int | None = None
+        self._narration_task: asyncio.Task[Any] | None = None
         self._turn_generation: int | None = None
         self._first_sentence_generations: set[int] = set()
         self._cancelled_generations: set[int] = set()
@@ -500,6 +519,13 @@ class CallSession:
         self._playback_acknowledged_generations: set[int] = set()
         self._content_playback_acknowledged_generations: set[int] = set()
         self._audio_ended_generations: set[int] = set()
+        # What actually reached his ears, per generation. Interrupting her used
+        # to leave _recent_dialogue with NO record of the reply at all, because
+        # the cancel path raised before the transcript line was appended, so a
+        # reply he had already heard eight sentences of could be restarted from
+        # the top. The handbook's rule is the right one: keep exactly the part
+        # that was spoken, and mark where it stopped.
+        self._spoken_sentences: dict[int, list[str]] = {}
         self._task_job_ids: dict[int, str] = {}
         self._recent_dialogue: deque[str] = deque(maxlen=6)
         self._job_event_cursor = 0
@@ -812,6 +838,11 @@ class CallSession:
                 await self._accept_job_cursor(requested_job_cursor)
             if self.runtime.task_dispatcher is not None:
                 self._spawn(self._watch_job_events(), "call-job-events")
+            # Narration comes from the work supervisor, a different process
+            # from the task dispatcher, so it must not be gated on one.
+            self._narration_task = self._spawn(
+                self._watch_narration(), "call-narration"
+            )
             self._endpoint_warm_task = self._spawn(self._warm_endpoint(), "call-vad-warm")
             self._start_tailnet_path_probe()
             self._spawn(self._announce_ready(), "call-ready")
@@ -1128,6 +1159,7 @@ class CallSession:
         self._playback_acknowledged_generations.discard(generation)
         self._content_playback_acknowledged_generations.discard(generation)
         self._audio_ended_generations.discard(generation)
+        self._spoken_sentences.pop(generation, None)
 
     def _retire_completed_generation(self, generation: int) -> None:
         if (
@@ -1531,8 +1563,11 @@ class CallSession:
         self._recent_dialogue.append(f"Raghav: {text}")
         panel_action = await self._apply_code_panel_intent(generation, text)
         task_job_id = None
+        preamble_clip: ThinkingClip | None = None
         if panel_action is None:
             task_job_id = await self._submit_call_task(generation, text)
+            if task_job_id:
+                preamble_clip = self._take_preamble()
         brain_text = text
         if panel_action:
             exact = (
@@ -1553,9 +1588,46 @@ class CallSession:
                 "call screen. Do not claim the draft is ready yet."
                 "</call-task-status>"
             )
-        spoken_reply = await self._brain_to_tts(generation, brain_text)
-        if spoken_reply:
+        try:
+            spoken_reply = await self._brain_to_tts(
+                generation, brain_text, preamble=preamble_clip
+            )
+        except asyncio.CancelledError:
+            # He cut her off. Record the part he actually heard so the next
+            # turn continues the conversation instead of repeating an answer
+            # he already sat through, and never record words he never heard.
+            self._record_truncated_reply(generation)
+            raise
+        heard = self._spoken_sentences.pop(generation, None)
+        if spoken_reply and heard is not None and len(heard) < _reply_sentence_count(
+            spoken_reply
+        ):
+            # The worker stopped early without a cancellation, e.g. the
+            # transport dropped mid-reply. Same rule applies.
+            self._append_dialogue_line(_join_spoken(heard), truncated=True)
+        elif spoken_reply:
             self._recent_dialogue.append(f"Serena: {spoken_reply}")
+
+    def _record_truncated_reply(self, generation: int) -> None:
+        """Keep only the sentences whose audio actually started playing."""
+        heard = self._spoken_sentences.pop(generation, None)
+        if not heard:
+            return
+        self._append_dialogue_line(_join_spoken(heard), truncated=True)
+        self.telemetry.record(
+            "turn.reply_truncated",
+            generation=generation,
+            sentences=len(heard),
+        )
+
+    def _append_dialogue_line(self, text: str, *, truncated: bool) -> None:
+        text = text.strip()
+        if not text:
+            return
+        # The marker matters as much as the text. Without it she reads a
+        # half sentence as a complete thought and answers the wrong question.
+        suffix = " (cut off here by Raghav)" if truncated else ""
+        self._recent_dialogue.append(f"Serena: {text}{suffix}")
 
     async def _apply_code_panel_intent(
         self,
@@ -1603,9 +1675,24 @@ class CallSession:
         )
         return job.job_id
 
-    async def _brain_to_tts(self, generation: int, text: str) -> str | None:
+    async def _brain_to_tts(
+        self,
+        generation: int,
+        text: str,
+        *,
+        preamble: ThinkingClip | None = None,
+    ) -> str | None:
         splitter = _reply_splitter(self.runtime.tts)
         sentences: asyncio.Queue[_TTSRequest | None] = asyncio.Queue(maxsize=8)
+        if preamble is not None:
+            # Queued before the worker starts, so it is the first thing on the
+            # wire and the brain's latency happens behind it.
+            sentences.put_nowait(
+                _TTSRequest(preamble.clip_id, "preamble", clip=preamble)
+            )
+            self.telemetry.record(
+                "turn.preamble", generation=generation, clip=preamble.clip_id
+            )
         content_queued = asyncio.Event()
         first_delta_received = asyncio.Event()
         tts_task = asyncio.create_task(
@@ -1760,6 +1847,36 @@ class CallSession:
         self.telemetry.record("queue.depth", queue="tts", depth=queue.qsize())
 
     @property
+    def _preamble_sounds(self) -> ThinkingSoundPool:
+        """Separate pool from the thinking sounds, so its no-repeat memory is
+        its own and a run of coding jobs does not exhaust the "hmm" rotation."""
+
+        pool = getattr(self, "_preamble_sound_pool", None)
+        if pool is None:
+            pool = ThinkingSoundPool(glob=PREAMBLE_GLOB)
+            self._preamble_sound_pool = pool
+        return pool
+
+    def _take_preamble(self) -> ThinkingClip | None:
+        """Pick the "on it" clip for work we already know will be slow.
+
+        The handbook's perceived-latency point: a preamble belongs in front of
+        work KNOWN to be slow, not on a timer. Dispatching a coding job is
+        exactly that moment, and the brain turn that would otherwise be his
+        first sign of life is still one to five seconds away.
+
+        It is handed to the reply's own TTS worker rather than played by a
+        second one. Two workers on one generation would each start their audio
+        sequence at zero, which is the corrupted-numbering failure the handbook
+        warns about, and the client would reject the reply as out of order.
+        """
+        pool = self._preamble_sounds
+        sample_rate = getattr(self.runtime.tts, "sample_rate", None)
+        if not pool.enabled or not isinstance(sample_rate, int) or sample_rate <= 0:
+            return None
+        return pool.take(sample_rate=sample_rate)
+
+    @property
     def _thinking_sounds(self) -> ThinkingSoundPool:
         """One pool per call, so the no-repeat memory spans her whole session."""
 
@@ -1871,12 +1988,25 @@ class CallSession:
         output_sequence = 0
         output_started = False
         output_sample_rate: int | None = None
+        spoken_segments = 0
         while True:
             request = await sentences.get()
             try:
                 if request is None:
                     break
                 if not self._generation_active(generation):
+                    # 2026-08-21: he heard her stop mid-reply with the full text
+                    # already on screen, twice, and nothing in the logs said why.
+                    # A reply that dies early must say so and name the reason.
+                    self.telemetry.record(
+                        "tts.abandoned",
+                        generation=generation,
+                        reason="generation_inactive",
+                        spoken_segments=spoken_segments,
+                        pending_kind=request.kind,
+                        cancelled=generation in self._cancelled_generations,
+                        current_generation=self.current_generation,
+                    )
                     return
                 self.telemetry.record(
                     "tts.start",
@@ -1891,6 +2021,7 @@ class CallSession:
                     backend=getattr(self.runtime.tts, "name", "unknown"),
                 )
                 segment_started = False
+                sentence_reached_him = False
                 source = (
                     _prerendered_chunks(request.clip)
                     if request.clip is not None
@@ -1900,6 +2031,14 @@ class CallSession:
                 )
                 async for chunk in source:
                     if not self._generation_active(generation):
+                        self.telemetry.record(
+                            "tts.abandoned",
+                            generation=generation,
+                            reason="cancelled_mid_sentence",
+                            spoken_segments=spoken_segments,
+                            pending_kind=request.kind,
+                            current_generation=self.current_generation,
+                        )
                         return
                     if output_sample_rate is None:
                         output_sample_rate = chunk.sample_rate
@@ -1949,7 +2088,23 @@ class CallSession:
                         segment_kind=request.kind,
                     )
                     if not sent:
+                        self.telemetry.record(
+                            "tts.abandoned",
+                            generation=generation,
+                            reason="send_failed",
+                            spoken_segments=spoken_segments,
+                            pending_kind=request.kind,
+                        )
                         return
+                    if not sentence_reached_him and request.kind == "content":
+                        # First audio of this sentence is on the wire, so he
+                        # heard at least its opening. Fillers and preambles are
+                        # deliberately excluded: they are not things she said.
+                        self._spoken_sentences.setdefault(generation, []).append(
+                            request.text
+                        )
+                        sentence_reached_him = True
+                        spoken_segments += 1
                     output_sequence = (output_sequence + 1) & 0xFFFFFFFF
             finally:
                 sentences.task_done()
@@ -2001,6 +2156,89 @@ class CallSession:
         self.telemetry.first_audio_send(generation, sequence=sequence, kind=segment_kind)
         if segment_kind == "content":
             self.telemetry.first_content_audio_send(generation, sequence=sequence)
+        return True
+
+    def _floor_is_free(self) -> bool:
+        """True only when speaking would interrupt nothing.
+
+        His one condition when he agreed to this: a coding job is never more
+        important than the conversation he is having. So a turn in flight, a
+        greeting, a cancelled-but-not-settled generation, or a closing session
+        all mean silence, and he can always just ask how it is going.
+        """
+        if self._closed or not self._call_started:
+            return False
+        if self._turn_task is not None and not self._turn_task.done():
+            return False
+        if self._greeting_claimed and not self._greeting_completed:
+            return False
+        generation = self.current_generation
+        # A generation that has not finished speaking is a turn still landing.
+        return generation in self._audio_ended_generations
+
+    async def _watch_narration(self) -> None:
+        """Speak coding-job updates in the gaps, or not at all."""
+
+        from core.work_narration import collapse, current_offset, read_since
+
+        if self._narration_offset is None:
+            self._narration_offset = await asyncio.to_thread(current_offset)
+        pending: list[Any] = []
+        while not self._closed:
+            await asyncio.sleep(0.4)
+            lines, offset = await asyncio.to_thread(
+                read_since, self._narration_offset or 0
+            )
+            self._narration_offset = offset
+            if lines:
+                pending.extend(lines)
+            if not pending:
+                continue
+            # Collapse every tick, not only before speaking, so a backlog that
+            # accumulates during a long conversation never becomes a queue of
+            # stale updates waiting to be read out.
+            pending = collapse(pending)
+            if not pending or not self._floor_is_free():
+                continue
+            line = pending.pop(0)
+            await self._speak_narration(line)
+
+    async def _speak_narration(self, line: Any) -> None:
+        generation = self.current_generation
+        try:
+            spoken = await self._brain_to_tts_line(generation, line.text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.telemetry.record("task.narration_failed", error=str(exc)[:200])
+            return
+        if spoken:
+            self.telemetry.record(
+                "task.narration_spoken",
+                generation=generation,
+                kind=line.kind,
+                chars=len(line.text),
+            )
+
+    async def _brain_to_tts_line(self, generation: int, text: str) -> bool:
+        """Say one prepared line, without asking the brain to rewrite it.
+
+        Routed through the same generation-scoped worker as a reply so barge-in
+        and cancellation stop it for free, and so its audio sequence continues
+        the one the client is already tracking.
+        """
+        sentence = prepare_spoken_text(text)
+        if not sentence:
+            return False
+        queue: asyncio.Queue[_TTSRequest | None] = asyncio.Queue(maxsize=2)
+        await queue.put(_TTSRequest(sentence, "content"))
+        await queue.put(None)
+        self._turn_generation = generation
+        self._turn_task = self._spawn(
+            self._tts_worker(generation, queue),
+            f"call-narration-{generation}",
+        )
+        await asyncio.shield(self._turn_task)
         return True
 
     async def _watch_job_events(self) -> None:

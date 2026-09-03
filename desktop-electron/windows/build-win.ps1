@@ -74,6 +74,60 @@ if (-not (Test-Path -LiteralPath $SidecarExe -PathType Leaf)) {
     throw "PyInstaller did not produce $SidecarExe"
 }
 
+Write-Host "[windows] smoke-testing the frozen PTY backend"
+$PtySmoke = Start-Process -FilePath $SidecarExe `
+    -ArgumentList @("--pty-smoke") `
+    -WindowStyle Hidden `
+    -Wait `
+    -PassThru
+if ($PtySmoke.ExitCode -ne 0) {
+    throw "the frozen PTY smoke test failed with exit code $($PtySmoke.ExitCode)"
+}
+
+# The exe existing proves nothing. It is built console=False, so a hidden import
+# PyInstaller failed to trace does not fail the build and does not print: the
+# process just dies and Electron waits forever on a port that never opens.
+# Boot it for real and poll the probe ui.web serves. This is the only step that
+# distinguishes "packaged" from "works".
+Write-Host "[windows] smoke-testing the frozen sidecar"
+$Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$Listener.Start()
+$SmokePort = $Listener.LocalEndpoint.Port
+$Listener.Stop()
+
+$Smoke = Start-Process -FilePath $SidecarExe `
+    -ArgumentList @("--host", "127.0.0.1", "--port", "$SmokePort") `
+    -WindowStyle Hidden `
+    -PassThru
+try {
+    $Probe = "http://127.0.0.1:$SmokePort/api/health"
+    $Deadline = (Get-Date).AddSeconds(120)
+    $Healthy = $false
+    while ((Get-Date) -lt $Deadline) {
+        if ($Smoke.HasExited) {
+            throw "the frozen sidecar exited with code $($Smoke.ExitCode) before answering $Probe"
+        }
+        try {
+            $Response = Invoke-WebRequest -Uri $Probe -UseBasicParsing -TimeoutSec 5
+            if ($Response.StatusCode -eq 200) {
+                $Healthy = $true
+                break
+            }
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    if (-not $Healthy) {
+        throw "the frozen sidecar never answered $Probe"
+    }
+    Write-Host "[windows] sidecar answered $Probe"
+}
+finally {
+    if (-not $Smoke.HasExited) {
+        Stop-Process -Id $Smoke.Id -Force
+    }
+}
+
 $PublishMode = if ($Publish) { "always" } else { "never" }
 Push-Location $DesktopDir
 try {
@@ -95,14 +149,15 @@ finally {
     Pop-Location
 }
 
-$Installer = Get-ChildItem `
-    -Path (Join-Path $DesktopDir "dist\windows") `
-    -Filter "Serena-Setup-*.exe" `
-    -File |
-    Select-Object -First 1
-if (-not $Installer) {
-    throw "electron-builder did not produce an NSIS installer"
+$Package = Get-Content -LiteralPath (Join-Path $DesktopDir "package.json") -Raw |
+    ConvertFrom-Json
+$InstallerPath = Join-Path `
+    $DesktopDir `
+    "dist\windows\Serena-Setup-$($Package.version)-x64.exe"
+if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
+    throw "electron-builder did not produce the expected NSIS installer: $InstallerPath"
 }
+$Installer = Get-Item -LiteralPath $InstallerPath
 
 Write-Host "[windows] sidecar: $SidecarExe"
 Write-Host "[windows] installer: $($Installer.FullName)"

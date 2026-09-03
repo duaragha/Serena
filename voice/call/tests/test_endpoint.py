@@ -204,3 +204,85 @@ def test_endpoint_pool_accepts_desk_timing_without_mutating_call_env(
         "pre_roll_ms": 320,
         "max_utterance_ms": 20_000,
     }
+
+
+def test_local_silero_runs_without_torch():
+    """The VAD children must not pull the torch runtime.
+
+    Inference was always ONNX, but silero_vad's own wrapper imports torch at
+    module scope, which cost ~200MB per VAD child for nothing but a state
+    array and a context concat. Importing the package at all reintroduces it,
+    so the model path is resolved with find_spec rather than an import.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys;"
+        "from voice.call.endpoint import LocalSileroModel;"
+        "LocalSileroModel().warm();"
+        "print('torch' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("False"), "torch was imported by the VAD path"
+
+
+def test_local_silero_matches_the_reference_wrapper():
+    """Framing must stay identical to silero_vad's OnnxWrapper.
+
+    The graph is stateful: a 2x1x128 hidden state plus the previous window's
+    64-sample tail prepended to each window. Getting that wrong degrades
+    endpointing subtly rather than loudly, so pin it against the package.
+    """
+    numpy = pytest.importorskip("numpy")
+    torch = pytest.importorskip("torch")
+    silero = pytest.importorskip("silero_vad")
+
+    from voice.call.endpoint import LocalSileroModel
+
+    rng = numpy.random.default_rng(11)
+    windows = [
+        numpy.zeros(512, dtype=numpy.float32),
+        (rng.standard_normal(512) * 0.05).astype(numpy.float32),
+        (numpy.sin(numpy.arange(512) * 0.12) * 0.4).astype(numpy.float32),
+        (rng.standard_normal(512) * 0.3).astype(numpy.float32),
+    ] * 3
+
+    ours = LocalSileroModel()
+    ours.warm()
+    ours.reset_states()
+    mine = [float(ours(window.tolist(), 16_000)) for window in windows]
+
+    reference = silero.load_silero_vad(onnx=True)
+    reference.reset_states()
+    theirs = [
+        float(reference(torch.tensor(window, dtype=torch.float32), 16_000).item())
+        for window in windows
+    ]
+
+    for got, want in zip(mine, theirs):
+        assert abs(got - want) < 1e-6
+
+
+def test_local_silero_rejects_the_wrong_window_size():
+    from voice.call.endpoint import LocalSileroModel
+
+    model = LocalSileroModel()
+    model.warm()
+    with pytest.raises(RuntimeError, match="samples per window"):
+        model([0.0] * 256, 16_000)
+
+
+def test_local_silero_rejects_the_wrong_sample_rate():
+    from voice.call.endpoint import LocalSileroModel
+
+    model = LocalSileroModel()
+    model.warm()
+    with pytest.raises(RuntimeError, match="16000 Hz"):
+        model([0.0] * 512, 8_000)

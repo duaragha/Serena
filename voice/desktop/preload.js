@@ -3,7 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 // Callbacks that the module script can register
 const callbacks = {
   setState: null,
-  setAmplitude: null,
+  showUserText: null,
+  showResponseText: null,
+  clearText: null,
 };
 
 // Code panel callbacks — registered by the module script
@@ -11,63 +13,13 @@ const codePanelCallbacks = {
   onStart: null,
   onEvent: null,
   onDone: null,
-  onSnapshot: null,
-  onControlResult: null,
   onToggle: null,
-  onShow: null,
 };
-let latestCodePanelWidth = 450;
-let codePanelWidthCallback = null;
-
-ipcRenderer.on('code-panel-width', (_event, width) => {
-  latestCodePanelWidth = Number(width) || 450;
-  codePanelWidthCallback?.(latestCodePanelWidth);
-});
 
 contextBridge.exposeInMainWorld('serena', {
-  // Renderer → Backend: the type bar, for when the mic is unusable
-  sendTyped: (payload) => {
-    ipcRenderer.send(
-      'typed-message',
-      typeof payload === 'object' && payload !== null
-        ? payload
-        : { text: String(payload || '') },
-    );
-  },
-  onTypedInputError: (callback) => {
-    ipcRenderer.on('typed-input-error', (_event, message) => callback(String(message || '')));
-  },
-  onTypedInputAccepted: (callback) => {
-    ipcRenderer.on('typed-input-accepted', () => callback());
-  },
-
-  // How fast she talks. Persisted by the main process, read by every voice
-  // surface, so it survives a restart and applies beyond this window.
-  setVoiceSpeed: (value) => {
-    ipcRenderer.send('set-voice-speed', Number(value));
-  },
-  onVoiceSpeed: (callback) => {
-    ipcRenderer.on('voice-speed', (_event, value) => callback(value));
-  },
-  setVoiceMuted: (muted) => {
-    ipcRenderer.send('set-voice-muted', Boolean(muted));
-  },
-  onVoiceMuted: (callback) => {
-    ipcRenderer.on('voice-muted', (_event, muted) => callback(Boolean(muted)));
-  },
-  setMicrophoneMuted: (muted) => {
-    ipcRenderer.send('set-microphone-muted', Boolean(muted));
-  },
-  onMicrophoneMuted: (callback) => {
-    ipcRenderer.on('microphone-muted', (_event, muted) => callback(Boolean(muted)));
-  },
-
   // Backend → Renderer event listeners
   onStateChange: (callback) => {
     ipcRenderer.on('state-change', (_event, state) => callback(state));
-  },
-  onAmplitude: (callback) => {
-    ipcRenderer.on('voice-amplitude', (_event, value) => callback(value));
   },
   onTranscription: (callback) => {
     ipcRenderer.on('transcription', (_event, text) => callback(text));
@@ -95,24 +47,8 @@ contextBridge.exposeInMainWorld('serena', {
   onCodeDone: (callback) => {
     ipcRenderer.on('code-done', (_event, data) => callback(data));
   },
-  onCodeSnapshot: (callback) => {
-    ipcRenderer.on('code-snapshot', (_event, data) => callback(data));
-  },
-  onCodeControlResult: (callback) => {
-    ipcRenderer.on('code-control-result', (_event, data) => callback(data));
-  },
   onToggleCodePanel: (callback) => {
     ipcRenderer.on('toggle-code-panel', (_event) => callback());
-  },
-  onHideCodePanel: (callback) => {
-    ipcRenderer.on('hide-code-panel', (_event) => callback());
-  },
-  onShowCodePanel: (callback) => {
-    ipcRenderer.on('show-code-panel', (_event) => callback());
-  },
-  onCodePanelWidth: (callback) => {
-    codePanelWidthCallback = callback;
-    callback(latestCodePanelWidth);
   },
 
   // Renderer → Main process
@@ -122,24 +58,13 @@ contextBridge.exposeInMainWorld('serena', {
   toggleDashboard: () => {
     ipcRenderer.send('toggle-dashboard');
   },
-  hideCodePanel: () => {
-    ipcRenderer.send('hide-code-panel');
-  },
-  showCodePanel: () => {
-    ipcRenderer.send('show-code-panel');
-  },
-  setCodePanelWidth: (width) => {
-    ipcRenderer.send('set-code-panel-width', Number(width));
-  },
-  sendCodeControl: (payload) => {
-    ipcRenderer.send('code-control', payload);
-  },
 
   // Brain visualization callbacks — registered by the module script
   registerBrain: (fns) => {
     if (fns.setState) callbacks.setState = fns.setState;
-    if (fns.setAmplitude) callbacks.setAmplitude = fns.setAmplitude;
-    ipcRenderer.send('renderer-ready');
+    if (fns.showUserText) callbacks.showUserText = fns.showUserText;
+    if (fns.showResponseText) callbacks.showResponseText = fns.showResponseText;
+    if (fns.clearText) callbacks.clearText = fns.clearText;
   },
 
   // Code panel callbacks — registered by the module script
@@ -147,21 +72,18 @@ contextBridge.exposeInMainWorld('serena', {
     if (fns.onStart) codePanelCallbacks.onStart = fns.onStart;
     if (fns.onEvent) codePanelCallbacks.onEvent = fns.onEvent;
     if (fns.onDone) codePanelCallbacks.onDone = fns.onDone;
-    if (fns.onSnapshot) codePanelCallbacks.onSnapshot = fns.onSnapshot;
-    if (fns.onControlResult) codePanelCallbacks.onControlResult = fns.onControlResult;
     if (fns.onToggle) codePanelCallbacks.onToggle = fns.onToggle;
-    if (fns.onShow) codePanelCallbacks.onShow = fns.onShow;
   },
 
-  // Stable proxy functions survive contextBridge's value freezing.
-  setState: (state) => callbacks.setState?.(state),
-  setAmplitude: (value) => callbacks.setAmplitude?.(value),
+  // Accessors for app.js to call brain functions
+  get setState() { return callbacks.setState; },
+  get showUserText() { return callbacks.showUserText; },
+  get showResponseText() { return callbacks.showResponseText; },
+  get clearText() { return callbacks.clearText; },
 
-  codePanelOnStart: (data) => codePanelCallbacks.onStart?.(data),
-  codePanelOnEvent: (event) => codePanelCallbacks.onEvent?.(event),
-  codePanelOnDone: (data) => codePanelCallbacks.onDone?.(data),
-  codePanelOnSnapshot: (data) => codePanelCallbacks.onSnapshot?.(data),
-  codePanelOnControlResult: (data) => codePanelCallbacks.onControlResult?.(data),
-  codePanelOnToggle: () => codePanelCallbacks.onToggle?.(),
-  codePanelOnShow: () => codePanelCallbacks.onShow?.(),
+  // Accessors for app.js to call code panel functions
+  get codePanelOnStart() { return codePanelCallbacks.onStart; },
+  get codePanelOnEvent() { return codePanelCallbacks.onEvent; },
+  get codePanelOnDone() { return codePanelCallbacks.onDone; },
+  get codePanelOnToggle() { return codePanelCallbacks.onToggle; },
 });

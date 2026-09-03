@@ -76,10 +76,17 @@ numpy_datas, numpy_binaries, numpy_modules = collect_all("numpy")
 hiddenimports = sorted(set(hiddenimports) | set(numpy_modules))
 datas += numpy_datas
 
+# PyInstaller's normal import analysis includes the pywinpty extension and
+# DLLs but omits the helper executables. The stable WinPTY backend cannot start
+# without winpty-agent.exe beside the package, so collect the whole wheel.
+winpty_datas, winpty_binaries, winpty_modules = collect_all("winpty")
+hiddenimports = sorted(set(hiddenimports) | set(winpty_modules))
+datas += winpty_datas
+
 a = Analysis(
     [str(ENTRYPOINT)],
     pathex=[str(REPO_ROOT)],
-    binaries=numpy_binaries,
+    binaries=numpy_binaries + winpty_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

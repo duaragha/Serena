@@ -8,6 +8,7 @@ import math
 import os
 import sys
 import threading
+from pathlib import Path
 from collections import deque
 from collections.abc import Callable, Sequence
 from contextlib import suppress
@@ -36,16 +37,31 @@ class EndpointResult:
         return self.sample_count * 1000.0 / MIC_SAMPLE_RATE
 
 
+# Silero's ONNX graph is stateful: it takes a 2x1x128 hidden state plus a
+# short context of the previous window's tail, and returns the updated state.
+_SILERO_STATE_SHAPE = (2, 1, 128)
+_SILERO_CONTEXT_SAMPLES = 64  # 32 at 8kHz; this pipeline is 16kHz only
+
+
 class LocalSileroModel:
-    """Lazy adapter around the installed Silero package.
+    """Lazy adapter around the installed Silero model, without torch.
 
     No model is fetched here. The silero-vad package and its local model
     assets must already be installed on the host.
+
+    The package ships the ONNX graph and a torch-based wrapper around it.
+    Importing that wrapper costs ~200MB of torch runtime per process purely
+    to allocate the state array and concatenate the context window, which is
+    a bad trade for two long-lived children on a laptop. The graph is called
+    here directly with numpy instead; the framing semantics below mirror
+    silero_vad.utils_vad.OnnxWrapper exactly.
     """
 
     def __init__(self) -> None:
-        self._model = None
-        self._torch = None
+        self._session = None
+        self._numpy = None
+        self._state = None
+        self._context = None
         self._load_lock = threading.Lock()
 
     def warm(self) -> None:
@@ -53,34 +69,91 @@ class LocalSileroModel:
         self([0.0] * VAD_WINDOW_SAMPLES, MIC_SAMPLE_RATE)
         self.reset_states()
 
+    @staticmethod
+    def _model_path() -> Path:
+        """Locate the shipped ONNX graph without importing the package.
+
+        `import silero_vad` executes utils_vad, whose first line is `import
+        torch` — which is the 200MB this class exists to avoid. find_spec
+        resolves the install location without running any of it.
+        """
+        import importlib.util
+
+        spec = importlib.util.find_spec("silero_vad")
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        if not origin:
+            raise RuntimeError(
+                "local Silero VAD is unavailable; install voice/call/requirements.txt"
+            )
+        candidate = Path(origin).resolve().parent / "data" / "silero_vad.onnx"
+        if not candidate.is_file():
+            raise RuntimeError(f"Silero VAD model is missing at {candidate}")
+        return candidate
+
     def _ensure_loaded(self) -> None:
-        if self._model is not None:
+        if self._session is not None:
             return
         with self._load_lock:
-            if self._model is not None:
+            if self._session is not None:
                 return
             try:
-                import torch
-                from silero_vad import load_silero_vad
+                import numpy
+                import onnxruntime
             except ImportError as exc:
                 raise RuntimeError(
                     "local Silero VAD is unavailable; install voice/call/requirements.txt"
                 ) from exc
-            self._torch = torch
-            self._model = load_silero_vad(onnx=True)
+            options = onnxruntime.SessionOptions()
+            # one worker per child already; extra threads only add contention
+            options.inter_op_num_threads = 1
+            options.intra_op_num_threads = 1
+            self._numpy = numpy
+            self._session = onnxruntime.InferenceSession(
+                str(self._model_path()),
+                sess_options=options,
+                providers=["CPUExecutionProvider"],
+            )
+            self._reset_arrays()
+
+    def _reset_arrays(self) -> None:
+        numpy = self._numpy
+        assert numpy is not None
+        self._state = numpy.zeros(_SILERO_STATE_SHAPE, dtype=numpy.float32)
+        self._context = numpy.zeros(
+            (1, _SILERO_CONTEXT_SAMPLES), dtype=numpy.float32
+        )
 
     def __call__(self, samples: Sequence[float], sample_rate: int) -> object:
         self._ensure_loaded()
-        assert self._torch is not None
-        tensor = self._torch.tensor(samples, dtype=self._torch.float32)
-        return self._model(tensor, sample_rate)
+        numpy = self._numpy
+        assert numpy is not None and self._session is not None
+        if sample_rate != MIC_SAMPLE_RATE:
+            raise RuntimeError(
+                f"Silero VAD expects {MIC_SAMPLE_RATE} Hz, got {sample_rate}"
+            )
+        window = numpy.asarray(samples, dtype=numpy.float32).reshape(1, -1)
+        if window.shape[1] != VAD_WINDOW_SAMPLES:
+            raise RuntimeError(
+                f"Silero VAD expects {VAD_WINDOW_SAMPLES} samples per window, "
+                f"got {window.shape[1]}"
+            )
+        padded = numpy.concatenate([self._context, window], axis=1)
+        output, state = self._session.run(
+            None,
+            {
+                "input": padded,
+                "state": self._state,
+                "sr": numpy.array(sample_rate, dtype="int64"),
+            },
+        )
+        self._state = state
+        self._context = padded[:, -_SILERO_CONTEXT_SAMPLES:]
+        return float(output[0][0])
 
     def reset_states(self) -> None:
-        if self._model is None:
+        if self._session is None:
             return
-        reset = getattr(self._model, "reset_states", None)
-        if callable(reset):
-            reset()
+        self._reset_arrays()
 
 
 class ProcessEndpointDetector:

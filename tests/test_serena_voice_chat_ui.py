@@ -29,7 +29,7 @@ def test_permanent_serena_chat_cannot_enter_a_resumable_code_view() -> None:
     html = web.HTML
 
     assert "const readOnly = externallyRunning || serenaVoice" in html
-    assert "classList.toggle('hidden', serenaVoice || fleetWorker)" in html
+    assert "'hidden', serenaVoice || fleetWorker" in html
     assert "if (mode === 'live' && (_isSerenaVoiceSession" in html
     assert "if (!opts.isNew && (_isSerenaVoiceSession" in html
     assert "if (_isSerenaVoiceSession(local || sid) || _isFleetSession(local))" in html
@@ -82,4 +82,5 @@ def test_voice_conversation_api_exposes_agent_for_serena_label(
 
     assert response.status_code == 200
     assert response.get_json()["agent"] == "serena-voice"
-    assert "data.agent === 'serena-voice' ? 'Serena' : 'Claude'" in web.HTML
+    assert "const defaultAgentLabel = 'Serena';" in web.HTML
+    assert "data.agent === 'codex' ? 'Codex' : defaultAgentLabel" in web.HTML

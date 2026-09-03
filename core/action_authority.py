@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -54,14 +55,41 @@ TIER_OBSERVE = 0
 TIER_REVERSIBLE = 1
 TIER_CONSEQUENTIAL = 2
 TIER_IRREVERSIBLE = 3
-TIERS = (TIER_OBSERVE, TIER_REVERSIBLE, TIER_CONSEQUENTIAL, TIER_IRREVERSIBLE)
+# Credentials, one-time codes, payment details and security settings. Every
+# other tier can be cleared by saying yes, which is the gap: a voice surface
+# authenticates a VOICE, and a voice is the one factor an attacker in the room,
+# a recording, or a TTS clone can supply. Anything at this tier needs Raghav at
+# a keyboard, so a spoken "yes" can never be the thing that authorises it.
+TIER_SECRET = 4
+TIERS = (
+    TIER_OBSERVE,
+    TIER_REVERSIBLE,
+    TIER_CONSEQUENTIAL,
+    TIER_IRREVERSIBLE,
+    TIER_SECRET,
+)
 
 TIER_NAMES = {
     TIER_OBSERVE: "observe",
     TIER_REVERSIBLE: "reversible",
     TIER_CONSEQUENTIAL: "consequential",
     TIER_IRREVERSIBLE: "irreversible",
+    TIER_SECRET: "secret",
 }
+
+# Surfaces where Raghav is typing rather than speaking. Only these can clear
+# TIER_SECRET.
+TYPED_SOURCES = frozenset({"chat", "ui", "cli"})
+# Narrower than the "critical" risk level on purpose: a database migration is
+# critical and still perfectly fine to approve out loud. This is only the
+# handful of things where the secret itself is the subject of the action.
+_SECRET_ACTION = re.compile(
+    r"\b(?:password|passphrase|otp|one[\s-]time[\s-]code|2fa|mfa|totp|"
+    r"authenticator|api[\s-]key|secret[\s-]key|private[\s-]key|ssh[\s-]key|"
+    r"credential|token|payment[\s-]method|card[\s-]number|cvv|"
+    r"security[\s-]settings?|recovery[\s-]code)\b",
+    re.IGNORECASE,
+)
 
 # What the caller declares its action does. This is the floor of the tier.
 EFFECT_TIERS = {
@@ -69,6 +97,7 @@ EFFECT_TIERS = {
     "reversible": TIER_REVERSIBLE,
     "external": TIER_CONSEQUENTIAL,
     "irreversible": TIER_IRREVERSIBLE,
+    "credential": TIER_SECRET,
 }
 
 # core.serena_policy.classify_risk speaks low/normal/high/critical. Only the
@@ -410,7 +439,14 @@ def classify_tier(
             f"risk policy unavailable ({type(error).__name__}), escalated by default",
         )
     floor = RISK_TIER_FLOORS.get(str(risk_level), TIER_CONSEQUENTIAL)
-    return max(base, floor), str(risk_level), str(risk_reason)
+    tier = max(base, floor)
+    if tier > TIER_OBSERVE and _SECRET_ACTION.search(
+        " ".join(part for part in (intent, capability, target) if part)
+    ):
+        # Reading about a password is still a read; doing something TO one is
+        # never something a voice may authorise.
+        return TIER_SECRET, "critical", "action operates on a credential or security setting"
+    return tier, str(risk_level), str(risk_reason)
 
 
 class ActionAuthority:
@@ -964,6 +1000,19 @@ class ActionAuthority:
 
         if request.source not in SOURCES:
             return False, f"unknown source {request.source}", BASIS_NONE, False, ""
+
+        if tier >= TIER_SECRET and request.source not in TYPED_SOURCES:
+            # Deliberately checked before the confirmation is even consumed, so
+            # a spoken yes cannot burn a confirmation it was never allowed to
+            # use, and cannot be replayed at a typed surface afterwards.
+            return (
+                False,
+                "credential and security actions cannot be authorised by voice, "
+                f"and {request.source} is not a surface Raghav types at",
+                BASIS_NONE,
+                False,
+                "",
+            )
 
         # A confirmation is the strongest basis and the only one tier 3 accepts.
         if request.confirmation_id:

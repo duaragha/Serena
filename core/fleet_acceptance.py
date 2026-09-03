@@ -202,46 +202,63 @@ def _fleet_state_canary(root: Path, checks: list[dict[str, Any]]) -> None:
         raise AcceptanceFailure("unfinished Fleet run was accepted as complete")
     _record(checks, "completion_rejection", "unfinished legs rejected completion")
 
-    sessions = {ordinal: f"canary-codex-session-{ordinal}" for ordinal in range(4)}
+    # Keyed by (phase_index, ordinal). Research and Code share chat "a"; Review
+    # opens chat "b" and Fix continues it.
+    sessions = {
+        (phase_index, ordinal): f"canary-session-{'a' if phase_index < 2 else 'b'}-{ordinal}"
+        for phase_index in range(4)
+        for ordinal in range(4)
+    }
     first_leg = run["phases"][0]["legs"][0]
     failed = store.begin_attempt(str(first_leg["leg_id"]))
     store.finish_attempt(
         str(failed["attempt_id"]),
         state="failed",
-        session_id=sessions[0],
+        session_id=sessions[(0, 0)],
         error="synthetic retry",
         exit_code=1,
     )
     retry = store.begin_attempt(str(first_leg["leg_id"]))
     _require(
-        retry["resume_session_id"] == sessions[0] and retry["resume_kind"] == "retry",
+        retry["resume_session_id"] == sessions[(0, 0)]
+        and retry["resume_kind"] == "retry",
         "same-provider retry did not resume its native session",
     )
     store.finish_attempt(
         str(retry["attempt_id"]),
         state="completed",
-        session_id=sessions[0],
+        session_id=sessions[(0, 0)],
         actual_model=str(first_leg["model"]),
         actual_effort=str(first_leg["effort"]),
         exit_code=0,
     )
 
+    # This canary is codex-only, so every phase shares a provider and a worker
+    # could in principle hold one chat throughout. It must not. Review is
+    # required to open its own chat even here, because a reviewer that sat
+    # through the work cannot independently disagree with it. Everything else
+    # continues, giving exactly two chats per worker.
     for phase_index, phase in enumerate(run["phases"]):
         for leg in phase["legs"]:
             ordinal = int(leg["ordinal"])
             if phase_index == 0 and ordinal == 0:
                 continue
             attempt = store.begin_attempt(str(leg["leg_id"]))
-            if phase_index:
+            if phase_index in {1, 3}:
                 _require(
-                    attempt["resume_session_id"] == sessions[ordinal]
+                    attempt["resume_session_id"] == sessions[(phase_index, ordinal)]
                     and attempt["resume_kind"] == "phase_continuation",
                     f"phase {phase_index} worker {ordinal} multiplied its chat",
+                )
+            elif phase_index == 2:
+                _require(
+                    attempt["resume_session_id"] is None,
+                    f"Review worker {ordinal} continued the chat that researched it",
                 )
             store.finish_attempt(
                 str(attempt["attempt_id"]),
                 state="completed",
-                session_id=sessions[ordinal],
+                session_id=sessions[(phase_index, ordinal)],
                 actual_model=str(leg["model"]),
                 actual_effort=str(leg["effort"]),
                 exit_code=0,
@@ -249,14 +266,15 @@ def _fleet_state_canary(root: Path, checks: list[dict[str, Any]]) -> None:
     completed = store.complete_run(run_id, "canary complete")
     _require(
         completed["state"] == "completed"
-        and completed["chat_count"] == 4
+        and completed["chat_count"] == 8
         and completed["agent_count"] == 4,
-        "four logical workers did not produce exactly four persistent chats",
+        "four logical workers did not produce exactly two persistent chats each",
     )
     _record(
         checks,
         "dag_retry_and_chat_continuity",
-        "four workers crossed four phases plus one retry with four native sessions",
+        "four workers crossed four phases plus one retry using two chats each: "
+        "Research and Code shared one, Review opened its own and Fix continued it",
     )
 
     recovery = store.create_run(

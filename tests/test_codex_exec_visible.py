@@ -168,3 +168,10 @@ def test_codex_exec_has_no_default_deadline(monkeypatch, tmp_path):
     payload = json.loads(result.output.strip())
     assert payload["ok"] is True
     assert done_marker.read_text(encoding="utf-8") == "done"
+
+
+def test_codex_exec_defaults_to_danger_full_access():
+    sandbox_param = next(
+        param for param in cli.codex_exec.params if param.name == "danger_full_access"
+    )
+    assert sandbox_param.default is True

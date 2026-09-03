@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from core.fleet_workers import (
+    MAX_EVENT_LINE_BYTES,
     WorkerRequest,
     _claude_actual_identity,
     _codex_actual_identity,
@@ -529,3 +530,91 @@ time.sleep(30)
     assert len(pids) == 1
     with pytest.raises(ProcessLookupError):
         os.kill(pids[0], 0)
+
+
+def test_oversized_tool_event_is_compacted_without_killing_claude(
+    tmp_path,
+    monkeypatch,
+):
+    claude_bin = _executable(
+        tmp_path / "verbose-claude",
+        """#!/usr/bin/env python3
+import json, sys
+sys.stdin.read()
+args = sys.argv
+sid = args[args.index("--session-id") + 1]
+print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5"}), flush=True)
+print(json.dumps({"type":"user","message":{"content":[{"type":"tool_result","content":"x" * (1024 * 1024)}]}}), flush=True)
+print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5","content":[{"type":"text","text":"finished after huge tool output"}]}}), flush=True)
+print(json.dumps({"type":"result","session_id":sid,"result":"finished after huge tool output","is_error":False}), flush=True)
+""",
+    )
+    monkeypatch.setenv("SERENA_FLEET_CLAUDE_BIN", str(claude_bin))
+    monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
+    events: list[tuple[str, dict]] = []
+
+    result = run_worker(
+        _request(tmp_path, "claude"),
+        cancel_requested=lambda: False,
+        on_event=lambda event, payload: events.append((event, payload)),
+    )
+
+    assert result.ok is True
+    assert result.exit_code == 0
+    assert result.output_text == "finished after huge tool output"
+    assert any(
+        event == "process.output_truncated"
+        and payload.get("reason") == "event_line_limit"
+        and int(payload.get("original_bytes") or 0) > MAX_EVENT_LINE_BYTES
+        for event, payload in events
+    )
+    records = [
+        json.loads(line)
+        for line in Path(result.event_log_path).read_text(encoding="utf-8").splitlines()
+    ]
+    receipts = [
+        json.loads(record["line"])
+        for record in records
+        if '"_serena_truncated":true' in record["line"]
+    ]
+    assert len(receipts) == 1
+    assert receipts[0]["type"] == "user"
+    assert receipts[0]["original_bytes"] > MAX_EVENT_LINE_BYTES
+
+
+def test_capture_limit_truncates_diagnostics_without_killing_codex(
+    tmp_path,
+    monkeypatch,
+):
+    codex_bin = _executable(
+        tmp_path / "verbose-codex",
+        """#!/usr/bin/env python3
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type":"thread.started","thread_id":"44444444-4444-4444-4444-444444444444"}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+for index in range(8):
+    print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":f"noise-{index}-" + "x" * 256}}), flush=True)
+print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"done after capture limit"}}), flush=True)
+""",
+    )
+    monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", str(codex_bin))
+    monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr("core.fleet_workers.MAX_CAPTURE_BYTES", 800)
+    events: list[tuple[str, dict]] = []
+
+    result = run_worker(
+        _request(tmp_path, "codex"),
+        cancel_requested=lambda: False,
+        on_event=lambda event, payload: events.append((event, payload)),
+    )
+
+    assert result.ok is True
+    assert result.exit_code == 0
+    assert result.output_text == "done after capture limit"
+    assert any(
+        event == "process.output_truncated"
+        and payload.get("reason") == "capture_limit"
+        for event, payload in events
+    )
+    assert Path(result.event_log_path).stat().st_size <= 800

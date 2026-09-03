@@ -130,7 +130,7 @@ async function findExistingBackend(options = {}) {
   }
 }
 
-function backendLaunch({ isPackaged, appDir, resourcesPath, port }) {
+function backendLaunch({ isPackaged, appDir, resourcesPath, port, platform = process.platform }) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new TypeError('backend port must be an integer between 1 and 65535');
   }
@@ -142,8 +142,11 @@ function backendLaunch({ isPackaged, appDir, resourcesPath, port }) {
     };
   }
   const repoRoot = path.resolve(appDir, '..');
+  const python = platform === 'win32'
+    ? path.join(repoRoot, '.venv', 'Scripts', 'python.exe')
+    : path.join(repoRoot, '.venv', 'bin', 'python');
   return {
-    command: path.join(repoRoot, '.venv', 'bin', 'python'),
+    command: python,
     args: [
       path.join(appDir, 'sidecar.py'),
       '--host', LOOPBACK_HOST,

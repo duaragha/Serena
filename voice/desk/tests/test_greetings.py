@@ -261,3 +261,55 @@ def test_refill_owns_an_isolated_tts_backend_when_factory_is_set(
     assert pool.status["cached"] == 1
     assert owned.warm_calls == 1
     assert owned.closed is True
+
+
+def test_a_stale_cached_greeting_is_not_replayed_forever(tmp_path, monkeypatch) -> None:
+    """2026-08-21: the pool held one greeting, so every wake after the first
+    got a 503 and fell back to the last cached line. One odd greeting
+    ("handsome weasel") became the thing she said every single time."""
+    import json
+    import time
+
+    from voice.desk.io import (
+        FALLBACK_MAX_AGE_SECONDS,
+        FALLBACK_SCHEMA_VERSION,
+        GreetingFetcher,
+    )
+    from voice.desk.greetings import GreetingAudio
+
+    path = tmp_path / "last-greeting.json"
+    fetcher = GreetingFetcher("http://127.0.0.1:1/greeting", "t", fallback_path=path)
+
+    def _write(age_seconds: float) -> None:
+        greeting = GreetingAudio(
+            "gid", 24_000, b"\x00\x00" * 100, "handsome weasel",
+            time.time() - age_seconds, "",
+        )
+        path.write_text(
+            json.dumps({"version": FALLBACK_SCHEMA_VERSION, "greeting": greeting.to_json()}),
+            encoding="utf-8",
+        )
+
+    _write(60.0)
+    assert fetcher.load_fallback() is not None, "a fresh cached line is still good"
+
+    _write(FALLBACK_MAX_AGE_SECONDS + 60.0)
+    assert fetcher.load_fallback() is None, (
+        "a stale cached line must expire; the plain tone beats saying the same "
+        "strange thing every wake"
+    )
+
+
+def test_the_greeting_prompt_forbids_invented_pet_names() -> None:
+    """He asked for ordinary. The old prompt pushed 'vary it every time, never
+    reach for a stock phrase', which is what produced an invented nickname."""
+    from pathlib import Path as _P
+
+    source = _P("voice/desk/greetings.py").read_text()
+    prompt = source.split("desk-wake-greeting", 1)[1][:2000]
+    # the old novelty pressure is gone as an instruction; it survives only
+    # inside the incident note that explains why it was removed
+    assert "vary it every time, never reach for a stock phrase" not in prompt
+    assert "Never invent a nickname" in prompt
+    assert "repeating one is fine" in prompt
+    assert "ordinary spoken greeting" in prompt

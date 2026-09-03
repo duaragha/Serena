@@ -985,7 +985,12 @@ class DeskClient:
                 ):
                     continue
                 barged_frames = barge_gate.trigger_frames
+            # The handbook's target is under 100 ms from his voice to her
+            # silence, and we were logging that a barge-in happened without
+            # ever logging how long it took to land.
+            detected_ns = time.monotonic_ns()
             self.playback.finish()
+            silence_ms = (time.monotonic_ns() - detected_ns) / 1_000_000.0
             transport.cancel()
             packer.reset()
             transport.begin_listening()
@@ -995,6 +1000,7 @@ class DeskClient:
                     transport.send_mic_frame(wire_frame)
             self.metrics.record(
                 "desk.barge_in",
+                silence_ms=round(silence_ms, 3),
                 call_id=transport.call_id,
                 generation=transport.generation,
                 phase=phase,

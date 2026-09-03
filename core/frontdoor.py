@@ -168,6 +168,44 @@ def _frontdoor_prompt(history: list[dict]) -> str:
     return "Raghav just opened the Serena app. Greet him per the front-door protocol."
 
 
+def _latest_user_query(history: list[dict]) -> str:
+    for message in reversed(history or []):
+        if str(message.get("role") or "") == "user":
+            return str(message.get("text") or "").strip()
+    return ""
+
+
+def _recent_user_queries(history: list[dict], *, limit: int = 4) -> tuple[str, ...]:
+    """Bounded user-only context before the current front-door query."""
+
+    bounded_limit = max(0, min(4, int(limit)))
+    if not bounded_limit:
+        return ()
+    users = [
+        " ".join(str(message.get("text") or "").split())[:700]
+        for message in history or []
+        if str(message.get("role") or "") == "user"
+        and str(message.get("text") or "").strip()
+    ]
+    return tuple(users[:-1][-bounded_limit:])
+
+
+def _frontdoor_memory_context(history: list[dict]) -> str:
+    try:
+        from memory.retrieval import pack_memory_context
+
+        return pack_memory_context(
+            _latest_user_query(history),
+            surface="frontdoor",
+            recent_context=_recent_user_queries(history),
+            max_characters=3_500,
+            max_tokens=900,
+            max_records=4,
+        ).text
+    except Exception:
+        return ""
+
+
 def _parse_reply(raw: str) -> dict:
     """Parse the strict-JSON reply, tolerating fences and stray prose."""
     raw = (raw or "").strip()
@@ -332,7 +370,14 @@ def _brain_turn(history: list[dict]) -> dict | None:
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/turn",
-            data=json.dumps({"text": text, "protocol": "frontdoor"}).encode("utf-8"),
+            data=json.dumps(
+                {
+                    "text": text,
+                    "memory_query": _latest_user_query(history),
+                    "recent_context": list(_recent_user_queries(history)),
+                    "protocol": "frontdoor",
+                }
+            ).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 **({"Authorization": f"Bearer {token}"} if token else {}),
@@ -547,6 +592,8 @@ def _resident_stream_turn(history: list[dict]) -> Iterator[dict]:
         "request_id": request_id,
         "protocol": "frontdoor",
         "text": _frontdoor_prompt(history),
+        "memory_query": _latest_user_query(history),
+        "recent_context": list(_recent_user_queries(history)),
         "stream": True,
     }
     if token:
@@ -744,6 +791,9 @@ def turn(history: list[dict], model: str = "", _skip_greeting_cache: bool = Fals
             "the front-door protocol: hello with his name matched to the "
             "time of day, then your take on what's live."
         )
+    memory_context = _frontdoor_memory_context(history)
+    if memory_context:
+        prompt = memory_context + "\n\n" + prompt
 
     cmd = [
         claude_bin, "-p", prompt,

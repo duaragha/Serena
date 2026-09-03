@@ -34,86 +34,113 @@ MAX_EXPLICIT_WORKSTREAMS = 16
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "serena" / "fleet.json"
 REPOSITORY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "fleet.example.json"
 
-# This is a hard Fleet contract, not a soft preference. Both entrypoints and
-# every provider mode build from the same phase matrix. The research workflow
-# has no coding or fixing phase, so Analyze and Refine retain the research pair.
+# This is a hard Fleet contract, not a soft preference. One model per phase,
+# every agent in that phase runs it, and no worker may change it. Effort is
+# named per model because the curves differ in shape.
+#
+# The scores below are DeepSWE v1.1 (a coding benchmark), so they justify Code,
+# Fix and Review. They say nothing about Research; the Luna choice there rests
+# on a direct measurement recorded in the discover comment.
+#
+#   claude-opus-5 high    73% +/-2   $6.08    73 turns
+#   claude-opus-5 xhigh   73% +/-3   $9.07    89 turns   (same score, +50% cost)
+#   claude-opus-5 max     74% +/-4  $11.84    99 turns   (+1 point, ~2x cost)
+#   claude-opus-5 medium  69% +/-1   $3.29    52 turns
+#   gpt-5.6-sol high      69% +/-1   $3.47    37 turns   (leanest of the top tier)
+#   gpt-5.6-sol xhigh     71% +/-1   $4.70    44 turns
+#   gpt-5.6-luna max      67% +/-4   $0.61   102 turns   (chatty, but 1/5 the price)
+#   claude-sonnet-5 high  48% +/-5   $7.43   147 turns   (dominated everywhere)
+#
+# Sonnet is deliberately absent. It lost to claude-opus-5 medium on score, cost
+# and turn count simultaneously, so there is no slot where it is the right pick.
 PHASE_MODEL_POLICY = {
     "coding": {
-        "discover": (
-            ("codex", "gpt-5.6-terra", "high"),
-            ("claude", "claude-sonnet-5", "high"),
-        ),
-        # Effort is set per model, because the two curves are not the same
-        # shape. On DeepSWE v1.1 Opus 5 scores 73% at high and 73% at xhigh
-        # while xhigh costs ~50% more ($6.08 vs $9.07), so xhigh buys nothing
-        # here. Sol climbs across the same rungs (69% high, 71% xhigh), so it
-        # keeps xhigh. (knowledge/llm-api-pricing/opus5-vs-sol-effort-levels.md)
-        "execute": (
-            ("codex", "gpt-5.6-sol", "xhigh"),
-            ("claude", "claude-opus-5", "high"),
-        ),
-        # Review runs terra + sonnet, not luna + haiku: Luna has a 41.3% MRCR
-        # long-context recall cliff (vs Sol's 91.5%), which is disqualifying for
-        # reading whole diffs in context, and Haiku ignores the effort lever and
-        # sits a full capability tier below the models whose work it reviews.
-        # (Decision 2026-08-10, benchmarks in knowledge/openai-models/.)
-        "verify": (
-            ("codex", "gpt-5.6-terra", "xhigh"),
-            ("claude", "claude-sonnet-5", "xhigh"),
-        ),
-        # Fix matches Code rung for rung, rather than sitting a step below it.
-        # Repairing a defect a reviewer already found is not the easier job:
-        # the fixer inherits someone else's mental model, works against a
-        # checkout its peers have since moved, and its mistakes land in
-        # already-reviewed code that nothing downstream re-reads.
-        "finalize": (
-            ("codex", "gpt-5.6-sol", "xhigh"),
-            ("claude", "claude-opus-5", "high"),
-        ),
+        # Research runs Luna at max, which the published benchmarks say it should
+        # not. Luna's 41.3% MRCR long-context recall (vs Terra 89.6%) reads as
+        # disqualifying, so it was measured before being believed: one real
+        # Research leg each, Luna max vs Terra max, same prompt and checkout,
+        # graded against a 20-fact key written in advance with six facts planted
+        # mid-file where MRCR predicts Luna collapses. Luna scored 18.5/20 to
+        # Terra's 16, both 6/6 on the mid-file facts, in 31% less wall clock and
+        # ~30% fewer output and reasoning tokens. MRCR measures needle retrieval
+        # from one loaded context; a Fleet worker reads in ~500-line chunks and
+        # re-reads on demand, so the cliff does not describe this phase.
+        # (2026-08-20, knowledge/openai-models/best-research-model-aug-2026.md)
+        "discover": (("codex", "gpt-5.6-luna", "max"),),
+        # Code runs medium, Fix runs high, deliberately not the same rung.
+        # On DeepSWE medium is 69% at 37k tokens against high's 73% at 64k, so
+        # the 4 points cost 42% more burn on the phase that generates the most
+        # of it. Code can afford that because a defect it introduces is caught
+        # by Review and repaired by Fix; those two phases exist for exactly this.
+        # Watch Review findings per run: if they climb, the saving is being paid
+        # back in retries, which cost a whole leg and wipe it out several times
+        # over. (2026-08-24)
+        "execute": (("claude", "claude-opus-5", "medium"),),
+        # Sol high is the leanest strong reviewer on the board, 28k tokens across
+        # 37 turns. Review reads a diff and argues with it; paying xhigh for more
+        # turns is not what makes that better.
+        "verify": (("codex", "gpt-5.6-sol", "high"),),
+        # Fix stays high while Code drops to medium. It is the phase with no
+        # safety net: its mistakes land in already-reviewed code that nothing
+        # downstream re-reads, so the rung that is cheap to give up on Code is
+        # not cheap to give up here.
+        "finalize": (("claude", "claude-opus-5", "high"),),
     },
+    # Research runs read, analyse, review, refine. Same four models in the same
+    # order: Luna reads, Opus analyses, Sol reviews, Opus refines.
     "research": {
-        "discover": (
-            ("codex", "gpt-5.6-terra", "high"),
-            ("claude", "claude-opus-5", "high"),
-        ),
-        "execute": (
-            ("codex", "gpt-5.6-terra", "high"),
-            ("claude", "claude-opus-5", "high"),
-        ),
-        "verify": (
-            ("codex", "gpt-5.6-terra", "xhigh"),
-            ("claude", "claude-opus-5", "high"),
-        ),
-        "finalize": (
-            ("codex", "gpt-5.6-terra", "high"),
-            ("claude", "claude-opus-5", "high"),
-        ),
+        "discover": (("codex", "gpt-5.6-luna", "max"),),
+        "execute": (("claude", "claude-opus-5", "high"),),
+        "verify": (("codex", "gpt-5.6-sol", "high"),),
+        "finalize": (("claude", "claude-opus-5", "high"),),
     },
 }
+
+# Escape hatches for when one provider is exhausted or explicitly excluded. The
+# pipeline above needs both providers alive; these keep a run possible on one.
+# They are explicit provider substitutions, never chosen silently, and always
+# recorded in the frozen policy as the mode that was actually selected.
+PROVIDER_ONLY_POLICY = {
+    "codex": {
+        "coding": {
+            "discover": (("codex", "gpt-5.6-luna", "max"),),
+            # Sol xhigh gives an exhausted Opus-medium Code leg a small quality
+            # margin instead of merely matching it at Sol high.
+            "execute": (("codex", "gpt-5.6-sol", "xhigh"),),
+            "verify": (("codex", "gpt-5.6-sol", "high"),),
+            # Fix normally runs Opus high and has no downstream safety net, so
+            # its Codex substitute is Sol max rather than the Code-phase rung.
+            "finalize": (("codex", "gpt-5.6-sol", "max"),),
+        },
+        "research": {
+            "discover": (("codex", "gpt-5.6-luna", "max"),),
+            "execute": (("codex", "gpt-5.6-sol", "xhigh"),),
+            "verify": (("codex", "gpt-5.6-sol", "high"),),
+            "finalize": (("codex", "gpt-5.6-sol", "xhigh"),),
+        },
+    },
+    # Opus 5 medium replaces what used to be Sonnet here: 69% at $3.29 over 52
+    # turns against Sonnet high's 48% at $7.43 over 147. Better, cheaper, faster.
+    "claude": {
+        "coding": {
+            "discover": (("claude", "claude-opus-5", "medium"),),
+            "execute": (("claude", "claude-opus-5", "medium"),),
+            "verify": (("claude", "claude-opus-5", "medium"),),
+            "finalize": (("claude", "claude-opus-5", "high"),),
+        },
+        "research": {
+            "discover": (("claude", "claude-opus-5", "medium"),),
+            "execute": (("claude", "claude-opus-5", "high"),),
+            "verify": (("claude", "claude-opus-5", "medium"),),
+            "finalize": (("claude", "claude-opus-5", "high"),),
+        },
+    },
+}
+
 _LEGACY_PROFILE_PHASE = {"coding": "execute", "research": "discover"}
 
 
-RESEARCH_DEPTHS = frozenset({"full", "proportionate"})
-
-# Fleet's Research phase used to demand the same citation quota from every work
-# unit: three provider searches, five sources, three domains, whether the unit
-# was upgrading a dependency or fixing a typo in our own module. For local work
-# the answer lives in the checkout, so that quota bought nothing and cost a
-# search-and-read cycle per worker per run. Depth is now proportional: a unit
-# that actually touches the outside world keeps the full mandate, everything
-# else has to show a smaller, still-real amount of external evidence.
-_EXTERNAL_RESEARCH_SIGNAL = re.compile(
-    r"\b(?:upgrade|upgrading|migrat\w*|deprecat\w*|breaking change|"
-    r"depend\w*|dependenc\w*|package|packages|library|libraries|framework|sdk|"
-    r"vendor|third[- ]party|external api|public api|rest api|graphql|webhook|"
-    r"oauth|auth\w* flow|protocol|spec|specification|standard|rfc|"
-    r"version|versions|release notes|changelog|latest|newest|current best|"
-    r"compat\w*|interop\w*|browser support|polyfill|"
-    r"pricing|quota|rate limit|billing|terms|compliance|licen[cs]\w*|"
-    r"security advisor\w*|cve|vulnerab\w*|patch note\w*|"
-    r"best practice|state of the art|industry standard|benchmark\w*)\b",
-    re.IGNORECASE,
-)
+RESEARCH_DEPTHS = frozenset({"full"})
 
 _CODING_SIGNAL = re.compile(
     r"\b(?:build|code|coding|implement|fix|patch|refactor|debug|test|tests|"
@@ -128,7 +155,9 @@ _RESEARCH_SIGNAL = re.compile(
     re.IGNORECASE,
 )
 _WORKSTREAM_SECTION = re.compile(
-    r"^\s{0,3}(?:#{1,6}\s*)?(?:tasks?|objectives?|workstreams?)\s*:\s*(.*)$",
+    r"^\s{0,3}(?:#{1,6}\s*)?"
+    r"(?:use\s+(?:(?:one|two|three|four|[1-4])\s+)?(?:independent\s+)?)?"
+    r"(?:tasks?|objectives?|workstreams?)\s*:\s*(.*)$",
     re.IGNORECASE,
 )
 _NAMED_WORKSTREAM = re.compile(
@@ -137,6 +166,7 @@ _NAMED_WORKSTREAM = re.compile(
     re.IGNORECASE,
 )
 _NUMBERED_WORKSTREAM = re.compile(r"^\s{0,3}\d{1,2}[.)]\s+(\S.*)$")
+_LETTERED_WORKSTREAM = re.compile(r"^\s{0,3}[a-z][.)]\s+(\S.*)$", re.IGNORECASE)
 _BULLETED_WORKSTREAM = re.compile(r"^\s{0,3}[-*+]\s+(?:\[[ xX]\]\s+)?(\S.*)$")
 _NON_WORKSTREAM = re.compile(
     r"^(?:do not|don't|must not|never|constraints?\b|acceptance criteria\b|"
@@ -417,13 +447,11 @@ def validate_config(data: object) -> None:
             raise ValueError(f"{activity} requires at least {minimum} workers")
         for worker in workers:
             _validate_worker(worker, activity)
-        configured_providers = {
-            str(worker.get("provider") or "").lower()
-            for worker in workers
-            if isinstance(worker, dict)
-        }
-        if not PROVIDERS.issubset(configured_providers):
-            raise ValueError(f"{activity} requires one codex and one claude template")
+        # A phase used to need one template per provider. It now carries exactly
+        # one locked spec, and which provider that implies is the phase's choice.
+        for worker in workers:
+            if str(worker.get("provider") or "").lower() not in PROVIDERS:
+                raise ValueError(f"{activity} worker provider must be codex or claude")
         legacy_specs = _configured_worker_specs(workers)
         expected_legacy = PHASE_MODEL_POLICY[activity][_LEGACY_PROFILE_PHASE[activity]]
         if legacy_specs != expected_legacy:
@@ -499,6 +527,12 @@ def extract_explicit_workstreams(task: str) -> tuple[str, ...]:
             candidates.append((named or numbered).group(1).strip())
             pending = len(candidates) - 1
             in_section = False
+            continue
+
+        lettered = _LETTERED_WORKSTREAM.match(line) if in_section else None
+        if lettered:
+            candidates.append(lettered.group(1).strip())
+            pending = len(candidates) - 1
             continue
 
         bullet = _BULLETED_WORKSTREAM.match(line) if in_section else None
@@ -695,7 +729,7 @@ def build_policy(
     data = config if config is not None else load_config()
     validate_config(data)
     defaults = data["defaults"]
-    phase_workers = data["profiles"][activity]["phases"]
+    configured_phases = data["profiles"][activity]["phases"]
     explicit = extract_explicit_workstreams(task)
     capacity = int(defaults["max_parallel_workers"])
     (
@@ -726,14 +760,10 @@ def build_policy(
         raise ValueError(
             f"requested worker_count {requested_workers} exceeds configured capacity {capacity}"
         )
-    if selected_mode == "balanced":
-        if requested_workers is not None and requested_workers not in {2, 4}:
-            raise ValueError("balanced Fleet mode requires exactly two or four workers")
-        desired_workers = requested_workers or (4 if len(explicit) >= 3 else 2)
-        selected_workers = desired_workers if desired_workers <= capacity else 2
-    else:
-        desired_workers = requested_workers or min(MAX_WORKERS, max(1, len(explicit)))
-        selected_workers = min(desired_workers, capacity)
+    # Worker count is now independent of provider mode. A phase runs one model
+    # and every agent runs it, so there is no pair to keep even.
+    desired_workers = requested_workers or min(MAX_WORKERS, max(1, len(explicit)))
+    selected_workers = min(desired_workers, capacity)
     capacity_limited = selected_workers < desired_workers
     if routing_reason:
         reason = (
@@ -780,6 +810,15 @@ def build_policy(
             for ordinal in range(selected_workers)
         )
     )
+    # The locked pipeline needs both providers alive. A provider-only run is an
+    # explicit downgrade to that provider's stack, never a silent substitution.
+    if selected_mode in PROVIDER_ONLY_POLICY:
+        phase_workers = {
+            phase: _worker_entries(PROVIDER_ONLY_POLICY[selected_mode][activity][phase])
+            for phase in PHASES
+        }
+    else:
+        phase_workers = configured_phases
     phases: list[PhasePolicy] = []
     for index, name in enumerate(PHASES):
         roster = _select_roster(
@@ -794,8 +833,10 @@ def build_policy(
                 effort=str(raw["effort"]).lower(),
                 role=_role(activity, name, ordinal, str(raw["provider"]).lower()),
                 access_mode=_access_mode(activity, name, ordinal),
-                worker_key=f"{str(raw['provider']).lower()}:{suffix}",
-                worker_label=f"{str(raw['provider']).title()} {suffix.upper()}",
+                # Identity is the agent slot, not the runtime. Agent A stays
+                # Agent A while the provider under it changes every phase.
+                worker_key=f"agent:{suffix}",
+                worker_label=f"Agent {suffix.upper()}",
                 assignment=assignments[ordinal],
                 assignment_ids=assignment_ids[ordinal],
                 review_target_ids=review_targets[ordinal],
@@ -932,38 +973,35 @@ def _select_roster(
     selected_workers: int,
     provider_mode: str,
 ) -> tuple[tuple[dict[str, Any], str], ...]:
-    pools = {
-        provider: [
-            worker for worker in workers if str(worker.get("provider") or "").lower() == provider
-        ]
-        for provider in ("codex", "claude")
-    }
-    roster: list[tuple[dict[str, Any], str]] = []
-    if provider_mode == "balanced":
-        for pair_index in range(selected_workers // 2):
-            suffix = chr(ord("a") + pair_index)
-            for provider in ("codex", "claude"):
-                pool = pools[provider]
-                roster.append((pool[pair_index % len(pool)], suffix))
-        return tuple(roster)
-    pool = pools[provider_mode]
-    for worker_index in range(selected_workers):
-        suffix = chr(ord("a") + worker_index)
-        roster.append((pool[worker_index % len(pool)], suffix))
-    return tuple(roster)
+    """Give every agent in this phase the phase's one locked spec.
+
+    Workers are no longer branded by provider. Agent A is Agent A across the
+    whole run; which provider it runs on is a property of the phase, not of the
+    worker. The roster therefore just repeats the phase spec once per agent and
+    numbers them a, b, c, d.
+    """
+
+    if not workers:
+        raise ValueError("a Fleet phase must configure exactly one worker spec")
+    spec = workers[0]
+    return tuple(
+        (spec, chr(ord("a") + worker_index)) for worker_index in range(selected_workers)
+    )
 
 
 def _worker_from_snapshot(worker: dict[str, Any], ordinal: int) -> WorkerPolicy:
     provider = str(worker.get("provider") or worker.get("runtime"))
-    suffix = chr(ord("a") + (ordinal // 2))
+    # One agent per ordinal now; the old layout interleaved two providers per
+    # slot and had to halve the ordinal to recover the letter.
+    suffix = chr(ord("a") + ordinal)
     return WorkerPolicy(
         provider=provider,
         model=str(worker["model"]),
         effort=str(worker["effort"]),
         role=str(worker["role"]),
         access_mode=str(worker["access_mode"]),
-        worker_key=str(worker.get("worker_key") or f"{provider}:{suffix}"),
-        worker_label=str(worker.get("worker_label") or f"{provider.title()} {suffix.upper()}"),
+        worker_key=str(worker.get("worker_key") or f"agent:{suffix}"),
+        worker_label=str(worker.get("worker_label") or f"Agent {suffix.upper()}"),
         assignment=str(worker.get("assignment") or ""),
         assignment_ids=tuple(str(value) for value in (worker.get("assignment_ids") or ())),
         review_target_ids=tuple(str(value) for value in (worker.get("review_target_ids") or ())),
@@ -1029,8 +1067,8 @@ def policy_from_snapshot(snapshot: dict[str, Any]) -> FleetPolicy:
         # Old snapshots did not declare a session topology. Keeping those
         # phase-local avoids changing an already-materialized run mid-flight.
         session_mode=str(snapshot.get("session_mode") or "per_leg"),
-        # A snapshot written before proportional research depth existed was
-        # planned under the full mandate, so it keeps it. Only new runs opt in.
+        # Full research is the only active mandate. Legacy proportionate
+        # snapshots are upgraded when read instead of weakening a retry.
         research_depth=(
             str(snapshot.get("research_depth") or "full").lower()
             if str(snapshot.get("research_depth") or "full").lower() in RESEARCH_DEPTHS
@@ -1177,10 +1215,13 @@ def validate_policy_snapshot(snapshot: object) -> None:
                 raise ValueError("Fleet worker assignments reference an unknown workstream")
             if assignment_ids & review_ids:
                 raise ValueError("Fleet workers cannot review their own assignment")
-        if provider_mode == "balanced":
-            if len(workers) not in {2, 4} or provider_counts["codex"] != provider_counts["claude"]:
-                raise ValueError("balanced Fleet phases require equal codex and claude workers")
-        elif provider_mode != "adaptive" and provider_counts[provider_mode] != len(workers):
+        # A phase is single-provider when it is built, because every agent runs
+        # the phase's one locked model. It stops being single-provider the
+        # moment one worker is handed to the other provider for capacity, which
+        # is legitimate, so there is no phase-level provider rule to enforce
+        # here. policy_models_match_contract is what holds the line: it accepts
+        # only the phase's pipeline model or that provider's escape-hatch model.
+        if provider_mode in PROVIDERS and provider_counts[provider_mode] != len(workers):
             raise ValueError(f"{provider_mode}-only Fleet phases cannot include another provider")
     if selected_workers is not None and phase_worker_count != selected_workers:
         raise ValueError("Fleet scaling metadata does not match its durable worker count")
@@ -1212,8 +1253,20 @@ def expected_model_matches(provider: str, requested: str, actual: str | None) ->
     return needle in actual_clean if needle else actual_clean == requested_clean
 
 
-def policy_models_match_contract(activity: str, snapshot: object) -> bool:
-    """Return whether every saved worker still follows Fleet's hard phase matrix."""
+def policy_models_match_contract(
+    activity: str, snapshot: object, *, baseline: object = None
+) -> bool:
+    """Return whether every saved worker still follows Fleet's hard phase matrix.
+
+    ``baseline`` is the run's own frozen policy, and passing it says "this run
+    started under an earlier matrix". A run freezes its contract at creation so
+    it stays reproducible, but the check re-read the live matrix, so editing the
+    matrix invalidated every run already in flight: their next handoff or retry
+    raised "provider handoff violated Fleet's phase model contract" for a
+    contract Fleet itself had issued. A worker is legal when it matches the
+    current matrix, the current escape-hatch stack, or the spec this very run
+    was created with. Inventing a model is still refused.
+    """
 
     if activity not in PHASE_MODEL_POLICY or not isinstance(snapshot, dict):
         return False
@@ -1228,10 +1281,23 @@ def policy_models_match_contract(activity: str, snapshot: object) -> bool:
     if set(phases) != set(PHASES):
         return False
     for phase_name in PHASES:
+        # Two specs are legal per phase: the pipeline's, and the provider-only
+        # stack a capacity handoff falls back to. Nothing else.
         expected = {
             provider: (model, effort)
             for provider, model, effort in PHASE_MODEL_POLICY[activity][phase_name]
         }
+        # A provider can legitimately carry more than one spec for a phase: the
+        # pipeline's and the escape-hatch stack's. Keyed by provider alone, the
+        # second one silently replaced the first.
+        allowed: dict[str, set[tuple[str, str]]] = {
+            provider: {(model, effort)} for provider, (model, effort) in expected.items()
+        }
+        for stacks in PROVIDER_ONLY_POLICY.values():
+            fallback_provider, model, effort = stacks[activity][phase_name][0]
+            allowed.setdefault(fallback_provider, set()).add((model, effort))
+        for spec in _baseline_specs(baseline, phase_name):
+            allowed.setdefault(spec[0], set()).add((spec[1], spec[2]))
         workers = phases[phase_name].get("workers")
         if not isinstance(workers, list) or not workers:
             return False
@@ -1243,9 +1309,29 @@ def policy_models_match_contract(activity: str, snapshot: object) -> bool:
                 str(worker.get("model") or ""),
                 str(worker.get("effort") or "").lower(),
             )
-            if expected.get(provider) != actual:
+            if actual not in allowed.get(provider, set()):
                 return False
     return True
+
+
+def _baseline_specs(baseline: object, phase_name: str) -> list[tuple[str, str, str]]:
+    """Every (provider, model, effort) the run was actually created with."""
+
+    if not isinstance(baseline, dict):
+        return []
+    specs: list[tuple[str, str, str]] = []
+    for phase in baseline.get("phases") or []:
+        if not isinstance(phase, dict) or str(phase.get("name") or "") != phase_name:
+            continue
+        for worker in phase.get("workers") or []:
+            if not isinstance(worker, dict):
+                continue
+            provider = str(worker.get("provider") or worker.get("runtime") or "").lower()
+            model = str(worker.get("model") or "")
+            effort = str(worker.get("effort") or "").lower()
+            if provider and model and effort:
+                specs.append((provider, model, effort))
+    return specs
 
 
 def build_provider_handoff_policy(
@@ -1290,16 +1376,23 @@ def build_provider_handoff_policy(
     replacement = deepcopy(snapshot)
     source_label = str(source_worker.get("worker_label") or source.title())
     worker_key = str(source_worker.get("worker_key") or f"slot:{worker_ordinal + 1}")
-    target_label = f"{target.title()} pickup for {source_label}"
+    # The agent keeps its name through a handoff. Which provider is carrying it
+    # lives in runtime and handoff_from_provider, not in the worker's identity.
+    target_label = source_label
     activity = str(replacement["activity"])
     for index in range(start_index, len(replacement["phases"])):
         phase = replacement["phases"][index]
         worker = phase["workers"][worker_ordinal]
         phase_name = str(phase["name"])
+        # The pipeline pins one provider per phase, so a handoff to the other
+        # one takes that provider's escape-hatch model for this phase.
         model_entry = next(
-            entry
-            for entry in PHASE_MODEL_POLICY[activity][phase_name]
-            if entry[0] == target
+            (
+                entry
+                for entry in PHASE_MODEL_POLICY[activity][phase_name]
+                if entry[0] == target
+            ),
+            PROVIDER_ONLY_POLICY[target][activity][phase_name][0],
         )
         worker["provider"] = target
         worker["runtime"] = target
@@ -1330,8 +1423,15 @@ def build_provider_handoff_policy(
         }
     )
     validate_policy_snapshot(replacement)
-    if not policy_models_match_contract(activity, replacement):
-        raise ValueError("provider handoff violated Fleet's phase model contract")
+    if not policy_models_match_contract(activity, replacement, baseline=snapshot):
+        expected = PHASE_MODEL_POLICY[activity]
+        raise ValueError(
+            "provider handoff violated Fleet's phase model contract: "
+            f"{target} cannot serve this run's phases. Current matrix is "
+            + ", ".join(
+                f"{name}={expected[name][0][1]}/{expected[name][0][2]}" for name in PHASES
+            )
+        )
     return replacement
 
 
@@ -1413,15 +1513,10 @@ def _validate_snapshot_worker(worker: object) -> None:
 
 
 def resolve_research_depth(activity: str, task: str) -> str:
-    """Choose how much external evidence this run's Research phase must show.
+    """Require extensive current online research from every Research worker."""
 
-    Research runs always carry the full mandate: attribution is the deliverable.
-    Coding runs earn it only when the task reaches outside the checkout.
-    """
-
-    if activity != "coding":
-        return "full"
-    return "full" if _EXTERNAL_RESEARCH_SIGNAL.search(task or "") else "proportionate"
+    del activity, task
+    return "full"
 
 
 def _access_mode(activity: str, phase: str, ordinal: int) -> str:

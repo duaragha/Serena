@@ -70,6 +70,47 @@ pane events ──┘           └───────────┘    spawn
   watcher + periodic reconciliation, never watcher-only; failed actions go to
   a dead-letter file surfaced in the morning brief, never silently dropped.
 
+## Canonical memory retrieval and context packing
+
+`memory/retrieval.py` is the read path for persistent memory across chats,
+Claude and Codex brain tools, resident voice turns, front door, CLI search, and
+the unified indexer. It checks Memory v2 authority without initializing or
+activating the v2 store. Active v2 uses the typed retrieval API and its
+receipts; inactive v2 falls back to the legacy Markdown corpus. Migration,
+activation, proposals, rollback, and projection remain owned by their existing
+write paths.
+
+Prompt injection uses the same facade and a versioned context packer. Active
+state remains a distinct section from recalled history. Recalled records are
+data-only, retain record and source IDs, and are selected under both character
+and conservative token budgets. The packer normally supplies three to five
+complementary records, suppresses duplicate and contradictory lineage, escapes
+prompt-boundary characters, and records drop and budget metrics. Surface caps
+are 7,000 characters and 1,800 estimated tokens for resident/mobile turns,
+4,500 and 1,100 for voice, and 3,500 and 900 for front door. Archival voice
+history is independently packed and cannot expand the persistent-memory
+budget.
+
+## Mobile chat gateway
+
+The iOS/Android client uses `/ws/chat` for headless Claude/Codex continuation.
+The desktop coding app does not use this transport: opening a normal Claude or
+Codex conversation resumes its interactive Code terminal immediately. Read is
+only a read-only transcript surface for voice, Fleet, external workflows, and
+history inspection.
+
+Mobile turn admission is scoped to the session, not the socket. Different
+mobile chats can run concurrently over one connection while a second turn in
+the same chat is rejected until the first finishes. A disconnected client does
+not own the agent process, so accepted work can finish and persist after the
+phone navigates away or loses its socket. New mobile Serena chats reserve a real
+Claude UUID before their first turn and materialize it in the selected project
+when that turn is sent.
+
+Remote clients authenticate with the private bearer token. Windows batch shims
+are resolved through `core/process_launch.py`, shared by mobile headless turns
+and the PTY host, which keeps Claude and Codex `.cmd` launch behavior identical.
+
 ## Interrupt policy (when she speaks first)
 
 Grounded in CHI 2025 findings: timing beats content, identical suggestions

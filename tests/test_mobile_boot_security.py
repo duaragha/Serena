@@ -3,6 +3,7 @@ import os
 import stat
 import subprocess
 import threading
+import uuid
 from pathlib import Path
 
 
@@ -15,6 +16,21 @@ def test_mobile_bootstrap_does_not_disclose_bearer_token():
     assert "window.SERENA_BOOT" in html
     assert "'/ws/chat'" in html
     assert "token:" not in html
+
+
+def test_mobile_chat_websocket_accepts_private_token_only():
+    from ui import web
+
+    with web.app.test_request_context("/ws/chat?token=secret"):
+        assert web._chat_websocket_is_authorized("secret")
+    with web.app.test_request_context(
+        "/ws/chat", headers={"Authorization": "Bearer secret"}
+    ):
+        assert web._chat_websocket_is_authorized("secret")
+    with web.app.test_request_context("/ws/chat?token=wrong"):
+        assert not web._chat_websocket_is_authorized("secret")
+    with web.app.test_request_context("/ws/chat"):
+        assert not web._chat_websocket_is_authorized("secret")
 
 
 def test_mobile_static_route_does_not_escape_dist():
@@ -399,6 +415,8 @@ def test_mobile_agent_turns_and_context_stay_out_of_argv(
     monkeypatch.setattr(chat_daemon, "_injected_context", lambda: private_context)
     monkeypatch.setattr(chat_daemon, "_orig_session_file", lambda _sid: None)
     monkeypatch.setattr(chat_daemon, "_canonicalize_session", lambda _sid: None)
+    marked: list[str] = []
+    monkeypatch.setattr(chat_daemon, "_mark_turn_finished", marked.append)
     monkeypatch.setattr(chat_daemon, "CHAT_PROMPT_DIR", tmp_path / "prompts")
     monkeypatch.setattr(chat_daemon.subprocess, "Popen", Process)
     events: list[dict] = []
@@ -427,6 +445,7 @@ def test_mobile_agent_turns_and_context_stay_out_of_argv(
     assert process_input.closed is True
     assert not any((tmp_path / "prompts").iterdir())
     assert not any(event.get("type") == "error" for event in events)
+    assert marked == ["00000000-0000-0000-0000-000000000000"]
 
 
 def test_mobile_codex_turn_uses_stdin_marker() -> None:
@@ -438,6 +457,145 @@ def test_mobile_codex_turn_uses_stdin_marker() -> None:
     )
 
     assert command[-1] == "-"
+
+
+def test_chat_dispatch_allows_different_session_turns_to_overlap(monkeypatch):
+    from core import chat_daemon
+
+    started: set[str] = set()
+    started_lock = threading.Lock()
+    both_started = threading.Event()
+    release = threading.Event()
+
+    def blocking_handler(raw: str, _emit) -> None:
+        sid = json.loads(raw)["sessionId"]
+        with started_lock:
+            started.add(sid)
+            if len(started) == 2:
+                both_started.set()
+        release.wait(timeout=2)
+
+    monkeypatch.setattr(chat_daemon, "handle_client_message", blocking_handler)
+    futures = [
+        chat_daemon.dispatch_client_message(
+            json.dumps({"type": "send", "sessionId": sid, "text": "go"}),
+            lambda _event: None,
+        )
+        for sid in ("chat-a", "chat-b")
+    ]
+    try:
+        assert both_started.wait(timeout=1)
+    finally:
+        release.set()
+    for future in futures:
+        assert future is not None
+        future.result(timeout=1)
+    assert started == {"chat-a", "chat-b"}
+
+
+def test_new_headless_claude_turn_uses_the_reserved_session_id(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from core import chat_daemon
+
+    monkeypatch.setattr(chat_daemon, "_injected_context", lambda: "")
+    command = chat_daemon._agent_command(
+        "claude",
+        "00000000-0000-0000-0000-000000000000",
+        prompt_path=tmp_path / "prompt.md",
+        is_new=True,
+    )
+
+    assert "--session-id" in command
+    assert "--resume" not in command
+
+
+def test_new_headless_chat_reserves_a_real_claude_uuid(monkeypatch, tmp_path: Path):
+    from core import chat_daemon, config
+
+    monkeypatch.setattr(config, "resolve_session_cwd", lambda _cwd: str(tmp_path))
+    chat_daemon._pending_sessions.clear()
+
+    session = chat_daemon.create_pending_session(
+        "serena",
+        cwd="ignored",
+        title="mobile chat",
+    )
+
+    assert session["agent"] == "claude"
+    assert session["title"] == "mobile chat"
+    assert session["cwd"] == str(tmp_path)
+    assert str(uuid.UUID(session["id"])) == session["id"]
+    chat_daemon._drop_pending_session(session["id"])
+
+
+def test_first_turn_materializes_the_reserved_headless_chat(monkeypatch, tmp_path: Path):
+    from core import chat_daemon, config, indexer, metadata
+
+    monkeypatch.setattr(config, "resolve_session_cwd", lambda _cwd: str(tmp_path))
+    chat_daemon._pending_sessions.clear()
+    events: list[dict] = []
+    chat_daemon.handle_client_message(
+        json.dumps({
+            "type": "new_session",
+            "agent": "serena",
+            "cwd": "ignored",
+            "title": "gateway first",
+        }),
+        events.append,
+    )
+    sid = next(event["session"]["id"] for event in events if event["type"] == "session_created")
+
+    captured = {}
+    indexed = {"done": False}
+    monkeypatch.setattr(
+        indexer,
+        "get_session",
+        lambda _sid: {"session_id": sid} if indexed["done"] else None,
+    )
+
+    def update_index(**_kwargs):
+        indexed["done"] = True
+        return 1, 0
+
+    monkeypatch.setattr(indexer, "update_index", update_index)
+    monkeypatch.setattr(
+        metadata,
+        "set_custom_title",
+        lambda session_id, title: captured.update(title=(session_id, title)),
+    )
+
+    def run_agent(session_id, agent, text, cwd, emit, *, is_new=False):
+        captured.update(
+            session_id=session_id,
+            agent=agent,
+            text=text,
+            cwd=cwd,
+            is_new=is_new,
+        )
+        return True
+
+    monkeypatch.setattr(chat_daemon, "run_agent", run_agent)
+    monkeypatch.setattr(
+        chat_daemon,
+        "list_sessions_payload",
+        lambda: {"type": "sessions", "sessions": []},
+    )
+
+    chat_daemon.handle_client_message(
+        json.dumps({"type": "send", "sessionId": sid, "text": "build it"}),
+        events.append,
+    )
+
+    assert captured == {
+        "session_id": sid,
+        "agent": "claude",
+        "text": "build it",
+        "cwd": str(tmp_path),
+        "is_new": True,
+        "title": (sid, "gateway first"),
+    }
+    assert chat_daemon._get_pending_session(sid) is None
 
 
 def test_mobile_private_prompt_is_removed_when_spawn_fails(

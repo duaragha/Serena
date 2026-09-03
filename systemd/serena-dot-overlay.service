@@ -15,7 +15,9 @@ Environment=PYTHONUNBUFFERED=1
 # sandbox check rejects a perfectly good /usr/bin/bwrap under this unit's
 # user namespace and typed turns come back silent.
 Environment=SERENA_CALL_TRUST_IDMAPPED_SYSTEM=1
-Environment=SERENA_CALL_TTS_BACKEND=pocket
+Environment=SERENA_CALL_TTS_BACKEND=remote
+Environment=SERENA_CALL_TTS_REMOTE_URL=https://pc.tail4d6220.ts.net:8812
+Environment=SERENA_CALL_TTS_REMOTE_FALLBACK=1
 Environment=SERENA_CALL_POCKET_PYTHON=%h/Documents/Projects/serena/.venv-pocket/bin/python
 Environment=SERENA_CALL_POCKET_VOICE=anna
 Environment=HF_HOME=%h/.cache/serena/pocket-tts

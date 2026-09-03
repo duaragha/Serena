@@ -199,16 +199,16 @@ def test_unresolved_contradictions_are_not_retrieved_as_truth(tmp_path) -> None:
     assert store.retrieve("morning appointment") == []
 
 
-def test_local_semantic_retrieval_handles_paraphrases_and_explains_scores(tmp_path) -> None:
+def test_missing_local_model_does_not_use_the_old_synonym_map(tmp_path) -> None:
     store = MemoryV2Store(tmp_path / "memory.sqlite3")
-    record_id = _add(store, "Raghav prefers compact automobiles.")
+    _add(store, "Raghav prefers compact automobiles.")
 
     hits = store.retrieve("which small car does Raghav like", limit=3)
 
-    assert hits
-    assert hits[0].record.record_id == record_id
-    assert hits[0].semantic_score > 0
-    assert any(reason.startswith("local_semantic:") for reason in hits[0].reasons)
+    assert all(hit.semantic_score == 0.0 for hit in hits)
+    assert all(
+        not any(reason.startswith("local_semantic:") for reason in hit.reasons) for hit in hits
+    )
 
 
 def test_non_public_records_are_filtered_from_non_private_surfaces(tmp_path) -> None:
@@ -286,7 +286,7 @@ def test_retrieval_evaluation_reports_recall_and_rank(tmp_path) -> None:
     record_id = _add(store, "Raghav prefers the compact vehicle.")
 
     report = store.evaluate_retrieval(
-        [{"name": "paraphrase", "query": "favorite small car", "expected_record_ids": [record_id]}],
+        [{"name": "lexical", "query": "compact vehicle", "expected_record_ids": [record_id]}],
         limit=3,
     )
 
@@ -296,11 +296,62 @@ def test_retrieval_evaluation_reports_recall_and_rank(tmp_path) -> None:
     assert store.retrieval_evaluations()[0]["evaluation_id"] == report["evaluation_id"]
 
 
+def test_retrieval_evaluation_measures_no_answer_cases_without_awarding_recall(
+    tmp_path,
+) -> None:
+    store = MemoryV2Store(tmp_path / "memory.sqlite3")
+    _add(store, "Atlas deploys through the green channel.")
+
+    report = store.evaluate_retrieval(
+        [
+            {
+                "name": "no answer",
+                "query": "zephyr unobtainium",
+                "expected_record_ids": [],
+                "expect_no_answer": True,
+            }
+        ],
+        limit=3,
+    )
+
+    assert report["positive_case_count"] == 0
+    assert report["negative_case_count"] == 1
+    assert report["recall_at_k"] == 0.0
+    assert report["false_positive_rate"] == 0.0
+    assert report["no_answer_accuracy"] == 1.0
+    assert report["cases"][0]["returned_record_ids"] == []
+
+
+def test_retrieval_evaluation_counts_any_no_answer_result_as_a_false_positive(
+    tmp_path,
+) -> None:
+    store = MemoryV2Store(tmp_path / "memory.sqlite3")
+    record_id = _add(store, "Atlas deploys through the green channel.")
+
+    report = store.evaluate_retrieval(
+        [
+            {
+                "name": "matching no answer",
+                "query": "Atlas green channel",
+                "expected_record_ids": [],
+            }
+        ],
+        limit=3,
+    )
+
+    assert report["positive_case_count"] == 0
+    assert report["negative_case_count"] == 1
+    assert report["recall_at_k"] == 0.0
+    assert report["false_positive_rate"] == 1.0
+    assert report["no_answer_accuracy"] == 0.0
+    assert report["cases"][0]["returned_record_ids"] == [record_id]
+
+
 def test_retrieval_receipt_is_durable_without_raw_query(tmp_path) -> None:
     store = MemoryV2Store(tmp_path / "memory.sqlite3")
     record_id = _add(store, "Raghav prefers the compact vehicle.")
 
-    result = store.retrieve_with_receipt("favorite small car", surface="private")
+    result = store.retrieve_with_receipt("compact vehicle", surface="private")
 
     assert result["hits"][0]["record"]["record_id"] == record_id
     assert result["receipt"]["returned"][0]["record_id"] == record_id
@@ -311,7 +362,7 @@ def test_retrieval_receipt_is_durable_without_raw_query(tmp_path) -> None:
             "FROM memory_retrieval_receipts WHERE receipt_id = ?",
             (result["receipt"]["receipt_id"],),
         ).fetchone()[0]
-    assert "favorite small car" not in encoded
+    assert "compact vehicle" not in encoded
 
 
 def test_memory_proposal_events_use_transactional_outbox(tmp_path) -> None:

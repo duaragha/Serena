@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from core.fleet_completion import CompletionVerdict, evaluate_completion, extract_envelope
+from core.fleet_contracts import completion_unit_ids
 
 _DIRECT_TEST_TOOLS = frozenset(
     {
@@ -54,8 +55,55 @@ _DIRECT_TEST_TOOLS = frozenset(
     }
 )
 _SHELL_TOKENS = frozenset({"&&", "||", ";", "|", ">", ">>", "<", "2>", "2>&1"})
+# Fleet re-runs without a shell, so these never expand. Left alone they compare
+# or match literal text and hand back an exit code that means nothing, which is
+# worse than a refusal: the worker gets a green tick for a check that did not
+# happen.
+_UNEXPANDED_SHELL = ("$(", "`", "${")
+# Binaries that only read and report. The rule for adding one: no flag may make
+# it write a file or execute another program. That is why awk (system(), print
+# >), sed (-i, the e command), find (-exec), rg (--pre) and every shell are
+# absent, and it is why they stay absent.
+_READ_ONLY_INSPECTORS = frozenset({"grep", "cmp", "diff", "rg"})
+# ripgrep is safe for the same reason git is: its only escapes are flags, so it
+# is screened rather than excluded.
+_RG_ESCAPE_FLAGS = ("--pre", "--pre-glob", "--hostname-bin")
+# git subcommands that cannot mutate a repository. Kept separate from the
+# inspectors because git needs its own flag screening.
+_READ_ONLY_GIT = frozenset(
+    {
+        "blame",
+        "cat-file",
+        "describe",
+        "diff",
+        "grep",
+        "log",
+        "ls-files",
+        "merge-base",
+        "rev-parse",
+        "shortlog",
+        "show",
+        "status",
+    }
+)
+# git flags that turn a read into a write or an exec.
+_GIT_ESCAPE_FLAGS = (
+    "-c",
+    "--exec-path",
+    "--output",
+    "--ext-diff",
+    "--upload-pack",
+    "--receive-pack",
+)
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_PYTHON_TEST_MODULES = frozenset({"pytest", "ruff", "unittest", "py_compile"})
+# `python -m <module>` forms Fleet will re-run itself. The rule for adding one:
+# it must be a stdlib or already-trusted checker that reads and reports, never
+# one that installs, serves, or writes outside stdout. json.tool and doctest are
+# here because workers kept declaring them for exactly that purpose and losing an
+# attempt to a refusal that never said what was acceptable.
+_PYTHON_TEST_MODULES = frozenset(
+    {"pytest", "ruff", "unittest", "py_compile", "json.tool", "doctest"}
+)
 _SAFE_TEST_ENV = {
     "PYTHONDONTWRITEBYTECODE": frozenset({"1"}),
     "PYTHONPATH": frozenset({"."}),
@@ -64,6 +112,10 @@ _INHERITED_TEST_ENV = frozenset(
     {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ"}
 )
 _NODE_MODULE_BIN = re.compile(r"^(?:\./)?node_modules/\.bin/([A-Za-z0-9_.-]+)$")
+_SHELL_CONTROL_TOKENS = frozenset({";", ";;", "&", "&&", "|", "||", "(", ")"})
+_SHELL_COMMAND_PREFIXES = frozenset({"command", "exec", "nohup", "sudo"})
+_SHELL_COMMAND_KEYWORDS = frozenset({"do", "else", "then"})
+_BROAD_PROCESS_KILLERS = frozenset({"killall", "pkill"})
 
 
 def _string_list(value: object) -> list[str]:
@@ -100,7 +152,11 @@ def _active_claims(run_id: str, worker_key: str) -> list[str] | None:
     ]
 
 
-def _observed_changed_paths(run_id: str, worker_key: str) -> list[str] | None:
+def _observed_changed_paths(
+    run_id: str,
+    worker_key: str,
+    declared_paths: list[str] | None = None,
+) -> list[str] | None:
     """Real changed paths from this worker's workspace, when one is provable."""
 
     from core.fleet_isolation import FleetIsolationStore, workspace_changed_paths
@@ -109,7 +165,31 @@ def _observed_changed_paths(run_id: str, worker_key: str) -> list[str] | None:
     workspace = store.get_workspace(run_id, worker_key)
     if workspace is None:
         return None
-    return list(workspace_changed_paths(workspace))
+    try:
+        return list(workspace_changed_paths(workspace, declared_paths))
+    except Exception:
+        # A switched branch that is dirty, unpublished, or whose commit suffix
+        # does not exactly match the envelope must not get credit for the model's
+        # declaration. The broad baseline delta makes that mismatch visible and
+        # keeps the completion decision fail-closed.
+        return list(workspace_changed_paths(workspace))
+
+
+def _declared_changed_paths(
+    output_text: str, assignment_ids: list[str]
+) -> list[str] | None:
+    payload, _prose, error = extract_envelope(output_text)
+    if error or not isinstance(payload, dict):
+        return None
+    wanted = set(assignment_ids)
+    paths: set[str] = set()
+    for unit in payload.get("units") or []:
+        if not isinstance(unit, dict) or str(unit.get("id") or "") not in wanted:
+            continue
+        for path in unit.get("changed_paths") or []:
+            if str(path or "").strip():
+                paths.add(str(path).strip())
+    return sorted(paths)
 
 
 def _dependency_states(
@@ -210,6 +290,53 @@ def safe_test_argv(
     return list(argv)
 
 
+def _is_read_only_git(argv: list[str], workspace_path: str = "") -> bool:
+    """True for git invocations that can only read the repository.
+
+    `git diff --check` is the single most common verification any Fleet worker
+    declares and it was refused unless it appeared with no arguments at all, so
+    the most popular honest check in the fleet was also the most rejected. The
+    subcommand allowlist is what makes it safe; the flag screen is what keeps a
+    read from becoming a write or an exec.
+    """
+
+    rest = argv[1:]
+    # A leading `-C <dir>` is how a worker points git at its own checkout.
+    while rest[:1] == ["-C"] and len(rest) >= 2:
+        rest = rest[2:]
+    if not rest:
+        return False
+    if rest[0] not in _READ_ONLY_GIT:
+        return False
+    return not any(
+        token == flag or token.startswith(flag + "=")
+        for token in rest
+        for flag in _GIT_ESCAPE_FLAGS
+    )
+
+
+def accepted_verification_forms() -> list[str]:
+    """The command shapes Fleet will re-run, stated for a worker to choose from.
+
+    This list lived only inside the validator, so a worker had to guess which
+    verification Fleet would accept and paid an attempt for every wrong guess.
+    The prompt and the rejection notice both render from here now, so the rule a
+    worker is held to is the rule it was given.
+    """
+
+    modules = ", ".join(sorted(_PYTHON_TEST_MODULES))
+    tools = ", ".join(sorted(_DIRECT_TEST_TOOLS | _READ_ONLY_INSPECTORS))
+    git_subcommands = ", ".join(sorted(_READ_ONLY_GIT))
+    return [
+        f"python -m <{modules}> <args>",
+        "python <a-script-inside-your-own-worktree>.py",
+        f"one of these directly: {tools}",
+        f"git <{git_subcommands}> <args>, optionally after -C <dir>",
+        "no shell operators, pipes, redirection, or $(command substitution) - "
+        "Fleet runs without a shell, so those never expand",
+    ]
+
+
 def _test_spec(
     command: str, workspace_path: str, tool_root: str | None = None
 ) -> tuple[list[str], dict[str, str], list[str]] | None:
@@ -220,6 +347,8 @@ def _test_spec(
     except ValueError:
         return None
     if not argv or any(token in _SHELL_TOKENS for token in argv):
+        return None
+    if any(marker in token for token in argv for marker in _UNEXPANDED_SHELL):
         return None
     environment: dict[str, str] = {}
     unset: list[str] = []
@@ -255,14 +384,21 @@ def _test_spec(
     if not argv:
         return None
     executable = os.path.basename(argv[0])
+    if executable == "git" and not _is_read_only_git(argv):
+        return None
+    if executable == "rg" and any(
+        token == flag or token.startswith(flag + "=")
+        for token in argv[1:]
+        for flag in _RG_ESCAPE_FLAGS
+    ):
+        return None
     if executable.startswith("python"):
-        if (
-            len(argv) < 3
-            or argv[1] != "-m"
-            or argv[2] not in _PYTHON_TEST_MODULES
-        ):
+        module_form = (
+            len(argv) >= 3 and argv[1] == "-m" and argv[2] in _PYTHON_TEST_MODULES
+        )
+        if not module_form and not _is_workspace_script(argv, workspace_path):
             return None
-    elif executable not in _DIRECT_TEST_TOOLS:
+    elif executable not in _DIRECT_TEST_TOOLS | _READ_ONLY_INSPECTORS | {"git"}:
         return None
     raw_executable = argv[0]
     node_bin = _NODE_MODULE_BIN.fullmatch(raw_executable)
@@ -312,6 +448,38 @@ def _test_spec(
         return None
     argv[0] = str(candidate)
     return argv, environment, unset
+
+
+def _is_workspace_script(argv: list[str], workspace_path: str) -> bool:
+    """Allow `python <script>` when the script is the worker's own, in its tree.
+
+    Refusing this was costing real work. A worker whose job is to write a
+    preflight check has no runner to declare: the deliverable *is* the script.
+    Fleet recorded 126 for it, which the verdict then reported as "did not exit
+    cleanly", so a worker whose script exits 0 was failed for the harness
+    declining to run it, twice, with no message saying so.
+
+    The boundary this preserves is the one that matters. The interpreter still
+    has to resolve outside the worktree, which is what stops a worker
+    substituting its own binary. The script itself is worker-authored code, but
+    so is every test file `python -m pytest` already collects and executes, so
+    running one named script is not a wider door than the module form.
+    """
+
+    if len(argv) < 2:
+        return False
+    target = argv[1]
+    # Only a bare relative path. Flags reopen the interpreter's own surface
+    # (-c runs inline source, -i drops to a shell) and an absolute path could
+    # point anywhere outside the worktree.
+    if target.startswith("-") or Path(target).is_absolute():
+        return False
+    try:
+        workspace = Path(workspace_path).resolve(strict=True)
+        script = (workspace / target).resolve(strict=True)
+    except OSError:
+        return False
+    return script.is_file() and workspace in script.parents
 
 
 def _test_argv(command: str, workspace_path: str) -> list[str] | None:
@@ -582,6 +750,133 @@ def _event_log_test_results(event_log_path: str | None) -> dict[str, int]:
     return observed
 
 
+def _event_log_commands(event_log_path: str | None) -> list[str]:
+    """Return shell commands a provider actually asked its execution tool to run."""
+
+    if not event_log_path:
+        return []
+    path = Path(event_log_path)
+    if not path.is_file():
+        return []
+
+    commands: list[str] = []
+    try:
+        records = path.open("r", encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    with records:
+        for raw in records:
+            try:
+                outer = json.loads(raw)
+                event = json.loads(str(outer.get("line") or ""))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if not isinstance(event, dict):
+                continue
+
+            item = event.get("item")
+            if (
+                event.get("type") == "item.completed"
+                and isinstance(item, dict)
+                and item.get("type") == "command_execution"
+            ):
+                command = str(item.get("command") or "").strip()
+                if command:
+                    commands.append(_provider_command(command))
+                continue
+
+            if event.get("type") != "assistant":
+                continue
+            message = event.get("message")
+            if not isinstance(message, dict):
+                continue
+            for block in message.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if str(block.get("name") or "").casefold() not in {
+                    "bash",
+                    "shell",
+                }:
+                    continue
+                tool_input = block.get("input")
+                tool_input = tool_input if isinstance(tool_input, dict) else {}
+                command = str(tool_input.get("command") or "").strip()
+                if command:
+                    commands.append(_provider_command(command))
+    return commands
+
+
+def _simple_shell_commands(command: str) -> list[list[str]]:
+    """Tokenise executable positions without treating quoted prose as commands.
+
+    This is deliberately not a shell parser. It only needs to recognise the
+    simple command positions where a broad process killer can run. Heredoc
+    bodies are skipped so a worker documenting the forbidden spelling is not
+    failed for text it never executed.
+    """
+
+    commands: list[list[str]] = []
+    heredoc_end = ""
+    for line in command.splitlines() or [command]:
+        if heredoc_end:
+            if line.strip() == heredoc_end:
+                heredoc_end = ""
+            continue
+        heredoc = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)", line)
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            tokens = list(lexer)
+        except ValueError:
+            tokens = []
+        current: list[str] = []
+        for token in tokens:
+            if token in _SHELL_CONTROL_TOKENS:
+                if current:
+                    commands.append(current)
+                    current = []
+                continue
+            current.append(token)
+        if current:
+            commands.append(current)
+        if heredoc:
+            heredoc_end = heredoc.group(1)
+    return commands
+
+
+def _command_uses_broad_process_cleanup(command: str) -> bool:
+    """True when a simple command invokes pkill/killall rather than an exact PID."""
+
+    for argv in _simple_shell_commands(command):
+        cursor = 0
+        while cursor < len(argv) and (
+            argv[cursor] in _SHELL_COMMAND_KEYWORDS
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[cursor])
+        ):
+            cursor += 1
+        while cursor < len(argv):
+            executable = os.path.basename(argv[cursor])
+            if executable in _BROAD_PROCESS_KILLERS:
+                return True
+            if executable not in _SHELL_COMMAND_PREFIXES:
+                break
+            cursor += 1
+            while cursor < len(argv) and argv[cursor].startswith("-"):
+                cursor += 1
+    return False
+
+
+def _event_log_unsafe_process_cleanup(event_log_path: str | None) -> list[str]:
+    """Find worker commands that can kill unrelated user or Fleet processes."""
+
+    unsafe: list[str] = []
+    for command in _event_log_commands(event_log_path):
+        if _command_uses_broad_process_cleanup(command) and command not in unsafe:
+            unsafe.append(command[:400])
+    return unsafe
+
+
 def _event_log_research_activity(event_log_path: str | None) -> dict[str, int]:
     """Count completed native web searches/fetches from the provider stream."""
 
@@ -724,6 +1019,37 @@ def _clean_command(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
+def _leg_research_activity(
+    run_id: str, leg_id: str, event_log_path: str | None
+) -> dict[str, int]:
+    """Count this leg's research across every attempt, not just the last one.
+
+    A retry resumes the same native session, so a worker that already searched
+    has no reason to search again: the results are still in its context. Reading
+    only the current attempt's stream therefore reported zero searches for a leg
+    that had done a dozen, and the retry was unwinnable — the worker could not
+    satisfy the quota without redoing work it had already done and been given
+    credit for nowhere. Attempts of one leg are one piece of research.
+    """
+
+    totals = dict(_event_log_research_activity(event_log_path))
+    if not run_id or not leg_id:
+        return totals
+    try:
+        from core.fleet_store import FleetStore
+
+        earlier = FleetStore().attempt_event_logs(run_id, leg_id)
+    except Exception:
+        return totals
+    for path in earlier:
+        if not path or path == event_log_path:
+            continue
+        prior = _event_log_research_activity(path)
+        for key, value in prior.items():
+            totals[key] = int(totals.get(key) or 0) + int(value or 0)
+    return totals
+
+
 def evaluate_leg_completion(
     snapshot: dict[str, Any],
     leg: dict[str, Any],
@@ -735,8 +1061,19 @@ def evaluate_leg_completion(
     worker_key = str(leg.get("worker_key") or "")
     run_id = str(snapshot.get("run_id") or "")
     access_mode = str(leg.get("access_mode") or "read")
+    phase_index, phase_name = _leg_phase(snapshot, leg)
+    assignment_ids = completion_unit_ids(leg, phase_name)
+    declared_paths = (
+        _declared_changed_paths(output_text, assignment_ids)
+        if access_mode == "write"
+        else None
+    )
     claims = _active_claims(run_id, worker_key) if access_mode == "write" else None
-    observed = _observed_changed_paths(run_id, worker_key) if access_mode == "write" else None
+    observed = (
+        _observed_changed_paths(run_id, worker_key, declared_paths)
+        if access_mode == "write"
+        else None
+    )
     observed_tests = _observed_test_results(
         run_id,
         worker_key,
@@ -745,12 +1082,13 @@ def evaluate_leg_completion(
         allow_rerun=access_mode == "write",
         tool_root=str(snapshot.get("cwd") or "") or None,
     )
-    phase_index, phase_name = _leg_phase(snapshot, leg)
-    observed_research = _event_log_research_activity(event_log_path)
-    return evaluate_completion(
+    observed_research = _leg_research_activity(
+        run_id, str(leg.get("leg_id") or ""), event_log_path
+    )
+    verdict = evaluate_completion(
         output_text=output_text,
         units=_work_units(snapshot),
-        assignment_ids=_string_list(leg.get("assignment_ids")),
+        assignment_ids=assignment_ids,
         access_mode=access_mode,
         activity=str(snapshot.get("activity") or "coding"),
         phase=phase_name,
@@ -762,4 +1100,24 @@ def evaluate_leg_completion(
         research_depth=str(
             (snapshot.get("policy") or {}).get("research_depth") or "full"
         ).lower(),
+    )
+    unsafe_cleanup = _event_log_unsafe_process_cleanup(event_log_path)
+    if not unsafe_cleanup:
+        return verdict
+
+    failure = (
+        "unsafe broad process termination executed; use the exact PID or process "
+        f"group started by this worker: {unsafe_cleanup[0]}"
+    )
+    evidence = dict(verdict.evidence)
+    evidence["unsafe_process_cleanup"] = unsafe_cleanup
+    return CompletionVerdict(
+        accepted=False,
+        enforced=True,
+        reason="worker execution used unsafe broad process termination",
+        envelope_present=verdict.envelope_present,
+        failures=tuple(dict.fromkeys((*verdict.failures, failure))),
+        units=verdict.units,
+        schema_version=verdict.schema_version,
+        evidence=evidence,
     )

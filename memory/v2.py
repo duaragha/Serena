@@ -23,8 +23,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from memory.reranker import (
+    RANKING_VERSION,
+    CandidateSignals,
+    rerank_candidates,
+)
+
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "memory-v2.sqlite3"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 RECORD_TYPES = frozenset(
     {"semantic_fact", "episode", "procedure", "commitment", "preference", "correction"}
@@ -40,7 +46,10 @@ MAX_SOURCE_CHARS = 16_000
 MAX_PROPOSALS = 1_000
 MAX_RETRIEVAL_RESULTS = 50
 MAX_RECEIPTS = 10_000
-RETRIEVAL_RANKING_VERSION = "local-hybrid-v1"
+RETRIEVAL_RANKING_VERSION = RANKING_VERSION
+RETRIEVAL_FEEDBACK_VERSION = "receipt-bound-feedback-v1"
+FEEDBACK_KINDS = frozenset({"relevance", "factual_correction"})
+FEEDBACK_STATES = frozenset({"active", "revoked", "resolved"})
 
 _LEGACY_TYPES = frozenset(
     {"task", "ledger", "loop", "feedback", "user", "project", "reference", "general"}
@@ -55,19 +64,6 @@ _V2_LEGACY_TYPE_MAP = {
 }
 
 _WORDS = re.compile(r"[a-z0-9]+")
-_CONCEPT_GROUPS = (
-    ("prefer", "preference", "like", "favour", "favorite", "favourite", "choose"),
-    ("car", "cars", "vehicle", "vehicles", "automobile", "automobiles"),
-    ("doctor", "physician", "gp", "clinician"),
-    ("therapist", "therapy", "counsellor", "counselor", "psychotherapy"),
-    ("job", "work", "employment", "career"),
-    ("home", "house", "apartment", "condo", "residence"),
-    ("phone", "mobile", "iphone", "android", "handset"),
-    ("meeting", "appointment", "session", "call"),
-    ("remove", "delete", "forget", "erase", "purge"),
-    ("deadline", "due", "finish", "complete", "commitment"),
-)
-_CONCEPT_BY_WORD = {word: f"concept:{group[0]}" for group in _CONCEPT_GROUPS for word in group}
 _LEGACY_TYPE_MAP = {
     "task": "commitment",
     "ledger": "commitment",
@@ -112,6 +108,7 @@ class RetrievalHit:
     score: float
     literal_score: float
     semantic_score: float
+    components: dict[str, float]
     reasons: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -120,6 +117,7 @@ class RetrievalHit:
             "score": self.score,
             "literal_score": self.literal_score,
             "semantic_score": self.semantic_score,
+            "components": dict(self.components),
             "reasons": list(self.reasons),
         }
 
@@ -132,21 +130,53 @@ class RetrievalReceipt:
     project: str
     record_type: str | None
     ranking_version: str
+    filters: dict[str, Any]
     returned: tuple[dict[str, Any], ...]
     created_at: float
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
+        value["filters"] = dict(self.filters)
         value["returned"] = list(self.returned)
         return value
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalFeedback:
+    feedback_id: str
+    receipt_id: str
+    record_id: str
+    kind: str
+    label: str
+    query_sha256: str
+    surface: str
+    ranking_version: str
+    reason_sha256: str
+    source_sha256: str
+    proposal_id: str | None
+    state: str
+    created_at: float
+    updated_at: float
+    revoked_at: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class MemoryV2Store:
     """SQLite authority for v2 records and reviewed proposal application."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        embedding_provider: Any = None,
+        embedding_model_path: str | Path | None = None,
+    ) -> None:
         configured = os.environ.get("SERENA_MEMORY_V2_DB_PATH", "").strip()
         self.path = Path(path or configured or DEFAULT_DB_PATH).expanduser()
+        self._embedding_provider = embedding_provider
+        self._embedding_model_path = embedding_model_path
         self._initialize()
         from core.control_plane import SurfaceOutbox
 
@@ -668,6 +698,19 @@ class MemoryV2Store:
             )
         return proposals
 
+    def prepare_hybrid_cache(self) -> dict[str, Any]:
+        """Build local FTS and dense caches without activating memory authority."""
+
+        from memory.hybrid import HybridCandidateGenerator, v2_documents
+
+        records = self.records(include_inactive=True)
+        generator = HybridCandidateGenerator(
+            self.path,
+            embedding_provider=self._embedding_provider,
+            model_path=self._embedding_model_path,
+        )
+        return generator.prepare(v2_documents(records), authority="memory-v2")
+
     def retrieve(
         self,
         query: str,
@@ -676,72 +719,43 @@ class MemoryV2Store:
         surface: str = "private",
         project: str = "",
         people: Sequence[str] = (),
+        entities: Sequence[str] = (),
         record_type: str | None = None,
         now: float | None = None,
+        temporal_intent: str | None = None,
+        as_of: float | None = None,
+        include_contested: bool = False,
+        include_superseded: bool | None = None,
+        active_record_ids: Sequence[str] = (),
+        candidate_scores: Mapping[str, Mapping[str, float]] | None = None,
+        query_variants: Sequence[str] = (),
+        query_understanding: Mapping[str, Any] | None = None,
         record_receipt: bool = True,
     ) -> list[RetrievalHit]:
-        """Combine literal and local semantic signals with validity and state."""
+        """Apply one state-aware policy to bounded local retrieval candidates."""
 
         clean_query = " ".join(str(query or "").split())
         if not clean_query:
             return []
         current = time.time() if now is None else float(now)
-        q_words = _tokens(clean_query)
-        q_semantic = _semantic_tokens(clean_query)
-        wanted_people = {str(person).strip().lower() for person in people if str(person).strip()}
-        hits: list[RetrievalHit] = []
-        for record in self.records(record_type=record_type):
-            if record.valid_from is not None and record.valid_from > current:
-                continue
-            if record.valid_until is not None and record.valid_until <= current:
-                continue
-            if record.retention_until is not None and record.retention_until <= current:
-                continue
-            if surface != "private" and record.sensitivity != "public":
-                continue
-            words = _tokens(record.content)
-            semantic = _semantic_tokens(record.content)
-            literal = _overlap_score(q_words, words)
-            semantic_score = _cosine(q_semantic, semantic)
-            project_score = 1.0 if project and record.project.lower() == project.lower() else 0.0
-            record_people = {person.lower() for person in record.people}
-            people_score = _overlap_score(wanted_people, record_people) if wanted_people else 0.0
-            age_days = max(0.0, (current - record.updated_at) / 86_400.0)
-            recency = math.exp(-age_days / 365.0)
-            state_priority = 1.0 if record.record_type == "commitment" else 0.0
-            score = (
-                0.38 * literal
-                + 0.38 * semantic_score
-                + 0.08 * recency
-                + 0.07 * project_score
-                + 0.05 * people_score
-                + 0.04 * state_priority
-            ) * record.confidence
-            if literal <= 0 and semantic_score <= 0 and project_score <= 0 and people_score <= 0:
-                continue
-            reasons = []
-            if literal > 0:
-                reasons.append(f"literal:{literal:.3f}")
-            if semantic_score > 0:
-                reasons.append(f"local_semantic:{semantic_score:.3f}")
-            if project_score:
-                reasons.append("project")
-            if people_score:
-                reasons.append("people")
-            if state_priority:
-                reasons.append("active_state_priority")
-            reasons.append(f"confidence:{record.confidence:.3f}")
-            hits.append(
-                RetrievalHit(
-                    record=record,
-                    score=round(score, 6),
-                    literal_score=round(literal, 6),
-                    semantic_score=round(semantic_score, 6),
-                    reasons=tuple(reasons),
-                )
-            )
-        hits.sort(key=lambda hit: (-hit.score, -hit.record.updated_at, hit.record.record_id))
-        selected = hits[: min(MAX_RETRIEVAL_RESULTS, max(1, int(limit)))]
+        hits, ranking_details = self._rank_retrieval(
+            clean_query,
+            limit=limit,
+            surface=surface,
+            project=project,
+            people=people,
+            entities=entities,
+            record_type=record_type,
+            now=current,
+            temporal_intent=temporal_intent,
+            as_of=as_of,
+            include_contested=include_contested,
+            include_superseded=include_superseded,
+            active_record_ids=active_record_ids,
+            candidate_scores=candidate_scores,
+            query_variants=query_variants,
+            query_understanding=query_understanding,
+        )
         if record_receipt:
             self._record_retrieval(
                 query=clean_query,
@@ -749,25 +763,247 @@ class MemoryV2Store:
                 project=project,
                 people=people,
                 record_type=record_type,
-                hits=selected,
+                hits=hits,
+                ranking_details=ranking_details,
                 created_at=current,
             )
-        return selected
+        return hits
+
+    def _rank_retrieval(
+        self,
+        clean_query: str,
+        *,
+        limit: int,
+        surface: str,
+        project: str,
+        people: Sequence[str],
+        entities: Sequence[str],
+        record_type: str | None,
+        now: float,
+        temporal_intent: str | None,
+        as_of: float | None,
+        include_contested: bool,
+        include_superseded: bool | None,
+        active_record_ids: Sequence[str],
+        candidate_scores: Mapping[str, Mapping[str, float]] | None,
+        query_variants: Sequence[str],
+        query_understanding: Mapping[str, Any] | None,
+    ) -> tuple[list[RetrievalHit], dict[str, Any]]:
+        clean_variants = tuple(
+            dict.fromkeys(
+                " ".join(str(value or "").split())[:2_000]
+                for value in tuple(query_variants)[:6]
+                if str(value or "").strip()
+            )
+        )
+        expanded_query = " ".join((clean_query, *clean_variants))
+        q_words = _tokens(expanded_query)
+        query_folded = clean_query.casefold()
+        wanted_people = {str(person).strip().casefold() for person in people if str(person).strip()}
+        wanted_entities = [str(entity).strip().casefold() for entity in entities if str(entity).strip()]
+        wanted_project = str(project or "").strip().casefold()
+        records = self.records(include_inactive=True, record_type=record_type)
+        candidate_generation: dict[str, Any] = {}
+        if candidate_scores is None:
+            from memory.hybrid import HybridCandidateGenerator, HybridRequest, v2_documents
+
+            generated = HybridCandidateGenerator(
+                self.path,
+                embedding_provider=self._embedding_provider,
+                model_path=self._embedding_model_path,
+            ).generate(
+                v2_documents(records),
+                HybridRequest(
+                    query=clean_query,
+                    query_variants=clean_variants,
+                    project=project,
+                    people=tuple(str(value) for value in people),
+                    entities=tuple(str(value) for value in entities),
+                    limit=MAX_RETRIEVAL_RESULTS,
+                ),
+                authority="memory-v2",
+            )
+            supplied_scores: Mapping[str, Mapping[str, float]] = generated.score_map()
+            candidate_generation = generated.diagnostics
+        else:
+            supplied_scores = candidate_scores
+        feedback_penalties = self._feedback_penalties(_sha256(clean_query), surface)
+        candidates: list[CandidateSignals] = []
+        dense_record_ids: set[str] = set()
+        invalid_dense_count = 0
+        for record in records:
+            words = _tokens(record.content)
+            raw_external = supplied_scores.get(record.record_id, {})
+            external = raw_external if isinstance(raw_external, Mapping) else {}
+            dense_present = any(key in external for key in ("dense", "dense_score"))
+            dense_score = _optional_external_score(external, "dense", "dense_score")
+            has_dense = dense_score is not None
+            if has_dense:
+                dense_record_ids.add(record.record_id)
+            elif dense_present:
+                invalid_dense_count += 1
+            literal = max(
+                _overlap_score(q_words, words),
+                _external_score(external, "literal", "lexical", "lexical_score"),
+            )
+            semantic_score = dense_score if dense_score is not None else 0.0
+            record_folded = record.content.casefold()
+            exact = 1.0 if query_folded in record_folded else 0.0
+            if not exact and len(q_words) <= 6 and q_words and q_words.issubset(words):
+                exact = 0.8
+            exact = max(exact, _external_score(external, "exact", "exact_score"))
+
+            record_project = record.project.strip().casefold()
+            project_score = 1.0 if wanted_project and record_project == wanted_project else 0.0
+            if record_project:
+                project_score = max(project_score, _overlap_score(q_words, _tokens(record_project)))
+            project_score = max(project_score, _external_score(external, "project"))
+
+            record_people = {person.strip().casefold() for person in record.people if person.strip()}
+            people_score = _overlap_score(wanted_people, record_people) if wanted_people else 0.0
+            if record_people:
+                people_words = set().union(*(_tokens(person) for person in record_people))
+                people_score = max(people_score, _overlap_score(q_words, people_words))
+            people_score = max(people_score, _external_score(external, "people"))
+
+            searchable = " ".join((record_folded, record_project, *record_people))
+            entity_matches = sum(
+                1 for entity in wanted_entities if _contains_entity_phrase(searchable, entity)
+            )
+            entity_score = entity_matches / len(wanted_entities) if wanted_entities else 0.0
+            entity_score = max(entity_score, _external_score(external, "entity", "entity_score"))
+            relevance_penalty = feedback_penalties.get(record.record_id, (0.0, ()))[0]
+            candidates.append(
+                CandidateSignals(
+                    record=record,
+                    literal=literal,
+                    semantic=semantic_score,
+                    exact=exact,
+                    project=project_score,
+                    people=people_score,
+                    entity=entity_score,
+                    relevance_penalty=relevance_penalty,
+                )
+            )
+
+        result = rerank_candidates(
+            candidates,
+            query=clean_query,
+            now=now,
+            limit=min(MAX_RETRIEVAL_RESULTS, max(1, int(limit))),
+            surface=surface,
+            temporal_intent=temporal_intent,
+            as_of=as_of,
+            include_contested=include_contested,
+            include_superseded=include_superseded,
+            active_record_ids=active_record_ids,
+        )
+        dense_supplied = bool(dense_record_ids)
+        backend = "hybrid_candidates" if dense_supplied else "deterministic_local_fallback"
+        hits = []
+        for ranked in result.ranked:
+            candidate = ranked.candidate
+            record = candidate.record
+            assert isinstance(record, MemoryRecord)
+            components = dict(ranked.components)
+            components.update(
+                {
+                    "literal_raw": round(candidate.literal, 6),
+                    "semantic_raw": round(candidate.semantic, 6),
+                    "exact_raw": round(candidate.exact, 6),
+                    "project_raw": round(candidate.project, 6),
+                    "people_raw": round(candidate.people, 6),
+                    "entity_raw": round(candidate.entity, 6),
+                }
+            )
+            reasons = list(ranked.reasons)
+            if candidate.semantic > 0:
+                reasons.append(f"dense_semantic:{candidate.semantic:.3f}")
+            if record.record_id in feedback_penalties:
+                reasons.extend(
+                    f"relevance_feedback:{feedback_id}"
+                    for feedback_id in feedback_penalties[record.record_id][1]
+                )
+            hits.append(
+                RetrievalHit(
+                    record=record,
+                    score=ranked.score,
+                    literal_score=round(candidate.literal, 6),
+                    semantic_score=round(candidate.semantic, 6),
+                    components=components,
+                    reasons=tuple(reasons),
+                )
+            )
+        details = result.receipt_details()
+        generated_fallback = str(candidate_generation.get("fallback_reason") or "")
+        details.update(
+            {
+                "backend": backend,
+                "fallback_reason": (
+                    "invalid_dense_scores"
+                    if invalid_dense_count
+                    else generated_fallback
+                    if generated_fallback
+                    else ""
+                    if dense_supplied
+                    else "dense_scores_unavailable"
+                ),
+                "invalid_dense_count": invalid_dense_count,
+                "entity_count": len(wanted_entities),
+                "active_record_count": len({str(value) for value in active_record_ids}),
+                "as_of": as_of,
+                "include_contested": bool(include_contested),
+                "include_superseded": include_superseded,
+                "query_variant_count": len(clean_variants),
+                "query_variant_sha256": [_sha256(value) for value in clean_variants],
+                "feedback_version": RETRIEVAL_FEEDBACK_VERSION,
+                "active_feedback_count": sum(
+                    len(feedback_ids) for _penalty, feedback_ids in feedback_penalties.values()
+                ),
+                "query_understanding": dict(query_understanding or {}),
+                "candidate_generation": candidate_generation,
+            }
+        )
+        return hits, details
 
     def retrieve_with_receipt(self, query: str, **filters: Any) -> dict[str, Any]:
         """Retrieve once and return the exact durable receipt for what was exposed."""
 
         filters.pop("record_receipt", None)
-        hits = self.retrieve(query, record_receipt=False, **filters)
+        clean_query = " ".join(str(query or "").split())
         receipt_time = filters.get("now")
+        current = time.time() if receipt_time is None else float(receipt_time)
+        if clean_query:
+            hits, ranking_details = self._rank_retrieval(
+                clean_query,
+                limit=int(filters.get("limit", 8)),
+                surface=str(filters.get("surface") or "private"),
+                project=str(filters.get("project") or ""),
+                people=filters.get("people") or (),
+                entities=filters.get("entities") or (),
+                record_type=filters.get("record_type"),
+                now=current,
+                temporal_intent=filters.get("temporal_intent"),
+                as_of=filters.get("as_of"),
+                include_contested=bool(filters.get("include_contested", False)),
+                include_superseded=filters.get("include_superseded"),
+                active_record_ids=filters.get("active_record_ids") or (),
+                candidate_scores=filters.get("candidate_scores"),
+                query_variants=filters.get("query_variants") or (),
+                query_understanding=filters.get("query_understanding"),
+            )
+        else:
+            hits = []
+            ranking_details = {"backend": "empty_query", "temporal_intent": "current"}
         receipt = self._record_retrieval(
-            query=" ".join(str(query or "").split()),
+            query=clean_query,
             surface=str(filters.get("surface") or "private"),
             project=str(filters.get("project") or ""),
             people=filters.get("people") or (),
             record_type=filters.get("record_type"),
             hits=hits,
-            created_at=time.time() if receipt_time is None else float(receipt_time),
+            ranking_details=ranking_details,
+            created_at=current,
         )
         return {"hits": [hit.to_dict() for hit in hits], "receipt": receipt.to_dict()}
 
@@ -780,6 +1016,281 @@ class MemoryV2Store:
             ).fetchall()
         return [_retrieval_receipt_from_row(row).to_dict() for row in rows]
 
+    def retrieval_feedback(
+        self,
+        *,
+        state: str | None = None,
+        kind: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clean_state = str(state or "").strip().lower()
+        clean_kind = str(kind or "").strip().lower()
+        if clean_state and clean_state not in FEEDBACK_STATES:
+            raise ValueError("invalid retrieval feedback state")
+        if clean_kind and clean_kind not in FEEDBACK_KINDS:
+            raise ValueError("invalid retrieval feedback kind")
+        clauses = []
+        values: list[object] = []
+        if clean_state:
+            clauses.append("state = ?")
+            values.append(clean_state)
+        if clean_kind:
+            clauses.append("kind = ?")
+            values.append(clean_kind)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(min(1_000, max(1, int(limit))))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM memory_retrieval_feedback"
+                + where
+                + " ORDER BY created_at DESC, feedback_id DESC LIMIT ?",
+                values,
+            ).fetchall()
+        return [_retrieval_feedback_from_row(row).to_dict() for row in rows]
+
+    def record_relevance_feedback(
+        self,
+        receipt_id: str,
+        record_id: str,
+        *,
+        reason: str = "",
+        source: Mapping[str, Any],
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Record reversible relevance failure for one returned record only."""
+
+        clean_receipt_id = _required_text(receipt_id, "retrieval receipt id", 256)
+        clean_record_id = _required_text(record_id, "retrieval feedback record id", 256)
+        created_at = time.time() if now is None else float(now)
+        clean_source = _source(source)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            receipt = _require_retrieval_target(connection, clean_receipt_id, clean_record_id)
+            feedback = self._insert_feedback(
+                connection,
+                receipt=receipt,
+                record_id=clean_record_id,
+                kind="relevance",
+                label="irrelevant",
+                reason=reason,
+                source=clean_source,
+                proposal_id=None,
+                created_at=created_at,
+            )
+            self._stage_event(
+                connection,
+                event_type="retrieval.feedback.recorded",
+                proposal_id=feedback.feedback_id,
+                lifecycle_state="active",
+                payload={
+                    "feedback_kind": feedback.kind,
+                    "receipt_id": feedback.receipt_id,
+                    "record_id": feedback.record_id,
+                    "query_sha256": feedback.query_sha256,
+                },
+            )
+        return feedback.to_dict()
+
+    def propose_factual_correction(
+        self,
+        receipt_id: str,
+        record_id: str,
+        *,
+        corrected_content: str,
+        source: Mapping[str, Any],
+        reason: str = "",
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Create a reviewable correction proposal and leave canonical memory alone."""
+
+        clean_receipt_id = _required_text(receipt_id, "retrieval receipt id", 256)
+        clean_record_id = _required_text(record_id, "retrieval feedback record id", 256)
+        clean_content = _content(corrected_content)
+        if not clean_content:
+            raise ValueError("corrected memory content is required")
+        clean_source = _source(source)
+        with self._connect() as connection:
+            receipt = _require_retrieval_target(connection, clean_receipt_id, clean_record_id)
+            row = self._record_row(connection, clean_record_id)
+            if row is None:
+                raise KeyError(f"unknown memory record {clean_record_id}")
+            record = _record_from_row(row)
+            if record.status in {"forgotten", "retracted"}:
+                raise RuntimeError("inactive memory records cannot receive factual corrections")
+        proposal = self.create_proposal(
+            operation="update",
+            target_record_id=clean_record_id,
+            candidate={
+                "record_type": record.record_type,
+                "content": clean_content,
+                "confidence": record.confidence,
+                "sensitivity": record.sensitivity,
+                "project": record.project,
+                "people": list(record.people),
+                "valid_from": record.valid_from,
+                "valid_until": record.valid_until,
+                "retention_until": record.retention_until,
+            },
+            source=clean_source,
+        )
+        created_at = time.time() if now is None else float(now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            receipt = _require_retrieval_target(connection, clean_receipt_id, clean_record_id)
+            feedback = self._insert_feedback(
+                connection,
+                receipt=receipt,
+                record_id=clean_record_id,
+                kind="factual_correction",
+                label="incorrect_fact",
+                reason=reason,
+                source=clean_source,
+                proposal_id=str(proposal["proposal_id"]),
+                created_at=created_at,
+            )
+            self._stage_event(
+                connection,
+                event_type="retrieval.correction.proposed",
+                proposal_id=feedback.feedback_id,
+                lifecycle_state="proposed",
+                payload={
+                    "feedback_kind": feedback.kind,
+                    "receipt_id": feedback.receipt_id,
+                    "record_id": feedback.record_id,
+                    "proposal_id": feedback.proposal_id,
+                },
+            )
+        return {"feedback": feedback.to_dict(), "proposal": proposal}
+
+    def revoke_relevance_feedback(
+        self,
+        feedback_id: str,
+        *,
+        source: Mapping[str, Any],
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Revoke a relevance judgment without deleting its audit history."""
+
+        clean_id = _required_text(feedback_id, "retrieval feedback id", 256)
+        clean_source = _source(source)
+        revoked_at = time.time() if now is None else float(now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM memory_retrieval_feedback WHERE feedback_id = ?",
+                (clean_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown retrieval feedback {clean_id}")
+            feedback = _retrieval_feedback_from_row(row)
+            if feedback.kind != "relevance":
+                raise RuntimeError("factual corrections are reviewed through their proposal")
+            if feedback.state == "revoked":
+                return feedback.to_dict()
+            connection.execute(
+                "UPDATE memory_retrieval_feedback SET state = 'revoked', updated_at = ?, "
+                "revoked_at = ?, revocation_source_sha256 = ? WHERE feedback_id = ?",
+                (revoked_at, revoked_at, _sha256(_json(clean_source)), clean_id),
+            )
+            self._stage_event(
+                connection,
+                event_type="retrieval.feedback.revoked",
+                proposal_id=clean_id,
+                lifecycle_state="revoked",
+                payload={"receipt_id": feedback.receipt_id, "record_id": feedback.record_id},
+            )
+            updated = connection.execute(
+                "SELECT * FROM memory_retrieval_feedback WHERE feedback_id = ?",
+                (clean_id,),
+            ).fetchone()
+            assert updated is not None
+            return _retrieval_feedback_from_row(updated).to_dict()
+
+    def _insert_feedback(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        receipt: sqlite3.Row,
+        record_id: str,
+        kind: str,
+        label: str,
+        reason: str,
+        source: Mapping[str, Any],
+        proposal_id: str | None,
+        created_at: float,
+    ) -> RetrievalFeedback:
+        source_json = _json(source)
+        source_sha256 = _sha256(source_json)
+        feedback_key = _sha256(
+            _json(
+                {
+                    "kind": kind,
+                    "label": label,
+                    "proposal_id": proposal_id,
+                    "receipt_id": str(receipt["receipt_id"]),
+                    "record_id": record_id,
+                    "source_sha256": source_sha256,
+                }
+            )
+        )
+        existing = connection.execute(
+            "SELECT * FROM memory_retrieval_feedback WHERE feedback_key = ?",
+            (feedback_key,),
+        ).fetchone()
+        if existing is not None:
+            return _retrieval_feedback_from_row(existing)
+        feedback_id = str(uuid.uuid4())
+        connection.execute(
+            "INSERT INTO memory_retrieval_feedback("
+            "feedback_id, feedback_key, receipt_id, record_id, kind, label, query_sha256, "
+            "surface, ranking_version, reason_sha256, source_json, source_sha256, proposal_id, "
+            "state, created_at, updated_at, revoked_at, revocation_source_sha256) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, '')",
+            (
+                feedback_id,
+                feedback_key,
+                str(receipt["receipt_id"]),
+                str(record_id),
+                kind,
+                label,
+                str(receipt["query_sha256"]),
+                str(receipt["surface"]),
+                str(receipt["ranking_version"]),
+                _sha256(" ".join(str(reason or "").split())),
+                source_json,
+                source_sha256,
+                proposal_id,
+                created_at,
+                created_at,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM memory_retrieval_feedback WHERE feedback_id = ?",
+            (feedback_id,),
+        ).fetchone()
+        assert row is not None
+        return _retrieval_feedback_from_row(row)
+
+    def _feedback_penalties(
+        self,
+        query_sha256: str,
+        surface: str,
+    ) -> dict[str, tuple[float, tuple[str, ...]]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT feedback_id, record_id FROM memory_retrieval_feedback "
+                "WHERE kind = 'relevance' AND state = 'active' "
+                "AND query_sha256 = ? AND surface = ? ORDER BY created_at, feedback_id",
+                (query_sha256, str(surface or "private")[:64]),
+            ).fetchall()
+        grouped: dict[str, list[str]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["record_id"]), []).append(str(row["feedback_id"]))
+        return {
+            record_id: (min(0.30, 0.12 * len(feedback_ids)), tuple(feedback_ids))
+            for record_id, feedback_ids in grouped.items()
+        }
+
     def _record_retrieval(
         self,
         *,
@@ -789,8 +1300,13 @@ class MemoryV2Store:
         people: Sequence[object],
         record_type: object,
         hits: Sequence[RetrievalHit],
+        ranking_details: Mapping[str, Any],
         created_at: float,
     ) -> RetrievalReceipt:
+        clean_people = _people(people)
+        receipt_filters = dict(ranking_details)
+        receipt_filters["people_count"] = len(clean_people)
+        receipt_filters["people_sha256"] = [_sha256(person.casefold()) for person in clean_people]
         receipt = RetrievalReceipt(
             receipt_id=str(uuid.uuid4()),
             query_sha256=_sha256(query),
@@ -798,19 +1314,20 @@ class MemoryV2Store:
             project=str(project or "")[:500],
             record_type=str(record_type) if record_type else None,
             ranking_version=RETRIEVAL_RANKING_VERSION,
+            filters=receipt_filters,
             returned=tuple(
                 {
                     "record_id": hit.record.record_id,
                     "score": hit.score,
                     "confidence": hit.record.confidence,
                     "source_sha256": _sha256(_json(hit.record.source)),
+                    "components": dict(hit.components),
                     "reasons": list(hit.reasons),
                 }
                 for hit in hits
             ),
             created_at=created_at,
         )
-        filters = {"people": _people(people)}
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -823,7 +1340,7 @@ class MemoryV2Store:
                     receipt.surface,
                     receipt.project,
                     receipt.record_type,
-                    _json(filters),
+                    _json(receipt.filters),
                     receipt.ranking_version,
                     _json(list(receipt.returned)),
                     receipt.created_at,
@@ -843,38 +1360,123 @@ class MemoryV2Store:
         *,
         limit: int = 8,
     ) -> dict[str, Any]:
-        """Evaluate recall and reciprocal rank on an inspectable local corpus."""
+        """Evaluate positive recall, negative abstention, and context flooding."""
 
         results = []
         recall_total = 0.0
         reciprocal_total = 0.0
-        for case in cases:
+        precision_total = 0.0
+        positive_total = 0
+        false_positive_total = 0
+        negative_total = 0
+        no_answer_total = 0
+        no_answer_false_positives = 0
+        context_budget_passes = 0
+        flooding_total = 0
+        feedback_case_count = 0
+        for case_index, case in enumerate(cases, start=1):
             query = str(case.get("query") or "")
+            surface = str(case.get("surface") or "private")
             expected = {str(value) for value in case.get("expected_record_ids") or []}
-            returned = [
-                hit.record.record_id
-                for hit in self.retrieve(query, limit=limit, record_receipt=False)
-            ]
+            expect_no_answer = bool(case.get("expect_no_answer", not expected))
+            if expect_no_answer and expected:
+                raise ValueError("no-answer evaluation cases cannot declare expected records")
+            negative = {str(value) for value in case.get("negative_record_ids") or []}
+            feedback = self._feedback_penalties(_sha256(" ".join(query.split())), surface)
+            negative.update(feedback)
+            feedback_ids = sorted(
+                feedback_id
+                for _penalty, record_feedback_ids in feedback.values()
+                for feedback_id in record_feedback_ids
+            )
+            if feedback_ids:
+                feedback_case_count += 1
+            retrieved = self.retrieve(
+                query,
+                limit=limit,
+                surface=surface,
+                record_receipt=False,
+            )
+            returned = [hit.record.record_id for hit in retrieved]
             found = expected.intersection(returned)
-            recall = len(found) / len(expected) if expected else 1.0
+            false_positives = negative.intersection(returned)
+            recall = len(found) / len(expected) if expected else 0.0
             ranks = [returned.index(record_id) + 1 for record_id in found]
             reciprocal = 1.0 / min(ranks) if ranks else 0.0
-            recall_total += recall
-            reciprocal_total += reciprocal
+            precision = len(found) / len(returned) if returned else (1.0 if expect_no_answer else 0.0)
+            if expected:
+                positive_total += 1
+                recall_total += recall
+                reciprocal_total += reciprocal
+                precision_total += precision
+            if expect_no_answer:
+                no_answer_total += 1
+                no_answer_false_positives += int(bool(returned))
+            false_positive_total += len(false_positives)
+            negative_total += len(negative)
+            max_context_records = max(1, int(case.get("max_context_records") or 5))
+            max_context_characters = max(
+                1, int(case.get("max_context_characters") or 7_000)
+            )
+            max_context_tokens = max(1, int(case.get("max_context_tokens") or 1_800))
+            context_characters = sum(len(hit.record.content) for hit in retrieved)
+            context_tokens = math.ceil(context_characters / 4)
+            context_passed = (
+                len(retrieved) <= max_context_records
+                and context_characters <= max_context_characters
+                and context_tokens <= max_context_tokens
+            )
+            context_budget_passes += int(context_passed)
+            flooding_total += int(not context_passed)
             results.append(
                 {
-                    "name": str(case.get("name") or query)[:200],
+                    "name": str(case.get("name") or f"case-{case_index}")[:200],
+                    "query_sha256": _sha256(" ".join(query.split())),
+                    "expect_no_answer": expect_no_answer,
                     "expected_record_ids": sorted(expected),
                     "returned_record_ids": returned,
+                    "negative_record_ids": sorted(negative),
+                    "negative_feedback_ids": feedback_ids,
+                    "false_positive_record_ids": sorted(false_positives),
                     "recall": recall,
                     "reciprocal_rank": reciprocal,
+                    "precision": precision,
+                    "context_record_count": len(retrieved),
+                    "context_character_count": context_characters,
+                    "context_token_count": context_tokens,
+                    "context_budget_passed": context_passed,
+                    "flooded": not context_passed,
                 }
             )
         count = len(results)
+        false_positive_denominator = negative_total + no_answer_total
+        false_positive_numerator = false_positive_total + no_answer_false_positives
         report = {
+            "evaluation_version": "memory-retrieval-evaluation-v1",
+            "corpus_sha256": _sha256(_json([dict(case) for case in cases])),
+            "ranking_version": RETRIEVAL_RANKING_VERSION,
             "case_count": count,
-            "recall_at_k": recall_total / count if count else 0.0,
-            "mean_reciprocal_rank": reciprocal_total / count if count else 0.0,
+            "positive_case_count": positive_total,
+            "negative_case_count": no_answer_total,
+            "recall_at_k": recall_total / positive_total if positive_total else 0.0,
+            "mean_reciprocal_rank": (
+                reciprocal_total / positive_total if positive_total else 0.0
+            ),
+            "precision_at_k": precision_total / positive_total if positive_total else 0.0,
+            "false_positive_rate": (
+                false_positive_numerator / false_positive_denominator
+                if false_positive_denominator
+                else 0.0
+            ),
+            "no_answer_accuracy": (
+                1.0 - no_answer_false_positives / no_answer_total
+                if no_answer_total
+                else 0.0
+            ),
+            "context_budget_pass_rate": context_budget_passes / count if count else 0.0,
+            "flooding_rate": flooding_total / count if count else 0.0,
+            "feedback_case_count": feedback_case_count,
+            "feedback_version": RETRIEVAL_FEEDBACK_VERSION,
             "limit": limit,
             "cases": results,
         }
@@ -1118,6 +1720,14 @@ class MemoryV2Store:
 
         record_id = str(uuid.uuid4())
         status = "contested" if operation == "contradict" else "current"
+        valid_from = candidate.get("valid_from")
+        valid_until = candidate.get("valid_until")
+        if (
+            operation in {"update", "supersede"}
+            and valid_from is None
+            and (valid_until is None or float(valid_until) > now)
+        ):
+            valid_from = now
         self._insert_record(
             connection,
             record_id=record_id,
@@ -1128,8 +1738,8 @@ class MemoryV2Store:
             sensitivity=str(candidate["sensitivity"]),
             project=str(candidate.get("project") or ""),
             people=tuple(candidate.get("people") or ()),
-            valid_from=candidate.get("valid_from"),
-            valid_until=candidate.get("valid_until"),
+            valid_from=valid_from,
+            valid_until=valid_until,
             retention_until=candidate.get("retention_until"),
             status=status,
             legacy_id=None,
@@ -1301,6 +1911,32 @@ class MemoryV2Store:
                 );
                 CREATE INDEX IF NOT EXISTS memory_retrieval_receipts_time_idx
                     ON memory_retrieval_receipts(created_at);
+                CREATE TABLE IF NOT EXISTS memory_retrieval_feedback (
+                    feedback_id TEXT PRIMARY KEY,
+                    feedback_key TEXT NOT NULL UNIQUE,
+                    receipt_id TEXT NOT NULL,
+                    record_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    query_sha256 TEXT NOT NULL,
+                    surface TEXT NOT NULL,
+                    ranking_version TEXT NOT NULL,
+                    reason_sha256 TEXT NOT NULL,
+                    source_json TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL,
+                    proposal_id TEXT,
+                    state TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    revoked_at REAL,
+                    revocation_source_sha256 TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS memory_retrieval_feedback_rank_idx
+                    ON memory_retrieval_feedback(
+                        query_sha256, surface, kind, state, record_id
+                    );
+                CREATE INDEX IF NOT EXISTS memory_retrieval_feedback_time_idx
+                    ON memory_retrieval_feedback(created_at);
                 CREATE TABLE IF NOT EXISTS memory_retrieval_evaluations (
                     evaluation_id TEXT PRIMARY KEY,
                     ranking_version TEXT NOT NULL,
@@ -1446,9 +2082,52 @@ def _retrieval_receipt_from_row(row: sqlite3.Row) -> RetrievalReceipt:
         project=str(row["project"] or ""),
         record_type=str(row["record_type"]) if row["record_type"] else None,
         ranking_version=str(row["ranking_version"]),
+        filters=dict(_load_json(row["filters_json"], {})),
         returned=tuple(dict(item) for item in returned if isinstance(item, Mapping)),
         created_at=float(row["created_at"]),
     )
+
+
+def _retrieval_feedback_from_row(row: sqlite3.Row) -> RetrievalFeedback:
+    return RetrievalFeedback(
+        feedback_id=str(row["feedback_id"]),
+        receipt_id=str(row["receipt_id"]),
+        record_id=str(row["record_id"]),
+        kind=str(row["kind"]),
+        label=str(row["label"]),
+        query_sha256=str(row["query_sha256"]),
+        surface=str(row["surface"]),
+        ranking_version=str(row["ranking_version"]),
+        reason_sha256=str(row["reason_sha256"]),
+        source_sha256=str(row["source_sha256"]),
+        proposal_id=str(row["proposal_id"]) if row["proposal_id"] else None,
+        state=str(row["state"]),
+        created_at=float(row["created_at"]),
+        updated_at=float(row["updated_at"]),
+        revoked_at=_optional_number(row["revoked_at"]),
+    )
+
+
+def _require_retrieval_target(
+    connection: sqlite3.Connection,
+    receipt_id: str,
+    record_id: str,
+) -> sqlite3.Row:
+    clean_receipt_id = _required_text(receipt_id, "retrieval receipt id", 256)
+    clean_record_id = _required_text(record_id, "retrieval feedback record id", 256)
+    receipt = connection.execute(
+        "SELECT * FROM memory_retrieval_receipts WHERE receipt_id = ?",
+        (clean_receipt_id,),
+    ).fetchone()
+    if receipt is None:
+        raise KeyError(f"unknown retrieval receipt {clean_receipt_id}")
+    returned = _load_json(receipt["returned_json"], [])
+    returned_ids = {
+        str(item.get("record_id") or "") for item in returned if isinstance(item, Mapping)
+    }
+    if clean_record_id not in returned_ids:
+        raise ValueError("retrieval feedback target was not returned by that receipt")
+    return receipt
 
 
 def _rollback_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -1472,23 +2151,16 @@ def _tokens(value: str) -> set[str]:
     return {token for token in _WORDS.findall(value.lower()) if len(token) > 1}
 
 
-def _semantic_tokens(value: str) -> dict[str, float]:
-    tokens = _tokens(value)
-    features: dict[str, float] = {}
-    for token in tokens:
-        stem = _stem(token)
-        features[f"stem:{stem}"] = 0.5
-        concept = _CONCEPT_BY_WORD.get(token) or _CONCEPT_BY_WORD.get(stem)
-        if concept:
-            features[concept] = 1.0
-    return features
-
-
-def _stem(token: str) -> str:
-    for suffix in ("ing", "ments", "ment", "ed", "ies", "es", "s"):
-        if token.endswith(suffix) and len(token) > len(suffix) + 3:
-            return token[: -len(suffix)] + ("y" if suffix == "ies" else "")
-    return token
+def _contains_entity_phrase(searchable: str, entity: str) -> bool:
+    entity_tokens = _WORDS.findall(str(entity or "").casefold())
+    if not entity_tokens:
+        return False
+    searchable_tokens = _WORDS.findall(str(searchable or "").casefold())
+    width = len(entity_tokens)
+    return any(
+        searchable_tokens[index : index + width] == entity_tokens
+        for index in range(len(searchable_tokens) - width + 1)
+    )
 
 
 def _overlap_score(left: set[str], right: set[str]) -> float:
@@ -1497,13 +2169,22 @@ def _overlap_score(left: set[str], right: set[str]) -> float:
     return len(left.intersection(right)) / math.sqrt(len(left) * len(right))
 
 
-def _cosine(left: Mapping[str, float], right: Mapping[str, float]) -> float:
-    if not left or not right:
-        return 0.0
-    numerator = sum(value * right.get(key, 0.0) for key, value in left.items())
-    left_norm = math.sqrt(sum(value * value for value in left.values()))
-    right_norm = math.sqrt(sum(value * value for value in right.values()))
-    return numerator / (left_norm * right_norm) if left_norm and right_norm else 0.0
+def _external_score(values: Mapping[str, float], *names: str) -> float:
+    score = _optional_external_score(values, *names)
+    return score if score is not None else 0.0
+
+
+def _optional_external_score(values: Mapping[str, float], *names: str) -> float | None:
+    for name in names:
+        if name not in values:
+            continue
+        try:
+            score = float(values[name])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(score):
+            return max(0.0, min(1.0, score))
+    return None
 
 
 def _record_type(value: object) -> str:

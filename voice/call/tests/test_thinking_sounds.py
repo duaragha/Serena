@@ -473,3 +473,42 @@ def test_a_missing_clip_directory_leaves_her_quiet_rather_than_beeping(
 
     assert pool.clips == ()
     assert pool.take(sample_rate=24_000) is None
+
+
+def test_a_preamble_is_a_separate_family_from_thinking_sounds(tmp_path) -> None:
+    """"hmm" covers a slow brain; "on it" is said because slow work was just
+    dispatched. Sharing one pool let a run of coding jobs exhaust the filler
+    rotation, so they share plumbing and nothing else."""
+    from voice.call.thinking_sounds import (
+        PREAMBLE_GLOB,
+        CLIP_GLOB,
+        ThinkingSoundPool,
+        clip_path,
+    )
+
+    rate = 24_000
+    silence = b"\x00\x00" * 2_400
+    clip_path(tmp_path, "hmm", rate).write_bytes(silence)
+    clip_path(tmp_path, "on-it", rate, "preamble").write_bytes(silence)
+
+    thinking = ThinkingSoundPool(directory=tmp_path, glob=CLIP_GLOB)
+    preamble = ThinkingSoundPool(directory=tmp_path, glob=PREAMBLE_GLOB)
+
+    assert [c.clip_id for c in thinking.clips] == ["thinking-hmm-24k-mono-s16"]
+    assert [c.clip_id for c in preamble.clips] == ["preamble-on-it-24k-mono-s16"]
+
+
+def test_the_preamble_rides_the_reply_worker_so_audio_stays_in_order() -> None:
+    """Two TTS workers on one generation would each start their audio sequence
+    at zero and the client would reject the reply as out of order. The preamble
+    is queued into the reply's own worker instead of playing beside it."""
+    from pathlib import Path as _P
+
+    source = _P("voice/call/orchestrator.py").read_text()
+    body = source.split("async def _brain_to_tts", 1)[1][:1200]
+    assert "if preamble is not None:" in body
+    assert "sentences.put_nowait(" in body
+    # and the dispatch site must only CHOOSE a clip, never play one
+    dispatch = source.split("task_job_id = await self._submit_call_task", 1)[1][:200]
+    assert "_take_preamble()" in dispatch
+    assert "_tts_worker" not in dispatch

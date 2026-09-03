@@ -30,59 +30,34 @@
     "coding": {
       "workers": [
         {
-          "provider": "codex",
-          "model": "gpt-5.6-sol",
-          "effort": "xhigh"
-        },
-        {
           "provider": "claude",
           "model": "claude-opus-5",
-          "effort": "high"
+          "effort": "medium"
         }
       ],
       "phases": {
         "discover": [
           {
             "provider": "codex",
-            "model": "gpt-5.6-terra",
-            "effort": "high"
-          },
-          {
-            "provider": "claude",
-            "model": "claude-sonnet-5",
-            "effort": "high"
+            "model": "gpt-5.6-luna",
+            "effort": "max"
           }
         ],
         "execute": [
           {
-            "provider": "codex",
-            "model": "gpt-5.6-sol",
-            "effort": "xhigh"
-          },
-          {
             "provider": "claude",
             "model": "claude-opus-5",
-            "effort": "high"
+            "effort": "medium"
           }
         ],
         "verify": [
           {
             "provider": "codex",
-            "model": "gpt-5.6-terra",
-            "effort": "xhigh"
-          },
-          {
-            "provider": "claude",
-            "model": "claude-sonnet-5",
-            "effort": "xhigh"
+            "model": "gpt-5.6-sol",
+            "effort": "high"
           }
         ],
         "finalize": [
-          {
-            "provider": "codex",
-            "model": "gpt-5.6-sol",
-            "effort": "xhigh"
-          },
           {
             "provider": "claude",
             "model": "claude-opus-5",
@@ -95,61 +70,36 @@
       "workers": [
         {
           "provider": "codex",
-          "model": "gpt-5.6-terra",
-          "effort": "high"
-        },
-        {
-          "provider": "claude",
-          "model": "claude-sonnet-5",
-          "effort": "high"
+          "model": "gpt-5.6-luna",
+          "effort": "max"
         }
       ],
       "phases": {
         "discover": [
           {
             "provider": "codex",
-            "model": "gpt-5.6-terra",
-            "effort": "high"
-          },
-          {
-            "provider": "claude",
-            "model": "claude-sonnet-5",
-            "effort": "high"
+            "model": "gpt-5.6-luna",
+            "effort": "max"
           }
         ],
         "execute": [
           {
-            "provider": "codex",
-            "model": "gpt-5.6-terra",
-            "effort": "high"
-          },
-          {
             "provider": "claude",
-            "model": "claude-sonnet-5",
+            "model": "claude-opus-5",
             "effort": "high"
           }
         ],
         "verify": [
           {
             "provider": "codex",
-            "model": "gpt-5.6-terra",
-            "effort": "xhigh"
-          },
-          {
-            "provider": "claude",
-            "model": "claude-sonnet-5",
-            "effort": "xhigh"
+            "model": "gpt-5.6-sol",
+            "effort": "high"
           }
         ],
         "finalize": [
           {
-            "provider": "codex",
-            "model": "gpt-5.6-terra",
-            "effort": "high"
-          },
-          {
             "provider": "claude",
-            "model": "claude-sonnet-5",
+            "model": "claude-opus-5",
             "effort": "high"
           }
         ]

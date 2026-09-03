@@ -1,5 +1,5 @@
 /* Serena Overlay — Dark Theme
- * Color scheme: deep violet with pink and amber accents.
+ * Color scheme: dark #0a0a1a, primary #4488ff, accent #00ffff, text #e0e0e0
  * Glassmorphism panels, smooth transitions, transparent background
  */
 
@@ -28,14 +28,14 @@ html, body {
 /* ---- Color variables ---- */
 
 :root {
-  --bg-dark: #080612;
-  --primary: #a78bfa;
-  --accent: #f472b6;
+  --bg-dark: #0a0a1a;
+  --primary: #4488ff;
+  --accent: #00ffff;
   --text: #e0e0e0;
   --text-dim: #8888aa;
   --text-bright: #ffffff;
-  --glass-bg: rgba(11, 7, 22, 0.86);
-  --glass-border: rgba(216, 180, 254, 0.11);
+  --glass-bg: rgba(10, 10, 26, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.1);
   --glass-blur: 20px;
   --transition: 0.3s ease;
 }
@@ -123,48 +123,6 @@ html, body {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
-#voice-mute,
-#microphone-mute {
-  padding: 5px 10px;
-  border: 1px solid rgba(179, 157, 219, 0.22);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.035);
-  color: rgba(214, 205, 235, 0.58);
-  font: inherit;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: color .15s ease, border-color .15s ease, background .15s ease,
-              box-shadow .15s ease;
-}
-
-#voice-mute { margin-left: auto; }
-
-#voice-mute:hover,
-#voice-mute:focus-visible,
-#microphone-mute:hover,
-#microphone-mute:focus-visible {
-  color: #f2eaff;
-  border-color: rgba(209, 179, 255, 0.54);
-  outline: none;
-}
-
-#voice-mute[aria-pressed="true"] {
-  color: #ffd5e9;
-  border-color: rgba(244, 114, 182, 0.56);
-  background: rgba(190, 48, 114, 0.2);
-  box-shadow: 0 0 12px rgba(244, 114, 182, 0.16);
-}
-
-#microphone-mute[aria-pressed="true"] {
-  color: #ffe0b2;
-  border-color: rgba(246, 173, 85, 0.68);
-  background: rgba(180, 83, 9, 0.24);
-  box-shadow: 0 0 12px rgba(246, 173, 85, 0.18);
-}
-
 /* Status indicator generic class variants */
 
 .status-indicator {
@@ -189,12 +147,6 @@ html, body {
   background-color: #aa66ff;
   box-shadow: 0 0 12px rgba(170, 102, 255, 0.6);
   animation: pulse-glow 1s ease-in-out infinite;
-}
-
-.status-indicator--working {
-  background-color: #c084fc;
-  box-shadow: 0 0 12px rgba(192, 132, 252, 0.62);
-  animation: pulse-glow 1.2s ease-in-out infinite;
 }
 
 .status-indicator--speaking {
@@ -244,87 +196,6 @@ html, body {
 .fade-out {
   opacity: 0;
 }
-
-/* ---- Recent conversation ---- */
-
-#conversation-history {
-  flex: 0 1 auto;
-  min-height: 0;
-  border: 1px solid rgba(179, 157, 219, 0.2);
-  border-radius: 12px;
-  background: rgba(11, 7, 22, 0.78);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  overflow: hidden;
-}
-
-#conversation-history > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 12px;
-  color: rgba(214, 205, 235, 0.6);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  cursor: pointer;
-  list-style: none;
-}
-
-#conversation-history > summary::-webkit-details-marker { display: none; }
-#conversation-history > summary::before {
-  content: '\25B8';
-  color: rgba(209, 179, 255, 0.7);
-  margin-right: -4px;
-}
-#conversation-history[open] > summary::before { content: '\25BE'; }
-
-#conversation-history-count {
-  margin-left: auto;
-  color: rgba(214, 205, 235, 0.36);
-  font-weight: 500;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-#conversation-history-list {
-  max-height: 260px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  border-top: 1px solid rgba(179, 157, 219, 0.14);
-  padding: 5px 12px 10px;
-  user-select: text;
-}
-
-.conversation-turn {
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-.conversation-turn:last-child { border-bottom: 0; }
-.conversation-line {
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
-  gap: 8px;
-  padding: 2px 0;
-  font-size: 12px;
-  line-height: 1.45;
-}
-.conversation-role {
-  color: rgba(214, 205, 235, 0.42);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-}
-.conversation-line.serena .conversation-role { color: rgba(244, 114, 182, 0.72); }
-.conversation-text {
-  color: var(--text);
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-.conversation-line.user .conversation-text { color: var(--text-dim); }
 
 /* ---- Dashboard panel ---- */
 
@@ -709,110 +580,27 @@ html, body {
 
 /* ---- Code Output Panel ---- */
 
-/* A column of the window, not a sheet over it. The main process widens the
-   window by exactly this much when the drawer opens, so the conversation keeps
-   the room it had instead of disappearing underneath. */
 .code-panel {
-  --code-panel-width: 450px;
-  order: -1;
-  flex: 0 0 var(--code-panel-width);
-  width: var(--code-panel-width);
-  min-width: 300px;
-  max-width: 720px;
-  height: 100%;
-  /* Paint order only. It stays in the flow and still makes its own room; this
-     just keeps it level with the other panels the way z-index: 100 did when it
-     was a sheet. */
-  position: relative;
-  z-index: 100;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 450px;
+  height: 100vh;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   border-right: 1px solid var(--glass-border);
-  display: none;
+  transform: translateX(-100%);
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 100;
+  display: flex;
   flex-direction: column;
   overflow: hidden;
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', 'Consolas', monospace;
 }
 
 .code-panel--visible {
-  display: flex;
-}
-
-.code-panel__resize {
-  position: absolute;
-  z-index: 3;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 14px;
-  cursor: col-resize;
-  touch-action: none;
-}
-
-.code-panel__resize::before {
-  position: absolute;
-  top: 0;
-  right: 6px;
-  bottom: 0;
-  width: 2px;
-  background: rgba(192, 132, 252, 0.24);
-  content: '';
-  transition: background var(--transition), box-shadow var(--transition);
-}
-
-.code-panel__resize:hover::before,
-.code-panel__resize:focus-visible::before,
-.code-panel__resize--active::before {
-  background: var(--accent);
-  box-shadow: 0 0 9px rgba(244, 114, 182, 0.55);
-}
-
-.code-panel__resize:focus-visible {
-  outline: 2px solid rgba(244, 114, 182, 0.72);
-  outline-offset: -3px;
-}
-
-/* Out of the flow on purpose: a small button in the header's reserved corner,
-   not a column of the row. */
-.code-panel__reopen {
-  position: fixed;
-  top: 14px;
-  left: 14px;
-  z-index: 101;
-  display: none;
-  align-items: center;
-  gap: 7px;
-  border: 1px solid rgba(192, 132, 252, 0.38);
-  border-radius: 999px;
-  padding: 7px 11px;
-  background: rgba(10, 10, 26, 0.92);
-  color: var(--text-bright);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.34);
-  font: 600 11px/1 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.code-panel__reopen::before {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #4ade80;
-  box-shadow: 0 0 7px rgba(74, 222, 128, 0.65);
-  content: '';
-}
-
-.code-panel__reopen--visible {
-  display: flex;
-}
-
-.code-panel__reopen:hover,
-.code-panel__reopen:focus-visible {
-  border-color: rgba(244, 114, 182, 0.7);
-  outline: none;
-  transform: translateY(-1px);
+  transform: translateX(0);
 }
 
 /* Status bar */
@@ -878,96 +666,6 @@ html, body {
 .code-panel__clear:hover {
   color: var(--text-bright);
   background: rgba(255, 255, 255, 0.08);
-}
-
-.code-panel__details {
-  max-height: 42vh;
-  overflow-y: auto;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--glass-border);
-  background: rgba(10, 10, 26, 0.72);
-}
-
-.code-panel__section {
-  margin: 0 0 10px;
-}
-
-.code-panel__section:last-child {
-  margin-bottom: 0;
-}
-
-.code-panel__section h3 {
-  margin: 0 0 3px;
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-
-.code-panel__section div {
-  color: var(--text-dim);
-  font-size: 10px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.code-panel__controls {
-  display: grid;
-  grid-template-columns: 1fr auto auto auto auto;
-  gap: 6px;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--glass-border);
-  background: rgba(10, 10, 26, 0.9);
-}
-
-.code-panel__steer-input {
-  min-width: 0;
-  height: 34px;
-  resize: vertical;
-  padding: 7px 8px;
-  border: 1px solid var(--glass-border);
-  border-radius: 5px;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.04);
-  font: inherit;
-  font-size: 10px;
-}
-
-.code-panel__control {
-  padding: 5px 8px;
-  border: 1px solid var(--glass-border);
-  border-radius: 5px;
-  color: var(--text-dim);
-  background: rgba(255, 255, 255, 0.05);
-  cursor: pointer;
-  font: inherit;
-  font-size: 10px;
-}
-
-.code-panel__control:hover:not(:disabled) {
-  color: var(--text-bright);
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.code-panel__control--cancel:hover:not(:disabled) {
-  color: #f87171;
-}
-
-.code-panel__control:disabled,
-.code-panel__steer-input:disabled {
-  cursor: default;
-  opacity: 0.35;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    scroll-behavior: auto !important;
-    transition-duration: 0.001ms !important;
-  }
 }
 
 /* Output area */
@@ -1093,138 +791,4 @@ html, body {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
-}
-
-/* ── Type bar ───────────────────────────────────────────────────────────
-   For when the mic is unusable: a bad driver, a noisy room, someone
-   sitting next to him. Typing here runs exactly the turn speaking would. */
-#type-composer {
-  margin-top: 10px;
-}
-#typed-attachment {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-bottom: 6px;
-  padding: 7px 9px;
-  border: 1px solid rgba(196, 167, 255, 0.36);
-  border-radius: 10px;
-  background: rgba(75, 52, 112, 0.34);
-  font-size: 11px;
-  color: rgba(233, 223, 250, 0.8);
-}
-#typed-attachment-preview {
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
-  border-radius: 7px;
-  object-fit: cover;
-  background: rgba(0, 0, 0, 0.2);
-}
-#typed-attachment span { flex: 1; }
-#typed-attachment-remove {
-  border: 0;
-  padding: 4px 6px;
-  background: transparent;
-  color: rgba(233, 191, 222, 0.84);
-  font: inherit;
-  cursor: pointer;
-}
-#typed-attachment-remove:hover,
-#typed-attachment-remove:focus-visible { color: #ffd4ee; }
-#type-error {
-  margin: 0 4px 6px;
-  color: #f5b7cf;
-  font-size: 11px;
-  line-height: 1.3;
-}
-#type-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border: 1px solid rgba(179, 157, 219, 0.28);
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(255,255,255,.06), rgba(140,110,220,.05));
-  backdrop-filter: blur(14px);
-  transition: border-color .15s ease, box-shadow .15s ease, opacity .2s ease;
-}
-#type-bar:focus-within {
-  border-color: rgba(196, 167, 255, 0.6);
-  box-shadow: 0 0 0 3px rgba(179, 157, 219, 0.12);
-}
-#type-bar.busy { opacity: .55; }
-#type-input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 13px;
-  caret-color: #d1b3ff;
-}
-#type-input::placeholder { color: rgba(214, 205, 235, 0.38); }
-#type-hint {
-  font-size: 10px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  color: rgba(214, 205, 235, 0.3);
-  transition: color .15s ease;
-}
-#type-bar:focus-within #type-hint { color: rgba(209, 179, 255, 0.75); }
-
-#speed-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 8px;
-  padding: 6px 12px;
-  border: 1px solid rgba(179, 157, 219, 0.18);
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(255,255,255,.04), rgba(140,110,220,.04));
-  backdrop-filter: blur(14px);
-}
-#speed-bar .speed-label,
-#speed-value {
-  font-size: 10px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  color: rgba(214, 205, 235, 0.42);
-}
-#speed-value {
-  min-width: 34px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  text-transform: none;
-  letter-spacing: 0;
-}
-#speed-range {
-  flex: 1;
-  min-width: 0;
-  appearance: none;
-  -webkit-appearance: none;
-  height: 3px;
-  border-radius: 3px;
-  background: rgba(214, 205, 235, 0.16);
-  outline: none;
-}
-#speed-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #d1b3ff;
-  box-shadow: 0 0 8px rgba(209, 179, 255, 0.45);
-  cursor: pointer;
-}
-#speed-range::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border: 0;
-  border-radius: 50%;
-  background: #d1b3ff;
-  box-shadow: 0 0 8px rgba(209, 179, 255, 0.45);
-  cursor: pointer;
 }

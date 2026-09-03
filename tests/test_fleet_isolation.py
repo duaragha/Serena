@@ -21,6 +21,7 @@ from core.fleet_isolation import (
     IsolationError,
     assess_isolation,
     cleanup_workspace,
+    dependency_sync_command,
     ensure_workspace,
     integrate_workspace,
     is_protected_path,
@@ -412,6 +413,81 @@ def test_integration_applies_claimed_work_and_leaves_evidence(tmp_path):
     assert store.get_workspace("run-1", "claude:a").state == "integrated"
 
 
+def test_published_stacked_branch_records_only_its_own_suffix(tmp_path):
+    root = _repo(tmp_path)
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    _git(root, "remote", "add", "origin", str(remote))
+    _git(root, "push", "-u", "origin", "main")
+    store = _store(tmp_path)
+    store.claim_paths(run_id="run-1", worker_key="claude:a", paths=[ROOT_CLAIM])
+    workspace = ensure_workspace(
+        store, run_id="run-1", worker_key="claude:a", cwd=root
+    )
+    worker = Path(workspace.path)
+
+    _git(worker, "switch", "-c", "dependency")
+    (worker / "core" / "beta.py").write_text("beta = 'dependency'\n")
+    _git(worker, "add", "core/beta.py")
+    _git(worker, "commit", "-qm", "dependency")
+    _git(worker, "switch", "-c", "feature")
+    (worker / "core" / "alpha.py").write_text("alpha = 'worker'\n")
+    _git(worker, "add", "core/alpha.py")
+    _git(worker, "commit", "-qm", "feature")
+    _git(worker, "push", "-u", "origin", "feature")
+
+    assert workspace_changed_paths(workspace, ["core/alpha.py"]) == [
+        "core/alpha.py"
+    ]
+    result = integrate_workspace(
+        store,
+        run_id="run-1",
+        worker_key="claude:a",
+        cwd=root,
+        declared_paths=["core/alpha.py"],
+    )
+
+    assert result.ok is True, result.reason
+    assert result.delivery_mode == "published_branch"
+    assert result.delivery_branch == "feature"
+    assert result.changed_paths == ["core/alpha.py"]
+    assert result.applied is False
+    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core" / "beta.py").read_text() == "beta = 1\n"
+    refreshed = store.get_workspace("run-1", "claude:a")
+    assert refreshed is not None and refreshed.state == "delivered"
+    assert refreshed.base_head == _git(worker, "rev-parse", "HEAD").strip()
+    history = store.integrations("run-1")[-1]
+    assert history["delivery_mode"] == "published_branch"
+    assert history["applied"] is False
+
+
+def test_switched_unpublished_branch_never_falls_back_to_local_integration(tmp_path):
+    root = _repo(tmp_path)
+    store = _store(tmp_path)
+    store.claim_paths(run_id="run-1", worker_key="claude:a", paths=[ROOT_CLAIM])
+    workspace = ensure_workspace(
+        store, run_id="run-1", worker_key="claude:a", cwd=root
+    )
+    worker = Path(workspace.path)
+    _git(worker, "switch", "-c", "unpublished")
+    (worker / "core" / "alpha.py").write_text("alpha = 'worker'\n")
+    _git(worker, "add", "core/alpha.py")
+    _git(worker, "commit", "-qm", "feature")
+
+    result = integrate_workspace(
+        store,
+        run_id="run-1",
+        worker_key="claude:a",
+        cwd=root,
+        declared_paths=["core/alpha.py"],
+    )
+
+    assert result.ok is False
+    assert "must be pushed with an upstream" in result.reason
+    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
+
+
 def test_integration_refuses_a_worker_the_supervisor_never_preclaimed(tmp_path):
     root = _repo(tmp_path)
     store = _store(tmp_path)
@@ -543,6 +619,26 @@ def test_worker_can_update_an_unchanged_untracked_baseline_file(tmp_path):
     assert (root / "operator.py").read_text() == "value = 'worker update'\n"
 
 
+def test_integration_preserves_crlf_patch_context_byte_exactly(tmp_path):
+    """Patch serialization must not erase CR bytes before plain git apply."""
+
+    root = _repo(tmp_path)
+    source = root / "core" / "alpha.py"
+    source.write_bytes(b"alpha = 1\r\nbeta = 1\r\n")
+    _git(root, "add", "core/alpha.py")
+    _git(root, "commit", "-qm", "crlf baseline")
+    store = _store(tmp_path)
+    store.claim_paths(run_id="run-1", worker_key="codex:a", paths=["core/alpha.py"])
+    workspace = ensure_workspace(store, run_id="run-1", worker_key="codex:a", cwd=root)
+    expected = b"alpha = 2\nbeta = 1\r\n"
+    (Path(workspace.path) / "core" / "alpha.py").write_bytes(expected)
+
+    result = integrate_workspace(store, run_id="run-1", worker_key="codex:a", cwd=root)
+
+    assert result.ok is True, result.reason
+    assert source.read_bytes() == expected
+
+
 def test_worker_cannot_overwrite_an_untracked_file_edited_after_fork(tmp_path):
     root = _repo(tmp_path)
     (root / "operator.py").write_text("value = 'dirty baseline'\n")
@@ -595,6 +691,67 @@ def test_a_passing_test_gate_admits_the_integration(tmp_path):
     assert result.ok is True, result.reason
     assert result.test_gate["ok"] is True
     assert (root / "core" / "alpha.py").read_text() == "alpha = 'good'\n"
+
+
+def test_node_dependency_changes_sync_before_merged_tree_checks(tmp_path, monkeypatch):
+    root = _repo(tmp_path)
+    (root / "package.json").write_text('{"name":"fixture"}\n')
+    (root / "package-lock.json").write_text(
+        '{"name":"fixture","lockfileVersion":3,"packages":{"":{"name":"fixture"}}}\n'
+    )
+    _git(root, "add", "package.json", "package-lock.json")
+    _git(root, "commit", "-qm", "add node fixture")
+    store = _store(tmp_path)
+    store.claim_paths(
+        run_id="run-1", worker_key="claude:a", paths=["package.json"]
+    )
+    workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
+    (Path(workspace.path) / "package.json").write_text(
+        '{"name":"fixture","devDependencies":{"new-rule":"1.0.0"}}\n'
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_sync(sync_root, changed_paths, *, timeout=900):
+        del timeout
+        calls.append(tuple(changed_paths))
+        (Path(sync_root) / ".dependency-synced").write_text("yes\n")
+        return {"ran": True, "ok": True, "command": ["npm", "ci"], "exit_code": 0}
+
+    monkeypatch.setattr("core.fleet_isolation.run_dependency_sync", fake_sync)
+    result = integrate_workspace(
+        store,
+        run_id="run-1",
+        worker_key="claude:a",
+        cwd=root,
+        declared_tests=[
+            [
+                sys.executable,
+                "-c",
+                "import pathlib,sys;sys.exit(0 if pathlib.Path('.dependency-synced').is_file() else 1)",
+            ]
+        ],
+    )
+
+    assert result.ok is True, result.reason
+    assert calls == [("package.json",)]
+    assert result.test_gate["dependency_sync"]["ok"] is True
+
+
+def test_node_dependency_sync_is_lockfile_bounded(tmp_path):
+    root = tmp_path / "node"
+    root.mkdir()
+    (root / "package.json").write_text("{}\n")
+
+    assert dependency_sync_command(root, ["README.md"]) is None
+    assert dependency_sync_command(root, ["package.json"]) == []
+    (root / "package-lock.json").write_text("{}\n")
+    assert dependency_sync_command(root, ["package.json"]) == [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+    ]
 
 
 def test_new_files_and_deletions_integrate(tmp_path):

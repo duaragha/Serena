@@ -229,3 +229,83 @@ def test_cached_backchannel_is_also_split(monkeypatch):
     assert len(frames) > 1
     assert max(len(frame.pcm) for frame in frames) <= _frame_limit(24_000)
     assert sum(len(frame.pcm) for frame in frames) == len(pcm)
+
+
+def test_local_delegate_is_retired_once_the_container_returns(monkeypatch):
+    """A fallback at boot must not pin the local model for the whole session.
+
+    The laptop is up before the tailnet is, so the first sentence after login
+    routinely falls back. If the delegate survives that, ~700MB of model stays
+    resident on the machine we just moved TTS off.
+    """
+    backend = RemotePocketTTSBackend(base_url="https://example.invalid:8812")
+    killed = []
+
+    class _Process:
+        pass
+
+    class _Local:
+        _process = _Process()
+        _model_executor = None
+
+        def _discard_process(self, process):
+            killed.append(process)
+
+    backend._local = _Local()
+    monkeypatch.setattr(
+        RemotePocketTTSBackend,
+        "_health_sync",
+        lambda self: {"worker_alive": True, "sample_rate": 24_000},
+    )
+
+    asyncio.run(backend.warm())
+
+    assert backend._local is None, "the local delegate must be dropped"
+    assert len(killed) == 1, "its worker process must be terminated"
+
+
+def test_retiring_without_a_local_delegate_is_a_no_op(monkeypatch):
+    backend = RemotePocketTTSBackend(base_url="https://example.invalid:8812")
+    monkeypatch.setattr(
+        RemotePocketTTSBackend,
+        "_health_sync",
+        lambda self: {"worker_alive": True, "sample_rate": 24_000},
+    )
+
+    asyncio.run(backend.warm())
+
+    assert backend._local is None
+
+
+def test_a_stalled_remote_falls_back_before_he_notices(monkeypatch) -> None:
+    """2026-08-21: her finished reply sat on screen in silence for close to a
+    minute. The remote is not slow (0.10s p50 over 15 runs), it stalls, and the
+    only deadline was the 60s inference timeout. A conversation cannot wait
+    that long when a local engine answers in 0.03s."""
+    from voice.call.tts import RemotePocketTTSBackend
+
+    url = "https://example.invalid:8812"
+    monkeypatch.setenv("SERENA_CALL_TTS_REMOTE_FIRST_AUDIO_TIMEOUT", "2.0")
+    assert RemotePocketTTSBackend(base_url=url).first_audio_timeout == 2.0
+
+    # the default is short because the remote is normally 0.10s
+    monkeypatch.delenv("SERENA_CALL_TTS_REMOTE_FIRST_AUDIO_TIMEOUT", raising=False)
+    assert RemotePocketTTSBackend(base_url=url).first_audio_timeout == 1.5
+
+    # and it can never be tuned down to something that trips on a healthy round trip
+    monkeypatch.setenv("SERENA_CALL_TTS_REMOTE_FIRST_AUDIO_TIMEOUT", "0.01")
+    assert RemotePocketTTSBackend(base_url=url).first_audio_timeout == 0.5
+
+
+def test_the_deadline_only_guards_audio_he_has_not_heard_yet() -> None:
+    """Once a chunk has played, cutting to a different engine mid-sentence
+    would splice two voices together. The deadline applies before the first
+    chunk only; after that the long inference timeout is correct."""
+    from pathlib import Path as _P
+
+    source = _P("voice/call/tts.py").read_text()
+    loop = source.split("failure: str | None = None", 1)[1][:1400]
+    assert "if emitted:" in loop
+    assert "first_audio_timeout" in loop
+    # the plain unbounded get is what runs once audio is already flowing
+    assert loop.index("if emitted:") < loop.index("first_audio_timeout")

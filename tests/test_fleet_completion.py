@@ -788,9 +788,7 @@ def test_verdict_serialises_for_durable_storage():
     assert payload["units"][0]["unit_id"] == "ws-1"
 
 
-def test_proportionate_depth_accepts_smaller_but_real_local_evidence():
-    """A local coding unit shows real, dated sources without the full quota."""
-
+def test_legacy_proportionate_depth_cannot_weaken_the_research_gate():
     units = _units()
     lean = _online_research()
     lean["search_queries"] = ["serena fleet integration gate"]
@@ -804,23 +802,13 @@ def test_proportionate_depth_accepts_smaller_but_real_local_evidence():
         observed_research_activity={"searches": 1, "fetches": 2},
         research_depth="proportionate",
     )
-    assert verdict.accepted is True, verdict.failures
-
-    # The same receipt still fails the full mandate, so depth is what moved,
-    # not the rule.
-    strict = _evaluate(
-        _good_unit(units[0], online_research=lean),
-        units=units,
-        access_mode="read_only",
-        phase="discover",
-        observed_research_activity={"searches": 1, "fetches": 2},
-        research_depth="full",
-    )
-    assert strict.accepted is False
-    assert any("unique direct sources" in item for item in strict.failures)
+    assert verdict.accepted is False
+    assert any("distinct search queries" in item for item in verdict.failures)
+    assert any("recorded provider web searches" in item for item in verdict.failures)
+    assert any("unique direct sources" in item for item in verdict.failures)
 
 
-def test_proportionate_depth_still_requires_attributable_dated_evidence():
+def test_legacy_proportionate_depth_still_requires_attributable_dated_evidence():
     units = _units()
     empty = _online_research()
     empty["search_queries"] = []

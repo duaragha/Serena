@@ -175,10 +175,15 @@ async def fleet_wait(run_id: str, timeout_seconds: float = 1800) -> dict[str, An
         openWorldHint=False,
     ),
 )
-def fleet_cancel(run_id: str) -> dict[str, Any]:
-    """Request cancellation; active worker process groups are stopped cooperatively."""
+def fleet_cancel(run_id: str, force: bool = False) -> dict[str, Any]:
+    """Request cancellation; active worker process groups are stopped cooperatively.
 
-    return _call(stop_run, run_id)
+    Set force only for a run whose supervisor is alive but wedged and therefore
+    cannot converge the cancel itself. It refuses while any worker process is
+    alive or the run has changed in the last ten minutes.
+    """
+
+    return _call(stop_run, run_id, force=force)
 
 
 @mcp.tool(

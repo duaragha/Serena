@@ -33,7 +33,12 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-RestrictAddressFamilies=AF_UNIX
+# The hot greeting is fetched over HTTP from the mobile host and the dot
+# field is driven over a loopback websocket, so an AF_UNIX-only sandbox
+# made both fail with errno 97 the instant he said her name. Every cold
+# wake between 2026-08-19 and 2026-08-20 logged wake.hot_greeting_failed,
+# which left the whole app boot covered by silence instead of her voice.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # ProtectHome=read-only otherwise blocks the dot-field state file and the wake
 # metrics, so waking looks dead even when the phrase was heard.
 ReadWritePaths=%h/.config/serena %h/.cache/serena %h/.local/state/serena
