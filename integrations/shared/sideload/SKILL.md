@@ -12,8 +12,8 @@ Codex invokes this skill as `$sideload`. Claude invokes the same skill as `/side
 ## Route the command
 
 - No arguments or `status`: read [status and discovery](references/status-and-discovery.md), then run the live status collector.
-- `diagnose`, an error message, or a question about a failure: collect status once, then read [repair matrix](references/repair-matrix.md). Diagnose the exact failing layer before changing anything.
-- `repair`: collect status, read [repair matrix](references/repair-matrix.md), and apply only the repair matching positive evidence.
+- `diagnose`, `why`, `explain`, or another explicitly read-only question: collect status once, then read [repair matrix](references/repair-matrix.md). Report the exact failing layer without changing it.
+- `fix`, `repair`, a pasted error, or a report that something is broken or not working, unless paired with the explicit analysis-only wording above: collect status, read [repair matrix](references/repair-matrix.md), diagnose the exact failing layer, then automatically apply and verify only the safe targeted repair matching positive evidence. Do not ask for a second “go ahead.”
 - `install`, `update`, `migrate`, `source`, `backup`, `restore`, or `uninstall`: read [operations](references/operations.md). Inspect every IPA before signing or installation.
 - A request whose result requires opening, tapping, swiping, or verifying an app on the phone: read [device control](references/device-control.md). Attempt live control before giving the user tap-by-tap instructions.
 - Any mutation involving Raghav's known apps: also read [local policy](references/local-policy.md).
@@ -39,6 +39,7 @@ Resolve this `SKILL.md` to its real directory before invoking scripts. Symlinked
 14. Do not claim a repair from source inspection or an IPA build alone. Verify on the physical device when the requested outcome is device behavior.
 15. Do not stop at “do these taps” when the connected phone exposes CoreDevice screenshot and HID control. Probe once, inspect a fresh screenshot, perform one bounded action, and inspect the result before the next action.
 16. The user must personally enter a device passcode, Apple Account password, two-factor code, or Trust confirmation. Never type, request, capture, or retain those secrets. Resume control after the protected prompt is complete.
+17. Once the user has asked to fix the problem, or reported breakage without an analysis-only qualifier, continue from diagnosis through safe repair and live verification without another confirmation. This standing workflow does not authorize certificate revocation, app or data deletion, keychain cleaning, credential entry, publishing, or any other destructive or out-of-scope action.
 
 ## Deterministic helpers
 
