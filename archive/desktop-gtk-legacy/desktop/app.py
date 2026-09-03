@@ -195,7 +195,7 @@ def run(width: int = 1400, height: int = 900) -> None:
     # Set the window/taskbar icon explicitly (pywebview's winforms backend reads
     # this into Form.Icon → the Windows taskbar). Without it the running window
     # falls back to pythonw.exe's icon / a stale shortcut association.
-    _icon = Path(__file__).resolve().parent.parent / "static" / "serena-icon.ico"
+    _icon = Path(__file__).resolve().parent.parent / "ui" / "static" / "icons" / "serena-icon.ico"
     webview.start(None, window, icon=str(_icon) if _icon.exists() else None)
 
 

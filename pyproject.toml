@@ -41,7 +41,7 @@ dev = [
 
 [project.scripts]
 chats = "cli:main"
-serena = "voice.main:main"
+serena = "cli:main"
 
 [tool.setuptools]
 # Multiple top-level packages — one per feature.
@@ -53,13 +53,10 @@ packages = [
     "knowledge",
     "ui",
     "voice",
-    "voice.brain",
-    "voice.daemon",
-    "voice.ipc",
-    "voice.tools",
-    "voice.voice",
+    "voice.call",
+    "voice.desk",
+    "voice.desktop",
     "dream",
-    "reminders",
 ]
 py-modules = ["cli"]
 

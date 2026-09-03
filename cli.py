@@ -820,9 +820,13 @@ def web(host, port):
 
 @main.command()
 def desktop():
-    """Launch the desktop shell (native GTK on Linux, pywebview elsewhere)."""
+    """Launch the legacy desktop shell (native GTK on Linux, pywebview elsewhere)."""
     import os as _os
     import sys as _sys
+    from pathlib import Path as _Path
+    legacy_dir = _Path(__file__).resolve().parent / "archive" / "desktop-gtk-legacy"
+    if legacy_dir.is_dir() and str(legacy_dir) not in _sys.path:
+        _sys.path.insert(0, str(legacy_dir))
     _os.environ.setdefault("SERENA_CALL_RUNTIME", "lazy")
     if _sys.platform.startswith("linux"):
         from desktop.app_gtk import run
