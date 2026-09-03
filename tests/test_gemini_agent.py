@@ -196,3 +196,24 @@ def test_the_split_carries_the_whole_group_not_just_one_sibling() -> None:
 
     assert "_linkedGroupSids(sid)" in body
     assert "_gtkSplitSids = split ? members : null" in body
+
+
+def test_the_indexer_actually_calls_the_scanner() -> None:
+    """The scanner passing its own tests says nothing about being reachable.
+
+    It was written, tested and committed while the three lines in the indexer
+    that call it were not, so every Gemini chat indexed once by hand and was
+    then pruned as a zombie on the next pass. A scanner nothing invokes is an
+    empty sidebar.
+    """
+    import inspect
+
+    from core import indexer
+
+    body = inspect.getsource(indexer._update_index_locked)
+
+    assert "scan_gemini_sessions()" in body, "discovery never yields Gemini conversations"
+    assert "parse_gemini_metadata(" in body, "discovered conversations are never parsed"
+    assert 'if agent == "gemini"' in inspect.getsource(indexer._discovered_session_id), (
+        "without an id rule the conversation is dropped before it is parsed"
+    )
