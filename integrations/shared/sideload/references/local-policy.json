@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "inventory_mode": "automatic",
+  "unknown_app_policy": "preserve_current_placement",
+  "apps": {
+    "dev.unifiedinbox.mobile": {
+      "name": "Unified",
+      "preferred_placement": "standalone",
+      "preserve": [
+        "application container",
+        "secure Hub session",
+        "SideStore in-place update identity"
+      ],
+      "source_url": "https://raw.githubusercontent.com/duaragha/unified-inbox-releases/main/sidestore-source.json"
+    },
+    "com.ragha.locket": {
+      "name": "Locket",
+      "preferred_placement": "standalone",
+      "preserve": [
+        "application container",
+        "background Bluetooth behavior",
+        "local notification behavior"
+      ]
+    },
+    "com.kdt.livecontainer": {
+      "name": "LiveContainer",
+      "preferred_placement": "standalone_host",
+      "preserve": [
+        "all guest application bundles",
+        "all guest data containers",
+        "built-in SideStore state"
+      ]
+    }
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sideload"
+  short_description: "Manage and repair SideStore and LiveContainer apps"
+  default_prompt: "Use $sideload to inspect or repair my SideStore and LiveContainer setup."
