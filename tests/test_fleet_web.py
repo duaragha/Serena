@@ -461,10 +461,11 @@ def test_main_serena_shell_registers_fleet_and_opens_workers_read_only():
     assert 'data-tab="fleet"' in web.HTML
     assert 'id="fleetFrame"' in web.HTML
     assert "openConv(String(sid), { mode: 'read' })" in web.HTML
-    assert "const showReadView = opts.mode !== 'live' || readOnly" in web.HTML
+    assert "const showReadView = opts.mode === 'read' || readOnly" in web.HTML
     assert "showReadView && convMode !== 'read'" in web.HTML
     assert "else if (showReadView && convMode !== 'read')" in web.HTML
-    assert "data.agent === 'codex' ? 'Codex' : defaultAgentLabel" in web.HTML
+    assert "data.agent === 'codex' ? 'Codex'" in web.HTML
+    assert "data.agent === 'gemini' ? 'Gemini' : defaultAgentLabel" in web.HTML
     assert "!s.external_runtime_active && !s.fleet_worker" in web.HTML
 
 

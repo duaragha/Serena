@@ -59,7 +59,7 @@ def providers_exhausted() -> tuple[bool, str]:
     """
 
     try:
-        from core.fleet_capacity import read_fleet_capacity
+        from fleet.capacity import read_fleet_capacity
 
         capacity = read_fleet_capacity()
     except Exception:

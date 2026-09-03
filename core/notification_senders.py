@@ -135,7 +135,7 @@ def observe_notification_result(
     notice_id = str(request.metadata.get("fleet_notice_id") or "")
     if not notice_id:
         return
-    from core.fleet_store import FleetStore
+    from fleet.store import FleetStore
 
     event_type = (
         "run.notification.delivered" if result.sent else "run.notification.failed"

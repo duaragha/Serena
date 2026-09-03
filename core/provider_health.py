@@ -1,6 +1,6 @@
 """Full, degraded, or offline: what Serena can still do when providers go dark.
 
-`core.fleet_capacity` already answers "is Claude out, is Codex out". That is a
+`fleet.capacity` already answers "is Claude out, is Codex out". That is a
 per-provider fact. This turns those facts into one system-wide mode, states
 plainly what survives in each mode, and keeps the work that could not run so it
 can run for real when a subscription comes back.
@@ -194,7 +194,7 @@ def assess_continuity(
     moment = float(time.time() if now is None else now)
     if capacity is None:
         with suppress(Exception):
-            from core.fleet_capacity import read_fleet_capacity
+            from fleet.capacity import read_fleet_capacity
 
             capacity = read_fleet_capacity()
     readings = tuple(_reading(capacity, provider) for provider in CLOUD_PROVIDERS)

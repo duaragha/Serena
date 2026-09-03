@@ -1642,7 +1642,7 @@ def fleet_start(
     """Start a four-phase Fleet run and return immediately."""
     import os
 
-    from core.fleet_supervisor import start_run
+    from fleet.supervisor import start_run
 
     prompt = " ".join(task).strip()
     if not origin_session_id:
@@ -1671,7 +1671,7 @@ def fleet_start(
 @click.option("--json", "as_json", is_flag=True)
 def fleet_list(limit, as_json):
     """List recent Fleet runs."""
-    from core.fleet_supervisor import list_runs
+    from fleet.supervisor import list_runs
 
     runs = _fleet_call(list_runs, limit=limit)
     if as_json:
@@ -1704,7 +1704,7 @@ def fleet_list(limit, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def fleet_status(run_id, as_json):
     """Show one Fleet run."""
-    from core.fleet_supervisor import get_run
+    from fleet.supervisor import get_run
 
     run = _fleet_call(get_run, run_id)
     if run is None:
@@ -1725,7 +1725,7 @@ def fleet_inspect(run_id, focus, event_limit, as_json):
     """Inspect durable DAG, context-budget, and event evidence."""
     import json
 
-    from core.fleet_supervisor import inspect_run
+    from fleet.supervisor import inspect_run
 
     inspection = _fleet_call(
         inspect_run,
@@ -1745,7 +1745,7 @@ def fleet_inspect(run_id, focus, event_limit, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def fleet_wait(run_id, timeout, as_json):
     """Wait for a run to reach a terminal state."""
-    from core.fleet_supervisor import wait_for_run
+    from fleet.supervisor import wait_for_run
 
     run = _fleet_call(wait_for_run, run_id, timeout=None if timeout == 0 else timeout)
     _fleet_print(run, as_json=as_json)
@@ -1756,7 +1756,7 @@ def fleet_wait(run_id, timeout, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def fleet_stop(run_id, as_json):
     """Cancel a queued or active run."""
-    from core.fleet_supervisor import stop_run
+    from fleet.supervisor import stop_run
 
     _fleet_print(_fleet_call(stop_run, run_id), as_json=as_json)
 
@@ -1766,7 +1766,7 @@ def fleet_stop(run_id, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def fleet_delete(run_id, as_json):
     """Delete a terminal run and its Fleet-owned worker chats."""
-    from core.fleet_supervisor import delete_run
+    from fleet.supervisor import delete_run
 
     _fleet_print(_fleet_call(delete_run, run_id), as_json=as_json)
 
@@ -1776,7 +1776,7 @@ def fleet_delete(run_id, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def fleet_retry(run_id, as_json):
     """Start a new attempt using an existing run's frozen policy."""
-    from core.fleet_supervisor import retry_run
+    from fleet.supervisor import retry_run
 
     _fleet_print(_fleet_call(retry_run, run_id), as_json=as_json)
 
@@ -1788,7 +1788,7 @@ def fleet_retry(run_id, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def fleet_handoff(run_id, leg_id, provider, as_json):
     """Continue one unfinished worker on the other native provider."""
-    from core.fleet_supervisor import handoff_leg
+    from fleet.supervisor import handoff_leg
 
     _fleet_print(
         _fleet_call(handoff_leg, run_id, leg_id, provider),
@@ -1801,7 +1801,7 @@ def fleet_handoff(run_id, leg_id, provider, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def fleet_result(run_id, as_json):
     """Print a run's reconciled final result."""
-    from core.fleet_supervisor import get_result
+    from fleet.supervisor import get_result
 
     result = _fleet_call(get_result, run_id)
     if as_json:
@@ -1816,7 +1816,7 @@ def fleet_result(run_id, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def fleet_steer(run_id, message, as_json):
     """Add context that future legs in an active run must consume."""
-    from core.fleet_supervisor import steer_run
+    from fleet.supervisor import steer_run
 
     _fleet_print(
         _fleet_call(steer_run, run_id, " ".join(message).strip()),
@@ -1828,7 +1828,7 @@ def fleet_steer(run_id, message, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def fleet_doctor(as_json):
     """Check worker binaries, policy, store, integrations, and service."""
-    from core.fleet_supervisor import doctor
+    from fleet.supervisor import doctor
 
     report = _fleet_call(doctor)
     _fleet_print(report, as_json=as_json)
@@ -1839,7 +1839,7 @@ def fleet_doctor(as_json):
 @fleet_group.command(name="serve", hidden=True)
 def fleet_serve():
     """Own the durable Fleet queue (normally run by systemd)."""
-    from core.fleet_supervisor import serve_forever
+    from fleet.supervisor import serve_forever
 
     serve_forever()
 
@@ -1847,7 +1847,7 @@ def fleet_serve():
 @fleet_group.command(name="mcp", hidden=True)
 def fleet_mcp():
     """Serve Fleet tools over MCP stdio."""
-    from core.fleet_mcp import run_mcp_server
+    from fleet.mcp import run_mcp_server
 
     run_mcp_server()
 
@@ -1855,7 +1855,7 @@ def fleet_mcp():
 @fleet_group.command(name="read-mcp", hidden=True)
 def fleet_read_mcp():
     """Serve Fleet's read-only account gateway over MCP stdio."""
-    from core.fleet_read_mcp import run_gateway
+    from fleet.read_mcp import run_gateway
 
     run_gateway()
 
@@ -1865,7 +1865,7 @@ def fleet_read_mcp():
 @click.option("--json", "as_json", is_flag=True)
 def fleet_read_tools(refresh, as_json):
     """Show which read-only account tools Fleet's Research and Review legs get."""
-    from core.fleet_read_mcp import (
+    from fleet.read_mcp import (
         allowed_servers,
         catalog_tools,
         load_catalog,

@@ -17,7 +17,7 @@ from core.coding_job_contract import (
     RepositoryResolutionError,
     resolve_repository_root,
 )
-from core.fleet_supervisor import (
+from fleet.supervisor import (
     get_run,
     list_runs,
     retry_run,

@@ -115,7 +115,7 @@ def choose_providers(
     counts against someone. Being unsure is not the same as being out.
     """
     if capacity is None:
-        from core.fleet_capacity import read_fleet_capacity
+        from fleet.capacity import read_fleet_capacity
 
         capacity = read_fleet_capacity()
 

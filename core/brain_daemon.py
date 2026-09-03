@@ -3171,7 +3171,7 @@ async def _run_daemon() -> None:
     from core.brain_work_tools import WORK_TOOL_NAMES, work_tools_server
     from core.codex_brain import CodexBrainClient
     from core.codex_brain_tools import build_serena_codex_brain_tools
-    from core.fleet_capacity import read_fleet_capacity
+    from fleet.capacity import read_fleet_capacity
     from core.local_model_fallback import LocalBrain
     from core.provider_health import ContinuityStore
 

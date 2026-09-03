@@ -301,7 +301,7 @@ def inspect_session(session_id: str) -> dict[str, Any]:
 
     sid = _clean_session_id(session_id)
     from core import metadata
-    from core.fleet_context import redact_value
+    from fleet.context import redact_value
     from core.indexer import get_session
     from ui import pty_terminal
 
@@ -320,7 +320,7 @@ def inspect_session(session_id: str) -> dict[str, Any]:
     diffs: list[dict[str, Any]] = []
     if isinstance(fleet_marker, dict) and fleet_marker.get("run_id"):
         try:
-            from core.fleet_supervisor import inspect_run
+            from fleet.supervisor import inspect_run
 
             fleet = inspect_run(
                 str(fleet_marker["run_id"]),
