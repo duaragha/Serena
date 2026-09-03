@@ -203,6 +203,19 @@ Apply without overwriting existing files:
 
 Every archived file is checksum-verified before its restore plan is accepted. Existing files are skipped unless `--overwrite` is explicit.
 
+## Nightly VM Restic Backups
+Two restic repositories on `E:\` (a separate physical disk from the data) are written by systemd timers inside the Docker-Ubuntu VirtualBox VM on the PC:
+- `atrium-backup.timer` at 03:30 -> `E:\Backups\atrium-restic` from `/srv/atrium-data`.
+- `unified-backup.timer` at 02:30 -> `E:\Backups\unified-restic`: individual database dumps, state/secrets volumes, Synapse media store.
+- Password: `/etc/atrium-restic-pass`. Run with: `sudo -n env RESTIC_PASSWORD_FILE=/etc/atrium-restic-pass restic ...`
+- Note on VirtualBox transient shares: shares are re-mounted by `~/start-docker-vm.ps1` and Startup entry `ensure-docker-vm-shares.cmd`. To make permanent when VM is off:
+  ```powershell
+  VBoxManage sharedfolder add "Docker-Ubuntu" --name atriumresticE --hostpath "E:\Backups\atrium-restic"  --automount
+  VBoxManage sharedfolder add "Docker-Ubuntu" --name unifiedrestic  --hostpath "E:\Backups\unified-restic" --automount
+  ```
+- Fast backup (~5s) is expected due to deduplication. Verify via `restic snapshots` and `restic stats latest`.
+
+
 ## Prove reconstruction from Git
 
 ```bash
