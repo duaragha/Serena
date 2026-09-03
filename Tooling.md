@@ -499,27 +499,61 @@ Distinguish them by md5-ing each dirty file against `origin/main`: if they match
 upstream exactly it is drift, not work, and resetting is safe once the branch is
 confirmed pushed. Confirm the push before resetting, every time.
 
-## Shipping: GitHub Releases only, never a manual install
+## Shipping: never a manual install
 
-Every app ships through GitHub Releases, and no device gets an update installed
-by hand any more. An update the user did not choose is worse than a stale
-version, so the app checks for its own updates and swaps on restart.
+No device gets an update installed by hand. An update the user did not choose
+is worse than a stale version, so each app checks for its own and swaps on
+restart. There are two mechanisms in play, and they are not the same.
 
-- **Serena and Unified Inbox** are Electron apps and self-update from GitHub
-  Releases. Publishing is a tag push whose version matches `package.json`; one
-  tag builds and publishes every platform artifact to the same release, which is
-  the feed electron-updater reads. See **Updating the desktop app** for the
-  mechanics, the AppImage filename trap, and the rollback commands.
-- **Atrium and Vantage** serve their web tier from Docker, and that stays a
-  Docker deploy. Their MOBILE builds still need a GitHub Release, because
-  CodeMagic sources the IPA from one. A web deploy alone does not ship mobile.
-- **Locket** ships the same way as the mobile builds above: release first, then
-  the IPA is sourced from it.
+**Desktop (Electron): GitHub Releases.** Serena and Unified Inbox self-update
+from GitHub Releases via electron-updater, and each solves the same problem a
+different way. electron-updater downloads anonymously, so the release feed must
+be readable without a token: Serena's own repo is therefore PUBLIC, while
+Unified Inbox keeps its code private and publishes to a separate public repo,
+`duaragha/unified-inbox-releases` (`RELEASE_REPOSITORY` in
+`desktop-release.yml`). Do not look for Unified's desktop releases in the code
+repo — the only releases there are Telegram-bridge and hub-runtime container
+images, which is misleading.
+
+Unified's workflow is `workflow_dispatch` only and its preflight refuses to run
+without `UNIFIED_RELEASES_TOKEN`, a scoped token with release write access to
+the releases repo. The tag must equal `v` + the version in
+`apps/desktop/package.json`, not the root manifest. A run of the older
+push-triggered version failed six times in a row in late August on that token
+check; those failures are stale history, and publishing has been current since
+(alpha.36, 2026-09-01). See **Updating the desktop app** for the AppImage
+filename trap and the rollback commands.
+
+**iOS: a live CodeMagic source, NOT a GitHub Release.** This is the part that
+is easy to get backwards. Atrium, Vantage, Locket and OpenWhispr each serve a
+SideStore/LiveContainer source endpoint from their own web container, e.g.
+`https://pc.tail4d6220.ts.net/vantage/api/v1/sidestore/source`. That endpoint
+queries the CodeMagic API for the newest finished build of its app id and
+points the phone at that IPA, so the phone self-updates without anyone
+installing anything. Nothing sources an IPA *from* a GitHub Release today.
+
+Consequences worth knowing before touching it. The endpoint needs
+`CODEMAGIC_API_TOKEN` in the web container, supplied by the env file at
+`CODEMAGIC_ENV_FILE` (default `~/.config/serena/codemagic.env`); without it the
+endpoint returns `source unavailable`. It also depends on the tailnet and on
+the PC's container being up, since there is no public origin any more — Railway
+was retired 2026-08-17. And CodeMagic prunes build artifacts, so old versions
+disappear in a way a GitHub Release would not. Moving iOS IPA hosting onto
+GitHub Releases would fix the retention and the PC dependency, but it is a
+migration across four apps rather than a config edit, and it is not done.
+
+The GitHub Actions side only *triggers* CodeMagic. atrium and locket each have
+a `codemagic-ios.yml` that POSTs to `api.codemagic.io/builds` with a hardcoded
+app id and `secrets.CODEMAGIC_API_TOKEN`. vantage has no such workflow: its
+CodeMagic app id is `6a5504d651238a3fa7259752` (hardcoded in
+`apps/web/src/app/api/v1/sidestore/source/route.ts`) and the repo holds no
+secrets, so its builds are started by hand. Note vantage is a PUBLIC repo,
+which is why adding the token there is a decision and not a chore.
 
 So a change is not shipped when the code is merged, nor when the container is
-redeployed. It is shipped when the release carrying it exists and the app can
-see it. Never SSH into a device to install a build, and never hand-copy an
-artifact onto a phone or laptop.
+redeployed. Desktop is shipped when the release exists; iOS is shipped when a
+CodeMagic build for that app id finishes. Never SSH into a device to install a
+build, and never hand-copy an artifact onto a phone or laptop.
 
 ## Cross-machine artifact storage
 
