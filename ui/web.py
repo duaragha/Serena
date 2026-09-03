@@ -4860,6 +4860,7 @@ async function openConv(sid, opts) {
       if (window.__nativeTerminalBridge) stopGtkCode();
       else _hideAllTermPanes();
     }
+    _resetIdentityRowForSwitch(sid, showReadView);
   } else if (showReadView && convMode !== 'read') {
     // A Fleet deep-link can target the already-selected chat. Honour the
     // explicit read-only request instead of leaving its terminal visible.
@@ -6354,6 +6355,27 @@ function _installClipboardBridge(term) {
   });
 }
 
+/**
+ * Point the identity row at the chat being opened.
+ *
+ * The row names the chat in front of you, and the chat you just left is not
+ * it. Only terminal lifecycle events refreshed it, so a chat whose runtime is
+ * still spawning -- or never spawns at all -- kept the previous chat's badges:
+ * an ungrouped gemini chat reported a claude and a codex session id, plus a
+ * machine badge it had never earned, and a "claude live - codex live" status
+ * describing two runtimes that belonged to a different conversation.
+ *
+ * Clicking the other half of the pair you are already viewing is not a switch
+ * away from the split, so that case leaves the layout alone.
+ */
+function _resetIdentityRowForSwitch(sid, showReadView) {
+  if (_gtkSplitSids && _gtkSplitSids.includes(sid)) return;
+  _gtkSplitActive = false;
+  _gtkSplitSids = null;
+  _renderOpenSessionIds(showReadView ? [] : [sid]);
+  if (!showReadView) setTermStatus('');
+}
+
 function _machineBadge() {
   // Chats sync between the Linux laptop and the Windows PC, and a resumed pane
   // looks identical on either. Naming the host here settles at a glance which
@@ -6875,7 +6897,8 @@ async function startLiveTerminal(sid, opts) {
 
   setTermStatus(opts.isNew
     ? 'Starting ' + (opts.agent || 'claude') + '…'
-    : 'Starting claude --resume ' + sid.slice(0, 8) + '…');
+    : 'Resuming ' + (((localSession && localSession.agent) || 'claude').toLowerCase())
+      + ' ' + sid.slice(0, 8) + '…');
 
   const container = document.getElementById('termMounts');
   const mount = document.createElement('div');

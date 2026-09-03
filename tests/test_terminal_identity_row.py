@@ -23,6 +23,7 @@ import pytest
 from ui import web
 
 FUNCTIONS = (
+    "_resetIdentityRowForSwitch",
     "_visibleRuntimeSids",
     "_machineBadge",
     "_renderOpenSessionIds",
@@ -70,7 +71,8 @@ const SESSIONS = JSON.parse(process.env.SESSIONS);
 function _findClientSession(sid) { return SESSIONS[sid] || null; }
 const termSessions = new Map();
 const _gtkRuntimeStates = new Map();
-function setTermStatus() {}
+let termStatus = '';
+function setTermStatus(text) { termStatus = text === undefined ? '' : text; }
 function _findClientSessionAgent(sid) { return (SESSIONS[sid] || {}).agent; }
 
 let _gtkSplitActive = false;
@@ -120,6 +122,42 @@ _gtkCodeSid = 'c660e9ce-1111-2222-3333-444444444444';
 render();
 assert.deepEqual(pills(), ['claude c660e9ce'], 'the native shell must render the row too');
 
+// --- switching chats ----------------------------------------------------
+// A linked claude+codex pair is open and the row describes it.
+window.__nativeTerminalBridge = false;
+_gtkCodeSid = null;
+_gtkSplitActive = true;
+_gtkSplitSids = ['c660e9ce-1111-2222-3333-444444444444', '019fdfc8-5555-6666-7777-888888888888'];
+activeTermSid = 'c660e9ce-1111-2222-3333-444444444444';
+setTermStatus('claude live  ·  codex live');
+render();
+assert.deepEqual(pills(), ['claude c660e9ce', 'codex 019fdfc8']);
+
+// Now open a gemini chat that is in no group at all. Its runtime has not
+// spawned yet, so nothing in the terminal lifecycle will redraw the row.
+const GEMINI = '9984a527-9999-aaaa-bbbb-cccccccccccc';
+_resetIdentityRowForSwitch(GEMINI, false);
+
+assert.deepEqual(pills(), ['gemini 9984a527'],
+  'an ungrouped chat inherited the previous pair session ids');
+assert.equal(_gtkSplitActive, false, 'the previous split must not survive the switch');
+assert.equal(_gtkSplitSids, null);
+assert.equal(termStatus, '',
+  'the status still described two runtimes from a different conversation');
+
+// Opening a chat in read mode shows no runtime at all.
+_resetIdentityRowForSwitch('019fdfc8-5555-6666-7777-888888888888', true);
+assert.deepEqual(pills(), [], 'read view has no live runtime to name');
+assert.ok(root.classList.contains('hidden'));
+
+// Clicking the other half of the pair you are already viewing is not a switch
+// away from the split, and must not tear it down.
+_gtkSplitActive = true;
+_gtkSplitSids = ['c660e9ce-1111-2222-3333-444444444444', '019fdfc8-5555-6666-7777-888888888888'];
+_resetIdentityRowForSwitch('019fdfc8-5555-6666-7777-888888888888', false);
+assert.equal(_gtkSplitActive, true, 'focusing a sibling collapsed the split');
+assert.deepEqual(_gtkSplitSids.length, 2);
+
 console.log('ok');
 """
 
@@ -148,6 +186,7 @@ def test_the_identity_row_names_the_machine_and_session_for_every_pane(tmp_path:
     sessions = {
         "c660e9ce-1111-2222-3333-444444444444": {"agent": "claude"},
         "019fdfc8-5555-6666-7777-888888888888": {"agent": "codex"},
+        "9984a527-9999-aaaa-bbbb-cccccccccccc": {"agent": "gemini"},
     }
     result = subprocess.run(
         ["node", str(script)],
@@ -173,3 +212,29 @@ def test_the_render_is_not_gated_behind_the_split_view() -> None:
 
 def test_leaving_the_terminal_clears_the_row() -> None:
     assert "_renderOpenSessionIds([])" in _extract("_hideAllTermPanes")
+
+
+def test_switching_chats_redraws_the_row_rather_than_waiting_for_a_runtime() -> None:
+    """openConv is where the row goes stale, so it is where it must be reset.
+
+    Raghav opened a Gemini chat and the row read "claude 979a60b0 · codex
+    019de3ff" — the linked pair he had open before it. Those ids were correct
+    for a conversation he was no longer looking at.
+    """
+    page = web.HTML
+    start = page.index("async function openConv(")
+    body = page[start : start + 2600]
+
+    assert "_resetIdentityRowForSwitch(sid, showReadView)" in body, (
+        "switching chats leaves the previous chat's session ids on screen"
+    )
+
+
+def test_a_resumed_chat_is_not_announced_as_claude_regardless_of_agent() -> None:
+    """"Starting claude --resume" was printed for codex and gemini too."""
+    page = web.HTML
+    start = page.index("async function startLiveTerminal(")
+    body = page[start : page.index("setTermStatus(opts.isNew", start) + 400]
+
+    assert "'Starting claude --resume '" not in body
+    assert "localSession && localSession.agent" in body
