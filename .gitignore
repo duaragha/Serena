@@ -50,9 +50,10 @@ voice/__pycache__/
 # absent from origin/master HEAD, so nothing has leaked.
 Persona.md
 
-# venv that .venv/ did not match — 8,708 files, 292MB of the untracked noise
-.venv-wake/
-voice/.venv-wake/
+# Any venv variant, at any depth. .venv/ alone missed .venv-wake/ (8,708 files,
+# 292MB of untracked noise) and later .venv-pocket/ appeared and did it again,
+# so match the whole family rather than naming them one at a time.
+.venv*/
 
 # node_modules under desktop-electron was untracked (5,324 files)
 node_modules/
