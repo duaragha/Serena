@@ -1,6 +1,6 @@
 ---
 name: sideload
-description: Inventory, diagnose, install, update, back up, and repair every app managed by SideStore or LiveContainer. Use for IPA, iLoader, LocalDevVPN, pairing-file, signing, provisioning-profile, App ID, expiration, refresh, JIT-less, SideStore, or LiveContainer work. Auto-discovers native apps and LiveContainer guests; it never requires manual app registration.
+description: Inventory, diagnose, install, update, back up, operate, and repair every app managed by SideStore or LiveContainer, including screenshot-gated control of the connected iPhone. Use for IPA, iLoader, LocalDevVPN, pairing-file, signing, provisioning-profile, App ID, expiration, refresh, JIT-less, SideStore, or LiveContainer work. Auto-discovers native apps and LiveContainer guests; it never requires manual app registration.
 ---
 
 # Sideload
@@ -15,6 +15,7 @@ Codex invokes this skill as `$sideload`. Claude invokes the same skill as `/side
 - `diagnose`, an error message, or a question about a failure: collect status once, then read [repair matrix](references/repair-matrix.md). Diagnose the exact failing layer before changing anything.
 - `repair`: collect status, read [repair matrix](references/repair-matrix.md), and apply only the repair matching positive evidence.
 - `install`, `update`, `migrate`, `source`, `backup`, `restore`, or `uninstall`: read [operations](references/operations.md). Inspect every IPA before signing or installation.
+- A request whose result requires opening, tapping, swiping, or verifying an app on the phone: read [device control](references/device-control.md). Attempt live control before giving the user tap-by-tap instructions.
 - Any mutation involving Raghav's known apps: also read [local policy](references/local-policy.md).
 - When current upstream behavior matters, consult only the maintained primary links in [official sources](references/official-sources.md).
 
@@ -36,6 +37,8 @@ Resolve this `SKILL.md` to its real directory before invoking scripts. Symlinked
 12. Treat LiveContainer guests as less capable than native apps. Remote push, app extensions, original entitlements, background execution, and URL schemes may not work. Do not move an app into LiveContainer solely to save a slot when those capabilities matter.
 13. Do not call a profile refreshed merely because SideStore reported success. When expiry or missing entitlements are in dispute, verify the current profile using the method in the official LiveContainer refresh guide.
 14. Do not claim a repair from source inspection or an IPA build alone. Verify on the physical device when the requested outcome is device behavior.
+15. Do not stop at “do these taps” when the connected phone exposes CoreDevice screenshot and HID control. Probe once, inspect a fresh screenshot, perform one bounded action, and inspect the result before the next action.
+16. The user must personally enter a device passcode, Apple Account password, two-factor code, or Trust confirmation. Never type, request, capture, or retain those secrets. Resume control after the protected prompt is complete.
 
 ## Deterministic helpers
 
@@ -53,6 +56,22 @@ python scripts/inspect_ipa.py /absolute/path/to/app.ipa --json
 
 Both helpers are read-only. The status cache is sanitized and contains no full UDID, credential, key, certificate, or pairing-record content.
 
+Probe non-mutating on-device control:
+
+```bash
+python scripts/device_control.py probe --json
+```
+
+Capture a screen, launch an exact installed app, or perform screenshot-gated touch actions:
+
+```bash
+python scripts/device_control.py screenshot --output /private/path/before.png --json
+python scripts/device_control.py launch LiveContainer --json
+python scripts/device_control.py tap --screen /private/path/before.png --x 600 --y 2100 --json
+```
+
+Never copy coordinates from an example. Every touch must come from visual inspection of the fresh screenshot passed to that command. Delete transient screenshots after the operation is verified.
+
 ## Completion standard
 
 Report:
@@ -61,6 +80,6 @@ Report:
 - the single repair performed;
 - which apps or data could have been affected;
 - live post-repair evidence;
-- anything still unverified because the phone was disconnected, locked, or awaiting an on-device action.
+- anything still unverified because the phone was disconnected, CoreDevice control was proven unavailable, or the phone awaits a passcode, Apple credential, two-factor code, or Trust confirmation.
 
 Do not bury the outcome in command transcripts.

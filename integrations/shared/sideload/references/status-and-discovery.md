@@ -35,6 +35,8 @@ It never requires an app registry entry. `local-policy.json` only annotates matc
 
 The installation proxy cannot prove the exact current provisioning-profile expiry for every app. If expiry or entitlement coverage matters, use LiveContainer's documented StikDebug `Tools -> App Expiry` verification. SideStore's success message alone is insufficient.
 
+Status collection does not establish UI control. When the requested result requires opening or operating an app, run `scripts/device_control.py probe --json` and follow [device control](device-control.md).
+
 ## Device unavailable
 
 If the phone is missing or locked, show the cached snapshot if present and identify the one missing prerequisite. Do not repeatedly restart services or ask a list of generic questions. For a live repair, wait for only what is required: cable/trust, unlock, Wi-Fi, or LocalDevVPN.
