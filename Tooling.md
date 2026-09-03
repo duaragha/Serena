@@ -154,7 +154,9 @@ ssh docker-vm docker logs <container>          # when already inside
 
 Quoting through Windows cmd mangles braces and quotes, so pipe a script on
 stdin rather than inlining the command. The VM sees this Projects tree at
-`/mnt/projects` over Syncthing, so an edit here reaches the build context
+`/mnt/projects` as a VirtualBox shared folder (vboxsf) of the PC's Projects
+directory. It is NOT Syncthing; Syncthing does not run in the VM at all. So an
+edit here reaches the build context
 without copying.
 
 ## Launching a GUI app on Windows, from a pane
@@ -427,6 +429,70 @@ not there yet. It reports both platforms rather than only the one it runs on,
 because whoever cut the release is waiting on both from one screen. What has
 already been announced lives in `announced-builds.json` under the app's user
 data, so a restart does not replay it.
+
+## Syncing the Projects tree between machines
+
+Syncthing carries the tree; git carries history. Both write the same files, so
+the split has to be explicit or the repos drift. `.stignore` is per-device and
+is NOT itself synced, so every rule below must be applied on BOTH machines by
+hand; an asymmetric `.stignore` is its own bug class.
+
+`.git` IS synced, minus its machine-local parts. Excluding `.git` wholesale is
+what let atrium sit on a June commit holding August files, and left vantage and
+locket on the PC with working files and no history at all. But these must never
+sync, or the machines corrupt each other: `.git/index` (derived, machine-local,
+and a half-written one breaks the repo), `.git/config` (`core.filemode` and
+`core.symlinks` MUST differ between Linux and Windows), `.git/worktrees`
+(registrations pointing at paths only one machine has), and the logs, `*_HEAD`
+files and lock files. Objects are immutable and append-only so they merge
+safely; refs are tiny.
+
+Some paths are excluded outright. A repo whose two machines sit on different
+active branches cannot be reconciled by a file syncer, so unified-inbox is
+git-only. `mcp_servers` is PC-only infrastructure, and on 2026-09-03 a deletion
+recorded on the laptop propagated and wiped the amazon_shopping and opentable
+source from the PC, leaving only `__pycache__`/`build`/`node_modules` so
+Syncthing looped on five pull errors it could not clear. A symlink git manages
+is excluded per-path, because Windows cannot represent one (it needs Developer
+Mode or admin), so the PC writes a plain file and Syncthing carries that over
+the laptop's symlink: konpeki's `apps/admin/templates` is the live example.
+
+Two Windows artifacts fake a dirty tree, and both cost hours before. Every repo
+cloned on the PC carried a LOCAL `core.filemode = true` overriding the global,
+so files showed modified on an exec bit Windows cannot store: konpeki reported
+181 dirty files whose real diff was zero. Set `core.autocrlf false`,
+`core.filemode false` and `core.symlinks false` globally, then
+`git config --local --unset` each of them per repo or the local value keeps
+winning. Diagnose with `git diff --ignore-cr-at-eol --stat`, and compare content
+md5 with CR stripped: identical content means pure line-ending noise.
+
+Syncthing drift looks identical to real edits and is not. The tell is that the
+working tree holds `origin/main` content while HEAD sits on an older branch.
+Distinguish them by md5-ing each dirty file against `origin/main`: if they match
+upstream exactly it is drift, not work, and resetting is safe once the branch is
+confirmed pushed. Confirm the push before resetting, every time.
+
+## Shipping: GitHub Releases only, never a manual install
+
+Every app ships through GitHub Releases, and no device gets an update installed
+by hand any more. An update the user did not choose is worse than a stale
+version, so the app checks for its own updates and swaps on restart.
+
+- **Serena and Unified Inbox** are Electron apps and self-update from GitHub
+  Releases. Publishing is a tag push whose version matches `package.json`; one
+  tag builds and publishes every platform artifact to the same release, which is
+  the feed electron-updater reads. See **Updating the desktop app** for the
+  mechanics, the AppImage filename trap, and the rollback commands.
+- **Atrium and Vantage** serve their web tier from Docker, and that stays a
+  Docker deploy. Their MOBILE builds still need a GitHub Release, because
+  CodeMagic sources the IPA from one. A web deploy alone does not ship mobile.
+- **Locket** ships the same way as the mobile builds above: release first, then
+  the IPA is sourced from it.
+
+So a change is not shipped when the code is merged, nor when the container is
+redeployed. It is shipped when the release carrying it exists and the app can
+see it. Never SSH into a device to install a build, and never hand-copy an
+artifact onto a phone or laptop.
 
 ## Cross-machine artifact storage
 
