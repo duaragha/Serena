@@ -16,6 +16,7 @@ from core import metadata as meta_sync
 from core.parser import SessionMeta, parse_messages_for_search, parse_metadata
 from core.scanner import scan_sessions
 from core.codex_scanner import scan_codex_sessions, parse_codex_metadata, _FILENAME_RE as _CODEX_FILE_RE
+from core.gemini_scanner import scan_gemini_sessions, parse_gemini_metadata
 from core.locket_scanner import scan_locket_sessions, parse_locket_metadata
 from core.voice_transcripts import (
     VOICE_SESSION_ID,
@@ -282,6 +283,8 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
         discovered.append(("locket", project_dir, fp))
     for project_dir, fp in scan_voice_sessions():
         discovered.append(("serena-voice", project_dir, fp))
+    for agent_name, fp in scan_gemini_sessions():
+        discovered.append((agent_name, "gemini", fp))
 
     # The same Claude session can legitimately exist under several cwd/OS
     # slug folders. Indexing every copy reparses large transcripts repeatedly
@@ -344,6 +347,11 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
         elif agent == "serena-voice":
             _index_voice_transcript_locked(conn, file_path)
             continue
+        elif agent == "gemini":
+            meta = parse_gemini_metadata(file_path)
+            if meta is None:
+                continue
+            project_dir = meta.project_dir
         else:
             meta = parse_codex_metadata(file_path)
             if meta is None:
@@ -361,6 +369,10 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
 
 
 def _discovered_session_id(agent: str, file_path: Path) -> str | None:
+    if agent == "gemini":
+        # Antigravity names each conversation file after its id, which is also
+        # what `agy --conversation <id>` takes to reopen it.
+        return file_path.stem
     if agent == "codex":
         match = _CODEX_FILE_RE.match(file_path.name)
         return match.group(1) if match else None
