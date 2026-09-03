@@ -56,7 +56,6 @@ packages = [
     "voice.call",
     "voice.desk",
     "voice.desktop",
-    "dream",
 ]
 py-modules = ["cli"]
 

@@ -32,8 +32,7 @@
     "Persona.md",
     "memory",
     "knowledge",
-    "reminders",
-    "dream"
+    "integrations/reminders-legacy"
   ],
   "runtime_paths": [
     "~/.config/serena",
