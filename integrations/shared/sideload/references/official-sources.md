@@ -23,4 +23,10 @@ Reviewed 2026-09-03. Re-check these pages when behavior may have changed.
 - Destructive data-management operations: https://livecontainer.github.io/docs/guides/data-management
 - Provisioning-profile refresh verification: https://livecontainer.github.io/docs/guides/refresh-verification
 
+## Connected-device control
+
+- pymobiledevice3 official repository and supported platforms: https://github.com/doronz88/pymobiledevice3
+- iOS 17+ tunnel modes, including no-root userspace operation: https://doronz88.github.io/pymobiledevice3/guides/ios17-tunnels/
+- official CLI recipes for developer services and screen capture: https://doronz88.github.io/pymobiledevice3/guides/cli-recipes/
+
 Prefer these sources over forum recipes. Treat an issue comment as version-specific evidence, not permanent procedure.

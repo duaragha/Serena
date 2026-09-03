@@ -1,6 +1,6 @@
 # Evidence-led repair matrix
 
-Use this for `diagnose`, `repair`, or any pasted SideStore/LiveContainer error. Run the status collector once first. Match the error to one layer and change only that layer.
+Use this for `diagnose`, `repair`, or any pasted SideStore/LiveContainer error. Run the status collector once first. Match the error to one layer and change only that layer. When the matching repair enters the phone UI, follow [device control](device-control.md) instead of defaulting to manual tap instructions.
 
 ## 1. Transport and host trust
 
@@ -45,11 +45,11 @@ Evidence:
 
 Preferred official recovery:
 
-1. In SideStore Settings, use `Reset Pairing File` when available.
+1. Probe on-device control and open SideStore Settings; use `Reset Pairing File` when available.
 2. In current iLoader, delete the stored pairing.
 3. Connect by USB, unlock, and trust the computer.
 4. Refresh iLoader's device list, open `Manage Pairing File`, and place the record into SideStore or all intended apps.
-5. Fully quit and reopen SideStore, connect LocalDevVPN, then retry once.
+5. Fully quit and reopen SideStore, connect LocalDevVPN, then retry once through the screenshot-gated interaction loop.
 
 Never print or copy the pairing plist into chat. Do not hand-edit or inject a lockdown plist unless the official flow is unavailable and the exact required schema has been independently verified. A host pairing validating successfully does not prove SideStore's embedded pairing file is valid.
 
@@ -100,8 +100,8 @@ Response:
 
 1. Enumerate every affected native app first.
 2. Preserve their containers.
-3. Refresh or re-sign them together using the current certificate.
-4. Verify each app launches afterward.
+3. Use [device control](device-control.md) to refresh or re-sign each affected app through the SideStore instance that owns it. If only one app still carries the dead identity, refresh that app specifically rather than choosing `Refresh All`.
+4. Re-read the installed profiles/signing state and verify each app launches afterward. A SideStore success banner by itself is not proof.
 
 Never revoke a certificate merely to make a dialog disappear. Revocation can invalidate all apps sharing it. If Apple forces replacement, keep a working SideStore path alive until every affected app is refreshed.
 
@@ -115,7 +115,7 @@ Evidence:
 
 Response:
 
-1. Refresh the app in SideStore.
+1. Use [device control](device-control.md) to refresh the exact app in SideStore.
 2. Verify the newly installed profile and required entitlements with StikDebug when the result matters.
 3. If the refreshed profile omits required entitlements, reinstall the same IPA through SideStore so its entitlement record is rebuilt, then verify again.
 
@@ -136,7 +136,7 @@ Always run `scripts/inspect_ipa.py` before retrying an IPA.
 
 Evidence and response:
 
-- `Certificate not found`: open built-in SideStore, sign in, connect LocalDevVPN, run `Refresh All`, then import its certificate from LiveContainer Settings.
+- `Certificate not found`: use [device control](device-control.md) to open built-in SideStore, sign in, connect LocalDevVPN, refresh every app actually affected by the missing certificate, then import its certificate from LiveContainer Settings. Use `Refresh All` only when the evidence covers all managed apps.
 - If direct import fails, use LiveContainer's documented export-from-SideStore/import-into-LiveContainer fallback and keep the export private.
 - `executable was signed with invalid entitlements`: update to the minimum current SideStore/LiveContainer versions required by the official guide before repairing individual guests.
 - `signed with latest certificate but code signature is invalid`: run JIT-Less Diagnose. If it passes, force re-sign only the affected guest.

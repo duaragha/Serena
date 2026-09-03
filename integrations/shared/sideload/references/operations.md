@@ -1,6 +1,6 @@
 # Install, update, migrate, back up, and restore
 
-Read this for any mutation. Start with one live status snapshot and read `local-policy.md` for Raghav's phone.
+Read this for any mutation. Start with one live status snapshot and read `local-policy.md` for Raghav's phone. If the workflow enters the phone UI, use [device control](device-control.md) and retain control except for protected credential prompts.
 
 ## Inspect the IPA
 
@@ -33,7 +33,7 @@ A LiveContainer guest is suitable when the app is primarily foreground-driven an
 3. Confirm a native slot and any required App IDs are available before attempting installation.
 4. Prefer a trusted HTTPS AltSource for ongoing updates. Otherwise import the already-inspected IPA.
 5. For an update, install over the existing app without deleting it and preserve the canonical bundle ID.
-6. Wait for signing and installation to finish once. Do not repeatedly tap install.
+6. Drive the SideStore flow with fresh screenshots and one bounded action per transition. Wait for signing and installation to finish once. Do not repeatedly tap install.
 7. Launch the exact native bundle, verify important data/login, and verify the current provisioning profile when relevant.
 8. Save a sanitized post-install status snapshot.
 
@@ -42,7 +42,7 @@ A LiveContainer guest is suitable when the app is primarily foreground-driven an
 1. Confirm the LiveContainer host itself launches and JIT-Less Diagnose passes when using JIT-less mode.
 2. Confirm its SideStore certificate is imported.
 3. Inspect the IPA before import and confirm it is decrypted.
-4. Import through LiveContainer's app picker.
+4. Import through LiveContainer's app picker using screenshot-gated device control where the host allows it.
 5. Allow LiveContainer to patch/sign the guest once.
 6. Verify the guest's `Info.plist`, `LCAppInfo.plist`, application bundle, and at least one data container are discoverable.
 7. Launch it and verify its actual required features, not just its splash screen.
@@ -64,7 +64,7 @@ Use the official combined IPA only.
 1. Back up all guest bundles and guest data containers from the current LiveContainer.
 2. Keep the existing working SideStore available as the recovery path.
 3. Install the combined IPA over the existing LiveContainer using `Keep All Extensions (Use Main Profile)` when preserving the one-slot arrangement.
-4. Open SideStore using the button in LiveContainer, sign in on-device, connect LocalDevVPN, and run `Refresh All`.
+4. Use screenshot-gated device control to open SideStore using the button in LiveContainer, sign in on-device, connect LocalDevVPN, and refresh every affected app. Use `Refresh All` here only because a combined-host migration affects the complete managed signing set.
 5. Return to LiveContainer and import the certificate from SideStore.
 6. Run JIT-Less Diagnose and launch representative guests.
 7. Confirm the built-in SideStore can refresh the host and other native apps.
