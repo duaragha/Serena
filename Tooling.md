@@ -432,30 +432,54 @@ data, so a restart does not replay it.
 
 ## Syncing the Projects tree between machines
 
-Syncthing carries the tree; git carries history. Both write the same files, so
-the split has to be explicit or the repos drift. `.stignore` is per-device and
-is NOT itself synced, so every rule below must be applied on BOTH machines by
+Syncthing carries the working tree. Git carries history, and it moves machine
+to machine directly, never through Syncthing. `.stignore` is per-device and is
+NOT itself synced, so every rule below must be applied on BOTH machines by
 hand; an asymmetric `.stignore` is its own bug class.
 
-`.git` IS synced, minus its machine-local parts. Excluding `.git` wholesale is
-what let atrium sit on a June commit holding August files, and left vantage and
-locket on the PC with working files and no history at all. But these must never
-sync, or the machines corrupt each other: `.git/index` (derived, machine-local,
-and a half-written one breaks the repo), `.git/config` (`core.filemode` and
-`core.symlinks` MUST differ between Linux and Windows), `.git/worktrees`
-(registrations pointing at paths only one machine has), and the logs, `*_HEAD`
-files and lock files. Objects are immutable and append-only so they merge
-safely; refs are tiny.
+**`.git` is never synced.** Syncing it was tried on 2026-09-03 and reverted the
+same day, after one pass corrupted two repos. Git's object store has invariants
+a file syncer cannot honour. A `.pack` and its `.idx` must arrive together, and
+serena ended up with two `.idx` files whose `.pack` never came, which broke
+`multi-pack-index` and made `git fsck` fail outright. `git gc` deletes loose
+objects the instant it packs them, so transfers already in flight fail with
+"no such file". `commit-graph` and `multi-pack-index` are caches that reference
+THIS machine's packs, so a synced copy points at packs that do not exist here.
+And locket picked up two empty, partially written loose objects in the same
+run. Excluding only the obviously machine-local parts (`index`, `config`,
+`worktrees`, `logs`) is NOT enough — the object store itself is the problem.
 
-Some paths are excluded outright. A repo whose two machines sit on different
-active branches cannot be reconciled by a file syncer, so unified-inbox is
-git-only. `mcp_servers` is PC-only infrastructure, and on 2026-09-03 a deletion
-recorded on the laptop propagated and wiped the amazon_shopping and opentable
-source from the PC, leaving only `__pycache__`/`build`/`node_modules` so
-Syncthing looped on five pull errors it could not clear. A symlink git manages
-is excluded per-path, because Windows cannot represent one (it needs Developer
-Mode or admin), so the PC writes a plain file and Syncthing carries that over
-the laptop's symlink: konpeki's `apps/admin/templates` is the live example.
+Each machine is instead a git remote of the other over the tailnet, so history
+moves between them with no GitHub round trip:
+
+```bash
+# on the PC                      # on the laptop
+git fetch laptop                 git fetch pc
+git log --oneline laptop/main    git log --oneline pc/main
+```
+
+Prefer `fetch` over `push`: pushing to the branch the other machine currently
+has checked out is refused, and fetching never touches its working tree.
+
+The laptop's `pc` remote needs two extra settings, already configured, because
+the PC's OpenSSH shell is `cmd.exe` with no git on its PATH. `remote.pc.uploadpack`
+and `remote.pc.receivepack` point at `C:/Users/ragha/gitshim/*.cmd`, which are
+shims that exist for two reasons: the real binaries live under `C:\Program
+Files` and 8.3 short names are disabled on this machine, so a space-free path is
+required; and git sends the repo path POSIX-quoted (`'C:/x'`) while cmd.exe does
+not strip single quotes, so each shim strips them before calling the real
+`git-upload-pack` / `git-receive-pack`. Without that the error is a confusing
+`''C:/Users/ragha/Projects/serena'' does not appear to be a git repository`.
+
+Some paths are excluded from Syncthing outright. unified-inbox was, while the
+two machines sat on different active branches; both are on `main` as of
+2026-09-03. `mcp_servers` is PC-only infrastructure, and a deletion recorded on
+the laptop propagated and wiped the amazon_shopping and opentable source from
+the PC, leaving only `__pycache__`/`build`/`node_modules` so Syncthing looped on
+five pull errors it could not clear. A symlink git manages is excluded
+per-path, because Windows cannot represent one (it needs Developer Mode or
+admin), so the PC writes a plain file and Syncthing carries that over the
+laptop's symlink: konpeki's `apps/admin/templates` is the live example.
 
 Two Windows artifacts fake a dirty tree, and both cost hours before. Every repo
 cloned on the PC carried a LOCAL `core.filemode = true` overriding the global,
@@ -464,7 +488,10 @@ so files showed modified on an exec bit Windows cannot store: konpeki reported
 `core.filemode false` and `core.symlinks false` globally, then
 `git config --local --unset` each of them per repo or the local value keeps
 winning. Diagnose with `git diff --ignore-cr-at-eol --stat`, and compare content
-md5 with CR stripped: identical content means pure line-ending noise.
+md5 with CR stripped: identical content means pure line-ending noise. A repo
+with `eol=lf` in `.gitattributes` (atrium) will also show a file as modified
+after any Windows tool rewrites it with CRLF; `git checkout --` on that path is
+the fix.
 
 Syncthing drift looks identical to real edits and is not. The tell is that the
 working tree holds `origin/main` content while HEAD sits on an older branch.
