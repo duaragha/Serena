@@ -1,4 +1,4 @@
-"""Serena brain daemon, the resident process. Spec: docs/spec-brain-daemon.md.
+"""Serena brain daemon, the resident process. Spec: docs/architecture.md.
 
 One live Claude Agent SDK session, fed messages over time (streaming input
 mode), serving every surface (front door first) over localhost HTTP. This is

@@ -3,6 +3,13 @@
 Operational reference for the `chats` CLI and Serena's cross-agent features.
 Personality lives in Persona.md — this file is purely the how-to.
 
+## Engineering & Architecture Contracts
+Before modifying Serena's core runtimes, services, or data contracts, consult `docs/`:
+- `docs/architecture.md`: Resident brain daemon protocol, Gideon 6-layer model, action authority, state graph, and continuity.
+- `docs/fleet-runtime.md`: Serena Fleet orchestration, worker contracts, review gates, and capacity recovery.
+- `docs/memory-and-knowledge.md`: Hybrid memory retrieval (dense + BM25), query planning, feedback, and knowledge curation.
+- `docs/operations.md`: Repository storage classes, machine layout, backup/bootstrap doctor, and Windows container setup.
+
 ## Memory
 
 Memories persist what you've learned about Raghav across sessions. They're injected at session start (you don't need to fetch them manually).

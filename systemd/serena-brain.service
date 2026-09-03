@@ -1,4 +1,4 @@
-# Serena brain daemon, the resident process (docs/spec-brain-daemon.md).
+# Serena brain daemon, the resident process (docs/architecture.md).
 # Install (after `claude setup-token`, put CLAUDE_CODE_OAUTH_TOKEN=... in
 # ~/.config/serena/brain.env):
 #   cp systemd/serena-brain.service ~/.config/systemd/user/

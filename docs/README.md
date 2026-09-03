@@ -1,29 +1,15 @@
 # Serena Documentation
 
-## Start here
+The canonical engineering specifications, runtime contracts, and operational guides for Serena.
 
-- [Repository and runtime map](repository-map.md): source, private data, runtime state, credentials, caches, and machine ownership
-- [Architecture status](serena-gideon-architecture-status.md): implemented systems, acceptance evidence, and remaining physical gates
+## 1. System Architecture & Contracts
+- [Architecture & Contracts](architecture.md): Resident brain daemon protocol, Gideon 6-layer execution model, action authority, personal state graph, commitments & continuity, and vision support.
 
-## Operations
+## 2. Agent Orchestration
+- [Fleet Runtime](fleet-runtime.md): Multi-agent supervision, renderer-owned terminals, dispatching, capacity recovery, and worker review obligations.
 
-- [Backup and bootstrap](backup-and-bootstrap.md): machine doctor, service installation, private snapshots, restore, and clean reconstruction
-- [Windows setup](windows-setup.md): Windows runtime and container setup
+## 3. Memory & Knowledge Engine
+- [Memory & Knowledge Architecture](memory-and-knowledge.md): Hybrid candidate generation (dense embeddings + FTS5 BM25), deterministic query plans, relevance feedback, and knowledge curation.
 
-## System specifications
-
-- [Brain daemon](spec-brain-daemon.md): resident session, streaming protocol, lifecycle, and acceptance contract
-- [Fleet runtime](fleet-runtime.md): renderer-owned terminals, work-unit contracts, capacity recovery, and delivery obligations
-- [Knowledge maintenance](knowledge-maintenance-spec.md): knowledge lifecycle and curation contract
-- [Memory query and feedback](memory-query-and-feedback.md): deterministic query plans, privacy-safe receipts, relevance feedback, and correction proposals
-- [Memory retrieval and rollout](memory-retrieval.md): local dense embeddings, FTS5, private evaluation, shadow migration, canary, and rollback
-
-## Voice acceptance
-
-Voice and phone documentation stays beside the implementation because its commands and file paths are package-specific:
-
-- [Call runtime](../voice/call/README.md)
-- [Wake word](../voice/call/WAKEWORD.md)
-- [Wake model training handoff](../voice/call/WAKEWORD_TRAINING.md)
-- [iPhone one-call acceptance](../voice/call/IPHONE_CALL_ACCEPTANCE.md)
-- [Desk loop](../voice/desk/README.md)
+## 4. Setup & Operations
+- [Operations & Machine Layout](operations.md): Repository ownership rules, storage classes, machine doctor (`bootstrap doctor`), backup/restore snapshots, and Windows PC runtime setup.
