@@ -10,6 +10,58 @@ Before modifying Serena's core runtimes, services, or data contracts, consult `d
 - `docs/memory-and-knowledge.md`: Hybrid memory retrieval (dense + BM25), query planning, feedback, and knowledge curation.
 - `docs/operations.md`: Repository storage classes, machine layout, backup/bootstrap doctor, and Windows container setup.
 
+## Git & Commit Hygiene (Mandatory for All Agents)
+All agents (Claude, Codex, Gemini) must maintain strict git discipline:
+1. **Commit After Every Major Step**: Never leave uncommitted changes hanging across multiple logical steps. As soon as a feature milestone, bug fix, or refactor step passes verification, commit it immediately.
+2. **Conventional Commits**: Format commit messages strictly per the conventional commits standard:
+   - `feat(scope): ...` — new capabilities or user-facing features
+   - `fix(scope): ...` — bug fixes
+   - `refactor(scope): ...` — structural code changes with no behavior change
+   - `docs(scope): ...` — documentation updates
+   - `test(scope): ...` — adding or updating tests
+   - `chore(scope): ...` — tooling, packaging, releases, dependencies
+3. **Verify Before Committing**: Run tests and lint/typechecks (`pytest`, `npm test`, `tsc --noEmit`, etc.) before committing. Never commit broken code or syntax errors.
+4. **Clean Staging Only**: Never stage or commit `.env*`, `node_modules/`, `__pycache__/`, transient debug scripts, or untracked test database files.
+5. **Sync with Origin**: When a complete user request or work session is finished, push commits to `origin` (`git push origin <branch>`) so Syncthing and GitHub remain in sync across machines.
+
+## Electron Desktop Releases (Serena & Unified Inbox)
+Both **Serena** (`desktop-electron/`) and **Unified Inbox** (`personal_projects/unified-inbox/apps/desktop/`) have built-in auto-updaters powered by GitHub Releases. Whenever an agent makes changes affecting either desktop app, a new release MUST be cut immediately so the installed app can auto-update.
+
+### 1. Serena Desktop (`desktop-electron/`)
+- **When**: Any changes to `desktop-electron/`, `ui/`, or core desktop services.
+- **Workflow**:
+  1. Test the build/tests: `cd desktop-electron && npm test`
+  2. Bump the patch version in `desktop-electron/package.json` (e.g. `0.2.11` -> `0.2.12`).
+  3. Commit the bump:
+     ```bash
+     git add desktop-electron/package.json
+     git commit -m "chore(release): bump desktop version to vX.Y.Z"
+     ```
+  4. Tag and push to trigger GitHub Actions release build:
+     ```bash
+     git tag vX.Y.Z
+     git push origin master --tags
+     ```
+  5. GitHub Actions (`.github/workflows/desktop-release.yml`) builds the Linux AppImage and Windows installer, attaches them to the GitHub Release, and the installed Serena desktop app detects and auto-updates itself.
+
+### 2. Unified Inbox Desktop (`personal_projects/unified-inbox/apps/desktop/`)
+- **When**: Any changes to `apps/desktop/` or its dependent core packages (`packages/`).
+- **Workflow**:
+  1. Typecheck and verify: `pnpm --filter @unified-inbox/desktop check`
+  2. Bump the version in `apps/desktop/package.json` (e.g. `0.1.0-alpha.36` -> `0.1.0-alpha.37`).
+  3. Commit and tag:
+     ```bash
+     git add apps/desktop/package.json
+     git commit -m "chore(release): bump desktop version to vX.Y.Z"
+     git tag vX.Y.Z
+     git push origin master --tags
+     ```
+  4. Dispatch the release workflow via GitHub CLI:
+     ```bash
+     gh workflow run desktop-release.yml -f release_tag=vX.Y.Z
+     ```
+  5. GitHub Actions publishes the release to `duaragha/unified-inbox-releases`.
+
 ## Memory
 
 Memories persist what you've learned about Raghav across sessions. They're injected at session start (you don't need to fetch them manually).
