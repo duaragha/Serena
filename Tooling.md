@@ -555,6 +555,53 @@ redeployed. Desktop is shipped when the release exists; iOS is shipped when a
 CodeMagic build for that app id finishes. Never SSH into a device to install a
 build, and never hand-copy an artifact onto a phone or laptop.
 
+## The nightly backups, and the share that vanishes
+
+Two restic repos, both on E: which is a DIFFERENT physical disk from the data,
+written by systemd timers inside the Docker VM:
+
+- `atrium-backup.timer` at 03:30 -> `E:\Backups\atrium-restic`, from
+  `/srv/atrium-data` (the originals live inside the VM now, not on the vboxsf
+  share). 14 snapshots as of 2026-09-03, 4455 files, 36 GiB, `restic check`
+  clean.
+- `unified-backup.timer` at 02:30 -> `E:\Backups\unified-restic`: a pg_dump of
+  every database individually, the state and secrets volumes, and the synapse
+  media store.
+
+The password for both is `/etc/atrium-restic-pass`. `sudo` strips the
+environment, so use `sudo -n env RESTIC_PASSWORD_FILE=/etc/atrium-restic-pass
+restic ...` — a plain `sudo restic` reads an empty password and dies with
+"an empty password is not a password", which looks like a corrupt repo and is
+not.
+
+**The shares are TRANSIENT VirtualBox mappings, and transient mappings do not
+survive a VM restart.** Both scripts begin with `mountpoint -q "$REPO"` and exit
+1 when it is missing, so after any reboot the backups fail — honestly, but they
+fail. They cannot be converted while the VM runs: `VBoxManage sharedfolder add`
+returns `VBOX_E_INVALID_OBJECT_STATE` against a locked machine. So
+`~/start-docker-vm.ps1` starts the VM and re-adds the shares if absent
+(idempotent, logs to `~/start-docker-vm.log`), and a Startup entry
+`ensure-docker-vm-shares.cmd` runs it at logon. Making them permanent needs the
+VM powered off, once:
+
+```powershell
+VBoxManage sharedfolder add "Docker-Ubuntu" --name atriumresticE --hostpath "E:\Backups\atrium-restic"  --automount
+VBoxManage sharedfolder add "Docker-Ubuntu" --name unifiedrestic  --hostpath "E:\Backups\unified-restic" --automount
+```
+
+The same VM start task is still `Interactive only` and editing it needs an
+elevated shell, which is why the Startup entry exists as the non-elevated path.
+
+A backup finishing in five seconds is normal, not broken: restic dedups, so a
+run with nothing new to store does almost no work. Verify with
+`restic snapshots` and `restic stats latest`, never by wall-clock time.
+
+The old 41 GB repo at `D:\Atrium\restic` was deleted on 2026-09-03, after
+confirming E: held every one of its snapshot IDs plus two newer ones and passed
+a full `restic check`. Its transient share was detached first. Note that the
+`atrium-backup.service` unit description still reads `-> D:\Atrium\restic`; that
+string is stale, `REPO` inside the script is correct.
+
 ## Cross-machine artifact storage
 
 Final files and user-facing outputs must live inside the active machine's
