@@ -4,7 +4,6 @@
 
 - [Repository and runtime map](repository-map.md): source, private data, runtime state, credentials, caches, and machine ownership
 - [Architecture status](serena-gideon-architecture-status.md): implemented systems, acceptance evidence, and remaining physical gates
-- [Architecture status, visual edition](serena-gideon-architecture-status.html): the same system review in a browser-friendly format
 
 ## Operations
 

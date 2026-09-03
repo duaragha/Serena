@@ -4,7 +4,6 @@
 **Audit date:** 2026-07-20  
 **Repository:** `/home/raghav/Documents/Projects/serena`  
 **Status:** active completion contract  
-**Human reading view:** [`serena-gideon-architecture-status.html`](./serena-gideon-architecture-status.html)
 
 ## 1. Purpose
 
@@ -12,7 +11,7 @@ This document is the execution contract for turning the current Serena project i
 
 The target is not fictional omniscience or an unsupported AGI claim. The target is one continuously available Serena who keeps identity and context across surfaces, speaks and listens naturally, performs bounded work, improves through measured experiments, and can eventually use a personalized local cognitive model.
 
-The HTML and Markdown versions contain the same architecture, objective IDs, status, and acceptance criteria. The HTML is optimized for Raghav to read. This Markdown file is optimized for implementation and future agent handoff.
+This Markdown specification is the canonical architecture contract for implementation and future agent handoff.
 
 ## 2. Non-negotiable system contract
 
