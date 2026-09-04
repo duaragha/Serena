@@ -563,9 +563,16 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
     # next scan, which looks exactly like the move never worked.
     project_dir = meta.project_dir
     slug = meta.slug
+    cwd = meta.cwd
+    last_cwd = meta.last_cwd
     folder = synced.get("chat_folder")
     if folder:
         project_dir = slug = claude_project_dir_for(str(folder))
+        # The cwd moves with the chat, because that is what the CLI resumes
+        # against: claude looks under the slug of the directory it is launched
+        # in. Re-deriving cwd from the transcript would point resume back at
+        # the old home the very next time the index is rebuilt.
+        cwd = last_cwd = str(folder)
 
     conn.execute("""
         INSERT OR REPLACE INTO sessions
@@ -578,7 +585,7 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
          devices_used)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        meta.session_id, project_dir, meta.cwd, meta.last_cwd, meta.device,
+        meta.session_id, project_dir, cwd, last_cwd, meta.device,
         meta.first_message, title, custom_title, starred, is_done, done_at,
         meta.first_timestamp.isoformat() if meta.first_timestamp else None,
         meta.last_timestamp.isoformat() if meta.last_timestamp else None,

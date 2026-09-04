@@ -7,8 +7,11 @@ a statement, so it outranks every guess, and it has to survive the next scan:
 the index is rebuilt from transcripts, and a transcript only records where the
 chat was typed.
 
-The transcript itself never moves. It stays where its CLI wrote it, which is
-the only place that CLI looks when you resume the chat.
+The transcript moves with the chat -- filing one that leaves its transcript
+behind is not filing it. Where each CLI still finds a moved session was
+measured, not assumed: a real transcript was relocated and resumed for each of
+Claude, Codex and Gemini. Gemini needed a symlink left at its flat lookup path;
+the other two found the file on their own.
 """
 
 from __future__ import annotations
@@ -36,26 +39,32 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(metadata, "META_DIR", meta_dir, raising=False)
     monkeypatch.setattr(metadata, "_session_path", lambda sid: meta_dir / f"{sid}.json")
 
-    # The mirror roots are under the real home. Without redirecting them the
-    # move writes symlinks into the user's own canonical tree -- this fixture
-    # did exactly that on its first run, leaving three links to files in
-    # /tmp/pytest behind.
+    # Every tree this touches lives under the real home, and filing a chat
+    # both symlinks into the mirror and MOVES the transcript. Redirect all of
+    # them here rather than in the moving-specific fixture: the first run of
+    # this file left three stray transcripts in ~/.codex/sessions and ~/.gemini
+    # because only the mirror roots were sandboxed.
     from core import project_mirror
 
     for name in ("CLAUDE_PROJECTS", "CODEX_PROJECTS", "GEMINI_PROJECTS"):
         monkeypatch.setattr(project_mirror, name, tmp_path / "mirror" / name.lower())
+    for name in ("CODEX_SESSIONS", "CLAUDE_PROJECTS_DIR", "GEMINI_CONVERSATIONS"):
+        target = tmp_path / "cli" / name.lower()
+        target.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(chat_folders, name, target)
 
     db = tmp_path / "index.db"
     conn = sqlite3.connect(db)
     conn.execute(
         "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, agent TEXT, "
-        "project_dir TEXT, slug TEXT, cwd TEXT, file_path TEXT)"
+        "project_dir TEXT, slug TEXT, cwd TEXT, last_cwd TEXT, file_path TEXT)"
     )
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_text("{}\n", encoding="utf-8")
     conn.execute(
-        "INSERT INTO sessions VALUES (?,?,?,?,?,?)",
-        ("s-1", "codex", "-home-raghav", "-home-raghav", "/home/raghav", str(transcript)),
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
+        ("s-1", "codex", "-home-raghav", "-home-raghav", "/home/raghav", "/home/raghav",
+         str(transcript)),
     )
     conn.commit()
     conn.close()
@@ -88,14 +97,20 @@ class TestTheMove:
         assert row["project_dir"].endswith("-frameworth-it")
         assert row["slug"] == row["project_dir"]
 
-    def test_the_transcript_does_not_move(self, workspace) -> None:
-        """Its CLI looks where it wrote it; moving the file breaks resume."""
-        before = workspace["transcript"].read_text(encoding="utf-8")
+    def test_the_transcript_goes_with_the_chat(self, workspace) -> None:
+        """Filing a chat that leaves its transcript behind is not filing it.
 
-        chat_folders.move_chat("s-1", "frameworth/it")
+        Each CLI still finds the moved file -- verified against all three by
+        relocating a real transcript and resuming it. See the notes on
+        transcript_destination for what each one tolerates.
+        """
+        before = workspace["transcript"].read_bytes()
 
-        assert workspace["transcript"].is_file()
-        assert workspace["transcript"].read_text(encoding="utf-8") == before
+        result = chat_folders.move_chat("s-1", "frameworth/it")
+
+        landed = Path(result["transcript"]["to"])
+        assert landed.is_file()
+        assert landed.read_bytes() == before, "the transcript changed in transit"
 
     def test_the_move_is_remembered(self, workspace) -> None:
         chat_folders.move_chat("s-1", "frameworth/it")
@@ -165,6 +180,22 @@ class TestEveryAgent:
         assert result["project_dir"].endswith("-frameworth-it")
 
 
+def test_no_test_here_can_touch_the_real_trees(workspace, tmp_path) -> None:
+    """The guard that was missing when this file first ran."""
+    from core import project_mirror
+
+    roots = [
+        chat_folders.CODEX_SESSIONS,
+        chat_folders.CLAUDE_PROJECTS_DIR,
+        chat_folders.GEMINI_CONVERSATIONS,
+        project_mirror.CLAUDE_PROJECTS,
+        project_mirror.CODEX_PROJECTS,
+        project_mirror.GEMINI_PROJECTS,
+    ]
+    for root in roots:
+        assert str(root).startswith(str(tmp_path)), f"{root} is the user's real tree"
+
+
 def test_the_move_never_writes_outside_its_own_roots(workspace, tmp_path) -> None:
     """A test that files a chat must not touch the real canonical tree."""
     from core import project_mirror
@@ -231,3 +262,237 @@ def test_the_endpoint_exists_and_clears_on_an_empty_folder() -> None:
         "an empty folder would file the chat at the projects root"
     )
     assert "move_chat(session_id, folder)" in body
+
+
+# --- the transcript moves too ------------------------------------------------
+#
+# Where each CLI still finds a session after it moves was measured, not
+# assumed: a real transcript was relocated and resumed for each agent. Codex
+# scans its tree recursively and found it. Claude looks under the slug of the
+# cwd it is launched in and found it. Gemini looks up conversations/<id>.db by
+# name, answered "conversation not found" from a subdirectory, and resumed
+# normally through a symlink left at the flat path.
+
+
+@pytest.fixture()
+def moving(workspace):
+    """The sandboxed CLI trees, named for the tests that plant files in them."""
+    return {
+        **workspace,
+        "CODEX_SESSIONS": chat_folders.CODEX_SESSIONS,
+        "CLAUDE_PROJECTS_DIR": chat_folders.CLAUDE_PROJECTS_DIR,
+        "GEMINI_CONVERSATIONS": chat_folders.GEMINI_CONVERSATIONS,
+    }
+
+
+def _plant(moving, agent: str, name: str, body: bytes = b'{"x":1}\n') -> Path:
+    """Put a transcript where that agent's CLI would have written it."""
+    if agent == "claude":
+        path = moving["CLAUDE_PROJECTS_DIR"] / "-home-raghav" / name
+    elif agent == "codex":
+        path = moving["CODEX_SESSIONS"] / "2026" / "07" / "29" / name
+    else:
+        path = moving["GEMINI_CONVERSATIONS"] / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    conn = sqlite3.connect(moving["db"])
+    conn.execute(
+        "UPDATE sessions SET agent = ?, file_path = ? WHERE session_id = 's-1'",
+        (agent, str(path)),
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+class TestTheTranscriptMoves:
+    def test_claude_lands_under_the_slug_of_its_new_folder(self, moving) -> None:
+        """That is the only place `claude -r` looks when launched there."""
+        source = _plant(moving, "claude", "s-1.jsonl")
+
+        result = chat_folders.move_chat("s-1", "frameworth/it")
+
+        assert result["transcript"]["moved"] is True
+        assert not source.exists(), "the original was left behind"
+        landed = Path(result["transcript"]["to"])
+        assert landed.is_file()
+        assert landed.parent.name.endswith("-frameworth-it")
+
+    def test_codex_lands_in_the_nested_project_folder(self, moving) -> None:
+        source = _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+
+        result = chat_folders.move_chat("s-1", "frameworth/it")
+
+        assert not source.exists()
+        landed = Path(result["transcript"]["to"])
+        assert landed.is_file()
+        assert landed.parent == moving["CODEX_SESSIONS"] / "Projects" / "frameworth" / "it"
+
+    def test_gemini_leaves_a_link_the_cli_can_still_open(self, moving) -> None:
+        """It looks up <id>.db by name and does not recurse."""
+        source = _plant(moving, "gemini", "s-1.db")
+
+        result = chat_folders.move_chat("s-1", "frameworth/it")
+
+        landed = Path(result["transcript"]["to"])
+        assert landed.is_file() and not landed.is_symlink(), "the real file must move"
+        assert source.is_symlink(), "the Gemini CLI could no longer find this chat"
+        assert source.resolve() == landed.resolve()
+        assert source.read_bytes() == landed.read_bytes()
+
+    def test_the_index_points_at_where_the_file_now_is(self, moving) -> None:
+        _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+
+        result = chat_folders.move_chat("s-1", "frameworth/it")
+
+        assert _row(moving["db"])["file_path"] == result["transcript"]["to"]
+
+    def test_the_folder_becomes_the_working_directory(self, moving) -> None:
+        """`claude -r` resolves a session against the cwd's slug, so a stale
+        cwd would make Serena stage a second copy under the old slug on every
+        resume -- the exact opposite of filing the chat."""
+        _plant(moving, "claude", "s-1.jsonl")
+
+        chat_folders.move_chat("s-1", "frameworth/it")
+
+        assert _row(moving["db"])["cwd"].endswith("frameworth/it")
+
+
+class TestNothingIsEverLost:
+    """A misfiled chat is an annoyance; a destroyed transcript is not."""
+
+    def test_a_different_file_of_the_same_name_is_never_overwritten(self, moving) -> None:
+        source = _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+        occupied = (moving["CODEX_SESSIONS"] / "Projects" / "frameworth" / "it"
+                    / source.name)
+        occupied.parent.mkdir(parents=True, exist_ok=True)
+        occupied.write_bytes(b'{"someone":"else"}\n')
+
+        result = chat_folders.move_chat("s-1", "frameworth/it")
+
+        assert result["transcript"]["moved"] is False
+        assert "already exists" in result["transcript"]["error"]
+        assert occupied.read_bytes() == b'{"someone":"else"}\n'
+        assert source.is_file(), "the original was removed anyway"
+
+    def test_moving_the_same_chat_twice_is_harmless(self, moving) -> None:
+        _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+
+        first = chat_folders.move_chat("s-1", "frameworth/it")
+        second = chat_folders.move_chat("s-1", "frameworth/it")
+
+        assert second["transcript"]["moved"] is True
+        assert Path(first["transcript"]["to"]).is_file()
+
+    def test_a_transcript_that_is_not_there_is_not_invented(self, moving) -> None:
+        conn = sqlite3.connect(moving["db"])
+        conn.execute("UPDATE sessions SET file_path = '/nope/gone.jsonl' WHERE session_id='s-1'")
+        conn.commit()
+        conn.close()
+
+        result = chat_folders.move_chat("s-1", "frameworth/it")
+
+        assert result["transcript"]["moved"] is False
+        assert result["ok"] is True, "the chat is still filed even with no file"
+
+    def test_a_failed_copy_leaves_the_original_alone(self, moving, monkeypatch) -> None:
+        source = _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+        original = source.read_bytes()
+
+        import shutil
+
+        def explode(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(shutil, "copy2", explode)
+        result = chat_folders.move_chat("s-1", "frameworth/it")
+
+        assert result["transcript"]["moved"] is False
+        assert source.read_bytes() == original
+
+    def test_a_second_move_does_not_strand_the_first_copy(self, moving) -> None:
+        _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+
+        first = chat_folders.move_chat("s-1", "frameworth/it")
+        chat_folders.move_chat("s-1", "frameworth/legal")
+
+        assert not Path(first["transcript"]["to"]).exists(), "the chat is in two folders"
+
+    def test_a_chat_already_filed_is_not_moved_again_by_its_own_link(self, moving) -> None:
+        """Gemini leaves a symlink behind; a later move must not follow it and
+        file the link itself somewhere."""
+        _plant(moving, "gemini", "s-1.db")
+        chat_folders.move_chat("s-1", "frameworth/it")
+
+        conn = sqlite3.connect(moving["db"])
+        conn.execute(
+            "UPDATE sessions SET file_path = ? WHERE session_id='s-1'",
+            (str(moving["GEMINI_CONVERSATIONS"] / "s-1.db"),),
+        )
+        conn.commit()
+        conn.close()
+
+        result = chat_folders.move_chat("s-1", "frameworth/legal")
+
+        assert result["transcript"]["moved"] is False, "a symlink was treated as the transcript"
+
+
+class TestUnfiling:
+    """A move you cannot undo is a trap.
+
+    Clearing has to put the transcript back where its CLI wrote it. Leaving it
+    in a folder the chat no longer claims is worse than never moving it: the
+    index, the metadata and the disk would each say something different.
+    """
+
+    def test_the_transcript_comes_home(self, moving) -> None:
+        source = _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+        original = source.read_bytes()
+        filed = Path(chat_folders.move_chat("s-1", "frameworth/it")["transcript"]["to"])
+
+        result = chat_folders.clear_folder("s-1")
+
+        assert result["restored"] is True
+        assert source.read_bytes() == original
+        assert not filed.exists(), "the transcript is in two places"
+        assert _row(moving["db"])["file_path"] == str(source)
+
+    def test_geminis_link_is_cleaned_up_too(self, moving) -> None:
+        source = _plant(moving, "gemini", "s-1.db")
+        chat_folders.move_chat("s-1", "frameworth/it")
+        assert source.is_symlink()
+
+        chat_folders.clear_folder("s-1")
+
+        assert source.is_file() and not source.is_symlink(), "a dangling link was left behind"
+
+    def test_clearing_a_chat_that_was_never_filed_does_nothing(self, moving) -> None:
+        _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+
+        result = chat_folders.clear_folder("s-1")
+
+        assert result["restored"] is False
+
+    def test_the_origin_is_the_first_home_not_the_last(self, moving) -> None:
+        """Two moves then a clear must land back at the original, not at the
+        folder it happened to be filed in most recently."""
+        source = _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+        chat_folders.move_chat("s-1", "frameworth/it")
+        chat_folders.move_chat("s-1", "frameworth/legal")
+
+        chat_folders.clear_folder("s-1")
+
+        assert source.is_file()
+        assert chat_folders.get_folder("s-1") is None
+
+    def test_something_already_at_the_original_path_is_not_clobbered(self, moving) -> None:
+        source = _plant(moving, "codex", "rollout-2026-07-29T09-18-56-s-1.jsonl")
+        filed = Path(chat_folders.move_chat("s-1", "frameworth/it")["transcript"]["to"])
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b'{"someone":"else"}\n')
+
+        result = chat_folders.clear_folder("s-1")
+
+        assert result["restored"] is False
+        assert source.read_bytes() == b'{"someone":"else"}\n'
+        assert filed.is_file(), "the filed transcript was removed with nowhere to go"
