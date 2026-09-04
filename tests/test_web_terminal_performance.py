@@ -91,18 +91,17 @@ def test_renderer_forces_resize_on_reattach_and_dedupes_otherwise():
 
 
 def test_renderer_refits_both_panes_after_window_resize_or_reveal():
-    assert "function _queueVisibleWebTermFit(delay, force)" in web.HTML
-    assert "window.addEventListener('resize', () => _queueVisibleWebTermFit(100, true));" in web.HTML
-    assert "function _fitVisibleWebTerms(force)" in web.HTML
-    assert "_sendResizeForSid(sid, !!force);" in web.HTML
-    assert "runtime.term.refresh(0, runtime.term.rows - 1);" in web.HTML
-    assert "activeTermSid !== sid" in web.HTML
-    assert "_fitVisibleWebTerms(true);" in web.HTML
+    assert "function _fitVisibleWebTerms()" in web.HTML
+    assert "_termResizeObs = new ResizeObserver(() => {" in web.HTML
+    assert "_resizeDebounceTimer = setTimeout(() => {" in web.HTML
+    assert "runtime.fit.fit(); _sendResizeForSid(sid);" in web.HTML
+    assert "requestAnimationFrame(() => {\n    _fitVisibleWebTerms();" in web.HTML
 
 
 def test_windows_newline_mode_follows_the_spawned_pty_backend():
-    assert "convertEol: false," in web.HTML
-    assert "term.options.convertEol = spawnResp.pty_backend === 'conpty';" in web.HTML
+    assert "const _isWin = (navigator.userAgent || '').includes('Windows');" in web.HTML
+    assert "convertEol: _isWin," in web.HTML
+    assert "...(_isWin ? { windowsPty: { backend: 'conpty'" in web.HTML
 
 
 def test_window_focus_returns_the_keyboard_to_the_active_pane():
@@ -151,15 +150,11 @@ def test_terminal_socket_detaches_on_drop_and_only_kills_on_exit():
     assert "def api_kill_terminal(tid):" in web_source
 
 
-def test_gtk_terminal_path_is_untouched_by_the_xterm_work():
-    """The native shell must keep working while the Electron path lands."""
+def test_deleted_gtk_entrypoint_is_not_a_runtime_dependency():
     root = Path(web.__file__).resolve().parents[1]
-    gtk_source = (root / "desktop" / "app_gtk.py").read_text(encoding="utf-8")
-
-    assert "pty_terminal.attach" not in gtk_source
-    assert "pty_terminal.detach" not in gtk_source
-    assert "pty_terminal.note_ack" not in gtk_source
-    assert "pty_terminal.kill_all()" in gtk_source
+    assert not (root / "desktop" / "app_gtk.py").exists()
+    assert (root / "apps" / "desktop" / "main.js").is_file()
+    assert (root / "apps" / "desktop" / "preload.js").is_file()
 
 
 def test_open_terminal_status_shows_copyable_session_ids():
@@ -177,17 +172,14 @@ def test_linked_workflow_agents_show_count_and_cycle_every_group_member():
     assert "openConv(next.session_id);" in web.HTML
 
 
-def test_linux_desktop_uses_renderer_terminal_by_default_with_explicit_vte_recovery():
+def test_electron_desktop_uses_the_renderer_terminal_on_every_platform():
     root = Path(web.__file__).resolve().parents[1]
-    gtk_source = (root / "desktop" / "app_gtk.py").read_text(encoding="utf-8")
+    main_source = (root / "apps" / "desktop" / "main.js").read_text(encoding="utf-8")
+    preload_source = (root / "apps" / "desktop" / "preload.js").read_text(encoding="utf-8")
 
-    assert 'os.environ.get("SERENA_TERMINAL_BACKEND", "renderer")' in gtk_source
-    assert '_USE_NATIVE_VTE = _TERMINAL_BACKEND == "vte"' in gtk_source
-    assert 'window.__terminalBackend' in gtk_source
-    assert "if self._use_native_vte:\n            self.overlay.add_overlay(self._stack)" in gtk_source
-    assert "if self._use_native_vte:\n            self.overlay.add_overlay(self._paned)" in gtk_source
-    assert "self._stack.set_no_show_all(True)" in gtk_source
-    assert "self._paned.set_no_show_all(True)" in gtk_source
+    assert "new BrowserWindow" in main_source
+    assert "contextBridge.exposeInMainWorld('serenaDesktop'" in preload_source
+    assert "startLiveTerminal(tempId, { cwd, agent, isNew: true })" in web.HTML
 
 
 def test_renderer_terminal_ignores_hidden_geometry_and_restores_after_layout():
@@ -359,7 +351,6 @@ def test_modal_keyboard_is_exclusive():
 def test_xterm_editing_shortcuts_reach_the_pty_before_widget_shortcuts():
     root = Path(web.__file__).resolve().parents[1]
     web_source = (root / "ui" / "web.py").read_text(encoding="utf-8")
-    gtk_source = (root / "desktop" / "app_gtk.py").read_text(encoding="utf-8")
 
     # The newline is chosen per platform now: a bare LF on POSIX, and the CSI-u
     # form on Windows, where ConPTY eats the escape prefix the usual remedy uses.
@@ -373,7 +364,6 @@ def test_xterm_editing_shortcuts_reach_the_pty_before_widget_shortcuts():
     assert r"arrowdown: '\x1b[1;2B'" not in web_source
     assert r"arrowright: '\x1b[1;2C'" not in web_source
     assert r"arrowleft: '\x1b[1;2D'" not in web_source
-    assert 'if action.startswith("term-") and self._focused_vte() is None:' in gtk_source
 
 
 # ═══════════════════════════════════════════════════════════════════════════

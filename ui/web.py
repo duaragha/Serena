@@ -2539,7 +2539,7 @@ body.pane-dragging * {
     <div class="panel-right" id="convPanel">
       <div class="panel-right-empty" id="convEmpty">
         <!-- === FRONT DOOR FEATURE === Serena as the landing surface. Falls
-             back to the old static text outside the GTK shell (fdInit). -->
+             back to the old static text outside a supported desktop shell. -->
         <div id="frontDoor" class="hidden">
           <style>
             #convEmpty.fd-on { position: relative; overflow: hidden;
@@ -8250,17 +8250,23 @@ async function newChatInline(cwdOverride) {
 let _lastNewChatAgent = 'claude';
 
 // ═══════════════════════════════════════════════════════════════
-// === FOLDER PICKER === (Alt+Shift+N → GTK file chooser → new chat
+// === FOLDER PICKER === (Alt+Shift+N → native file chooser → new chat
 // in arbitrary cwd. Replaces the old "open external terminal, cd,
 // relaunch claude" workflow for working in dirs not yet tracked
 // as Serena projects.)
 // ═══════════════════════════════════════════════════════════════
 window.__pickerResolvers = window.__pickerResolvers || {};
 
-function pickFolder({ title = 'Choose a folder', startDir = null } = {}) {
-  // Promise-returning helper: opens a GTK FileChooserNative on the python
-  // side, resolves with the absolute path the user picked (or null if they
-  // cancelled). Token-keyed so multiple pickers can race without clobbering.
+function _hasDesktopShell() {
+  return !!(window.__gtkBridge || window.serenaDesktop);
+}
+
+async function pickFolder({ title = 'Choose a folder', startDir = null } = {}) {
+  if (window.serenaDesktop && typeof window.serenaDesktop.pickFolder === 'function') {
+    return window.serenaDesktop.pickFolder({ title, startDir });
+  }
+  // GTK resolves through a token callback from Python. Token-keying lets
+  // multiple native pickers race without clobbering each other.
   if (!window.gtkSend) return Promise.resolve(null);
   const token = 'pf_' + Math.random().toString(36).slice(2, 12);
   return new Promise((resolve) => {
@@ -8335,16 +8341,26 @@ window.__onLinkedClaudeSpawned = async function(pseudoSid, realSid, codexSid) {
 
 async function newChatPickDir() {
   // Alt+Shift+N: pick a folder, then create an inline chat there.
-  if (!window.__gtkBridge) {
-    showToast('Folder picker requires the GTK desktop shell', { variant: 'error' });
+  const canPickFolder = !!(
+    (window.serenaDesktop && typeof window.serenaDesktop.pickFolder === 'function')
+    || window.gtkSend
+  );
+  if (!canPickFolder) {
+    showToast('Folder picker is unavailable in this window', { variant: 'error' });
     return;
   }
   // Default the chooser to the current project cwd if there is one — saves a
   // few clicks when picking a sibling dir.
-  const cwd = await pickFolder({
-    title: 'New chat — pick working directory',
-    startDir: currentProjectCwd || null,
-  });
+  let cwd = null;
+  try {
+    cwd = await pickFolder({
+      title: 'New chat — pick working directory',
+      startDir: currentProjectCwd || null,
+    });
+  } catch (e) {
+    showToast('Folder picker failed: ' + (e && e.message ? e.message : e), { variant: 'error' });
+    return;
+  }
   if (!cwd) return;
   await newChatInline(cwd);
 }
@@ -9529,12 +9545,12 @@ function updateShortcutBar() {
   if (currentTab === 'chats') {
     shortcuts = [
       ['\u2191\u2193', 'navigate'], ['Enter', 'open'], ['/', 'search'],
-      ['n', 'new chat'], ['Alt+n', 'new in ext term'],
+      ['n', 'new chat'], ['Alt+n', 'new chat'], ['Alt+Shift+n', 'choose folder'],
       ['o', 'resume ext'], ['s', 'star'], ['r', 'rename'], ['t', 'AI title'],
       ['d', 'done / undone'], ['Alt+Del', 'delete'], ['Ctrl+A', 'select all'],
       ['Shift+\u2191\u2193', 'extend sel'], ['Esc', 'deselect'],
     ];
-    if (window.__gtkBridge) {
+    if (_hasDesktopShell()) {
       shortcuts.push(
         ['Alt+w', 'close term'],
         ['Alt+j/k', 'next/prev'],
@@ -10107,8 +10123,9 @@ function fdGreetingText() {
 }
 
 function fdInit() {
-  // v1 is desktop-shell only — seeds ride the GTK spawn argv.
-  if (!window.__gtkBridge) return;
+  // Desktop-shell only. GTK passes seeds in native VTE argv; Electron uses
+  // the xterm/WebSocket spawn path in fdSpawnBoth and fdSpawnPane.
+  if (!_hasDesktopShell()) return;
   document.getElementById('fdFallbackText').classList.add('hidden');
   const fdRoot = document.getElementById('frontDoor');
   const fdPanel = document.getElementById('convEmpty');

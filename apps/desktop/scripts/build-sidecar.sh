@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 desktop_dir="$(cd "$script_dir/.." && pwd)"
-repo_root="$(cd "$desktop_dir/.." && pwd)"
+repo_root="$(cd "$desktop_dir/../.." && pwd)"
 python_bin="${SERENA_PYTHON:-$repo_root/.venv/bin/python}"
 uv_bin="${UV_BIN:-$(command -v uv || true)}"
 pyinstaller_work="$desktop_dir/build/pyinstaller-work"

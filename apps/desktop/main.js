@@ -28,6 +28,7 @@ const updates = require('./updates');
 const releases = require('./releases');
 const logging = require('./logging');
 const backendControl = require('./backend-control');
+const folderPicker = require('./folder-picker');
 
 const SMOKE_TEST = process.argv.includes('--smoke-test');
 const BACKEND_STABLE_MS = 30000;
@@ -43,7 +44,13 @@ const BACKEND_READY_TIMEOUT_MS = process.platform === 'win32' && app.isPackaged
 // Sharing the packaged app's lock made `--dev` exit instantly with no output,
 // which reads exactly like a broken launcher.
 const isDevRun = process.argv.includes('--dev');
-if (isDevRun) app.setPath('userData', `${app.getPath('userData')}-dev`);
+if (isDevRun) {
+  app.setPath('userData', `${app.getPath('userData')}-dev`);
+} else if (SMOKE_TEST) {
+  // Release verification must be able to run beside the installed app without
+  // stealing its single-instance lock or touching its real profile.
+  app.setPath('userData', `${app.getPath('userData')}-smoke-${process.pid}`);
+}
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 let backend = null;
@@ -124,6 +131,11 @@ function registerDesktopIpc() {
   ipcMain.handle('desktop:open-external', async (event, value) => {
     if (!senderIsTrusted(event)) throw new Error('untrusted IPC sender');
     return openExternal(value);
+  });
+  ipcMain.handle('desktop:pick-folder', async (event, value) => {
+    if (!senderIsTrusted(event)) throw new Error('untrusted IPC sender');
+    const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    return folderPicker.chooseFolder(dialog, owner, value);
   });
   ipcMain.handle('desktop:notify', (event, value) => {
     if (!senderIsTrusted(event)) throw new Error('untrusted IPC sender');

@@ -131,6 +131,7 @@ test('main and preload retain the required Electron security contract', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
 
   assert.match(main, /requestSingleInstanceLock\(\)/);
+  assert.match(main, /SMOKE_TEST[\s\S]*setPath\('userData',[\s\S]*-smoke-/);
   assert.match(main, /contextIsolation:\s*true/);
   assert.match(main, /nodeIntegration:\s*false/);
   assert.match(main, /sandbox:\s*true/);
@@ -140,5 +141,19 @@ test('main and preload retain the required Electron security contract', () => {
   assert.match(preload, /getVersion/);
   assert.match(preload, /notify/);
   assert.match(preload, /openExternal/);
+  assert.match(preload, /pickFolder/);
+  assert.match(main, /desktop:pick-folder/);
+  assert.ok(packageJson.build.files.includes('folder-picker.js'));
   assert.deepEqual(packageJson.build.linux.target, ['AppImage', 'deb']);
+});
+
+test('linux sidecar packaging resolves the repository above apps/desktop', () => {
+  const script = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-sidecar.sh'), 'utf8');
+  assert.match(script, /repo_root="\$\(cd "\$desktop_dir\/\.\.\/\.\." && pwd\)"/);
+});
+
+test('the AppImage smoke run is isolated from the installed app', () => {
+  const smoke = fs.readFileSync(path.join(desktopDir, 'tests', 'smoke-appimage.js'), 'utf8');
+  assert.match(smoke, /SERENA_DESKTOP_SHARE_BACKEND:\s*'0'/);
+  assert.match(smoke, /--smoke-test/);
 });

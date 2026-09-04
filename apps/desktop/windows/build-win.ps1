@@ -9,7 +9,8 @@ $ErrorActionPreference = "Stop"
 
 $WindowsDir = $PSScriptRoot
 $DesktopDir = Split-Path -Parent $WindowsDir
-$RepoRoot = Split-Path -Parent $DesktopDir
+$AppsDir = Split-Path -Parent $DesktopDir
+$RepoRoot = Split-Path -Parent $AppsDir
 $Requirements = Join-Path $RepoRoot "requirements-windows.txt"
 $Spec = Join-Path $WindowsDir "sidecar-win.spec"
 $SidecarDist = Join-Path $DesktopDir "build\windows-sidecar"

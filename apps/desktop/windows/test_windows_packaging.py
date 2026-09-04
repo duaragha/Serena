@@ -214,8 +214,9 @@ def test_builder_packs_the_windows_entry_it_declares(builder):
     assert (DESKTOP_DIR / main).is_file()
     # main-win.js reaches these with require('../...'); missing any of them
     # breaks the packaged app at launch, not at build time.
-    for required in ("main.js", "updates.js"):
+    for required in ("main.js", "updates.js", "folder-picker.js"):
         assert required in builder["files"]
+        assert (DESKTOP_DIR / required).is_file()
 
 
 # -- build script -----------------------------------------------------------
@@ -223,6 +224,8 @@ def test_builder_packs_the_windows_entry_it_declares(builder):
 
 def test_build_script_matches_the_spec_output_path():
     script = BUILD_SCRIPT.read_text(encoding="utf-8")
+    assert "$AppsDir = Split-Path -Parent $DesktopDir" in script
+    assert "$RepoRoot = Split-Path -Parent $AppsDir" in script
     assert "build\\windows-sidecar" in script
     assert f"{SIDECAR_NAME}\\{SIDECAR_NAME}.exe" in script
     assert "sidecar-win.spec" in script

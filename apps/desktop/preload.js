@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('serenaDesktop', Object.freeze({
   getVersion: () => ipcRenderer.invoke('desktop:get-version'),
   notify: (options) => ipcRenderer.invoke('desktop:notify', options),
   openExternal: (url) => ipcRenderer.invoke('desktop:open-external', url),
+  pickFolder: (options) => ipcRenderer.invoke('desktop:pick-folder', options),
   // Updates, exposed so an in-page About panel can drive the same flow the
   // native menu uses. onProgress returns its own unsubscribe so a re-render
   // cannot leak listeners.

@@ -27,6 +27,7 @@ async function main() {
       ...process.env,
       APPIMAGE_EXTRACT_AND_RUN: '1',
       ELECTRON_DISABLE_GPU: '1',
+      SERENA_DESKTOP_SHARE_BACKEND: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
