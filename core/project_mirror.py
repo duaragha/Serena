@@ -22,9 +22,70 @@ CODEX_PROJECTS = Path.home() / ".codex" / "projects"
 GEMINI_PROJECTS = Path.home() / ".gemini" / "projects"
 
 
+# Group directories whose project names are spelled with underscores. The rest
+# of the tree keeps whatever the directory on disk is called, so
+# ``frameworth/shopify-free-gift-app`` stays hyphenated.
+_UNDERSCORE_GROUPS = {"personal_projects", "money_making"}
+
+# Everything after this segment is the canonical subpath. Both machines put
+# their checkouts under a directory with this name (``~/Documents/Projects`` on
+# Linux, ``C:\Users\ragha\Projects`` on Windows), which is why the same rule
+# reads both.
+_PROJECTS_SEGMENT = "projects"
+
+# How deep a mirror goes: group plus project. A chat run in
+# ``personal_projects/konpeki/apps/landing`` belongs to konpeki, not to a
+# folder of its own.
+_MAX_DEPTH = 2
+
+
+def _segments(text: str) -> list[str]:
+    """Split a cwd or a slug into path segments, whatever wrote it.
+
+    A slug has already had its separators flattened to ``-``, and project names
+    contain hyphens, so a slug cannot be split back apart reliably. Only real
+    paths are read here; slugs fall through to the name table.
+    """
+    return [part for part in re.split(r"[\\/]+", text or "") if part not in ("", ".", "..")]
+
+
+def _from_path(cwd: str | None) -> str | None:
+    """Derive the canonical subpath from where the chat actually ran.
+
+    The name table below cannot answer for a project nobody has added to it
+    yet, and it silently returned None instead of saying so: full_tracker was
+    missing, so twenty-eight chats simply had no mirror. The directory layout
+    already carries the answer, so read it from there and keep the table for
+    paths that have no Projects root to read.
+    """
+    parts = _segments(cwd or "")
+    lowered = [part.lower() for part in parts]
+    if _PROJECTS_SEGMENT not in lowered:
+        return None
+    tail = parts[lowered.index(_PROJECTS_SEGMENT) + 1 :][:_MAX_DEPTH]
+    if not tail:
+        return None
+    if len(tail) > 1 and tail[0] in _UNDERSCORE_GROUPS:
+        tail[1] = tail[1].replace("-", "_")
+    return "Projects/" + "/".join(tail)
+
+
 def canonical_subpath(project_dir: str, cwd: str | None) -> str | None:
+    """Where this chat's mirror belongs, or None if it is not project work.
+
+    The table is consulted first and is authoritative: it encodes decisions the
+    directory layout does not carry, such as a chat sitting directly in the
+    frameworth group belonging to ``frameworth/general`` rather than to the
+    group directory itself, and a renamed project keeping its old home. Reading
+    the path first re-answered seventeen chats that were already placed
+    correctly, which is churn, not a fix.
+
+    Derivation is the fallback, for the projects nobody has added to the table.
+    That is the actual gap: full_tracker was missing, so twenty-eight chats had
+    no mirror at all and the table had no way to say so.
+    """
     txt = (cwd or "") + " " + (project_dir or "")
-    
+
     # Check personal_projects
     for proj in [
         "locket", "unified", "atrium", "vantage", "konpeki", "overclock", "witline",
@@ -34,23 +95,23 @@ def canonical_subpath(project_dir: str, cwd: str | None) -> str | None:
         if proj in txt:
             canonical_proj = proj.replace("-", "_")
             return f"Projects/personal_projects/{canonical_proj}"
-            
+
     # Check frameworth
     for proj in ["liquid", "hydrogen", "storefront", "shopify-free-gift-app", "frameworth-google-ads-auctions"]:
         if proj in txt:
             return f"Projects/frameworth/{proj}"
     if "frameworth" in txt:
         return "Projects/frameworth/general"
-        
+
     # Check ad_sorcery
     if "ad_sorcery" in txt or "ad-sorcery" in txt:
         return "Projects/ad_sorcery"
-        
+
     # Check money_making
     for proj in ["agent_pr_evidence", "agent-pr-evidence", "mcp_shield", "mcp-shield", "rovo_pir_agent", "rovo-pir-agent"]:
         if proj in txt:
             return f"Projects/money_making/{proj.replace('-', '_')}"
-            
+
     # Check serena
     if "serena-chats" in txt or "/serena/chats" in txt:
         return "Projects/serena/chats"
@@ -59,13 +120,12 @@ def canonical_subpath(project_dir: str, cwd: str | None) -> str | None:
     if "serena" in txt:
         return "Projects/serena"
 
-        
     if "cybersec-tracker" in txt:
         return "Projects/cybersec-tracker"
     if "ai-automation-agency" in txt:
         return "Projects/ai-automation-agency"
-        
-    return None
+
+    return _from_path(cwd)
 
 
 def sync_mirrors() -> dict[str, int]:
