@@ -6639,6 +6639,15 @@ async function _syncWebRuntimePolicy() {
   // The sibling is still named so the server sweeps it, but it no longer
   // sleeps on sight: every unfocused pane must prove it has been quiet first.
   if (sibling && !standbyTids.includes(sibling.tid)) standbyTids.push(sibling.tid);
+  // A merged view has two panes on screen and only one of them holds focus.
+  // Naming just the focused one let the server stop the other while the user
+  // was looking straight at it.
+  const visibleSids = (_gtkSplitActive && _gtkSplitSids && _gtkSplitSids.length)
+    ? _gtkSplitSids
+    : [_webRuntimeFocusSid];
+  const visibleTids = visibleSids
+    .map(item => { const runtime = termSessions.get(item); return runtime && runtime.tid; })
+    .filter(Boolean);
   const pinned = Boolean(_gtkCurrentGroup && _gtkPinnedGroups.has(_gtkCurrentGroup));
   _webRuntimeSyncing = true;
   try {
@@ -6647,6 +6656,7 @@ async function _syncWebRuntimePolicy() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         focus_tid: focus.tid,
+        visible_tids: visibleTids,
         standby_tids: sibling ? [sibling.tid] : [],
         all_open_tids: standbyTids,
         protected_tids: protectedTids,
@@ -12617,13 +12627,22 @@ def api_terminal_runtime_sync():
     protected_tids = {
         str(tid).strip() for tid in (data.get("protected_tids") or []) if str(tid).strip()
     }
+    # Every pane the user can actually see. A merged view shows two at once and
+    # only one of them can hold focus, so keying sleep on focus alone stopped
+    # the visible half: it rendered nothing and stayed that way for as long as
+    # the chat was open. Sleep is for panes that are off screen.
+    visible_tids = {
+        str(tid).strip() for tid in (data.get("visible_tids") or []) if str(tid).strip()
+    }
+    if focus_tid:
+        visible_tids.add(focus_tid)
     pin_both = bool(data.get("pin_both"))
     # Sweep every runtime the server owns, not just the panes the client named.
     # The client used to send the focused pane and its linked sibling only, so
     # every other terminal a user had opened was never a sleep candidate and
     # stayed fully resident for as long as the app ran.
     tids = set(pty_terminal.live_terminal_ids())
-    tids |= ({focus_tid} if focus_tid else set()) | standby_tids
+    tids |= visible_tids | standby_tids
     states = {}
     reclaimed_mb = 0.0
 
@@ -12635,7 +12654,7 @@ def api_terminal_runtime_sync():
         active, version = _terminal_file_snapshot(tid)
         busy = pty_terminal.refresh_turn_state(tid, active, version)
         working = busy or active is True or tid in protected_tids
-        if tid == focus_tid or pin_both:
+        if tid in visible_tids or pin_both:
             pty_terminal.resume(tid)
         else:
             # EVERY unfocused pane has to prove it has been quiet, the linked

@@ -1400,6 +1400,17 @@ def attach(tid: str) -> tuple[int, bytes] | None:
     term = get(tid)
     if not term:
         return None
+    # A renderer only attaches to a pane it is about to draw, and a stopped
+    # process draws nothing: it accepts the socket, replays its backlog and
+    # then sits there looking like an agent that failed to start. Waking here
+    # is the backstop for every path that puts a pane on screen without going
+    # through the focus sweep -- a reconnect after a dropped socket, a client
+    # that does not send visible_tids, a pane restored on load.
+    #
+    # state_lock is taken on its own and before flow_lock: the reader thread
+    # holds flow_lock on every chunk, and nesting the two in opposite orders
+    # in different callers is how deadlocks are built.
+    resume(tid)
     with term.flow_lock:
         term.attach_seq += 1
         token = term.attach_seq
