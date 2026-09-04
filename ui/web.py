@@ -5546,10 +5546,14 @@ async function _pasteTerminalClipboard(sid, ws) {
         if (!response.ok || !data.path) throw new Error(data.error || 'upload failed');
         paths.push(data.path);
       }
-      const input = paths.map(path => "'" + path.replace(/'/g, "'\\''") + "' ").join('');
+      // Bracketed paste with unquoted path so Claude Code's image handler
+      // parses the image path into an [Image #N] attachment pill instead of
+      // typing raw quoted strings into the prompt.
+      const rawText = paths.join(' ') + ' ';
+      const input = '\x1b[200~' + rawText + '\x1b[201~';
       if (ws.readyState === 1) ws.send(input);
       if (window.__termDrafts) {
-        window.__termDrafts.set(sid, (window.__termDrafts.get(sid) || '') + input);
+        window.__termDrafts.set(sid, (window.__termDrafts.get(sid) || '') + rawText);
       }
       toast.update(images.length === 1 ? 'Image attached' : (images.length + ' images attached'), 'success');
     } catch(e) {
@@ -7551,15 +7555,15 @@ function setupTerminalDrop(mount, getSocket) {
       }
     }
 
-    // Type each path into the PTY as a quoted literal (matches gnome-terminal drag behavior,
-    // which is what claude parses into [Image #N]).
+    // Send unquoted path inside bracketed paste so Claude Code collapses it into [Image #N].
     const ws = getSocket();
     if (ws && ws.readyState === 1) {
-      const input = paths.map(p => "'" + p.replace(/'/g, "'\\''") + "' ").join('');
+      const rawText = paths.join(' ') + ' ';
+      const input = '\x1b[200~' + rawText + '\x1b[201~';
       ws.send(input);
       const sid = mount.dataset.sid;
       if (sid && window.__termDrafts) {
-        window.__termDrafts.set(sid, (window.__termDrafts.get(sid) || '') + input);
+        window.__termDrafts.set(sid, (window.__termDrafts.get(sid) || '') + rawText);
       }
     }
     toast.update(
