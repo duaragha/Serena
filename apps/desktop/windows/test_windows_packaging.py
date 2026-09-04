@@ -31,6 +31,7 @@ SPEC_FILE = WINDOWS_DIR / "sidecar-win.spec"
 BUILD_SCRIPT = WINDOWS_DIR / "build-win.ps1"
 ENTRYPOINT = WINDOWS_DIR / "sidecar-win.py"
 PACKAGE_JSON = DESKTOP_DIR / "package.json"
+PYPROJECT = REPO_ROOT / "pyproject.toml"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "windows-desktop.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "desktop-release.yml"
 
@@ -123,6 +124,13 @@ def test_spec_carries_the_imports_pyinstaller_cannot_trace(spec_calls):
     assert "ui.web" in hidden
     # flask-sock's transport, which the terminal WebSocket upgrade needs.
     assert "simple_websocket" in hidden
+
+
+def test_desktop_runtime_dependencies_are_installed_before_freezing():
+    project = PYPROJECT.read_text(encoding="utf-8")
+
+    for package in ("flask-sock", "ptyprocess", "pywinpty", "psutil"):
+        assert f'"{package}' in project
 
 
 def test_spec_excludes_the_linux_desktop_stack(spec_calls):
