@@ -40,12 +40,30 @@ class CodexFile:
     session_id: str
 
 
+# Directories under the sessions root that hold copies of rollouts rather than
+# rollouts. ``.stversions`` is Syncthing's file-versioning archive: every time
+# it replaces or deletes a rollout it keeps the old bytes here. Those files
+# parse perfectly and describe real conversations, so the scanner indexed them
+# and the sidebar grew rows for chats the CLI has no record of -- clicking one
+# gets "No saved session found with ID ..." and the pane dies on the spot.
+# ``.stfolder`` is Syncthing's marker directory and ``archived_sessions`` is
+# Codex's own retirement bin; neither is resumable either.
+_NOT_SESSION_DIRS = frozenset({".stversions", ".stfolder", "archived_sessions"})
+
+
+def _is_scannable(path: Path) -> bool:
+    """True unless the file sits under a directory that only holds copies."""
+    return _NOT_SESSION_DIRS.isdisjoint(path.parts)
+
+
 def scan_codex_sessions() -> Iterator[tuple[str, Path]]:
     """Yield (project_dir_pseudo, jsonl_path) tuples for Codex session files."""
     if not CODEX_SESSIONS_ROOT.exists():
         return
     for jsonl in CODEX_SESSIONS_ROOT.rglob("rollout-*.jsonl"):
         if not jsonl.is_file():
+            continue
+        if not _is_scannable(jsonl):
             continue
         if not _is_user_initiated(jsonl):
             continue
