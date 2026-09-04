@@ -4181,14 +4181,7 @@ function renderSessionList() {
     groupBuckets.get(s.group).push(s);
   }
   for (const arr of groupBuckets.values()) {
-    // Sort: claude always first, then by recency among same-agent. So in mixed
-    // threads the claude chat is the head; the codex chat tucks under it.
-    arr.sort((a, b) => {
-      const aClaude = (a.agent || 'claude').toLowerCase() === 'claude' ? 0 : 1;
-      const bClaude = (b.agent || 'claude').toLowerCase() === 'claude' ? 0 : 1;
-      if (aClaude !== bClaude) return aClaude - bClaude;
-      return (b.last_timestamp || '').localeCompare(a.last_timestamp || '');
-    });
+    arr.sort(_groupHeadFirst);
   }
   const groupSiblings = new Map(); // representative_sid -> [sibling sessions]
   const consumedByGroup = new Set(); // sids that should NOT render at top-level
@@ -4478,6 +4471,39 @@ function toggleDoneCollapsed() {
 function isHiddenCodexPlumbing(s) {
   const origin = String(s.originator || '').toLowerCase();
   return s.parent_session_id === 'orphan-claude-code' || (origin === 'claude code' && !s.parent_session_id);
+}
+
+/**
+ * Order a linked thread's members so the right one becomes the visible row.
+ *
+ * Claude heads a mixed thread by default, which is the right choice when you
+ * are browsing: one row per conversation, and the Claude side is usually where
+ * it started. But the head is the ONLY member that renders -- the rest are
+ * folded underneath it -- so with the Codex filter on, a claude-headed pair
+ * showed a Claude row. Of Raghav's own Codex chats, twenty-one of thirty-eight
+ * were paired with a Claude chat and therefore unreachable that way, which is
+ * why the older ones seemed to be missing entirely: he paired chats more often
+ * back then.
+ *
+ * So when a filter is asking for one agent, that agent heads the thread. The
+ * filter exists to reach those chats; answering it with the other half of the
+ * pair is answering a different question.
+ */
+function _groupHeadFirst(a, b) {
+  // Two levels, not one. The filtered agent leads; among equals Claude still
+  // leads. A single level made the order depend on whether the filter happened
+  // to match anything in this thread, so filtering for Gemini quietly
+  // reshuffled every Claude+Codex pair it was about to discard anyway.
+  const rank = (session) => {
+    const agent = (session.agent || 'claude').toLowerCase();
+    const wanted = _agentFilter && agent === _agentFilter ? 0 : 1;
+    return [wanted, agent === 'claude' ? 0 : 1];
+  };
+  const [aWanted, aClaude] = rank(a);
+  const [bWanted, bClaude] = rank(b);
+  if (aWanted !== bWanted) return aWanted - bWanted;
+  if (aClaude !== bClaude) return aClaude - bClaude;
+  return (b.last_timestamp || '').localeCompare(a.last_timestamp || '');
 }
 
 function buildSessionTree(source) {
