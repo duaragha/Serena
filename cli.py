@@ -209,6 +209,19 @@ def recall(query, limit, no_update):
         click.echo("")
 
 
+@main.command("project-context")
+@click.argument("cwd", required=False)
+@click.option("--limit", "-n", default=6, help="Max recent sessions (default 6)")
+@click.option("--exclude", "-x", default=None, help="Exclude specific session ID")
+def project_context_cmd(cwd, limit, exclude):
+    """Print compact recent chat context for the current project repository."""
+    from core.project_context import format_project_context
+    target = cwd or os.getcwd()
+    output = format_project_context(target, limit=limit, exclude_sid=exclude)
+    if output:
+        click.echo(output)
+
+
 @main.command()
 @click.argument("session_id")
 def show(session_id):

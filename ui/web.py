@@ -12349,34 +12349,26 @@ def api_persona_files_post():
     return jsonify({"ok": True, "path": str(target)})
 
 
-def _persona_args() -> list[str]:
-    """--append-system-prompt with Persona.md + Tooling.md so every claude
-    spawn carries the Serena persona + operational reference, independent of
-    the SessionStart hook."""
+def _persona_args(cwd: str | None = None, session_id: str | None = None) -> list[str]:
+    """--append-system-prompt with Persona.md + Tooling.md + project chat context
+    so every claude spawn carries the Serena persona + operational reference +
+    recent repo context without needing repo files."""
     try:
         from core.config import read_agent_context
         ctx = read_agent_context()
+        if cwd:
+            try:
+                from core.project_context import format_project_context
+                p_ctx = format_project_context(cwd, limit=6, exclude_sid=session_id)
+                if p_ctx.strip():
+                    ctx = f"{ctx}\n\n{p_ctx}"
+            except Exception:
+                pass
         if ctx.strip():
             return ["--append-system-prompt", ctx]
     except Exception:
         pass
-def _ensure_agent_rules(cwd: str) -> None:
-    """Guarantee AGENTS.md and GEMINI.md exist in cwd so Codex and Gemini
-    automatically load Serena's Persona and Tooling on spawn."""
-    if not cwd or not os.path.isdir(cwd):
-        return
-    try:
-        from core.config import read_agent_context
-        ctx = read_agent_context()
-        if not ctx.strip():
-            return
-        p_cwd = Path(cwd)
-        for name in ("AGENTS.md", "GEMINI.md"):
-            rule_file = p_cwd / name
-            if not rule_file.exists() or rule_file.stat().st_size == 0:
-                rule_file.write_text(ctx, encoding="utf-8")
-    except Exception:
-        pass
+    return []
 
 
 def _gemini_argv(*, conversation: str | None = None, seed: str = "") -> list[str]:
@@ -12462,7 +12454,6 @@ def api_spawn_terminal():
         sid = session["session_id"]
         runtime_sid = sid
         ensure_session_visible(sid, session.get("project_dir", ""), cwd)
-        _ensure_agent_rules(cwd)
         # Resume the right agent based on stored agent value
         agent = (session.get("agent") or "claude").lower()
         if agent == "gemini":
@@ -12484,11 +12475,10 @@ def api_spawn_terminal():
             # won't match where the file lives, so stage a current copy there.
             _ensure_resumable(sid, cwd)
             argv = ["claude", "--dangerously-skip-permissions", "-r", sid]
-            argv += _persona_args()
+            argv += _persona_args(cwd, session_id=sid)
     else:
         raw_cwd = (data.get("cwd") or "").strip()
         cwd = resolve_session_cwd(raw_cwd)
-        _ensure_agent_rules(cwd)
 
         if agent == "gemini":
             argv = _gemini_argv(seed=seed)
@@ -12498,7 +12488,7 @@ def api_spawn_terminal():
                 argv.append(seed)
         else:
             argv = ["claude", "--dangerously-skip-permissions"]
-            argv += _persona_args()
+            argv += _persona_args(cwd)
             if seed:
                 argv.append(seed)
 
