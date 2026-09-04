@@ -70,6 +70,18 @@ def _from_path(cwd: str | None) -> str | None:
     return "Projects/" + "/".join(tail)
 
 
+def folder_subpath(folder: str | None) -> str | None:
+    """The canonical subpath for a folder the user chose by hand.
+
+    A move is a statement about where the chat belongs, so it outranks every
+    guess below -- including the name table, which cannot know about a folder
+    invented a minute ago.
+    """
+    if not folder:
+        return None
+    return _from_path(str(folder))
+
+
 def canonical_subpath(project_dir: str, cwd: str | None) -> str | None:
     """Where this chat's mirror belongs, or None if it is not project work.
 
@@ -139,8 +151,11 @@ def sync_mirrors() -> dict[str, int]:
     
     stats = {"claude": 0, "codex": 0, "gemini": 0, "slug_links": 0}
     
+    from core.chat_folders import get_folder
+
     for sid, agent, pdir, cwd, fp in rows:
-        sub = canonical_subpath(pdir, cwd)
+        # A folder the user picked wins over anything inferred from the cwd.
+        sub = folder_subpath(get_folder(sid)) or canonical_subpath(pdir, cwd)
         if not sub:
             continue
             

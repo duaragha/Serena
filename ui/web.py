@@ -4719,6 +4719,9 @@ function showSessionContextMenu(evt, idx) {
   }
   if (!inMultiSelect && !isReadOnlyTranscript) {
     items.push({ label: 'Rename',         key: 'R', action: () => renameSession(sid) });
+    // Filing a chat is the same act for every agent: what moves is its home,
+    // never the transcript, which stays where its CLI wrote it.
+    items.push({ label: 'Move to folder…', action: () => moveChatToFolderFlow(sid) });
   }
   if (!isReadOnlyTranscript) {
     items.push({
@@ -8910,6 +8913,51 @@ function showLinkPicker(srcSid) {
   });
 }
 
+async function moveChatToFolderFlow(sid) {
+  // Existing folders are offered as a hint rather than a closed list: the
+  // point of the feature is to file a chat somewhere that does not exist yet.
+  let known = [];
+  try {
+    const r = await fetch('/api/chat-folders');
+    if (r.ok) known = await r.json();
+  } catch(e) {}
+  const current = _findClientSession(sid);
+  const hint = known.length
+    ? 'Existing: ' + known.slice(0, 8).map(f => f.relative).join(', ')
+    : '';
+
+  const folder = await showPrompt({
+    title: 'Move chat to folder',
+    body: (current && current.display_title ? _menuLabel(current.display_title, 60) + '\n' : '')
+      + 'Path under your Projects root, e.g. frameworth/it. '
+      + 'The folder is created if it does not exist.'
+      + (hint ? '\n\n' + hint : ''),
+    placeholder: 'frameworth/it',
+    confirm: 'Move',
+  });
+  if (folder === null) return;
+
+  const toast = showToast('Moving…', { spinner: true, sticky: true });
+  try {
+    const r = await fetch('/api/chat-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sid, folder: String(folder || '').trim() }),
+    });
+    const resp = await r.json();
+    if (!r.ok || !resp.ok) throw new Error(resp.error || 'move failed');
+    toast.update(resp.folder
+      ? 'Moved to ' + resp.folder.split('/').slice(-2).join('/')
+        + (resp.folder_created ? ' (folder created)' : '')
+      : 'Folder cleared', 'success');
+  } catch(e) {
+    toast.update('Move failed: ' + e.message, 'error');
+    return;
+  }
+  await loadProjects();
+  await loadSessions(currentProject, { refresh: true });
+}
+
 async function linkChatPickerFlow(srcSid) {
   const targetSid = await showLinkPicker(srcSid);
   if (!targetSid) return;
@@ -13057,6 +13105,44 @@ def api_handoff():
         "prompt": prompt,
     })
 # === HANDOFF FEATURE END ===
+
+
+@app.route("/api/chat-folder", methods=["POST"])
+def api_chat_folder():
+    """File one chat under a folder of the user's choosing.
+
+    Works the same for every agent: the transcript stays where its CLI wrote
+    it, and what moves is the chat's home -- its slug, its sidebar chip and its
+    place in the canonical mirror tree.
+    """
+    from core.chat_folders import clear_folder, move_chat
+
+    data = request.get_json(silent=True) or {}
+    session_id = str(data.get("session_id") or "").strip()
+    folder = str(data.get("folder") or "").strip()
+    if not session_id:
+        return jsonify({"ok": False, "error": "session_id is required"}), 400
+
+    if not folder:
+        # An empty folder hands the chat back to inference rather than filing
+        # it at the projects root, which is what an empty string would mean.
+        clear_folder(session_id)
+        return jsonify({"ok": True, "session_id": session_id, "folder": None})
+
+    try:
+        return jsonify(move_chat(session_id, folder))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"could not create the folder: {exc}"}), 500
+
+
+@app.route("/api/chat-folders")
+def api_chat_folders():
+    """Folders that already exist, so the picker can offer them."""
+    from core.chat_folders import list_folders
+
+    return jsonify(list_folders())
 
 
 @app.route("/api/context-fork", methods=["POST"])

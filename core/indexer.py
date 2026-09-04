@@ -556,6 +556,17 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
             pass
 
     devices_used_csv = ",".join(getattr(meta, "devices_used", []) or [])
+
+    # A chat the user filed by hand keeps the home they gave it. The index is
+    # rebuilt from the transcripts, and a transcript only knows the directory
+    # the chat was typed in -- so without this the move is undone by the very
+    # next scan, which looks exactly like the move never worked.
+    project_dir = meta.project_dir
+    slug = meta.slug
+    folder = synced.get("chat_folder")
+    if folder:
+        project_dir = slug = claude_project_dir_for(str(folder))
+
     conn.execute("""
         INSERT OR REPLACE INTO sessions
         (session_id, project_dir, cwd, last_cwd, device, first_message, title,
@@ -567,13 +578,13 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
          devices_used)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        meta.session_id, meta.project_dir, meta.cwd, meta.last_cwd, meta.device,
+        meta.session_id, project_dir, meta.cwd, meta.last_cwd, meta.device,
         meta.first_message, title, custom_title, starred, is_done, done_at,
         meta.first_timestamp.isoformat() if meta.first_timestamp else None,
         meta.last_timestamp.isoformat() if meta.last_timestamp else None,
         meta.message_count, meta.raw_message_count,
-        1 if (meta.is_teammate or _is_internal_project(meta.project_dir)) else 0,
-        meta.model, meta.git_branch, meta.slug,
+        1 if (meta.is_teammate or _is_internal_project(project_dir)) else 0,
+        meta.model, meta.git_branch, slug,
         meta.file_path, meta.file_size, meta.file_mtime,
         meta.input_tokens, meta.output_tokens, meta.cache_read_tokens, meta.cache_create_tokens,
         agent, getattr(meta, "originator", None),
