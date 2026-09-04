@@ -248,6 +248,8 @@ def test_build_script_boots_the_frozen_sidecar():
     assert "Start-Process" in script
     assert "HasExited" in script, "a sidecar that exits early must fail the build"
     assert "--pty-smoke" in script, "the build must exercise the packaged PTY backend"
+    assert "$PtySmoke.WaitForExit(30000)" in script
+    assert "$PtySmoke.Kill($true)" in script, "a stuck PTY probe must not consume the CI timeout"
 
 
 def test_build_script_defaults_to_not_publishing():
@@ -266,9 +268,21 @@ def test_entrypoint_repairs_detached_console_streams_before_importing_flask():
     assert "os.fstat(stream.fileno())" in source
     assert "sink = open(" in source
     assert "os.devnull" in source
-    assert source.index("_repair_standard_streams()") < source.index(
-        'import_module("ui.web")'
+    assert source.index("_repair_standard_streams()") < source.index('import_module("ui.web")')
+
+
+def test_entrypoint_dispatches_pty_smoke_before_loading_the_web_runtime():
+    source = ENTRYPOINT.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(ENTRYPOINT))
+    main = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
     )
+    rendered = ast.unparse(main)
+
+    assert rendered.index("if args.pty_smoke") < rendered.index("_web_runtime().run_web")
+    assert "raise SystemExit(_pty_smoke())" in rendered
 
 
 def test_entrypoint_does_not_redeclare_routes_ui_web_owns():

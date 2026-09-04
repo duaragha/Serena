@@ -50,16 +50,22 @@ def _repair_standard_streams() -> None:
 
 _repair_standard_streams()
 
-# `app` is re-exported so tests and anything embedding this entry point can
-# reach the Flask app. /api/health is NOT declared here: ui.web owns it (as
-# `api_health`), so mobile_host serves the same probe. Declaring it again bound
-# a second view to the identical rule, and since ui.web registers first its
-# endpoint always won -- the copy here was unreachable code that read as though
-# it were the live probe. desktop-electron/sidecar.py made the same removal on
-# the Linux side.
-web = import_module("ui.web")
-app = web.app
-run_web = web.run_web
+def _web_runtime():
+    """Load the resident web runtime only when the sidecar is serving it.
+
+    The packaged PTY smoke path must remain a small, terminating process. Importing
+    ``ui.web`` before argument dispatch starts resident background threads, so a
+    successful ``SystemExit`` waits for those threads instead of returning to the
+    release script.
+    """
+    return import_module("ui.web")
+
+
+def __getattr__(name: str):
+    """Preserve the entry point's lazy ``app`` and ``run_web`` exports."""
+    if name in {"app", "run_web"}:
+        return getattr(_web_runtime(), name)
+    raise AttributeError(name)
 
 
 def _loopback_host(value: str) -> str:
@@ -125,7 +131,7 @@ def main() -> None:
         raise SystemExit(_pty_smoke())
     if args.port is None:
         parser.error("--port is required unless --pty-smoke is used")
-    run_web(host=args.host, port=args.port, open_browser=False)
+    _web_runtime().run_web(host=args.host, port=args.port, open_browser=False)
 
 
 if __name__ == "__main__":

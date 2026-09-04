@@ -79,8 +79,12 @@ Write-Host "[windows] smoke-testing the frozen PTY backend"
 $PtySmoke = Start-Process -FilePath $SidecarExe `
     -ArgumentList @("--pty-smoke") `
     -WindowStyle Hidden `
-    -Wait `
     -PassThru
+if (-not $PtySmoke.WaitForExit(30000)) {
+    $PtySmoke.Kill($true)
+    $PtySmoke.WaitForExit()
+    throw "the frozen PTY smoke test timed out after 30 seconds"
+}
 if ($PtySmoke.ExitCode -ne 0) {
     throw "the frozen PTY smoke test failed with exit code $($PtySmoke.ExitCode)"
 }
