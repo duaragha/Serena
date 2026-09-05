@@ -4144,7 +4144,14 @@ function filterProject(idx, el) {
 }
 
 function updateChatCount() {
-  document.getElementById('chatCount').textContent = '(' + allSessions.length + ')';
+  const el = document.getElementById('chatCount');
+  const matching = _agentFilter
+    ? allSessions.filter(s => (s.agent || 'claude').toLowerCase() === _agentFilter).length
+    : allSessions.length;
+  el.textContent = '(' + (_agentFilter ? matching + ' / ' : '') + allSessions.length + ')';
+  el.title = _agentFilter
+    ? matching + ' ' + _agentFilter + ' sessions out of ' + allSessions.length + ' total; linked sessions share a row'
+    : allSessions.length + ' sessions; linked sessions share a row';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -4396,6 +4403,9 @@ function renderSessionList() {
 let _collapsedState = { fleetChats: true, voiceChats: true, starred: false, done: true, timeGroups: [] };
 let _collapsedLoaded = false;
 let _timeGroupsCollapsed = new Set();
+// Filtering starts with the matching history visible, without overwriting the
+// saved collapse choices used when browsing all agents.
+let _filteredTimeGroupsCollapsed = new Set();
 
 function _applyCollapsedState(raw) {
   const c = (raw && typeof raw === 'object') ? raw : {};
@@ -4452,13 +4462,15 @@ function toggleStarredCollapsed() {
 // bucket you shut stays shut while a brand-new bucket (tomorrow's "Today")
 // still renders expanded.
 function isTimeGroupCollapsed(label) {
-  return _timeGroupsCollapsed.has(String(label));
+  const collapsed = _agentFilter ? _filteredTimeGroupsCollapsed : _timeGroupsCollapsed;
+  return collapsed.has(String(label));
 }
 function toggleTimeGroupCollapsed(label) {
   const key = String(label);
-  if (_timeGroupsCollapsed.has(key)) _timeGroupsCollapsed.delete(key);
-  else _timeGroupsCollapsed.add(key);
-  _saveCollapsedState();
+  const collapsed = _agentFilter ? _filteredTimeGroupsCollapsed : _timeGroupsCollapsed;
+  if (collapsed.has(key)) collapsed.delete(key);
+  else collapsed.add(key);
+  if (!_agentFilter) _saveCollapsedState();
   renderSessionList();
 }
 
@@ -9860,6 +9872,7 @@ document.addEventListener('keydown', function(e) {
 let _agentFilter = null;  // null | 'claude' | 'codex'
 function toggleAgentFilter(agent) {
   _agentFilter = (_agentFilter === agent) ? null : agent;
+  _filteredTimeGroupsCollapsed.clear();
   const c = document.getElementById('filterClaude');
   const x = document.getElementById('filterCodex');
   const g = document.getElementById('filterGemini');
@@ -9867,6 +9880,7 @@ function toggleAgentFilter(agent) {
   if (x) x.classList.toggle('active', _agentFilter === 'codex');
   if (g) g.classList.toggle('active', _agentFilter === 'gemini');
   renderSessionList();
+  updateChatCount();
 }
 function _initAgentFilterIcons() {
   const c = document.querySelector('#filterClaude .agent-icon');

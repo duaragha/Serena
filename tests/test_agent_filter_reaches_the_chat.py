@@ -16,7 +16,6 @@ ordering the browser actually applies.
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -111,3 +110,42 @@ def test_the_fold_uses_the_comparator_rather_than_its_own_copy() -> None:
 
     assert "arr.sort(_groupHeadFirst)" in body
     assert "=== 'claude' ? 0 : 1" not in body, "an inline copy of the old rule survives"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required to run page code")
+def test_filter_reveals_old_months_without_changing_saved_collapse_choices():
+    functions = "\n".join(_extract(name) for name in (
+        "toggleAgentFilter", "isTimeGroupCollapsed", "toggleTimeGroupCollapsed", "updateChatCount",
+    ))
+    script = r"""
+const assert = require('node:assert/strict');
+let _agentFilter = null;
+let _timeGroupsCollapsed = new Set(['June 2026', 'May 2026']);
+let _filteredTimeGroupsCollapsed = new Set();
+let saved = 0;
+function _saveCollapsedState() { saved++; }
+function renderSessionList() {}
+const count = {};
+const document = {getElementById: id => id === 'chatCount' ? count : null};
+const allSessions = [{agent:'claude'}, {agent:'codex'}, {agent:'codex'}];
+__FUNCTIONS__
+assert.equal(isTimeGroupCollapsed('June 2026'), true);
+toggleAgentFilter('codex');
+assert.equal(isTimeGroupCollapsed('June 2026'), false);
+assert.equal(isTimeGroupCollapsed('May 2026'), false);
+assert.equal(count.textContent, '(2 / 3)');
+toggleTimeGroupCollapsed('June 2026');
+assert.equal(isTimeGroupCollapsed('June 2026'), true);
+assert.equal(saved, 0);
+toggleAgentFilter('claude');
+assert.equal(isTimeGroupCollapsed('June 2026'), false);
+assert.equal(count.textContent, '(1 / 3)');
+toggleAgentFilter('claude');
+assert.equal(isTimeGroupCollapsed('June 2026'), true);
+assert.equal(count.textContent, '(3)');
+assert.deepEqual([..._timeGroupsCollapsed], ['June 2026', 'May 2026']);
+toggleTimeGroupCollapsed('June 2026');
+assert.equal(saved, 1);
+""".replace("__FUNCTIONS__", functions)
+    result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
