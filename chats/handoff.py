@@ -121,71 +121,19 @@ def _gemini_transcript(file_path: Path) -> Path | None:
     return transcript_path(conversation_id_for(file_path))
 
 
-# Antigravity wraps each prompt in tagged blocks: the typed text in
-# <USER_REQUEST>, and around it the local time, model switches, and open
-# editor tabs. Only the request is the user's message.
-_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>(.*?)</USER_REQUEST>", re.DOTALL)
-
-
-def _gemini_user_text(content: str) -> str:
-    found = _USER_REQUEST_RE.findall(content or "")
-    if found:
-        return "\n\n".join(part.strip() for part in found if part.strip()).strip()
-    # A prompt with no tags at all is still a prompt; the metadata blocks are
-    # appended after it, so drop from the first one onwards.
-    return re.split(r"<(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|EPHEMERAL_MESSAGE)>",
-                    content or "", maxsplit=1)[0].strip()
-
-
 def _parse_gemini(file_path: Path) -> list[_Msg]:
-    """Antigravity ``transcript.jsonl``: one JSON object per step.
+    """Antigravity turns, via the shared reader in ``core.gemini_scanner``."""
+    from core.gemini_scanner import read_turns
 
-    ``USER_INPUT`` is the user and ``PLANNER_RESPONSE`` is the model, which may
-    carry prose, thinking, and tool calls in a single step. ``GENERIC`` steps
-    are tool OUTPUT echoed back -- including, verbatim, earlier lines of this
-    same transcript -- so they are skipped the way tool results are for the
-    other agents, or a briefing would quote the log to itself.
-    """
-    out: list[_Msg] = []
-    try:
-        handle = file_path.open("r", encoding="utf-8", errors="replace")
-    except OSError:
-        return out
-    with handle as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            kind = obj.get("type")
-            if kind == "USER_INPUT":
-                text = _gemini_user_text(obj.get("content") or "")
-                if text:
-                    out.append(_Msg(role="user", text=text))
-                continue
-            if kind != "PLANNER_RESPONSE":
-                continue
-            text = (obj.get("content") or "").strip()
-            if text:
-                out.append(_Msg(role="assistant", text=text))
-            for call in obj.get("tool_calls") or []:
-                if not isinstance(call, dict):
-                    continue
-                args = call.get("args")
-                out.append(
-                    _Msg(
-                        role="assistant",
-                        text="",
-                        tool_name=call.get("name") or "tool",
-                        tool_input=json.dumps(args) if args is not None else None,
-                    )
-                )
-    return out
+    return [
+        _Msg(
+            role=turn["role"],
+            text=turn["text"],
+            tool_name=turn["tool_name"],
+            tool_input=turn["tool_input"],
+        )
+        for turn in read_turns(file_path)
+    ]
 
 
 def _parse_codex(file_path: Path) -> list[_Msg]:

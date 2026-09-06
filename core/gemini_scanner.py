@@ -23,6 +23,7 @@ it. Serena lists and launches; it does not try to re-render.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,6 +81,80 @@ def transcript_path(conversation_id: str) -> Path | None:
         / ".system_generated" / "logs" / "transcript.jsonl"
     )
     return candidate if candidate.is_file() else None
+
+
+# Antigravity wraps each prompt in tagged blocks: the typed text in
+# <USER_REQUEST>, and around it the local time, model switches, and open editor
+# tabs. Only the request is what the person actually said.
+_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>(.*?)</USER_REQUEST>", re.DOTALL)
+_TRAILING_BLOCK_RE = re.compile(
+    r"<(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|EPHEMERAL_MESSAGE)>"
+)
+
+
+def _typed_text(content: str) -> str:
+    found = _USER_REQUEST_RE.findall(content or "")
+    if found:
+        return "\n\n".join(part.strip() for part in found if part.strip()).strip()
+    # An untagged prompt is still a prompt; the metadata blocks follow it.
+    return _TRAILING_BLOCK_RE.split(content or "", maxsplit=1)[0].strip()
+
+
+def read_turns(path) -> list[dict]:
+    """A conversation as ordered turns: role, text, tool call, timestamp.
+
+    The ``.db`` beside this file is protobuf with no published schema, but
+    Antigravity writes the same conversation here as plain JSONL, one object per
+    step. ``USER_INPUT`` is the person and ``PLANNER_RESPONSE`` is the model,
+    which can carry prose and several tool calls in one step.
+
+    ``GENERIC`` steps are tool OUTPUT echoed back -- including, verbatim,
+    earlier lines of this same transcript whenever a command happens to read it
+    -- so they are dropped the way tool results are for every other agent.
+    Keeping them would have a briefing quote the log to itself.
+    """
+    turns: list[dict] = []
+    try:
+        handle = Path(path).open("r", encoding="utf-8", errors="replace")
+    except OSError:
+        return turns
+    with handle as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                step = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(step, dict):
+                continue
+            kind = step.get("type")
+            stamp = str(step.get("created_at") or "")
+            if kind == "USER_INPUT":
+                text = _typed_text(step.get("content") or "")
+                if text:
+                    turns.append({"role": "user", "text": text, "timestamp": stamp,
+                                  "tool_name": None, "tool_input": None})
+                continue
+            if kind != "PLANNER_RESPONSE":
+                continue
+            text = (step.get("content") or "").strip()
+            if text:
+                turns.append({"role": "assistant", "text": text, "timestamp": stamp,
+                              "tool_name": None, "tool_input": None})
+            for call in step.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                args = call.get("args")
+                turns.append({
+                    "role": "assistant",
+                    "text": "",
+                    "timestamp": stamp,
+                    "tool_name": str(call.get("name") or "tool"),
+                    "tool_input": json.dumps(args) if args is not None else None,
+                })
+    return turns
 
 
 def _history_entries() -> list[dict]:

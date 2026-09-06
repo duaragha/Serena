@@ -14,6 +14,41 @@ from core.parser import parse_full
 
 DEFAULT_CONTEXT_FORK_DIR = Path.home() / ".local" / "share" / "serena" / "context-forks"
 
+# Every agent whose transcript can be READ, in the order a fork presents them.
+# Gemini joined once its Antigravity transcript became readable; before that it
+# could receive a fork but never contribute to one.
+_FORKABLE_AGENTS = ("claude", "codex", "gemini")
+_AGENT_LABELS = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini"}
+
+
+def _english_list(names: list[str]) -> str:
+    if len(names) < 3:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _read_turns(agent: str, path: Path):
+    """Each agent's own reader. Antigravity's transcript is not Claude JSONL,
+    and running the Claude parser over it returned zero messages -- a fork that
+    silently dropped the Gemini side while claiming to carry it."""
+    if agent == "gemini":
+        from core.gemini_scanner import read_turns, transcript_path, conversation_id_for
+
+        source = path if path.name == "transcript.jsonl" else transcript_path(
+            conversation_id_for(path)
+        )
+        if source is None:
+            return []
+        return [
+            (turn["role"], turn["text"], turn["timestamp"])
+            for turn in read_turns(source)
+            if turn["text"].strip()
+        ]
+    return [
+        (m.role, str(m.text or ""), m.timestamp.isoformat() if m.timestamp else "")
+        for m in parse_full(path)
+    ]
+
 
 def build_context_fork(
     source_session_id: str,
@@ -27,9 +62,6 @@ def build_context_fork(
     target = str(target_agent or "").strip().lower()
     if not source_id:
         raise ValueError("source session id is required")
-    # Gemini can receive a fork -- the bundle is plain text. It cannot be a
-    # SOURCE, because Antigravity's transcript is undecoded protobuf, which is
-    # why the member scan below still looks for Claude and Codex only.
     if target not in {"claude", "codex", "gemini"}:
         raise ValueError("target agent must be claude, codex or gemini")
 
@@ -52,20 +84,20 @@ def build_context_fork(
         if member is None:
             continue
         agent = str(member.get("agent") or "claude").strip().lower()
-        if agent not in {"claude", "codex"}:
+        if agent not in _FORKABLE_AGENTS:
             continue
         previous = latest_by_agent.get(agent)
         if previous is None or _activity_key(member) > _activity_key(previous):
             latest_by_agent[agent] = member
 
-    if set(latest_by_agent) != {"claude", "codex"}:
+    if len(latest_by_agent) < 2:
         raise ValueError(
-            "the linked thread needs both a Claude chat and a Codex chat "
-            "(a Gemini chat can receive a fork but cannot contribute one: its "
-            "transcript is not readable)"
+            "a context fork carries a thread's chats into a fresh one, so the "
+            "thread needs at least two chats from different agents to carry"
         )
 
-    sources = [latest_by_agent["claude"], latest_by_agent["codex"]]
+    # Stable order, so a fork of the same thread reads the same way twice.
+    sources = [latest_by_agent[agent] for agent in _FORKABLE_AGENTS if agent in latest_by_agent]
     rendered, message_count = _render_context(sources, group_id=group_id)
     root = Path(
         output_dir
@@ -87,11 +119,12 @@ def build_context_fork(
     cwd = str(source.get("cwd") or source.get("last_cwd") or Path.home())
     if not Path(cwd).expanduser().is_dir():
         cwd = str(Path.home())
+    named = _english_list([_AGENT_LABELS[str(item["agent"]).lower()] for item in sources])
     prompt = (
         f"Read the complete linked-chat context at {path}. It contains only user and "
-        "assistant text from the prior Claude and Codex chats. This is a new standalone "
-        "branch, not part of their linked thread. Use both transcripts as prior context, "
-        "then reply only: context loaded. Wait for my next request."
+        f"assistant text from the prior {named} chats. This is a new standalone "
+        "branch, not part of their linked thread. Use every transcript in it as prior "
+        "context, then reply only: context loaded. Wait for my next request."
     )
     return {
         "ok": True,
@@ -148,14 +181,13 @@ def _render_context(
         path = Path(str(session.get("file_path") or ""))
         if not path.exists():
             raise ValueError(f"source transcript is missing for {session['session_id']}")
-        for message in parse_full(path):
-            if message.role not in {"user", "assistant"}:
+        for role_name, raw, timestamp in _read_turns(agent, path):
+            if role_name not in {"user", "assistant"}:
                 continue
-            text = str(message.text or "").strip()
+            text = raw.strip()
             if not text:
                 continue
-            role = "Raghav" if message.role == "user" else agent.title()
-            timestamp = message.timestamp.isoformat() if message.timestamp else ""
+            role = "Raghav" if role_name == "user" else agent.title()
             lines.extend([f"### {role} [{timestamp}]", "", text, ""])
             message_count += 1
     return "\n".join(lines).rstrip() + "\n", message_count
