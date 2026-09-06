@@ -56,6 +56,32 @@ def _conversation_files() -> dict[str, Path]:
 
 
 
+def conversation_id_for(file_path) -> str:
+    """The conversation id behind an indexed path, whichever form it took."""
+    fp = Path(file_path)
+    if fp.name == "transcript.jsonl":
+        return fp.parent.parent.parent.name
+    return fp.stem
+
+
+def transcript_path(conversation_id: str) -> Path | None:
+    """The readable transcript for a conversation, when Antigravity kept one.
+
+    A conversation that exists in both forms is indexed by its ``.db``, because
+    that is the file whose mtime moves. The protobuf inside it is undocumented,
+    but Antigravity writes the same turns as plain JSONL under ``brain/``, so
+    anything wanting to READ a conversation resolves the id to that instead.
+    Only conversations predating the brain directory lack one.
+    """
+    if not conversation_id:
+        return None
+    candidate = (
+        GEMINI_ROOT / "brain" / conversation_id
+        / ".system_generated" / "logs" / "transcript.jsonl"
+    )
+    return candidate if candidate.is_file() else None
+
+
 def _history_entries() -> list[dict]:
     """Prompt history, oldest first. Unreadable lines are skipped."""
     try:

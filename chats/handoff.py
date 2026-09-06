@@ -55,19 +55,18 @@ def build_handoff_briefing(session_id: str) -> dict:
     title = session.get("display_title") or session.get("title") or "Untitled chat"
 
     if agent == "gemini":
-        # Antigravity keeps its transcript as protobuf blobs in a SQLite table
-        # with no published schema, so there is nothing here to summarise. The
-        # other direction works fine: a briefing built from Claude or Codex is
-        # just text, and Gemini reads it like any other agent.
-        return {
-            "ok": False,
-            "error": (
-                "Gemini transcripts cannot be read yet, so there is nothing to brief from "
-                "this side. Hand off from the Claude or Codex chat in this thread instead."
-            ),
-        }
-
-    if agent == "codex":
+        transcript = _gemini_transcript(file_path)
+        if transcript is None:
+            return {
+                "ok": False,
+                "error": (
+                    "This Gemini chat has no readable transcript on disk, so there is "
+                    "nothing to brief from this side. Hand off from the Claude or Codex "
+                    "chat in this thread instead."
+                ),
+            }
+        msgs = _parse_gemini(transcript)
+    elif agent == "codex":
         msgs = _parse_codex(file_path)
     else:
         msgs = _parse_claude(file_path)
@@ -106,51 +105,144 @@ def _parse_claude(file_path: Path) -> list[_Msg]:
     return out
 
 
-def _parse_codex(file_path: Path) -> list[_Msg]:
-    """Codex .jsonl: line 1 is session_meta, the rest are event_msg / turn_context.
+def _gemini_transcript(file_path: Path) -> Path | None:
+    """Antigravity indexes a conversation by a file it cannot read.
 
-    Tool calls aren't natively typed the same as Claude — we surface the
-    `function_call` / `function_call_output` event payload kinds when present.
+    A conversation that exists as both a ``.db`` and a ``brain/`` transcript is
+    indexed by the ``.db``, since that is the file whose mtime tracks the
+    conversation. The protobuf inside it has no published schema; the transcript
+    beside it is plain JSONL of the same turns. So resolve through the id rather
+    than reading whatever path the index happened to store.
+    """
+    from core.gemini_scanner import conversation_id_for, transcript_path
+
+    if file_path.name == "transcript.jsonl":
+        return file_path
+    return transcript_path(conversation_id_for(file_path))
+
+
+# Antigravity wraps each prompt in tagged blocks: the typed text in
+# <USER_REQUEST>, and around it the local time, model switches, and open
+# editor tabs. Only the request is the user's message.
+_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>(.*?)</USER_REQUEST>", re.DOTALL)
+
+
+def _gemini_user_text(content: str) -> str:
+    found = _USER_REQUEST_RE.findall(content or "")
+    if found:
+        return "\n\n".join(part.strip() for part in found if part.strip()).strip()
+    # A prompt with no tags at all is still a prompt; the metadata blocks are
+    # appended after it, so drop from the first one onwards.
+    return re.split(r"<(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|EPHEMERAL_MESSAGE)>",
+                    content or "", maxsplit=1)[0].strip()
+
+
+def _parse_gemini(file_path: Path) -> list[_Msg]:
+    """Antigravity ``transcript.jsonl``: one JSON object per step.
+
+    ``USER_INPUT`` is the user and ``PLANNER_RESPONSE`` is the model, which may
+    carry prose, thinking, and tool calls in a single step. ``GENERIC`` steps
+    are tool OUTPUT echoed back -- including, verbatim, earlier lines of this
+    same transcript -- so they are skipped the way tool results are for the
+    other agents, or a briefing would quote the log to itself.
     """
     out: list[_Msg] = []
     try:
-        with file_path.open("r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") != "event_msg":
-                    continue
-                payload = obj.get("payload") or {}
-                inner = payload.get("type")
-                if inner == "user_message":
-                    text = payload.get("message") or payload.get("text") or ""
-                    if isinstance(text, str) and text.strip():
-                        out.append(_Msg(role="user", text=text.strip()))
-                elif inner in ("agent_message", "assistant_message"):
-                    text = payload.get("message") or payload.get("text") or ""
-                    if isinstance(text, str) and text.strip():
-                        out.append(_Msg(role="assistant", text=text.strip()))
-                elif inner == "function_call":
-                    name = payload.get("name") or payload.get("tool") or "?"
-                    args = payload.get("arguments") or payload.get("input") or ""
-                    if isinstance(args, dict):
-                        args = json.dumps(args)[:200]
-                    out.append(
-                        _Msg(
-                            role="assistant",
-                            text="",
-                            tool_name=str(name),
-                            tool_input=str(args)[:200],
-                        )
-                    )
+        handle = file_path.open("r", encoding="utf-8", errors="replace")
     except OSError:
-        pass
+        return out
+    with handle as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            kind = obj.get("type")
+            if kind == "USER_INPUT":
+                text = _gemini_user_text(obj.get("content") or "")
+                if text:
+                    out.append(_Msg(role="user", text=text))
+                continue
+            if kind != "PLANNER_RESPONSE":
+                continue
+            text = (obj.get("content") or "").strip()
+            if text:
+                out.append(_Msg(role="assistant", text=text))
+            for call in obj.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                args = call.get("args")
+                out.append(
+                    _Msg(
+                        role="assistant",
+                        text="",
+                        tool_name=call.get("name") or "tool",
+                        tool_input=json.dumps(args) if args is not None else None,
+                    )
+                )
     return out
+
+
+def _parse_codex(file_path: Path) -> list[_Msg]:
+    """Codex rollout records, via the shared reader in ``core.codex_records``.
+
+    This used to walk the file itself looking for ``event_msg`` payloads named
+    ``user_message`` and ``agent_message``. Codex has since moved turns into
+    ``response_item`` records and wrapped the events in ``item_completed``, so
+    on a current rollout that search matched nothing and the handoff failed with
+    "No messages to summarize" -- the conversation was all there, in shapes this
+    module had never been taught. ``codex_records`` already knew both, having
+    been fixed for the sidebar; there is no reason for a second reader here.
+
+    Turns follow that module's rule: the events win when a file carries both,
+    or the same turn counts twice. Tool calls only ever appear as
+    ``response_item``, so they are kept either way and merged in file order.
+    """
+    from core import codex_records
+
+    events: list[_Msg] = []
+    items: list[_Msg] = []
+    saw_event_turn = False
+
+    for record in codex_records.iter_records(file_path):
+        found = codex_records.message_of(record)
+        if found is not None:
+            shape, role, text = found
+            message = _Msg(role=role, text=text.strip())
+            if shape == "event":
+                saw_event_turn = True
+                events.append(message)
+            else:
+                items.append(message)
+            continue
+
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("type") not in ("function_call", "custom_tool_call"):
+            continue
+        args = payload.get("arguments")
+        if args is None:
+            args = payload.get("input") or ""
+        if isinstance(args, (dict, list)):
+            args = json.dumps(args)
+        call = _Msg(
+            role="assistant",
+            text="",
+            tool_name=str(payload.get("name") or "tool"),
+            tool_input=str(args)[:200],
+        )
+        # A tool call belongs to whichever transcript ends up being used, and
+        # only one of them is returned.
+        events.append(call)
+        items.append(call)
+
+    return events if saw_event_turn else items
 
 
 def _render_briefing(*, agent_from: str, title: str, cwd: str, msgs: list[_Msg]) -> str:
