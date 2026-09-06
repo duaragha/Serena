@@ -23,6 +23,7 @@ rather than on every page poll.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -52,6 +53,32 @@ _LOCK = threading.Lock()
 _CACHE: dict[str, object] = {"at": 0.0, "data": None}
 
 
+
+# `/usage` reports quota per model FAMILY -- every row says "Gemini Models" --
+# so it can never name the model in use. That left a hardcoded "gemini" here,
+# and the panel showed a bare name beside Claude's "Opus 5" and Codex's
+# "gpt-6-astra". Antigravity writes the current choice to its settings file,
+# which is the same place its own switcher reads.
+DEFAULT_MODEL = "gemini"
+
+
+def selected_model() -> str:
+    """The model Antigravity is set to, or a plain fallback."""
+    from core.gemini_scanner import GEMINI_ROOT
+
+    try:
+        raw = (GEMINI_ROOT / "settings.json").read_text(encoding="utf-8")
+        settings = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_MODEL
+    if not isinstance(settings, dict):
+        return DEFAULT_MODEL
+    name = settings.get("model")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return DEFAULT_MODEL
+
+
 def _binary() -> str | None:
     for name in _BINARIES:
         found = shutil.which(name)
@@ -73,7 +100,7 @@ def _epoch(value: str) -> int | None:
 def parse_usage(text: str, *, now: float | None = None) -> dict:
     """Turn `/usage` output into the service shape the panel renders."""
     moment = int(now if now is not None else time.time())
-    out: dict[str, object] = {"available": False, "source": SOURCE, "model": "gemini"}
+    out: dict[str, object] = {"available": False, "source": SOURCE, "model": selected_model()}
 
     for line in (text or "").splitlines():
         parts = [p.strip() for p in line.split("\t") if p.strip()]
@@ -117,7 +144,12 @@ def read_gemini_usage(*, now: float | None = None, force: bool = False) -> dict:
 
         binary = _binary()
         if not binary:
-            result = {"available": False, "source": SOURCE, "reason": "antigravity CLI not installed"}
+            result = {
+                "available": False,
+                "source": SOURCE,
+                "model": selected_model(),
+                "reason": "antigravity CLI not installed",
+            }
         else:
             try:
                 completed = subprocess.run(
@@ -133,6 +165,7 @@ def read_gemini_usage(*, now: float | None = None, force: bool = False) -> dict:
                 result = {
                     "available": False,
                     "source": SOURCE,
+                    "model": selected_model(),
                     "reason": f"{type(exc).__name__}: {exc}"[:200],
                 }
 

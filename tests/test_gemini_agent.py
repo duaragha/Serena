@@ -52,6 +52,10 @@ def antigravity(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
+    # GEMINI_ROOT too, or the brain/ sweep in _conversation_files reads the
+    # real ~/.gemini and the test picks up whatever conversations this machine
+    # happens to have.
+    monkeypatch.setattr(gemini_scanner, "GEMINI_ROOT", tmp_path)
     monkeypatch.setattr(gemini_scanner, "CONVERSATIONS_DIR", conversations)
     monkeypatch.setattr(gemini_scanner, "HISTORY_FILE", history)
     return db, conversation_id
@@ -287,3 +291,57 @@ def test_a_menu_row_is_a_label_not_a_sentence() -> None:
     body = page[start : page.index("\nfunction ", start + 10)]
     assert "44" in body, "no default length"
     assert "…" in body, "a silent cut reads as the real title"
+
+
+def test_the_usage_panel_names_the_model_antigravity_is_set_to(tmp_path, monkeypatch) -> None:
+    """`/usage` reports quota per model FAMILY -- every row says "Gemini
+    Models" -- so it can never name the model in use. That left a hardcoded
+    "gemini" in the payload, and the panel showed a bare name next to Claude's
+    "Opus 5" and Codex's "gpt-6-astra". Antigravity writes the current choice
+    to settings.json, which is where its own switcher reads it."""
+    from core import gemini_usage_reader
+
+    monkeypatch.setattr(gemini_scanner, "GEMINI_ROOT", tmp_path)
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"colorScheme": "dark", "model": "Gemini 3.8 Flash (High)"}),
+        encoding="utf-8",
+    )
+
+    assert gemini_usage_reader.selected_model() == "Gemini 3.8 Flash (High)"
+
+    rows = "Gemini Models\tFive Hour Limit Remaining\t98%\t2026-09-03T23:27:58Z"
+    assert parse_usage(rows)["model"] == "Gemini 3.8 Flash (High)"
+
+
+@pytest.mark.parametrize("settings", [
+    None,                      # no file at all
+    "{ not json",              # unparseable
+    "[]",                      # not an object
+    '{"colorScheme": "dark"}',  # no model key
+    '{"model": "   "}',        # blank
+])
+def test_a_missing_model_setting_falls_back_rather_than_breaking_the_panel(
+    tmp_path, monkeypatch, settings
+) -> None:
+    from core import gemini_usage_reader
+
+    monkeypatch.setattr(gemini_scanner, "GEMINI_ROOT", tmp_path)
+    if settings is not None:
+        (tmp_path / "settings.json").write_text(settings, encoding="utf-8")
+
+    assert gemini_usage_reader.selected_model() == gemini_usage_reader.DEFAULT_MODEL
+
+
+def test_the_model_is_named_even_when_the_cli_is_not_installed(tmp_path, monkeypatch) -> None:
+    """An unavailable pill still has to say which model it is unavailable for."""
+    from core import gemini_usage_reader
+
+    monkeypatch.setattr(gemini_scanner, "GEMINI_ROOT", tmp_path)
+    (tmp_path / "settings.json").write_text('{"model": "Gemini 3.8 Flash (High)"}', encoding="utf-8")
+    monkeypatch.setattr(gemini_usage_reader, "_binary", lambda: None)
+    monkeypatch.setattr(gemini_usage_reader, "_CACHE", {"at": 0.0, "data": None})
+
+    result = gemini_usage_reader.read_gemini_usage(force=True)
+
+    assert result["available"] is False
+    assert result["model"] == "Gemini 3.8 Flash (High)"
