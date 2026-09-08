@@ -50,6 +50,7 @@ class CodexBrainClient:
         environ: dict[str, str] | None = None,
         tool_registry=None,
         base_instructions: str | None = None,
+        service_tier: str | None = None,
     ) -> None:
         self.cwd = Path(cwd).expanduser().resolve()
         self.developer_instructions = developer_instructions
@@ -66,6 +67,10 @@ class CodexBrainClient:
         ).expanduser()
         self.binary = binary or os.environ.get("SERENA_CODEX_BRAIN_BIN") or shutil.which("codex")
         self.ephemeral = bool(ephemeral)
+        if service_tier not in {None, "default", "fast"}:
+            raise CodexBrainError("unsupported Codex service tier")
+        self.service_tier = service_tier
+        self.accepted_service_tier = None
         self.environ = strip_metered_auth_env(dict(os.environ if environ is None else environ))
         self.tool_registry = tool_registry
         self.base_instructions = base_instructions or BASE_INSTRUCTIONS
@@ -177,6 +182,10 @@ class CodexBrainClient:
         }
         if include_dynamic_tools and self.tool_registry is not None:
             params["dynamicTools"] = self.tool_registry.specs()
+        if self.service_tier is not None:
+            params["serviceTier"] = self.service_tier
+            params["config"]["service_tier"] = self.service_tier
+            params["config"]["features"]["fast_mode"] = self.service_tier == "fast"
         return params
 
     async def _open_thread(self) -> None:
@@ -201,6 +210,9 @@ class CodexBrainClient:
             self.thread_id = self._thread_id_from(result)
         if not self.thread_id:
             raise CodexBrainError("Codex app-server returned no thread id")
+        self.accepted_service_tier = result.get("serviceTier")
+        if self.service_tier == "fast" and self.accepted_service_tier not in {"fast", "priority"}:
+            raise CodexBrainError("Codex did not accept fast mode for this thread")
         if not self.ephemeral:
             self._write_saved_thread(self.thread_id)
 
@@ -218,10 +230,7 @@ class CodexBrainClient:
             value = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
-        if (
-            not isinstance(value, dict)
-            or value.get("tool_contract") != self.tool_contract
-        ):
+        if not isinstance(value, dict) or value.get("tool_contract") != self.tool_contract:
             return None
         return str(value.get("thread_id") or "") or None
 
@@ -277,6 +286,7 @@ class CodexBrainClient:
                     "approvalPolicy": "never",
                     "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
                     "summary": "none",
+                    **({"serviceTier": self.service_tier} if self.service_tier else {}),
                 },
             ),
             timeout=START_TIMEOUT_SECONDS,
@@ -379,10 +389,14 @@ class CodexBrainClient:
     async def steer(self, message: str) -> None:
         if not self.thread_id or not self.active_turn_id:
             raise CodexBrainError("no active turn to steer")
-        await self._request("turn/steer", {
-            "threadId": self.thread_id, "expectedTurnId": self.active_turn_id,
-            "input": [{"type": "text", "text": message}],
-        })
+        await self._request(
+            "turn/steer",
+            {
+                "threadId": self.thread_id,
+                "expectedTurnId": self.active_turn_id,
+                "input": [{"type": "text", "text": message}],
+            },
+        )
 
     async def _request(self, method: str, params: dict[str, Any]) -> Any:
         if self.process is None or self.process.returncode is not None:
@@ -417,7 +431,9 @@ class CodexBrainClient:
             try:
                 await process.stdin.drain()
             except (BrokenPipeError, ConnectionResetError) as exc:
-                raise CodexBrainError(self._process_failure("Codex app-server pipe closed")) from exc
+                raise CodexBrainError(
+                    self._process_failure("Codex app-server pipe closed")
+                ) from exc
 
     async def _read_messages(self) -> None:
         process = self.process

@@ -404,7 +404,12 @@ def test_mcp_background_start_uses_existing_astra_runner(controller, monkeypatch
             )
         )
         assert started == [(mode, True)]
-        assert result["driver"] == {"kind": "astra", "model": "gpt-6-astra", "effort": "medium"}
+        assert result["driver"] == {
+            "kind": "astra",
+            "model": "gpt-6-astra",
+            "effort": "medium",
+            "service_tier": "fast",
+        }
     finally:
         server.server_close()
 

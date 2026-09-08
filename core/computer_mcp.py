@@ -89,7 +89,7 @@ async def computer_start(
     return {
         **result,
         "driver": (
-            {"kind": "astra", "model": "gpt-6-astra", "effort": "medium"}
+            {"kind": "astra", "model": "gpt-6-astra", "effort": "medium", "service_tier": "fast"}
             if background
             else {"kind": "connected_chat"}
         ),

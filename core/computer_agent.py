@@ -201,6 +201,7 @@ class ComputerAgent:
                 base_instructions=INSTRUCTIONS,
                 model="gpt-6-astra",
                 effort="medium",
+                service_tier="fast",
                 ephemeral=True,
                 tool_registry=registry,
             )

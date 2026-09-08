@@ -13,7 +13,7 @@ import pytest
 from core.codex_brain import CodexBrainClient
 from core.codex_brain_tools import CodexBrainToolRegistry
 
-FAKE_SERVER = r'''#!/usr/bin/env python3
+FAKE_SERVER = r"""#!/usr/bin/env python3
 import json
 import os
 import sys
@@ -61,7 +61,7 @@ for line in sys.stdin:
     if method == "initialize":
         result = {"userAgent": "fake"}
     elif method in {"thread/start", "thread/resume"}:
-        result = {"thread": {"id": "thread-1"}}
+        result = {"thread": {"id": "thread-1"}, "serviceTier": message["params"].get("serviceTier")}
     elif method == "turn/start":
         result = {"turn": {"id": "turn-1", "items": [], "status": "inProgress"}}
     elif method == "turn/interrupt":
@@ -86,7 +86,7 @@ for line in sys.stdin:
             }), flush=True)
         else:
             complete_turn()
-'''
+"""
 
 
 def _fake_codex(tmp_path: Path) -> tuple[Path, Path]:
@@ -350,3 +350,32 @@ def test_installed_codex_schema_requires_url_for_image_input(tmp_path: Path) -> 
     assert set(image_variant["required"]) == {"type", "url"}
     assert "url" in image_variant["properties"]
     assert "image_url" not in image_variant["properties"]
+
+
+def test_fast_mode_preserves_model_and_reasoning_on_every_turn(tmp_path):
+    async def scenario():
+        binary, log = _fake_codex(tmp_path)
+        client = CodexBrainClient(
+            cwd=tmp_path / "agent",
+            developer_instructions="test",
+            model="gpt-6-astra",
+            effort="medium",
+            service_tier="fast",
+            binary=str(binary),
+            environ={**os.environ, "FAKE_CODEX_LOG": str(log)},
+            ephemeral=True,
+        )
+        try:
+            await client.turn("first")
+            await client.turn("second")
+            assert client.accepted_service_tier == "fast"
+        finally:
+            await client.close()
+        records = [json.loads(line) for line in log.read_text().splitlines()]
+        starts = [r["params"] for r in records if r.get("method") in {"thread/start", "turn/start"}]
+        assert len(starts) == 3
+        assert all(p["serviceTier"] == "fast" and p["model"] == "gpt-6-astra" for p in starts)
+        assert starts[0]["config"]["features"]["fast_mode"] is True
+        assert all(p["effort"] == "medium" for p in starts[1:])
+
+    asyncio.run(scenario())
