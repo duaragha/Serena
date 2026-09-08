@@ -56,6 +56,7 @@ class ComputerVisualAdapter:
                 request="inspect the requested active window once",
                 seconds=max(1, min(60, consent.expires_at - time.time())),
                 owner=consent.session_id,
+                interactive=True,
             )
             session_id = opened["session"]["id"]
             frame = self.client.call("observe", session_id=session_id)

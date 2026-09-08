@@ -19,6 +19,10 @@ class ComputerError(RuntimeError):
     pass
 
 
+class ComputerTransientError(ComputerError):
+    """The foreground changed during capture; retry with a fresh screen check."""
+
+
 @lru_cache(maxsize=1)
 def legacy_unicode_keys():
     """Old X11 clients need legacy Greek/Cyrillic keysyms, not Uxxxx aliases."""
@@ -172,11 +176,12 @@ class X11Desktop:
 
     def context(self):
         window = self.active_window()
-        return (
-            self.window_info(window)
-            if window
-            else {"id": "", "title": "", "app": "", "visible": True}
-        )
+        if not window:
+            return {"id": "", "title": "", "app": "", "visible": True}
+        try:
+            return self.window_info(window)
+        except ComputerError as exc:
+            raise ComputerTransientError("foreground window changed while inspecting it") from exc
 
     def visible_windows(self):
         with self.lock:
@@ -320,7 +325,9 @@ class X11Desktop:
                 self._run("xdotool", "key", "--delay", "12", name, timeout=2)
             else:
                 delay = "1" if chunk.isascii() else "12"
-                self._run("xdotool", "type", "--delay", delay, "--file", "-", input=chunk, timeout=2)
+                self._run(
+                    "xdotool", "type", "--delay", delay, "--file", "-", input=chunk, timeout=2
+                )
             # Give clients time to consume MappingNotify before xdotool reuses
             # its temporary Unicode keymap for the following chunk.
             if any(ord(char) > 127 for char in chunk):

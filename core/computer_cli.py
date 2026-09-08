@@ -111,19 +111,33 @@ def run(**kwargs):
 @click.option("--mode", type=click.Choice(["watch", "control"]), default="watch")
 @click.option("--target", default="active")
 @click.option("--seconds", type=click.IntRange(1, 1800), default=300)
-def begin(task, mode, target, seconds):
+@click.option(
+    "--interactive",
+    is_flag=True,
+    help="Share with the connected chat without automatic Astra updates.",
+)
+def begin(task, mode, target, seconds, interactive):
     """Start a bounded session for a connected CLI/MCP agent.
 
     An agent may execute this command directly when the user requests computer
     use in chat. The user does not need to run it manually. Use their actual
-    task and intended target; active can be the chat terminal. For continuing
-    Astra coaching use watch --detach instead.
+    task and intended target; active can be the chat terminal. Watch mode starts
+    Astra coaching by default. --interactive explicitly opens sharing only;
+    it does not produce automatic observations.
     """
     client = ComputerClient()
     client.ensure_running()
     click.echo(
         json.dumps(
-            client.call("begin", mode=mode, target=target, request=task, seconds=seconds), indent=2
+            client.call(
+                "begin",
+                mode=mode,
+                target=target,
+                request=task,
+                seconds=seconds,
+                interactive=interactive,
+            ),
+            indent=2,
         )
     )
 
@@ -182,6 +196,9 @@ def follow(client, *, after=0, session_id=None):
                         f"[{event['model_ms']} ms · screenshot {event['captured_at']:.3f}]",
                         err=True,
                     )
+                elif kind == "screen_changed":
+                    click.echo("\n[screen changed · updating guidance]", err=True)
+                    streamed = False
                 elif kind in {"error", "speech_error", "stopped"}:
                     click.echo("\n" + str(event.get("error") or event.get("reason")), err=True)
                     if kind == "error":
