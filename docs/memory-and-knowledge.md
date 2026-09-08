@@ -313,6 +313,17 @@ a markdown file that gives the agent clear instructions:
 - tiny files (might be intentionally brief)
 - cross-reference suggestions
 
+## Computer conversation continuity
+
+`core/computer_conversation.py` maintains a private SQLite record of the exact
+launching Codex/Claude chat text and completed computer coaching. The caller
+resolves identity before contacting the shared helper. Worker rotations replay
+this history, and native `UserPromptSubmit` hooks return coaching to its parent
+chat on the next question. This is conversation context, separate from curated
+memories and tasks; screen text never becomes action authority. Rollouts remain
+unchanged and screenshots are not persisted. See `docs/computer-use.md` for
+hook installation, retention and context-size limits.
+
 ## Files to Create
 1. `~/Documents/Projects/knowledge/.claude/maintenance-prompt.md` — the agent's instructions
 2. update `~/.claude/settings.json` or use `/schedule` to register the weekly trigger

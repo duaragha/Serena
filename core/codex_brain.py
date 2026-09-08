@@ -51,6 +51,7 @@ class CodexBrainClient:
         tool_registry=None,
         base_instructions: str | None = None,
         service_tier: str | None = None,
+        allow_user_hooks: bool = True,
     ) -> None:
         self.cwd = Path(cwd).expanduser().resolve()
         self.developer_instructions = developer_instructions
@@ -71,6 +72,7 @@ class CodexBrainClient:
             raise CodexBrainError("unsupported Codex service tier")
         self.service_tier = service_tier
         self.accepted_service_tier = None
+        self.allow_user_hooks = allow_user_hooks
         self.environ = strip_metered_auth_env(dict(os.environ if environ is None else environ))
         self.tool_registry = tool_registry
         self.base_instructions = base_instructions or BASE_INSTRUCTIONS
@@ -186,6 +188,8 @@ class CodexBrainClient:
             params["serviceTier"] = self.service_tier
             params["config"]["service_tier"] = self.service_tier
             params["config"]["features"]["fast_mode"] = self.service_tier == "fast"
+        if not self.allow_user_hooks:
+            params["config"]["features"]["hooks"] = False
         return params
 
     async def _open_thread(self) -> None:

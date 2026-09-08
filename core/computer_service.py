@@ -23,9 +23,10 @@ class ComputerServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 16
 
-    def __init__(self, controller, *, directory=None):
+    def __init__(self, controller, *, directory=None, conversations=None):
         self.controller = controller
         self.directory = directory or state_dir()
+        self.conversations = controller.conversations = conversations
         self.token = secrets.token_urlsafe(32)
         self.operator_token = secrets.token_urlsafe(32)
         self.indicator_seen = 0.0
@@ -46,6 +47,9 @@ class ComputerServer(ThreadingHTTPServer):
                         "When the user requests computer use in this chat, the agent may start "
                         "that scoped session directly. No manual user terminal step is required. "
                         "Use computer_start with its default background=true for live coaching. "
+                        "The worker uses Astra medium with fast processing and the exact launching "
+                        "chat's history. Prompt hooks supply completed advice on follow-up questions; "
+                        "computer_history is the fallback when hooks are unavailable. "
                         "If that tool is not loaded, execute chats computer watch --detach "
                         "for live guidance or chats computer run --detach for a GUI task. "
                         "begin --mode watch also starts the watcher unless --interactive is explicit. "
@@ -82,6 +86,15 @@ class ComputerServer(ThreadingHTTPServer):
             params = dict(params)
             speak = params.pop("speak", False)
             interactive = params.pop("interactive", False)
+            source_id, source_agent = (
+                params.pop("source_session_id", ""),
+                params.pop("source_agent", ""),
+            )
+            origin = (
+                self.conversations.resolve(source_id, source_agent) if self.conversations else None
+            )
+            if source_id and not origin:
+                raise ComputerError("conversation linking is unavailable")
             if not isinstance(interactive, bool):
                 raise ComputerError("interactive must be a boolean")
             # Old chats used begin --mode watch for coaching. Honor that intent
@@ -91,7 +104,19 @@ class ComputerServer(ThreadingHTTPServer):
                 and params.get("owner", "cli") in {"cli", "mcp"}
                 and not interactive
             )
-            c.begin(**params, operator_confirmed=True)
+            c.begin(
+                **params,
+                operator_confirmed=True,
+                source_session_id=origin["id"] if origin else "",
+                source_agent=origin["agent"] if origin else "",
+            )
+            try:
+                if self.conversations:
+                    self.conversations.bind(c.session, origin)
+                    c.session.context_message_count = len(self.conversations.messages(c.session.id))
+            except Exception:
+                c.stop("conversation context could not be loaded")
+                raise
             if start_agent:
                 from core.computer_agent import ComputerAgent
 
@@ -118,6 +143,10 @@ class ComputerServer(ThreadingHTTPServer):
             if not c.agent:
                 raise ComputerError("no running visual task to steer")
             return c.agent.steer(params["message"])
+        if method == "history":
+            if not self.conversations:
+                raise ComputerError("conversation history is unavailable")
+            return {"messages": self.conversations.messages(params["session_id"])}
         raise ComputerError("unknown computer operation")
 
     def start_indicator(self):
@@ -260,7 +289,11 @@ def serve():
             )
 
     controller = ComputerController(desktop, publish=publish)
-    server = ComputerServer(controller, directory=directory)
+    from core.computer_conversation import ConversationStore
+
+    server = ComputerServer(
+        controller, directory=directory, conversations=ConversationStore(directory)
+    )
     info = {
         "port": server.server_port,
         "pid": os.getpid(),

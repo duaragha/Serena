@@ -74,7 +74,9 @@ class Desktop:
 
 
 @pytest.fixture
-def controller(tmp_path):
+def controller(tmp_path, monkeypatch):
+    # Transport tests use a synthetic chat; never bind them to the real test runner.
+    monkeypatch.setattr("core.computer_mcp.origin_arguments", lambda *args: {})
     controller = ComputerController(
         Desktop(), authority=ActionAuthority(tmp_path / "authority.sqlite", publish_events=False)
     )
@@ -488,9 +490,18 @@ def test_modal_dialog_is_in_scope_only_when_owned(controller):
 
 
 @pytest.mark.parametrize("entry", ["legacy_begin", "mcp_default"])
-def test_watch_start_actually_produces_advice(controller, monkeypatch, entry):
+def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path, entry):
+    from test_computer_conversation import write_chat
+
     from core import computer_agent, computer_mcp
+    from core.computer_conversation import ConversationStore
     from core.computer_service import ComputerServer
+
+    store = ConversationStore(tmp_path / "state", home=tmp_path)
+    parent, path = write_chat(tmp_path, "codex")
+    store.register(parent, "codex", path)
+    source = {"source_session_id": parent, "source_agent": "codex"}
+    monkeypatch.setattr(computer_mcp, "origin_arguments", lambda *args: source)
 
     options = []
     real_agent = computer_agent.ComputerAgent
@@ -503,6 +514,7 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, entry):
 
         async def turn(self, message, **kwargs):
             assert kwargs["images"][0]["data"]
+            assert all(f"prior-message-{i}:" in message for i in range(30))
             return {"text": "open the next setup step", "tool_calls": []}
 
         async def close(self):
@@ -513,7 +525,7 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, entry):
         "ComputerAgent",
         lambda c, speak: real_agent(c, speak=speak, client_factory=Model),
     )
-    server = ComputerServer(controller)
+    server = ComputerServer(controller, conversations=store)
 
     class Client:
         def ensure_running(self):
@@ -532,6 +544,7 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, entry):
                     "mode": "watch",
                     "target": "display:left",
                     "seconds": 30,
+                    **source,
                 },
                 operator=True,
             )
@@ -544,12 +557,16 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, entry):
                 )
             )
         assert result["session"]["driver"] == "astra"
+        assert result["session"]["source_session_id"] == parent
         deadline = time.monotonic() + 3
         while not controller.session.observation and time.monotonic() < deadline:
             time.sleep(0.01)
         assert controller.session.observation == "open the next setup step"
         assert controller.session.last_inspected_at is not None
         assert options[0]["model"] == "gpt-6-astra" and options[0]["effort"] == "medium"
+        assert options[0]["service_tier"] == "fast"
+        assert options[0]["allow_user_hooks"] is False
+        assert store.coaching(parent)[0]["text"] == controller.session.observation
     finally:
         controller.stop()
         if controller.agent:

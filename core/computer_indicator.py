@@ -87,7 +87,7 @@ class ComputerIndicator:
         )
         if automated:
             waiting = {
-                "starting": "starting gpt-6 astra · medium",
+                "starting": "starting gpt-6 astra · medium · fast",
                 "thinking": "astra is reading your screen…",
                 "screen_changed": "page changed · checking the new screen…",
             }.get(session.get("observation_state"), "watching for relevant screen changes")

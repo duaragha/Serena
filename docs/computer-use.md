@@ -51,16 +51,34 @@ task. The chat calls `computer_start` directly from that request; you do not
 need to open a terminal session manually or send a second confirmation.
 
 `computer_start` defaults to live desktop coaching with `background=true`,
-using GPT-6 Astra at medium reasoning. Select a window/display explicitly when
+using GPT-6 Astra at medium reasoning with fast processing. Select a window/display explicitly when
 the user requests that narrower scope. Background sessions stream through
 `computer_events` and the desktop indicator. Do not send input from the chat
 alongside a background controller.
 
-The background watcher is a separate ephemeral model thread, not a branch of
-the launching chat. It receives the requested task, screen images and its own
-recent observations; it does not inherit the parent's transcript. The parent
-chat must read `computer_events` to include the watcher's advice in its replies.
-There is currently no automatic two-way conversation synchronization.
+The background worker is a separate ephemeral model thread linked to the exact
+launching Codex or Claude conversation. The caller resolves its full session ID;
+the helper never guesses a parent by title, directory or recency. Status shows
+`source_session_id`, `source_agent` and the worker's `context_message_count`.
+The worker receives the parent's earlier user/assistant text, new messages and
+completed coaching. After each eight-turn rotation it reloads this text history.
+Images, hidden reasoning and tool transcripts are not copied into this history.
+
+`chats computer install` (or `install-hooks`) registers a `UserPromptSubmit`
+hook for Codex and Claude, preserving existing hooks. Codex requires reviewing
+and trusting the installed command through `/hooks`; reopen an existing chat
+if its hook configuration is cached. On the next question, the hook adds all
+completed coaching from this exact chat to its native conversation context.
+Thus 30 earlier chat messages plus 10 coaching updates plus a follow-up are
+available together. Coaching persists after stop/restart. The transcript itself
+is never rewritten. `computer_history` or `chats computer history SESSION_ID`
+provides a read-only fallback. A standalone terminal without a chat identity
+has local coaching history but cannot infer which conversation to link.
+
+Worker context is passed verbatim up to a 700 KB per-request guard; exceeding it
+produces a visible error instead of silently dropping earlier messages. Native
+parent-chat compaction still applies to very long chats. Stored text remains
+available for retrieval; this is not an unlimited model context window.
 
 Use `background=false` only for deliberate interactive MCP sessions handled
 by the connected chat's own model. This shares the screen but does not start
@@ -90,7 +108,7 @@ claude mcp add --scope user serena-computer -- /path/to/serena/.venv/bin/python 
 ```
 
 The stdio server exposes `computer_start`, `computer_status`, `computer_observe`,
-`computer_act`, `computer_events`, and `computer_stop`. The local chat is an
+`computer_act`, `computer_events`, `computer_history`, and `computer_stop`. The local chat is an
 operator surface: it starts only the task its user requested, and screen text
 cannot supply authorization. A lease's task and owner are visible in status. An agent receives
 mixed text/image MCP content, including frame IDs, timestamps, and coordinates.
@@ -120,11 +138,16 @@ chats computer install
 ```
 
 The existing Codex CLI must be signed into the ChatGPT subscription. The visual
-runner uses `gpt-6-astra` with medium reasoning effort through `codex app-server`,
+runner uses `gpt-6-astra` with medium reasoning effort and `service_tier=fast`
+through `codex app-server` (the accepted server tier is `priority`),
 with shell, web search, ambient MCP servers and metered credentials disabled.
 There is no API-key requirement. Each visual thread is ephemeral and rotates
 after eight watch turns. Model choice does not silently fall back to another
-model. Missing access is returned as a visible error.
+model. Missing access or an unaccepted fast tier is returned as a visible error.
+Fast mode is scoped to computer workers and does not change the parent chat's
+model or effort. [Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
+uses 2.5 times standard Codex credits where available. It does not remove
+model inference latency.
 
 `install` enables `serena-computer.service` for the graphical login. Starting
 the helper does not capture the screen. `status` can start a detached helper
@@ -148,7 +171,10 @@ selected ordinary application are not automatically OCR-redacted.
 The helper retains at most four fresh frames, expires them after 45 seconds,
 and clears them on stop. Receipt caches contain no images. Live text events
 are bounded in memory. The control plane keeps lifecycle and latency metadata;
-it does not store screenshots, typed text, or observation text. Explicit
+it does not store screenshots or computer-input payloads. A private
+`conversations.sqlite3` stores linked chat text and completed coaching for
+follow-up questions; it is retained across sessions, with file mode 0600.
+Chat text can include details the user typed in the conversation. Explicit
 `screenshot --output ...` exports and acceptance artifacts are exceptions the
 operator requested. The subscription service receives images selected for
 model turns; local expiry is not a claim about provider-side retention.
@@ -200,10 +226,18 @@ painted. The latter included interrupting an obsolete turn. No answer for that
 obsolete page was published, and popup updates did not trigger another turn.
 These samples describe that fixture, not a guaranteed desktop latency.
 
+Fast/medium acceptance on the same isolated fixture detected three changes in
+56–58 ms. Fresh guidance took 4.71 and 7.06 seconds, the latter including a
+cancelled obsolete turn. This small sample does not establish a speedup.
+A real native Codex test created 30 chat messages and 10 stored coaching updates,
+then answered the 41st message using a random detail from the first chat message
+and another from the last coaching update, injected through the trusted native
+hook. Both Codex and Claude transcript tests also verify restart and isolation.
+
 Run reproducible local verification:
 
 ```bash
-python -m pytest -q tests/test_computer_use.py tests/test_computer_x11.py tests/test_codex_brain.py tests/test_codex_brain_tools.py tests/test_gideon_api_wiring.py tests/test_visual_context.py tests/test_action_authority.py
+python -m pytest -q tests/test_computer_use.py tests/test_computer_conversation.py tests/test_computer_x11.py tests/test_codex_brain.py tests/test_codex_brain_tools.py tests/test_gideon_api_wiring.py tests/test_visual_context.py tests/test_action_authority.py tests/test_session_identity.py
 python scripts/computer_smoke.py --output /path/to/Projects/_artifacts/computer-test --x 2900 --model --watch
 ```
 
