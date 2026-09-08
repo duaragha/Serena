@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -60,6 +61,13 @@ class FleetLearning:
                     project TEXT NOT NULL, state TEXT NOT NULL, duration REAL,
                     attempts INTEGER NOT NULL, retries INTEGER NOT NULL, lessons_used INTEGER NOT NULL,
                     test_gates INTEGER NOT NULL, created REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS fleet_lesson_reviews (
+                    id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE REFERENCES fleet_runs ON DELETE CASCADE,
+                    state TEXT NOT NULL, candidates TEXT NOT NULL, provider TEXT NOT NULL,
+                    model TEXT NOT NULL, effort TEXT NOT NULL, created REAL NOT NULL,
+                    deadline REAL NOT NULL, finished REAL, dispatches INTEGER NOT NULL DEFAULT 0,
+                    pid INTEGER, process_token TEXT, session_id TEXT, error TEXT
                 );
             """)
 
@@ -146,6 +154,9 @@ class FleetLearning:
             return {"lesson_id": lesson_id, "state": state}
 
     def retrieve(self, run: dict, attempt_id: str) -> list[dict]:
+        if os.environ.get("SERENA_FLEET_LESSONS", "on") == "off":
+            self.store.append_event(run["run_id"], "learning.reuse.disabled", {"attempt_id": attempt_id})
+            return []
         project = str(Path(run["cwd"]).resolve())
         selected = []
         with self.store._connect() as db:
@@ -237,6 +248,11 @@ class FleetLearning:
                     "SELECT state FROM fleet_attempts WHERE attempt_id = ?",
                     (row["review_attempt"],),
                 ).fetchone()
+                if reviewer is None:
+                    reviewer = db.execute(
+                        "SELECT state FROM fleet_lesson_reviews WHERE id = ? AND run_id = ?",
+                        (row["review_attempt"], run_id),
+                    ).fetchone()
                 author = db.execute(
                     "SELECT state FROM fleet_attempts WHERE attempt_id = ?",
                     (row["source_attempt"],),
@@ -303,6 +319,9 @@ class FleetLearning:
                         "SELECT * FROM fleet_learning_outcomes WHERE run_id = ?", (run_id,)
                     )
                 ],
+                "reviews": [dict(r) for r in db.execute(
+                    "SELECT * FROM fleet_lesson_reviews WHERE run_id = ?", (run_id,)
+                )],
             }
 
     def report(self, project: str) -> dict:
@@ -318,7 +337,7 @@ class FleetLearning:
             for row in rows:
                 usage = []
                 for event in db.execute(
-                    "SELECT payload_json FROM fleet_events WHERE run_id = ? AND type IN ('worker.event','peer.worker.event')",
+                    "SELECT payload_json FROM fleet_events WHERE run_id = ? AND type IN ('worker.event','peer.worker.event','learning.worker.event')",
                     (row["run_id"],),
                 ):
                     payload = json.loads(event[0])

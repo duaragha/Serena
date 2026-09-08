@@ -155,7 +155,7 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
             config["mcpServers"]["serena_peer"] = {"type": "stdio", "command": command[0], "args": command[1:]}
             allowed = (read_mcp[3] + ",") if read_mcp else ""
             allowed += ",".join("mcp__serena_peer__" + name for name in
-                                ("read_messages", "send_message", "request_help", "propose_lesson", "review_lesson"))
+                                ("read_messages", "send_message", "request_help", "resolve_request", "propose_lesson", "review_lesson"))
             read_mcp = ["--mcp-config", json.dumps(config), "--allowedTools", allowed]
         # --safe-mode disables MCP servers outright, so a leg that was actually
         # granted read access swaps it for the narrower isolation that does the
@@ -294,7 +294,9 @@ def _run_gemini(request: WorkerRequest, *, cancel_requested: CancelCallback,
         if isinstance(event, dict) and event.get("event") == "init" and stream.session_id:
             on_event("session.started", {"session_id": stream.session_id})
         if isinstance(event, dict):
+            step = event.get("step_update") or {}
             on_event("worker.event", {"type": "gemini." + str(event.get("event", "")),
+                                      "progress": step.get("state") == "DONE" and step.get("step_type") == "tool",
                                       "gemini": event})
 
     process = _stream_process(worker_command(request), request=request,
@@ -911,6 +913,11 @@ def _claude_actual_identity(
 def _event_summary(event: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("type") or "event")
     summary: dict[str, Any] = {"type": event_type}
+    # Transport chatter, token deltas and reasoning are liveness, not useful progress.
+    summary["progress"] = event_type in {"turn.completed", "result"} or (
+        event_type == "item.completed" and (event.get("item") or {}).get("type")
+        in {"command_execution", "web_search", "mcp_tool_call", "file_change", "agent_message"}
+    )
     if event_type in {"turn.completed", "result"} and isinstance(event.get("usage"), dict):
         summary["usage"] = {key: value for key, value in event["usage"].items()
                             if key in {"input_tokens", "output_tokens", "cached_input_tokens",
@@ -940,6 +947,10 @@ def _event_summary(event: dict[str, Any]) -> dict[str, Any]:
             summary["text"] = str(item.get("text") or "")[:2_000]
     message = event.get("message")
     if isinstance(message, dict):
+        if event_type in {"assistant", "user"}:
+            content = message.get("content")
+            summary["progress"] = any(isinstance(block, dict) and block.get("type") in {"tool_result", "text"}
+                                      for block in (content if isinstance(content, list) else []))
         model = _reported_model(message.get("model"))
         if model:
             summary["model"] = model

@@ -33,7 +33,7 @@ async def smoke(binary: str, script: str | None = None) -> None:
             tools = await session.list_tools()
             names = {tool.name for tool in tools.tools}
             assert names == {
-                "read_messages", "send_message", "request_help", "propose_lesson", "review_lesson"
+                "read_messages", "send_message", "request_help", "resolve_request", "propose_lesson", "review_lesson"
             }, names
             response = await session.call_tool("read_messages", {})
             assert response.isError, "an invalid capability must be refused"

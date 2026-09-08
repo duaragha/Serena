@@ -376,6 +376,10 @@ class FleetStore:
                 session_ids = sorted(set(session_ids) | {str(row[0]) for row in connection.execute(
                     "SELECT session_id FROM fleet_peer_help WHERE run_id = ? AND session_id IS NOT NULL AND session_id != ''",
                     (clean_id,))})
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE name = 'fleet_lesson_reviews'").fetchone():
+                session_ids = sorted(set(session_ids) | {str(row[0]) for row in connection.execute(
+                    "SELECT session_id FROM fleet_lesson_reviews WHERE run_id = ? AND session_id IS NOT NULL AND session_id != ''",
+                    (clean_id,))})
             connection.execute("DELETE FROM fleet_runs WHERE run_id = ?", (clean_id,))
             return {
                 "run_id": clean_id,
@@ -2439,8 +2443,19 @@ class FleetStore:
             ).fetchone()
             return int(row["count"] or 0)
 
-    def recover_stale_runs(self) -> list[str]:
+    def recover_stale_runs(self, *, dead_threads: set[str] | None = None) -> list[str]:
+        """Recover dead owners, including positively joined local supervisor threads.
+
+        A live PID alone cannot prove that its per-run thread still exists. Only
+        the resident service's own thread registry may supply dead_threads.
+        Never infer an orphan from age or a quiet provider stream.
+        """
         recovered: list[str] = []
+        dead_threads = dead_threads or set()
+        def owner_alive(row):
+            return _process_alive(row["owner_pid"], row["owner_token"]) and not (
+                row["owner_pid"] == os.getpid() and str(row["run_id"]) in dead_threads
+            )
         now = time.time()
         candidates: list[dict[str, Any]] = []
         with self._connect() as connection:
@@ -2448,7 +2463,7 @@ class FleetStore:
                 "SELECT * FROM fleet_runs WHERE state IN ('running', 'stopping')"
             ).fetchall()
             for row in rows:
-                if _process_alive(row["owner_pid"], row["owner_token"]):
+                if owner_alive(row):
                     continue
                 run_id = str(row["run_id"])
                 attempts = connection.execute(
@@ -2457,14 +2472,19 @@ class FleetStore:
                     "WHERE l.run_id = ? AND a.state = 'running' AND a.pid IS NOT NULL",
                     (run_id,),
                 ).fetchall()
+                processes = [(a["pid"], a["process_token"]) for a in attempts]
+                for table in ("fleet_peer_help", "fleet_lesson_reviews"):
+                    if connection.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (table,)).fetchone():
+                        processes.extend((a[0], a[1]) for a in connection.execute(
+                            f"SELECT pid, process_token FROM {table} WHERE run_id = ? AND state = 'running'",
+                            (run_id,),
+                        ))
                 candidates.append(
                     {
                         "run_id": run_id,
                         "owner_pid": row["owner_pid"],
                         "owner_token": row["owner_token"],
-                        "attempts": [
-                            (attempt["pid"], attempt["process_token"]) for attempt in attempts
-                        ],
+                        "attempts": processes,
                     }
                 )
         for candidate in candidates:
@@ -2479,7 +2499,7 @@ class FleetStore:
                 row = self._require_run(connection, run_id)
                 if row["state"] not in {"running", "stopping"}:
                     continue
-                if _process_alive(row["owner_pid"], row["owner_token"]):
+                if owner_alive(row):
                     continue
                 if (
                     row["owner_pid"] != candidate["owner_pid"]
@@ -2502,12 +2522,29 @@ class FleetStore:
                         (now, run_id),
                     )
                 else:
-                    next_state = "queued"
+                    used = connection.execute(
+                        "SELECT COUNT(*) FROM fleet_events WHERE run_id = ? AND type = 'run.recovered'",
+                        (run_id,),
+                    ).fetchone()[0]
+                    next_state = "queued" if used < 2 else "failed"
                     connection.execute(
-                        "UPDATE fleet_legs SET state = 'queued', updated_at = ? "
+                        "UPDATE fleet_legs SET state = ?, updated_at = ? "
                         "WHERE run_id = ? AND state = 'running'",
-                        (now, run_id),
+                        ("queued" if next_state == "queued" else "failed", now, run_id),
                     )
+                if connection.execute("SELECT 1 FROM sqlite_master WHERE name = 'fleet_worker_leases'").fetchone():
+                    connection.execute(
+                        "UPDATE fleet_worker_leases SET state = 'expired', recovery_reason = 'orphan fenced', "
+                        "released_at = ?, updated_at = ? WHERE run_id = ? AND state IN ('active','stalled')",
+                        (now, now, run_id),
+                    )
+                if connection.execute("SELECT 1 FROM sqlite_master WHERE name = 'fleet_peer_tokens'").fetchone():
+                    connection.execute("DELETE FROM fleet_peer_tokens WHERE run_id = ?", (run_id,))
+                if next_state in {"failed", "cancelled"}:
+                    for table in ("fleet_peer_help", "fleet_lesson_reviews"):
+                        if connection.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (table,)).fetchone():
+                            connection.execute(f"UPDATE {table} SET state = 'cancelled', finished = ?, error = 'orphaned run ended' "
+                                               "WHERE run_id = ? AND state IN ('queued','running')", (now, run_id))
                 connection.execute(
                     "UPDATE fleet_attempts SET state = 'interrupted', completed_at = ?, "
                     "pid = NULL, process_token = NULL, updated_at = ? WHERE state = 'running' "
@@ -2516,16 +2553,18 @@ class FleetStore:
                 )
                 connection.execute(
                     "UPDATE fleet_runs SET state = ?, owner_pid = NULL, owner_token = NULL, "
-                    "completed_at = CASE WHEN ? = 'cancelled' THEN ? ELSE NULL END, "
+                    "completed_at = CASE WHEN ? IN ('cancelled','failed') THEN ? ELSE NULL END, "
                     "updated_at = ? WHERE run_id = ?",
                     (next_state, next_state, now, now, run_id),
                 )
                 self._insert_event(
                     connection,
                     run_id=run_id,
-                    event_type="run.recovered",
-                    payload={"state": next_state},
+                    event_type="run.recovery_exhausted" if next_state == "failed" else "run.recovered",
+                    payload={"state": next_state, "reason": "supervisor owner exited", "max_recoveries": 2},
                 )
+                if next_state == "failed":
+                    connection.execute("UPDATE fleet_runs SET error = 'automatic orphan recovery budget exhausted' WHERE run_id = ?", (run_id,))
                 recovered.append(run_id)
         return recovered
 

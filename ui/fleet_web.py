@@ -1039,9 +1039,16 @@ function renderCollaboration(run, open = false) {
     (job.error ? ' · ' + text(job.error) : '')));
   for (const message of messages.slice(-24)) panel.append(el('div', 'isolation-row',
     text(message.sender) + ' → ' + text(message.recipient) + ' · ' + text(message.kind) + ' · ' +
-    (message.acknowledged ? 'acknowledged' : message.delivered ? 'delivered' : 'queued') + '\n' + text(message.body)));
+    (message.acknowledged ? 'acknowledged' : message.delivered ? 'delivered' : 'queued') +
+    (message.outcome ? ' · outcome: ' + text(message.outcome) + ' · owner: ' + text(message.recipient) +
+      ' · deadline: ' + new Date(message.deadline * 1000).toLocaleTimeString() : '') +
+    (message.outcome_reason ? '\n' + text(message.outcome_reason) : '') + '\n' + text(message.body)));
+  for (const review of learning.reviews || []) panel.append(el('div', 'isolation-row',
+    'post-Fix lesson review · ' + text(review.state) + ' · ' + text(review.model) + ' ' + text(review.effort) +
+    ' · dispatches ' + text(review.dispatches) + '/2' + (review.error ? ' · ' + text(review.error) : '')));
   for (const lesson of learning.candidates || []) panel.append(el('div', 'isolation-row',
-    'lesson · ' + text(lesson.state) + ' · ' + text(lesson.summary)));
+    'lesson · ' + text(lesson.state) + ' · ' + text(lesson.summary) +
+    (lesson.review_reason ? '\nreview: ' + text(lesson.review_reason) : '')));
   for (const outcome of learning.outcomes || []) panel.append(el('div', 'isolation-row',
     'outcome · ' + text(outcome.state) + ' · ' + Math.round(outcome.duration || 0) + 's · ' +
     text(outcome.retries) + ' retries · ' + text(outcome.test_gates) + ' passing integration gates'));
@@ -1076,14 +1083,44 @@ function renderSupervision(run, open = false) {
       [
         text(worker.leg_id || worker.attempt_id || 'worker'),
         text(worker.state || 'unknown'),
+        'progress: ' + text(worker.progress_stage || 'unknown'),
         Number.isFinite(heartbeat) ? 'heartbeat ' + Math.round(heartbeat) + 's ago' : '',
         Number.isFinite(progress) ? 'progress ' + Math.round(progress) + 's ago' : '',
         'stall retries ' + retries,
+        worker.turn_deadline ? 'turn budget left ' + Math.round(worker.turn_remaining_seconds) + 's' : '',
         worker.lease_expired ? 'lease expired' : '',
         text(worker.recovery_reason || ''),
       ].filter(Boolean).join(' · '),
     ));
   }
+  return panel;
+}
+
+function renderAutonomy(run, open = true) {
+  if (!run.autonomy) return null;
+  const panel = el('details', 'work-plan');
+  panel.dataset.panel = 'autonomy';
+  panel.open = open;
+  const messages = (run.collaboration || {}).messages || [];
+  const lessons = (run.learning || {}).candidates || [];
+  const reviews = (run.learning || {}).reviews || [];
+  const escalated = messages.filter(m => m.outcome === 'escalated').length;
+  panel.append(el('summary', '', 'Autonomy · ' + run.autonomy.recoveries + '/' + run.autonomy.max_recoveries +
+    ' recoveries · ' + escalated + ' escalated requests · ' + lessons.filter(l => l.state === 'verified').length + ' verified lessons'));
+  panel.append(el('div', 'isolation-row', 'requests: ' + messages.filter(m => m.outcome === 'pending').length + ' pending → ' +
+    messages.filter(m => m.outcome === 'answered').length + ' answered → ' + messages.filter(m => m.outcome === 'resolved').length +
+    ' resolved · answered is not resolved'));
+  panel.append(el('div', 'isolation-row', 'learning: ' + lessons.filter(l => l.state === 'candidate').length + ' candidates · ' +
+    reviews.filter(r => r.state === 'running').length + ' independent reviews running · ' +
+    lessons.filter(l => l.state === 'rejected').length + ' rejected'));
+  for (const event of run.autonomy.timeline || []) {
+    const row = el('details', 'isolation-row');
+    row.append(el('summary', '', new Date(event.created_at * 1000).toLocaleTimeString() + ' · ' + text(event.type)));
+    row.append(el('pre', '', JSON.stringify(event.payload, null, 2)));
+    panel.append(row);
+  }
+  if (!(run.autonomy.timeline || []).length) panel.append(el('div', 'isolation-row', 'No autonomy transitions recorded yet.'));
+  panel.append(el('div', 'isolation-row', text(run.autonomy.scope)));
   return panel;
 }
 
@@ -1163,6 +1200,8 @@ function renderDetail() {
   if (supervision) root.append(supervision);
   const collaboration = renderCollaboration(run, panelState.get('collaboration') || false);
   if (collaboration) root.append(collaboration);
+  const autonomy = renderAutonomy(run, panelState.has('autonomy') ? panelState.get('autonomy') : true);
+  if (autonomy) root.append(autonomy);
   const phases = el('div', 'phases');
   const rows = Array.isArray(run.phases) ? run.phases : [];
   if (!rows.length) phases.append(el('div', 'empty', 'phase plan not available yet'));

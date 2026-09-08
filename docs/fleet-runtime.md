@@ -52,7 +52,27 @@ dispatched and tells the operator to reclaim disposable cache or inactive-worktr
 Concurrent worker startup can briefly collide on SQLite's write lock. Fleet retries that narrow
 `database is locked` / `database table is locked` class with bounded backoff around attempt and
 lease setup. Other SQLite failures are never retried or hidden. A run already interrupted by ENOSPC
-stays on its original run id and resumes only through `fleet_retry` after space is restored.
+stays on its original run id. Proven orphaned owners are recovered boundedly after storage returns;
+an already terminal failed run still requires explicit `fleet_retry`.
+
+## Continuous orphan recovery and progress budgets
+
+The resident service reconciles dead process owners every 30 seconds, not only on boot. Its own
+thread registry also identifies a per-run supervisor thread that exited while the service PID stayed
+alive. Quiet output, age, or a missing heartbeat alone never proves that thread dead. Before requeue,
+Fleet stops only birth-token-verified worker/helper/reviewer processes, fences active leases and peer
+capabilities, and preserves completed legs and attempts. Unverifiable ownership blocks recovery;
+cancellation stays cancelled. Two automatic orphan recoveries per run are allowed, then the run
+fails explicitly instead of looping. Existing worktree refresh/integration gates remain mandatory.
+
+Useful progress is separate from the monitor's five-second heartbeat: completed native tools/file
+changes and produced answer text count; startup/settings, reasoning and token-stream chatter do not.
+Default no-progress budget is 20 minutes, with warning at one-third and suspect at two-thirds.
+Actual progress clears the warning with a `worker.progress.resumed` receipt. At the limit Fleet
+stops the worker and uses the existing bounded stall retry (two retries by default). A separate
+90-minute turn budget cannot be reset by output. `SERENA_FLEET_STALL_SECONDS`,
+`SERENA_FLEET_TURN_SECONDS`, and `SERENA_FLEET_MAX_STALL_RETRIES` configure newly acquired leases.
+These defaults are operational bounds, not claims about optimal model thinking time.
 
 ## Terminal ownership
 
@@ -239,6 +259,7 @@ for OS isolation against a deliberately malicious process running under the same
 | `read_messages(acknowledge)` | Exact roster keys, unacknowledged inbox, own help status, lesson candidates. Delivery and acknowledgement are separate. |
 | `send_message(recipient, body, dedupe, reply_to)` | Targeted same-run advice; stable dedupe keys and parent-linked replies. No broadcasts or cross-run addressing. |
 | `request_help(recipient, body, dedupe)` | Durable bounded diagnostic request, serviced even after the peer's normal turn ends. |
+| `resolve_request(message_id, resolved, reason)` | Original requesting logical worker confirms the observed solution or explicitly escalates. |
 | `propose_lesson(summary, evidence_paths)` | Candidate project fact backed by files in the integrated checkout. No immediate reuse. |
 | `review_lesson(lesson_id, approve, reason)` | Independent Review worker must inspect unchanged evidence and explain endorsement/rejection. |
 
@@ -246,6 +267,15 @@ Messages arrive through tools at safe checkpoints, not instant interrupt injecti
 instructed to read at turn start, before completion, and when blocked; they can do independent work
 while waiting. A message is not proof merely because another model wrote it. Reviews retain their
 independent evidence/completion gate.
+
+Actionable requests persist their owner (recipient), deadline and outcome separately from delivery,
+acknowledgement and consultation state: `pending -> answered -> resolved` or `escalated`. A reply
+does not resolve a blocker. Unconfirmed requests escalate on deadline, helper failure, or run end.
+Only the requester can explicitly resolve; automatic failure-help may also resolve after its
+same-owner retry passes supervisor gates. Later proven resolution can close an escalation, but a
+late reply alone cannot. Informational mail has no fake resolution obligation and retains honest
+delivered/acknowledged state. Escalation is a durable visible status, not a new permission or an
+unbounded extra worker loop.
 
 The service reserves **one additional read-only consultation slot per run** beyond the main worker
 limit. This avoids deadlock when every normal slot is occupied by a worker waiting for advice.
@@ -294,6 +324,16 @@ receipts, a completed author attempt, a completed independent reviewer attempt, 
 evidence. Candidate or merely endorsed prose is never reused. A provider's zero exit alone does not
 promote anything. Research-only runs without integration evidence cannot promote operational code
 lessons under this first conservative gate.
+
+After all Code/Review/Fix legs finish, coding runs with remaining candidates get one independent,
+fresh-session read-only lesson review batch using the frozen Review model/effort (including
+single-worker runs). The checkout lock is retained until that batch ends. The optional batch has
+a 300-second deadline, at most one crash restart within that original deadline, and its own durable
+identity/session/receipt. It must return an exact per-candidate decision envelope; changed evidence,
+wrong model identity, malformed answers, cancellation or unavailable capacity cannot approve a lesson.
+Review failure leaves candidates unverified and does not fail otherwise accepted code. Successful
+independent endorsement STILL needs successful terminal run, completed author, real integration
+test receipts and matching fingerprints before promotion. Model weights and routing remain unchanged.
 
 Later turns receive at most three verified lessons from the same canonical project, only when the
 task names an evidence file and every fingerprint still matches. Lessons expire after 30 days;
@@ -600,6 +640,39 @@ scheduler ticks. The resident automation service registers only the reviewed act
 quiet hours, limits, deduplication, retry, and the voice-to-Telegram fallback share one decision.
 
 ## Deployment and checks
+
+### Visual resilience lab
+
+From the repository root, run:
+
+```bash
+.venv/bin/python scripts/fleet-resilience-lab.py --output /absolute/path/to/a/new/report-directory
+```
+
+The report directory must be new: previous evidence is never overwritten. `index.html` is an
+offline, expandable test report; `results.json`, `results.xml`, `test-output.txt` and `traces/`
+retain test outcomes and committed SQLite events. Tests cover dead local supervisor threads,
+recovery bounds, stale leases, unchanged completed work, cancelled runs, progress warnings and hard
+budgets, requester-only resolution, unavailable peers, late replies, post-Fix review/promotion,
+quota recovery and difficult retries. Provider outputs, clocks and capacity are scripted; the real
+Fleet control code, temporary SQLite stores, and selected real subprocess/git/test gates are used.
+The lab does NOT spend subscription usage, fill the disk, stop services or inject faults into live runs.
+
+In the Fleet tab, expand **Autonomy** for the latest 80 relevant durable events, **Supervision** for
+heartbeat versus progress stage and turn budget, and **Peer collaboration** for request outcomes,
+review jobs, lesson verdicts and reuse. All use real status projections; no synthetic success badges.
+
+For production acceptance, use a disposable repository and a dedicated test service/database (never
+the work Fleet service): run two workers, require A to ask B for help and confirm the outcome, and
+require a Fix-time lesson on an unchanged evidence file. Close the originating chat and verify final
+tests, request resolution, post-Fix independent review and promotion from durable records. Then use
+an equivalent held-out task naming that file to verify reuse. Separately stop only the test service
+or its recorded test-worker process, restart it and verify completed attempt IDs/hashes are unchanged.
+Use the deterministic lab for quota and hard timeout injection rather than exhausting real accounts.
+For matched trials set `SERENA_FLEET_LESSONS=off` only on the dedicated control-arm service:
+it disables retrieval with a receipt, without disabling peer messaging or candidate review.
+Repeat matched lessons-on/off trials before claiming faster or better results; green recovery tests
+alone cannot establish learning effectiveness or real-model reliability.
 
 After updating a running installation, restart the Fleet user service and reopen the Serena desktop
 so the resident Python process and renderer both load the new code.

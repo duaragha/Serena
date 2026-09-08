@@ -496,6 +496,7 @@ def test_real_stdio_peer_tools_from_isolated_working_directory(team, entrypoint)
                 "read_messages",
                 "send_message",
                 "request_help",
+                "resolve_request",
                 "propose_lesson",
                 "review_lesson",
             }

@@ -52,6 +52,7 @@ class PeerCoordinator:
 
     def pump(self) -> bool:
         """Advance durable jobs and retries; return whether help is outstanding."""
+        self.peers.reconcile_outcomes(self.run_id)
         if self.future and self.future.done():
             self.future.result()
             self.future = None

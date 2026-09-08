@@ -55,6 +55,13 @@ class PeerStore:
                 db.execute(
                     "ALTER TABLE fleet_peer_help ADD COLUMN dispatches INTEGER NOT NULL DEFAULT 0"
                 )
+            columns = {r[1] for r in db.execute("PRAGMA table_info(fleet_peer_messages)")}
+            for name, definition in (("outcome", "TEXT"), ("deadline", "REAL"),
+                                     ("resolved_at", "REAL"), ("outcome_reason", "TEXT")):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE fleet_peer_messages ADD COLUMN {name} {definition}")
+            db.execute("UPDATE fleet_peer_messages SET outcome = 'pending', deadline = created + ? "
+                       "WHERE kind IN ('help','question') AND outcome IS NULL", (HELP_SECONDS,))
 
     def issue(self, run_id: str, leg: dict, attempt_id: str, *, help_id: str = "") -> str:
         token = "fleetcap_" + secrets.token_urlsafe(32)
@@ -193,6 +200,9 @@ class PeerStore:
             event_type="peer.message.sent",
             payload={"id": message_id, "sender": sender, "recipient": recipient, "kind": kind},
         )
+        if kind in {"help", "question"}:
+            db.execute("UPDATE fleet_peer_messages SET outcome = 'pending', deadline = ? WHERE id = ?",
+                       (time.time() + HELP_SECONDS, message_id))
         return dict(
             db.execute("SELECT * FROM fleet_peer_messages WHERE id = ?", (message_id,)).fetchone()
         )
@@ -222,7 +232,53 @@ class PeerStore:
                     "UPDATE fleet_peer_help SET reply_id = ? WHERE message_id = ? AND reply_id IS NULL",
                     (message["id"], reply_to),
                 )
+                db.execute("UPDATE fleet_peer_messages SET outcome = 'answered' WHERE id = ? AND outcome = 'pending'",
+                           (reply_to,))
+            if kind == "question":
+                self._help(db, identity, message, auto_retry=False)
             return message
+
+    def resolve_request(self, token: str, message_id: str, *, resolved: bool, reason: str) -> dict:
+        """Only the requesting logical worker can confirm a useful outcome."""
+        if not 10 <= len(reason.strip()) <= 1000:
+            raise ValueError("explain the observed outcome in 10–1000 characters")
+        with self.store._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            who = self._identity(db, token)
+            row = db.execute("SELECT * FROM fleet_peer_messages WHERE id = ? AND run_id = ?",
+                             (message_id, who["run_id"])).fetchone()
+            if who["help_id"] or not row or row["sender"] != who["worker_key"] or not row["outcome"]:
+                raise PermissionError("only the original requester can resolve an actionable request")
+            if row["outcome"] == "resolved" or (row["outcome"] == "escalated" and not resolved):
+                return dict(row)
+            self._outcome(db, dict(row), "resolved" if resolved else "escalated", reason)
+            return dict(db.execute("SELECT * FROM fleet_peer_messages WHERE id = ?", (message_id,)).fetchone())
+
+    def _outcome(self, db, row: dict, state: str, reason: str) -> None:
+        db.execute("UPDATE fleet_peer_messages SET outcome = ?, outcome_reason = ?, resolved_at = ? WHERE id = ?",
+                   (state, redact_text(reason)[0][:1000], time.time(), row["id"]))
+        self.store._insert_event(db, run_id=row["run_id"], event_type="peer.request." + state,
+                                payload={"message_id": row["id"], "owner": row["recipient"], "reason": reason})
+
+    def reconcile_outcomes(self, run_id: str, *, terminal: bool = False, now: float | None = None) -> None:
+        at = time.time() if now is None else now
+        with self.store._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for row in db.execute("SELECT m.*, h.state AS help_state, h.auto_retry, h.retry_applied, h.owner_leg, "
+                                  "h.owner_attempt FROM fleet_peer_messages m LEFT JOIN fleet_peer_help h ON h.message_id = m.id "
+                                  "WHERE m.run_id = ? AND m.outcome IN ('pending','answered','escalated')", (run_id,)).fetchall():
+                # A successful, supervisor-gated repair can prove an automatic request resolved.
+                repaired = False
+                if row["auto_retry"] and row["retry_applied"]:
+                    repaired = db.execute("SELECT 1 FROM fleet_legs l JOIN fleet_attempts a ON a.leg_id = l.leg_id "
+                                          "WHERE l.leg_id = ? AND l.state = 'completed' AND a.state = 'completed' "
+                                          "AND a.attempt_number = l.current_attempt AND a.attempt_id != ?",
+                                          (row["owner_leg"], row["owner_attempt"])).fetchone()
+                if repaired:
+                    self._outcome(db, dict(row), "resolved", "same-owner repair passed the supervisor completion gates")
+                elif row["outcome"] != "escalated" and (terminal or (row["deadline"] or 0) <= at or row["help_state"] in {"failed", "expired", "cancelled"}):
+                    self._outcome(db, dict(row), "escalated", "run ended without confirmed resolution" if terminal
+                                  else "request deadline or consultation failure; no confirmed resolution")
 
     def inbox(self, token: str, *, acknowledge: list[str] | None = None) -> dict:
         with self.store._connect() as db:
@@ -251,10 +307,14 @@ class PeerStore:
                 "help_requests": [
                     dict(row)
                     for row in db.execute(
-                        "SELECT id,state,error,deadline,reply_id FROM fleet_peer_help WHERE run_id = ? AND owner_leg = ? ORDER BY created",
+                        "SELECT id,message_id,state,error,deadline,reply_id FROM fleet_peer_help WHERE run_id = ? AND owner_leg = ? ORDER BY created",
                         (who["run_id"], who["leg_id"]),
                     )
                 ],
+                "requests": [dict(r) for r in db.execute(
+                    "SELECT * FROM fleet_peer_messages WHERE run_id = ? AND sender = ? AND outcome IS NOT NULL ORDER BY created",
+                    (who["run_id"], who["worker_key"]),
+                )],
             }
 
     def request_help(self, token: str, recipient: str, body: str, *, dedupe: str) -> dict:
@@ -368,7 +428,9 @@ class PeerStore:
         recent = [m for m in state["messages"] if m["recipient"] == worker_key(leg)][-6:]
         return (
             "\nFleet peer tools (serena_peer): read_messages at start, before completion, and when blocked. "
-            "Use send_message for concise findings/questions; request_help for a concrete blocker. "
+            "Use send_message for informational findings; request_help for questions or blockers requiring an answer. "
+            "A reply or acknowledgement is not resolution: call resolve_request(message_id, resolved, reason) "
+            "after checking whether the advice solved your request; unresolved requests escalate at their deadline. "
             "Use exact roster worker_key values. A service-owned read-only consultation can reply even "
             "when the peer's ordinary turn has finished. Check read_messages with bounded waits; help expires "
             "after 300 seconds. Continue independent work while waiting. Acknowledge only after processing. "
