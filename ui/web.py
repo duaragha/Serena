@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+import atexit
 import signal
 import subprocess
 import shutil
@@ -6421,7 +6422,7 @@ function _installClipboardBridge(term) {
  * Clicking the other half of the pair you are already viewing is not a switch
  * away from the split, so that case leaves the layout alone.
  */
-// Every agent a chat can be handed to, in the order the quadrants read.
+// Every agent a chat can be handed to, in the order the panes read.
 const _HANDOFF_AGENTS = ['claude', 'codex', 'gemini'];
 
 function _agentLabel(agent) {
@@ -6602,7 +6603,7 @@ function _hideAllTermPanes() {
 // Quadrant order, so a square always reads the same way regardless of which
 // pane you clicked to open it: claude top-left, codex top-right, gemini
 // bottom-left, anything else bottom-right.
-const _AGENT_QUAD_ORDER = ['claude', 'codex', 'gemini'];
+const _AGENT_PANE_ORDER = ['claude', 'codex', 'gemini'];
 
 function _agentOf(sid) {
   const local = _findClientSession(sid);
@@ -6611,7 +6612,7 @@ function _agentOf(sid) {
 }
 
 /**
- * Every live member of this chat's linked group, in quadrant order.
+ * Every live member of this chat's linked group, in pane order.
  *
  * The pair case used to be the only case, so the split asked for "the sibling"
  * and got exactly one. A group can hold three now, and asking for one of three
@@ -6636,9 +6637,9 @@ function _linkedGroupSids(sid, { liveOnly = true } = {}) {
     id && all.indexOf(id) === i && (!liveOnly || id === sid || termSessions.has(id)));
 
   return live.sort((a, b) => {
-    const ai = _AGENT_QUAD_ORDER.indexOf(_agentOf(a));
-    const bi = _AGENT_QUAD_ORDER.indexOf(_agentOf(b));
-    return (ai < 0 ? _AGENT_QUAD_ORDER.length : ai) - (bi < 0 ? _AGENT_QUAD_ORDER.length : bi);
+    const ai = _AGENT_PANE_ORDER.indexOf(_agentOf(a));
+    const bi = _AGENT_PANE_ORDER.indexOf(_agentOf(b));
+    return (ai < 0 ? _AGENT_PANE_ORDER.length : ai) - (bi < 0 ? _AGENT_PANE_ORDER.length : bi);
   });
 }
 
@@ -6766,14 +6767,22 @@ function _fitVisibleWebTerms() {
   return true;
 }
 
-// A linked thread of three or more runs as a square instead of slivers.
-// Three panes side by side leaves each about a third of the width, which is
-// not enough columns for an agent TUI to lay out its own input box, so past
-// two the panes stack into quadrants: claude, codex, gemini, and one spare.
-const _QUAD_MIN_PANES = 3;
+// A linked thread of three or more runs as columns, all in one row.
+//
+// This was a 2x2 square, on the reasoning that a third of the width is not
+// enough columns for an agent TUI to lay out its input box. On a real window
+// that reasoning does not survive contact: quarters halve the HEIGHT too, and
+// a 2x2 of agent panes is harder to read than three tall columns -- you lose
+// scrollback in every cell, and with three chats the fourth quadrant sits
+// empty. Width is the cheaper axis to spend here.
+const _COLUMN_MIN_PANES = 3;
 
-function _isQuadSplit() {
-  return Boolean(_gtkSplitSids && _gtkSplitSids.length >= _QUAD_MIN_PANES);
+// Outer margin and the gap between neighbours, matching the two-pane layout.
+const _SPLIT_EDGE_PX = 8;
+const _SPLIT_GAP_PX = 6;
+
+function _isColumnSplit() {
+  return Boolean(_gtkSplitSids && _gtkSplitSids.length >= _COLUMN_MIN_PANES);
 }
 
 function _clearPaneGeometry(mount) {
@@ -6786,20 +6795,25 @@ function _clearPaneGeometry(mount) {
 function _applyWebSplitGeometry(container) {
   if (!_gtkSplitActive || !_gtkSplitSids) return;
 
-  if (_isQuadSplit()) {
-    // Fixed halves rather than a draggable ratio: the divider only ever knew
-    // about columns, and a square whose quadrants drift is worse than one that
-    // stays put. The gap matches the 6px the two-pane layout leaves.
-    const cells = [
-      { left: '8px',            right: 'calc(50% + 3px)', top: '6px',              bottom: 'calc(50% + 3px)' },
-      { left: 'calc(50% + 3px)', right: '8px',            top: '6px',              bottom: 'calc(50% + 3px)' },
-      { left: '8px',            right: 'calc(50% + 3px)', top: 'calc(50% + 3px)',  bottom: '2px' },
-      { left: 'calc(50% + 3px)', right: '8px',            top: 'calc(50% + 3px)',  bottom: '2px' },
-    ];
-    _gtkSplitSids.slice(0, 4).forEach((sid, index) => {
+  if (_isColumnSplit()) {
+    // Equal columns, full height, fixed rather than draggable: the divider
+    // only ever knew how to split two panes, and columns that drift out of
+    // step are worse than columns that stay put.
+    const count = _gtkSplitSids.length;
+    const half = _SPLIT_GAP_PX / 2;
+    _gtkSplitSids.forEach((sid, index) => {
       const runtime = termSessions.get(sid);
       if (!runtime || !runtime.mount) return;
-      Object.assign(runtime.mount.style, cells[index]);
+      const leftEdge = (index / count) * 100;
+      const rightEdge = ((count - index - 1) / count) * 100;
+      Object.assign(runtime.mount.style, {
+        left: 'calc(' + leftEdge.toFixed(4) + '% + '
+          + (index === 0 ? _SPLIT_EDGE_PX : half) + 'px)',
+        right: 'calc(' + rightEdge.toFixed(4) + '% + '
+          + (index === count - 1 ? _SPLIT_EDGE_PX : half) + 'px)',
+        top: '6px',
+        bottom: '2px',
+      });
     });
     return;
   }
@@ -6826,9 +6840,9 @@ function _applyWebSplitGeometry(container) {
 
 function _layoutWebSplitDivider(container, split) {
   let divider = container.querySelector('.term-split-divider');
-  if (!split || _isQuadSplit()) {
+  if (!split || _isColumnSplit()) {
     if (divider) divider.classList.add('hidden');
-    if (_isQuadSplit()) _applyWebSplitGeometry(container);
+    if (_isColumnSplit()) _applyWebSplitGeometry(container);
     return;
   }
   if (!divider) {
@@ -13574,5 +13588,30 @@ def run_web(host="0.0.0.0", port=8080, open_browser=False):
                     webbrowser.open(url)
         except Exception:
             pass
+
+    # An idle pane is frozen with SIGSTOP and thawed with SIGCONT, and only
+    # this process knows which panes are frozen. Leaving at any point other
+    # than through here strands them: stopped, orphaned to init, waiting on a
+    # SIGCONT whose only sender just exited. Reopening that chat then starts a
+    # second `codex resume` against a rollout the first one still holds.
+    #
+    # So: clear the previous run's casualties on the way in, and on the way
+    # out thaw everything before terminating it. Restarting the backend is the
+    # routine repair for everything else here, which is exactly why it must
+    # not be the thing creating this.
+    for _stranded in pty_terminal.sweep_stranded_agents():
+        print(f"[serena] reaped stranded agent process {_stranded}", file=sys.stderr)
+
+    atexit.register(pty_terminal.shutdown_all)
+
+    def _leave(signum, _frame):
+        pty_terminal.shutdown_all()
+        raise SystemExit(128 + signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(_sig, _leave)
+        except (OSError, ValueError):
+            pass  # not the main thread, or the platform has no such signal
 
     app.run(host=host, port=port, debug=False, threaded=True)

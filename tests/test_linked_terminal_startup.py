@@ -24,8 +24,8 @@ def test_opening_any_member_starts_all_three_once(entry):
     ))
     script = r"""
 const assert = require('node:assert/strict');
-const _AGENT_QUAD_ORDER = ['claude', 'codex', 'gemini'];
-const sessionSource = _AGENT_QUAD_ORDER.map(agent => ({session_id:agent, agent, group:'group'}));
+const _AGENT_PANE_ORDER = ['claude', 'codex', 'gemini'];
+const sessionSource = _AGENT_PANE_ORDER.map(agent => ({session_id:agent, agent, group:'group'}));
 sessionSource.push({session_id:'worker', agent:'codex', group:'group', fleet_worker:true});
 sessionSource.push({session_id:'external', agent:'codex', group:'group', external_runtime_active:true});
 sessionSource.push({session_id:'solo', agent:'gemini'});
@@ -42,13 +42,13 @@ function startLiveTerminal(sid, opts) { calls.push([sid,opts]); _termStarting.ad
 __FUNCTIONS__
 const entry = __ENTRY__;
 assert.deepEqual(_linkedGroupSids(entry), [entry]);
-assert.deepEqual(_linkedGroupSids(entry, {liveOnly:false}), _AGENT_QUAD_ORDER);
+assert.deepEqual(_linkedGroupSids(entry, {liveOnly:false}), _AGENT_PANE_ORDER);
 _startLinkedTerminals(entry);
 _startLinkedTerminals(entry);
-assert.deepEqual(calls.map(c => c[0]), _AGENT_QUAD_ORDER.filter(s => s !== entry));
+assert.deepEqual(calls.map(c => c[0]), _AGENT_PANE_ORDER.filter(s => s !== entry));
 assert(calls.every(c => c[1].background));
-for (const id of _AGENT_QUAD_ORDER) termSessions.set(id, {agent:id});
-assert.deepEqual(_linkedGroupSids(entry), _AGENT_QUAD_ORDER);
+for (const id of _AGENT_PANE_ORDER) termSessions.set(id, {agent:id});
+assert.deepEqual(_linkedGroupSids(entry), _AGENT_PANE_ORDER);
 _startLinkedTerminals(entry);
 assert.equal(calls.length, 2);
 _startLinkedTerminals('solo');
