@@ -51,6 +51,14 @@ keep Luna max Research and Astra high Fix. Use identical isolated fixtures and r
 attempt identities, independent checks, and phase timings. Do not infer a universal ranking
 from a single paired run.
 
+For the opt-in research pilot, use `activity: research`, `provider_mode: balanced`,
+and the exact first line `Fleet research comparison: luna` or
+`Fleet research comparison: gemini`. Only Research changes (Luna max versus Gemini
+3.8 Flash high via `agy`); later phases stay Opus high/Sol high/Opus high. Gemini is
+limited to native read/search tools and has no peer or account MCP gateway yet.
+Do not use it for account-connected tasks or as an automatic fallback. Report
+actual timing, step counts, research quality, and these pilot limitations.
+
 For coding Code/Fix integration gates with proven implementation failures, Fleet may
 automatically queue one difficult retry on Astra xhigh when Codex has capacity.
 This recorded exception changes only the failed leg, never Claude-only runs, and

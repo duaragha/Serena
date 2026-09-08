@@ -918,6 +918,18 @@ def _event_log_research_activity(event_log_path: str | None) -> dict[str, int]:
             if not isinstance(event, dict):
                 continue
 
+            if event.get("event") == "step_update":
+                step = event.get("step_update")
+                if isinstance(step, dict) and step.get("state") == "DONE":
+                    info = step.get("tool_info")
+                    info = info if isinstance(info, dict) else {}
+                    if step.get("step_type") == "tool" and not info.get("error"):
+                        key = str(step.get("step_index"))
+                        if step.get("tool_name") == "search_web":
+                            searches.add("gemini:" + key)
+                        elif step.get("tool_name") == "read_url_content":
+                            fetches.add("gemini:" + key)
+
             if event.get("type") == "item.completed":
                 item = event.get("item")
                 if isinstance(item, dict) and str(item.get("type") or "").casefold() in {

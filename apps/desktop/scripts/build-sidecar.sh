@@ -40,6 +40,7 @@ mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
   --collect-all numpy \
   --collect-submodules Xlib \
   --add-data "$repo_root/ui/static:ui/static" \
+  --add-data "$repo_root/fleet/gemini_research_agent.md:fleet" \
   "$desktop_dir/sidecar.py"
 
 test -x "$sidecar_dist/serena-web-sidecar/serena-web-sidecar"
