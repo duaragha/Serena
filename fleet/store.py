@@ -2540,6 +2540,11 @@ class FleetStore:
                     )
                 if connection.execute("SELECT 1 FROM sqlite_master WHERE name = 'fleet_peer_tokens'").fetchone():
                     connection.execute("DELETE FROM fleet_peer_tokens WHERE run_id = ?", (run_id,))
+                if next_state in {"failed", "cancelled"}:
+                    for table in ("fleet_peer_help", "fleet_lesson_reviews"):
+                        if connection.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (table,)).fetchone():
+                            connection.execute(f"UPDATE {table} SET state = 'cancelled', finished = ?, error = 'orphaned run ended' "
+                                               "WHERE run_id = ? AND state IN ('queued','running')", (now, run_id))
                 connection.execute(
                     "UPDATE fleet_attempts SET state = 'interrupted', completed_at = ?, "
                     "pid = NULL, process_token = NULL, updated_at = ? WHERE state = 'running' "

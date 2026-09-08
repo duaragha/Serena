@@ -81,6 +81,7 @@ _DEFAULT_CODING_DISK_BASE_BYTES = _GIB
 _DEFAULT_CODING_DISK_PER_WORKER_BYTES = _GIB
 _DEFAULT_RESEARCH_DISK_BYTES = _GIB
 _SQLITE_BUSY_RETRY_DELAYS = (0.25, 0.5, 1.0)
+ORPHAN_POLL_SECONDS = 30.0
 
 
 def _required_disk_headroom(activity: str, worker_count: int) -> int:
@@ -266,6 +267,8 @@ def get_run(run_id: str) -> dict[str, Any] | None:
 
         refreshed["collaboration"] = PeerStore(store).projection(clean_id)
         refreshed["learning"] = FleetLearning(store).projection(clean_id)
+        from fleet.observability import autonomy_projection
+        refreshed["autonomy"] = autonomy_projection(store, clean_id)
         return refreshed
     return None
 
@@ -502,6 +505,8 @@ def inspect_run(run_id: str, focus: str = "", *, event_limit: int = 100) -> dict
         "supervision": _supervision_projection(store, run),
     }
     redacted, redaction_count = redact_value(projection)
+    from fleet.observability import autonomy_projection
+    redacted["autonomy"] = autonomy_projection(store, clean_id)
     redacted["redaction_count"] = redaction_count
     return redacted
 
@@ -1674,7 +1679,7 @@ def serve_forever(
                                 if (store.get_run(rid) or {}).get("state") in {"running", "stopping"}}
             except Exception:
                 pass
-            next_orphan_probe = monotonic_now + 30.0
+            next_orphan_probe = monotonic_now + ORPHAN_POLL_SECONDS
         if monotonic_now >= next_control_flush:
             with suppress(Exception):
                 store.flush_control_outbox()

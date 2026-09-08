@@ -948,8 +948,9 @@ def _event_summary(event: dict[str, Any]) -> dict[str, Any]:
     message = event.get("message")
     if isinstance(message, dict):
         if event_type in {"assistant", "user"}:
+            content = message.get("content")
             summary["progress"] = any(isinstance(block, dict) and block.get("type") in {"tool_result", "text"}
-                                      for block in message.get("content", []) if isinstance(message.get("content"), list))
+                                      for block in (content if isinstance(content, list) else []))
         model = _reported_model(message.get("model"))
         if model:
             summary["model"] = model

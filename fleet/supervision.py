@@ -12,8 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from fleet.store import _terminate_owned_process
 from core.work_jobs import process_start_token
+from fleet.store import _terminate_owned_process
 
 DEFAULT_LEASE_SECONDS = 30.0
 DEFAULT_HEARTBEAT_SECONDS = 5.0
@@ -243,6 +243,11 @@ class FleetSupervisionStore:
             # explicit reassignment fences it, so let that owner recover. This
             # remains race-safe because a reassignment changes the lease state
             # before the old token can renew it.
+            if progress and row["progress_stage"] != "healthy":
+                from fleet.store import FleetStore
+                FleetStore._insert_event(connection, run_id=row["run_id"], leg_id=row["leg_id"],
+                    attempt_id=attempt_id, event_type="worker.progress.resumed",
+                    payload={"previous_stage": row["progress_stage"]})
             updated = connection.execute(
                 """
                 UPDATE fleet_worker_leases

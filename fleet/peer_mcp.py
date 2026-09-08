@@ -37,7 +37,7 @@ def read_messages(acknowledge: list[str] | None = None) -> dict:
 
 @mcp.tool(annotations=WRITE)
 def send_message(recipient: str, body: str, dedupe: str, reply_to: str | None = None) -> dict:
-    """Send scoped advice. Use reply_to to answer a help request and a stable dedupe key on retries."""
+    """Send informational advice or a reply. Questions needing an answer belong in request_help."""
     _store, peer, token = context()
     return peer.send(
         token,

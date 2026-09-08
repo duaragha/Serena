@@ -249,7 +249,7 @@ class PeerStore:
                              (message_id, who["run_id"])).fetchone()
             if who["help_id"] or not row or row["sender"] != who["worker_key"] or not row["outcome"]:
                 raise PermissionError("only the original requester can resolve an actionable request")
-            if row["outcome"] in {"resolved", "escalated"}:
+            if row["outcome"] == "resolved" or (row["outcome"] == "escalated" and not resolved):
                 return dict(row)
             self._outcome(db, dict(row), "resolved" if resolved else "escalated", reason)
             return dict(db.execute("SELECT * FROM fleet_peer_messages WHERE id = ?", (message_id,)).fetchone())
@@ -266,7 +266,7 @@ class PeerStore:
             db.execute("BEGIN IMMEDIATE")
             for row in db.execute("SELECT m.*, h.state AS help_state, h.auto_retry, h.retry_applied, h.owner_leg, "
                                   "h.owner_attempt FROM fleet_peer_messages m LEFT JOIN fleet_peer_help h ON h.message_id = m.id "
-                                  "WHERE m.run_id = ? AND m.outcome IN ('pending','answered')", (run_id,)).fetchall():
+                                  "WHERE m.run_id = ? AND m.outcome IN ('pending','answered','escalated')", (run_id,)).fetchall():
                 # A successful, supervisor-gated repair can prove an automatic request resolved.
                 repaired = False
                 if row["auto_retry"] and row["retry_applied"]:
@@ -276,7 +276,7 @@ class PeerStore:
                                           (row["owner_leg"], row["owner_attempt"])).fetchone()
                 if repaired:
                     self._outcome(db, dict(row), "resolved", "same-owner repair passed the supervisor completion gates")
-                elif terminal or (row["deadline"] or 0) <= at or row["help_state"] in {"failed", "expired", "cancelled"}:
+                elif row["outcome"] != "escalated" and (terminal or (row["deadline"] or 0) <= at or row["help_state"] in {"failed", "expired", "cancelled"}):
                     self._outcome(db, dict(row), "escalated", "run ended without confirmed resolution" if terminal
                                   else "request deadline or consultation failure; no confirmed resolution")
 
@@ -428,7 +428,7 @@ class PeerStore:
         recent = [m for m in state["messages"] if m["recipient"] == worker_key(leg)][-6:]
         return (
             "\nFleet peer tools (serena_peer): read_messages at start, before completion, and when blocked. "
-            "Use send_message for concise findings/questions; request_help for a concrete blocker. "
+            "Use send_message for informational findings; request_help for questions or blockers requiring an answer. "
             "A reply or acknowledgement is not resolution: call resolve_request(message_id, resolved, reason) "
             "after checking whether the advice solved your request; unresolved requests escalate at their deadline. "
             "Use exact roster worker_key values. A service-owned read-only consultation can reply even "

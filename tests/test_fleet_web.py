@@ -266,6 +266,27 @@ def test_collaboration_javascript_compiles_and_renders_untrusted_text(fleet_clie
     subprocess.run(["node", "-e", script], input=page, text=True, check=True, capture_output=True)
 
 
+def test_autonomy_panel_renders_real_states_without_html_injection(fleet_client):
+    client, _supervisor = fleet_client
+    page = client.get("/fleet/view").get_data(as_text=True)
+    script = r"""
+      const html = require('node:fs').readFileSync(0, 'utf8');
+      const body = html.split('function renderAutonomy')[1].split('function renderDetail')[0];
+      const el = (tag, cls, text) => ({tag, cls, text, dataset: {}, children: [], append(item) {this.children.push(item);}});
+      const render = new Function('el', 'text', 'return function renderAutonomy' + body)(el, x=>String(x??''));
+      const attack = '<img src=x onerror=alert(1)>';
+      const panel = render({autonomy: {recoveries:1,max_recoveries:2,scope:'observed',timeline:[
+        {type:'run.recovered',created_at:100,payload:{reason:attack}}]},
+        collaboration:{messages:[{outcome:'escalated'}]},learning:{candidates:[{state:'verified'}],reviews:[]}});
+      if (!panel.open || panel.dataset.panel !== 'autonomy') throw Error('missing panel');
+      if (!panel.children[0].text.includes('1/2 recoveries')) throw Error('missing recovery count');
+      if (!panel.children[0].text.includes('1 escalated')) throw Error('missing escalation');
+      if (!JSON.stringify(panel).includes(attack)) throw Error('missing receipt');
+      if (body.includes('innerHTML')) throw Error('unsafe renderer');
+    """
+    subprocess.run(["node", "-e", script], input=page, text=True, check=True, capture_output=True)
+
+
 def test_gemini_provider_badge_is_not_claude(fleet_client):
     client, _ = fleet_client
     page = client.get("/fleet/view").get_data(as_text=True)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -153,6 +154,9 @@ class FleetLearning:
             return {"lesson_id": lesson_id, "state": state}
 
     def retrieve(self, run: dict, attempt_id: str) -> list[dict]:
+        if os.environ.get("SERENA_FLEET_LESSONS", "on") == "off":
+            self.store.append_event(run["run_id"], "learning.reuse.disabled", {"attempt_id": attempt_id})
+            return []
         project = str(Path(run["cwd"]).resolve())
         selected = []
         with self.store._connect() as db:
