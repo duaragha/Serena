@@ -104,6 +104,7 @@ let activeTermSid = codex;
 const siblings = new Map([[claude, codex], [codex, claude]]);
 const activated = [];
 function _linkedSiblingSid(sid) {{ return siblings.get(sid) || null; }}
+function _linkedGroupSids(sid) {{ return [sid, siblings.get(sid)].filter(Boolean); }}
 function _activateTermPane(sid) {{ activated.push(sid); }}
 
 {helper}

@@ -68,7 +68,8 @@ def test_all_startup_and_socket_paths_use_group_membership():
     source = source[:source.index("\nasync function ")]
     assert "_startLinkedTerminals(sid)" in source
     assert source.index("_startLinkedTerminals(sid)") < source.index("await _spawnTerminalRequest(body)")
-    assert "_linkedGroupSids(activeTermSid).includes(state.sid)" in source
+    assert "_restoreWebSplitAfterTerminalOpen(state.sid" in source
+    assert "_linkedGroupSids(focus).includes(sid)" in _function("_restoreWebSplitAfterTerminalOpen")
     assert "_linkedSiblingSid(" not in source
 
 

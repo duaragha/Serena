@@ -351,7 +351,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chats</title>
+<title>Serena</title>
 <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
 <link rel="stylesheet" href="/static/operator_workspace.css">
 <script src="/static/vendor/xterm/xterm.js"></script>
@@ -2484,9 +2484,20 @@ body.pane-dragging * {
 .sel-btn.danger { border-color: var(--red); color: var(--red); }
 .sel-btn.danger:hover { background: var(--red-dim); }
 </style>
+<link rel="stylesheet" href="/static/workspace.css">
+<script src="/static/vendor/lucide.min.js"></script>
 </head>
-<body>
+<body class="serena-workspace">
 <div id="app">
+  <header class="workspace-topbar">
+    <button class="workspace-brand" onclick="switchTab('chats')" aria-label="Serena chats"><img src="/static/icons/serena-icon.png" alt=""><strong>Serena<span>.</span></strong></button>
+    <span class="workspace-divider"></span><span class="workspace-owner">Raghav's workspace</span>
+    <div class="workspace-top-actions">
+      <div class="live-usage-ribbon" id="liveUsageRibbon" tabindex="0" aria-label="Usage limits" aria-live="polite"><span class="live-usage-empty">usage loading</span></div>
+      <button class="workspace-icon" onclick="switchTab('persona')" title="Workspace settings" aria-label="Workspace settings"><i data-lucide="settings-2"></i></button>
+      <span class="workspace-avatar" aria-label="Raghav">R</span>
+    </div>
+  </header>
   <!-- Tab Bar -->
   <div class="tab-bar">
     <div class="tab active" data-tab="chats" onclick="switchTab('chats')">Chats <span class="count" id="chatCount"></span></div>
@@ -2496,10 +2507,8 @@ body.pane-dragging * {
     <div class="tab" data-tab="fleet" onclick="switchTab('fleet')">Fleet <span class="count" id="fleetCount"></span></div>
     <div class="tab" data-tab="usage" onclick="switchTab('usage')">Usage</div>
     <div class="tab" data-tab="persona" onclick="switchTab('persona')">Persona</div>
+    <div class="tab" data-tab="tooling" onclick="switchTab('tooling')">Tooling</div>
     <div class="tab-spacer"></div>
-    <div class="live-usage-ribbon" id="liveUsageRibbon" tabindex="0" aria-live="polite">
-      <span class="live-usage-empty">usage loading</span>
-    </div>
     <button class="tab-action" onclick="shutdownServer()" title="Shutdown server">Quit</button>
   </div>
 
@@ -2508,9 +2517,11 @@ body.pane-dragging * {
     <div class="project-sidebar" id="projectSidebar"></div>
     <div class="pane-divider" data-divider="proj-chats" title="Drag to resize"></div>
     <div class="chat-list-col" id="chatListCol">
+      <div class="workspace-project-wrap"><button id="workspaceProject" aria-expanded="false" aria-controls="projectSidebar"><i data-lucide="folder-git-2"></i><span><strong id="workspaceProjectName">All projects</strong><small id="workspaceProjectCount">Projects</small></span><i data-lucide="chevrons-up-down"></i></button></div>
       <div class="search-bar">
-        <input type="text" id="searchInput" placeholder="Search conversations... ( / )" autocomplete="off">
+        <div class="workspace-search"><label><i data-lucide="search"></i><input type="text" id="searchInput" aria-label="Search conversations" placeholder="Find a chat..." autocomplete="off"></label><button class="workspace-icon" onclick="newChatInline()" title="New chat" aria-label="New chat"><i data-lucide="square-pen"></i></button></div>
         <div class="agent-filter-row">
+          <button class="agent-filter-btn active" id="filterAll" onclick="toggleAgentFilter(null)">All</button>
           <button class="agent-filter-btn claude" id="filterClaude" onclick="toggleAgentFilter('claude')">
             <span class="agent-icon claude"></span>Claude
           </button>
@@ -2535,6 +2546,7 @@ body.pane-dragging * {
         <span class="col-date">M.Date</span>
       </div>
       <div class="session-list" id="sessionList"></div>
+      <button class="workspace-completed" id="workspaceCompleted"><i data-lucide="archive"></i>Completed chats<span id="workspaceDoneCount"></span><i data-lucide="chevron-right"></i></button>
     </div>
     <div class="pane-divider" data-divider="chats-conv" title="Drag to resize"></div>
     <div class="panel-right" id="convPanel">
@@ -2901,6 +2913,7 @@ body.pane-dragging * {
         <div class="conv-header">
           <div class="conv-header-top">
             <div class="conv-header-text">
+              <div id="workspaceBreadcrumb" class="workspace-breadcrumb"></div>
               <h2 id="convTitle"></h2>
               <div class="meta" id="convMeta"></div>
             </div>
@@ -2910,10 +2923,13 @@ body.pane-dragging * {
             </div>
             <button class="conv-hide" onclick="closeConv()"
                     title="Hide this pane without stopping its work">Hide</button>
+            <button class="workspace-icon" id="workspaceFork" title="Fork with shared context" aria-label="Fork with shared context"><i data-lucide="git-fork"></i></button>
+            <button class="workspace-icon" onclick="toggleFilesPane()" title="Toggle project files" aria-label="Toggle project files"><i data-lucide="panel-right"></i></button>
           </div>
         </div>
         <div class="conv-body" id="convBody"></div>
         <div class="conv-terminal hidden" id="convTerminal">
+          <div id="workspaceAgents" class="workspace-agents" aria-label="Agent panes"></div>
           <div class="code-tabs" id="codeTabs"></div>
           <div class="code-pane-wrap" id="codePaneWrap">
             <div class="code-pane term-pane" id="termPane">
@@ -2934,11 +2950,14 @@ body.pane-dragging * {
     </div>
     <div class="pane-divider" data-divider="conv-files" id="convFilesDivider" title="Drag to resize"></div>
     <div class="panel-files" id="filesPane">
+      <div class="workspace-inspector-tabs"><button id="workspaceFiles" class="active">Files</button><button id="workspaceChanges">Changes <span id="workspaceChangesCount"></span></button></div>
       <div class="files-header">
         <span class="files-root" id="filesRootName">—</span>
         <button class="files-close" onclick="toggleFilesPane()" title="Close (Alt+B)">✕</button>
       </div>
       <div class="files-tree" id="filesTree"><div class="empty-text">Open a chat to view files</div></div>
+      <div id="workspaceChangesList" class="hidden"></div>
+      <div class="workspace-context"><h3>SESSION CONTEXT</h3><div id="workspaceContext"></div><button onclick="switchTab('persona')"><i data-lucide="fingerprint"></i>Persona</button><button onclick="switchTab('tooling')"><i data-lucide="wrench"></i>Tooling</button></div>
     </div>
   </div>
 
@@ -3086,6 +3105,7 @@ body.pane-dragging * {
 
   <!-- Shortcut Bar -->
   <div class="shortcut-bar" id="shortcutBar"></div>
+  <footer class="workspace-status"><button id="workspaceChatsToggle" title="Toggle chats" aria-label="Toggle chats"><i data-lucide="panel-left"></i></button><span id="workspaceRuntimeCount">No open terminals</span><span class="workspace-status-end">Serena<button id="workspaceShortcuts" title="Keyboard shortcuts" aria-label="Keyboard shortcuts"><i data-lucide="keyboard"></i></button></span></footer>
 </div>
 
 <script>
@@ -3147,14 +3167,16 @@ function switchTab(tab) {
   document.getElementById('viewKnowledge').classList.toggle('hidden', tab !== 'knowledge');
   document.getElementById('viewFleet').classList.toggle('hidden', tab !== 'fleet');
   document.getElementById('viewUsage').classList.toggle('hidden', tab !== 'usage');
-  document.getElementById('viewPersona').classList.toggle('hidden', tab !== 'persona');
+  document.getElementById('viewPersona').classList.toggle('hidden', tab !== 'persona' && tab !== 'tooling');
+  document.getElementById('viewPersona').classList.toggle('workspace-tooling', tab === 'tooling');
   updateShortcutBar();
   if (tab === 'tasks') { loadTasks(); }
   if (tab === 'memory') { if (memories.length) renderMemoryList(); loadMemories(); }
   if (tab === 'knowledge') { if (topics.length) renderTopicList(); loadTopics(); }
   syncFleetFrameVisibility();
   if (tab === 'usage') { loadUsage(); }
-  if (tab === 'persona') loadPersona();
+  if (tab === 'persona' || tab === 'tooling') loadPersona();
+  window.SerenaWorkspace?.refresh();
   // Returning to Chats: force the now-visible DOM allocation and remap the
   // native overlay immediately. RAF is only an invalid-rect retry.
   if (tab === 'chats' && window.__nativeTerminalBridge) {
@@ -3223,6 +3245,8 @@ function loadPersona() {
   fetch('/api/persona-files').then(r => r.json()).then(d => {
     for (const [key, ids] of Object.entries(_personaPanes)) {
       const ta = document.getElementById(ids.text);
+      // Navigating between Persona and Tooling must not discard either draft.
+      if (ta.dataset.saved !== undefined && ta.value !== ta.dataset.saved) continue;
       ta.value = d[key] || '';
       ta.dataset.saved = ta.value;
       document.getElementById(ids.status).textContent = '';
@@ -4131,6 +4155,7 @@ async function newChatInProject(idx) {
 }
 
 function filterProject(idx, el) {
+  window.SerenaWorkspace?.closeProjects();
   document.querySelectorAll('.project-sidebar .project-item').forEach(c => c.classList.remove('active'));
   if (el) el.classList.add('active');
   else document.querySelector('.project-sidebar .project-item').classList.add('active');
@@ -4380,6 +4405,7 @@ function renderSessionList() {
 
   sessions = rendered;
   el.innerHTML = html;
+  window.SerenaWorkspace?.refresh();
 
   // Re-attach focus highlight by sid — not by numeric index. Auto-poll
   // reshuffles the list and index N would otherwise point at a random chat.
@@ -4641,6 +4667,7 @@ function renderSessionRow(s, idx, opts) {
     + disclosure
     + linkGlyph
     + '<span class="session-title"><span class="session-title-main">' + liveIndicator + agentBadges + esc(_isSerenaVoiceSession(s) ? 'Serena' : (s.display_title || 'Untitled')) + childBadge + threadBadge + '</span>' + snippetHtml + '</span>'
+    + '<span class="workspace-row-project">' + esc(s.project_short || '') + '</span>'
     + '<span class="session-date" title="Last activity">' + formatDate(rowActivityTs(s)) + '</span>'
     + '</div>';
 }
@@ -5289,7 +5316,9 @@ function toggleFolder(path) {
 }
 
 function toggleFilesPane() {
-  _filesVisible = !_filesVisible;
+  _filesVisible = window.SerenaWorkspace && matchMedia('(max-width:760px)').matches
+    ? document.getElementById('filesPane').classList.toggle('workspace-mobile-files')
+    : !_filesVisible;
   document.getElementById('filesPane').classList.toggle('hidden', !_filesVisible);
   const div = document.getElementById('convFilesDivider');
   if (div) div.classList.toggle('hidden', !_filesVisible || _focusMode);
@@ -6906,7 +6935,9 @@ function _activateTermPane(sid) {
   // Linked pair with both terminals alive -> side-by-side split. Keep Claude
   // on the left and Codex on the right even when focus changes.
   const members = _linkedGroupSids(sid);
-  const split = members.length >= 2;
+  const requestedSingle = window.SerenaWorkspace?.singleSid;
+  if (requestedSingle && members.includes(requestedSingle)) sid = requestedSingle;
+  const split = members.length >= 2 && !members.includes(requestedSingle);
   const shown = new Set(split ? members : [sid]);
   for (const child of container.children) {
     if (child.classList.contains('term-split-divider')) continue;
@@ -7089,7 +7120,10 @@ async function startLiveTerminal(sid, opts) {
     ));
   } catch(e) {}
 
-  term.open(mount);
+  const terminalBody = window.SerenaWorkspace
+    ? window.SerenaWorkspace.terminalBody(mount, sid, opts.agent || localSession?.agent || 'claude')
+    : mount;
+  term.open(terminalBody);
   fit.fit();
 
   // The default xterm renderer is DOM-based and is expensive in WebKitGTK
@@ -7460,12 +7494,10 @@ async function startLiveTerminal(sid, opts) {
       // Force on every attach: the backend still holds the geometry from
       // before the drop, and the window may have been resized meanwhile.
       _sendResizeForSid(state.sid, true);
-      if (isResume) return;
-      // If this terminal is the background half of a linked pair, re-run the
-      // active pane's layout so the split appears now that both are live.
-      if (activeTermSid && activeTermSid !== state.sid && _linkedGroupSids(activeTermSid).includes(state.sid)) {
-        _activateTermPane(activeTermSid);
+      if (currentTab === 'chats' && convMode === 'live') {
+        _restoreWebSplitAfterTerminalOpen(state.sid, opts.background || activeTermSid !== state.sid);
       }
+      if (isResume) return;
       _revealSurvivingLinkedTerminals(currentSessionId);
     };
     socket.onmessage = (ev) => {
@@ -7699,6 +7731,31 @@ window.__spawnLinkedTerminal = async function(sourceSid, pseudoSid, agent, cwd) 
   return true;
 };
 
+function _collapseWebSplitAfterTerminalExit(sid) {
+  _gtkRuntimeStates.delete(sid);
+  if (!_gtkSplitSids || !_gtkSplitSids.includes(sid)) {
+    // A provider-only view can still belong to a running linked group.
+    return activeTermSid === sid ? (_linkedGroupSids(sid).find(id => id !== sid) || null) : null;
+  }
+  const survivors = _gtkSplitSids.filter(id => id !== sid && termSessions.has(id));
+  _gtkSplitActive = survivors.length > 1;
+  _gtkSplitSids = _gtkSplitActive ? survivors : null;
+  if (!_gtkSplitActive) _gtkCurrentGroup = null;
+  _layoutWebSplitDivider(document.getElementById('termMounts'), _gtkSplitActive);
+  _syncRuntimePinButton();
+  if (!survivors.length) _renderOpenSessionIds([]);
+  return survivors[0] || null;
+}
+
+function _restoreWebSplitAfterTerminalOpen(sid, background) {
+  if (!termSessions.has(sid)) return null;
+  const focus = background ? activeTermSid : sid;
+  if (!focus || !termSessions.has(focus)) return null;
+  if (background && focus !== sid && !_linkedGroupSids(focus).includes(sid)) return null;
+  _activateTermPane(focus);
+  return focus;
+}
+
 function teardownLiveTerminal(sid) {
   // No arg → tear down all live terminals (used on page unload).
   if (sid == null) {
@@ -7709,6 +7766,7 @@ function teardownLiveTerminal(sid) {
   const s = termSessions.get(sid);
   if (!s) return;
   termSessions.delete(sid);
+  const survivorSid = _collapseWebSplitAfterTerminalExit(sid);
   const partner = _pendingTermPartners.get(sid);
   _pendingTermPartners.delete(sid);
   if (partner && _pendingTermPartners.get(partner) === sid) {
@@ -7730,6 +7788,10 @@ function teardownLiveTerminal(sid) {
     fetch('/api/kill-terminal/' + s.tid, { method: 'POST' }).catch(() => {});
   }
   if (s.mount && s.mount.parentNode) s.mount.parentNode.removeChild(s.mount);
+  if (survivorSid) {
+    if (window.SerenaWorkspace?.singleSid === sid) window.SerenaWorkspace.singleSid = null;
+    _activateTermPane(survivorSid);
+  }
   if (activeTermSid === sid) {
     activeTermSid = null;
     setTermStatus('Ready to resume.');
@@ -9915,6 +9977,7 @@ function toggleAgentFilter(agent) {
   if (c) c.classList.toggle('active', _agentFilter === 'claude');
   if (x) x.classList.toggle('active', _agentFilter === 'codex');
   if (g) g.classList.toggle('active', _agentFilter === 'gemini');
+  document.getElementById('filterAll')?.classList.toggle('active', !_agentFilter);
   renderSessionList();
   updateChatCount();
 }
@@ -10639,6 +10702,7 @@ function showToast(message, opts) {
 
 </script>
 <script src="/static/operator_workspace.js"></script>
+<script src="/static/workspace.js"></script>
 </body>
 </html>"""
 
@@ -12325,14 +12389,23 @@ _FS_IGNORE = {".git", "node_modules", "__pycache__", ".venv", "venv",
               ".mypy_cache", "egg-info", ".turbo"}
 
 
+def _is_windows_reserved_name(name: str) -> bool:
+    stem = name.rstrip(" .").split(".", 1)[0].upper()
+    return stem in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
 def _fallback_walk(root: str, max_files: int = 5000) -> list[str]:
     out: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _FS_IGNORE and not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames if d not in _FS_IGNORE and not d.startswith(".")
+                       and not (sys.platform == "win32" and _is_windows_reserved_name(d))]
         for fn in filenames:
-            if fn.startswith("."):
+            if fn.startswith(".") or (sys.platform == "win32" and _is_windows_reserved_name(fn)):
                 continue
-            rel = os.path.relpath(os.path.join(dirpath, fn), root).replace("\\", "/")
+            try:
+                rel = os.path.relpath(os.path.join(dirpath, fn), root).replace("\\", "/")
+            except (OSError, ValueError):
+                continue
             out.append(rel)
             if len(out) >= max_files:
                 return out
@@ -12414,6 +12487,23 @@ def api_files():
     if not os.path.isdir(cwd):
         return jsonify({"error": "cwd not found"}), 404
     return jsonify(_build_tree(cwd))
+
+
+@app.route("/api/workspace-changes")
+def api_workspace_changes():
+    from ui.workspace_git import repository_changes
+
+    raw_cwd = (request.args.get("cwd") or "").strip()
+    if not raw_cwd:
+        return jsonify({"error": "No project directory"}), 400
+    # Inspection must never silently fall back to an unrelated home directory.
+    cwd = _localize_path(raw_cwd)
+    if not os.path.isdir(cwd):
+        return jsonify({"error": "Project directory not found"}), 404
+    try:
+        return jsonify(repository_changes(cwd))
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return jsonify({"error": "Unable to read working-tree changes"}), 503
 
 
 _READFILE_MAX = 2 * 1024 * 1024  # 2 MB — refuse to slurp huge files into the viewer
