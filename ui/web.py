@@ -6290,10 +6290,7 @@ function setConvMode(mode) {
     // have a live PTY to feed on this machine. Opening only one was fine while
     // a group was always a pair; a claude+codex+gemini thread needs all three.
     if (!window.__nativeTerminalBridge) {
-      for (const memberSid of _linkedGroupSids(currentSessionId)) {
-        if (memberSid === currentSessionId) continue;
-        if (!termSessions.has(memberSid)) startLiveTerminal(memberSid, { background: true });
-      }
+      _startLinkedTerminals(currentSessionId);
     }
     syncCodeView();
   } else {
@@ -6620,7 +6617,7 @@ function _agentOf(sid) {
  * and got exactly one. A group can hold three now, and asking for one of three
  * silently drops whichever the lookup did not happen to pick.
  */
-function _linkedGroupSids(sid) {
+function _linkedGroupSids(sid, { liveOnly = true } = {}) {
   const pending = _pendingTermPartners.get(sid);
   const src = (sessionSource.length ? sessionSource : sessions);
   const me = src.find(x => x && x.session_id === sid);
@@ -6634,15 +6631,22 @@ function _linkedGroupSids(sid) {
     ids = [pending];
   }
 
-  // Only panes that actually exist can be laid out.
+  // Layout needs existing panes; startup must also see unopened members.
   const live = [sid, ...ids].filter((id, i, all) =>
-    id && all.indexOf(id) === i && (id === sid || termSessions.has(id)));
+    id && all.indexOf(id) === i && (!liveOnly || id === sid || termSessions.has(id)));
 
   return live.sort((a, b) => {
     const ai = _AGENT_QUAD_ORDER.indexOf(_agentOf(a));
     const bi = _AGENT_QUAD_ORDER.indexOf(_agentOf(b));
     return (ai < 0 ? _AGENT_QUAD_ORDER.length : ai) - (bi < 0 ? _AGENT_QUAD_ORDER.length : bi);
   });
+}
+
+function _startLinkedTerminals(sid) {
+  for (const memberSid of _linkedGroupSids(sid, { liveOnly: false })) {
+    if (memberSid === sid || termSessions.has(memberSid) || _termStarting.has(memberSid)) continue;
+    startLiveTerminal(memberSid, { background: true });
+  }
 }
 
 function _linkedSiblingSid(sid) {
@@ -6955,6 +6959,23 @@ function _ensureTermResizeObserver() {
   _termResizeObs.observe(container);
 }
 
+function _reportTerminalStartFailure(sid, opts, message) {
+  const detail = _agentLabel((opts && opts.agent) || _agentOf(sid))
+    + ' ' + sid.slice(0, 8) + ': ' + message;
+  if ((opts && opts.background) || _linkedGroupSids(sid, { liveOnly: false }).length > 1) {
+    showToast(detail, { variant: 'error' });
+  }
+  if (!(opts && opts.background) && (currentSessionId === sid || activeTermSid === sid)) {
+    setTermStatus(detail, 'error');
+  }
+}
+
+function _revealSurvivingLinkedTerminals(sid) {
+  if (sid !== currentSessionId || convMode !== 'live' || termSessions.has(sid) || _termStarting.has(sid)) return;
+  const available = _linkedGroupSids(sid).filter(id => id !== sid && termSessions.has(id));
+  if (available.length) _activateTermPane(available.includes(activeTermSid) ? activeTermSid : available[0]);
+}
+
 async function startLiveTerminal(sid, opts) {
   // `opts` is for new-chat mode: { cwd: string, agent?: string, isNew: true }.
   // For existing chats (omit opts), we resume by session_id.
@@ -6968,6 +6989,8 @@ async function startLiveTerminal(sid, opts) {
     if (!opts.background) setConvMode('read');
     return null;
   }
+  // A missing CLI/session in one pane must not block the rest of the group.
+  if (!opts.background && !opts.isNew) _startLinkedTerminals(sid);
   // Already alive? Just bring its pane to front.
   if (termSessions.has(sid)) {
     if (!opts.background) _activateTermPane(sid);
@@ -7226,12 +7249,15 @@ async function startLiveTerminal(sid, opts) {
         };
     spawnResp = await _spawnTerminalRequest(body);
   } catch(e) {
-    setTermStatus('Failed to spawn terminal: ' + e.message, 'error');
+    _reportTerminalStartFailure(sid, opts, 'Failed to spawn terminal: ' + e.message);
     // Refine it once we know whether the backend is reachable at all.
-    _describeSpawnFailure(e).then((detail) => setTermStatus(detail, 'error')).catch(() => {});
+    if (!opts.background) {
+      _describeSpawnFailure(e).then((detail) => _reportTerminalStartFailure(sid, opts, detail)).catch(() => {});
+    }
     mount.remove();
     if (activeTermSid === sid) activeTermSid = null;
     _termStarting.delete(sid);
+    _revealSurvivingLinkedTerminals(sid);
     return;
   }
   if (!spawnResp.ok) {
@@ -7239,10 +7265,11 @@ async function startLiveTerminal(sid, opts) {
       _patchClientSession(sid, { external_runtime_active: true });
       if (!opts.background) setConvMode('read');
     }
-    setTermStatus(spawnResp.error || 'Failed to spawn terminal', 'error');
+    _reportTerminalStartFailure(sid, opts, spawnResp.error || 'Failed to spawn terminal');
     mount.remove();
     if (activeTermSid === sid) activeTermSid = null;
     _termStarting.delete(sid);
+    _revealSurvivingLinkedTerminals(sid);
     return;
   }
 
@@ -7422,15 +7449,10 @@ async function startLiveTerminal(sid, opts) {
       if (isResume) return;
       // If this terminal is the background half of a linked pair, re-run the
       // active pane's layout so the split appears now that both are live.
-      if (activeTermSid && activeTermSid !== state.sid && _linkedSiblingSid(activeTermSid) === state.sid) {
+      if (activeTermSid && activeTermSid !== state.sid && _linkedGroupSids(activeTermSid).includes(state.sid)) {
         _activateTermPane(activeTermSid);
       }
-      if (!opts.background) {
-        const siblingSid = _linkedSiblingSid(state.sid);
-        if (siblingSid && !termSessions.has(siblingSid)) {
-          startLiveTerminal(siblingSid, { background: true });
-        }
-      }
+      _revealSurvivingLinkedTerminals(currentSessionId);
     };
     socket.onmessage = (ev) => {
       if (state.ws !== socket) return;
@@ -12619,6 +12641,18 @@ def api_spawn_terminal():
                 "agent": agent,
                 "reused": True,
             })
+
+        if session_id and agent == "gemini":
+            from core.gemini_scanner import resumable_conversation_path
+
+            if resumable_conversation_path(runtime_sid) is None:
+                return jsonify({
+                    "ok": False,
+                    "error": "Gemini conversation " + runtime_sid[:8]
+                    + " cannot resume on this machine: its native conversation file is missing. "
+                    "A saved transcript alone is read-only; restore the original Antigravity "
+                    "conversation data to resume this exact chat.",
+                }), 409
 
         try:
             from core.billing import strip_metered_auth_env
