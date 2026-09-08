@@ -328,6 +328,37 @@ def test_old_session_stop_cannot_stop_new_session(controller):
     assert controller.current(new_sid).state == "active"
 
 
+def test_resized_indicator_is_fully_masked_without_hiding_extra_desktop(controller):
+    import base64
+    import io
+
+    from core.computer_service import ComputerServer
+
+    sid, _ = begin(controller, mode="watch")
+    server = ComputerServer(controller)
+    try:
+        for height in (500, 160):
+            server.dispatch(
+                "indicator",
+                {"rect": {"x": -1980, "y": 20, "width": 520, "height": height}},
+                operator=False,
+            )
+            frame = controller.observe(sid, max_width=2560)
+            with Image.open(io.BytesIO(base64.b64decode(frame["data"]))) as image:
+                assert all(v < 50 for v in image.getpixel((100, height + 10)))
+                assert all(v > 240 for v in image.getpixel((100, height + 40)))
+        previous = controller.indicator_rect
+        with pytest.raises(ComputerError, match="invalid indicator rectangle"):
+            server.dispatch(
+                "indicator",
+                {"rect": {"x": 20, "y": 20, "width": 520, "height": -1}},
+                operator=False,
+            )
+        assert controller.indicator_rect == previous
+    finally:
+        server.server_close()
+
+
 def test_modal_dialog_is_in_scope_only_when_owned(controller):
     c = controller
     sid, _ = begin(c, target="window:123")

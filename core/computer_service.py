@@ -39,6 +39,21 @@ class ComputerServer(ThreadingHTTPServer):
         if method == "status":
             return {**c.status(), "monitors": c.desktop.monitors()}
         if method == "indicator":
+            if "rect" in params:
+                value = params["rect"]
+                if (
+                    not isinstance(value, dict)
+                    or set(value) != {"x", "y", "width", "height"}
+                    or any(type(v) is not int for v in value.values())
+                    or not 1 <= value["width"] <= 4096
+                    or not 1 <= value["height"] <= 4096
+                    or abs(value["x"]) > 65536
+                    or abs(value["y"]) > 65536
+                ):
+                    raise ComputerError("invalid indicator rectangle")
+                # Match the mask to the popup without changing it mid-capture.
+                with c.capture_lock:
+                    c.indicator_rect = Rect(**value)
             self.indicator_seen = time.monotonic()
             self.visible_session = str(params.get("visible_session", ""))
             return c.status()
