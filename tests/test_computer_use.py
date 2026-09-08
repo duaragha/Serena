@@ -320,6 +320,117 @@ def test_service_auth_rejects_browser_origin_and_unprivileged_lease(controller):
         thread.join(timeout=2)
 
 
+def test_mcp_chat_can_start_observe_and_stop_requested_watch(controller, monkeypatch):
+    from core import computer_mcp
+    from core.computer_service import ComputerServer
+
+    server = ComputerServer(controller)
+
+    class Client:
+        def ensure_running(self):
+            return server.dispatch("status", {}, operator=False)
+
+        def call(self, method, **params):
+            return server.dispatch(method, params, operator=method in {"begin", "run"})
+
+    monkeypatch.setattr(computer_mcp, "ComputerClient", Client)
+
+    async def scenario():
+        tools = await computer_mcp.mcp.list_tools()
+        assert "computer_start" in {tool.name for tool in tools}
+        status = await computer_mcp.computer_status()
+        assert status["session"] is None
+        assert "No manual user terminal step" in status["session_start"]["guidance"]
+        result = await computer_mcp.computer_start(
+            "watch my left screen and guide me", target="display:left", seconds=30
+        )
+        sid = result["session"]["id"]
+        assert result["session"]["mode"] == "watch"
+        assert result["session"]["owner"] == "mcp"
+        assert result["driver"]["kind"] == "connected_chat"
+        assert controller.agent is None
+        observed = await computer_mcp.computer_observe(sid)
+        assert [item.type for item in observed.content] == ["text", "image"]
+        with pytest.raises(ComputerError, match="already owns"):
+            await computer_mcp.computer_start("watch this screen", target="display:left")
+        await computer_mcp.computer_stop()
+        assert controller.session.state == "stopped"
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        server.server_close()
+
+
+@pytest.mark.parametrize("mode", ["watch", "control"])
+def test_mcp_background_start_uses_existing_astra_runner(controller, monkeypatch, mode):
+    from core import computer_agent, computer_mcp
+    from core.computer_service import ComputerServer
+
+    server = ComputerServer(controller)
+    started = []
+
+    class Agent:
+        thread = None
+
+        def __init__(self, owner, *, speak):
+            self.session = owner.session
+            self.speak = speak
+
+        def start(self):
+            started.append((self.session.mode, self.speak))
+
+        def cancel(self):
+            pass
+
+    class Client:
+        def ensure_running(self):
+            return server.dispatch("status", {}, operator=False)
+
+        def call(self, method, **params):
+            return server.dispatch(method, params, operator=True)
+
+    monkeypatch.setattr(computer_mcp, "ComputerClient", Client)
+    monkeypatch.setattr(computer_agent, "ComputerAgent", Agent)
+    try:
+        result = asyncio.run(
+            computer_mcp.computer_start(
+                "help me with this desktop task",
+                mode=mode,
+                target="display:left",
+                background=True,
+                speak=True,
+            )
+        )
+        assert started == [(mode, True)]
+        assert result["driver"] == {"kind": "astra", "model": "gpt-6-astra", "effort": "medium"}
+    finally:
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"request": ""},
+        {"request": "x" * 4001},
+        {"mode": "invalid"},
+        {"seconds": 0},
+        {"seconds": 1801},
+        {"seconds": True},
+        {"speak": True},
+    ],
+)
+def test_mcp_start_rejects_invalid_requests_before_launch(monkeypatch, args):
+    from core import computer_mcp
+
+    def unexpected_client():
+        pytest.fail("invalid request must not start the helper or a session")
+
+    monkeypatch.setattr(computer_mcp, "ComputerClient", unexpected_client)
+    with pytest.raises(ComputerError):
+        asyncio.run(computer_mcp.computer_start(**{"request": "watch my screen", **args}))
+
+
 def test_old_session_stop_cannot_stop_new_session(controller):
     sid, _ = begin(controller)
     controller.stop()
