@@ -3,17 +3,43 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import os
 import re
 import select
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 
 
 class ComputerError(RuntimeError):
     pass
+
+
+@lru_cache(maxsize=1)
+def legacy_unicode_keys():
+    """Old X11 clients need legacy Greek/Cyrillic keysyms, not Uxxxx aliases."""
+    result = {}
+    try:
+        xkb = ctypes.CDLL("libxkbcommon.so.0")
+        to_unicode = xkb.xkb_keysym_to_utf32
+        to_unicode.argtypes = [ctypes.c_uint32]
+        to_unicode.restype = ctypes.c_uint32
+        x11 = ctypes.CDLL("libX11.so.6")
+        to_name = x11.XKeysymToString
+        to_name.argtypes = [ctypes.c_ulong]
+        to_name.restype = ctypes.c_char_p
+        for keysym in range(0x100, 0x3000):
+            codepoint = to_unicode(keysym)
+            name = to_name(keysym) if codepoint > 255 else None
+            if name:
+                result.setdefault(chr(codepoint), name.decode("ascii"))
+    except (OSError, AttributeError):
+        pass
+    return result
 
 
 @dataclass(frozen=True)
@@ -282,19 +308,23 @@ class X11Desktop:
     def type_text(self, text, cancelled):
         # Short complete chunks bound takeover latency without killing xdotool
         # between a synthetic key-down and its key-up. stdin hides text from ps.
-        for offset in range(0, len(text), 8):
+        legacy = legacy_unicode_keys() if any(ord(char) > 255 for char in text) else {}
+        chunks = re.findall(r"[\x00-\x7f]{1,8}|[^\x00-\x7f]", text)
+        for chunk in chunks:
             if cancelled():
                 raise ComputerError("text entry interrupted; some characters may have been typed")
-            self._run(
-                "xdotool",
-                "type",
-                "--delay",
-                "1",
-                "--file",
-                "-",
-                input=text[offset : offset + 8],
-                timeout=2,
-            )
+            if chunk in legacy:
+                name = legacy[chunk]
+                if chunk.isupper() and chunk.lower() in legacy:
+                    name = "shift+" + legacy[chunk.lower()]
+                self._run("xdotool", "key", "--delay", "12", name, timeout=2)
+            else:
+                delay = "1" if chunk.isascii() else "12"
+                self._run("xdotool", "type", "--delay", delay, "--file", "-", input=chunk, timeout=2)
+            # Give clients time to consume MappingNotify before xdotool reuses
+            # its temporary Unicode keymap for the following chunk.
+            if any(ord(char) > 127 for char in chunk):
+                time.sleep(0.025)
 
     def release(self):
         from Xlib import X

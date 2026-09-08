@@ -99,6 +99,12 @@ if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
 
 _repair_standard_streams()
 
+if __name__ == "__main__" and sys.argv[1:2] == ["computer"]:
+    from core.computer_cli import computer
+
+    computer.main(args=sys.argv[2:], prog_name="serena computer")
+    raise SystemExit(0)
+
 def _web_runtime():
     """Load the resident web runtime only when the sidecar is serving it.
 

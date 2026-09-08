@@ -31,7 +31,9 @@ def fixture(path, x):
     }
 
     def save():
-        path.write_text(json.dumps(state))
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(state))
+        temporary.replace(path)
 
     tk.Label(root, text="SERENA · COMPUTER TEST", font=("sans", 22)).pack(pady=20)
     tk.Label(root, text=f"visible code: {code}", font=("monospace", 25)).pack(pady=10)
@@ -90,11 +92,13 @@ def fixture(path, x):
     state["canvas"] = [canvas.winfo_x() + 100, canvas.winfo_y() + 65]
     save()
     change_path = path.with_suffix(".change")
+
     def change():
         if change_path.exists():
             status.set(change_path.read_text())
             change_path.unlink()
         root.after(100, change)
+
     root.after(100, change)
     root.mainloop()
 
@@ -167,6 +171,26 @@ def main():
                 "path": [point("canvas"), {"x": state["canvas"][0] + 80, "y": state["canvas"][1]}],
             },
         ]
+        typed = client.call(
+            "act",
+            session_id=sid,
+            frame_id=frame["frame_id"],
+            request_id=secrets.token_hex(8),
+            intent="type the acceptance text into the fixture field",
+            actions=actions[:2],
+        )
+        assert typed["ok"], typed
+        deadline = time.monotonic() + 3
+        while (
+            json.loads(state_path.read_text())["text"] != "Serena Ω café"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+        actual_text = json.loads(state_path.read_text())["text"]
+        assert actual_text == "Serena Ω café", actual_text
+        receipt["checks"]["unicode_typing"] = True
+        frame = typed["frame"]
+        actions = actions[2:]
         request_id = secrets.token_hex(8)
         batch = dict(
             session_id=sid,
@@ -238,8 +262,13 @@ def main():
         if args.watch:
             # Wait for the previous runner to finish closing its subscription process.
             time.sleep(1)
-            result = client.call("run", mode="watch", target="window:" + window_id, seconds=120,
-                                 request="Watch the status label below confirm and report its text when it changes. Include the exact new status text.")
+            result = client.call(
+                "run",
+                mode="watch",
+                target="window:" + window_id,
+                seconds=120,
+                request="Watch the status label below confirm and report its text when it changes. Include the exact new status text.",
+            )
             watch_sid = result["session"]["id"]
             after = 0
             observations = []
@@ -259,7 +288,9 @@ def main():
                 if client.call("status")["session"]["state"] != "active":
                     break
             receipt["watch_observations"] = observations
-            assert len(observations) >= 2 and "purple triangle" in observations[-1]["text"].lower(), observations
+            assert (
+                len(observations) >= 2 and "purple triangle" in observations[-1]["text"].lower()
+            ), observations
             assert not any(event.get("tool_calls") for event in observations)
             receipt["checks"]["live_watch_updates"] = True
     finally:

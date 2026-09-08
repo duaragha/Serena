@@ -101,6 +101,10 @@ class ComputerServer(ThreadingHTTPServer):
         while not self.controller.shutdown.wait(0.05):
             s = self.controller.session
             if s and s.state == "active":
+                with self.controller.lock:
+                    for identifier, frame in list(s.frames.items()):
+                        if time.time() >= frame["expires_at"]:
+                            s.frames.pop(identifier, None)
                 if time.time() >= s.expires_at:
                     self.controller.stop("session expired")
                 elif self.indicator_process and (
@@ -165,6 +169,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve():
+    if os.name == "nt":
+        raise ComputerError("computer use currently requires the Linux X11 desktop service")
     directory = state_dir()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory.chmod(0o700)
@@ -177,7 +183,33 @@ def serve():
     except BlockingIOError:
         raise SystemExit("computer service is already running") from None
     desktop = create_desktop()
-    controller = ComputerController(desktop)
+    from core.control_plane import ControlPlaneStore
+
+    ledger = ControlPlaneStore()
+
+    def publish(event):
+        # Keep lifecycle/latency evidence, not screen text, typed text, or pixels.
+        allowed = {
+            "mode",
+            "target",
+            "reason",
+            "model",
+            "model_ms",
+            "request_id",
+            "ok",
+            "status",
+            "actions_executed",
+        }
+        with contextlib.suppress(Exception):
+            ledger.append_event(
+                surface="action",
+                event_type="computer." + event["type"],
+                lifecycle_state=event["type"],
+                session_id=event.get("session_id"),
+                payload={k: v for k, v in event.items() if k in allowed},
+            )
+
+    controller = ComputerController(desktop, publish=publish)
     server = ComputerServer(controller, directory=directory)
     info = {
         "port": server.server_port,

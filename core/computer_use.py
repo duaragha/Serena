@@ -40,6 +40,7 @@ class Session:
     last_signature: str = ""
     last_inspected_at: float | None = None
     observation: str = ""
+    action_deadline: float = 0
 
 
 def number(value, name, minimum, maximum):
@@ -86,7 +87,9 @@ class ComputerController:
                 None
                 if s is None
                 else {
-                    "id": s.id,
+                "id": s.id,
+                "request": s.request,
+                "owner": s.owner,
                     "mode": s.mode,
                     "target": s.target,
                     "state": s.state,
@@ -431,6 +434,9 @@ class ComputerController:
             if kind == "scroll":
                 for axis in ("scroll_x", "scroll_y"):
                     number(a.get(axis, 0), axis, -1200, 1200)
+        text = "".join(a.get("text", "") for a in actions if a["type"] == "type")
+        if len(text) > 500 or sum(ord(char) > 127 for char in text) > 100 or "\x00" in text:
+            raise ComputerError("split text into batches of at most 500 characters / 100 non-ASCII characters; NUL is unsupported")
 
     def act(self, session_id, frame_id, actions, *, request_id, intent, confirmation_id=""):
         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
@@ -483,9 +489,12 @@ class ComputerController:
             while len(s.results) > 100:
                 s.results.popitem(last=False)
             self.event("action_started", session_id=s.id, request_id=request_id, intent=intent)
+            s.action_deadline = time.monotonic() + 15
             try:
                 for action in actions:
                     self.current(session_id)
+                    if self._input_cancelled(s):
+                        raise ComputerError("input batch deadline reached; inspect the partial result")
                     if self.authority.lock_state()["engaged"] or self.desktop.locked():
                         raise ComputerError("input stopped by lock")
                     if self.geometry(s.target)[2] != geometry:
@@ -559,7 +568,7 @@ class ComputerController:
             self.desktop.button(button, True)
             try:
                 for p in path[1:]:
-                    if s.cancelled.wait(0.02):
+                    if s.cancelled.wait(0.02) or self._input_cancelled(s):
                         raise ComputerError("drag cancelled")
                     self.desktop.move(*self._point(frame, **p, monitors=monitors))
             finally:
@@ -573,9 +582,13 @@ class ComputerController:
             finally:
                 self.desktop.release()
         elif kind == "type":
-            self.desktop.type_text(a["text"], s.cancelled.is_set)
+            self.desktop.type_text(a["text"], lambda: self._input_cancelled(s))
         elif kind == "wait" and s.cancelled.wait(a.get("seconds", 0.5)):
             raise ComputerError("wait cancelled")
+
+    @staticmethod
+    def _input_cancelled(s):
+        return s.cancelled.is_set() or (s.action_deadline > 0 and time.monotonic() >= s.action_deadline)
 
     def close(self):
         self.stop("computer service stopped")

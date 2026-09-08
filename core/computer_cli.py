@@ -154,6 +154,7 @@ def screenshot(output):
 
 def follow(client, *, after=0, session_id=None):
     streamed = False
+    failure = None
     try:
         while True:
             result = client.call("events", after=after, timeout=10)
@@ -177,7 +178,11 @@ def follow(client, *, after=0, session_id=None):
                     )
                 elif kind in {"error", "speech_error", "stopped"}:
                     click.echo("\n" + str(event.get("error") or event.get("reason")), err=True)
+                    if kind == "error":
+                        failure = event["error"]
                 if kind == "stopped":
+                    if failure:
+                        raise ComputerError(failure)
                     return
             current = client.call("status").get("session")
             if (
@@ -201,6 +206,10 @@ def events():
 @computer.command()
 def install():
     """Enable the X11 helper at login, without starting a capture session."""
+    if getattr(sys, "frozen", False):
+        raise ComputerError(
+            "install the login service using chats computer install from the source CLI, whose path survives AppImage unmounts"
+        )
     if sys.platform != "linux":
         raise ComputerError("automatic service installation currently supports Linux X11")
     from core.computer_client import child_command
