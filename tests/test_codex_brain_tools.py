@@ -10,6 +10,39 @@ from core.codex_brain_tools import (
 )
 
 
+def test_image_results_preserve_pixels_and_order_without_serializing_them_as_text():
+    import base64
+
+    from core.codex_brain_tools import _handler_result
+
+    encoded = base64.b64encode(b"synthetic image bytes").decode()
+    result = _handler_result({"content": [
+        {"type": "text", "text": "frame 123"},
+        {"type": "image", "data": encoded, "mimeType": "image/png"},
+        {"type": "text", "text": "captured now"},
+    ]})
+    assert result == {"success": True, "contentItems": [
+        {"type": "inputText", "text": "frame 123"},
+        {"type": "inputImage", "imageUrl": f"data:image/png;base64,{encoded}"},
+        {"type": "inputText", "text": "captured now"},
+    ]}
+    image_only = _handler_result({"content": [SimpleNamespace(
+        type="image", data=encoded, mimeType="image/png",
+    )]})
+    assert [item["type"] for item in image_only["contentItems"]] == ["inputImage"]
+
+
+def test_invalid_image_fails_without_leaking_payload_and_mcp_errors_stay_failed():
+    import pytest
+
+    from core.codex_brain_tools import CodexBrainToolError, _handler_result
+
+    with pytest.raises(CodexBrainToolError, match="valid base64"):
+        _handler_result({"content": [{"type": "image", "data": "secret!", "mimeType": "image/png"}]})
+    result = _handler_result({"isError": True, "content": [{"type": "text", "text": "refused"}]})
+    assert result["success"] is False
+
+
 def test_real_coding_tools_keep_their_existing_handlers_and_contracts() -> None:
     registry = CodexBrainToolRegistry(
         {"serena_work": ("Serena coding work.", WORK_TOOLS)}

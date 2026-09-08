@@ -38,6 +38,7 @@ mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
   --paths "$repo_root" \
   --paths "$site_packages" \
   --collect-all numpy \
+  --collect-submodules Xlib \
   --add-data "$repo_root/ui/static:ui/static" \
   "$desktop_dir/sidecar.py"
 

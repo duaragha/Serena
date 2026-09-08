@@ -16,6 +16,12 @@ if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
     mcp.run()
     raise SystemExit(0)
 
+if __name__ == "__main__" and sys.argv[1:2] == ["computer"]:
+    from core.computer_cli import computer
+
+    computer.main(args=sys.argv[2:], prog_name="serena computer")
+    raise SystemExit(0)
+
 # ui.web reads this at import time. Desktop startup should not eagerly allocate
 # the voice stack just to paint the first window.
 os.environ.setdefault("SERENA_CALL_RUNTIME", "lazy")

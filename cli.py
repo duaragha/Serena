@@ -2784,5 +2784,9 @@ def _detect_serena_port() -> int | None:
     return ports[0] if ports else None
 
 
+from core.computer_cli import computer
+
+main.add_command(computer)
+
 if __name__ == "__main__":
     main()

@@ -49,6 +49,7 @@ class CodexBrainClient:
         ephemeral: bool = False,
         environ: dict[str, str] | None = None,
         tool_registry=None,
+        base_instructions: str | None = None,
     ) -> None:
         self.cwd = Path(cwd).expanduser().resolve()
         self.developer_instructions = developer_instructions
@@ -67,6 +68,7 @@ class CodexBrainClient:
         self.ephemeral = bool(ephemeral)
         self.environ = strip_metered_auth_env(dict(os.environ if environ is None else environ))
         self.tool_registry = tool_registry
+        self.base_instructions = base_instructions or BASE_INSTRUCTIONS
         self.tool_contract = str(getattr(tool_registry, "contract_id", "none-v1"))
         self.process: asyncio.subprocess.Process | None = None
         self.thread_id: str | None = None
@@ -165,7 +167,7 @@ class CodexBrainClient:
             "cwd": str(self.cwd),
             "approvalPolicy": "never",
             "sandbox": "read-only",
-            "baseInstructions": BASE_INSTRUCTIONS,
+            "baseInstructions": self.base_instructions,
             "developerInstructions": self.developer_instructions,
             "config": {
                 "features": {"shell_tool": False},
@@ -374,6 +376,14 @@ class CodexBrainClient:
             {"threadId": self.thread_id, "turnId": self.active_turn_id},
         )
 
+    async def steer(self, message: str) -> None:
+        if not self.thread_id or not self.active_turn_id:
+            raise CodexBrainError("no active turn to steer")
+        await self._request("turn/steer", {
+            "threadId": self.thread_id, "expectedTurnId": self.active_turn_id,
+            "input": [{"type": "text", "text": message}],
+        })
+
     async def _request(self, method: str, params: dict[str, Any]) -> Any:
         if self.process is None or self.process.returncode is not None:
             raise CodexBrainError(self._process_failure("Codex app-server is not running"))
@@ -506,6 +516,7 @@ class CodexBrainClient:
     async def close(self) -> None:
         process, self.process = self.process, None
         self.active_turn_id = None
+        self.thread_id = None
         if process is not None:
             if process.stdin is not None:
                 with contextlib.suppress(OSError, BrokenPipeError):
