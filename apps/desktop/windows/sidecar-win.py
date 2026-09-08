@@ -48,13 +48,56 @@ def _repair_standard_streams() -> None:
             setattr(sys, name, sink)
 
 
-_repair_standard_streams()
+def _restore_peer_streams() -> None:
+    """Windowed PyInstaller has no Python stdio, even with inherited MCP pipes.
+
+    Reconstruct only this explicit stdio-server invocation from duplicated Win32
+    standard handles. Normal GUI launches keep the existing null-stream repair.
+    """
+    for name, number, flags, mode in (
+        ("stdin", -10, os.O_RDONLY, "r"),
+        ("stdout", -11, os.O_WRONLY, "w"),
+        ("stderr", -12, os.O_WRONLY, "w"),
+    ):
+        stream = getattr(sys, name, None)
+        try:
+            os.fstat(stream.fileno())
+            continue
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+        if os.name != "nt":
+            raise RuntimeError("peer MCP requires inherited standard pipes")
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel.GetStdHandle.restype = wintypes.HANDLE
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.DuplicateHandle.argtypes = [
+            wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+            ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+        ]
+        kernel.DuplicateHandle.restype = wintypes.BOOL
+        handle = kernel.GetStdHandle(number)
+        process = kernel.GetCurrentProcess()
+        duplicate = wintypes.HANDLE()
+        if handle in {None, 0, wintypes.HANDLE(-1).value} or not kernel.DuplicateHandle(process, handle, process, ctypes.byref(duplicate), 0, False, 2):
+            raise RuntimeError(f"peer MCP missing inherited {name} pipe")
+        descriptor = msvcrt.open_osfhandle(duplicate.value, flags | os.O_BINARY)
+        restored = os.fdopen(descriptor, mode, encoding="utf-8", buffering=1)
+        _STREAM_SINKS.append(restored)
+        setattr(sys, name, restored)
 
 if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
+    _restore_peer_streams()
     from fleet.peer_mcp import mcp
 
     mcp.run()
     raise SystemExit(0)
+
+_repair_standard_streams()
 
 def _web_runtime():
     """Load the resident web runtime only when the sidecar is serving it.

@@ -247,6 +247,12 @@ to override a stop condition.
 `collaboration` status projection expose authored messages, ack state, native helper sessions,
 requested recovery, and retry receipts. The dashboard has a Peer collaboration panel.
 
+Desktop builds explicitly depend on the MCP SDK and smoke-test `--fleet-peer-mcp` on the frozen
+executable before packaging. The Windows windowed executable reconstructs its inherited standard
+pipes for this mode only, before importing the MCP server; ordinary GUI startup is unchanged.
+This follows [PyInstaller's windowed-stdio contract](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html)
+and [Win32 standard-handle semantics](https://learn.microsoft.com/en-us/windows/console/getstdhandle).
+
 ## Verified Fleet playbooks and measurements
 
 `fleet/learning.py` stores operational lessons in the Fleet database, separate from personal memory.
