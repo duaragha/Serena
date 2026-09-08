@@ -342,6 +342,9 @@ def default_gideon_api() -> GideonAPI:
     global _DEFAULT_API
     if _DEFAULT_API is None:
         _DEFAULT_API = GideonAPI()
+        from core.computer_visual import ComputerVisualAdapter
+
+        _DEFAULT_API.visual = ComputerVisualAdapter(_DEFAULT_API.device_runner.authority)
     return _DEFAULT_API
 
 

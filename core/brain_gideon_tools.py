@@ -27,6 +27,7 @@ from core.action_authority import (
     build_request,
     default_authority,
 )
+from core.brain_computer_tools import COMPUTER_TOOLS
 from core.brain_laptop_tools import current_turn
 from core.gideon_api import GideonAPI, default_gideon_api
 from core.visual_context import CAPTURE_SCOPE, CaptureConsent
@@ -414,6 +415,7 @@ async def gideon_visual_context(args):
     if _api().visual is None:
         return _text({"ok": False, "captured": False, "error": _api().visual_status()["reason"]})
     origin, source, session_id, turn_id = _turn_binding()
+    session_id = session_id or "local-session"
     authority = _api().device_runner.authority
     proof = authority.issue_turn_proof(
         source=source,
@@ -452,6 +454,7 @@ async def gideon_visual_context(args):
 
 
 GIDEON_TOOLS = (
+    *COMPUTER_TOOLS,
     gideon_status,
     gideon_briefing,
     gideon_commitments,
