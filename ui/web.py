@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+import atexit
 import signal
 import subprocess
 import shutil
@@ -13574,5 +13575,30 @@ def run_web(host="0.0.0.0", port=8080, open_browser=False):
                     webbrowser.open(url)
         except Exception:
             pass
+
+    # An idle pane is frozen with SIGSTOP and thawed with SIGCONT, and only
+    # this process knows which panes are frozen. Leaving at any point other
+    # than through here strands them: stopped, orphaned to init, waiting on a
+    # SIGCONT whose only sender just exited. Reopening that chat then starts a
+    # second `codex resume` against a rollout the first one still holds.
+    #
+    # So: clear the previous run's casualties on the way in, and on the way
+    # out thaw everything before terminating it. Restarting the backend is the
+    # routine repair for everything else here, which is exactly why it must
+    # not be the thing creating this.
+    for _stranded in pty_terminal.sweep_stranded_agents():
+        print(f"[serena] reaped stranded agent process {_stranded}", file=sys.stderr)
+
+    atexit.register(pty_terminal.shutdown_all)
+
+    def _leave(signum, _frame):
+        pty_terminal.shutdown_all()
+        raise SystemExit(128 + signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(_sig, _leave)
+        except (OSError, ValueError):
+            pass  # not the main thread, or the platform has no such signal
 
     app.run(host=host, port=port, debug=False, threaded=True)
