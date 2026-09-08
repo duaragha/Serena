@@ -1137,6 +1137,35 @@ def pause(
     return True
 
 
+def _repaint(term: Terminal) -> bool:
+    """Make an event-driven TUI redraw its whole screen.
+
+    A pane that has just been reattached, or just been thawed, is showing
+    either a blank renderer or whatever it was mid-way through drawing when it
+    was frozen. Claude's Ink UI re-renders every frame and heals on its own;
+    codex (ratatui) and agy (bubbletea) redraw only when something happens,
+    and until then sit there garbled. The reconnect path already "forces" a
+    resize for exactly this reason -- but TIOCSWINSZ with unchanged dimensions
+    delivers no SIGWINCH at all (measured: 0 of 2), and the dimensions are
+    unchanged in the ordinary case of the same window and the same layout.
+
+    So the size is nudged one column off and straight back: two real changes,
+    two SIGWINCH, a full redraw, and the pane ends at the size it started.
+    Skipped on Windows, where ConPTY repaints on its own and each resize is a
+    slow call.
+    """
+    if _IS_WINDOWS:
+        return False
+    rows, cols = term.rows, term.cols
+    nudge = cols - 1 if cols - 1 >= MIN_COLS else cols + 1
+    try:
+        term.proc.setwinsize(rows, nudge)
+        term.proc.setwinsize(rows, cols)
+    except (OSError, ValueError, AttributeError):
+        return False
+    return True
+
+
 def _resume_locked(term: Terminal) -> bool:
     if term.runtime_state != "paused":
         return True
@@ -1150,6 +1179,9 @@ def _resume_locked(term: Terminal) -> bool:
     except (OSError, ProcessLookupError):
         return False
     term.runtime_state = "live"
+    # It was stopped in the middle of whatever it was drawing; waking it does
+    # not make it finish. Only a redraw does.
+    _repaint(term)
     return True
 
 
@@ -1570,6 +1602,10 @@ def attach(tid: str) -> tuple[int, bytes] | None:
     # holds flow_lock on every chunk, and nesting the two in opposite orders
     # in different callers is how deadlocks are built.
     resume(tid)
+    # Whether or not it was asleep, the renderer on the other end of this
+    # socket is about to draw from nothing plus a tail of old bytes. The
+    # redraw that lands right after that tail is what turns it into a screen.
+    _repaint(term)
     with term.flow_lock:
         term.attach_seq += 1
         token = term.attach_seq
