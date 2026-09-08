@@ -16,7 +16,9 @@
  * thing forfeited is the SmartScreen prompt on a manual install.
  */
 
-const { app, dialog } = require('electron');
+const { app } = require('electron');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const FEED_HOST = 'github.com';
 
@@ -94,6 +96,7 @@ function describe() {
     channelHost: FEED_HOST,
     feed: `${FEED.owner}/${FEED.repo}`,
     blocker: updateBlocker(),
+    downloadedVersion: downloaded && downloaded.version,
   };
 }
 
@@ -178,93 +181,27 @@ function install() {
   return true;
 }
 
-/** The whole flow behind one menu item, as a native dialog. */
-async function checkInteractively(parentWindow) {
-  const outcome = await check();
-  const parent = parentWindow && !parentWindow.isDestroyed() ? parentWindow : undefined;
-
-  if (outcome.state === 'available') {
-    const { response } = await dialog.showMessageBox(parent, {
-      type: 'info',
-      buttons: ['Download', 'Not now'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Update available',
-      message: `Serena ${outcome.remoteVersion} is available.`,
-      detail: `You are on ${outcome.version} (${outcome.platform}). The download runs in the background; Serena restarts into the new version when you choose to.`,
-    });
-    if (response !== 0) return outcome;
-
-    try {
-      await download();
-    } catch (error) {
-      await dialog.showMessageBox(parent, {
-        type: 'error',
-        title: 'Download failed',
-        message: 'The update could not be downloaded.',
-        detail: String((error && error.message) || error).slice(0, 500),
-      });
-      return { ...outcome, state: 'error' };
-    }
-
-    const { response: restart } = await dialog.showMessageBox(parent, {
-      type: 'info',
-      buttons: ['Restart now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Update ready',
-      message: `Serena ${outcome.remoteVersion} is ready to install.`,
-      detail: 'Restarting closes every open pane. Agents keep their sessions and resume where they left off.',
-    });
-    if (restart === 0) install();
-    return { ...outcome, state: 'downloaded' };
+/** Keep update interaction inside the themed renderer, never an OS dialog. */
+async function openPanel(parentWindow, action) {
+  if (!parentWindow || parentWindow.isDestroyed()) throw new Error('Serena window is unavailable.');
+  const contents = parentWindow.webContents;
+  if (!contents || contents.isDestroyed()) throw new Error('Serena page is unavailable.');
+  if (contents.isLoadingMainFrame()) {
+    await new Promise(resolve => contents.once('did-stop-loading', resolve));
   }
+  if (contents.isDestroyed()) throw new Error('Serena page is unavailable.');
+  // Ship with the shell: a shared backend may still serve an older page.
+  await contents.executeJavaScript(fs.readFileSync(path.join(__dirname, 'about-panel.js'), 'utf8'));
+  if (!contents.isDestroyed()) contents.send('updates:open', { action });
+  return describe();
+}
 
-  const copy = {
-    current: {
-      type: 'info',
-      message: `Serena ${outcome.version} is up to date.`,
-      detail: `Running the ${outcome.platform} build.`,
-    },
-    'none-published': {
-      type: 'info',
-      message: 'No releases have been published yet.',
-      detail: `Serena ${outcome.version} (${outcome.platform}) is the local build. Publish a tagged release and this will start finding updates.`,
-    },
-    unsupported: {
-      type: 'info',
-      message: 'This build cannot update itself.',
-      detail: outcome.reason,
-    },
-    error: {
-      type: 'error',
-      message: 'Could not check for updates.',
-      detail: outcome.reason || 'Unknown error.',
-    },
-  }[outcome.state] || {
-    type: 'info',
-    message: `Serena ${outcome.version}`,
-    detail: outcome.state,
-  };
-
-  await dialog.showMessageBox(parent, { title: 'Check for updates', buttons: ['OK'], ...copy });
-  return outcome;
+async function checkInteractively(parentWindow) {
+  return openPanel(parentWindow, 'check');
 }
 
 async function showAbout(parentWindow) {
-  const facts = describe();
-  const parent = parentWindow && !parentWindow.isDestroyed() ? parentWindow : undefined;
-  await dialog.showMessageBox(parent, {
-    type: 'info',
-    title: 'About Serena',
-    message: `Serena ${facts.version}`,
-    detail: [
-      `${facts.platform} build${facts.packaged ? '' : ' (development)'}`,
-      `Electron ${facts.electron} · Chromium ${facts.chrome} · Node ${facts.node}`,
-    ].join('\n'),
-    buttons: ['OK'],
-  });
-  return facts;
+  return openPanel(parentWindow, 'about');
 }
 
 module.exports = {

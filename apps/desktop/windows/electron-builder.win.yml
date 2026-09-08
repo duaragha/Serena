@@ -17,6 +17,7 @@ files:
   - folder-picker.js
   - menu.js
   - updates.js
+  - about-panel.js
   - releases.js
   - logging.js
   - backend-control.js

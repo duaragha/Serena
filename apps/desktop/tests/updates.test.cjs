@@ -39,6 +39,7 @@ function loadUpdates({ packaged = true, platform = 'linux', appImage = '/tmp/Ser
     },
   };
   const sandboxRequire = (name) => {
+    if (name === 'node:fs' || name === 'node:path') return require(name);
     if (name === 'electron') return electron;
     if (name === 'electron-updater') {
       if (updater === null) throw new Error('not installed');
@@ -52,6 +53,7 @@ function loadUpdates({ packaged = true, platform = 'linux', appImage = '/tmp/Ser
 
   const module = { exports: {} };
   const context = {
+    __dirname: ROOT,
     module,
     exports: module.exports,
     require: sandboxRequire,
@@ -201,12 +203,38 @@ test('the platform label matches the build the user is running', () => {
 
 test('About states the version and the platform it is for', async () => {
   const { api, dialogCalls } = loadUpdates({ platform: 'win32', updater: fakeUpdater() });
+  const sent = [];
+  const parent = { isDestroyed: () => false, webContents: {
+    isDestroyed: () => false, isLoadingMainFrame: () => false,
+    executeJavaScript: async source => { assert.match(source, /desktopAbout/); },
+    send: (channel, payload) => sent.push([channel, payload.action]),
+  } };
+  const facts = await api.showAbout(parent);
+  assert.equal(facts.version, '0.1.0');
+  assert.equal(facts.platform, 'Windows');
+  assert.deepEqual(sent, [['updates:open', 'about']]);
+  assert.equal(dialogCalls.length, 0);
+  await api.checkInteractively(parent);
+  assert.deepEqual(sent[1], ['updates:open', 'check']);
+  assert.equal(dialogCalls.length, 0);
+});
 
-  await api.showAbout();
-
-  const box = dialogCalls.at(-1);
-  assert.match(box.message, /Serena 0\.1\.0/);
-  assert.match(box.detail, /Windows build/);
+test('the About request waits for the renderer and refuses a missing window', async () => {
+  const { api } = loadUpdates();
+  await assert.rejects(api.showAbout(), /window is unavailable/);
+  const sent = [];
+  let ready;
+  const parent = { isDestroyed: () => false, webContents: {
+    isDestroyed: () => false, isLoadingMainFrame: () => true,
+    executeJavaScript: async () => {},
+    once: (event, callback) => { assert.equal(event, 'did-stop-loading'); ready = callback; },
+    send: (channel) => sent.push(channel),
+  } };
+  const pending = api.checkInteractively(parent);
+  assert.equal(sent.length, 0);
+  ready();
+  await pending;
+  assert.deepEqual(sent, ['updates:open']);
 });
 
 test('the feed carries no credential, because the repository is public', () => {
@@ -219,6 +247,16 @@ test('the feed carries no credential, because the repository is public', () => {
     assert.ok(!('token' in feed), `${name}: no credential may be baked into the feed config`);
     assert.ok(!feed.private, `${name}: a private feed would require a credential`);
   }
+});
+
+test('both desktop packages include the themed panel independently of the backend', () => {
+  const linux = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).build;
+  const windows = yaml.load(fs.readFileSync(WIN_CONFIG, 'utf8'));
+  assert.ok(linux.files.includes('about-panel.js'));
+  assert.ok(windows.files.includes('about-panel.js'));
+  const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8');
+  assert.match(preload, /ipcRenderer\.on\('updates:open', listener\)/);
+  assert.match(preload, /ipcRenderer\.removeListener\('updates:open', listener\)/);
 });
 
 test('both platforms publish to the same feed', () => {

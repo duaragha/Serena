@@ -11,6 +11,12 @@ contextBridge.exposeInMainWorld('serenaDesktop', Object.freeze({
   // native menu uses. onProgress returns its own unsubscribe so a re-render
   // cannot leak listeners.
   updates: Object.freeze({
+    onOpen: (handler) => {
+      if (typeof handler !== 'function') throw new TypeError('handler must be a function');
+      const listener = (_event, payload) => handler(payload);
+      ipcRenderer.on('updates:open', listener);
+      return () => ipcRenderer.removeListener('updates:open', listener);
+    },
     describe: () => ipcRenderer.invoke('updates:describe'),
     check: () => ipcRenderer.invoke('updates:check'),
     download: () => ipcRenderer.invoke('updates:download'),

@@ -24,7 +24,7 @@ function aboutSubmenu(getWindow) {
     {
       label: 'Check for Updates…',
       click: () => {
-        // Fire and forget: the dialogs own the interaction from here, and an
+        // Fire and forget: the themed panel owns the interaction from here, and an
         // unhandled rejection in a menu handler would take down the window.
         updates.checkInteractively(getWindow()).catch((error) => {
           console.error('[menu] update check failed:', error && error.message);
