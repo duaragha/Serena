@@ -262,6 +262,7 @@ def test_gideon_capture_consumes_real_turn_proof(controller):
 
         def call(self, method, **params):
             if method == "begin":
+                assert params.pop("interactive") is True
                 params["operator_confirmed"] = True
             return getattr(controller, method)(**params)
 
@@ -342,7 +343,7 @@ def test_mcp_chat_can_start_observe_and_stop_requested_watch(controller, monkeyp
         assert status["session"] is None
         assert "No manual user terminal step" in status["session_start"]["guidance"]
         result = await computer_mcp.computer_start(
-            "watch my left screen and guide me", target="display:left", seconds=30
+            "watch my left screen and guide me", target="display:left", seconds=30, background=False
         )
         sid = result["session"]["id"]
         assert result["session"]["mode"] == "watch"
@@ -417,7 +418,7 @@ def test_mcp_background_start_uses_existing_astra_runner(controller, monkeypatch
         {"seconds": 0},
         {"seconds": 1801},
         {"seconds": True},
-        {"speak": True},
+        {"speak": True, "background": False},
     ],
 )
 def test_mcp_start_rejects_invalid_requests_before_launch(monkeypatch, args):
@@ -479,3 +480,258 @@ def test_modal_dialog_is_in_scope_only_when_owned(controller):
     c.desktop.focus = "unrelated"
     with pytest.raises(ComputerError, match="foreground"):
         c.observe(sid)
+
+
+@pytest.mark.parametrize("entry", ["legacy_begin", "mcp_default"])
+def test_watch_start_actually_produces_advice(controller, monkeypatch, entry):
+    from core import computer_agent, computer_mcp
+    from core.computer_service import ComputerServer
+
+    options = []
+    real_agent = computer_agent.ComputerAgent
+
+    class Model:
+        active_turn_id = None
+
+        def __init__(self, **kwargs):
+            options.append(kwargs)
+
+        async def turn(self, message, **kwargs):
+            assert kwargs["images"][0]["data"]
+            return {"text": "open the next setup step", "tool_calls": []}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(
+        computer_agent,
+        "ComputerAgent",
+        lambda c, speak: real_agent(c, speak=speak, client_factory=Model),
+    )
+    server = ComputerServer(controller)
+
+    class Client:
+        def ensure_running(self):
+            return server.dispatch("status", {}, operator=False)
+
+        def call(self, method, **params):
+            return server.dispatch(method, params, operator=True)
+
+    monkeypatch.setattr(computer_mcp, "ComputerClient", Client)
+    try:
+        if entry == "legacy_begin":
+            result = server.dispatch(
+                "begin",
+                {
+                    "request": "watch my screen and guide me",
+                    "mode": "watch",
+                    "target": "display:left",
+                    "seconds": 30,
+                },
+                operator=True,
+            )
+        else:
+            result = asyncio.run(
+                computer_mcp.computer_start(
+                    "watch my screen and guide me",
+                    target="display:left",
+                    seconds=30,
+                )
+            )
+        assert result["session"]["driver"] == "astra"
+        deadline = time.monotonic() + 3
+        while not controller.session.observation and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller.session.observation == "open the next setup step"
+        assert controller.session.last_inspected_at is not None
+        assert options[0]["model"] == "gpt-6-astra" and options[0]["effort"] == "medium"
+    finally:
+        controller.stop()
+        if controller.agent:
+            controller.agent.thread.join(timeout=3)
+            assert not controller.agent.thread.is_alive()
+        server.server_close()
+
+
+@pytest.mark.parametrize("params", [{"interactive": True}, {"owner": "resident-capture-123"}])
+def test_explicit_sharing_and_legacy_single_capture_do_not_start_worker(
+    controller, monkeypatch, params
+):
+    from core import computer_agent
+    from core.computer_service import ComputerServer
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("a sharing-only capture must not launch a model")
+
+    monkeypatch.setattr(computer_agent, "ComputerAgent", unexpected)
+    server = ComputerServer(controller)
+    try:
+        result = server.dispatch(
+            "begin",
+            {
+                "request": "inspect this screen once",
+                "mode": "watch",
+                "target": "display:left",
+                **params,
+            },
+            operator=True,
+        )
+        assert result["session"]["driver"] == "connected_chat"
+        assert controller.agent is None
+    finally:
+        server.server_close()
+
+
+def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
+    controller, monkeypatch
+):
+    from core import computer_agent
+    from core.computer_service import ComputerServer
+
+    real_agent = computer_agent.ComputerAgent
+    page = ["red"]
+    controller.desktop.capture = lambda rect: Image.new("RGB", (rect.width, rect.height), page[0])
+    second_started = threading.Event()
+    interrupted = threading.Event()
+
+    class Model:
+        active_turn_id = None
+        turns = 0
+
+        def __init__(self, **kwargs):
+            self.release = None
+
+        async def turn(self, message, *, on_delta, **kwargs):
+            self.turns += 1
+            turn = self.turns
+            self.active_turn_id = str(turn)
+            try:
+                if turn == 2:
+                    self.release = asyncio.Event()
+                    second_started.set()
+                    await self.release.wait()
+                    on_delta("obsolete green-page advice")
+                    return {"text": "obsolete green-page advice"}
+                await asyncio.sleep(0.1)
+                return {"text": "red-page advice" if turn == 1 else "blue-page advice"}
+            finally:
+                self.active_turn_id = None
+
+        async def interrupt(self):
+            interrupted.set()
+            self.release.set()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(
+        computer_agent,
+        "ComputerAgent",
+        lambda c, speak: real_agent(c, speak=speak, client_factory=Model),
+    )
+    server = ComputerServer(controller)
+
+    def until(predicate, timeout=3):
+        deadline = time.monotonic() + timeout
+        while not predicate() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert predicate()
+
+    try:
+        server.dispatch(
+            "begin",
+            {
+                "request": "watch this page and guide me",
+                "mode": "watch",
+                "target": "display:left",
+            },
+            operator=True,
+        )
+        until(lambda: controller.session.observation == "red-page advice")
+        page[0] = "green"
+        until(lambda: second_started.is_set())
+        assert controller.session.observation == ""
+        changed_at = time.monotonic()
+        page[0] = "blue"
+        until(lambda: interrupted.is_set(), timeout=1)
+        assert time.monotonic() - changed_at < 1
+        until(lambda: controller.session.observation == "blue-page advice")
+        assert not any("obsolete" in e.get("text", "") for e in controller.events)
+        assert any(e["type"] == "superseded" for e in controller.events)
+    finally:
+        controller.stop()
+        if controller.agent:
+            controller.agent.thread.join(timeout=3)
+            assert not controller.agent.thread.is_alive()
+        server.server_close()
+
+
+def test_watch_capture_retries_a_disappearing_foreground_without_losing_scope(controller):
+    from core.computer_platform import ComputerTransientError
+
+    context = controller.desktop.context
+    calls = []
+
+    def changed_once():
+        calls.append(True)
+        if len(calls) == 1:
+            raise ComputerTransientError("foreground changed")
+        return context()
+
+    controller.desktop.context = changed_once
+    sid, frame = begin(controller, mode="watch")
+    assert frame["session_id"] == sid and controller.current(sid).state == "active"
+
+
+def test_watch_changes_ignore_overlay_resize_and_caret_but_detect_page_content():
+    from PIL import ImageDraw
+
+    from core.computer_watch import changed
+
+    previous = {
+        "rect": {"x": -320, "y": 0, "width": 320, "height": 180},
+        "context": {"id": "browser", "title": "setup"},
+        "indicator_rect": {"x": -315, "y": 5, "width": 90, "height": 25},
+    }
+    current = {
+        **previous,
+        "indicator_rect": {"x": -315, "y": 5, "width": 130, "height": 45},
+    }
+    with Image.new("RGB", (320, 180), "black") as old:
+        with old.copy() as new:
+            draw = ImageDraw.Draw(new)
+            draw.rectangle((5, 5, 135, 50), fill="white")  # Popup resized.
+            draw.line((250, 100, 250, 110), fill="white")  # Blinking caret.
+            assert not changed(previous, current, old, new)
+            draw.rectangle((160, 90, 180, 110), fill="white")  # Page content.
+            assert changed(previous, current, old, new)
+        with Image.new("RGB", (320, 180), (3, 3, 3)) as noise:
+            assert not changed(previous, previous, old, noise)
+        title_change = {**previous, "context": {"id": "browser", "title": "next step"}}
+        assert changed(previous, title_change, old, old)
+
+
+def test_supervisor_allows_first_indicator_handshake_but_stops_lost_heartbeat(controller):
+    from types import SimpleNamespace
+
+    from core.computer_service import ComputerServer
+
+    server = ComputerServer(controller)
+    server.indicator_process = SimpleNamespace(poll=lambda: None)
+    begin(controller, mode="watch")
+    worker = threading.Thread(target=server.supervise, daemon=True)
+    worker.start()
+    try:
+        # begin already requires the first visible acknowledgement before capture.
+        # The supervisor must not mistake its initial zero timestamp for a loss.
+        time.sleep(0.15)
+        assert controller.session.state == "active"
+        server.indicator_seen = time.monotonic() - 4
+        deadline = time.monotonic() + 1
+        while controller.session.state == "active" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller.session.reason == "visible indicator disconnected"
+    finally:
+        controller.shutdown.set()
+        worker.join(timeout=2)
+        server.server_close()

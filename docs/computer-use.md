@@ -50,22 +50,35 @@ Ask the connected chat to watch a selected screen or complete a specific GUI
 task. The chat calls `computer_start` directly from that request; you do not
 need to open a terminal session manually or send a second confirmation.
 
-`computer_start` defaults to desktop observation for the connected chat; select
-a window/display explicitly when the user requests that narrower scope. Use
-`background=true` for continuous overlay coaching or a dedicated Astra GUI
-task, both using GPT-6 Astra with medium reasoning. The connected chat's own
-model handles interactive MCP sessions; opening one does not change that
-chat's model. Background sessions stream through `computer_events` and the
-desktop indicator. Do not send input from the chat alongside a background
-controller.
+`computer_start` defaults to live desktop coaching with `background=true`,
+using GPT-6 Astra at medium reasoning. Select a window/display explicitly when
+the user requests that narrower scope. Background sessions stream through
+`computer_events` and the desktop indicator. Do not send input from the chat
+alongside a background controller.
+
+The background watcher is a separate ephemeral model thread, not a branch of
+the launching chat. It receives the requested task, screen images and its own
+recent observations; it does not inherit the parent's transcript. The parent
+chat must read `computer_events` to include the watcher's advice in its replies.
+There is currently no automatic two-way conversation synchronization.
+
+Use `background=false` only for deliberate interactive MCP sessions handled
+by the connected chat's own model. This shares the screen but does not start
+automatic coaching. The indicator calls this sharing and says automatic
+coaching is off. Status reports the session's `driver` and `observation_state`
+so clients can distinguish a shared screen from a running visual worker.
 
 Already-open chats may have the older tool list cached. `computer_status`
 returns current startup guidance from the helper; those chats can execute
-the CLI fallback themselves after the user's request. Reloading their MCP
-connection makes `computer_start` available. An interactive example:
+the CLI fallback themselves after the user's request: `chats computer watch
+--detach` for live guidance, or `chats computer run --detach` for a GUI task.
+Legacy `begin --mode watch` also starts the watcher. `begin --interactive`
+explicitly opens sharing only, and internal single-use captures never start
+a watcher. Reloading the MCP connection makes `computer_start` available.
+An interactive example:
 
 ```bash
-chats computer begin "complete this specific task" --mode control --target window:12345
+chats computer begin "complete this specific task" --interactive --mode control --target window:12345
 ```
 
 Register the MCP server with an absolute Python and CLI path so it works from
@@ -164,10 +177,28 @@ Live verification on the two 2560×1440 monitors on 2026-09-08 covered:
 | Live watching | Correctly reported a changed fixture status in two consecutive observations |
 | Watch model turns | Approximately 2.5–2.6 seconds in those samples |
 
-These are distinct measurements, not a promised frame rate. At 120 Hz a monitor
-refresh interval is 8.33 ms; capture and model latency remain separate. Watch
-mode samples locally and sends changed screenshots through sequential model
-turns. It is not a continuous video model or a 120 Hz perception loop.
+The original model timings above used low reasoning before the switch to
+medium. They are historical samples, not a latency promise for the current model.
+At 120 Hz a monitor refresh interval is 8.33 ms; capture and model latency remain
+separate. Watch mode now checks for meaningful changes locally every 150 ms
+(or as fast as capture permits), including while Astra is thinking. A change
+clears stale guidance, waits 200 ms for page painting to settle, interrupts an
+obsolete turn and sends the newest frame. Superseded replies cannot become
+the current observation. The popup polls active state every 100 ms.
+
+The detector excludes the popup and ignores small changes such as a caret or
+JPEG noise. Detection is approximate: tiny updates can be missed and substantial
+animation can repeatedly interrupt reasoning. Fresh medium-effort guidance
+still takes model inference time. This is not continuous video or 120 Hz
+perception. `screen_changed`, `superseded` and timestamped `observation` events
+separate local detection from model latency.
+
+The updated loop was verified with real X11 fixture screenshots and Astra at
+medium on an isolated 1600×1000 display: three page changes were detected in
+57–123 ms, and two fresh replies arrived 3.06 and 7.31 seconds after the page
+painted. The latter included interrupting an obsolete turn. No answer for that
+obsolete page was published, and popup updates did not trigger another turn.
+These samples describe that fixture, not a guaranteed desktop latency.
 
 Run reproducible local verification:
 

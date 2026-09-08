@@ -45,9 +45,11 @@ class ComputerServer(ThreadingHTTPServer):
                     "guidance": (
                         "When the user requests computer use in this chat, the agent may start "
                         "that scoped session directly. No manual user terminal step is required. "
-                        "If computer_start is not loaded, execute chats computer begin yourself "
-                        "for interactive MCP use, or chats computer watch/run --detach for "
-                        "background Astra updates. Pass the user's task, mode and intended "
+                        "Use computer_start with its default background=true for live coaching. "
+                        "If that tool is not loaded, execute chats computer watch --detach "
+                        "for live guidance or chats computer run --detach for a GUI task. "
+                        "begin --mode watch also starts the watcher unless --interactive is explicit. "
+                        "Sharing-only sessions do not produce automatic observations. Pass the user's task, mode and intended "
                         "target explicitly; active may be the terminal. Watch is observation "
                         "only; control needs a specific requested GUI task."
                     ),
@@ -79,13 +81,29 @@ class ComputerServer(ThreadingHTTPServer):
                 )
             params = dict(params)
             speak = params.pop("speak", False)
-            result = c.begin(**params, operator_confirmed=True)
-            if method == "run":
+            interactive = params.pop("interactive", False)
+            if not isinstance(interactive, bool):
+                raise ComputerError("interactive must be a boolean")
+            # Old chats used begin --mode watch for coaching. Honor that intent
+            # while leaving internal one-shot captures and explicit sharing alone.
+            start_agent = method == "run" or (
+                params.get("mode") == "watch"
+                and params.get("owner", "cli") in {"cli", "mcp"}
+                and not interactive
+            )
+            c.begin(**params, operator_confirmed=True)
+            if start_agent:
                 from core.computer_agent import ComputerAgent
 
-                c.agent = ComputerAgent(c, speak=speak)
-                c.agent.start()
-            return result
+                c.session.driver = "astra"
+                c.session.observation_state = "starting"
+                try:
+                    c.agent = ComputerAgent(c, speak=speak)
+                    c.agent.start()
+                except Exception:
+                    c.stop("visual worker failed to start")
+                    raise
+            return c.status()
         if method == "observe":
             return c.observe(**params)
         if method == "act":
@@ -139,7 +157,9 @@ class ComputerServer(ThreadingHTTPServer):
                     self.controller.stop("session expired")
                 elif self.indicator_process and (
                     self.indicator_process.poll() is not None
-                    or time.monotonic() - self.indicator_seen > 3
+                    # begin waits for its first acknowledgement before capture.
+                    # An initial zero heartbeat is not a disconnected indicator.
+                    or (self.indicator_seen and time.monotonic() - self.indicator_seen > 3)
                 ):
                     self.controller.stop("visible indicator disconnected")
                 elif self.controller.authority.lock_state()["engaged"]:

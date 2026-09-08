@@ -15,7 +15,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
 from core.action_authority import BASIS_GRANT, build_request, default_authority
-from core.computer_platform import ComputerError, Rect
+from core.computer_platform import ComputerError, ComputerTransientError, Rect
 from core.visual_context import VisualPolicy
 
 MAX_ACTIONS = 12
@@ -40,6 +40,8 @@ class Session:
     last_signature: str = ""
     last_inspected_at: float | None = None
     observation: str = ""
+    driver: str = "connected_chat"
+    observation_state: str = "ready"
     action_deadline: float = 0
 
 
@@ -87,9 +89,9 @@ class ComputerController:
                 None
                 if s is None
                 else {
-                "id": s.id,
-                "request": s.request,
-                "owner": s.owner,
+                    "id": s.id,
+                    "request": s.request,
+                    "owner": s.owner,
                     "mode": s.mode,
                     "target": s.target,
                     "state": s.state,
@@ -97,6 +99,8 @@ class ComputerController:
                     "expires_at": s.expires_at,
                     "last_inspected_at": s.last_inspected_at,
                     "observation": s.observation,
+                    "driver": s.driver,
+                    "observation_state": s.observation_state,
                     "latest_frame": next(reversed(s.frames), None),
                 }
             )
@@ -159,7 +163,15 @@ class ComputerController:
         try:
             if self.indicator:
                 self.indicator(s)
-            self.observe(s.id)
+            for attempt in range(3):
+                try:
+                    self.observe(s.id)
+                    break
+                except ComputerTransientError:
+                    if attempt == 2:
+                        raise
+                    if s.cancelled.wait(0.1):
+                        raise ComputerError("session stopped") from None
         except Exception:
             self.stop("session startup failed")
             raise
@@ -285,7 +297,9 @@ class ComputerController:
                     self.desktop.context().get("id") != context.get("id")
                     or self.geometry(s.target)[2] != geometry
                 ):
-                    raise ComputerError("desktop changed while capturing; request a fresh frame")
+                    raise ComputerTransientError(
+                        "desktop changed while capturing; request a fresh frame"
+                    )
                 self._assert_public_region(rect)
                 if self.indicator_rect:
                     masked = self.indicator_rect
@@ -316,6 +330,9 @@ class ComputerController:
                     "height": image.height,
                     "geometry": geometry,
                     "context": context,
+                    "indicator_rect": self.indicator_rect.to_dict()
+                    if self.indicator_rect
+                    else None,
                     "capture_ms": capture_ms,
                     "media_type": "image/jpeg",
                     "data": base64.b64encode(data).decode(),
@@ -436,7 +453,9 @@ class ComputerController:
                     number(a.get(axis, 0), axis, -1200, 1200)
         text = "".join(a.get("text", "") for a in actions if a["type"] == "type")
         if len(text) > 500 or sum(ord(char) > 127 for char in text) > 100 or "\x00" in text:
-            raise ComputerError("split text into batches of at most 500 characters / 100 non-ASCII characters; NUL is unsupported")
+            raise ComputerError(
+                "split text into batches of at most 500 characters / 100 non-ASCII characters; NUL is unsupported"
+            )
 
     def act(self, session_id, frame_id, actions, *, request_id, intent, confirmation_id=""):
         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
@@ -494,7 +513,9 @@ class ComputerController:
                 for action in actions:
                     self.current(session_id)
                     if self._input_cancelled(s):
-                        raise ComputerError("input batch deadline reached; inspect the partial result")
+                        raise ComputerError(
+                            "input batch deadline reached; inspect the partial result"
+                        )
                     if self.authority.lock_state()["engaged"] or self.desktop.locked():
                         raise ComputerError("input stopped by lock")
                     if self.geometry(s.target)[2] != geometry:
@@ -588,7 +609,9 @@ class ComputerController:
 
     @staticmethod
     def _input_cancelled(s):
-        return s.cancelled.is_set() or (s.action_deadline > 0 and time.monotonic() >= s.action_deadline)
+        return s.cancelled.is_set() or (
+            s.action_deadline > 0 and time.monotonic() >= s.action_deadline
+        )
 
     def close(self):
         self.stop("computer service stopped")

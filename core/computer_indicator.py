@@ -79,8 +79,21 @@ class ComputerIndicator:
         )
 
     def show(self, session):
-        mode = "controlling" if session["mode"] == "control" else "watching"
-        observation = session.get("observation") or "waiting for a visual observation"
+        automated = session.get("driver") == "astra"
+        mode = (
+            ("controlling" if session["mode"] == "control" else "watching")
+            if automated
+            else "sharing"
+        )
+        if automated:
+            waiting = {
+                "starting": "starting gpt-6 astra · medium",
+                "thinking": "astra is reading your screen…",
+                "screen_changed": "page changed · checking the new screen…",
+            }.get(session.get("observation_state"), "watching for relevant screen changes")
+        else:
+            waiting = "screen shared with your chat; automatic coaching is off"
+        observation = session.get("observation") or waiting
         shown = (session["id"], mode, session["target"], observation)
         if shown == self.shown:
             return  # Keep the user's scroll position when the advice has not changed.
@@ -134,7 +147,7 @@ class ComputerIndicator:
             if self.failures >= 5:
                 self.root.destroy()
                 return
-        self.root.after(350, self.poll)
+        self.root.after(100 if self.visible_session else 350, self.poll)
 
 
 def main():
