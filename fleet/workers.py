@@ -13,7 +13,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +57,8 @@ class WorkerRequest:
     assignment_ids: tuple[str, ...] = ()
     review_target_ids: tuple[str, ...] = ()
     resume_session_id: str | None = None
+    peer_token: str = field(default="", repr=False)
+    fleet_db_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +111,14 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
         ]
         if request.phase == "discover" or request.activity == "research":
             base += ["--enable", "standalone_web_search"]
-        # A non-writing leg gets Serena's read-only MCP gateway and nothing
-        # else. Writers keep zero MCP: they already have a shell.
+        # Account gateways stay read-leg-only. Attempt-scoped peer tools are
+        # separate and cannot grant filesystem or account-write authority.
         base += codex_read_mcp_flags(request.access_mode)
+        if request.peer_token:
+            command = _peer_command()
+            base += ["-c", f'mcp_servers.serena_peer.command={json.dumps(command[0])}',
+                     "-c", f'mcp_servers.serena_peer.args={json.dumps(command[1:])}',
+                     "-c", 'mcp_servers.serena_peer.env_vars=["SERENA_FLEET_PEER_TOKEN","SERENA_FLEET_DB_PATH"]']
         if request.resume_session_id:
             base += ["resume", request.resume_session_id, "-"]
         else:
@@ -126,10 +133,18 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
         )
         if request.access_mode != "write":
             disallowed += ",Edit,Write,NotebookEdit"
-        # Same rule as Codex: read legs get the gateway, writers get nothing.
+        # Same rule as Codex: only read legs receive the account gateway.
         # --strict-mcp-config keeps the user's own MCP configuration out either
         # way, so the only reachable tools are the ones Fleet chose per tool.
         read_mcp = claude_read_mcp_flags(request.access_mode)
+        if request.peer_token:
+            config = json.loads(read_mcp[1]) if read_mcp else {"mcpServers": {}}
+            command = _peer_command()
+            config["mcpServers"]["serena_peer"] = {"type": "stdio", "command": command[0], "args": command[1:]}
+            allowed = (read_mcp[3] + ",") if read_mcp else ""
+            allowed += ",".join("mcp__serena_peer__" + name for name in
+                                ("read_messages", "send_message", "request_help", "propose_lesson", "review_lesson"))
+            read_mcp = ["--mcp-config", json.dumps(config), "--allowedTools", allowed]
         # --safe-mode disables MCP servers outright, so a leg that was actually
         # granted read access swaps it for the narrower isolation that does the
         # same job here: no user, project, or local settings, so no hooks,
@@ -558,7 +573,7 @@ def _stream_process(
     process = subprocess.Popen(
         command,
         cwd=request.cwd,
-        env=_worker_environment(),
+        env=_worker_environment(request),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -848,6 +863,11 @@ def _claude_actual_identity(
 def _event_summary(event: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("type") or "event")
     summary: dict[str, Any] = {"type": event_type}
+    if event_type in {"turn.completed", "result"} and isinstance(event.get("usage"), dict):
+        summary["usage"] = {key: value for key, value in event["usage"].items()
+                            if key in {"input_tokens", "output_tokens", "cached_input_tokens",
+                                       "cache_read_input_tokens", "cache_creation_input_tokens"}
+                            and type(value) is int and value >= 0}
     settings = event.get("thread_settings") or event.get("settings") or {}
     if isinstance(settings, dict):
         model = _reported_model(settings.get("model"))
@@ -1044,11 +1064,23 @@ def _binary(provider: str) -> str:
     raise FileNotFoundError(f"{provider} CLI is not installed")
 
 
-def _worker_environment() -> dict[str, str]:
+def _peer_command() -> list[str]:
+    import sys
+
+    root = str(Path(__file__).resolve().parents[1])
+    # A worker's cwd is an isolated project, not Serena's import root.
+    return [sys.executable, "-c", f"import sys; sys.path.insert(0, {root!r}); from fleet.peer_mcp import mcp; mcp.run()"]
+
+
+def _worker_environment(request: WorkerRequest | None = None) -> dict[str, str]:
     environment = strip_metered_auth_env(os.environ)
     environment["PYTHONUNBUFFERED"] = "1"
     environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     environment["SERENA_FLEET_WORKER"] = "1"
+    environment.pop("SERENA_FLEET_PEER_TOKEN", None)
+    if request and request.peer_token:
+        environment["SERENA_FLEET_PEER_TOKEN"] = request.peer_token
+        environment["SERENA_FLEET_DB_PATH"] = request.fleet_db_path
     return environment
 
 

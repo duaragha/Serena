@@ -36,6 +36,28 @@ mcp = FastMCP(
 )
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+def fleet_revoke_lesson(lesson_id: str, reason: str) -> dict[str, Any]:
+    """Revoke an operational lesson without changing any Fleet model or safety policy."""
+    from fleet.learning import FleetLearning
+    from fleet.store import FleetStore
+
+    try:
+        FleetLearning(FleetStore()).rollback(lesson_id, reason)
+        return {"ok": True, "lesson_id": lesson_id, "state": "revoked"}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+def fleet_learning_report(cwd: str) -> dict[str, Any]:
+    """Inspect observed project outcomes and token receipts; never changes Fleet model policy."""
+    from fleet.learning import FleetLearning
+    from fleet.store import FleetStore
+
+    return {"ok": True, **FleetLearning(FleetStore()).report(cwd)}
+
+
 def _ok_run(run: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "run_id": run["run_id"], "run": run}
 

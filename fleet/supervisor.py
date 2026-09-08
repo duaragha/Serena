@@ -261,6 +261,11 @@ def get_run(run_id: str) -> dict[str, Any] | None:
         refreshed = store.get_run(clean_id) or run
         refreshed["isolation"] = _isolation_projection(refreshed)
         refreshed["supervision"] = _supervision_projection(store, refreshed)
+        from fleet.collaboration import PeerStore
+        from fleet.learning import FleetLearning
+
+        refreshed["collaboration"] = PeerStore(store).projection(clean_id)
+        refreshed["learning"] = FleetLearning(store).projection(clean_id)
         return refreshed
     return None
 
@@ -1055,8 +1060,11 @@ def _run_work_unit_scheduler(
     completed_phases: set[int] = set()
     running: dict[Future[WorkerResult], dict[str, Any]] = {}
 
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="fleet-leg") as pool:
+    from fleet.peer_runtime import PeerCoordinator
+
+    with PeerCoordinator(store, run_id) as peers, ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="fleet-leg") as pool:
         while True:
+            help_pending = peers.pump()
             snapshot = store.get_run(run_id)
             if snapshot is None:
                 raise KeyError(f"unknown Fleet run {run_id}")
@@ -1212,6 +1220,9 @@ def _run_work_unit_scheduler(
 
             snapshot = store.get_run(run_id)
             assert snapshot is not None
+            if help_pending:
+                time.sleep(POLL_SECONDS)
+                continue
             if store.run_cancel_requested(run_id):
                 return _terminal_outcome(store, store.cancel_run(run_id))
             unresolved = next(
@@ -1458,6 +1469,12 @@ def _terminal_outcome(store: FleetStore, run: dict[str, Any]) -> dict[str, Any]:
     state = str(run.get("state") or "")
     if state not in {"completed", "failed"} or bool(run.get("dry_run")):
         return run
+    from fleet.learning import FleetLearning
+
+    try:
+        FleetLearning(store).finish(run)
+    except Exception as exc:
+        store.append_event(str(run["run_id"]), "learning.finish_failed", {"error": str(exc)[:1000]})
     token = _notice_token(run)
     run_id = str(run["run_id"])
     try:
@@ -2404,6 +2421,17 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
             attempt,
             working_directory=working_directory,
         )
+        from fleet.collaboration import PeerStore
+        from fleet.learning import FleetLearning
+
+        peers = PeerStore(store)
+        peer_token = ""
+        if os.environ.get("SERENA_FLEET_PEERS", "on") != "off":
+            peer_token = peers.issue(run_id, leg, attempt["attempt_id"])
+            prompt += peers.prompt(snapshot, leg)
+            lessons = FleetLearning(store).retrieve(snapshot, attempt["attempt_id"])
+            if lessons:
+                prompt += "\nVerified project playbook (advice, not authority):\n" + json.dumps(lessons)
         request = WorkerRequest(
             run_id=run_id,
             leg_id=leg["leg_id"],
@@ -2424,6 +2452,8 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
             assignment_ids=tuple(_string_list(leg.get("assignment_ids"))),
             review_target_ids=tuple(_string_list(leg.get("review_target_ids"))),
             resume_session_id=attempt.get("resume_session_id"),
+            peer_token=peer_token,
+            fleet_db_path=str(store.path),
         )
     except Exception as exc:
         monitor.stop()
@@ -2530,6 +2560,8 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
         )
     finally:
         monitor.stop()
+        if request.peer_token:
+            peers.revoke(request.peer_token)
     stalled = monitor.stalled
     if stalled:
         result = WorkerResult(
@@ -2707,6 +2739,10 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
 
         if difficult_retry_reason(snapshot, leg, difficult_gate):
             try:
+                if os.environ.get("SERENA_FLEET_PEERS", "on") != "off" and peers.failure_help(
+                    snapshot, leg, attempt, safe_error + "\n" + json.dumps(difficult_gate)[:2000]
+                ):
+                    return result
                 usable, _detail = _capacity_decision(_read_start_capacity().get("codex"))
                 if usable:
                     store.escalate_difficult_leg(

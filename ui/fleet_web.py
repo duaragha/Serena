@@ -1016,6 +1016,33 @@ function renderIsolation(run, open = false) {
   return panel;
 }
 
+function renderCollaboration(run, open = false) {
+  const peers = run.collaboration;
+  if (!peers) return null;
+  const panel = el('details', 'work-plan');
+  panel.dataset.panel = 'collaboration';
+  panel.open = open;
+  const messages = peers.messages || [];
+  const jobs = peers.help || [];
+  const learning = run.learning || {};
+  panel.append(el('summary', '', 'Peer collaboration · ' + messages.length + ' messages · ' +
+    jobs.filter(j => j.state === 'queued' || j.state === 'running').length + ' help pending · ' +
+    (learning.uses || []).length + ' lesson uses'));
+  for (const job of jobs) panel.append(el('div', 'isolation-row',
+    'help · ' + text(job.helper) + ' · ' + text(job.state) +
+    (job.auto_retry ? ' · automatic repair' : '') + (job.retry_applied ? ' · retry processed' : '') +
+    (job.error ? ' · ' + text(job.error) : '')));
+  for (const message of messages.slice(-24)) panel.append(el('div', 'isolation-row',
+    text(message.sender) + ' → ' + text(message.recipient) + ' · ' + text(message.kind) + ' · ' +
+    (message.acknowledged ? 'acknowledged' : message.delivered ? 'delivered' : 'queued') + '\n' + text(message.body)));
+  for (const lesson of learning.candidates || []) panel.append(el('div', 'isolation-row',
+    'lesson · ' + text(lesson.state) + ' · ' + text(lesson.summary)));
+  for (const outcome of learning.outcomes || []) panel.append(el('div', 'isolation-row',
+    'outcome · ' + text(outcome.state) + ' · ' + Math.round(outcome.duration || 0) + 's · ' +
+    text(outcome.retries) + ' retries · ' + text(outcome.test_gates) + ' passing integration gates'));
+  return panel;
+}
+
 function renderSupervision(run, open = false) {
   const supervision = (run && run.supervision) || null;
   if (!supervision) return null;
@@ -1129,6 +1156,8 @@ function renderDetail() {
     panelState.has('supervision') ? panelState.get('supervision') : false,
   );
   if (supervision) root.append(supervision);
+  const collaboration = renderCollaboration(run, panelState.get('collaboration') || false);
+  if (collaboration) root.append(collaboration);
   const phases = el('div', 'phases');
   const rows = Array.isArray(run.phases) ? run.phases : [];
   if (!rows.length) phases.append(el('div', 'empty', 'phase plan not available yet'));
