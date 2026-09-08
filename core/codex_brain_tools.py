@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import inspect
 import json
@@ -162,26 +164,38 @@ def _arguments(value: object) -> dict[str, Any]:
 
 def _handler_result(result: object) -> dict[str, Any]:
     content = result.get("content") if isinstance(result, Mapping) else None
-    texts: list[str] = []
+    items: list[dict[str, str]] = []
     for item in content or []:
-        text = (
-            item.get("text")
-            if isinstance(item, Mapping)
-            else getattr(item, "text", None)
-        )
+        def field(name, item=item):
+            return item.get(name) if isinstance(item, Mapping) else getattr(item, name, None)
+
+        if field("type") == "image":
+            media_type = field("mimeType")
+            data = field("data")
+            if media_type not in {"image/png", "image/jpeg", "image/webp"}:
+                raise CodexBrainToolError("unsupported tool image media type")
+            if not isinstance(data, str) or len(data) > 28 * 1024 * 1024:
+                raise CodexBrainToolError("tool image exceeds the 20 MB limit")
+            try:
+                decoded = base64.b64decode(data, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise CodexBrainToolError("tool image is not valid base64") from exc
+            if not decoded or len(decoded) > 20 * 1024 * 1024:
+                raise CodexBrainToolError("tool image is empty or exceeds the 20 MB limit")
+            items.append({"type": "inputImage", "imageUrl": f"data:{media_type};base64,{data}"})
+            continue
+        text = field("text")
         if text is not None:
-            texts.append(str(text))
-    if not texts:
+            items.append({"type": "inputText", "text": str(text)})
+    if not items:
         try:
-            texts.append(json.dumps(result, ensure_ascii=False, default=str))
+            text = json.dumps(result, ensure_ascii=False, default=str)
         except (TypeError, ValueError):
-            texts.append(str(result))
+            text = str(result)
+        items.append({"type": "inputText", "text": text})
     return {
-        "success": True,
-        "contentItems": [
-            {"type": "inputText", "text": text}
-            for text in texts
-        ],
+        "success": not (isinstance(result, Mapping) and result.get("isError", False)),
+        "contentItems": items,
     }
 
 
