@@ -89,6 +89,13 @@ paths and run those writers concurrently. If it cannot prove ownership before la
 repository-wide claim and serial execution. This keeps provider sandbox differences from changing
 whether identical work is accepted.
 
+Explicit positive ownership may name a new file before it exists. Read-only,
+preserve, and negated clauses are not ownership. When retrying a failed writer,
+Fleet repairs older missing-file declarations from the original frozen workstream:
+it adds the missing paths without dropping existing claims, changing completed
+attempts, or widening to a repository claim. The policy and materialized contract
+are updated together with a `run.retry_ownership_refreshed` receipt.
+
 ## The phase matrix and worker identity
 
 Fleet runs one locked model per phase, and every agent in that phase runs it:

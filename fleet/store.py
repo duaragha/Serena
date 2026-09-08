@@ -1020,6 +1020,56 @@ class FleetStore:
                 policy = json.loads(str(row["policy_json"] or "{}"))
             except json.JSONDecodeError as exc:
                 raise ValueError("Fleet policy snapshot is not valid JSON") from exc
+            # Older planners dropped explicitly assigned files that did not
+            # yet exist. Refresh only unfinished writing units from their
+            # original frozen workstream text. Completed attempt receipts and
+            # every other contract field remain immutable.
+            ownership_refreshes = []
+            if row["activity"] == "coding":
+                from fleet.contracts import extract_declared_paths
+
+                unfinished_writers = connection.execute(
+                    "SELECT phase_index, ordinal FROM fleet_legs "
+                    "WHERE run_id = ? AND access_mode = 'write' AND state IN ('failed', 'cancelled', 'interrupted')",
+                    (run_id,),
+                ).fetchall()
+                assignment_ids = set()
+                for writer in unfinished_writers:
+                    worker = policy["phases"][int(writer["phase_index"])]["workers"][int(writer["ordinal"])]
+                    assignment_ids.update(worker.get("assignment_ids") or [])
+                sources = {item["id"]: item for item in policy.get("workstreams", [])}
+                for unit in policy.get("work_units", []):
+                    unit_id = unit.get("id")
+                    source = sources.get(unit_id)
+                    if unit_id not in assignment_ids or not source:
+                        continue
+                    paths = extract_declared_paths(
+                        str(source.get("title") or "") + "\n" + str(source.get("description") or ""),
+                        cwd=str(row["cwd"]),
+                    )
+                    ownership = unit.get("file_ownership") or {}
+                    previous = ownership.get("declared_paths") or []
+                    # Existing frozen scope can include later Fix authority.
+                    # Add missing declarations without revoking that scope.
+                    paths = list(dict.fromkeys([*previous, *paths]))
+                    # No positive declaration means the previous bounded
+                    # ownership remains, rather than widening to repo-wide.
+                    if not paths or paths == previous or ownership.get("mode") == "read_only":
+                        continue
+                    unit["file_ownership"] = {**ownership, "mode": "declare_before_edit", "declared_paths": paths}
+                    connection.execute(
+                        "UPDATE fleet_work_units SET contract_json = ?, updated_at = ? "
+                        "WHERE run_id = ? AND unit_id = ?",
+                        (json.dumps(unit, separators=(",", ":"), sort_keys=True), now, run_id, unit_id),
+                    )
+                    ownership_refreshes.append({"unit_id": unit_id, "previous_paths": previous, "declared_paths": paths})
+                if ownership_refreshes:
+                    connection.execute(
+                        "UPDATE fleet_runs SET policy_json = ?, updated_at = ? WHERE run_id = ?",
+                        (json.dumps(policy, separators=(",", ":"), sort_keys=True), now, run_id),
+                    )
+                    self._insert_event(connection, run_id=run_id, event_type="run.retry_ownership_refreshed",
+                                       payload={"units": ownership_refreshes, "source": "frozen_workstreams"})
             remapped_review_legs = repair_work_unit_review_ownership(
                 connection,
                 run_id=run_id,
