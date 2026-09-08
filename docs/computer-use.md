@@ -46,7 +46,23 @@ used. Failure to register the actual stop shortcut prevents startup.
 
 ## CLI agent integration
 
-Open a bounded lease before giving an MCP agent the desktop:
+Ask the connected chat to watch a selected screen or complete a specific GUI
+task. The chat calls `computer_start` directly from that request; you do not
+need to open a terminal session manually or send a second confirmation.
+
+`computer_start` defaults to desktop observation for the connected chat; select
+a window/display explicitly when the user requests that narrower scope. Use
+`background=true` for continuous overlay coaching or a dedicated Astra GUI
+task, both using GPT-6 Astra with medium reasoning. The connected chat's own
+model handles interactive MCP sessions; opening one does not change that
+chat's model. Background sessions stream through `computer_events` and the
+desktop indicator. Do not send input from the chat alongside a background
+controller.
+
+Already-open chats may have the older tool list cached. `computer_status`
+returns current startup guidance from the helper; those chats can execute
+the CLI fallback themselves after the user's request. Reloading their MCP
+connection makes `computer_start` available. An interactive example:
 
 ```bash
 chats computer begin "complete this specific task" --mode control --target window:12345
@@ -60,9 +76,10 @@ codex mcp add serena-computer -- /path/to/serena/.venv/bin/python /path/to/seren
 claude mcp add --scope user serena-computer -- /path/to/serena/.venv/bin/python /path/to/serena/cli.py computer mcp
 ```
 
-The stdio server exposes `computer_status`, `computer_observe`, `computer_act`,
-`computer_events`, and `computer_stop`. It deliberately does not expose session
-creation. A lease's task and owner are visible in status. An agent receives
+The stdio server exposes `computer_start`, `computer_status`, `computer_observe`,
+`computer_act`, `computer_events`, and `computer_stop`. The local chat is an
+operator surface: it starts only the task its user requested, and screen text
+cannot supply authorization. A lease's task and owner are visible in status. An agent receives
 mixed text/image MCP content, including frame IDs, timestamps, and coordinates.
 The Codex dynamic-tool adapter preserves images as `inputImage` items instead
 of discarding or JSON-encoding them as text.
