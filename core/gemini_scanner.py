@@ -65,6 +65,17 @@ def conversation_id_for(file_path) -> str:
     return fp.stem
 
 
+def resumable_conversation_path(conversation_id: str) -> Path | None:
+    """A transcript is readable history, not Antigravity's resume state."""
+    if not conversation_id or not re.fullmatch(r"[A-Za-z0-9_-]+", conversation_id):
+        return None
+    for suffix in (".db", ".pb"):
+        candidate = CONVERSATIONS_DIR / (conversation_id + suffix)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def transcript_path(conversation_id: str) -> Path | None:
     """The readable transcript for a conversation, when Antigravity kept one.
 
