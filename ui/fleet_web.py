@@ -419,6 +419,7 @@ button { font: inherit; }
   border-radius: 5px; font-size: 9px; font-weight: 800; border: 1px solid currentColor; }
 .agent-mark.codex { color: var(--codex); background: rgba(176,124,255,.08); }
 .agent-mark.claude { color: var(--claude); background: rgba(193,95,60,.08); }
+.agent-mark.gemini { color: #68a5ff; background: rgba(104,165,255,.08); }
 .leg-copy { min-width: 0; }
 .leg-worker { color: var(--bright); font-weight: 650; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
@@ -429,6 +430,7 @@ button { font: inherit; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .leg-identity .model.codex { color: var(--codex); }
 .leg-identity .model.claude { color: #e58c6f; }
+.leg-identity .model.gemini { color: #68a5ff; }
 .leg-stats { color: var(--dim); font-size: 10px; white-space: nowrap; text-align: right; }
 .leg-actions { display: flex; align-items: center; gap: 6px; }
 .leg-error { grid-column: 2 / -1; color: var(--red); font-size: 10px;
@@ -551,6 +553,7 @@ function capacityTime(value) {
 function providerFor(leg, attempt) {
   const runtime = text((leg && (leg.runtime || leg.provider || leg.backend)) || '').toLowerCase();
   const model = text((attempt && attempt.actual_model) || (leg && leg.model)).toLowerCase();
+  if (runtime === 'gemini' || model.startsWith('gemini-')) return 'gemini';
   return runtime.includes('codex') || model.startsWith('gpt-') || model.includes('sol') || model.includes('terra')
     ? 'codex' : 'claude';
 }
@@ -579,13 +582,15 @@ function routingInfo(run) {
   const phase = ((run && run.phases) || [])[0] || {};
   const policyPhase = (policy.phases || [])[0] || {};
   const workers = (phase.legs && phase.legs.length) ? phase.legs : (policyPhase.workers || []);
-  const counts = { codex: 0, claude: 0 };
+  const counts = { codex: 0, claude: 0, gemini: 0 };
   for (const worker of workers) {
     const provider = providerFor(worker, (worker && worker.current_attempt) || {});
     if (Object.prototype.hasOwnProperty.call(counts, provider)) counts[provider] += 1;
   }
   let roster = '';
-  if (counts.codex && counts.claude) {
+  if (counts.gemini) {
+    roster = counts.gemini + ' gemini research ' + (counts.gemini === 1 ? 'agent' : 'agents');
+  } else if (counts.codex && counts.claude) {
     roster = counts.codex + ' codex + ' + counts.claude + ' claude';
   } else if (counts.codex) {
     roster = 'codex only · ' + counts.codex + (counts.codex === 1 ? ' agent' : ' agents');
@@ -776,7 +781,7 @@ function renderLeg(run, phase, leg) {
   const assignment = text(leg.assignment || '');
   const sessionId = text(attempt.session_id || leg.session_id || '');
   const row = el('div', 'leg');
-  row.append(el('span', 'agent-mark ' + provider, provider === 'codex' ? 'X' : 'C'));
+  row.append(el('span', 'agent-mark ' + provider, provider === 'gemini' ? 'G' : provider === 'codex' ? 'X' : 'C'));
   const copy = el('div', 'leg-copy');
   copy.append(el('div', 'leg-worker', workerLabel));
   if (assignment) copy.append(el('div', 'leg-assignment', 'owns: ' + assignment));
@@ -836,7 +841,7 @@ function renderLeg(run, phase, leg) {
   const targetProvider = provider === 'codex' ? 'claude' : 'codex';
   const currentPhase = text(run.current_phase || '');
   const isCurrentPhase = !currentPhase || text(phase && phase.name) === currentPhase;
-  const canHandoff = LEG_HANDOFF_RUN_STATES.has(runState(run)) &&
+  const canHandoff = provider !== 'gemini' && LEG_HANDOFF_RUN_STATES.has(runState(run)) &&
     isCurrentPhase && !['completed','complete','done','cancelled','canceled'].includes(storedStatus);
   if (canHandoff || leg.handoff_requested || handoffPending) {
     const label = handoffPending || leg.handoff_requested

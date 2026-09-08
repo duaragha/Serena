@@ -266,6 +266,20 @@ def test_collaboration_javascript_compiles_and_renders_untrusted_text(fleet_clie
     subprocess.run(["node", "-e", script], input=page, text=True, check=True, capture_output=True)
 
 
+def test_gemini_provider_badge_is_not_claude(fleet_client):
+    client, _ = fleet_client
+    page = client.get("/fleet/view").get_data(as_text=True)
+    script = r"""
+      const html = require('node:fs').readFileSync(0, 'utf8');
+      const body = html.split('function providerFor')[1].split('function statusPill')[0];
+      const providerFor = new Function('text', 'return function providerFor' + body)(x => String(x ?? ''));
+      if (providerFor({runtime:'gemini',model:'gemini-3.8-flash-high'}, {}) !== 'gemini') throw Error('wrong badge');
+      if (providerFor({runtime:'codex',model:'gpt-6-astra'}, {}) !== 'codex') throw Error('codex regression');
+      if (providerFor({runtime:'claude',model:'claude-opus-5'}, {}) !== 'claude') throw Error('claude regression');
+    """
+    subprocess.run(["node", "-e", script], input=page, text=True, check=True, capture_output=True)
+
+
 def test_list_and_get_runs_keep_full_supervisor_shape(fleet_client):
     client, supervisor = fleet_client
 
