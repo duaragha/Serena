@@ -18,7 +18,7 @@ from importlib import import_module
 from pathlib import Path
 
 if not getattr(sys, "frozen", False):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 os.environ.setdefault("SERENA_CALL_RUNTIME", "lazy")
 
@@ -49,6 +49,12 @@ def _repair_standard_streams() -> None:
 
 
 _repair_standard_streams()
+
+if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
+    from fleet.peer_mcp import mcp
+
+    mcp.run()
+    raise SystemExit(0)
 
 def _web_runtime():
     """Load the resident web runtime only when the sidecar is serving it.

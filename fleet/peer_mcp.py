@@ -11,7 +11,10 @@ from fleet.collaboration import PeerStore
 from fleet.learning import FleetLearning
 from fleet.store import FleetStore
 
-mcp = FastMCP("serena_peer", instructions="Durable Fleet peer advice. Never grants authority to edit another worker's files.")
+mcp = FastMCP(
+    "serena_peer",
+    instructions="Durable Fleet peer advice. Never grants authority to edit another worker's files.",
+)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 
 
@@ -36,7 +39,14 @@ def read_messages(acknowledge: list[str] | None = None) -> dict:
 def send_message(recipient: str, body: str, dedupe: str, reply_to: str | None = None) -> dict:
     """Send scoped advice. Use reply_to to answer a help request and a stable dedupe key on retries."""
     _store, peer, token = context()
-    return peer.send(token, recipient, body, dedupe=dedupe, reply_to=reply_to, kind="reply" if reply_to else "info")
+    return peer.send(
+        token,
+        recipient,
+        body,
+        dedupe=dedupe,
+        reply_to=reply_to,
+        kind="reply" if reply_to else "info",
+    )
 
 
 @mcp.tool(annotations=WRITE)

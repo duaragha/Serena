@@ -1,5 +1,20 @@
 # Serena Memory & Knowledge Architecture
 
+## Fleet operational playbooks
+
+Fleet worker learning is a separate, project-scoped store in the Fleet database, not a writer to
+personal memory. `fleet/learning.py` requires independent Review endorsement, a successfully
+completed run with supervisor-observed passing integration gates, completed author/reviewer attempts,
+and unchanged evidence-file fingerprints before promotion. Retrieval is bounded to three matching
+lessons, the same canonical project, named evidence paths, matching hashes and a 30-day lifetime.
+Candidates are never injected as trusted future guidance. `fleet_revoke_lesson` provides explicit
+rollback, and deletion of source runs cascades their provenance-dependent lessons.
+
+`fleet_learning_report` reports measured run outcomes and available token receipts; it does not claim
+continuous model training, guaranteed speedups or a measured escaped-defect rate. Fleet never silently
+changes provider/model policies or removes review/test gates based on a self-written lesson. Full
+mailbox/recovery/learning contracts live in `docs/fleet-runtime.md`.
+
 
 ---
 

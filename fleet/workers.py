@@ -1067,6 +1067,8 @@ def _binary(provider: str) -> str:
 def _peer_command() -> list[str]:
     import sys
 
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--fleet-peer-mcp"]
     root = str(Path(__file__).resolve().parents[1])
     # A worker's cwd is an isolated project, not Serena's import root.
     return [sys.executable, "-c", f"import sys; sys.path.insert(0, {root!r}); from fleet.peer_mcp import mcp; mcp.run()"]

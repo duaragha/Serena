@@ -7,9 +7,14 @@ import os
 import sys
 from pathlib import Path
 
-
 if not getattr(sys, "frozen", False):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
+    from fleet.peer_mcp import mcp
+
+    mcp.run()
+    raise SystemExit(0)
 
 # ui.web reads this at import time. Desktop startup should not eagerly allocate
 # the voice stack just to paint the first window.
