@@ -76,10 +76,9 @@ PHASE_MODEL_POLICY = {
         # back in retries, which cost a whole leg and wipe it out several times
         # over. (2026-08-24)
         "execute": (("claude", "claude-opus-5", "medium"),),
-        # Sol high is the leanest strong reviewer on the board, 28k tokens across
-        # 37 turns. Review reads a diff and argues with it; paying xhigh for more
-        # turns is not what makes that better.
-        "verify": (("codex", "gpt-5.6-sol", "high"),),
+        # Astra medium is the approved reviewer trial. Coding scores support
+        # evaluating it, while actual defect detection must be measured locally.
+        "verify": (("codex", "gpt-6-astra", "medium"),),
         # Fix stays high while Code drops to medium. It is the phase with no
         # safety net: its mistakes land in already-reviewed code that nothing
         # downstream re-reads, so the rung that is cheap to give up on Code is
@@ -104,13 +103,12 @@ PROVIDER_ONLY_POLICY = {
     "codex": {
         "coding": {
             "discover": (("codex", "gpt-5.6-luna", "max"),),
-            # Sol xhigh gives an exhausted Opus-medium Code leg a small quality
-            # margin instead of merely matching it at Sol high.
-            "execute": (("codex", "gpt-5.6-sol", "xhigh"),),
-            "verify": (("codex", "gpt-5.6-sol", "high"),),
+            # Astra medium replaces Sol xhigh as the approved Code fallback.
+            "execute": (("codex", "gpt-6-astra", "medium"),),
+            "verify": (("codex", "gpt-6-astra", "medium"),),
             # Fix normally runs Opus high and has no downstream safety net, so
-            # its Codex substitute is Sol max rather than the Code-phase rung.
-            "finalize": (("codex", "gpt-5.6-sol", "max"),),
+            # its Codex substitute uses Astra high rather than the Code rung.
+            "finalize": (("codex", "gpt-6-astra", "high"),),
         },
         "research": {
             "discover": (("codex", "gpt-5.6-luna", "max"),),
@@ -138,6 +136,26 @@ PROVIDER_ONLY_POLICY = {
 }
 
 _LEGACY_PROFILE_PHASE = {"coding": "execute", "research": "discover"}
+
+# Explicit, reproducible A/B runs through the normal Fleet entrypoints. Research
+# and Fix are held constant so the experiment changes only Code and Review.
+COMPARISON_PROFILES = {
+    "sol": {"execute": ("codex", "gpt-5.6-sol", "xhigh"),
+            "verify": ("codex", "gpt-5.6-sol", "high")},
+    "astra": {"execute": ("codex", "gpt-6-astra", "medium"),
+              "verify": ("codex", "gpt-6-astra", "medium")},
+}
+
+
+def comparison_profile(task: str) -> str | None:
+    first = task.strip().splitlines()[0] if task.strip() else ""
+    prefix = "Fleet comparison profile:"
+    if not first.startswith(prefix):
+        return None
+    name = first[len(prefix):].strip()
+    if name not in COMPARISON_PROFILES:
+        raise ValueError("Fleet comparison profile must be sol or astra")
+    return name
 
 
 RESEARCH_DEPTHS = frozenset({"full"})
@@ -319,6 +337,7 @@ class FleetPolicy:
     work_units: tuple[dict[str, Any], ...]
     phases: tuple[PhasePolicy, ...]
     handoffs: tuple[dict[str, Any], ...] = ()
+    difficult_retries: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -338,6 +357,7 @@ class FleetPolicy:
             "work_units": [deepcopy(work_unit) for work_unit in self.work_units],
             "phases": [phase.to_dict() for phase in self.phases],
             "handoffs": [dict(handoff) for handoff in self.handoffs],
+            "difficult_retries": [dict(item) for item in self.difficult_retries],
         }
 
 
@@ -819,6 +839,13 @@ def build_policy(
         }
     else:
         phase_workers = configured_phases
+    comparison = comparison_profile(task)
+    if comparison:
+        if activity != "coding" or selected_mode != "codex":
+            raise ValueError("Fleet comparison profiles require coding and codex-only mode")
+        phase_workers = dict(phase_workers)
+        for phase, spec in COMPARISON_PROFILES[comparison].items():
+            phase_workers[phase] = _worker_entries((spec,))
     phases: list[PhasePolicy] = []
     for index, name in enumerate(PHASES):
         roster = _select_roster(
@@ -1092,6 +1119,7 @@ def policy_from_snapshot(snapshot: dict[str, Any]) -> FleetPolicy:
             for item in (snapshot.get("handoffs") or ())
             if isinstance(item, dict)
         ),
+        difficult_retries=tuple(dict(item) for item in snapshot.get("difficult_retries", [])),
     )
 
 
@@ -1129,7 +1157,25 @@ def validate_policy_snapshot(snapshot: object) -> None:
     handoffs = snapshot.get("handoffs") or []
     if not isinstance(handoffs, list) or any(not isinstance(item, dict) for item in handoffs):
         raise ValueError("Fleet policy handoffs must be a list of objects")
-    if provider_mode == "adaptive" and not handoffs:
+    difficult_retries = snapshot.get("difficult_retries") or []
+    if not isinstance(difficult_retries, list):
+        raise ValueError("Fleet difficult retries must be a list")
+    retry_slots: set[tuple[int, int]] = set()
+    for receipt in difficult_retries:
+        if not isinstance(receipt, dict):
+            raise ValueError("Fleet difficult retry requires a receipt")
+        index, ordinal = receipt.get("phase_index"), receipt.get("ordinal")
+        if (snapshot.get("activity") != "coding" or requested_provider_mode == "claude"
+                or type(index) is not int or index not in {1, 3}
+                or type(ordinal) is not int or not 0 <= ordinal < MAX_WORKERS
+                or (index, ordinal) in retry_slots
+                or (receipt.get("to_provider"), receipt.get("to_model"), receipt.get("to_effort"))
+                != ("codex", "gpt-6-astra", "xhigh")
+                or receipt.get("from_provider") not in PROVIDERS
+                or not all(receipt.get(key) for key in ("attempt_id", "leg_id", "reason", "from_model", "from_effort"))):
+            raise ValueError("Fleet difficult retry receipt violates its bounded coding contract")
+        retry_slots.add((index, ordinal))
+    if provider_mode == "adaptive" and not handoffs and not difficult_retries:
         raise ValueError("adaptive Fleet routing requires a recorded provider handoff")
     parallel = _positive_int(snapshot.get("max_parallel_workers"), "max_parallel_workers")
     if parallel > MAX_WORKERS:
@@ -1296,12 +1342,17 @@ def policy_models_match_contract(
         for stacks in PROVIDER_ONLY_POLICY.values():
             fallback_provider, model, effort = stacks[activity][phase_name][0]
             allowed.setdefault(fallback_provider, set()).add((model, effort))
+        if activity == "coding":
+            for profile in COMPARISON_PROFILES.values():
+                if phase_name in profile:
+                    provider, model, effort = profile[phase_name]
+                    allowed.setdefault(provider, set()).add((model, effort))
         for spec in _baseline_specs(baseline, phase_name):
             allowed.setdefault(spec[0], set()).add((spec[1], spec[2]))
         workers = phases[phase_name].get("workers")
         if not isinstance(workers, list) or not workers:
             return False
-        for worker in workers:
+        for ordinal, worker in enumerate(workers):
             if not isinstance(worker, dict):
                 return False
             provider = str(worker.get("provider") or worker.get("runtime") or "").lower()
@@ -1310,7 +1361,15 @@ def policy_models_match_contract(
                 str(worker.get("effort") or "").lower(),
             )
             if actual not in allowed.get(provider, set()):
-                return False
+                receipt = next((item for item in snapshot.get("difficult_retries", [])
+                                if item.get("phase_index") == PHASES.index(phase_name)
+                                and item.get("ordinal") == ordinal), None)
+                if (activity != "coding" or phase_name not in {"execute", "finalize"}
+                        or snapshot.get("requested_provider_mode") == "claude"
+                        or not receipt or provider != "codex" or actual != ("gpt-6-astra", "xhigh")
+                        or (receipt.get("to_provider"), receipt.get("to_model"), receipt.get("to_effort"))
+                        != (provider, *actual)):
+                    return False
     return True
 
 

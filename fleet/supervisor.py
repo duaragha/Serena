@@ -29,6 +29,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
+from core.session_identity import resolve_origin_session
 from fleet.capacity import read_fleet_capacity
 from fleet.completion import CompletionVerdict, render_evidence_instructions
 from fleet.completion_gate import evaluate_leg_completion
@@ -48,7 +49,6 @@ from fleet.read_mcp import prompt_block as read_mcp_prompt_block
 from fleet.store import DEFAULT_DB_PATH, TERMINAL_RUN_STATES, FleetStore
 from fleet.supervision import FleetSupervisionStore, WorkerLeaseMonitor
 from fleet.workers import WorkerRequest, WorkerResult, run_worker, runtime_doctor
-from core.session_identity import resolve_origin_session
 
 POLL_SECONDS = 0.5
 WAIT_POLL_SECONDS = 0.5
@@ -2604,6 +2604,7 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
             state = "failed"
             safe_error = redact_text(verdict.summary())[0] or "completion evidence rejected"
     integration_blocked = False
+    difficult_gate: dict[str, Any] | None = None
     if state == "completed" and request.access_mode == "write" and _isolation_enabled():
         try:
             integration = _integrate_completed_workspace(
@@ -2630,6 +2631,7 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
                 integration_blocked = True
                 state = "failed"
                 safe_error = redact_text(integration.reason)[0] or "integration was rejected"
+                difficult_gate = integration.test_gate
         except Exception as exc:
             integration_blocked = True
             state = "failed"
@@ -2700,6 +2702,22 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
         ),
         reason=safe_error,
     )
+    if state == "failed" and integration_blocked and difficult_gate:
+        from fleet.retry_policy import difficult_retry_reason
+
+        if difficult_retry_reason(snapshot, leg, difficult_gate):
+            try:
+                usable, _detail = _capacity_decision(_read_start_capacity().get("codex"))
+                if usable:
+                    store.escalate_difficult_leg(
+                        run_id, str(leg["leg_id"]),
+                        attempt_id=str(attempt["attempt_id"]), gate=difficult_gate,
+                    )
+            except Exception as exc:
+                store.append_event(
+                    run_id, "leg.difficult_retry_failed", {"error": str(exc)[:1_000]},
+                    leg_id=str(leg["leg_id"]), attempt_id=str(attempt["attempt_id"]),
+                )
     if (
         evidence_blocked
         and verdict is not None
@@ -3535,6 +3553,15 @@ def _worker_prompt(
                 "finishing, then re-emit a compliant evidence envelope:\n"
                 + safe_prior.strip()[:1_500]
             )
+    retry_receipt = next((item for item in (run.get("policy") or {}).get("difficult_retries", [])
+                          if item.get("leg_id") == leg.get("leg_id")), None)
+    if retry_receipt:
+        retry_reason = redact_text(str(retry_receipt.get("reason") or ""))[0]
+        resume += (
+            "\nThis is the single escalated difficult retry. Repair the concrete integration "
+            "failure below, rerun verification, and preserve all scope and stop conditions. "
+            "A further failure will remain failed for operator review:\n" + retry_reason[:1_500]
+        )
     steering_block, _steering_redactions = redact_text("\n\n".join(steering))
     steering_block = steering_block.strip() or "(none)"
     if len(steering_block) > MAX_STEERING_CONTEXT_CHARS:

@@ -13,6 +13,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from core.work_jobs import process_start_token
 from fleet.context import redact_text, redact_value
 from fleet.contracts import derive_work_unit_views
 from fleet.dag import (
@@ -45,7 +46,6 @@ from fleet.dag import (
 from fleet.dag import (
     reset_leg_for_retry as reset_work_unit_leg_for_retry,
 )
-from core.work_jobs import process_start_token
 
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "fleet.sqlite3"
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled", "planned"})
@@ -1281,6 +1281,87 @@ class FleetStore:
                 event_type="leg.retry_requested",
                 payload={"state": "queued"},
             )
+            return self._snapshot(connection, run_id)
+
+    def escalate_difficult_leg(self, run_id: str, leg_id: str, *, attempt_id: str,
+                               gate: dict[str, Any]) -> dict[str, Any]:
+        """Queue one proven implementation retry, preserving all other legs."""
+        from fleet.policy import policy_models_match_contract, validate_policy_snapshot
+        from fleet.retry_policy import (
+            DIFFICULT_RETRY_EFFORT,
+            DIFFICULT_RETRY_MODEL,
+            difficult_retry_reason,
+        )
+
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = self._require_run(connection, run_id)
+            if run["state"] not in {"queued", "running", "failed"} or run["cancel_requested"] or run["dry_run"]:
+                raise RuntimeError("difficult retry requires an active, uncancelled real run")
+            leg = connection.execute(
+                "SELECT * FROM fleet_legs WHERE run_id = ? AND leg_id = ?", (run_id, leg_id)
+            ).fetchone()
+            if leg is None or leg["state"] != "failed":
+                raise ValueError("difficult retry requires the current failed attempt")
+            attempt = connection.execute(
+                "SELECT * FROM fleet_attempts WHERE attempt_id = ?", (attempt_id,)
+            ).fetchone()
+            if (attempt is None or attempt["leg_id"] != leg_id
+                    or attempt["attempt_number"] != leg["current_attempt"]
+                    or attempt["state"] != "failed" or _process_alive(attempt["pid"], attempt["process_token"])):
+                raise RuntimeError("difficult retry requires a stopped failed attempt")
+            if connection.execute(
+                "SELECT 1 FROM fleet_events WHERE run_id = ? AND leg_id = ? AND type = ?",
+                (run_id, leg_id, "leg.difficult_retry_queued"),
+            ).fetchone():
+                return self._snapshot(connection, run_id)
+            policy = json.loads(run["policy_json"])
+            reason = difficult_retry_reason({"activity": run["activity"], "policy": policy}, dict(leg), gate)
+            if reason is None:
+                raise ValueError("failure is not eligible for a difficult retry")
+            reason = redact_text(reason)[0]
+            receipt = {
+                "phase_index": int(leg["phase_index"]), "ordinal": int(leg["ordinal"]),
+                "leg_id": leg_id, "attempt_id": attempt_id,
+                "from_provider": leg["runtime"], "from_model": leg["requested_model"],
+                "from_effort": leg["requested_effort"], "to_provider": "codex",
+                "to_model": DIFFICULT_RETRY_MODEL, "to_effort": DIFFICULT_RETRY_EFFORT,
+                "reason": reason, "requested_at": now,
+            }
+            policy.setdefault("difficult_retries", []).append(receipt)
+            worker = policy["phases"][int(leg["phase_index"])]["workers"][int(leg["ordinal"])]
+            worker.update(provider="codex", model=DIFFICULT_RETRY_MODEL, effort=DIFFICULT_RETRY_EFFORT)
+            if "runtime" in worker:
+                worker["runtime"] = "codex"
+            if leg["runtime"] != "codex":
+                policy["provider_mode"] = "adaptive"
+            validate_policy_snapshot(policy)
+            if not policy_models_match_contract(str(run["activity"]), policy):
+                raise ValueError("difficult retry violated the frozen Fleet contract")
+            connection.execute(
+                "UPDATE fleet_attempts SET requested_provider = COALESCE(requested_provider, ?), "
+                "requested_model = COALESCE(requested_model, ?), requested_effort = COALESCE(requested_effort, ?) "
+                "WHERE leg_id = ?",
+                (leg["runtime"], leg["requested_model"], leg["requested_effort"], leg_id),
+            )
+            connection.execute(
+                "UPDATE fleet_legs SET runtime = 'codex', requested_model = ?, requested_effort = ?, "
+                "state = 'queued', updated_at = ? WHERE leg_id = ?",
+                (DIFFICULT_RETRY_MODEL, DIFFICULT_RETRY_EFFORT, now, leg_id),
+            )
+            reset_work_unit_leg_for_retry(connection, leg_id=leg_id, now=now)
+            connection.execute(
+                "UPDATE fleet_runs SET policy_json = ?, error = NULL, updated_at = ? WHERE run_id = ?",
+                (json.dumps(policy, separators=(",", ":"), sort_keys=True), now, run_id),
+            )
+            if run["state"] == "failed":
+                connection.execute(
+                    "UPDATE fleet_runs SET state = 'queued', owner_pid = NULL, owner_token = NULL, "
+                    "result_text = NULL, completed_at = NULL WHERE run_id = ?", (run_id,),
+                )
+            self._insert_event(connection, run_id=run_id, leg_id=leg_id, attempt_id=attempt_id,
+                               event_type="leg.difficult_retry_queued", payload=receipt)
             return self._snapshot(connection, run_id)
 
     def request_leg_handoff(

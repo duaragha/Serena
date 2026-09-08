@@ -899,9 +899,9 @@ def test_single_codex_worker_reuses_one_chat_across_all_four_phases(
     assert requests[3].resume_session_id is not None
     assert [(request.model, request.effort) for request in requests] == [
         ("gpt-5.6-luna", "max"),
-        ("gpt-5.6-sol", "xhigh"),
-        ("gpt-5.6-sol", "high"),
-        ("gpt-5.6-sol", "max"),
+        ("gpt-6-astra", "medium"),
+        ("gpt-6-astra", "medium"),
+        ("gpt-6-astra", "high"),
     ]
     verify = requests[2]
     assert verify.review_target_ids == ()
@@ -1219,7 +1219,7 @@ def test_resident_supervisor_replaces_a_complete_stale_model_plan(
     ] == [
         [("gpt-5.6-luna", "max")],
         [("claude-opus-5", "medium")],
-        [("gpt-5.6-sol", "high")],
+        [("gpt-6-astra", "medium")],
         [("claude-opus-5", "high")],
     ]
     assert any(event["type"] == "run.policy_refreshed" for event in store.events(run["run_id"]))
@@ -1822,7 +1822,7 @@ def test_doctor_reports_the_locked_phase_model_matrix(fleet_env, monkeypatch):
     assert policy["coding_phase_models"] == {
         "Research": luna,
         "Code": opus_medium,
-        "Review": sol,
+        "Review": [{"provider": "codex", "model": "gpt-6-astra", "effort": "medium"}],
         "Fix": opus,
     }
     assert policy["research_phase_models"] == {
