@@ -93,7 +93,7 @@ class ComputerAgent:
                 developer_instructions=INSTRUCTIONS,
                 base_instructions=INSTRUCTIONS,
                 model="gpt-6-astra",
-                effort="low",
+                effort="medium",
                 ephemeral=True,
                 tool_registry=registry,
             )

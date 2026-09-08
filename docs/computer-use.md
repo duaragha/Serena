@@ -90,7 +90,7 @@ chats computer install
 ```
 
 The existing Codex CLI must be signed into the ChatGPT subscription. The visual
-runner uses `gpt-6-astra` with low reasoning effort through `codex app-server`,
+runner uses `gpt-6-astra` with medium reasoning effort through `codex app-server`,
 with shell, web search, ambient MCP servers and metered credentials disabled.
 There is no API-key requirement. Each visual thread is ephemeral and rotates
 after eight watch turns. Model choice does not silently fall back to another
