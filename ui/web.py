@@ -13608,7 +13608,10 @@ def run_web(host="0.0.0.0", port=8080, open_browser=False):
         pty_terminal.shutdown_all()
         raise SystemExit(128 + signum)
 
-    for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    for _signal_name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        _sig = getattr(signal, _signal_name, None)
+        if _sig is None:
+            continue
         try:
             signal.signal(_sig, _leave)
         except (OSError, ValueError):
