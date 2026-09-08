@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from pathlib import Path
 
 MODEL = "gemini-3.8-flash-high"
+AGENT = "serena-fleet-research"
 READ_TOOLS = frozenset({"view_file", "list_dir", "find_by_name", "grep_search",
                         "search_web", "read_url_content", "finish"})
 
@@ -37,14 +39,15 @@ class GeminiStream:
             self.initialized = True
             self.session_id = str(event.get("conversation_id") or "") or None
             self.model = str(payload.get("model") or "") or None
-            tools = payload.get("tools")
-            if not isinstance(tools, list) or any(not isinstance(t, str) for t in tools):
-                self.error = "Gemini did not report its tool boundary"
-            elif set(tools) - READ_TOOLS:
-                self.error = "Gemini exposed tools outside the Fleet read-only boundary"
+            # agy 1.1.27 reports the global tool catalog here, not the custom
+            # agent's filtered tools. Verify the selected, pinned definition.
+            if payload.get("agent") != AGENT:
+                self.error = "Gemini did not select the Fleet read-only agent"
             if self.model != MODEL:
                 self.error = "Gemini model identity does not match the pinned Flash high model"
         elif kind == "step_update":
+            if payload.get("step_type") == "tool" and payload.get("tool_name") not in READ_TOOLS | {"manage_task"}:
+                self.error = "Gemini attempted a tool outside the Fleet read-only boundary"
             index = payload.get("step_index")
             if type(index) is int and payload.get("state") == "DONE":
                 if payload.get("step_type") != "user_input":
@@ -71,3 +74,15 @@ class GeminiStream:
         if self.status != "SUCCESS" or not self.output:
             return "Gemini completed without a successful final response"
         return None
+
+
+def verify_agent(cwd: str) -> None:
+    """Never overwrite user config or accept a workspace shadow definition."""
+    template = Path(__file__).with_name("gemini_research_agent.md").read_bytes()
+    installed = Path.home() / ".gemini/config/agents" / AGENT / "agent.md"
+    if not installed.is_file() or installed.read_bytes() != template:
+        raise ValueError(f"Install the exact Fleet research agent template at {installed}")
+    for parent in (Path(cwd).resolve(), *Path(cwd).resolve().parents):
+        root = parent / ".agents/agents"
+        if (root / f"{AGENT}.md").exists() or (root / AGENT).exists():
+            raise ValueError("Workspace definition shadows the Fleet research agent")

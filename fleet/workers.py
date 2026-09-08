@@ -85,12 +85,24 @@ def run_worker(
         return _run_codex(request, cancel_requested=cancel_requested, on_event=on_event)
     if provider == "claude":
         return _run_claude(request, cancel_requested=cancel_requested, on_event=on_event)
+    if provider == "gemini":
+        return _run_gemini(request, cancel_requested=cancel_requested, on_event=on_event)
     raise ValueError(f"unsupported Fleet provider {request.provider}")
 
 
 def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> list[str]:
     """Build the exact provider argv, exposed for policy and regression tests."""
 
+    if request.provider == "gemini":
+        from fleet.gemini import AGENT, MODEL, verify_agent
+        if request.access_mode == "write" or request.phase != "discover":
+            raise ValueError("Experimental Gemini is restricted to Research")
+        if request.model != MODEL or request.effort != "high":
+            raise ValueError("Experimental Gemini requires Flash 3.8 high")
+        verify_agent(request.cwd)
+        return [_binary("agy"), "--agent", AGENT, "--model", MODEL,
+                "--effort", "high", "--disable-slash-commands", "--output-format",
+                "stream-json", "--print-timeout", "30m", "--input-format", "stream-json"]
     if request.provider == "codex":
         base = [
             _binary("codex"),
@@ -260,6 +272,40 @@ def runtime_doctor() -> dict[str, Any]:
         "ready_providers": ready,
         "providers": providers,
     }
+
+
+def _run_gemini(request: WorkerRequest, *, cancel_requested: CancelCallback,
+                on_event: EventCallback) -> WorkerResult:
+    from fleet.gemini import GeminiStream
+    stream = GeminiStream()
+    user_cancelled = False
+
+    def should_cancel() -> bool:
+        nonlocal user_cancelled
+        user_cancelled = user_cancelled or cancel_requested()
+        return user_cancelled or bool(stream.error)
+
+    def parse(line: str) -> None:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        stream.accept(event)
+        if isinstance(event, dict) and event.get("event") == "init" and stream.session_id:
+            on_event("session.started", {"session_id": stream.session_id})
+        if isinstance(event, dict):
+            on_event("worker.event", {"type": "gemini." + str(event.get("event", "")),
+                                      "gemini": event})
+
+    process = _stream_process(worker_command(request), request=request,
+        parse_stdout=parse, cancel_requested=should_cancel,
+        on_event=on_event)
+    error = "cancelled by user" if user_cancelled else stream.completion_error(process.exit_code)
+    on_event("worker.metrics", {"steps": len(stream.completed_steps),
+             "tool_steps": len(stream.tool_steps), "usage": stream.usage})
+    return WorkerResult(not error, stream.output, stream.session_id, stream.model,
+        "high" if stream.model == request.model else None, process.exit_code,
+        error, user_cancelled, process.event_log_path)
 
 
 def _run_codex(
@@ -604,7 +650,9 @@ def _stream_process(
             reader.start()
         assert process.stdin is not None
         with suppress(BrokenPipeError, OSError):
-            process.stdin.write(request.prompt)
+            prompt = (json.dumps({"event": "user", "message": {"content": request.prompt}}) + "\n"
+                      if request.provider == "gemini" else request.prompt)
+            process.stdin.write(prompt)
             process.stdin.close()
         on_event(
             "process.started",
@@ -1080,6 +1128,10 @@ def _worker_environment(request: WorkerRequest | None = None) -> dict[str, str]:
     environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     environment["SERENA_FLEET_WORKER"] = "1"
     environment.pop("SERENA_FLEET_PEER_TOKEN", None)
+    if request and request.provider == "gemini":
+        for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+                    "GEMINI_BASE_URL", "AGY_ADC_AUTH"):
+            environment.pop(key, None)
     if request and request.peer_token:
         environment["SERENA_FLEET_PEER_TOKEN"] = request.peer_token
         environment["SERENA_FLEET_DB_PATH"] = request.fleet_db_path

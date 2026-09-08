@@ -24,7 +24,7 @@ SCHEMA_VERSION = 1
 PHASES = ("discover", "execute", "verify", "finalize")
 ACTIVITIES = frozenset({"auto", "coding", "research"})
 EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
-PROVIDERS = frozenset({"codex", "claude"})
+PROVIDERS = frozenset({"codex", "claude", "gemini"})
 REQUESTED_PROVIDER_MODES = frozenset({"auto", "balanced", "mixed", "codex", "claude"})
 SELECTED_PROVIDER_MODES = frozenset({"balanced", "codex", "claude", "adaptive"})
 SESSION_MODES = frozenset({"per_leg", "persistent_by_worker"})
@@ -715,7 +715,7 @@ def _resolve_provider_mode(
                 )
     else:
         selected_mode = explicit_mode
-    required = PROVIDERS if selected_mode == "balanced" else {selected_mode}
+    required = {"codex", "claude"} if selected_mode == "balanced" else {selected_mode}
     unavailable = [provider for provider in sorted(required) if not capacities[provider][0]]
     if unavailable:
         details = "; ".join(
@@ -838,6 +838,19 @@ def build_policy(
         phase_workers = dict(phase_workers)
         for phase, spec in COMPARISON_PROFILES[comparison].items():
             phase_workers[phase] = _worker_entries((spec,))
+    research_prefix = "Fleet research comparison:"
+    first_line = task.strip().splitlines()[0] if task.strip() else ""
+    if first_line.startswith(research_prefix):
+        variant = first_line[len(research_prefix):].strip()
+        if variant not in {"luna", "gemini"}:
+            raise ValueError("Fleet research comparison must be luna or gemini")
+        if activity != "research" or selected_mode != "balanced":
+            raise ValueError("Fleet research comparisons require research and balanced mode")
+        if variant == "gemini":
+            if not _capacities["gemini"][0]:
+                raise ValueError("Gemini capacity is unavailable")
+            phase_workers = dict(phase_workers)
+            phase_workers["discover"] = _worker_entries((("gemini", "gemini-3.8-flash-high", "high"),))
     phases: list[PhasePolicy] = []
     for index, name in enumerate(PHASES):
         roster = _select_roster(
@@ -1237,7 +1250,7 @@ def validate_policy_snapshot(snapshot: object) -> None:
         elif len(workers) != phase_worker_count:
             raise ValueError("Fleet phases must retain the same durable worker count")
         worker_keys: set[str] = set()
-        provider_counts = {"codex": 0, "claude": 0}
+        provider_counts = {provider: 0 for provider in PROVIDERS}
         for worker in workers:
             _validate_snapshot_worker(worker)
             provider = str(worker.get("provider") or worker.get("runtime") or "").lower()
@@ -1339,6 +1352,8 @@ def policy_models_match_contract(
                 if phase_name in profile:
                     provider, model, effort = profile[phase_name]
                     allowed.setdefault(provider, set()).add((model, effort))
+        if activity == "research" and phase_name == "discover":
+            allowed["gemini"] = {("gemini-3.8-flash-high", "high")}
         for spec in _baseline_specs(baseline, phase_name):
             allowed.setdefault(spec[0], set()).add((spec[1], spec[2]))
         workers = phases[phase_name].get("workers")

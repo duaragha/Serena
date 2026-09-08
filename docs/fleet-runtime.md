@@ -1,5 +1,33 @@
 # Fleet runtime and recovery
 
+## Opt-in Gemini research pilot
+
+For a matched research comparison, use `activity: research`, `provider_mode: balanced`,
+and begin the task with `Fleet research comparison: luna` or
+`Fleet research comparison: gemini`. Only Research changes: Luna max versus
+`gemini-3.8-flash-high` through the subscription-authenticated `agy` CLI.
+Analyze/Review/Refine retain Opus high/Sol high/Opus high. Ordinary defaults are unchanged.
+
+Install the exact `fleet/gemini_research_agent.md` at
+`~/.gemini/config/agents/serena-fleet-research/agent.md`. The adapter verifies the
+definition before launch and rejects workspace overrides. It allows native file
+reads and web search/fetch, not shell execution, writes, delegation, browser
+actuation or account MCP tools. This initial pilot does **not** expose Fleet peer
+MCP or account-read gateways to Gemini; use it for self-contained research only.
+Gemini is not an automatic quota fallback and its exhausted attempts fail for
+explicit same-provider retry, preserving comparison identity.
+
+Antigravity 1.1.27's init `tools` is the global catalog, not the selected agent's
+effective allowlist. The adapter checks the pinned agent and model identities and
+rejects unexpected tool steps. A live negative write-capability probe and native
+search smoke verified the restricted agent. Only `SUCCESS` with final text and
+zero exit is accepted; WAITING, cancelled and missing results cannot pass. Metrics
+deduplicate completed step indices and retain native usage, including thinking tokens.
+CLI stdin uses the documented NDJSON user-message protocol, not a shell argument.
+
+References: [headless protocol](https://antigravity.google/docs/cli/headless/),
+[agent tool definitions](https://antigravity.google/docs/subagents).
+
 Fleet remains a Serena-owned orchestrator over the native `claude` and `codex` programs. It does
 not use Hermes as a dependency, replace Serena's identity, or route through a generic model API.
 

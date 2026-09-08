@@ -734,6 +734,10 @@ def _queue_automatic_capacity_handoff(
     ):
         return
     source = str(leg["runtime"])
+    # Experimental research comparisons must preserve model identity, even on
+    # exhaustion. Gemini failures remain retryable on the same provider.
+    if source == "gemini":
+        return
     target = "claude" if source == "codex" else "codex"
     capacity = _read_start_capacity()
     source_usable, source_reason = _capacity_decision(capacity.get(source))
