@@ -1280,6 +1280,165 @@ def kill_all() -> int:
     return len(tids)
 
 
+# ── freeze/thaw survives this process, or it does not ───────────────────────
+# An idle pane is frozen with SIGSTOP and thawed with SIGCONT, and the fact
+# that it is frozen lives only in this process's Terminal object. Nothing ran
+# at shutdown, so a backend restart while any pane was frozen left the child
+# stopped forever: orphaned to init, no controlling terminal, waiting in
+# do_signal_stop for a SIGCONT that no longer had a sender. Reopening that
+# chat then spawned a SECOND `codex resume` on the same rollout while the
+# first still held it -- which is what "codex is tweaking in the tabs" was.
+#
+# Restarting the backend is the routine repair for everything else here, so it
+# was also the thing quietly manufacturing these.
+
+def _proc_field(pid: int, index: int) -> int | None:
+    """One numeric field of /proc/<pid>/stat, counting from 1 as procfs does.
+
+    The comm field can contain spaces and parentheses, so everything is read
+    relative to the LAST ')' rather than by splitting the whole line.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    close = raw.rfind(")")
+    if close < 0:
+        return None
+    fields = raw[close + 2:].split()
+    # stat field 3 (state) is fields[0] here; field N is fields[N - 3].
+    position = index - 3
+    if position < 0 or position >= len(fields):
+        return None
+    try:
+        return int(fields[position])
+    except ValueError:
+        return None
+
+
+def _is_stopped(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
+            raw = handle.read()
+    except OSError:
+        return False
+    close = raw.rfind(")")
+    return close >= 0 and raw[close + 2:close + 3] == "T"
+
+
+def thaw_all() -> int:
+    """SIGCONT every frozen pane. Safe to call twice; returns how many woke."""
+    if _IS_WINDOWS:
+        return 0
+    with _registry_lock:
+        terms = list(_terminals.values())
+    woken = 0
+    for term in terms:
+        with term.state_lock:
+            if term.runtime_state != "paused":
+                continue
+            try:
+                os.killpg(os.getpgid(term.proc.pid), signal.SIGCONT)
+            except (OSError, ProcessLookupError):
+                continue
+            term.runtime_state = "live"
+            woken += 1
+    return woken
+
+
+def shutdown_all() -> int:
+    """Thaw, then terminate, every PTY this process owns.
+
+    The thaw is not politeness. ``terminate`` escalates SIGHUP -> SIGINT ->
+    SIGTERM before SIGKILL, and a stopped process runs no handler for any of
+    them, so the escalation is spent on a process that cannot answer. Worse,
+    leaving one stopped is how it becomes an orphan nothing can ever wake.
+    """
+    thaw_all()
+    return kill_all()
+
+
+# A stranded pane is unmistakable, but it has to be recognised as a GROUP.
+# Freezing uses killpg, so the whole process group stops together, and what
+# survives the backend is a group whose leader has been reparented to init and
+# which holds no controlling terminal -- the PTY that WAS its terminal died
+# with the backend that owned it. Inside such a group the node wrapper often
+# sits in S while the real binary sits in T, so keying off the stopped process
+# alone missed half of them and left the wrapper holding the rollout.
+#
+# A codex the user runs in a real terminal has a tty and fails the test, which
+# is what keeps this from reaping live work.
+_STRANDED_MARKERS = ("codex", "claude", "gemini", "agy")
+
+
+def _agent_cmdline(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return ""
+    name = raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip().lower()
+    return name if any(marker in name for marker in _STRANDED_MARKERS) else ""
+
+
+def _stranded_groups() -> dict[int, list[int]]:
+    """Process groups left frozen by a previous backend, as ``pgrp -> pids``."""
+    groups: dict[int, list[int]] = {}
+    stopped: set[int] = set()
+    try:
+        pids = [int(entry.name) for entry in os.scandir("/proc") if entry.name.isdigit()]
+    except OSError:
+        return {}
+    for pid in pids:
+        if pid == os.getpid():
+            continue
+        if _proc_field(pid, 7) != 0:          # tty_nr: has a controlling terminal
+            continue
+        if not _agent_cmdline(pid):
+            continue
+        pgrp = _proc_field(pid, 5)
+        if not pgrp:
+            continue
+        groups.setdefault(pgrp, []).append(pid)
+        if _is_stopped(pid):
+            stopped.add(pgrp)
+
+    out: dict[int, list[int]] = {}
+    for pgrp, members in groups.items():
+        if pgrp not in stopped:
+            continue                          # nothing frozen: leave it alone
+        leader_parent = _proc_field(pgrp, 4)
+        # Orphaned when the leader was reparented to init, or has already gone
+        # and left the rest of the group behind.
+        if leader_parent is not None and leader_parent != 1:
+            continue
+        out[pgrp] = sorted(members)
+    return out
+
+
+def sweep_stranded_agents() -> list[int]:
+    """Reap agent process groups a previous backend left frozen.
+
+    Returns the group ids reaped. Run at startup: without it the leak is only
+    ever cleared by a reboot, and a frozen ``codex resume`` keeps its grip on a
+    rollout the user is about to open again.
+    """
+    if _IS_WINDOWS:
+        return []
+    reaped: list[int] = []
+    for pgrp in _stranded_groups():
+        try:
+            # SIGCONT first. A stopped process leaves SIGTERM pending forever,
+            # so terminating one without waking it changes nothing.
+            os.killpg(pgrp, signal.SIGCONT)
+            os.killpg(pgrp, signal.SIGTERM)
+        except (OSError, ProcessLookupError, PermissionError):
+            continue
+        reaped.append(pgrp)
+    return reaped
+
+
 # ── browser flow control + reattach ─────────────────────────────────────────
 # Two problems the xterm.js path has that the native GTK VTE never had.
 #
