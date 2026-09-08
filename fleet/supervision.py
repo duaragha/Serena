@@ -17,7 +17,8 @@ from core.work_jobs import process_start_token
 
 DEFAULT_LEASE_SECONDS = 30.0
 DEFAULT_HEARTBEAT_SECONDS = 5.0
-DEFAULT_STALL_SECONDS = 45.0 * 60.0
+DEFAULT_STALL_SECONDS = 20.0 * 60.0
+DEFAULT_TURN_SECONDS = 90.0 * 60.0
 DEFAULT_MAX_RETRIES = 2
 
 LEASE_STATES = frozenset(
@@ -152,6 +153,10 @@ class FleetSupervisionStore:
                     at,
                 ),
             )
+            connection.execute(
+                "UPDATE fleet_worker_leases SET turn_deadline = ? WHERE attempt_id = ?",
+                (at + _positive(None, "SERENA_FLEET_TURN_SECONDS", DEFAULT_TURN_SECONDS), attempt_id),
+            )
             return self._lease(connection, attempt_id)
 
     def fence_expired_leg(self, leg_id: str, *, now: float | None = None) -> bool:
@@ -242,10 +247,11 @@ class FleetSupervisionStore:
                 """
                 UPDATE fleet_worker_leases
                 SET heartbeat_at = ?, progress_at = CASE WHEN ? THEN ? ELSE progress_at END,
+                    progress_stage = CASE WHEN ? THEN 'healthy' ELSE progress_stage END,
                     lease_expires_at = ?, updated_at = ?
                 WHERE attempt_id = ? AND lease_token = ? AND state = 'active'
                 """,
-                (at, int(progress), at, at + lease_for, at, attempt_id, lease_token),
+                (at, int(progress), at, int(progress), at + lease_for, at, attempt_id, lease_token),
             ).rowcount
             return bool(updated)
 
@@ -286,9 +292,22 @@ class FleetSupervisionStore:
                 return str(row["state"]) == "stalled" if row is not None else False
             if not hmac.compare_digest(str(row["lease_token"]), str(lease_token)):
                 return False
-            if at - float(row["progress_at"]) < float(row["stall_after_seconds"]):
+            age = at - float(row["progress_at"])
+            budget_exceeded = bool(row["turn_deadline"] and at >= row["turn_deadline"])
+            stage = "recovery" if budget_exceeded or age >= row["stall_after_seconds"] else (
+                "suspect" if age >= row["stall_after_seconds"] * 2 / 3 else
+                "warning" if age >= row["stall_after_seconds"] / 3 else "healthy"
+            )
+            if stage != row["progress_stage"]:
+                connection.execute("UPDATE fleet_worker_leases SET progress_stage = ? WHERE attempt_id = ?", (stage, attempt_id))
+                from fleet.store import FleetStore
+                FleetStore._insert_event(connection, run_id=row["run_id"], leg_id=row["leg_id"],
+                    attempt_id=attempt_id, event_type="worker.progress." + stage,
+                    payload={"progress_age_seconds": age, "turn_deadline": row["turn_deadline"],
+                             "reason": "turn budget exceeded" if budget_exceeded else "no completed work observed"})
+            if stage != "recovery":
                 return False
-            reason = (
+            reason = "worker turn budget exceeded" if budget_exceeded else (
                 f"no worker progress for {float(row['stall_after_seconds']):.0f} seconds"
             )
             connection.execute(
@@ -516,6 +535,10 @@ class FleetSupervisionStore:
             item["heartbeat_age_seconds"] = max(0.0, current - lease.heartbeat_at)
             item["progress_age_seconds"] = max(0.0, current - lease.progress_at)
             item["lease_expired"] = lease.lease_expires_at <= current
+            row = next(r for r in rows if r["attempt_id"] == lease.attempt_id)
+            item["progress_stage"] = row["progress_stage"]
+            item["turn_deadline"] = row["turn_deadline"]
+            item["turn_remaining_seconds"] = max(0, (row["turn_deadline"] or current) - current)
             workers.append(item)
         workers.sort(key=lambda item: (item["leg_id"], -int(item["generation"])))
         return {
@@ -586,6 +609,10 @@ class FleetSupervisionStore:
                 );
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(fleet_worker_leases)")}
+            for name, definition in (("progress_stage", "TEXT NOT NULL DEFAULT 'healthy'"), ("turn_deadline", "REAL")):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE fleet_worker_leases ADD COLUMN {name} {definition}")
 
 
 class WorkerLeaseMonitor:

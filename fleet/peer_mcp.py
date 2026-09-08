@@ -57,6 +57,13 @@ def request_help(recipient: str, body: str, dedupe: str) -> dict:
 
 
 @mcp.tool(annotations=WRITE)
+def resolve_request(message_id: str, resolved: bool, reason: str) -> dict:
+    """Requester only: confirm an observed solution, or escalate with a concrete reason. Ack is not resolution."""
+    _store, peer, token = context()
+    return peer.resolve_request(token, message_id, resolved=resolved, reason=reason)
+
+
+@mcp.tool(annotations=WRITE)
 def propose_lesson(summary: str, evidence_paths: list[str]) -> dict:
     """Propose a reusable project fact, backed by unchanged files in the integrated base checkout."""
     store, peer, token = context()

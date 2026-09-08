@@ -947,6 +947,8 @@ def run_supervisor(run_id: str) -> dict[str, Any]:
             interrupted = _run_work_unit_scheduler(store, clean_id, policy)
             if interrupted is not None:
                 return interrupted
+            from fleet.lesson_review import review_final_lessons
+            review_final_lessons(store, clean_id)
         final_phase = policy.phases[-1]
         final_outputs = [
             output
@@ -1471,6 +1473,9 @@ def _terminal_outcome(store: FleetStore, run: dict[str, Any]) -> dict[str, Any]:
     """Route one terminal alert through the shared notification authority."""
 
     state = str(run.get("state") or "")
+    if state in TERMINAL_RUN_STATES:
+        from fleet.collaboration import PeerStore
+        PeerStore(store).reconcile_outcomes(str(run["run_id"]), terminal=True)
     if state not in {"completed", "failed"} or bool(run.get("dry_run")):
         return run
     from fleet.learning import FleetLearning
@@ -1651,10 +1656,25 @@ def serve_forever(
     _recover_outstanding_obligations(store)
     next_capacity_probe = 0.0
     next_control_flush = 0.0
+    next_orphan_probe = 0.0
     active: dict[str, threading.Thread] = {}
+    dead_threads: set[str] = set()
     while not stopper.is_set():
+        dead_threads.update(run_id for run_id, thread in active.items() if not thread.is_alive())
         active = {run_id: thread for run_id, thread in active.items() if thread.is_alive()}
         monotonic_now = time.monotonic()
+        if monotonic_now >= next_orphan_probe:
+            # Keep the dead-thread proof if SQLite is temporarily unavailable.
+            try:
+                for recovered_id in store.recover_stale_runs(dead_threads=dead_threads):
+                    recovered = store.get_run(recovered_id)
+                    if recovered and recovered["state"] in TERMINAL_RUN_STATES:
+                        _terminal_outcome(store, recovered)
+                dead_threads = {rid for rid in dead_threads
+                                if (store.get_run(rid) or {}).get("state") in {"running", "stopping"}}
+            except Exception:
+                pass
+            next_orphan_probe = monotonic_now + 30.0
         if monotonic_now >= next_control_flush:
             with suppress(Exception):
                 store.flush_control_outbox()
@@ -2504,7 +2524,7 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
             live["surfaced_session_id"] = sid
 
     def on_event(event_type: str, payload: dict[str, Any]) -> None:
-        if not monitor.progress():
+        if payload.get("progress") and not monitor.progress():
             raise RuntimeError("Fleet worker lease was fenced")
         if event_type == "process.started":
             live["pid"] = int(payload["pid"])
