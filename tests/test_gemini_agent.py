@@ -182,13 +182,18 @@ def test_gemini_appears_everywhere_the_other_agents_do() -> None:
     assert "_GEMINI_SVG" in page, "no agent badge"
 
 
-def test_a_group_of_three_lays_out_as_a_square() -> None:
-    """Three panes side by side leaves too few columns for an agent TUI."""
+def test_a_group_of_three_lays_out_as_columns() -> None:
+    """Three panes run as columns in one row, in a fixed agent order.
+
+    This was a 2x2 square, to keep each pane wider than a third of the window.
+    Quarters halve the height as well, though, so every cell lost scrollback
+    and the fourth quadrant sat empty for the common three-agent thread. The
+    column geometry itself is covered in test_split_panes_are_columns.py."""
     page = _page()
 
-    assert "_QUAD_MIN_PANES = 3" in page
-    match = re.search(r"const _AGENT_QUAD_ORDER = \[([^\]]*)\]", page)
-    assert match, "no fixed quadrant order"
+    assert "_COLUMN_MIN_PANES = 3" in page
+    match = re.search(r"const _AGENT_PANE_ORDER = \[([^\]]*)\]", page)
+    assert match, "no fixed pane order"
     assert "claude" in match.group(1) and "codex" in match.group(1) and "gemini" in match.group(1)
 
 
