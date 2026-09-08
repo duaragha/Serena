@@ -99,14 +99,14 @@ are updated together with a `run.retry_ownership_refreshed` receipt.
 ## The phase matrix and worker identity
 
 Fleet runs one locked model per phase, and every agent in that phase runs it:
-Research `gpt-5.6-luna` max, Code `claude-opus-5` medium, Review `gpt-6-astra`
+Research `gpt-5.6-luna` max, Code `gpt-6-astra` medium, Review `gpt-6-astra`
 medium, Fix `claude-opus-5` high. `fleet/policy.py` holds it as a hard
 contract, `validate_config` refuses a config that drifts from it, and
 `policy_models_match_contract` re-checks every run before it starts.
 
-For coding runs, confirmed Claude exhaustion maps unfinished Code to
-`gpt-6-astra` medium and unfinished Fix to `gpt-6-astra` high. Review is already
-`gpt-6-astra` medium and does not change. These are per-worker handoffs; healthy
+For coding runs, confirmed Claude exhaustion maps unfinished Fix to
+`gpt-6-astra` high. Code and Review are already `gpt-6-astra` medium and do not
+change. Explicit Claude-only runs retain their Opus stack. These are per-worker handoffs; healthy
 workers and completed phases keep their original routing.
 
 Explicit coding Codex-only experiments may start their task with
@@ -140,10 +140,9 @@ handed to the other provider for capacity or a recorded difficult retry.
 
 Two consequences fall out of alternating providers, both deliberate:
 
-- **Sessions cannot span a provider change.** Code opens a fresh Claude session
-  because Research ran on Codex. Fix continues Code's session, since both are
-  Claude and a fixer repairing code it wrote is a benefit. Review deliberately
-  does *not* continue Research even though both land on Codex, because a
+- **Sessions cannot span a provider change.** Default Code can continue the
+  Codex Research session; default Fix opens a Claude session. Review deliberately
+  does *not* continue Research or Code even though they land on Codex, because a
   reviewer that sat through the research cannot independently disagree with it.
   That suppression is one condition in `fleet_store.py`'s continuation lookup.
 - **A dead provider blocks its phases.** `no-claude:` and `no-codex:` pin a run
@@ -151,7 +150,7 @@ Two consequences fall out of alternating providers, both deliberate:
   to the other provider's stack through the existing handoff path. Both are
   recorded in the frozen policy; `no_silent_fallback` still holds.
 
-Because every phase starts cold on the other provider, Research must end with a
+Because some phases start cold or cross providers, Research must end with a
 `Read map` naming the `path:start-end` regions it actually opened. Rediscovery
 was the largest measured input-token cost on a real Research leg, and the map
 turns it into a lookup.

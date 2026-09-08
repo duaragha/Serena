@@ -69,7 +69,7 @@ def test_policy_routes_exact_models_and_safe_coding_writers():
         [("gpt-5.6-luna", "max")],
         # Code runs medium and Fix runs high on purpose: Code's defects are
         # caught by Review and repaired by Fix, Fix's are not caught by anything.
-        [("claude-opus-5", "medium")],
+        [("gpt-6-astra", "medium")],
         [("gpt-6-astra", "medium")],
         [("claude-opus-5", "high")],
     ]
@@ -115,8 +115,8 @@ def test_provider_handoff_preserves_the_logical_slot_and_uses_each_phase_model()
         original,
         phase_index=1,
         ordinal=1,
-        target_provider="codex",
-        reason="Claude usage exhausted",
+        target_provider="claude",
+        reason="Codex usage exhausted",
         automatic=True,
         requested_at=123.0,
     )
@@ -125,11 +125,11 @@ def test_provider_handoff_preserves_the_logical_slot_and_uses_each_phase_model()
     assert replacement["provider_mode"] == "adaptive"
     # Phase 0 ran before the handoff and keeps the pipeline's Codex research leg.
     assert replacement["phases"][0]["workers"][1]["provider"] == "codex"
-    # Every unfinished phase moves to the Codex escape-hatch stack.
+    # Every unfinished phase moves to the Claude escape-hatch stack.
     assert [phase["workers"][1]["model"] for phase in replacement["phases"][1:]] == [
-        "gpt-6-astra",
-        "gpt-6-astra",
-        "gpt-6-astra",
+        "claude-opus-5",
+        "claude-opus-5",
+        "claude-opus-5",
     ]
     assert [phase["workers"][1]["effort"] for phase in replacement["phases"][1:]] == [
         "medium",
@@ -148,9 +148,9 @@ def test_provider_handoff_preserves_the_logical_slot_and_uses_each_phase_model()
             "phase": "execute",
             "ordinal": 1,
             "worker_key": "agent:b",
-            "from_provider": "claude",
-            "to_provider": "codex",
-            "reason": "Claude usage exhausted",
+            "from_provider": "codex",
+            "to_provider": "claude",
+            "reason": "Codex usage exhausted",
             "automatic": True,
             "requested_at": 123.0,
         }
@@ -364,7 +364,7 @@ def test_three_explicit_workstreams_select_three_durable_agents():
     expected_keys = ["agent:a", "agent:b", "agent:c"]
     expected_models = [
         ["gpt-5.6-luna"] * 3,
-        ["claude-opus-5"] * 3,
+        ["gpt-6-astra"] * 3,
         ["gpt-6-astra"] * 3,
         ["claude-opus-5"] * 3,
     ]
@@ -928,14 +928,8 @@ def test_claude_retry_resumes_only_after_provider_init_confirmed_the_session(tmp
     assert third["resume_session_id"] == "confirmed-session"
 
 
-def test_code_and_fix_share_a_session_while_review_starts_clean(tmp_path):
-    """The two halves of the session rule, in one run.
-
-    Fix continues the session Code worked in: same provider, same agent, and the
-    fixer repairing code it wrote is a benefit. Review deliberately does not
-    continue Research even though both land on Codex, because a reviewer that
-    sat through the research cannot independently disagree with it.
-    """
+def test_code_continues_research_while_review_and_cross_provider_fix_start_clean(tmp_path):
+    """Code reuses Codex research; Review is isolated and Fix crosses providers."""
 
     store = FleetStore(tmp_path / "fleet.sqlite3")
     run = _create(store, activity="coding")
@@ -958,8 +952,9 @@ def test_code_and_fix_share_a_session_while_review_starts_clean(tmp_path):
 
     for index, leg in enumerate(run["phases"][1]["legs"]):
         opened = store.begin_attempt(leg["leg_id"])
-        # Research ran on Codex, so Code opens a fresh Claude session.
-        assert opened["resume_session_id"] is None
+        assert leg["runtime"] == "codex"
+        assert opened["resume_session_id"] == f"research-session-{index}"
+        assert opened["resume_source_phase"] == "discover"
         store.finish_attempt(
             opened["attempt_id"],
             state="completed",
@@ -975,11 +970,12 @@ def test_code_and_fix_share_a_session_while_review_starts_clean(tmp_path):
         assert review["resume_session_id"] is None
         assert review["resume_kind"] is None
 
-    for index, leg in enumerate(run["phases"][3]["legs"]):
+    for leg in run["phases"][3]["legs"]:
         fix = store.begin_attempt(leg["leg_id"])
-        assert fix["resume_session_id"] == f"code-session-{index}"
-        assert fix["resume_kind"] == "phase_continuation"
-        assert fix["resume_source_phase"] == "execute"
+        assert leg["runtime"] == "claude"
+        assert fix["resume_session_id"] is None
+        assert fix["resume_kind"] is None
+        assert fix["resume_source_phase"] is None
 
 
 def test_claude_confirmed_lineage_survives_a_preinit_resumed_failure(tmp_path):
@@ -1373,11 +1369,11 @@ def test_editing_the_matrix_does_not_strand_runs_already_in_flight():
         frozen,
         phase_index=1,
         ordinal=0,
-        target_provider="codex",
-        reason="claude exhausted",
+        target_provider="claude",
+        reason="codex exhausted",
         automatic=True,
     )
-    assert replacement["phases"][1]["workers"][0]["provider"] == "codex"
+    assert replacement["phases"][1]["workers"][0]["provider"] == "claude"
     assert replacement["phases"][1]["workers"][0]["worker_key"] == "agent:a"
 
     # Inventing a model is still refused.

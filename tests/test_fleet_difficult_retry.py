@@ -234,7 +234,7 @@ def test_supervisor_real_integration_failure_retries_once(
     assert result["state"] == ("completed" if repair and codex_available else "failed"), result.get(
         "error"
     )
-    expected = [("execute", "claude-opus-5", "medium")]
+    expected = [("execute", "gpt-6-astra", "medium")]
     if codex_available:
         expected.append(("execute", "gpt-6-astra", "xhigh"))
     assert [call for call in calls if call[0] == "execute"] == expected
