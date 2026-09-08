@@ -45,7 +45,7 @@ def indicator():
 
 @computer.command()
 def mcp():
-    """Expose the already-authorized desktop session over MCP stdio."""
+    """Expose user-requested computer sessions over MCP stdio."""
     from core.computer_mcp import mcp as server
 
     server.run()
@@ -112,7 +112,13 @@ def run(**kwargs):
 @click.option("--target", default="active")
 @click.option("--seconds", type=click.IntRange(1, 1800), default=300)
 def begin(task, mode, target, seconds):
-    """Authorize a bounded session for a connected CLI/MCP agent."""
+    """Start a bounded session for a connected CLI/MCP agent.
+
+    An agent may execute this command directly when the user requests computer
+    use in chat. The user does not need to run it manually. Use their actual
+    task and intended target; active can be the chat terminal. For continuing
+    Astra coaching use watch --detach instead.
+    """
     client = ComputerClient()
     client.ensure_running()
     click.echo(

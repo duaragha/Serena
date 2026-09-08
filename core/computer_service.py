@@ -37,7 +37,22 @@ class ComputerServer(ThreadingHTTPServer):
     def dispatch(self, method, params, operator):
         c = self.controller
         if method == "status":
-            return {**c.status(), "monitors": c.desktop.monitors()}
+            return {
+                **c.status(),
+                "monitors": c.desktop.monitors(),
+                "session_start": {
+                    "mcp_tool": "computer_start",
+                    "guidance": (
+                        "When the user requests computer use in this chat, the agent may start "
+                        "that scoped session directly. No manual user terminal step is required. "
+                        "If computer_start is not loaded, execute chats computer begin yourself "
+                        "for interactive MCP use, or chats computer watch/run --detach for "
+                        "background Astra updates. Pass the user's task, mode and intended "
+                        "target explicitly; active may be the terminal. Watch is observation "
+                        "only; control needs a specific requested GUI task."
+                    ),
+                },
+            }
         if method == "indicator":
             if "rect" in params:
                 value = params["rect"]
