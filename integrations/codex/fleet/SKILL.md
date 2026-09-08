@@ -38,10 +38,10 @@ explicitly asks for one to four agents, pass that exact number as `worker_count`
 it so Fleet scales from the task. Never bury an explicit provider restriction only inside `task`.
 
 Model routing is fixed server-side for every entrypoint. A provider handoff therefore selects the
-target provider, not an arbitrary model. Coding runs use Luna max for Research, Opus medium for
-Code, Astra medium for Review, and Opus high for Fix. On confirmed Claude exhaustion, an unfinished
-Code phase moves to Astra medium and an unfinished Fix phase moves to Astra high; Review stays
-Astra medium. Pure research runs use Luna max for Research, Opus high for Analyze, Sol high for Review,
+target provider, not an arbitrary model. Coding runs use Luna max for Research, Astra medium for
+both Code and Review, and Opus high for Fix. On confirmed Claude exhaustion, an unfinished
+Fix phase moves to Astra high; Code and Review stay Astra medium. Claude-only runs retain their
+explicit Opus stack. Pure research runs use Luna max for Research, Opus high for Analyze, Sol high for Review,
 and Opus high for Refine. Do not pass, imply, or silently substitute another phase model.
 
 For explicitly requested A/B tests, a coding Codex-only task may begin with the exact line

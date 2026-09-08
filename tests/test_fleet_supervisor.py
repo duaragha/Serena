@@ -975,8 +975,8 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
     assert completed["state"] == "completed"
     assert completed["progress"] == {"completed": 8, "total": 8}
     assert completed["agent_count"] == 2
-    # Three chats per agent: Research on Codex, Code and Fix sharing one Claude
-    # chat, and Review on its own Codex chat rather than resuming Research.
+    # Three chats per agent: Research/Code share Codex, Review starts clean,
+    # and Fix starts its own Claude session.
     assert completed["chat_count"] == 6
     assert len(calls) == 8
     assert agent_a_review_started.is_set()
@@ -989,22 +989,20 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
     }
     assert by_phase == {
         "discover": ["codex", "codex"],
-        "execute": ["claude", "claude"],
+        "execute": ["codex", "codex"],
         "verify": ["codex", "codex"],
         "finalize": ["claude", "claude"],
     }
 
-    # Session continuity follows the two rules: only Fix continues an earlier
-    # session, and Review deliberately starts clean even though it shares the
-    # Research provider.
+    # Code continues Research; Review starts clean and Fix crosses providers.
     resumes = {
         name: [resume for phase, _provider, _access, resume in calls if phase == name]
         for name in phase_names
     }
     assert resumes["discover"] == [None, None]
-    assert resumes["execute"] == [None, None]
+    assert all(resume is not None for resume in resumes["execute"])
     assert resumes["verify"] == [None, None]
-    assert all(resume is not None for resume in resumes["finalize"])
+    assert resumes["finalize"] == [None, None]
     assert [access for phase, _provider, access, _resume in calls if phase == "execute"] == [
         "write",
         "write",
@@ -1125,10 +1123,9 @@ tasks:
         label in execute_a.prompt
         for label in ("Agent A", "Agent B", "Agent C", "Agent D")
     )
-    # Code runs on the other provider in a fresh session, so it must be handed
-    # its own Research output too. The own-output trim only applies when a
-    # worker actually resumed a session that already contains it.
-    assert "output-discover-agent:a" in execute_a.prompt
+    # Code resumes its Research session, so its own output is already present.
+    assert execute_a.resume_session_id is not None
+    assert "output-discover-agent:a" not in execute_a.prompt
 
     review_a = next(
         request
@@ -1218,7 +1215,7 @@ def test_resident_supervisor_replaces_a_complete_stale_model_plan(
         for phase in completed["phases"]
     ] == [
         [("gpt-5.6-luna", "max")],
-        [("claude-opus-5", "medium")],
+        [("gpt-6-astra", "medium")],
         [("gpt-6-astra", "medium")],
         [("claude-opus-5", "high")],
     ]
@@ -1358,14 +1355,15 @@ def test_worker_prompt_names_the_actual_isolated_directory(fleet_env):
 def test_persistent_worker_prompt_adds_only_the_peers_previous_phase_output(fleet_env):
     """A worker that really resumed a session is not re-handed its own output.
 
-    Fix is the phase that continues an earlier session, because Code ran on the
-    same provider. Its own Review output is already in that session, so the
+    In a Codex-only run Fix continues the latest same-provider session, Review.
+    Its own Review output is already in that session, so the
     prompt carries only the peer's.
     """
 
     run = supervisor.start_run(
         "implement bounded persistent context",
         activity="coding",
+        provider_mode="codex",
         cwd=str(fleet_env),
         worker_count=2,
     )
@@ -1389,7 +1387,7 @@ def test_persistent_worker_prompt_adds_only_the_peers_previous_phase_output(flee
     fix_leg = snapshot["phases"][3]["legs"][0]
     attempt = store.begin_attempt(fix_leg["leg_id"])
     assert attempt["resume_kind"] == "phase_continuation"
-    assert attempt["resume_source_phase"] == "execute"
+    assert attempt["resume_source_phase"] == "verify"
     refreshed = store.get_run(run["run_id"])
     assert refreshed is not None
     fix_live = refreshed["phases"][3]["legs"][0]
@@ -1583,8 +1581,7 @@ def test_controlled_promotion_resumes_codex_and_starts_opus_in_parallel(
         interrupted["attempt_id"],
         state="cancelled",
         session_id="resumable-execute-session",
-        # Code runs on Claude, whose sessions only become resumable once the
-        # provider confirmed them by reporting the model it actually ran.
+        # Keep the actual model receipt for the interrupted native session.
         actual_model=execute_first["model"],
         actual_effort=execute_first["effort"],
         exit_code=-15,
@@ -1617,15 +1614,15 @@ def test_controlled_promotion_resumes_codex_and_starts_opus_in_parallel(
     completed = supervisor.run_supervisor(run["run_id"])
 
     assert completed["state"] == "completed"
-    # Code runs Claude for every agent, so both promoted legs are Claude and
+    # Code runs Codex for every agent, so both promoted legs are Codex and
     # the interrupted one resumes its own session.
-    assert sorted(provider for provider, _resume in execute_calls) == ["claude", "claude"]
-    assert ("claude", "resumable-execute-session") in execute_calls
+    assert sorted(provider for provider, _resume in execute_calls) == ["codex", "codex"]
+    assert ("codex", "resumable-execute-session") in execute_calls
     promoted_execute = completed["phases"][1]
     assert promoted_execute["execution"] == "parallel"
     assert [leg["model"] for leg in promoted_execute["legs"]] == [
-        "claude-opus-5",
-        "claude-opus-5",
+        "gpt-6-astra",
+        "gpt-6-astra",
     ]
 
 
@@ -1815,13 +1812,11 @@ def test_doctor_reports_the_locked_phase_model_matrix(fleet_env, monkeypatch):
     policy = report["checks"]["policy"]
     luna = [{"provider": "codex", "model": "gpt-5.6-luna", "effort": "max"}]
     opus = [{"provider": "claude", "model": "claude-opus-5", "effort": "high"}]
-    opus_medium = [
-        {"provider": "claude", "model": "claude-opus-5", "effort": "medium"}
-    ]
+    astra_medium = [{"provider": "codex", "model": "gpt-6-astra", "effort": "medium"}]
     sol = [{"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"}]
     assert policy["coding_phase_models"] == {
         "Research": luna,
-        "Code": opus_medium,
+        "Code": astra_medium,
         "Review": [{"provider": "codex", "model": "gpt-6-astra", "effort": "medium"}],
         "Fix": opus,
     }
@@ -1910,8 +1905,8 @@ def test_confirmed_capacity_exhaustion_hands_the_same_slot_to_the_other_provider
     assert completed["policy"]["handoffs"][0]["automatic"] is True
     assert completed["agent_count"] == 2
     # Agent A spends the whole run on Claude after the pickup, so it opens one
-    # chat there. Agent B keeps the pipeline: Codex research, a Claude chat for
-    # Code and Fix, and a separate Codex chat for Review.
+    # chat there. Agent B keeps Codex Research/Code, a separate Codex Review
+    # session, and a fresh Claude Fix session.
     assert completed["chat_count"] == 4
 
 

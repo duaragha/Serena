@@ -67,17 +67,9 @@ PHASE_MODEL_POLICY = {
         # re-reads on demand, so the cliff does not describe this phase.
         # (2026-08-20, knowledge/openai-models/best-research-model-aug-2026.md)
         "discover": (("codex", "gpt-5.6-luna", "max"),),
-        # Code runs medium, Fix runs high, deliberately not the same rung.
-        # On DeepSWE medium is 69% at 37k tokens against high's 73% at 64k, so
-        # the 4 points cost 42% more burn on the phase that generates the most
-        # of it. Code can afford that because a defect it introduces is caught
-        # by Review and repaired by Fix; those two phases exist for exactly this.
-        # Watch Review findings per run: if they climb, the saving is being paid
-        # back in retries, which cost a whole leg and wipe it out several times
-        # over. (2026-08-24)
-        "execute": (("claude", "claude-opus-5", "medium"),),
-        # Astra medium is the approved reviewer trial. Coding scores support
-        # evaluating it, while actual defect detection must be measured locally.
+        # Approved after the paired Fleet pilot: Astra medium for Code and
+        # Review. Provider-only Claude routing remains an explicit exception.
+        "execute": (("codex", "gpt-6-astra", "medium"),),
         "verify": (("codex", "gpt-6-astra", "medium"),),
         # Fix stays high while Code drops to medium. It is the phase with no
         # safety net: its mistakes land in already-reviewed code that nothing
