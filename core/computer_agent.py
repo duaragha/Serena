@@ -128,7 +128,7 @@ class ComputerAgent:
                 text = reply["text"].strip()
                 s.last_inspected_at = frame["captured_at"]
                 if text != "UNCHANGED":
-                    s.observation = text[:2000]
+                    s.observation = text
                     previous = text[:1000]
                     c.event(
                         "observation",

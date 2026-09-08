@@ -25,6 +25,11 @@ reattaches to its updates. `--speak` sends completed observations through
 Serena's existing local voice output. `chats computer steer "new instruction"`
 steers the active Astra turn without starting a second controller.
 
+The desktop indicator shows the complete latest observation, wraps text and
+grows to fit. Long updates scroll within the popup while the stop button stays
+visible. The screenshot mask follows the popup's size so advice is not fed back
+into the next visual observation.
+
 Sessions default to five minutes and allow at most thirty minutes using
 `--seconds`. The resident brain can start five-minute sessions from a matching
 real user turn using `computer_session`. It passes the user's actual words as
