@@ -42,6 +42,9 @@ class Session:
     observation: str = ""
     driver: str = "connected_chat"
     observation_state: str = "ready"
+    source_session_id: str = ""
+    source_agent: str = ""
+    context_message_count: int = 0
     action_deadline: float = 0
 
 
@@ -70,12 +73,15 @@ class ComputerController:
         self.shutdown = threading.Event()
         self.policy = VisualPolicy()
         self.agent = None
+        self.conversations = None
         self.indicator_rect = None
 
     def event(self, kind, **data):
         with self.condition:
             self.sequence += 1
             event = {"id": self.sequence, "type": kind, "at": self.clock(), **data}
+            if self.conversations:
+                self.conversations.record(event)
             self.events.append(event)
             self.condition.notify_all()
         if self.publish and kind not in {"frame", "delta"}:
@@ -101,6 +107,10 @@ class ComputerController:
                     "observation": s.observation,
                     "driver": s.driver,
                     "observation_state": s.observation_state,
+                    "source_session_id": s.source_session_id or None,
+                    "source_agent": s.source_agent or None,
+                    "context_message_count": s.context_message_count,
+                    "service_tier": "fast" if s.driver == "astra" else None,
                     "latest_frame": next(reversed(s.frames), None),
                 }
             )
@@ -113,7 +123,18 @@ class ComputerController:
             "event_id": self.sequence,
         }
 
-    def begin(self, *, mode, target, request, seconds=300, owner="cli", operator_confirmed=False):
+    def begin(
+        self,
+        *,
+        mode,
+        target,
+        request,
+        seconds=300,
+        owner="cli",
+        operator_confirmed=False,
+        source_session_id="",
+        source_agent="",
+    ):
         if not operator_confirmed:
             raise ComputerError(
                 "start a scoped session from the CLI or a verified Serena user turn"
@@ -158,6 +179,8 @@ class ComputerController:
                 self.clock() + seconds,
                 owner,
                 grant_id=grant.grant_id if grant else "",
+                source_session_id=source_session_id,
+                source_agent=source_agent,
             )
             self.session = s
         try:

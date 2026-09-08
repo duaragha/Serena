@@ -12,6 +12,7 @@ from pathlib import Path
 import click
 
 from core.computer_client import ComputerClient
+from core.computer_conversation import origin_arguments
 from core.computer_platform import ComputerError
 
 
@@ -51,6 +52,22 @@ def mcp():
     server.run()
 
 
+@computer.command(hidden=True)
+@click.option("--agent", type=click.Choice(["codex", "claude"]), required=True)
+def context_hook(agent):
+    """Add this chat's earlier coaching to its next turn."""
+    from core.computer_context_hook import main
+
+    main(agent)
+
+
+@computer.command()
+@click.argument("session_id")
+def history(session_id):
+    """Read the linked chat and durable computer coaching history."""
+    click.echo(json.dumps(ComputerClient().call("history", session_id=session_id), indent=2))
+
+
 @computer.command()
 def status():
     """Inspect active displays and the current lease; captures no pixels."""
@@ -84,7 +101,13 @@ def run_task(mode, task, target, seconds, speak, detach):
     client = ComputerClient()
     client.ensure_running()
     result = client.call(
-        "run", mode=mode, target=target, request=task, seconds=seconds, speak=speak
+        "run",
+        mode=mode,
+        target=target,
+        request=task,
+        seconds=seconds,
+        speak=speak,
+        **origin_arguments(),
     )
     session = result["session"]
     click.echo(f"{mode} · {session['target']} · {session['id']} · gpt-6-astra")
@@ -136,6 +159,7 @@ def begin(task, mode, target, seconds, interactive):
                 request=task,
                 seconds=seconds,
                 interactive=interactive,
+                **origin_arguments(),
             ),
             indent=2,
         )
@@ -236,6 +260,9 @@ def install():
     if sys.platform != "linux":
         raise ComputerError("automatic service installation currently supports Linux X11")
     from core.computer_client import child_command
+    from core.computer_hooks import install_context_hooks
+
+    install_context_hooks()
 
     unit = Path.home() / ".config/systemd/user/serena-computer.service"
     unit.parent.mkdir(parents=True, exist_ok=True)
@@ -258,3 +285,15 @@ def install():
     except ComputerError:
         subprocess.run(["systemctl", "--user", "start", "serena-computer.service"], check=True)
     click.echo(str(unit))
+
+
+@computer.command()
+def install_hooks():
+    """Install conversation continuity hooks into the local Codex and Claude CLIs."""
+    if getattr(sys, "frozen", False):
+        raise ComputerError(
+            "install hooks from the source CLI so their command survives app updates"
+        )
+    from core.computer_hooks import install_context_hooks
+
+    click.echo(json.dumps(install_context_hooks(), indent=2))
