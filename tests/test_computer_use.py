@@ -242,6 +242,14 @@ def test_resident_tool_cannot_invent_permission(monkeypatch):
     monkeypatch.setattr(module, "current_turn", lambda: {"text": "watch this window"})
     result = asyncio.run(module.computer_session.handler({"operation": "run"}))
     assert "observation only" in result["content"][0]["text"]
+    monkeypatch.setattr(
+        module, "current_turn", lambda: {"text": "do not click anything on my screen"}
+    )
+    result = asyncio.run(module.computer_session.handler({"operation": "run"}))
+    assert "asked not to start" in result["content"][0]["text"]
+    monkeypatch.setattr(module, "current_turn", lambda: {"text": "don't look at my screen"})
+    result = asyncio.run(module.computer_session.handler({"operation": "watch"}))
+    assert "asked not to start" in result["content"][0]["text"]
 
 
 def test_gideon_capture_consumes_real_turn_proof(controller):

@@ -36,6 +36,17 @@ async def computer_session(args):
             raise ComputerError("operation must be watch, run, stop, or status")
         origin = current_turn()
         request = str(origin.get("text") or "").strip()
+        action_words = (
+            r"control|use|click|type|scroll|drag|open|fill"
+            if operation == "run"
+            else r"watch|look|see|view|check|read|inspect"
+        )
+        if re.match(
+            rf"^(?:no[, ]+)?(?:please\s+)?(?:don't|do not|never|avoid|stop)\s+(?:{action_words})\b",
+            request,
+            re.I,
+        ):
+            raise ComputerError("the user asked not to start this computer operation")
         # The model cannot authorize itself using its tool arguments. The bound
         # user request is also the worker's task, never a model-written expansion.
         subject = (
