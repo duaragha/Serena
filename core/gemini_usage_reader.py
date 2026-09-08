@@ -30,6 +30,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 SOURCE = "gemini-cli-usage"
 
@@ -84,6 +85,13 @@ def _binary() -> str | None:
         found = shutil.which(name)
         if found:
             return found
+    # Desktop services inherit a smaller PATH than interactive terminals.
+    home = Path.home()
+    for directory in (home / ".local" / "bin", home / ".bun" / "bin", home / "bin"):
+        for name in _BINARIES:
+            found = shutil.which(name, path=str(directory))
+            if found:
+                return found
     return None
 
 

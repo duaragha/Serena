@@ -3412,7 +3412,7 @@ function liveUsageServiceHtml(name, cls, svc, updatedAt) {
     return '<div class="live-usage-card">'
       + '<div class="live-usage-card-head">'
       + '<span class="live-usage-name ' + cls + '">' + esc(name) + '</span>'
-      + '<span class="live-usage-empty">waiting</span>'
+      + '<span class="live-usage-empty" title="' + esc(svc.reason || '') + '">' + (svc.reason ? 'unavailable' : 'waiting') + '</span>'
       + '</div>'
       + '</div>';
   }
