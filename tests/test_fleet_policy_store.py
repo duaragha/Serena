@@ -70,7 +70,7 @@ def test_policy_routes_exact_models_and_safe_coding_writers():
         # Code runs medium and Fix runs high on purpose: Code's defects are
         # caught by Review and repaired by Fix, Fix's are not caught by anything.
         [("claude-opus-5", "medium")],
-        [("gpt-5.6-sol", "high")],
+        [("gpt-6-astra", "medium")],
         [("claude-opus-5", "high")],
     ]
     assert all(phase.execution == "parallel" for phase in coding.phases)
@@ -127,14 +127,14 @@ def test_provider_handoff_preserves_the_logical_slot_and_uses_each_phase_model()
     assert replacement["phases"][0]["workers"][1]["provider"] == "codex"
     # Every unfinished phase moves to the Codex escape-hatch stack.
     assert [phase["workers"][1]["model"] for phase in replacement["phases"][1:]] == [
-        "gpt-5.6-sol",
-        "gpt-5.6-sol",
-        "gpt-5.6-sol",
+        "gpt-6-astra",
+        "gpt-6-astra",
+        "gpt-6-astra",
     ]
     assert [phase["workers"][1]["effort"] for phase in replacement["phases"][1:]] == [
-        "xhigh",
+        "medium",
+        "medium",
         "high",
-        "max",
     ]
     assert all(
         phase["workers"][1]["worker_key"] == "agent:b"
@@ -365,7 +365,7 @@ def test_three_explicit_workstreams_select_three_durable_agents():
     expected_models = [
         ["gpt-5.6-luna"] * 3,
         ["claude-opus-5"] * 3,
-        ["gpt-5.6-sol"] * 3,
+        ["gpt-6-astra"] * 3,
         ["claude-opus-5"] * 3,
     ]
     # Effort is named per model because the curves differ in shape; every agent
@@ -373,7 +373,7 @@ def test_three_explicit_workstreams_select_three_durable_agents():
     expected_efforts = [
         ["max"] * 3,
         ["medium"] * 3,
-        ["high"] * 3,
+        ["medium"] * 3,
         ["high"] * 3,
     ]
     for phase, phase_models, phase_efforts in zip(
@@ -487,13 +487,13 @@ def test_exact_four_codex_workers_only_directive_builds_four_native_codex_slots(
         [worker.model for worker in phase.workers] for phase in policy.phases
     ] == [
         ["gpt-5.6-luna"] * 4,
-        ["gpt-5.6-sol"] * 4,
-        ["gpt-5.6-sol"] * 4,
-        ["gpt-5.6-sol"] * 4,
+        ["gpt-6-astra"] * 4,
+        ["gpt-6-astra"] * 4,
+        ["gpt-6-astra"] * 4,
     ]
     assert [
         [worker.effort for worker in phase.workers] for phase in policy.phases
-    ] == [["max"] * 4, ["xhigh"] * 4, ["high"] * 4, ["max"] * 4]
+    ] == [["max"] * 4, ["medium"] * 4, ["medium"] * 4, ["high"] * 4]
 
 
 @pytest.mark.parametrize(
@@ -502,7 +502,7 @@ def test_exact_four_codex_workers_only_directive_builds_four_native_codex_slots(
         (
             "no-claude: implement the fix",
             "codex",
-            ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol"],
+            ["gpt-5.6-luna", "gpt-6-astra", "gpt-6-astra", "gpt-6-astra"],
         ),
         (
             "no-codex: implement the fix",

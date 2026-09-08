@@ -89,25 +89,54 @@ paths and run those writers concurrently. If it cannot prove ownership before la
 repository-wide claim and serial execution. This keeps provider sandbox differences from changing
 whether identical work is accepted.
 
+Explicit positive ownership may name a new file before it exists. Read-only,
+preserve, and negated clauses are not ownership. When retrying a failed writer,
+Fleet repairs older missing-file declarations from the original frozen workstream:
+it adds the missing paths without dropping existing claims, changing completed
+attempts, or widening to a repository claim. The policy and materialized contract
+are updated together with a `run.retry_ownership_refreshed` receipt.
+
 ## The phase matrix and worker identity
 
 Fleet runs one locked model per phase, and every agent in that phase runs it:
-Research `gpt-5.6-luna` max, Code `claude-opus-5` medium, Review `gpt-5.6-sol`
-high, Fix `claude-opus-5` high. `core/fleet_policy.py` holds it as a hard
+Research `gpt-5.6-luna` max, Code `claude-opus-5` medium, Review `gpt-6-astra`
+medium, Fix `claude-opus-5` high. `fleet/policy.py` holds it as a hard
 contract, `validate_config` refuses a config that drifts from it, and
 `policy_models_match_contract` re-checks every run before it starts.
 
 For coding runs, confirmed Claude exhaustion maps unfinished Code to
-`gpt-5.6-sol` xhigh and unfinished Fix to `gpt-5.6-sol` max. Review is already
-`gpt-5.6-sol` high and does not change. These are per-worker handoffs; healthy
+`gpt-6-astra` medium and unfinished Fix to `gpt-6-astra` high. Review is already
+`gpt-6-astra` medium and does not change. These are per-worker handoffs; healthy
 workers and completed phases keep their original routing.
+
+Explicit coding Codex-only experiments may start their task with
+`Fleet comparison profile: sol` or `Fleet comparison profile: astra`.
+The two fixed Code/Review pairs are Sol xhigh/Sol high and Astra medium/Astra medium.
+Both keep Luna max Research and Astra high Fix. Each run persists the exact phase models;
+no mutable global experiment switch is used. Ordinary tasks retain the default stack.
+
+### Bounded difficult retries
+
+A failed Code or Fix integration test may queue one extra attempt on `gpt-6-astra`
+`xhigh`. This is separate from quota recovery: the supervisor must observe a real
+nonzero test gate with concrete assertion, syntax, or type-check failure output,
+and Codex must have a positive capacity signal. Infrastructure failures, missing
+dependencies, malformed evidence, honest stops, Research, Review, and Claude-only
+runs do not qualify. Ambiguous failures stay failed.
+
+The failed patch is rolled back before retry. Only the failed leg changes model;
+its worker identity, prior attempt identity, and the other phases are preserved.
+The frozen policy records a `difficult_retries` receipt and the event log records
+`leg.difficult_retry_queued`. A second implementation failure stays failed for
+operator review. This initial implementation covers integration-gate failures,
+not every error a worker may report in prose or encounter inside its workspace.
 
 Workers are Agent A through Agent D. `worker_key` is `agent:a`, not
 `codex:a`: the provider is a property of the phase, not of the worker, so one
 agent moves between Codex and Claude as the run advances and keeps its name,
 assignment, workstream and evidence lineage the whole way. A phase is therefore
 single-provider when it is built, and stops being so only when one worker is
-handed to the other provider for capacity, which is legitimate.
+handed to the other provider for capacity or a recorded difficult retry.
 
 Two consequences fall out of alternating providers, both deliberate:
 

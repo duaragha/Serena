@@ -39,17 +39,31 @@ it so Fleet scales from the task. Never bury an explicit provider restriction on
 
 Model routing is fixed server-side for every entrypoint. A provider handoff therefore selects the
 target provider, not an arbitrary model. Coding runs use Luna max for Research, Opus medium for
-Code, Sol high for Review, and Opus high for Fix. On confirmed Claude exhaustion, an unfinished
-Code phase moves to Sol xhigh and an unfinished Fix phase moves to Sol max; Review is already Sol
-high. Pure research runs use Luna max for Research, Opus high for Analyze, Sol high for Review,
+Code, Astra medium for Review, and Opus high for Fix. On confirmed Claude exhaustion, an unfinished
+Code phase moves to Astra medium and an unfinished Fix phase moves to Astra high; Review stays
+Astra medium. Pure research runs use Luna max for Research, Opus high for Analyze, Sol high for Review,
 and Opus high for Refine. Do not pass, imply, or silently substitute another phase model.
+
+For explicitly requested A/B tests, a coding Codex-only task may begin with the exact line
+`Fleet comparison profile: sol` or `Fleet comparison profile: astra`. These fixed profiles
+select Sol xhigh/Sol high or Astra medium/Astra medium for Code/Review respectively; both
+keep Luna max Research and Astra high Fix. Use identical isolated fixtures and report actual
+attempt identities, independent checks, and phase timings. Do not infer a universal ranking
+from a single paired run.
+
+For coding Code/Fix integration gates with proven implementation failures, Fleet may
+automatically queue one difficult retry on Astra xhigh when Codex has capacity.
+This recorded exception changes only the failed leg, never Claude-only runs, and
+does not apply to quota, infrastructure, or malformed-evidence failures. A second
+failure stays failed. Do not manually promote arbitrary attempts to this model.
 
 Every Research worker must use native online search extensively, including for local coding work.
 Fleet requires observed searches plus current direct sources, authoritative evidence, best practices,
 recent technology, and a stated impact on the recommendation; repository reading is not a substitute.
 
 Do not wait for a newly started run unless Raghav explicitly asks to wait or babysit it. Auto and
-balanced runs may cross providers only after confirmed usage exhaustion and only when the target
+balanced runs may cross providers after confirmed usage exhaustion or the bounded difficult-retry
+gate above, and only when the target
 has capacity. Explicit provider-only runs require `fleet_handoff`; never use another orchestration path.
 
 ## Response

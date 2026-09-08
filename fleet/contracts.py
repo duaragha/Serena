@@ -46,8 +46,9 @@ _PATH_TOKEN = re.compile(
 )
 _OWNERSHIP_CLAUSE = re.compile(
     r"\b(?:own|owns|owned|edit|edits|edited|editing|modify|modifies|modified|modifying|"
-    r"change|changes|changed|changing)\s+(?:only\s+)?(?P<scope>.*?)"
-    r"(?=(?:\.\s+(?=[A-Z])|\n|$))",
+    r"change|changes|changed|changing|create|creates|created|creating|add|adds)\s+(?:only\s+)?(?P<scope>.*?)"
+    r"(?=(?:\.\s+(?=[A-Z])|;|\n|$|[, ]\s*(?:(?:and|but|then)\s+)?"
+    r"(?:read|preserve|ignore|inspect|verify|run|do\s+not|don't|never)\b))",
     re.IGNORECASE,
 )
 _NEGATED_OWNERSHIP = re.compile(
@@ -276,7 +277,10 @@ def extract_declared_paths(
                 target.relative_to(root)
             except ValueError:
                 continue
-            if not target.exists():
+            # Explicit positive file ownership can name a file this worker is
+            # meant to create. Missing directories remain ambiguous scope;
+            # a bounded filename is sufficient even below a new directory.
+            if not target.exists() and not Path(candidate).suffix:
                 continue
         paths.append(candidate)
     return list(dict.fromkeys(paths))
