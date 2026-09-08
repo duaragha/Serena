@@ -75,6 +75,10 @@ if (-not (Test-Path -LiteralPath $SidecarExe -PathType Leaf)) {
     throw "PyInstaller did not produce $SidecarExe"
 }
 
+Write-Host "[windows] smoke-testing the frozen Fleet peer MCP"
+& $Python (Join-Path $RepoRoot "scripts\fleet_peer_smoke.py") --binary $SidecarExe
+Assert-LastExitCode "Frozen Fleet peer MCP smoke test"
+
 Write-Host "[windows] smoke-testing the frozen PTY backend"
 $PtySmoke = Start-Process -FilePath $SidecarExe `
     -ArgumentList @("--pty-smoke") `

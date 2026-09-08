@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 
 import pytest
@@ -204,6 +205,12 @@ def test_fleet_view_is_isolated_and_uses_true_attempt_identity(fleet_client):
     assert "heartbeat " in page
     assert "stall retries " in page
     assert "lease expired" in page
+    assert "function renderCollaboration(run, open = false)" in page
+    assert "Peer collaboration · " in page
+    assert "message.acknowledged" in page
+    assert "job.retry_applied" in page
+    assert "learning.candidates" in page
+    assert "learning.outcomes" in page
 
 
 def test_fleet_polling_preserves_scroll_and_panel_state(fleet_client):
@@ -235,6 +242,28 @@ def test_fleet_polling_preserves_scroll_and_panel_state(fleet_client):
     assert "panelState.has('work-units')" in detail_render
     assert "panelState.has('isolation')" in detail_render
     assert "panelState.has('supervision')" in detail_render
+
+
+def test_collaboration_javascript_compiles_and_renders_untrusted_text(fleet_client):
+    client, _supervisor = fleet_client
+    page = client.get("/fleet/view").get_data(as_text=True)
+    script = r"""
+      const fs = require('node:fs');
+      const html = fs.readFileSync(0, 'utf8');
+      for (const match of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) new Function(match[1]);
+      const body = html.split('function renderCollaboration')[1].split('function renderSupervision')[0];
+      const el = (tag, cls, text) => ({tag, cls, text, dataset: {}, children: [], append(item) {this.children.push(item);}});
+      const text = value => String(value ?? '');
+      const render = new Function('el', 'text', 'return function renderCollaboration' + body)(el, text);
+      const attack = '<img src=x onerror=alert(1)>';
+      const panel = render({collaboration: {messages: [{sender:'agent:a',recipient:'agent:b',kind:'help',body:attack}],
+        help: [{helper:'agent:b',state:'answered',auto_retry:1,retry_applied:1}]},
+        learning: {candidates:[{state:'verified',summary:'Scoped rule'}],uses:[],outcomes:[]}}, true);
+      if (!panel.open || panel.dataset.panel !== 'collaboration') throw Error('panel state');
+      if (!panel.children.some(child => child.text.includes(attack))) throw Error('message missing');
+      if (body.includes('innerHTML')) throw Error('unsafe text renderer');
+    """
+    subprocess.run(["node", "-e", script], input=page, text=True, check=True, capture_output=True)
 
 
 def test_list_and_get_runs_keep_full_supervisor_shape(fleet_client):

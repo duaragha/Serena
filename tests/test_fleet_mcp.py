@@ -11,6 +11,8 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from core import fleet_mcp
 
 EXPECTED_TOOLS = {
+    "fleet_learning_report",
+    "fleet_revoke_lesson",
     "fleet_start",
     "fleet_status",
     "fleet_list",

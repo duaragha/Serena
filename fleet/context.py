@@ -11,6 +11,7 @@ DEFAULT_CONTEXT_CHARS = 96_000
 MIN_EXCERPT_CHARS = 1_000
 
 _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("fleet_capability", re.compile(r"\bfleetcap_[A-Za-z0-9_-]{40,}\b")),
     ("private_key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.DOTALL)),
     ("authorization", re.compile(r"(?i)\b(?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")),
     (

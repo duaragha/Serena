@@ -372,6 +372,10 @@ class FleetStore:
                 (clean_id,),
             ).fetchall()
             session_ids = sorted({str(row["session_id"]) for row in rows})
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE name = 'fleet_peer_help'").fetchone():
+                session_ids = sorted(set(session_ids) | {str(row[0]) for row in connection.execute(
+                    "SELECT session_id FROM fleet_peer_help WHERE run_id = ? AND session_id IS NOT NULL AND session_id != ''",
+                    (clean_id,))})
             connection.execute("DELETE FROM fleet_runs WHERE run_id = ?", (clean_id,))
             return {
                 "run_id": clean_id,

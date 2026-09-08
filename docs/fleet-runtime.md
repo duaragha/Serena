@@ -167,7 +167,8 @@ A leg whose access mode is not `write` now gets exactly one MCP server, Fleet's 
 and still nothing from the user's MCP configuration. The gateway exposes only tools classified
 `read`, per tool, drawn from the server list in `defaults.mcp_read_access`. Nothing else about the
 leg changes: no repository writes, no `Edit`/`Write`/`NotebookEdit` for Claude, and Codex stays on
-`--sandbox read-only`. Write legs are untouched and keep zero MCP; they already have a shell.
+`--sandbox read-only`. Write legs receive no account gateway. They may receive the separate
+attempt-scoped `serena_peer` server described below, which has no account or filesystem write tools.
 
 Classification is deny-by-default and decided per tool, never inherited from the leg's label:
 
@@ -186,11 +187,98 @@ never touches the network. The supervisor refreshes it once per run before any l
 build blocks, bounded; a stale one refreshes behind the run. Both the Claude allowlist
 (`--allowedTools mcp__serena_read__…`) and the Codex allowlist (`mcp_servers.serena_read.enabled_tools`)
 are written per tool from that catalog, and the gateway re-checks the classification against the live
-server at call time, so a stale catalog can never widen access. No catalog means no MCP flags at all:
+server at call time, so a stale catalog can never widen access. No catalog means no account MCP flags:
 the failure mode is a worker that behaves exactly as it did before, never one that silently gets more.
 
 `chats fleet read-tools` shows what is currently exposed and what each server denied; `--refresh`
 rebuilds it. Each run records a `read_mcp_catalog` event with the same counts.
+
+## Unattended peer collaboration
+
+`fleet/collaboration.py`, `peer_mcp.py`, and `peer_runtime.py` add a durable advice plane.
+Workers do not need the originating chat to watch, steer, or manually retry them. The resident Fleet
+service remains the execution authority: messages cannot acquire claims, edit peer files, change
+models/providers, approve a result, remove tests, bypass an honest stop, or extend the task.
+
+Every ordinary attempt gets an expiring capability through its process environment, never argv or
+prompt text. Only its hash is stored. The gateway derives sender/run/attempt identity from that
+capability and checks current attempt generation and run cancellation on every call. Native writers
+still have their existing filesystem sandbox; this capability is API authorization, not a replacement
+for OS isolation against a deliberately malicious process running under the same user account.
+
+| Worker tool | Contract |
+| --- | --- |
+| `read_messages(acknowledge)` | Exact roster keys, unacknowledged inbox, own help status, lesson candidates. Delivery and acknowledgement are separate. |
+| `send_message(recipient, body, dedupe, reply_to)` | Targeted same-run advice; stable dedupe keys and parent-linked replies. No broadcasts or cross-run addressing. |
+| `request_help(recipient, body, dedupe)` | Durable bounded diagnostic request, serviced even after the peer's normal turn ends. |
+| `propose_lesson(summary, evidence_paths)` | Candidate project fact backed by files in the integrated checkout. No immediate reuse. |
+| `review_lesson(lesson_id, approve, reason)` | Independent Review worker must inspect unchanged evidence and explain endorsement/rejection. |
+
+Messages arrive through tools at safe checkpoints, not instant interrupt injection. Workers are
+instructed to read at turn start, before completion, and when blocked; they can do independent work
+while waiting. A message is not proof merely because another model wrote it. Reviews retain their
+independent evidence/completion gate.
+
+The service reserves **one additional read-only consultation slot per run** beyond the main worker
+limit. This avoids deadlock when every normal slot is occupied by a worker waiting for advice.
+Consultations use the addressed peer's frozen phase provider/model/effort, positive provider capacity,
+a fresh native session (never a concurrent resume of the peer's main chat), and a 300-second deadline
+from request creation. Helpers may only answer the assigned request and cannot recursively ask for
+help. A normal peer reply can satisfy a queued request without launching a consultation.
+
+Limits: 96 messages/run, 3,000 characters/message, four reply hops, eight help jobs/run, one outstanding
+request per attempt, one consultation at a time, and at most one restart of an interrupted helper
+within its original deadline. Replies and jobs survive service restart. Replaced capabilities are
+fenced, cancellation/deadline stops only the recorded process birth-token/group, and deletion cascades
+mailboxes/lessons and includes helper-owned sessions. `SERENA_FLEET_PEERS=off` disables grants and
+new automatic failure-help requests; it does not discard existing durable mail.
+
+Before the existing difficult-retry escalation, an eligible supervisor-observed Code/Fix integration
+test failure can synthesize a help request. A successful consultation queues **one same-owner,
+same-model retry per leg**, atomically with its receipt. Failed patches remain rolled back, healthy
+siblings continue, and the retry reads its incoming diagnosis. If the repair still fails, the existing
+single Astra xhigh difficult retry may apply. Quota/infra failures, permission denials, malformed
+evidence, honest stops, and Claude-only automatic escalation remain outside this classifier. Explicit
+worker help messages work in either provider; failed/expired consultations stop boundedly rather
+than claiming repair. Main workers should consume help before finishing, not exit expecting advice
+to override a stop condition.
+
+`peer.message.sent`, `peer.help.queued/answered/failed`, and `peer.retry.queued` events plus the
+`collaboration` status projection expose authored messages, ack state, native helper sessions,
+requested recovery, and retry receipts. The dashboard has a Peer collaboration panel.
+
+Desktop builds explicitly depend on the MCP SDK and smoke-test `--fleet-peer-mcp` on the frozen
+executable before packaging. The Windows windowed executable reconstructs its inherited standard
+pipes for this mode only, before importing the MCP server; ordinary GUI startup is unchanged.
+This follows [PyInstaller's windowed-stdio contract](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html)
+and [Win32 standard-handle semantics](https://learn.microsoft.com/en-us/windows/console/getstdhandle).
+
+## Verified Fleet playbooks and measurements
+
+`fleet/learning.py` stores operational lessons in the Fleet database, separate from personal memory.
+An ordinary worker may propose up to eight candidates/run, with a 1,200-character summary and
+1–8 existing, project-relative evidence files (each at most 1 MB). Files are SHA-256 fingerprinted;
+path traversal and symlink escapes are rejected. Proposal identity is run/attempt-bound. Review
+cannot endorse its own worker's lesson, a different run's lesson, or changed evidence.
+
+Promotion happens only on a successful terminal run, with supervisor-accepted integration test
+receipts, a completed author attempt, a completed independent reviewer attempt, and unchanged
+evidence. Candidate or merely endorsed prose is never reused. A provider's zero exit alone does not
+promote anything. Research-only runs without integration evidence cannot promote operational code
+lessons under this first conservative gate.
+
+Later turns receive at most three verified lessons from the same canonical project, only when the
+task names an evidence file and every fingerprint still matches. Lessons expire after 30 days;
+changed files make them inapplicable immediately. `fleet_revoke_lesson(lesson_id, reason)` rolls back
+a bad lesson without mutating model/permission/test policy. Source-run deletion removes its lessons
+and uses, rather than leaving unverifiable knowledge behind.
+
+Terminal receipts record elapsed time, attempts/retries, passing integration gates and lesson use.
+`fleet_learning_report(cwd)` adds available provider-reported token totals, including consultations;
+missing usage is null, not a guessed number. These are observed cohorts, not causal speedup claims:
+task difficulty, model choice, cache state and tool latency confound comparisons. No escaped-defect
+rate is inferred from passing tests. No model weights are trained, and no model matrix or safety gate
+is automatically optimized. Use matched held-out tasks before promoting broader workflow changes.
 
 ## Writer isolation and integration
 
