@@ -31,6 +31,8 @@ on:
       - "pyproject.toml"
       - "ui/**"
       - "core/**"
+      - "fleet/**"
+      - "scripts/fleet_peer_smoke.py"
   pull_request:
     paths:
       - ".github/workflows/windows-desktop.yml"
@@ -43,6 +45,8 @@ on:
       - "pyproject.toml"
       - "ui/**"
       - "core/**"
+      - "fleet/**"
+      - "scripts/fleet_peer_smoke.py"
   workflow_dispatch:
 
 # Validation only. Nothing here is allowed to touch a release.
