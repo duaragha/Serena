@@ -41,6 +41,8 @@ async def main():
         lease.launching()
         await transport.open()
         lease.bind(transport.owned_pid)
+        if os.name != "nt":
+            assert lease.record["process_group"] == os.getpgid(transport.owned_pid) == transport.rpc.process.pid
         child = psutil.Process(transport.owned_pid)
         try:
             duplicate = SessionLease(sid, directory=root / "leases")

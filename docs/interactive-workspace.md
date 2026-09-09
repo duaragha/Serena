@@ -2,6 +2,28 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+POSIX crash containment (2026-09-09): leases now record the runtime's dedicated
+process group when it is also a separate OS session, excluding the host's own
+group. A dead CLI leader no longer proves its tools exited: surviving non-zombie
+group members prevent reacquisition. Permission/inspection ambiguity fails
+closed. The check does not terminate processes or launch recovery automatically.
+A child that disappears before binding leaves the launching marker unresolved
+instead of being recorded as safely dead. Normal shared host groups are not
+tracked as owned groups. Native Codex and Claude wrapper/CLI group bindings are
+asserted in their runtime proofs.
+This closes an orphan-tool admission race, not the complete recovery UI. Older
+records without group metadata, deliberately escaped groups, ambiguous launch
+markers and Windows containment still need separate recovery work.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_lease.py -q`: initial exit 0, 8 passed in 1.20s; final exit 0, 9 passed in 5.95s with shared-group exclusion and inspection-failure coverage.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_lease.py tests/test_workspace_rpc.py tests/test_workspace_codex.py tests/test_workspace_claude.py -q`: exit 0, 84 passed in 3.95s.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-lease-recovery.py`: exit 0. Real disposable owner crashed via os._exit without releasing the lock; both a surviving runtime and an orphan tool after leader death refused another lease. Exact lease recovered after group exit. No provider/user session involved.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py`: exit 0, repeated with native group-binding assertion also exit 0. Exact ownership, local commands, desktop/mobile flows and cleanup passed without user credentials/inference.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-mcp.py`: exit 0, including actual Codex group-binding assertion, native MCP settings, desktop/mobile and owner preservation.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_lease.py tests/test_workspace_lease.py`: initial exit 1 for test import ordering, corrected.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_lease.py tests/test_workspace_lease.py scripts/verify-workspace-lease-recovery.py scripts/verify-workspace-claude-transport.py scripts/verify-workspace-codex-mcp.py`: final exit 0, all checks passed.
+Source-only; no packaged app, deployed service or user runtime changed.
+
 Codex MCP enablement (2026-09-09): the connections dialog now has an explicit
 persistent user-setting checkbox backed by native config/value/write. The
 server name must exist in current effective configuration; a uniquely identified

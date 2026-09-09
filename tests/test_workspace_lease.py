@@ -1,10 +1,13 @@
 import os
+import signal
 import subprocess
 import sys
+import time
+from contextlib import suppress
 
 import pytest
 
-from core.workspace_lease import SessionLease, SessionOwnedError
+from core.workspace_lease import SessionLease, SessionOwnedError, _runtime_alive
 
 
 def test_same_session_is_exclusive_but_distinct_sessions_are_independent(tmp_path):
@@ -26,6 +29,7 @@ def test_live_child_keeps_session_unavailable_after_owner_releases(tmp_path):
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         lease.bind(child.pid)
+        assert "process_group" not in lease.record
         lease.release()
         with pytest.raises(SessionOwnedError, match="may still be running"):
             SessionLease("exact", directory=tmp_path)
@@ -44,6 +48,66 @@ def test_unknown_launch_outcome_never_authorizes_another_writer(tmp_path):
     lease.release()
     with pytest.raises(SessionOwnedError, match="may still be running"):
         SessionLease("exact", directory=tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process group containment")
+def test_exited_leader_does_not_release_surviving_tool_group(tmp_path):
+    code = """
+import subprocess, sys
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+print(child.pid, flush=True)
+sys.stdin.readline()
+"""
+    leader = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, text=True, start_new_session=True)
+    lease = SessionLease("exact", directory=tmp_path)
+    try:
+        assert int(leader.stdout.readline()) > 0
+        lease.launching()
+        lease.bind(leader.pid)
+        assert lease.record["process_group"] == leader.pid
+        leader.stdin.close()
+        leader.wait(timeout=5)
+        lease.release()
+        with pytest.raises(SessionOwnedError, match="may still be running"):
+            SessionLease("exact", directory=tmp_path)
+    finally:
+        with suppress(ProcessLookupError):
+            os.killpg(leader.pid, signal.SIGKILL)
+        leader.wait(timeout=5)
+        leader.stdout.close()
+        lease.release()
+    deadline = time.monotonic() + 5
+    while _runtime_alive(lease.record) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    recovered = SessionLease("exact", directory=tmp_path)
+    recovered.release()
+
+
+def test_vanished_child_keeps_launch_ambiguous(tmp_path, monkeypatch):
+    import psutil
+    def vanished(pid):
+        raise psutil.NoSuchProcess(pid)
+    lease = SessionLease("exact", directory=tmp_path)
+    lease.launching()
+    monkeypatch.setattr("core.workspace_lease._identity", vanished)
+    with pytest.raises(SessionOwnedError, match="ownership"):
+        lease.bind(123)
+    lease.release()
+    with pytest.raises(SessionOwnedError, match="may still be running"):
+        SessionLease("exact", directory=tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process group inspection")
+def test_group_inspection_failure_never_proves_exit(monkeypatch):
+    def denied(pid):
+        raise PermissionError("Cannot inspect process")
+    monkeypatch.setattr("core.workspace_lease.psutil.pids", lambda: [123])
+    monkeypatch.setattr("core.workspace_lease.os.getpgid", denied)
+    assert _runtime_alive({"process_group": 456})
+    assert _runtime_alive({"process_group": -1})
+    assert _runtime_alive({"process_group": "invalid"})
 
 
 def test_lock_is_enforced_across_real_processes(tmp_path):

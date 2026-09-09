@@ -33,6 +33,27 @@ def _identity(pid: int) -> dict:
     return {"pid": pid, "born": psutil.Process(pid).create_time()}
 
 
+def _runtime_alive(record: dict) -> bool:
+    if _alive(record.get("child")):
+        return True
+    group = record.get("process_group")
+    if group is None or os.name == "nt":
+        return False
+    if type(group) is not int or group <= 0:
+        return True
+    # The leader may be gone while tool processes still hold the group. Never
+    # infer their exit from the leader's PID, or kill a potentially reused group.
+    for pid in psutil.pids():
+        try:
+            if os.getpgid(pid) == group and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+                return True
+        except (ProcessLookupError, psutil.NoSuchProcess):
+            continue
+        except (PermissionError, psutil.AccessDenied):
+            return True
+    return False
+
+
 class SessionLease:
     def __init__(self, session_id: str, *, directory: Path | None = None) -> None:
         if not session_id:
@@ -67,7 +88,7 @@ class SessionLease:
             raise SessionOwnedError("This session already has a runtime owner") from error
         try:
             previous = json.loads(self.metadata.read_text()) if self.metadata.exists() else {}
-            if previous.get("phase") == "launching" or _alive(previous.get("child")):
+            if previous.get("phase") == "launching" or _runtime_alive(previous):
                 raise SessionOwnedError(
                     "Previous runtime may still be running; recovery must confirm its exit"
                 )
@@ -112,9 +133,16 @@ class SessionLease:
             raise SessionOwnedError("Lease is closed")
         try:
             child = _identity(pid)
-        except psutil.NoSuchProcess:
-            child = None
+            group = None
+            if os.name != "nt":
+                candidate = os.getpgid(pid)
+                if candidate == os.getsid(pid) and candidate != os.getpgrp():
+                    group = candidate
+        except (psutil.NoSuchProcess, ProcessLookupError) as error:
+            raise SessionOwnedError("Runtime exited before its ownership could be verified") from error
         self.record.update(phase="bound", child=child)
+        if group is not None:
+            self.record["process_group"] = group
         self._save()
 
     def release(self) -> None:
@@ -123,7 +151,7 @@ class SessionLease:
         # Keep crash/launch ambiguity and live orphan identity on disk. A new
         # owner must not interpret a released host lock as a dead agent.
         try:
-            if self.record.get("phase") != "launching" and not _alive(self.record.get("child")):
+            if self.record.get("phase") != "launching" and not _runtime_alive(self.record):
                 self.record = {}
                 self._save()
         finally:

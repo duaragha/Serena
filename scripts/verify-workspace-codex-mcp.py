@@ -193,6 +193,8 @@ async def main():
                 owner = CodexWorkspace(session_id=sid, cwd=project, publish=publish, lease_factory=lambda value: SessionLease(value, directory=root / "leases"))
                 await owner.open(binary=binary, env=env)
                 pid = owner.rpc.process.pid
+                if os.name != "nt":
+                    assert owner._lease.record["process_group"] == os.getpgid(pid) == pid
                 login = await owner.login_mcp("proof")
                 assert login["status"] == "pending", login
                 assert await owner.login_mcp("proof") == login
