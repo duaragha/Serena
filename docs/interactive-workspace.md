@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native Claude MCP tool-call form verified (2026-09-09): the isolated subscription
+proof now optionally resumes with ClaudeTypeScriptClient and registers a local
+MCP tool fixture. Only that fixture tool is approved; its native elicitation
+reaches ClaudeWorkspace, is validated by the normal answer route, and returns
+the exact typed count to the MCP server. The server persists the real response
+as the assertion source; the parent turn must complete successfully. The same
+run verifies actual inference before/after exact resume, command discovery,
+local /context output, and native context breakdown through the new client.
+
+```sh
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference --typescript-sdk /tmp/serena-sdk-ts/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs --mcp-form
+# exit 0: first native turn, exact resumed second response, native context,
+# real MCP tool -> form -> validated count 2 returned to requesting server,
+# parent completed, owned processes reaped, isolated auth/history cleaned up.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_claude_wire.py tests/test_workspace_claude_transport.py -q
+# exit 0: 38 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-claude-roundtrip.py scripts/workspace-claude-form-fixture.py
+# exit 0
+```
+
+The earlier discovery-time cancellation remains a distinct native behavior,
+not a failed normal tool-call route. The successful proof uses an automated
+fixture answer at the pane-owner boundary; real browser field entry is covered
+separately, not claimed as one combined browser/native run. Runtime dependency
+packaging and production client selection are next; full provider/desktop
+parity gates elsewhere in this document remain open.
+
 Claude MCP form UI route (2026-09-09): the public SDK client's elicitation
 callback now reaches ClaudeWorkspace and the existing shared form renderer.
 Requests use a provider-prefixed native ID, exact thread identity, form-mode

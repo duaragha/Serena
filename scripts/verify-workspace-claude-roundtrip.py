@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import tempfile
+from functools import partial
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -15,12 +16,13 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
 
 from core.billing import METERED_AUTH_ENV_VARS, strip_metered_auth_env
 from core.workspace_claude import ClaudeWorkspace
+from core.workspace_claude_client import ClaudeTypeScriptClient
 from core.workspace_host import WorkspaceHost
 from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease
 
 
-async def main(bridge=False, background_task=False):
+async def main(bridge=False, background_task=False, typescript_sdk=None, mcp_form=False):
     binary = shutil.which("claude")
     if not binary:
         raise RuntimeError("Installed Claude unavailable")
@@ -77,11 +79,25 @@ async def main(bridge=False, background_task=False):
             await client.disconnect()
             assert first_process.returncode is not None
             print("PASS: isolated Claude first turn completed; original process reaped")
+            receipt = root / "form-receipt.json"
+            if mcp_form:
+                (project / ".mcp.json").write_text(json.dumps({"mcpServers": {"form_proof": {
+                    "command": sys.executable,
+                    "args": [str(Path(__file__).with_name("workspace-claude-form-fixture.py")), str(receipt), "--tool"],
+                }}}), encoding="utf-8")
+                (project / ".claude").mkdir()
+                (project / ".claude" / "settings.local.json").write_text(
+                    json.dumps({"enabledMcpjsonServers": ["form_proof"]}), encoding="utf-8")
             events = []
             finished = asyncio.Event()
 
             async def publish(event):
                 events.append(event)
+                if mcp_form and event.get("method") == "workspace/claudeApproval":
+                    await owner.answer(event["id"], {"decision": "allow" if event["params"]["tool"] == "mcp__form_proof__ask" else "deny"})
+                if mcp_form and event.get("method") == "mcpServer/elicitation/request":
+                    assert event["params"]["serverName"] == "form_proof"
+                    await owner.answer(event["id"], {"action": "accept", "content": {"count": 2}})
                 if background_task and event.get("method") == "workspace/claudeApproval":
                     params = event["params"]
                     allowed = params["tool"] == "Bash" and params["input"].get("command") == "sleep 60" and params["input"].get("run_in_background") is True
@@ -94,6 +110,7 @@ async def main(bridge=False, background_task=False):
                 cwd=project,
                 publish=publish,
                 lease_factory=lambda session: SessionLease(session, directory=root / "leases"),
+                **({"client_factory": partial(ClaudeTypeScriptClient, sdk_path=typescript_sdk, node_path=shutil.which("node"))} if typescript_sdk else {}),
             )
             await owner.open()
             assert "SERENA_CLAUDE_FIRST_PROOF" in json.dumps(events[0])
@@ -117,7 +134,7 @@ async def main(bridge=False, background_task=False):
                 if event.get("method") == "item/completed"
                 and event.get("params", {}).get("item", {}).get("type") == "agentMessage"
             )
-            assert not list(project.iterdir()), "Proof changed its project"
+            assert {path.name for path in project.iterdir()} == ({".mcp.json", ".claude"} if mcp_form else set()), "Proof changed its project"
             print(
                 "PASS: exact Claude ID/history resumed through workspace adapter; real second response received"
             )
@@ -141,6 +158,16 @@ async def main(bridge=False, background_task=False):
             print(
                 "PASS: native /context output rendered as commandOutput; advertised commands discovered on same session"
             )
+            if mcp_form:
+                finished.clear()
+                await owner.submit([{"type": "text", "text": "Transport test: call mcp__form_proof__ask exactly once with empty arguments. It requests a count via the native user form. Do not call any other tools, edit files, or run commands. After it returns, report its returned count."}])
+                await asyncio.wait_for(finished.wait(), 120)
+                assert receipt.exists(), "MCP tool did not return a form result"
+                result = json.loads(receipt.read_text())
+                assert result["action"] == "accept" and result["content"] == {"count": 2}, result
+                assert any(event.get("method") == "mcpServer/elicitation/request" for event in events)
+                assert [event for event in events if event.get("method") == "turn/completed"][-1]["params"]["turn"]["status"] == "completed"
+                print("PASS: real MCP tool elicited a form through public SDK and pane owner; validated answer returned to server, parent turn completed")
             if background_task:
                 finished.clear()
                 before = len(events)
@@ -236,10 +263,13 @@ async def main(bridge=False, background_task=False):
         finally:
             try:
                 if owner:
-                    process = owner.client._transport._process if owner.client else None
+                    process = getattr(getattr(owner.client, "_transport", None), "_process", None)
+                    wrapper = owner.client.transport.rpc.process if isinstance(owner.client, ClaudeTypeScriptClient) else None
                     await owner.close()
                     if process:
                         assert process.returncode is not None
+                    if wrapper:
+                        assert wrapper.returncode == 0
                 await client.disconnect()
             finally:
                 if original_config is None:
@@ -254,5 +284,10 @@ if __name__ == "__main__":
     parser.add_argument("--allow-inference", action="store_true", required=True)
     parser.add_argument("--bridge", action="store_true")
     parser.add_argument("--background-task", action="store_true")
+    parser.add_argument("--typescript-sdk")
+    parser.add_argument("--mcp-form", action="store_true")
     args = parser.parse_args()
-    asyncio.run(main(bridge=args.bridge, background_task=args.background_task))
+    if args.mcp_form and (not args.typescript_sdk or args.bridge or args.background_task):
+        parser.error("--mcp-form requires --typescript-sdk and cannot combine with other proof modes")
+    asyncio.run(main(bridge=args.bridge, background_task=args.background_task,
+                     typescript_sdk=args.typescript_sdk, mcp_form=args.mcp_form))
