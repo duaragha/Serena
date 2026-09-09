@@ -2,6 +2,31 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native fork feasibility (2026-09-09): the pinned SDK's exported `forkSession`
+copies a persisted conversation without submitting a turn. Its declarations
+specify fresh message UUIDs and no copied file-checkpoint history. Official
+session semantics checked at https://code.claude.com/docs/en/agent-sdk/sessions
+(accessed 2026-09-09) distinguish exact resume from continuing the latest session.
+The isolated proof now creates a fork of its seeded native history, verifies
+new session/message identities and identical message content, explicitly resumes
+that fork, submits a zero-inference local command, and verifies source history
+remains unchanged afterwards. All native owners are sequential and reaped.
+
+```sh
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron
+# exit 0: native fork identity/history/resume/local-output/source-preservation
+# checks passed, along with existing exact-owner and skill-reload checks.
+node --test tests/workspace-claude-sdk.test.mjs
+# exit 0: 7 passed
+```
+
+This establishes a native lifecycle primitive, not a finished fork control.
+The application still needs guarded owner routing, durable fork receipts,
+index/catalog registration and explicit navigation before that control can be
+enabled. Do not use the existing context-fork launcher as a substitute: it
+launches the legacy terminal path. Codex lifecycle and cross-provider context
+forks remain separate open requirements.
+
 Combined workspace regression (2026-09-09), after skill reload and command
 presentation changes:
 

@@ -132,6 +132,31 @@ try {
     exits.push(frozenExit);frozenExit.catch(()=>{});
     assert.equal((await frozenExit).code,0,'Frozen workspace proof failed');
   }
+  const sourceHistory=await sdk.getSessionMessages(sid,{dir:root});
+  assert(sourceHistory.length>0);
+  const fork=await sdk.forkSession(sid,{dir:root,title:'Isolated workspace fork proof'});
+  assert(fork.sessionId && fork.sessionId!==sid,'Fork must have its own persisted identity');
+  const forkHistory=await sdk.getSessionMessages(fork.sessionId,{dir:root});
+  assert.deepEqual(forkHistory.map(item=>item.message),sourceHistory.map(item=>item.message));
+  const sourceIds=new Set(sourceHistory.map(item=>item.uuid));
+  assert(forkHistory.every(item=>!sourceIds.has(item.uuid)),'Fork must remap message identities');
+  assert.deepEqual(await sdk.getSessionMessages(sid,{dir:root}),sourceHistory,'Fork changed source history');
+  let finishFork;
+  const forkResult=new Promise(done=>{finishFork=done;});
+  driver=new ClaudeSdkSession({sdk,sessionId:fork.sessionId,cwd:root,options,spawnOwned,
+    publish:message=>{if(message.type==='result')finishFork(message);},
+    request:async()=>{throw new Error('Unexpected fork interactive request');}});
+  await driver.open();
+  driver.send({type:'user',session_id:fork.sessionId,uuid:randomUUID(),parent_tool_use_id:null,
+    message:{role:'user',content:'/effort high'}});
+  const forkCompleted=await Promise.race([forkResult,driver.done.then(()=>{throw new Error('Fork stream closed before result');})]);
+  assert.equal(forkCompleted.session_id,fork.sessionId);
+  assert.equal(forkCompleted.num_turns,0);
+  assert.equal(forkCompleted.total_cost_usd,0);
+  await driver.close();
+  assert.equal((await exits.at(-1)).code,0);
+  assert.deepEqual(await sdk.getSessionMessages(sid,{dir:root}),sourceHistory,'Fork input changed source history');
+  console.log('PASS: native fork preserved history with new message/session IDs, resumed exact fork and received local-command output without changing source');
   console.log('PASS: all isolated processes reaped; no user authentication, sessions or settings used');
 } finally {
   seed?.close();
