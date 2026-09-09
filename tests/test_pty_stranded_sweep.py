@@ -37,6 +37,19 @@ pytestmark = pytest.mark.skipif(
 MARKER_SOURCE = "import time  # codex\ntime.sleep(120)\n"
 
 
+def _marker_pids() -> list[int]:
+    out = []
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == os.getpid():
+            continue
+        if "# codex" in pty_terminal._agent_cmdline(pid):
+            out.append(pid)
+    return out
+
+
 def _wait_for(predicate, timeout: float = 5.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -50,6 +63,9 @@ class _Orphan:
     """A real process group: own session, no tty, reparented to init."""
 
     def __init__(self, stop: bool = True):
+        # Snapshot first: several of these exist at once, and picking any
+        # matching pid would let one instance clean up another's process.
+        before = set(_marker_pids())
         # sh forks the python child and exits immediately, so init adopts it.
         # setsid detaches the session, which is what removes the tty.
         subprocess.run(
@@ -57,24 +73,20 @@ class _Orphan:
             check=True,
             timeout=30,
         )
-        self.pid = self._find()
+        self.pid = self._find(before)
+        # "Exits immediately" is not "before this line": wait until init has
+        # actually adopted the child, or the sweep correctly refuses it as a
+        # process with a living parent and the test flakes.
+        assert _wait_for(lambda: pty_terminal._proc_field(self.pid, 4) == 1), "never orphaned"
         if stop:
             os.killpg(os.getpgid(self.pid), signal.SIGSTOP)
             assert _wait_for(lambda: pty_terminal._is_stopped(self.pid)), "did not stop"
 
-    def _find(self) -> int:
+    def _find(self, before: set[int]) -> int:
         found: list[int] = []
 
         def look() -> bool:
-            found.clear()
-            for entry in os.scandir("/proc"):
-                if not entry.name.isdigit():
-                    continue
-                pid = int(entry.name)
-                if pid == os.getpid():
-                    continue
-                if "# codex" in pty_terminal._agent_cmdline(pid):
-                    found.append(pid)
+            found[:] = sorted(set(_marker_pids()) - before)
             return bool(found)
 
         assert _wait_for(look), "helper process never appeared"
