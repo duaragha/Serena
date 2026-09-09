@@ -3,20 +3,22 @@ import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {mkdtemp,rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {homedir,tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {fileURLToPath} from 'node:url';
 import {createInterface} from 'node:readline';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
-const [sdkPath,cliPath,pythonPath,formMode,electronPath]=process.argv.slice(2);
+const [sdkPath,cliPath,pythonPath,formMode,electronPath,frozenPath]=process.argv.slice(2);
 assert(!formMode || formMode==='--discovery-form','Unknown proof mode');
 assert(sdkPath && cliPath,'SDK module and installed CLI paths required');
 const root=await mkdtemp(join(tmpdir(),'serena-claude-driver-'));
 const path=process.env.PATH;
+const browsers=process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(),'.cache','ms-playwright');
+const proofPythonPath=process.env.SERENA_PROOF_PYTHONPATH;
 for(const key of Object.keys(process.env)) delete process.env[key];
-Object.assign(process.env,{PATH:path,HOME:root,CLAUDE_CONFIG_DIR:join(root,'config'),XDG_CONFIG_HOME:join(root,'xdg')});
+Object.assign(process.env,{PATH:path,HOME:root,CLAUDE_CONFIG_DIR:join(root,'config'),XDG_CONFIG_HOME:join(root,'xdg'),PLAYWRIGHT_BROWSERS_PATH:browsers});
 const sdk=await import(pathToFileURL(resolve(sdkPath)).href);
 const children=[],exits=[];
 let driver,seed;
@@ -32,11 +34,11 @@ const spawnOwned=options=>{
 const options={cwd:root,pathToClaudeCodeExecutable:resolve(cliPath),env:{...process.env},
   settingSources:[],tools:[],strictMcpConfig:true,spawnClaudeCodeProcess:spawnOwned};
 const deadline=setTimeout(()=>{
-  console.error('Native driver proof exceeded 45s');
+  console.error('Native driver proof exceeded 90s');
   seed?.close();driver?.close().catch(()=>{});
   for(const child of children)if(child.exitCode===null)child.kill('SIGTERM');
   process.exitCode=1;
-},45000);
+},90000);
 try {
   seed=sdk.query({prompt:'/effort high',options});
   let sid;
@@ -119,6 +121,16 @@ try {
     const pythonExit=new Promise((done,reject)=>{python.once('exit',(code,signal)=>done({code,signal}));python.once('error',reject);});
     exits.push(pythonExit);pythonExit.catch(()=>{});
     assert.equal((await pythonExit).code,0,'Python transport proof failed');
+  }
+  if(frozenPath) {
+    assert(pythonPath && electronPath,'Frozen proof requires Python and Electron');
+    const frozen=spawn(resolve(pythonPath),[fileURLToPath(new URL('./verify-workspace-frozen.py',import.meta.url)),
+      resolve(frozenPath),resolve(sdkPath),resolve(electronPath),sid,root],{
+      env:{...process.env,SERENA_EVIDENCE_KIND:'live',...(proofPythonPath?{SERENA_PROOF_PYTHONPATH:proofPythonPath}:{})},stdio:['ignore','inherit','inherit']});
+    children.push(frozen);
+    const frozenExit=new Promise((done,reject)=>{frozen.once('exit',(code,signal)=>done({code,signal}));frozen.once('error',reject);});
+    exits.push(frozenExit);frozenExit.catch(()=>{});
+    assert.equal((await frozenExit).code,0,'Frozen workspace proof failed');
   }
   console.log('PASS: all isolated processes reaped; no user authentication, sessions or settings used');
 } finally {

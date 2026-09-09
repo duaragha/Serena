@@ -2,6 +2,41 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Frozen native browser roundtrip (2026-09-09): `verify-workspace-frozen.py`
+starts the built sidecar with isolated HOME, index, leases and an inaccessible
+private D-Bus address. It resumes only the seeded test session, sends a native
+zero-inference local command over HTTP, then sends another through the actual
+browser composer at 1440x1000 and 390x844. No user credentials or live chats are
+used. It checks native completion, no page/console/HTTP errors, no horizontal
+overflow, and owner survival after view closure. Browser tooling is imported
+only into the proof process, not the frozen server.
+
+```sh
+SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: direct driver, JSONL worker, Python owner, Electron Node-mode worker,
+# frozen HTTP, desktop browser and mobile browser native roundtrips passed;
+# isolated processes reaped. No inference or user sessions used.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q
+# exit 0: 2 passed in 7.07s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-frozen.py
+# exit 0: All checks passed!
+```
+
+Initial proof attempts exited 1: browser tooling was installed in the original
+user's site-packages, hidden by the isolated HOME; an explicit proof-only import
+path fixed it. The next attempt expected `Ready` rather than the actual pane's
+`completed` state; corrected the assertion. Ruff initially exited 1 on loop
+callback captures, fixed by binding each page's error list. Invoking the shared
+venv's pytest entrypoint directly exited 2 because it imported the base checkout;
+`python -m pytest` selects this worktree correctly.
+
+Screenshots: `apps/desktop/build/workspace-proof/frozen-desktop.png` and
+`frozen-mobile.png`. Visual inspection confirms the native result is readable
+and composer/header fit both viewports, but also exposes duplicated local-command
+results and raw command markup in replayed history. Those presentation defects
+remain open. This is a native local-command proof, not full CLI parity, an
+inference/browser tool-use proof, installed Electron QA, or Windows execution.
+
 Frozen Linux backend build (2026-09-09): the first attempt selected libpython
 from the running AppImage's mount via inherited LD_LIBRARY_PATH. That build was
 explicitly terminated (exit 143), not treated as a successful artifact. A sourced
@@ -33,9 +68,9 @@ SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtim
 
 The build contains all three worker .mjs files and the Python client/runtime/
 transport modules in its archive index. This proves artifact construction and
-the existing startup smoke, NOT a full frozen workspace session roundtrip or
-installed Electron UI behavior. The build emitted optional dependency warnings;
-Windows execution, full frozen workspace proof and installer QA remain open.
+the existing startup smoke. The later frozen native browser roundtrip above
+extends that evidence, but does not verify installed Electron UI behavior. The
+build emitted optional dependency warnings; Windows and installer QA remain open.
 
 Desktop runtime packaging wiring (2026-09-09): both Linux and Windows recipes
 now provision the locked SDK and include it outside app.asar, plus all three
