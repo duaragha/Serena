@@ -187,6 +187,30 @@ class CodexWorkspace:
                 self.state = "uncertain"
                 raise
 
+    async def search_files(self, query):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Codex session is unavailable")
+        if not isinstance(query, str) or not query.strip() or len(query) > 200 or "\0" in query:
+            raise ValueError("A file search of 1 to 200 characters is required")
+        result = await self.rpc.request("fuzzyFileSearch", {"query": query, "roots": [str(self.cwd)]})
+        if not isinstance(result, dict) or not isinstance(result.get("files"), list):
+            raise WorkspaceRpcError("Codex returned invalid file search results")
+        paths = []
+        for item in result["files"]:
+            if not isinstance(item, dict) or item.get("root") != str(self.cwd) or not isinstance(item.get("path"), str):
+                raise WorkspaceRpcError("Codex returned files outside the session project")
+            relative = Path(item["path"])
+            if relative.is_absolute() or ".." in relative.parts:
+                raise WorkspaceRpcError("Codex returned files outside the session project")
+            path = self.cwd / relative
+            if item.get("match_type") != "file" or not path.is_file() or not path.resolve().is_relative_to(self.cwd):
+                continue
+            if item["path"] not in paths:
+                paths.append(item["path"])
+            if len(paths) >= 100:
+                break
+        return {"paths": paths}
+
     async def permissions(self):
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")

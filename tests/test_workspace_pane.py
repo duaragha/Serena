@@ -61,6 +61,33 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_project_file_picker_preserves_draft_and_never_sends(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      controls.searchFiles=async query=>{calls.push(query);return {paths:['src/main.py','src/with space.py']};};
+      pane.mentionButton.hidden=false;
+    }""")
+    composer=page.get_by_role('textbox',name='Message Claude')
+    composer.fill('review this')
+    composer.evaluate('el=>el.setSelectionRange(7,11)')
+    page.get_by_role('button',name='Mention project file',exact=True).click()
+    assert page.evaluate('calls') == []
+    dialog=page.get_by_role('dialog',name='Mention project file')
+    search=dialog.get_by_role('searchbox',name='Find project file')
+    search.fill('src')
+    search.press('Enter')
+    dialog.get_by_role('button',name='src/with space.py',exact=True).wait_for()
+    search.press('ArrowDown')
+    page.keyboard.press('ArrowDown')
+    page.keyboard.press('Enter')
+    assert composer.input_value() == 'review @"src/with space.py" '
+    assert page.evaluate('calls') == ['src']
+    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_plugin_reload_is_explicit_refreshes_commands_and_reports_native_errors(pane, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})

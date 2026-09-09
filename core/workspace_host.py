@@ -292,6 +292,7 @@ class WorkspaceHost:
             "commands",
             "reload_skills",
             "reload_plugins",
+            "search_files",
             "load_earlier",
             "shell_command",
             "fork_session",
@@ -427,6 +428,11 @@ class WorkspaceHost:
                     # before publishing, so a confirmed failure can be retried.
                     retryable = True
                     result = await owner.load_earlier(payload["cursor"])
+                elif action == "search_files":
+                    if provider != "codex" or set(payload) != {"query"}:
+                        raise ValueError("File search requires a Codex session and query")
+                    retryable = True
+                    result = await owner.search_files(payload["query"])
                 elif action == "reload_plugins":
                     if provider != "claude" or payload:
                         raise ValueError("Plugin reload requires a Claude session and no payload")

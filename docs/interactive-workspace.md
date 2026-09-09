@@ -2,6 +2,26 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex file picker (2026-09-09): the composer now has an explicit project-file
+search dialog using the existing native app-server's fuzzyFileSearch. The host
+supplies only the owned session cwd as roots; callers cannot choose another root.
+Returned paths are validated against that root, with traversal, absolute-path
+and outside-project symlink protections. Search reads names, not file contents,
+and starts no turn. Selecting a result inserts an @path into the draft at its
+selection, quoting whitespace paths, without sending it. Arrow keys/Enter and
+mobile layout are covered. This adds Codex path selection, not Claude/Gemini
+parity or evidence that a model has read the referenced file.
+Official sources accessed 2026-09-09:
+https://learn.chatgpt.com/docs/prompting documents explicit CLI @path mentions;
+https://learn.chatgpt.com/docs/app-server documents the rich-client transport.
+Installed native fuzzyFileSearch response was additionally probed directly in
+an isolated home and returned the requested fixture under the supplied root.
+Verification (exit 0):
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_pane.py::test_project_file_picker_preserves_draft_and_never_sends -q`: 30 passed in 1.97s, including 390px/1600px picker keyboard/draft checks and root rejection.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_pane.py scripts/verify-workspace-codex-history.py`: all checks passed.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py`: native desktop/mobile file search and draft insertion before existing shell/history/reopen/cleanup checks; all passed. Mobile screenshot inspected at apps/desktop/build/workspace-proof/codex-native-mobile.png.
+Not rebuilt into the packaged sidecar or released.
+
 POSIX owner shutdown (2026-09-09): a marked isolated subprocess proof reproduced
 an orphaned worker: parent exit 0, child_survived_owner_close true. The proof
 terminated its own child and exited 0; no provider was launched. WorkspaceRpc

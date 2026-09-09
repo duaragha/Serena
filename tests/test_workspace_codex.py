@@ -8,6 +8,31 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_rpc import WorkspaceRpcError
 
 
+def test_native_file_search_is_bound_to_owned_project(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        (tmp_path / "selected file.py").write_text("fixture")
+        async def request(method, params):
+            assert method == "fuzzyFileSearch"
+            assert params == {"query": "selected", "roots": [str(tmp_path)]}
+            return {"files": [{"root": str(tmp_path), "path": "selected file.py", "match_type": "file"}]}
+        rpc.request = request
+        try:
+            assert await client.search_files("selected") == {"paths": ["selected file.py"]}
+            with pytest.raises(ValueError):
+                await client.search_files("")
+            async def escaped(method, params):
+                return {"files": [{"root": str(tmp_path), "path": "../outside", "match_type": "file"}]}
+            rpc.request = escaped
+            with pytest.raises(WorkspaceRpcError, match="outside"):
+                await client.search_files("selected")
+            assert client.state == "ready"
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_shell_command_requires_confirmation_and_preserves_exact_input(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

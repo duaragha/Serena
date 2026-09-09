@@ -98,6 +98,9 @@ export class WorkspacePane {
     this.stop.hidden = true;
     this.send = this.button('Send message', 'arrow-up'); this.send.type = 'submit';
     footer.append(attach, this.modelSelect, this.effortSelect, this.tierSelect, this.stop, this.send);
+    this.mentionButton=this.button('Mention project file','file-search',()=>this.openFileSearch());
+    this.mentionButton.hidden=provider!=='Codex' || !controls.searchFiles;
+    footer.insertBefore(this.mentionButton,this.modelSelect);
     this.reviewButton = this.button('Review changes', 'scan-eye', () => this.openReview());
     this.reviewButton.hidden = provider !== 'Codex' || !controls.review;
     footer.insertBefore(this.reviewButton, this.stop);
@@ -285,6 +288,52 @@ export class WorkspacePane {
     dialog.append(node('h3','','Fork conversation'),close,identity,status,create,open,another,recover);
     dialog.addEventListener('close',()=>dialog.remove());
     this.forkDialog=dialog;this.root.append(dialog);render();dialog.showModal();
+    window.lucide?.createIcons();
+  }
+
+  openFileSearch() {
+    if(this.fileSearchDialog?.open)return;
+    const start=this.input.selectionStart,end=this.input.selectionEnd;
+    const original=this.input.value;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');
+    dialog.setAttribute('aria-label','Mention project file');
+    const search=node('input');search.type='search';search.maxLength=200;
+    search.setAttribute('aria-label','Find project file');
+    const status=node('p');status.setAttribute('role','status');
+    const list=node('div','aw-command-list');
+    let generation=0;
+    list.addEventListener('keydown',e=>{
+      if(e.key==='ArrowDown' || e.key==='ArrowUp'){
+        e.preventDefault();
+        (e.key==='ArrowDown'?e.target.nextElementSibling:e.target.previousElementSibling)?.focus();
+      }
+    });
+    const run=async()=>{
+      if(!search.value.trim())return;
+      const request=++generation;
+      status.textContent='Searching...';list.replaceChildren();
+      try{
+        const result=await this.controls.searchFiles(search.value);
+        if(!dialog.open || this.disposed || request!==generation)return;
+        status.textContent=`${result.paths.length} files`;
+        for(const path of result.paths){
+          const item=node('button','aw-command',path);item.type='button';
+          item.addEventListener('click',()=>{
+            const mention='@'+(/\s|["\\]/.test(path)?JSON.stringify(path):path)+' ';
+            if(this.input.value===original)this.input.setRangeText(mention,start,end,'end');
+            else this.input.setRangeText(mention,this.input.selectionStart,this.input.selectionEnd,'end');
+            this.persistDraft();dialog.close();this.input.focus();
+          });
+          list.append(item);
+        }
+      }catch(error){if(dialog.open && request===generation)status.textContent=error.message;}
+    };
+    const find=this.button('Search project files','search',run);
+    search.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();run();}else if(e.key==='ArrowDown'){e.preventDefault();list.querySelector('button')?.focus();}});
+    const close=this.button('Close file search','x',()=>dialog.close());
+    dialog.addEventListener('close',()=>{generation++;dialog.remove();});
+    dialog.append(node('h3','','Mention project file'),close,search,find,status,list);
+    this.fileSearchDialog=dialog;this.root.append(dialog);dialog.showModal();search.focus();
     window.lucide?.createIcons();
   }
 
@@ -1085,6 +1134,7 @@ export class WorkspacePane {
     this.reviewDialog?.close();
     this.tasksDialog?.close();
     this.commandsDialog?.close();
+    this.fileSearchDialog?.close();
     this.mcpDialog?.close();
     this.contextDialog?.close();
     this.permissionsDialog?.close();

@@ -78,6 +78,14 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False):
                     if pid is None:
                         assert not owners(), "Page load launched an owner"
                     page.get_by_role("button", name="Resume session", exact=True).click()
+                    page.get_by_role("button", name="Mention project file", exact=True).click()
+                    picker = page.get_by_role("dialog", name="Mention project file")
+                    search = picker.get_by_role("searchbox", name="Find project file")
+                    search.fill("workspace-mention-proof")
+                    search.press("Enter")
+                    picker.get_by_role("button", name="workspace-mention-proof.py", exact=True).click()
+                    assert "@workspace-mention-proof.py" in page.get_by_role("textbox", name="Message Codex").input_value()
+                    print(f"PASS: {prefix} {label} native project file search inserted a draft mention without submitting a turn")
                     page.get_by_role("button", name="Run shell command", exact=True).wait_for(state="visible")
                     page.get_by_role("button", name="Run shell command", exact=True).click()
                     dialog = page.get_by_role("dialog", name="Run shell command")
@@ -198,6 +206,8 @@ async def main():
         home, project = root / "home", root / "project"
         (home / ".codex").mkdir(parents=True)
         project.mkdir()
+        mention_fixture = project / "workspace-mention-proof.py"
+        mention_fixture.write_text("# Isolated native file-search fixture\n")
         env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home),
                "CODEX_HOME": str(home / ".codex"), "XDG_CONFIG_HOME": str(home / ".config"),
                "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}
@@ -273,6 +283,7 @@ async def main():
             await asyncio.to_thread(frozen_browser_proof, sid, root, project, env, sys.argv[1])
         else:
             await asyncio.to_thread(browser_proof, sid, root, project, env, binary)
+        mention_fixture.unlink()
         assert not list(project.iterdir())
         print("PASS: isolated project untouched; native owners closed; no credentials used")
 
