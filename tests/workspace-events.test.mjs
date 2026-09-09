@@ -5,6 +5,14 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('native history model reaches controls without overwriting explicit resume settings',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,{method:'workspace/history',params:{thread:{id:'exact',model:'last-real',turns:[]}}}));
+  assert.equal(model.metadata.model,'last-real');
+  model.apply(wrap(2,{method:'workspace/history',params:{model:'explicit-resume',thread:{id:'exact',model:'last-real',turns:[]}}}));
+  assert.equal(model.metadata.model,'explicit-resume');
+});
+
 test('provider usage is retained without deriving invented context percentages', () => {
   const model = new WorkspaceConversation('exact');
   model.apply(wrap(1,{method:'thread/tokenUsage/updated',params:{threadId:'exact',tokenUsage:{last:{totalTokens:1234},total:{totalTokens:90000},modelContextWindow:null}}}));

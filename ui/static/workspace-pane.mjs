@@ -602,6 +602,33 @@ export class WorkspacePane {
         block.append(copy);
       }
       entry.append(message);
+    } else if (item.type === 'claudeToolCall') {
+      const detail=node('details','aw-tool');
+      const summary=node('summary');summary.append(node('span','',item.input?.description || item.tool || 'Tool'));
+      if(item.status)summary.append(node('small','',item.status));detail.append(summary);
+      const input=item.input || {};
+      if(typeof input.file_path==='string')detail.append(node('div','aw-file-name',input.file_path));
+      if(item.tool==='Bash' && typeof input.command==='string')detail.append(node('pre','aw-command',input.command));
+      else if(item.tool==='Edit' && typeof input.old_string==='string' && typeof input.new_string==='string'){
+        detail.append(node('div','aw-author','Requested edit'));
+        const diff=node('pre','aw-diff');
+        for(const [text,marker,style] of [[input.old_string,'-','aw-remove'],[input.new_string,'+','aw-add']]){
+          for(const line of text.split('\n'))diff.append(node('span',style,marker+line+'\n'));
+        }
+        detail.append(diff);
+      }else if(item.tool==='Write' && typeof input.content==='string'){
+        detail.append(node('div','aw-author','Requested file content'),node('pre','',input.content));
+      }else if(Object.keys(input).length)detail.append(node('pre','',JSON.stringify(input,null,2)));
+      if(item.output!==undefined && item.output!==null){
+        detail.append(node('div','aw-author','Output'));
+        const blocks=Array.isArray(item.output)?item.output:[item.output];
+        for(const block of blocks){
+          const text=typeof block==='string'?block:block?.type==='text' && typeof block.text==='string'?block.text:JSON.stringify(block,null,2);
+          detail.append(node('pre','aw-tool-output',text));
+        }
+      }
+      const original=node('details');original.append(node('summary','','Native details'),node('pre','',JSON.stringify(item,null,2)));
+      detail.append(original);entry.append(detail);
     } else if (item.type === 'contextCompaction') {
       entry.append(node('div', 'aw-author', 'Context compaction'));
       entry.append(node('div', '', item.status === 'completed' ? 'Completed' : 'In progress'));

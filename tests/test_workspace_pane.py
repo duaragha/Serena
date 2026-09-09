@@ -61,6 +61,39 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_claude_tools_show_readable_native_output_and_requested_edits(pane, tmp_path, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    page.evaluate("""() => {
+      for(const item of [
+        {id:'bash-native',type:'claudeToolCall',tool:'Bash',input:{command:'pytest tests/test_example.py -q',description:'Run focused tests'},output:[{type:'text',text:'3 passed in 0.4s'}],status:'completed'},
+        {id:'edit-native',type:'claudeToolCall',tool:'Edit',input:{file_path:'core/example.py',old_string:'old_value',new_string:'new_value'},output:'Edit rejected by tool',status:'failed'},
+        {id:'write-native',type:'claudeToolCall',tool:'Write',input:{file_path:'index.html',content:'<img src=x onerror=window.compromised=true>'},status:'inProgress'},
+        {id:'unknown-native',type:'claudeToolCall',tool:'CustomTool',input:{custom:'retained'},output:{structured:'also retained'},status:'completed'}
+      ])emit({method:'item/completed',params:{turnId:'t',item}});
+    }""")
+    for identifier in ["bash-native", "edit-native", "write-native", "unknown-native"]:
+        page.locator(f'[data-item-id="{identifier}"] > details > summary').click()
+    command = page.locator('[data-item-id="bash-native"]')
+    assert command.locator(".aw-command").inner_text() == "pytest tests/test_example.py -q"
+    assert command.locator(".aw-tool-output").inner_text() == "3 passed in 0.4s"
+    assert command.locator(".aw-exit").count() == 0
+    edit = page.locator('[data-item-id="edit-native"]')
+    assert edit.get_by_text("Requested edit", exact=True).is_visible()
+    assert edit.locator(".aw-diff").inner_text() == "-old_value\n+new_value\n"
+    assert edit.get_by_text("failed", exact=True).is_visible()
+    assert edit.locator(".aw-tool-output").inner_text() == "Edit rejected by tool"
+    assert page.locator('[data-item-id="write-native"] img').count() == 0
+    assert page.evaluate("window.compromised === undefined")
+    assert "also retained" in page.locator('[data-item-id="unknown-native"] .aw-tool-output').inner_text()
+    command.get_by_text("Native details", exact=True).click()
+    assert '"description": "Run focused tests"' in command.locator("details details pre").inner_text()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / f"claude-tools-{width}.png"))
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_claude_effort_uses_native_command_without_consuming_draft(pane, tmp_path, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})

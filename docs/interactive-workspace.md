@@ -2,6 +2,26 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude tool cards now render Bash commands and text output directly, requested
+Edit before/after lines, and requested Write content. Failed edits remain labelled
+failed and requested, not applied. Unknown structured output and full native
+records remain inspectable. All tool-provided strings render as text, not HTML;
+there are no inferred command exit codes. Browser fixtures cover desktop/mobile,
+malicious markup, unknown output, and native-record access; screenshots reviewed.
+The history reducer also promotes the native thread model into pane controls
+without overwriting an explicit resume model.
+
+```sh
+node --test tests/workspace-events.test.mjs
+# exit 0: 6 passed, 0 failed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_claude_tools_show_readable_native_output_and_requested_edits -q --basetemp=/tmp/serena-native-tool-view
+# exit 0: 2 passed in 2.06s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q --basetemp=/tmp/serena-native-tool-view-final
+# exit 0: 42 passed in 29.38s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+# exit 0: all checks passed
+```
+
 Claude model identity now ignores `<synthetic>` local-command responses and
 subagent models when updating the parent pane. Original native records remain
 intact. History restores the last real assistant model when one exists, without
