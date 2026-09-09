@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Integrated workspace verification after the control additions:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_*.py -q --basetemp=/tmp/serena-workspace-integrated-check
+# exit 0: 147 passed in 33.47s
+node --test tests/workspace-*.test.mjs
+# exit 0: 16 passed, 0 failed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_complete_control_surface_fits_without_auto_actions -q --basetemp=/tmp/serena-combined-controls-final
+# exit 0: four provider/viewport cases passed; populated idle controls, selected
+# model/effort/speed and queued-message control stay in bounds without overlap
+```
+
+The new browser cases use supplied control fixtures, not live provider sessions.
+They assert no construction-time actions and inspect actual DOM geometry at
+390/1600 pixels. Screenshots were reviewed while developing the cases. These
+results do not prove the complete installed Electron application, Windows,
+Gemini, or remaining command/session lifecycle parity. No rollout was performed.
+
 Codex permission profiles now use native permissionProfile/list and
 thread/settings/update. Profiles are discovered for the owner's project with
 bounded pagination; managed disallowed entries are disabled in the picker and

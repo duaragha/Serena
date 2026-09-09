@@ -60,6 +60,35 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+@pytest.mark.parametrize("provider", ["Codex", "Claude"])
+@pytest.mark.parametrize("width", [390, 1600])
+def test_complete_control_surface_fits_without_auto_actions(pane, tmp_path, provider, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 844})
+    page.evaluate("""provider => {
+      pane.dispose();
+      for(const name of ['commands','permissions','contextUsage','mcpServers','review','compact','backgroundTasks','cancelQueuedBridge']) controls[name]=async()=>{calls.push([name]);return {};};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider,controls});
+      window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      emit({method:'workspace/models',params:{data:[{model:'native',displayName:'Native model with a long display name',supportedReasoningEfforts:provider==='Codex'?[{reasoningEffort:'high'}]:[],serviceTiers:provider==='Codex'?[{id:'fast',name:'Fast'}]:[]}]}});
+      emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:3,requests:[]}});
+    }""", provider)
+    page.wait_for_function("!pane.send.disabled")
+    page.locator('#left').get_by_role('combobox', name='Model', exact=True).select_option('native')
+    assert page.evaluate("calls") == []
+    assert page.locator("#left").evaluate("el=>el.scrollWidth<=el.clientWidth")
+    boxes = page.locator("#left .aw-composer-tools").evaluate("""el=>[...el.children].filter(c=>c.getClientRects().length).map(c=>{const r=c.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};})""")
+    root = page.locator("#left").bounding_box()
+    for index, box in enumerate(boxes):
+        assert root["x"] <= box["left"] < box["right"] <= root["x"] + root["width"]
+        assert 0 <= box["top"] < box["bottom"] <= 844
+        for other in boxes[index + 1:]:
+            assert box["right"] <= other["left"] or other["right"] <= box["left"] or box["bottom"] <= other["top"] or other["bottom"] <= box["top"]
+    page.screenshot(path=str(tmp_path / f"controls-{provider}-{width}.png"))
+    assert not errors
+
+
 def test_codex_permission_profile_picker_disables_managed_denials(pane):
     page, errors = pane
     page.evaluate("""() => {
