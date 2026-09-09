@@ -9,6 +9,8 @@ export class WorkspaceConnection {
     this.storage = storage;
     this.key = `serena-workspace-pending:${sessionId}`;
     this.pending = JSON.parse(storage.getItem(this.key) || '{}');
+    this.uploadKey = `serena-workspace-uploads:${sessionId}`;
+    this.uploads = JSON.parse(storage.getItem(this.uploadKey) || '{}');
     this.cursor = 0;
     this.stopped = false;
     this.polling = false;
@@ -19,11 +21,12 @@ export class WorkspaceConnection {
   async request(path, body) {
     if (this.stopped) throw Error('Conversation view is closed');
     const fetcher = this.fetcher;
+    const multipart = body instanceof FormData;
     const response = await fetcher(this.base + path, {
       method: body === undefined ? 'GET' : 'POST',
       credentials: 'same-origin',
-      headers: {'X-Serena-Workspace-Token': this.token, ...(body === undefined ? {} : {'Content-Type': 'application/json'})},
-      ...(body === undefined ? {} : {body: JSON.stringify(body)}),
+      headers: {'X-Serena-Workspace-Token': this.token, ...(body === undefined || multipart ? {} : {'Content-Type': 'application/json'})},
+      ...(body === undefined ? {} : {body: multipart ? body : JSON.stringify(body)}),
     });
     const data = await response.json();
     if (!response.ok) throw Error(data.error || `Workspace request failed (${response.status})`);
@@ -76,9 +79,23 @@ export class WorkspaceConnection {
 
   controls() {
     return {
-      submit: ({text, files}) => {
-        if (files?.length) throw Error('Owner-bound uploads are not connected yet');
-        return this.command('submit', {inputs: [{type: 'text', text}]});
+      submit: async ({text, files = []}) => {
+        if (files.length > 16) throw Error('Attach up to 16 files per message');
+        const inputs = text ? [{type: 'text', text}] : [];
+        for (const file of files) {
+          if (!file.size || file.size > 25 * 1024 * 1024) throw Error('Attach non-empty files no larger than 25 MB');
+          const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+          const key = JSON.stringify([file.name, ...new Uint8Array(digest)]);
+          if (!this.uploads[key]) {
+            const form = new FormData(); form.append('file', file, file.name);
+            const result = await this.request('/uploads', form);
+            if (!result.ok || !result.upload?.token) throw Error(result.error || 'Upload failed');
+            this.uploads[key] = result.upload.token;
+            this.storage.setItem(this.uploadKey, JSON.stringify(this.uploads));
+          }
+          inputs.push({type: 'upload', token: this.uploads[key]});
+        }
+        return this.command('submit', {inputs});
       },
       interrupt: () => this.command('interrupt', {}),
       answer: (request_id, answer) => this.command('answer', {request_id, answer}),

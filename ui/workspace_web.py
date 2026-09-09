@@ -42,6 +42,18 @@ def workspace_blueprint(host, *, token: str):
     def attach(sid):
         return jsonify(host.attach(sid))
 
+    @bp.post("/<sid>/uploads")
+    def upload(sid):
+        from core.workspace_uploads import MAX_UPLOAD_BYTES
+
+        request.max_content_length = MAX_UPLOAD_BYTES + 1024 * 1024
+        file = request.files.get("file")
+        if file is None or not file.filename:
+            raise ValueError("An attachment file is required")
+        return jsonify(
+            ok=True, upload=host.uploads.save(sid, file.filename, file.stream, file.mimetype)
+        )
+
     @bp.get("/<sid>/events")
     def events(sid):
         return jsonify(host.events(sid, after=int(request.args.get("after", "0"))))

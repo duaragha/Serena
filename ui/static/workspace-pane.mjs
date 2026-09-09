@@ -17,6 +17,7 @@ export class WorkspacePane {
     this.conversation = new WorkspaceConversation(sessionId);
     this.rendered = new Map();
     this.files = [];
+    this.previews = new Map();
     this.sending = false;
     this.disposed = false;
     this.frame = 0;
@@ -63,6 +64,22 @@ export class WorkspacePane {
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.form.requestSubmit(); }
+    });
+    this.input.addEventListener('paste', e => {
+      const files = [...(e.clipboardData?.files || [])];
+      if (!files.length) return;
+      e.preventDefault();
+      const text = e.clipboardData.getData('text/plain');
+      if (text) this.input.setRangeText(text, this.input.selectionStart, this.input.selectionEnd, 'end');
+      this.files.push(...files); this.renderAttachments();
+    });
+    this.form.addEventListener('dragover', e => {
+      if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
+    });
+    this.form.addEventListener('drop', e => {
+      const files = [...(e.dataTransfer?.files || [])];
+      if (!files.length) return;
+      e.preventDefault(); this.files.push(...files); this.renderAttachments(); this.input.focus();
     });
     const identity = node('footer', 'aw-identity');
     const copy = this.button(`Copy session ID ${sessionId}`, 'copy', () => {
@@ -115,9 +132,18 @@ export class WorkspacePane {
   }
 
   renderAttachments() {
+    for (const [file, url] of this.previews) {
+      if (!this.files.includes(file)) { URL.revokeObjectURL(url); this.previews.delete(file); }
+    }
     this.attachments.replaceChildren();
     for (const file of this.files) {
       const row = node('span', 'aw-attachment', file.name);
+      if (/^image\/(png|jpeg|gif|webp)$/.test(file.type)) {
+        if (!this.previews.has(file)) this.previews.set(file, URL.createObjectURL(file));
+        const preview = node('img'); preview.src = this.previews.get(file); preview.alt = file.name;
+        preview.width = 40; preview.height = 40; preview.style.objectFit = 'contain';
+        row.prepend(preview);
+      }
       row.append(this.button(`Remove ${file.name}`, 'x', () => {
         this.files = this.files.filter(f => f !== file); this.renderAttachments();
       }));
@@ -246,6 +272,8 @@ export class WorkspacePane {
 
   dispose() {
     this.disposed = true;
+    for (const url of this.previews.values()) URL.revokeObjectURL(url);
+    this.previews.clear();
     cancelAnimationFrame(this.frame);
     this.root.replaceChildren();
     // No stop/interrupt/close call: the owner outlives this view.

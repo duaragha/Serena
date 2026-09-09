@@ -148,8 +148,7 @@ proof for user sessions. No arbitrary provider RPC proxy is exposed.
 `ui/static/workspace-connection.mjs` connects the real pane to those HTTP routes.
 Pending send IDs survive view reload through sessionStorage. Replay advances only
 after the view accepts each event; disposal stops polling, without stopping work.
-Uploads currently fail explicitly instead of silently sending only the text.
-Owner-bound file transport remains required before production use.
+Uploads now use the owner-bound transport below rather than sending only text.
 
 The real-browser integration test mounts the actual blueprint and pane, sends
 through local HTTP, receives journaled adapter output, reloads, and verifies the
@@ -170,7 +169,40 @@ SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/pytho
 # exit 0: one installed Codex initialization probe, repeated attach/replay, child reaped with exit 0
 ```
 
-Next: implement production admission and owner-bound uploads, mount the connected
+`core/workspace_uploads.py` stores bounded uploads privately under the workspace
+state directory. A token is scoped to one exact session; renderer-supplied local
+paths are rejected. Image payloads are decoded/verified, files are limited to
+25 MB, and byte count/hash are checked again before delivery. Codex receives
+images as native `localImage` inputs and other documents as explicit attached-file
+references for its file tools. That document path is not a claim that every
+binary format is natively interpreted by the model.
+
+The composer now accepts file selection, pasted images and dropped files, with
+raster previews and removal. Upload IDs are cached by filename/content hash, so
+a lost send response reuses the same command receipt and attachment IDs. Preview
+URLs are revoked on removal/disposal. Authenticated upload requests do not start
+an agent. Submitted files persist for replay/resume; attachment deletion must be
+integrated with session deletion before production rollout. No blanket expiry
+may delete files still referenced by persisted conversations.
+
+Upload verification (2026-09-09):
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_uploads.py tests/test_workspace_host.py tests/test_workspace_pane.py -q
+# exit 0: 17 passed in 4.64s; includes real HTTP/browser upload, image delivery,
+# cross-session denial, corrupt/changed file denial, paste/drop and mobile preview
+node --test tests/workspace-connection.test.mjs
+# exit 0: 4 passed, 0 failed; upload/send retries retain IDs
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-host.py
+# exit 0: private byte-exact attachment storage and cross-session rejection,
+# installed Codex initialization, single owner/replay, clean child exit 0
+```
+
+The mobile upload screenshot was inspected; preview, names, removal and composer
+fit the 390x844 viewport. Browser provider responses remain controlled fixtures,
+not proof of live image understanding or CLI capability parity.
+
+Next: implement production admission and attachment/session deletion, mount the connected
 pane in the app, implement Claude/Antigravity control and the remaining capability
 matrix, then prove full provider parity and migrate the real app. The replacement
 remains disabled and incomplete.

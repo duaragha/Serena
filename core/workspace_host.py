@@ -16,11 +16,13 @@ from pathlib import Path
 
 from core.workspace_codex import CodexWorkspace
 from core.workspace_journal import WorkspaceJournal
+from core.workspace_uploads import WorkspaceUploads
 
 
 class WorkspaceHost:
     def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None):
         self.journal = journal
+        self.uploads = WorkspaceUploads(journal.path.parent / "workspace-uploads")
         self.resolve = resolve
         self.factories = factories if factories is not None else {"codex": CodexWorkspace}
         self._guard = threading.Lock()
@@ -129,16 +131,26 @@ class WorkspaceHost:
                         "error": "Prior delivery has no confirmed result; it will not be repeated",
                     }
                 )
-            owner, _ = self._sessions[sid]
+            owner, provider = self._sessions[sid]
             try:
                 if action == "submit":
                     if payload.keys() - {"inputs", "options"}:
                         raise ValueError("Unsupported submit fields")
-                    result = await owner.submit(payload["inputs"], options=payload.get("options"))
+                    if provider != "codex":
+                        raise ValueError("Provider input mapping is not implemented")
+                    inputs = await asyncio.to_thread(
+                        self.uploads.codex_inputs, sid, payload["inputs"]
+                    )
+                    result = await owner.submit(inputs, options=payload.get("options"))
                 elif action == "steer":
                     if set(payload) != {"inputs"}:
                         raise ValueError("Steering requires inputs only")
-                    result = await owner.steer(payload["inputs"])
+                    if provider != "codex":
+                        raise ValueError("Provider input mapping is not implemented")
+                    inputs = await asyncio.to_thread(
+                        self.uploads.codex_inputs, sid, payload["inputs"]
+                    )
+                    result = await owner.steer(inputs)
                 elif action == "interrupt":
                     if payload:
                         raise ValueError("Interrupt takes no payload")

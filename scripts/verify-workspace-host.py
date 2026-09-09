@@ -1,5 +1,6 @@
 """Safe installed-Codex host proof: initialization only, no coding thread or turn."""
 
+import io
 import os
 import shutil
 import sys
@@ -58,6 +59,18 @@ def main():
         try:
             assert host.events("probe-only")["events"] == []
             assert not owners
+            upload = host.uploads.save(
+                "probe-only", "proof.txt", io.BytesIO(b"exact attachment bytes")
+            )
+            path, _ = host.uploads.resolve("probe-only", upload["token"])
+            assert path.read_bytes() == b"exact attachment bytes"
+            try:
+                host.uploads.resolve("different-session", upload["token"])
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Attachment crossed session ownership")
+            print("PASS: private attachment persisted byte-for-byte; cross-session lookup rejected")
             assert host.attach("probe-only")["ok"]
             process = owners[0].rpc.process
             assert host.attach("probe-only")["ok"]

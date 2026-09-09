@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
+import {File} from 'node:buffer';
 import {WorkspaceConnection} from '../ui/static/workspace-connection.mjs';
 
 globalThis.crypto ??= webcrypto;
@@ -41,12 +42,27 @@ test('lost send response retains request ID across view reload, confirmed next s
   assert.notEqual(ids[1],ids[2]);
 });
 
-test('attachments fail honestly without losing them through a text-only send',()=>{
-  let called=false;
-  const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:()=>{called=true;}});
-  assert.throws(()=>conn.controls().submit({text:'photo',files:[{name:'a.png'}]}),/uploads/);
+test('files upload once and stable attachment IDs survive a lost send response',async()=>{
+  const calls=[];
+  let lose=true;
+  const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push([url,options]);
+    if(url.endsWith('/uploads')) {
+      assert.equal(options.body.get('file').name,'notes.txt');
+      assert.equal(options.headers['Content-Type'],undefined);
+      return response({ok:true,upload:{token:'bound-token'}});
+    }
+    if(lose){lose=false;throw Error('lost');}
+    return response({ok:true,result:{}});
+  }});
+  const files=[new File(['contents'],'notes.txt',{type:'text/plain'})];
+  await assert.rejects(conn.controls().submit({text:'read',files}),/lost/);
+  await conn.controls().submit({text:'read',files});
   conn.dispose();
-  assert.equal(called,false);
+  assert.equal(calls.filter(([url])=>url.endsWith('/uploads')).length,1);
+  const sends=calls.filter(([url])=>url.endsWith('/commands')).map(([,options])=>JSON.parse(options.body));
+  assert.deepEqual(sends[0],sends[1]);
+  assert.deepEqual(sends[0].payload.inputs,[{type:'text',text:'read'},{type:'upload',token:'bound-token'}]);
 });
 
 test('a rejected render leaves the replay cursor before the failed event',async()=>{

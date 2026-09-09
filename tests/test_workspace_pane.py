@@ -74,6 +74,31 @@ def test_real_items_tool_expansion_and_injection_safety(pane, tmp_path):
     assert not errors
 
 
+def test_pasted_image_drop_preview_and_mobile_cleanup(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""async () => {
+      const canvas=document.createElement('canvas');canvas.width=8;canvas.height=8;
+      canvas.getContext('2d').fillRect(0,0,8,8);
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+      const clipboard=new DataTransfer();clipboard.items.add(new File([blob],'screenshot.png',{type:'image/png'}));
+      clipboard.setData('text/plain','pasted text');
+      pane.input.dispatchEvent(new ClipboardEvent('paste',{clipboardData:clipboard,bubbles:true,cancelable:true}));
+      const dropped=new DataTransfer();dropped.items.add(new File(['document'],'notes.txt',{type:'text/plain'}));
+      pane.form.dispatchEvent(new DragEvent('drop',{dataTransfer:dropped,bubbles:true,cancelable:true}));
+    }""")
+    assert page.get_by_role("textbox", name="Message Claude").input_value() == "pasted text"
+    page.wait_for_function("document.querySelector('.aw-attachment img').naturalWidth === 8")
+    assert page.get_by_role("button", name="Remove notes.txt").is_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / "workspace-mobile-upload.png"))
+    page.get_by_role("button", name="Remove screenshot.png").click()
+    assert page.locator(".aw-attachment img").count() == 0
+    assert page.evaluate("pane.previews.size") == 0
+    page.evaluate("pane.dispose()")
+    assert not errors
+
+
 def test_composer_upload_failure_retains_draft_and_closing_does_not_cancel(pane):
     page, errors = pane
     composer = page.get_by_role("textbox", name="Message Claude")

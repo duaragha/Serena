@@ -1,4 +1,5 @@
 import asyncio
+import io
 import sys
 import threading
 import time
@@ -196,11 +197,21 @@ window.addEventListener('pagehide',()=>connection.dispose());
             assert page.locator(".aw-error").is_hidden(), page.locator(".aw-error").inner_text()
             page.wait_for_function("pane.conversation.status === 'ready'")
             page.get_by_role("textbox", name="Message Codex").fill("through the actual HTTP host")
+            page.locator("input[type=file]").set_input_files(
+                {"name": "notes.txt", "mimeType": "text/plain", "buffer": b"attached document"}
+            )
             page.get_by_role("button", name="Send message", exact=True).click()
             page.get_by_text("adapter fixture output", exact=True).wait_for()
-            assert Owner.instances[0].sent == [
-                [{"type": "text", "text": "through the actual HTTP host"}]
-            ]
+            assert Owner.instances[0].sent[0][0] == {
+                "type": "text",
+                "text": "through the actual HTTP host",
+            }
+            import json
+
+            attachment = json.loads(
+                Owner.instances[0].sent[0][1]["text"].removeprefix("User-attached file: ")
+            )
+            assert Path(attachment["path"]).read_bytes() == b"attached document"
             page.reload()
             page.get_by_role("button", name="Open session").click()
             page.get_by_text("adapter fixture output", exact=True).wait_for()
@@ -213,6 +224,38 @@ window.addEventListener('pagehide',()=>connection.dispose());
         server.shutdown()
         server.server_close()
         thread.join(5)
+
+
+def test_uploaded_image_reaches_same_owner_and_cross_session_token_is_rejected(host):
+    from PIL import Image
+
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "green").save(image, format="PNG")
+    image.seek(0)
+    app = Flask(__name__)
+    app.register_blueprint(workspace_blueprint(host, token="s" * 40))
+    kwargs = {"base_url": "http://127.0.0.1", "headers": {"X-Serena-Workspace-Token": "s" * 40}}
+    with app.test_client() as client:
+        upload = client.post(
+            "/api/workspace/exact/uploads", data={"file": (image, "photo.png")}, **kwargs
+        )
+        assert upload.status_code == 200, upload.json
+        assert Owner.instances == []
+        token = upload.json["upload"]["token"]
+        assert client.post("/api/workspace/exact/attach", **kwargs).json["ok"]
+        data = {
+            "request_id": "image",
+            "action": "submit",
+            "payload": {"inputs": [{"type": "upload", "token": token}]},
+        }
+        assert client.post("/api/workspace/exact/commands", json=data, **kwargs).json["ok"]
+        delivered = Owner.instances[0].sent[0][0]
+        assert delivered["type"] == "localImage"
+        with Image.open(delivered["path"]) as decoded:
+            assert decoded.size == (8, 8)
+        assert client.post("/api/workspace/other/attach", **kwargs).json["ok"]
+        assert not client.post("/api/workspace/other/commands", json=data, **kwargs).json["ok"]
+        assert Owner.instances[1].sent == []
 
 
 PEER = r"""
