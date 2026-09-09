@@ -220,7 +220,7 @@ export class WorkspacePane {
     }
     const value = changedModel ? (this.modelSelect.value ? model?.defaultReasoningEffort : '') : selected;
     this.effortSelect.value = [...this.effortSelect.options].some(o => o.value === value) ? value : '';
-    this.effortSelect.hidden = !model;
+    this.effortSelect.hidden = !(model?.supportedReasoningEfforts?.length);
     const tier = this.tierSelect.value;
     this.tierSelect.replaceChildren();
     const same = node('option', '', this.conversation.metadata.serviceTier || 'Session speed'); same.value = '';

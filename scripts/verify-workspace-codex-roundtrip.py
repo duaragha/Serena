@@ -103,7 +103,8 @@ async def main():
             assert any(
                 "SERENA_RESUME_PROOF" in json.dumps(e)
                 for e in published
-                if e.get("method") in {"item/completed", "item/agentMessage/delta"}
+                if e.get("method") == "item/completed"
+                and e.get("params", {}).get("item", {}).get("type") == "agentMessage"
             )
             print(
                 "PASS: exact persisted ID/history resumed through CodexWorkspace; real second-turn output received"

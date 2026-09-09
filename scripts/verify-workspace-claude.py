@@ -1,6 +1,7 @@
 """Installed SDK control handshake in isolated storage; no user prompt or inference."""
 
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -44,6 +45,12 @@ async def main():
             assert isinstance(process.pid, int)
             info = await client.get_server_info()
             assert isinstance(info, dict) and info
+            print("Advertised control keys:", ", ".join(sorted(info)))
+            print("Advertised models:", json.dumps(info.get("models", [])))
+            models = info.get("models", [])
+            assert models and models[0].get("value")
+            await client.set_model(models[0]["value"])
+            print("PASS: installed SDK accepted an advertised model through the existing control connection")
             print("PASS: installed Claude SDK control initialization and owned process identity")
             print(
                 "No resume, user message, tool execution, or inference request sent; config isolated"

@@ -48,6 +48,7 @@ class ClaudeWorkspace:
         self.events = ClaudeEvents(session_id)
         self.questions = {}
         self.question_inputs = {}
+        self.model_catalog = None
         self._stop = asyncio.Event()
         self._ready = None
         self._owner_task = None
@@ -152,14 +153,51 @@ class ClaudeWorkspace:
             finally:
                 self._stop.set()
 
+    async def list_models(self):
+        if self.client is None:
+            raise RuntimeError("Claude is not attached")
+        info = await self.client.get_server_info()
+        models = (info or {}).get("models", [])
+        if not isinstance(models, list):
+            raise ValueError("Claude returned an invalid model catalog")
+        self.model_catalog = [
+            deepcopy(model)
+            for model in models
+            if isinstance(model, dict) and isinstance(model.get("value"), str)
+        ]
+        result = {
+            "data": [
+                {
+                    "id": model["value"],
+                    "model": model["value"],
+                    "displayName": model.get("displayName", model["value"]),
+                    "supportedReasoningEfforts": [],
+                    "claudeCapabilities": model,
+                }
+                for model in self.model_catalog
+            ]
+        }
+        await self.publish(self.events.event("workspace/models", result))
+        return result
+
     async def submit(self, inputs, *, options=None):
         async with self._control:
             if self.state != "ready":
                 raise RuntimeError("Claude is not ready for a new turn")
-            if options:
-                raise ValueError("Claude per-turn settings are not implemented yet")
+            options = options or {}
+            if not isinstance(options, dict) or options.keys() - {"model"}:
+                raise ValueError("Unsupported Claude per-turn settings")
             if not isinstance(inputs, list) or not inputs:
                 raise ValueError("A message or attachment is required")
+            if "model" in options:
+                if self.model_catalog is None:
+                    await self.list_models()
+                if options["model"] not in {model["value"] for model in self.model_catalog}:
+                    raise ValueError("Claude did not advertise this model")
+                await self.client.set_model(options["model"])
+                await self.publish(
+                    self.events.event("workspace/settings", {"model": options["model"]})
+                )
             turn_id = str(uuid4())
             self.active_turn = self.events.turn = turn_id
             self.state = "submitting"

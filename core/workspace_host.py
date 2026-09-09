@@ -148,7 +148,7 @@ class WorkspaceHost:
             owner, provider = self._sessions[sid]
             try:
                 if action == "models":
-                    if payload or provider != "codex":
+                    if payload or provider not in {"codex", "claude"}:
                         raise ValueError("Model discovery is unavailable for this request")
                     result = await owner.list_models()
                 elif action == "submit":

@@ -32,6 +32,13 @@ class Client:
         self.closed = False
         self.fail_send = False
         self.interrupted = False
+        self.models_set = []
+
+    async def get_server_info(self):
+        return {"models": [{"value": "sonnet", "displayName": "Sonnet"}]}
+
+    async def set_model(self, model):
+        self.models_set.append(model)
 
     async def connect(self):
         self.open_task = asyncio.current_task()
@@ -117,6 +124,26 @@ def test_missing_or_mismatched_native_session_never_launches(tmp_path, native_id
             await owner.open()
         assert owner.client is None and owner._owner_task is None
         assert events == []
+
+    asyncio.run(run())
+
+
+def test_advertised_model_selection_uses_existing_client(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        try:
+            await owner.open()
+            catalog = await owner.list_models()
+            assert catalog["data"][0]["model"] == "sonnet"
+            assert catalog["data"][0]["supportedReasoningEfforts"] == []
+            with pytest.raises(ValueError, match="advertise"):
+                await owner.submit([{"type": "text", "text": "hi"}], options={"model": "invented"})
+            assert not owner.client.sent and not owner.client.models_set
+            await owner.submit([{"type": "text", "text": "hi"}], options={"model": "sonnet"})
+            assert owner.client.models_set == ["sonnet"]
+            assert owner.client.sent[0][0] == "exact"
+        finally:
+            await owner.close()
 
     asyncio.run(run())
 

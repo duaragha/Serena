@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude now has a verified isolated subscription inference/resume round trip as
+well. Its model selector is populated from the installed SDK's advertised models;
+selection calls set_model on the existing client before submission, rejects
+unknown choices, and never substitutes providers. Runtime effort/fast controls
+remain unimplemented and hidden. The installed SDK exposes four model choices.
+
+Both round-trip proofs now require matching completed **assistant** message
+content, excluding echoed user inputs from the assertion. These still do not
+prove all tools, permissions, uploads, user configuration or Windows behavior.
+
+```sh
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference
+# exit 0: exact native Claude history/resume, real completed assistant reply,
+# both processes reaped, isolated credential/history copy removed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference
+# exit 0 after assistant-only assertion: native resume and completed reply
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py
+# exit 0: four advertised models, set_model accepted on same SDK connection;
+# no inference in this control-only command; child exit 0
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_app.py tests/test_workspace_host.py -q
+# exit 0: 21 passed in 7.77s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q
+# exit 0: 13 passed in 7.02s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_host.py tests/test_workspace_claude.py scripts/verify-workspace-claude.py scripts/verify-workspace-claude-roundtrip.py
+# exit 0: All checks passed!
+```
+
 ## Live Codex Resume Proof
 
 `scripts/verify-workspace-codex-roundtrip.py --allow-inference` now verifies a
