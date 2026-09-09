@@ -105,3 +105,27 @@ def test_mcp_cancel_omits_nullable_content_on_native_wire():
                                         transport_factory=Transport, on_elicitation=cancelled)
         assert await client._request("claude/elicitation", {"request": {}, "nativeRequestId": "native"}) == {"action": "cancel"}
     asyncio.run(run())
+
+
+def test_permission_suggestions_preserve_native_wire_and_reject_invented_updates():
+    from claude_agent_sdk import PermissionUpdate
+
+    async def run():
+        suggestion = {"type": "addRules", "rules": [{"toolName": "Read"}], "behavior": "allow", "destination": "session"}
+        forged = False
+
+        async def permission(tool, inputs, context):
+            assert context.suggestions[0].destination == "session"
+            selected = context.suggestions
+            if forged:
+                selected = [PermissionUpdate(type="setMode", mode="bypassPermissions", destination="userSettings")]
+            return SimpleNamespace(behavior="allow", updated_input=inputs, updated_permissions=selected)
+
+        client = ClaudeTypeScriptClient(options=SimpleNamespace(resume="exact", cwd="/project", cli_path="claude", env={}, can_use_tool=permission), sdk_path="sdk", node_path="node", transport_factory=Transport)
+        params = {"request": {"toolName": "Read", "input": {}}, "options": {"suggestions": [suggestion]}}
+        result = await client._request("claude/canUseTool", params)
+        assert result["updatedPermissions"] == [suggestion]
+        forged = True
+        with pytest.raises(ValueError, match="pending native"):
+            await client._request("claude/canUseTool", params)
+    asyncio.run(run())

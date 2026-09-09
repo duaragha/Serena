@@ -57,6 +57,19 @@ test('native cancellation retires request and rejects late answer',async()=>{
   await assert.rejects(f.channel.receive({id,result:{behavior:'allow'}}),/no longer pending/);
 });
 
+test('permission suggestions and selected updates survive JSON channel unchanged',async()=>{
+  const f=fixture();
+  const suggestion={type:'addRules',rules:[{toolName:'Bash',ruleContent:'pwd'}],behavior:'allow',destination:'localSettings'};
+  const pending=f.channel.ask('canUseTool',{toolName:'Bash',input:{command:'pwd'}},{toolUseID:'tool-1',suggestions:[suggestion]});
+  await new Promise(done=>setImmediate(done));
+  const question=JSON.parse(JSON.stringify(f.messages.at(-1)));
+  assert.deepEqual(question.params.options.suggestions,[suggestion]);
+  const result={behavior:'allow',updatedInput:{command:'pwd'},updatedPermissions:[suggestion]};
+  await f.channel.receive(JSON.parse(JSON.stringify({id:question.id,result})));
+  assert.deepEqual(await pending,result);
+  assert.equal(f.channel.pending.size,0);
+});
+
 test('owner close rejects outstanding questions without accepting them',async()=>{
   const f=fixture();
   await f.channel.receive({id:1,method:'open'});

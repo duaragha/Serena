@@ -583,6 +583,33 @@ def test_ambiguous_send_cannot_repeat_and_wrong_identity_closes(tmp_path):
     asyncio.run(run())
 
 
+def test_permission_suggestions_are_explicit_pending_and_exact(tmp_path):
+    from claude_agent_sdk import PermissionUpdate
+
+    async def run():
+        owner, events = make(tmp_path)
+        update = PermissionUpdate(type="addDirectories", directories=[str(tmp_path)], destination="session")
+        try:
+            await owner.open()
+            question = asyncio.create_task(owner._permission("Read", {}, ToolPermissionContext(tool_use_id="q", suggestions=[update])))
+            await asyncio.sleep(0)
+            assert events[-1]["params"]["suggestions"] == [update.to_dict()]
+            for selected in [[-1], [1], [True], [0, 0], [], "0", [{}]]:
+                with pytest.raises(ValueError):
+                    await owner.answer("q", {"decision": "allow", "suggestions": selected})
+            with pytest.raises(ValueError):
+                await owner.answer("q", {"decision": "deny", "suggestions": [0]})
+            assert not question.done()
+            await owner.answer("q", {"decision": "allow", "suggestions": [0]})
+            assert (await question).updated_permissions == [update]
+            assert not owner.question_suggestions
+            with pytest.raises(ValueError):
+                await owner.answer("q", {"decision": "allow", "suggestions": [0]})
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 def test_permissions_wait_for_user_reject_stale_and_cleanup_denies(tmp_path):
     async def run():
         owner, events = make(tmp_path)

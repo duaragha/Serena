@@ -3,6 +3,8 @@ import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 
+from claude_agent_sdk import PermissionUpdate
+
 from core.workspace_claude_transport import ClaudeSdkTransport
 
 
@@ -108,13 +110,21 @@ class ClaudeTypeScriptClient:
             return {key: value for key, value in answer.items() if key != "content" or value is not None}
         if method != "claude/canUseTool":
             raise ValueError("Unknown Claude interactive request")
+        suggestions = deepcopy(options.get("suggestions") or [])
+        updates = [PermissionUpdate.from_dict(value) for value in suggestions]
         context = SimpleNamespace(tool_use_id=options.get("toolUseID"),
-                                  title=options.get("title"), agent_id=options.get("agentID"))
+                                  title=options.get("title"), agent_id=options.get("agentID"),
+                                  suggestions=deepcopy(updates))
         result = await self.options.can_use_tool(request["toolName"], request["input"], context)
         if result.behavior == "allow":
-            if getattr(result, "updated_permissions", None):
-                raise ValueError("Permission rule changes require an explicit native mapping")
-            return {"behavior": "allow", "updatedInput": result.updated_input}
+            response = {"behavior": "allow", "updatedInput": result.updated_input}
+            selected = getattr(result, "updated_permissions", None)
+            if selected:
+                if any(update not in updates for update in selected):
+                    raise ValueError("Only the pending native permission suggestions may be applied")
+                # Return the original wire objects, preserving optional fields exactly.
+                response["updatedPermissions"] = [deepcopy(suggestions[updates.index(update)]) for update in selected]
+            return response
         if result.behavior == "deny":
             return {"behavior": "deny", "message": result.message, "interrupt": result.interrupt}
         raise ValueError("Explicit Claude permission response required")

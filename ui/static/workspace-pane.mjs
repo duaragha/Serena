@@ -997,6 +997,20 @@ export class WorkspacePane {
       } else if (question.method === 'workspace/claudeApproval') {
         form.append(node('p', '', p.title || `Allow ${p.tool || 'Claude tool'}?`));
         form.append(node('pre', '', JSON.stringify(p.input || {}, null, 2)));
+        if(p.suggestions?.length){
+          const group=node('fieldset');group.append(node('legend','','Permission changes'));
+          const destinations={session:'This session',localSettings:'Project local settings (persistent)',projectSettings:'Shared project settings (persistent)',userSettings:'User settings (all projects)',cliArg:'CLI arguments'};
+          const fields=p.suggestions.map((suggestion,index)=>{
+            const label=node('label','',`${suggestion.type} - ${destinations[suggestion.destination] || suggestion.destination}`);
+            const check=node('input');check.type='checkbox';label.prepend(check);
+            group.append(label,node('pre','',JSON.stringify(suggestion,null,2)));
+            return {check,index};
+          });
+          const apply=node('button','','Allow and apply selected changes');apply.type='button';apply.disabled=true;
+          group.addEventListener('change',()=>{apply.disabled=!fields.some(field=>field.check.checked);});
+          apply.addEventListener('click',()=>this.answer(id,{decision:'allow',suggestions:fields.filter(field=>field.check.checked).map(field=>field.index)},form));
+          group.append(apply);form.append(group);
+        }
         for (const [decision, label] of [['deny','Deny'], ['allow','Allow once']]) {
           const button = node('button', '', label); button.type = 'button';
           button.addEventListener('click', () => this.answer(id, {decision}, form));

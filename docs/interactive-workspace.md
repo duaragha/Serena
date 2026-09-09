@@ -2,6 +2,28 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude suggested permission updates (2026-09-09): native canUseTool suggestions
+now cross the client and owner into the approval UI. Nothing is preselected.
+The UI shows the exact rule and labels its destination, including persistent
+project/user settings. Applying selections is separate from Allow once/Deny.
+The server accepts only unique indices into the pending request's snapshot;
+stale requests, invalid indices, rule payload injection and deny-with-updates
+are rejected. The TypeScript client returns original native wire objects only,
+preserving absent optional fields rather than inventing null values. Closing
+the owner retains the existing deny/cancel behavior and cleans suggestions.
+Evidence: pinned sdk.d.ts PermissionUpdate/CanUseTool declarations, plus official
+https://code.claude.com/docs/en/agent-sdk/typescript (accessed 2026-09-09), which
+documents suggestions returned through updatedPermissions and localSettings
+persistence. This is native suggested-rule application, not a full permissions
+editor or evidence that a model-generated rule was persisted by the real CLI.
+Commands:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_client.py tests/test_workspace_claude.py::test_permission_suggestions_are_explicit_pending_and_exact tests/test_workspace_claude.py::test_permissions_wait_for_user_reject_stale_and_cleanup_denies tests/test_workspace_pane.py::test_claude_permission_suggestions_require_explicit_selection -q`: exit 0, 10 passed in 3.73s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_pane.py::test_claude_permission_suggestions_require_explicit_selection -q`: exit 0, 39 passed in 4.57s, after adding Allow once with checked suggestions coverage at both viewport sizes.
+- `node --test tests/workspace-claude-channel.test.mjs tests/workspace-claude-sdk.test.mjs`: exit 0, 15 passed, including permission wire roundtrip and cancellation.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_client.py tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_pane.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py`: exit 0, source native local-command/session/browser regression proof passed. This run uses no inference and does not exercise a model-generated permission request.
+Not packaged, installed or released. Full CLI parity remains unfinished.
+
 Inline project mentions (2026-09-09): Claude and Codex composers now complete
 @path fragments using their existing attached-owner names-only searches.
 Debounced results are bound to the draft and caret; stale results are discarded.

@@ -49,6 +49,7 @@ class ClaudeWorkspace:
         self.events = ClaudeEvents(session_id)
         self.questions = {}
         self.question_inputs = {}
+        self.question_suggestions = {}
         self.elicitations = {}
         self.model_catalog = None
         self.permission_mode = None
@@ -459,6 +460,8 @@ class ClaudeWorkspace:
         future = asyncio.get_running_loop().create_future()
         self.questions[request_id] = future
         self.question_inputs[request_id] = (tool, deepcopy(inputs))
+        suggestions = deepcopy(getattr(context, "suggestions", None) or [])
+        self.question_suggestions[request_id] = suggestions
         try:
             await self.publish(
                 {
@@ -470,6 +473,7 @@ class ClaudeWorkspace:
                         "input": deepcopy(inputs),
                         "title": getattr(context, "title", None),
                         "agentId": getattr(context, "agent_id", None),
+                        "suggestions": [update.to_dict() for update in suggestions],
                     },
                 }
             )
@@ -477,6 +481,7 @@ class ClaudeWorkspace:
         finally:
             self.questions.pop(request_id, None)
             self.question_inputs.pop(request_id, None)
+            self.question_suggestions.pop(request_id, None)
             await self.publish(
                 self.events.event("serverRequest/resolved", {"requestId": request_id})
             )
@@ -534,14 +539,23 @@ class ClaudeWorkspace:
             return
         if (
             not isinstance(answer, dict)
-            or set(answer) != {"decision"}
+            or set(answer) not in ({"decision"}, {"decision", "suggestions"})
             or answer["decision"] not in {"allow", "deny"}
         ):
             raise ValueError("An explicit allow or deny decision is required")
         if tool == "AskUserQuestion" and answer["decision"] == "allow":
             raise ValueError("Claude questions require answers, not approval")
+        selected = answer.get("suggestions", [])
+        suggestions = self.question_suggestions.get(request_id, [])
+        if (
+            not isinstance(selected, list)
+            or any(type(index) is not int or index < 0 or index >= len(suggestions) for index in selected)
+            or len(set(selected)) != len(selected)
+            or ("suggestions" in answer and (answer["decision"] != "allow" or not selected))
+        ):
+            raise ValueError("Select only pending permission suggestions with an explicit allow decision")
         result = (
-            PermissionResultAllow(updated_input=inputs)
+            PermissionResultAllow(updated_input=inputs, updated_permissions=[deepcopy(suggestions[index]) for index in selected] or None)
             if answer["decision"] == "allow"
             else PermissionResultDeny(message="Denied by user")
         )

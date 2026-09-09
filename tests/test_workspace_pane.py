@@ -61,6 +61,25 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+@pytest.mark.parametrize("apply_rules", [False, True])
+def test_claude_permission_suggestions_require_explicit_selection(pane, width, apply_rules):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""emit({id:'permission',method:'workspace/claudeApproval',params:{tool:'Bash',input:{command:'pwd'},suggestions:[{type:'addRules',rules:[{toolName:'Bash',ruleContent:'pwd'}],behavior:'allow',destination:'localSettings'}]}})""")
+    button = page.get_by_role('button', name='Allow and apply selected changes')
+    assert button.is_disabled()
+    assert page.evaluate('calls') == []
+    page.get_by_role('checkbox', name='addRules - Project local settings (persistent)').check()
+    if apply_rules:
+        button.click()
+    else:
+        page.get_by_role('button', name='Allow once', exact=True).click()
+    expected = {'decision': 'allow', 'suggestions': [0]} if apply_rules else {'decision': 'allow'}
+    assert page.evaluate('calls') == [['answer', 'permission', expected]]
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_inline_file_completion_selects_without_sending(pane, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})
