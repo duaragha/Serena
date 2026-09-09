@@ -60,6 +60,32 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_pending_command_streams_output_without_raw_event_json(pane):
+    page, errors = pane
+    page.evaluate("""() => emit({method:'item/started',params:{turnId:'t',item:{
+      id:'pending-command',type:'commandExecution',command:'printf hello',
+      status:'inProgress',aggregatedOutput:null,exitCode:null
+    }}})""")
+    tool = page.locator('[data-item-id="pending-command"]')
+    tool.locator('summary').click()
+    assert 'printf hello' in tool.inner_text()
+    assert 'inProgress' in tool.inner_text()
+    assert tool.locator('pre').count() == 0
+    page.evaluate("""() => emit({method:'item/commandExecution/outputDelta',params:{
+      turnId:'t',itemId:'pending-command',delta:'hello'
+    }})""")
+    tool.get_by_text('hello', exact=True).wait_for()
+    assert tool.locator('details').evaluate('el=>el.open')
+    page.evaluate("""() => emit({method:'item/completed',params:{turnId:'t',item:{
+      id:'pending-command',type:'commandExecution',command:'printf hello',
+      status:'completed',aggregatedOutput:'hello',exitCode:0
+    }}})""")
+    tool.get_by_text('Exit 0', exact=True).wait_for()
+    assert tool.locator('.aw-tool-output').inner_text() == 'hello'
+    assert tool.count() == 1
+    assert not errors
+
+
 def test_subagent_provenance_is_visible_for_messages_and_tools(pane, tmp_path):
     page, errors = pane
     page.evaluate("""() => {

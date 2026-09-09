@@ -825,7 +825,9 @@ export class WorkspacePane {
       if (item.status) summary.append(node('small', '', item.status));
       detail.append(summary);
       // Unknown tools remain fully inspectable, including all provider metadata.
-      detail.append(node('pre', '', item.aggregatedOutput ?? JSON.stringify(item, null, 2)));
+      if (item.type === 'commandExecution') {
+        if (item.aggregatedOutput) detail.append(node('pre', 'aw-tool-output', item.aggregatedOutput));
+      } else detail.append(node('pre', '', item.aggregatedOutput ?? JSON.stringify(item, null, 2)));
       if (item.exitCode !== undefined && item.exitCode !== null) detail.append(node('div', 'aw-exit', `Exit ${item.exitCode}`));
       entry.append(detail);
     }

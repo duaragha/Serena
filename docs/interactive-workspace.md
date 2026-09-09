@@ -2,6 +2,15 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Pending command rendering (2026-09-09): native commandExecution items with null
+output show their command/status without dumping raw event JSON. Streamed stdout
+and the final exit code retain the expanded tool entry. Unknown event types remain
+inspectable. Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q`: exit 0, 60 passed in 37.07s.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py`: exit 0; 51 native print-only turns, exact history pagination, once-only shell delivery, desktop/mobile actual stdout, owner survival after page close, isolated cleanup.
+- `git diff --check`: exit 0.
+This source rendering fix is not yet rebuilt into the frozen sidecar or released.
+
 Frozen Codex admission and fork ownership (2026-09-09): the packaged proof now
 seeds an isolated real catalog through normal registration and launches the
 built sidecar with normal index/admission logic. It initially failed with 404:
