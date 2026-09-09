@@ -109,6 +109,8 @@ export class WorkspacePane {
     this.mcpButton = this.button('MCP connections', 'plug', () => this.openMcpServers());
     this.mcpButton.hidden = !['Claude','Codex'].includes(provider) || !controls.mcpServers;
     footer.insertBefore(this.mcpButton, this.stop);
+    const permissions=this.button('Permission mode','shield',()=>this.openPermissions());
+    permissions.hidden=provider!=='Claude' || !controls.permissions;footer.insertBefore(permissions,this.stop);
     this.queueButton = this.button('Queued sibling messages', 'messages-square', () => this.openBridgeQueue());
     this.queueButton.hidden=true; footer.insertBefore(this.queueButton, this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
@@ -231,6 +233,37 @@ export class WorkspacePane {
     window.lucide?.createIcons();
     try { const result=await this.controls.commands(); if(!dialog.open || this.disposed)return; commands=result.data; render(); }
     catch(error){if(dialog.open)status.textContent=error.message;}
+  }
+
+  async openPermissions() {
+    if(this.permissionsDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Permission mode');
+    const form=node('form');const status=node('p');status.setAttribute('role','status');status.textContent='Loading...';
+    const label=node('label','','Mode');const select=node('select');select.setAttribute('aria-label','Permission mode');label.append(select);
+    const confirmLabel=node('label','','Allow tools without permission prompts');const confirm=node('input');confirm.type='checkbox';confirmLabel.prepend(confirm);confirmLabel.hidden=true;
+    const apply=node('button','','Apply');apply.type='submit';apply.disabled=true;
+    const close=this.button('Close permission mode','x',()=>dialog.close());
+    const labels={default:'Ask when needed',acceptEdits:'Accept file edits',plan:'Plan',dontAsk:'Deny unapproved tools',auto:'Automatic decisions',bypassPermissions:'Bypass permission prompts'};
+    let busy=false;
+    select.addEventListener('change',()=>{confirm.checked=false;confirmLabel.hidden=select.value!=='bypassPermissions';});
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(busy || apply.disabled)return;
+      if(select.value==='bypassPermissions' && !confirm.checked){status.textContent='Confirm bypassing permission prompts first';return;}
+      busy=true;apply.disabled=true;select.disabled=true;
+      try{const result=await this.controls.setPermissions(select.value,confirm.checked);if(dialog.open){select.value=result.mode;status.textContent=`Last confirmed: ${labels[result.mode] || result.mode}`;}}
+      catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;apply.disabled=false;select.disabled=false;}
+    });
+    form.append(label,confirmLabel,apply);dialog.append(node('h3','','Permission mode'),close,status,form);
+    dialog.addEventListener('close',()=>dialog.remove());this.permissionsDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();
+    try{
+      const result=await this.controls.permissions();if(!dialog.open || this.disposed)return;
+      for(const mode of result.modes){const option=node('option','',labels[mode] || mode);option.value=mode;select.append(option);}
+      if(result.mode && result.modes.includes(result.mode))select.value=result.mode;
+      else {const unknown=node('option','','Select a mode');unknown.value='';unknown.disabled=true;select.prepend(unknown);select.value='';}
+      status.textContent=result.mode?`Last confirmed: ${labels[result.mode] || result.mode}`:'Current mode unavailable';
+      confirmLabel.hidden=select.value!=='bypassPermissions';apply.disabled=false;
+    }catch(error){if(dialog.open)status.textContent=error.message;}
   }
 
   openContext() {
@@ -781,6 +814,7 @@ export class WorkspacePane {
     this.commandsDialog?.close();
     this.mcpDialog?.close();
     this.contextDialog?.close();
+    this.permissionsDialog?.close();
     this.queueDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
     this.historyImageUrls.clear();

@@ -288,6 +288,8 @@ class WorkspaceHost:
             "background_tasks",
             "commands",
             "context_usage",
+            "permissions",
+            "set_permissions",
             "mcp_servers",
             "mcp_server_control",
             "terminate_background_task",
@@ -339,6 +341,14 @@ class WorkspaceHost:
                     self._bridge_messages.pop((sid, key), None)
                     await self._publish_bridge_queue(sid)
                     result = {"cancelled": True}
+                elif action == "permissions":
+                    if provider != "claude" or payload:
+                        raise ValueError("Permission modes require a Claude session and no payload")
+                    result = await owner.permissions()
+                elif action == "set_permissions":
+                    if provider != "claude" or set(payload) != {"mode", "confirmed"} or type(payload["confirmed"]) is not bool:
+                        raise ValueError("An explicit Claude permission mode is required")
+                    result = await owner.set_permissions(payload["mode"], payload["confirmed"])
                 elif action == "context_usage":
                     if provider != "claude" or payload:
                         raise ValueError("Context breakdown requires a Claude session and no payload")

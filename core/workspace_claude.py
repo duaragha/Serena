@@ -50,6 +50,7 @@ class ClaudeWorkspace:
         self.questions = {}
         self.question_inputs = {}
         self.model_catalog = None
+        self.permission_mode = None
         self._stop = asyncio.Event()
         self._ready = None
         self._owner_task = None
@@ -180,6 +181,29 @@ class ClaudeWorkspace:
         }
         await self.publish(self.events.event("workspace/models", result))
         return result
+
+    async def permissions(self):
+        if self.client is None or self.state in {"closed", "opening", "unavailable"}:
+            raise RuntimeError("Claude is not attached")
+        if self.permission_mode is None:
+            info = await self.client.get_server_info()
+            mode = (info or {}).get("current_permission_mode")
+            if isinstance(mode, str):
+                self.permission_mode = mode
+        return {"mode": self.permission_mode, "modes": ["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"]}
+
+    async def set_permissions(self, mode, confirmed=False):
+        async with self._control:
+            if self.state != "ready" or self.questions:
+                raise RuntimeError("Finish the current Claude turn before changing permission mode")
+            if not isinstance(mode, str) or mode not in (await self.permissions())["modes"]:
+                raise ValueError("Unsupported Claude permission mode")
+            if mode == "bypassPermissions" and confirmed is not True:
+                raise ValueError("Bypassing permission prompts requires explicit confirmation")
+            await self.client.set_permission_mode(mode)
+            self.permission_mode = mode
+            await self.publish(self.events.event("workspace/settings", {"permissionMode": mode}))
+            return await self.permissions()
 
     async def context_usage(self):
         if self.client is None or self.state in {"closed", "opening", "unavailable"}:

@@ -60,6 +60,32 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_permission_mode_requires_explicit_apply_and_bypass_confirmation(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+      pane.dispose();
+      controls.permissions=async()=>({mode:'default',modes:['default','plan','bypassPermissions']});
+      controls.setPermissions=async(mode,confirmed)=>{calls.push([mode,confirmed]);return {mode};};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Claude',controls});
+    }""")
+    assert page.evaluate("calls") == []
+    page.get_by_role("button", name="Permission mode", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Permission mode", exact=True)
+    select = dialog.get_by_role("combobox", name="Permission mode")
+    select.select_option("bypassPermissions")
+    dialog.get_by_role("button", name="Apply", exact=True).click()
+    dialog.get_by_text("Confirm bypassing permission prompts first").wait_for()
+    assert page.evaluate("calls") == []
+    page.screenshot(path=str(tmp_path / "permission-mode-mobile.png"))
+    dialog.get_by_role("checkbox", name="Allow tools without permission prompts").check()
+    dialog.get_by_role("button", name="Apply", exact=True).click()
+    page.wait_for_function("calls.length===1")
+    assert page.evaluate("calls") == [["bypassPermissions", True]]
+    dialog.get_by_role("button", name="Close permission mode").click()
+    assert not errors
+
+
 def test_context_breakdown_is_explicit_and_clears_stale_data_on_failure(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

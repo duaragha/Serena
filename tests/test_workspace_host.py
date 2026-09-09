@@ -64,6 +64,26 @@ def host(tmp_path):
     value.shutdown()
 
 
+def test_permission_mode_control_requires_explicit_boolean_confirmation(tmp_path):
+    calls = []
+    class PermissionOwner(Owner):
+        async def set_permissions(self, mode, confirmed):
+            calls.append((self.sid, mode, confirmed))
+            return {"mode": mode}
+    value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "permissions.db"), resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)}, factories={"claude": PermissionOwner})
+    try:
+        value.attach("exact")
+        assert not value.command("exact", "invalid", "set_permissions", {"mode": "plan", "confirmed": "false"})["ok"]
+        payload = {"mode": "plan", "confirmed": False}
+        first = value.command("exact", "set", "set_permissions", payload)
+        assert first["ok"]
+        assert value.command("exact", "set", "set_permissions", payload) == first
+        assert calls == [("exact", "plan", False)]
+        assert not PermissionOwner.instances[-1].sent
+    finally:
+        value.shutdown()
+
+
 def test_context_control_reads_attached_claude_without_query(tmp_path):
     class ContextOwner(Owner):
         async def context_usage(self):

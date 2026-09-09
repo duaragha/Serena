@@ -2,6 +2,27 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude permission modes now use native set_permission_mode on the existing owner,
+with an explicit Apply action and a separate confirmation for bypassPermissions.
+Changes require an idle owner with no pending questions; native rejection leaves
+the confirmed mode unchanged. The UI labels the result "Last confirmed": SDK
+server-info is initialization metadata, not a live feed of automatic transitions.
+Auto/bypass availability is still enforced by the CLI and may be rejected; neither
+is enabled at startup. Native live proof changes only isolated plan/default modes.
+Source: installed ClaudeSDKClient.set_permission_mode and public Python reference.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_pane.py -q --basetemp=/tmp/serena-permission-mode-verification
+# exit 0: 50 passed in 18.33s; mobile dialog reviewed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_permission_mode_control_requires_explicit_boolean_confirmation -q --basetemp=/tmp/serena-permission-mode-routing
+# exit 0: 1 passed in 0.21s; exact owner, strict confirmation, replay deduplication
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py
+# exit 0: native plan/default acknowledgements, no turn/tool execution,
+# isolated configuration, owned process exit 0
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_host.py tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-claude.py
+# exit 0: All checks passed!
+```
+
 Claude context breakdown is now an explicit native control, not another /context
 conversation turn. The dialog displays provider totals, capacity, percentage,
 model and category counts, marks deferred entries, and clears stale data on

@@ -54,6 +54,9 @@ async def main():
             models = info.get("models", [])
             assert models and models[0].get("value")
             await client.set_model(models[0]["value"])
+            await client.set_permission_mode("plan")
+            await client.set_permission_mode("default")
+            print("PASS: native permission-mode controls acknowledged plan and default without a turn")
             print("PASS: installed SDK accepted an advertised model through the existing control connection")
             async def wait_status(expected):
                 async with asyncio.timeout(25):

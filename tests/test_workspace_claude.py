@@ -83,6 +83,36 @@ def make(tmp_path):
     return owner, events
 
 
+def test_permission_modes_change_only_after_native_acknowledgement(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        calls = []
+        async def set_mode(mode):
+            calls.append(mode)
+            if mode == "auto":
+                raise RuntimeError("Policy disallows auto")
+        try:
+            await owner.open()
+            owner.client.set_permission_mode = set_mode
+            assert (await owner.permissions())["mode"] is None
+            assert calls == []
+            with pytest.raises(ValueError, match="confirmation"):
+                await owner.set_permissions("bypassPermissions")
+            assert (await owner.set_permissions("plan"))["mode"] == "plan"
+            with pytest.raises(RuntimeError, match="Policy"):
+                await owner.set_permissions("auto")
+            assert (await owner.permissions())["mode"] == "plan"
+            owner.state = "running"
+            with pytest.raises(RuntimeError, match="current Claude turn"):
+                await owner.set_permissions("default")
+            assert calls == ["plan", "auto"]
+            assert not owner.client.sent
+            assert [event["params"]["permissionMode"] for event in events if event["method"] == "workspace/settings"] == ["plan"]
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 def test_context_breakdown_uses_native_totals_without_submitting(tmp_path):
     async def run():
         owner, _ = make(tmp_path)

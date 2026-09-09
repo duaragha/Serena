@@ -110,6 +110,8 @@ export class WorkspaceConnection {
       models: () => this.command('models', {}),
       commands: () => this.command('commands', {}),
       contextUsage: () => this.command('context_usage', {}),
+      permissions: () => this.command('permissions', {}),
+      setPermissions: (mode, confirmed) => this.command('set_permissions', {mode, confirmed}),
       mcpServers: () => this.command('mcp_servers', {}),
       mcpServerControl: (name, action) => this.command('mcp_server_control', {name, action}),
       cancelQueuedBridge: request_id => this.command('cancel_queued_bridge', {request_id}),
