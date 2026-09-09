@@ -15,6 +15,7 @@ from claude_agent_sdk import (
     TaskUpdatedMessage,
     TextBlock,
     ToolPermissionContext,
+    ToolUseBlock,
 )
 
 from core.workspace_claude import ClaudeWorkspace
@@ -81,6 +82,49 @@ def make(tmp_path):
         history=lambda sid, directory: [],
     )
     return owner, events
+
+
+def test_authoritative_tool_message_before_block_stop_keeps_complete_input():
+    converter = ClaudeEvents("exact")
+    converter.turn = "turn"
+    def stream(event):
+        return converter.receive(StreamEvent(uuid="event", session_id="exact", event=event))
+    stream({"type": "message_start", "message": {"id": "m"}})
+    stream({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "tool", "name": "Bash", "input": {}}})
+    converter.receive(AssistantMessage(content=[ToolUseBlock(id="tool", name="Bash", input={"command": "pwd"})], model="native", message_id="m"))
+    stream({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "late fragment"}})
+    stream({"type": "content_block_stop", "index": 0})
+    assert converter.tools["tool"]["input"] == {"command": "pwd"}
+    assert not converter.streaming_tools
+
+
+def test_tool_arguments_stream_separately_for_parent_and_subagent():
+    converter = ClaudeEvents("exact")
+    converter.turn = "turn"
+    def stream(event, parent=None):
+        return converter.receive(StreamEvent(uuid="event", session_id="exact", parent_tool_use_id=parent, event=event))
+    for parent, tool_id in [(None, "root-tool"), ("agent-parent", "child-tool")]:
+        stream({"type": "message_start", "message": {"id": tool_id + "-message"}}, parent)
+        events = stream({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {}}}, parent)
+        assert events[-1]["params"]["item"]["inputStreaming"] is True
+        assert events[-1]["params"]["item"]["id"] == tool_id
+    events = stream({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '{"command":'} })
+    first = events[-1]["params"]["item"]
+    assert first["input"] == {} and first["inputJson"] == '{"command":'
+    stream({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '"pwd"}'}})
+    assert first["inputJson"] == '{"command":'
+    events = stream({"type": "content_block_stop", "index": 0})
+    assert events[-1]["params"]["item"]["input"] == {"command": "pwd"}
+    assert events[-1]["params"]["item"]["status"] == "inProgress"
+    assert converter.tools["child-tool"]["input"] == {}
+    stream({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "invalid"}}, "agent-parent")
+    events = stream({"type": "content_block_stop", "index": 0}, "agent-parent")
+    assert events[-1]["params"]["item"]["inputUnavailable"] is True
+    assert events[-1]["params"]["item"]["inputJson"] == "invalid"
+    assert converter.streaming_tools == {}
+    final = converter.blocks([{"type": "tool_use", "id": "child-tool", "name": "Bash", "input": {"command": "canonical"}}], "child-message")[0]
+    assert "inputUnavailable" not in final
+    assert final["input"] == {"command": "canonical"}
 
 
 def test_synthetic_command_output_does_not_replace_the_selected_model():

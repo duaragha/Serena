@@ -60,6 +60,22 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_streaming_tool_input_keeps_one_expanded_call(pane):
+    page, errors = pane
+    page.evaluate("emit({method:'item/started',params:{turnId:'t',item:{id:'streamed',type:'claudeToolCall',tool:'Bash',input:{},inputStreaming:true,inputJson:'{\"command\":',status:'inProgress'}}})")
+    item = page.locator('[data-item-id="streamed"]')
+    item.locator("details > summary").first.click()
+    assert item.get_by_text("Receiving tool input", exact=True).is_visible()
+    assert item.locator(".aw-tool-input").inner_text() == '{"command":'
+    assert item.locator(".aw-command").count() == 0
+    page.evaluate("emit({method:'item/started',params:{turnId:'t',item:{id:'streamed',type:'claudeToolCall',tool:'Bash',input:{command:'pwd'},status:'inProgress'}}})")
+    page.wait_for_function("document.querySelector('[data-item-id=streamed] .aw-command')?.textContent === 'pwd'")
+    assert item.locator("details").first.evaluate("el=>el.open")
+    assert item.locator(".aw-tool-input").count() == 0
+    assert page.locator('[data-item-id="streamed"]').count() == 1
+    assert not errors
+
+
 @pytest.mark.parametrize("width", [390, 1600])
 def test_claude_tools_show_readable_native_output_and_requested_edits(pane, tmp_path, width):
     page, errors = pane

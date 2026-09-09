@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from dataclasses import asdict, is_dataclass
 
@@ -16,6 +17,7 @@ class ClaudeEvents:
         self.turn = None
         self.message_ids = {}
         self.tools = {}
+        self.streaming_tools = {}
         self.capabilities = {}
         self.tasks = {}
 
@@ -135,7 +137,37 @@ class ClaudeEvents:
             event = data["event"]
             if event["type"] == "message_start":
                 self.message_ids[parent] = event["message"]["id"]
+                self.streaming_tools = {key: value for key, value in self.streaming_tools.items() if key[0] != parent}
             message_id = self.message_ids.get(parent)
+            key = (parent, event.get("index"))
+            if message_id and event["type"] == "content_block_start" and event.get("content_block", {}).get("type") == "tool_use":
+                block = event["content_block"]
+                item = self.blocks([block], message_id)[0]
+                item.update(inputStreaming=True, inputJson="")
+                self.tools[item["id"]] = deepcopy(item)
+                self.streaming_tools[key] = item["id"]
+                events.append(self.event("item/started", {"turnId": self.turn, "item": item}))
+            elif key in self.streaming_tools:
+                tool_id = self.streaming_tools[key]
+                item = self.tools[tool_id]
+                if event["type"] == "content_block_delta" and event.get("delta", {}).get("type") == "input_json_delta":
+                    item["inputJson"] += event["delta"]["partial_json"]
+                    events.append(self.event("item/started", {"turnId": self.turn, "item": deepcopy(item)}))
+                elif event["type"] == "content_block_stop":
+                    self.streaming_tools.pop(key)
+                    item["inputStreaming"] = False
+                    if item["inputJson"]:
+                        try:
+                            parsed = json.loads(item["inputJson"])
+                            if not isinstance(parsed, dict):
+                                raise ValueError("Tool arguments are not an object")
+                            item["input"] = parsed
+                            item.pop("inputJson")
+                        except ValueError:
+                            item["inputUnavailable"] = True
+                    else:
+                        item.pop("inputJson")
+                    events.append(self.event("item/started", {"turnId": self.turn, "item": deepcopy(item)}))
             if (
                 message_id
                 and event["type"] == "content_block_delta"
@@ -155,6 +187,10 @@ class ClaudeEvents:
             message_id = data.get("message_id") or data.get("uuid") or self.message_ids.get(parent)
             if message_id:
                 for item in self.blocks(data["content"], message_id, user=kind == "UserMessage"):
+                    if item["type"] == "claudeToolCall":
+                        # The SDK may emit the authoritative tool before its
+                        # trailing stream stop. Late fragments must not replace it.
+                        self.streaming_tools = {key: value for key, value in self.streaming_tools.items() if value != item["id"]}
                     events.append(self.event("item/completed", {"turnId": self.turn, "item": item}))
             if parent == "root" and data.get("model") and data["model"] != "<synthetic>":
                 events.append(self.event("workspace/settings", {"model": data["model"]}))
@@ -194,4 +230,5 @@ class ClaudeEvents:
             if isinstance(data.get("usage"), dict):
                 events.append(self.event("workspace/claudeUsage", {"usage": data["usage"]}))
             self.turn = None
+            self.streaming_tools.clear()
         return events

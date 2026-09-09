@@ -2,6 +2,28 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude tool calls now stream into one pane item from native content-block start
+and input-JSON deltas. Partial JSON is explicitly labelled as receiving input,
+never treated as a complete command. Complete objects use the standard JSON
+parser; incomplete data remains inspectable until the authoritative SDK message.
+Parent/subagent streams remain separate, and late fragments/stops cannot replace
+an already complete tool message. Expanded call state survives renderer updates.
+
+The first live run exposed a real SDK ordering race (`inputJson` missing after
+the complete tool record arrived before block stop), exit 1. An instrumented
+rerun and targeted regression reproduced it, both exit 1. The complete record
+now retires that partial stream; the final native proof passed:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_pane.py::test_streaming_tool_input_keeps_one_expanded_call -q --basetemp=/tmp/serena-tool-stream-final
+# exit 0: 22 passed in 1.14s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference --background-task
+# exit 0: native partial tool JSON observed before complete input; exact resumed
+# session, task stopped by native ID, parent completed, owned processes closed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_events.py tests/test_workspace_claude.py tests/test_workspace_pane.py scripts/verify-workspace-claude-roundtrip.py
+# exit 0: all checks passed
+```
+
 Claude tool cards now render Bash commands and text output directly, requested
 Edit before/after lines, and requested Write content. Failed edits remain labelled
 failed and requested, not applied. Unknown structured output and full native

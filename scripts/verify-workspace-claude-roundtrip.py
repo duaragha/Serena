@@ -143,9 +143,15 @@ async def main(bridge=False, background_task=False):
             )
             if background_task:
                 finished.clear()
+                before = len(events)
                 await owner.submit([{"type": "text", "text": "Transport test: use Bash exactly once with command sleep 60 and run_in_background true. Do not run anything else. Once started, reply STARTED without waiting for or stopping the task. The test controller will stop it."}])
                 async with asyncio.timeout(120):
-                    while not (await owner.list_background_tasks())["data"]:
+                    while True:
+                        if owner.state == "unavailable":
+                            failures = [event.get("params", {}).get("reason") for event in events[before:] if event.get("method") == "workspace/error"]
+                            raise RuntimeError(f"Native tool proof owner became unavailable: {failures}")
+                        if (await owner.list_background_tasks())["data"]:
+                            break
                         await asyncio.sleep(0.1)
                 task = (await owner.list_background_tasks())["data"][0]
                 await owner.terminate_background_task(task["processId"])
@@ -155,6 +161,10 @@ async def main(bridge=False, background_task=False):
                 assert owner.events.tasks[task["processId"]]["status"] in {"stopped", "killed"}
                 await asyncio.wait_for(finished.wait(), 60)
                 assert [event for event in events if event.get("method") == "turn/completed"][-1]["params"]["turn"]["status"] == "completed"
+                streamed = [event["params"]["item"] for event in events[before:] if event.get("method") == "item/started" and event["params"].get("item", {}).get("inputStreaming")]
+                assert streamed and any(item.get("inputJson") for item in streamed)
+                assert any(item.get("tool") == "Bash" for item in streamed)
+                print("PASS: actual native tool call and partial JSON reached pane events before complete tool input")
                 print("PASS: native background task discovered and stopped by exact ID; parent turn completed normally")
             if bridge:
                 await owner.close()

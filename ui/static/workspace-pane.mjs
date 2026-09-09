@@ -608,6 +608,9 @@ export class WorkspacePane {
       if(item.status)summary.append(node('small','',item.status));detail.append(summary);
       const input=item.input || {};
       if(typeof input.file_path==='string')detail.append(node('div','aw-file-name',input.file_path));
+      if(item.inputStreaming || item.inputUnavailable){
+        detail.append(node('div','aw-author',item.inputStreaming?'Receiving tool input':'Tool input incomplete'),node('pre','aw-tool-input',item.inputJson || ''));
+      }
       if(item.tool==='Bash' && typeof input.command==='string')detail.append(node('pre','aw-command',input.command));
       else if(item.tool==='Edit' && typeof input.old_string==='string' && typeof input.new_string==='string'){
         detail.append(node('div','aw-author','Requested edit'));
