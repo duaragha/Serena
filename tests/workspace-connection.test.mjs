@@ -11,6 +11,19 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('history retry retains cursor but permits a new receipt after confirmed read failure',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    return response(calls.length===1?{ok:false,retryable:true,error:'history read timed out'}:{ok:true,result:{turns:[],historyCursor:null}});
+  }});
+  await assert.rejects(conn.controls().loadEarlier('opaque'),/timed out/);
+  await conn.controls().loadEarlier('opaque');
+  assert.notEqual(calls[0].request_id,calls[1].request_id);
+  assert.deepEqual(calls.map(c=>[c.action,c.payload]),[['load_earlier',{cursor:'opaque'}],['load_earlier',{cursor:'opaque'}]]);
+  conn.dispose();
+});
+
 test('saved fork survives reload and registration retries never create a new fork',async()=>{
   const saved=storage(),calls=[];
   const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

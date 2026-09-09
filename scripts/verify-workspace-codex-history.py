@@ -10,6 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.workspace_codex import CodexWorkspace
+from core.workspace_host import WorkspaceHost
+from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
 
@@ -54,12 +56,19 @@ async def main():
             assert "SERENA_HISTORY_050" in json.dumps(history)
             assert "SERENA_HISTORY_000" not in json.dumps(history)
             assert owner.history_cursor
-            page = await owner.load_earlier(owner.history_cursor)
+            host = WorkspaceHost(journal=WorkspaceJournal(root / "receipts.db"), resolve=None)
+            host._sessions[sid] = (owner, "codex")
+            refusal = await host._command(sid, "stale-read", "load_earlier", {"cursor": "not-the-current-cursor"})
+            assert not refusal["ok"] and refusal["retryable"]
+            receipt = await host._command(sid, "valid-read", "load_earlier", {"cursor": owner.history_cursor})
+            assert receipt["ok"], receipt
+            page = receipt["result"]
             assert len(page["turns"]) == 1 and page["historyCursor"] is None, page
             assert "SERENA_HISTORY_000" in json.dumps(page)
             assert events[-1]["method"] == "workspace/historyPage"
             assert owner.state == "ready" and owner.session_id == sid
             print("PASS: native resumed history loads 50 recent turns, then exact oldest full turn on demand")
+            print("PASS: host rejects stale history with retryable receipt and routes valid read to unchanged native owner")
         finally:
             if owner:
                 await owner.close()

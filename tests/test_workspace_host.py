@@ -101,6 +101,25 @@ def test_older_history_uses_exact_owner_cursor_and_receipt(host):
     assert len(calls) == 1
 
 
+def test_failed_history_read_can_retry_without_mutating_work(host):
+    host.attach("exact")
+    owner = Owner.instances[-1]
+    calls = []
+    async def older(cursor):
+        calls.append(cursor)
+        if len(calls) == 1:
+            raise TimeoutError("read timed out")
+        return {"turns": [], "historyCursor": None}
+    owner.load_earlier = older
+    payload = {"cursor": "opaque"}
+    failed = host.command("exact", "read-1", "load_earlier", payload)
+    assert not failed["ok"] and failed["retryable"]
+    assert host.command("exact", "read-1", "load_earlier", payload) == failed
+    assert calls == ["opaque"]
+    assert host.command("exact", "read-2", "load_earlier", payload)["ok"]
+    assert calls == ["opaque", "opaque"] and not owner.sent
+
+
 def test_permission_mode_control_requires_explicit_boolean_confirmation(tmp_path):
     calls = []
     class PermissionOwner(Owner):

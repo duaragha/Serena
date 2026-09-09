@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Combined regression and history retry (2026-09-09): all workspace Python/browser
+tests plus Codex history readers passed together after fork/pagination integration.
+Code review then found a confirmed failed history read remained pinned to its
+failed request ID. Read-only load_earlier errors now permit a fresh receipt;
+the owner still validates the exact cursor, and confirmed successes are replayed
+without rereading. Uncertain writes/forks/sends retain their existing policy.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace*.py tests/test_codex_history.py tests/test_codex_records.py -q
+# exit 0: 270 passed in 56.16s, before the narrow history-retry correction
+node --test tests/workspace-markdown.test.mjs tests/workspace-claude-channel.test.mjs tests/workspace-claude-sdk.test.mjs tests/workspace-connection.test.mjs tests/workspace-events.test.mjs
+# exit 0: 40 passed, before adding the retry regression
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_failed_history_read_can_retry_without_mutating_work tests/test_workspace_host.py::test_older_history_uses_exact_owner_cursor_and_receipt -q
+# exit 0: 2 passed in 0.34s, final correction
+node --test tests/workspace-connection.test.mjs
+# exit 0: 16 passed, including confirmed read failure/new receipt/same cursor
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py scripts/verify-workspace-codex-history.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py
+# exit 0: native 51 print-only turns, bounded resume, real host command/journal
+# path with retryable stale-cursor refusal followed by valid native older page.
+```
+
+The proof binds its already-admitted isolated native owner directly to the host
+on the same event loop. It does not prove HTTP admission or installed browser
+integration. Full delivery/parity and the remaining provider gates stay open.
+
 Native Codex history pagination (2026-09-09): paginated sessions now request
 the newest 50 turns with `itemsView:full`, reverse them into chronological order,
 and retain an opaque older-page cursor. Current/in-progress resume turns take

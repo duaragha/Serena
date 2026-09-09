@@ -417,6 +417,9 @@ class WorkspaceHost:
                 elif action == "load_earlier":
                     if provider != "codex" or set(payload) != {"cursor"} or not isinstance(payload["cursor"], str):
                         raise ValueError("An exact Codex history cursor is required")
+                    # Reading cannot start work. The owner revalidates its cursor
+                    # before publishing, so a confirmed failure can be retried.
+                    retryable = True
                     result = await owner.load_earlier(payload["cursor"])
                 elif action == "reload_skills":
                     if provider != "claude" or payload:
