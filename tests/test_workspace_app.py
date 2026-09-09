@@ -12,6 +12,23 @@ from werkzeug.serving import make_server
 from ui.workspace_app import install_workspace
 
 
+def test_pending_native_clear_page_uses_durable_identity_without_launch(tmp_path):
+    app = Flask(__name__)
+    host = install_workspace(app, tmp_path / "clear.db", describe=lambda sid: None,
+                             resolve=lambda sid: pytest.fail("page must not attach"))
+    target = "11111111-2222-4333-8444-555555555555"
+    try:
+        host.journal.claim_command("source", "clear", {"action": "clear_session", "payload": {"confirmed": True}})
+        host.journal.prepare_clear("source", "clear", {"session_id": target, "provider": "claude", "cwd": str(tmp_path)})
+        response = app.test_client().get(f"/workspace/{target}")
+        assert response.status_code == 200 and target.encode() in response.data
+        assert b'"provider": "Claude"' in response.data
+        assert host._loop is None and not host._sessions
+        assert app.test_client().get("/workspace/missing").status_code == 404
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize("width", [1440, 390])
 def test_failed_attachment_retry_is_explicit_and_does_not_stop_uncertain_owner(tmp_path, width):
     playwright = pytest.importorskip("playwright.sync_api")
@@ -181,7 +198,18 @@ function setTermStatus(status){window.lastStatus=status;}
             page.set_default_timeout(5000)
             errors = []
             page.on("pageerror", lambda e: errors.append(str(e)))
-            page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact")
+            def delay_boot(route):
+                if "?ready=1" in route.request.url:
+                    route.continue_()
+                else:
+                    route.fulfill(status=200, content_type="text/javascript", body="await new Promise(resolve=>window.startWorkspace=resolve); await import('/static/workspace-page.mjs?ready=1');")
+            page.route("**/workspace-page.mjs*", delay_boot)
+            page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact", wait_until="commit")
+            page.wait_for_function("() => typeof window.startWorkspace === 'function'")
+            assert page.get_by_role("button", name="Resume session").is_disabled()
+            assert not owners
+            page.evaluate("window.startWorkspace()")
+            page.unroute("**/workspace-page.mjs*", delay_boot)
             page.get_by_role("textbox", name=f"Message {provider.capitalize()}").wait_for()
             assert not owners
             page.get_by_role("button", name="Session events", exact=True).click()
@@ -204,7 +232,7 @@ function setTermStatus(status){window.lastStatus=status;}
                 {"name": "screenshot.png", "mimeType": "image/png", "buffer": raw}
             )
             page.wait_for_function(
-                "document.querySelector('.aw-attachment img').naturalWidth === 8"
+                "() => document.querySelector('.aw-attachment img').naturalWidth === 8"
             )
             assert len(owners[0].sent) == 1
             with page.expect_response(lambda r: r.url.endswith("/uploads")) as uploaded:
@@ -265,7 +293,7 @@ function setTermStatus(status){window.lastStatus=status;}
             page.wait_for_timeout(50)
             assert page.evaluate("openedForks") == []
             page.frames[1].evaluate("""() => parent.postMessage({type:'serena-workspace-open-fork',sid:'exact',target:'11111111-1111-4111-8111-111111111111'},location.origin)""")
-            page.wait_for_function("openedForks.length === 1")
+            page.wait_for_function("() => openedForks.length === 1")
             assert page.evaluate("openedForks") == ["11111111-1111-4111-8111-111111111111"]
             assert len(owners) == 1 and not owners[0].closed
             page.evaluate(

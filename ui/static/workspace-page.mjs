@@ -54,4 +54,5 @@ button.addEventListener('click', async () => {
     button.disabled = false;
   }
 });
+button.disabled = false;
 window.addEventListener('pagehide', () => { connection.dispose(); pane.dispose(); });

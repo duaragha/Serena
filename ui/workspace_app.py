@@ -29,7 +29,7 @@ def install_workspace(
 
     @pages.get("/workspace/<sid>")
     def page(sid):
-        session = describe(sid)
+        session = describe(sid) or host.describe_pending_session(sid)
         if not session or session.get("session_id") != sid:
             abort(404)
         provider = {"codex": "Codex", "claude": "Claude", "gemini": "Gemini"}.get(
@@ -43,7 +43,7 @@ def install_workspace(
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Serena</title>
 <link rel="stylesheet" href="/static/workspace-pane.css">
 <link rel="stylesheet" href="/static/workspace-page.css"></head><body>
-<button id="workspace-connect" type="button">Resume session</button><main id="workspace-pane"></main>
+<button id="workspace-connect" type="button" disabled>Resume session</button><main id="workspace-pane"></main>
 <script id="workspace-boot" type="application/json">"""
             + boot
             + """</script>

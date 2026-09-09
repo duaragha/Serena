@@ -52,6 +52,131 @@ class Owner:
         self.closed = True
 
 
+@pytest.mark.parametrize("failure", [None, "checkpoint", "handoff", "receipt"])
+def test_clear_checkpoint_exact_owner_routing_and_no_replay(tmp_path, monkeypatch, failure):
+    target = "11111111-2222-4333-8444-555555555555"
+    clears = []
+
+    class ClearOwner(Owner):
+        async def begin_clear(self):
+            clears.append(self.sid)
+            self.state = "awaiting-handoff"
+            return {"session_id": target, "provider": "claude", "cwd": str(tmp_path)}
+
+        async def commit_clear(self, sid, *, publish):
+            assert value.journal.has_pending_clear("source")
+            assert "source" not in value._sessions
+            assert value._sessions[sid][0] is self
+            self.sid, self.publish = sid, publish
+            if failure == "handoff":
+                raise RuntimeError("ack lost")
+            await publish({"method": "workspace/history", "params": {"thread": {"id": sid, "turns": []}}})
+            self.state = "ready"
+
+    value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "clear.db"),
+                          resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+                          factories={"claude": ClearOwner})
+    try:
+        value.attach("source")
+        original = value._sessions["source"][0]
+        if failure in {"checkpoint", "receipt"}:
+            def fail(*args):
+                raise OSError("disk full")
+            monkeypatch.setattr(value.journal, "prepare_clear" if failure == "checkpoint" else "complete_clear", fail)
+        result = value.command("source", "clear-1", "clear_session", {"confirmed": True})
+        assert result["ok"] is (failure is None)
+        assert value.command("source", "clear-1", "clear_session", {"confirmed": True}) == result
+        assert clears == ["source"]
+        if failure:
+            assert original.state == "unavailable"
+        else:
+            assert value.attach(target)["ok"]
+            assert value._sessions[target][0] is original
+            prior_source = value.events("source")
+            assert value.command(target, "new-input", "submit", {"inputs": [{"type": "text", "text": "hello"}]})["ok"]
+            assert value.events("source") == prior_source
+            assert value.events(target)["events"][-1]["event"]["params"]["threadId"] == target
+            assert not value.journal.has_pending_clear("source")
+        reopened = WorkspaceJournal(value.journal.path)
+        assert reopened.command_receipt("source", "clear-1", {"action": "clear_session", "payload": {"confirmed": True}}) == (True, result)
+        if failure != "checkpoint":
+            assert reopened.clear_target(target)["committed"] is (failure is None)
+    finally:
+        value.shutdown()
+
+
+def test_clear_requires_confirmation_idle_owner_and_no_queued_bridge(tmp_path):
+    value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "clear.db"),
+                          resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+                          factories={"claude": Owner})
+    try:
+        value.attach("source")
+        for index, payload in enumerate(({}, {"confirmed": False}, {"confirmed": 1})):
+            assert not value.command("source", str(index), "clear_session", payload)["ok"]
+        value._bridge_queues["source"] = ["bridge:queued"]
+        result = value.command("source", "queued", "clear_session", {"confirmed": True})
+        assert not result["ok"] and result["retryable"]
+        assert value._sessions["source"][0].state == "ready"
+    finally:
+        value.shutdown()
+
+
+def test_unfinished_clear_checkpoint_blocks_source_resume_without_launch(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "clear.db")
+    payload = {"action": "clear_session", "payload": {"confirmed": True}}
+    journal.claim_command("source", "clear", payload)
+    journal.prepare_clear("source", "clear", {"session_id": "11111111-2222-4333-8444-555555555555",
+                                             "provider": "claude", "cwd": str(tmp_path)})
+    value = WorkspaceHost(journal=WorkspaceJournal(journal.path), resolve=lambda sid: pytest.fail("must not resolve"))
+    try:
+        with pytest.raises(ValueError, match="unconfirmed"):
+            value.attach("source")
+        result = value.command("source", "clear", "clear_session", {"confirmed": True})
+        assert result["uncertain"] and not value._sessions
+    finally:
+        value.shutdown()
+
+
+def test_clear_preflight_failure_does_not_disable_unchanged_owner(tmp_path):
+    class BusyOwner(Owner):
+        async def begin_clear(self):
+            raise RuntimeError("Background task still running")
+    value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "clear.db"),
+                          resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+                          factories={"claude": BusyOwner})
+    try:
+        value.attach("source")
+        result = value.command("source", "clear", "clear_session", {"confirmed": True})
+        assert not result["ok"]
+        assert value._sessions["source"][0].state == "ready"
+        assert not value.journal.has_pending_clear("source")
+    finally:
+        value.shutdown()
+
+
+def test_clear_never_replaces_an_existing_target_owner(tmp_path):
+    target = "11111111-2222-4333-8444-555555555555"
+    class CollisionOwner(Owner):
+        async def begin_clear(self):
+            self.state = "awaiting-handoff"
+            return {"session_id": target, "provider": "claude", "cwd": str(tmp_path)}
+        async def commit_clear(self, *args, **kwargs):
+            pytest.fail("must not acknowledge an occupied identity")
+    value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "clear.db"),
+                          resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+                          factories={"claude": CollisionOwner})
+    try:
+        value.attach(target)
+        existing = value._sessions[target][0]
+        value.attach("source")
+        result = value.command("source", "clear", "clear_session", {"confirmed": True})
+        assert not result["ok"] and "already has" in result["error"]
+        assert value._sessions[target][0] is existing and existing.state == "ready"
+        assert value._sessions["source"][0].state == "unavailable"
+    finally:
+        value.shutdown()
+
+
 @pytest.fixture
 def host(tmp_path):
     Owner.instances = []

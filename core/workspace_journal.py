@@ -11,6 +11,7 @@ import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from uuid import UUID
 
 
 class WorkspaceJournal:
@@ -37,6 +38,61 @@ class WorkspaceJournal:
                 payload TEXT NOT NULL, result TEXT,
                 PRIMARY KEY (session_id, request_id)
             )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS workspace_clears (
+                source_id TEXT NOT NULL, request_id TEXT NOT NULL,
+                target_id TEXT NOT NULL UNIQUE, target TEXT NOT NULL,
+                committed INTEGER NOT NULL DEFAULT 0 CHECK (committed IN (0, 1)),
+                PRIMARY KEY (source_id, request_id)
+            )""")
+
+    def prepare_clear(self, source_id: str, request_id: str, target: dict) -> None:
+        sid = target.get("session_id")
+        if (not isinstance(sid, str) or str(UUID(sid)) != sid or sid == source_id
+                or target.get("provider") != "claude" or not isinstance(target.get("cwd"), str)
+                or not Path(target["cwd"]).is_absolute()
+                or set(target) != {"session_id", "provider", "cwd"}):
+            raise ValueError("Exact native clear target required")
+        encoded = json.dumps(target, sort_keys=True, allow_nan=False)
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            command = conn.execute("SELECT payload, result FROM workspace_commands WHERE session_id=? AND request_id=?",
+                                   (source_id, request_id)).fetchone()
+            if not command or json.loads(command[0]) != {"action": "clear_session", "payload": {"confirmed": True}} or command[1] is not None:
+                raise ValueError("An unfinished explicit clear command is required")
+            row = conn.execute("SELECT target FROM workspace_clears WHERE source_id=? AND request_id=?",
+                               (source_id, request_id)).fetchone()
+            if row:
+                if row[0] != encoded:
+                    raise ValueError("Clear already recorded a different identity")
+                return
+            conn.execute("INSERT INTO workspace_clears (source_id, request_id, target_id, target) VALUES (?, ?, ?, ?)",
+                         (source_id, request_id, sid, encoded))
+
+    def complete_clear(self, source_id: str, request_id: str) -> dict:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT target FROM workspace_clears WHERE source_id=? AND request_id=?",
+                               (source_id, request_id)).fetchone()
+            if not row:
+                raise ValueError("Native clear checkpoint is missing")
+            receipt = {"ok": True, "result": json.loads(row[0])}
+            changed = conn.execute("UPDATE workspace_commands SET result=? WHERE session_id=? AND request_id=? AND result IS NULL",
+                                   (json.dumps(receipt), source_id, request_id)).rowcount
+            if changed != 1:
+                raise ValueError("Clear command is missing or already finished")
+            conn.execute("UPDATE workspace_clears SET committed=1 WHERE source_id=? AND request_id=?",
+                         (source_id, request_id))
+            return receipt
+
+    def clear_target(self, session_id: str) -> dict | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT target, committed FROM workspace_clears WHERE target_id=?", (session_id,)).fetchone()
+        return {**json.loads(row[0]), "committed": bool(row[1])} if row else None
+
+    def has_pending_clear(self, source_id: str) -> bool:
+        with closing(self._connect()) as conn:
+            return conn.execute("SELECT 1 FROM workspace_clears WHERE source_id=? AND committed=0 LIMIT 1",
+                                (source_id,)).fetchone() is not None
 
     def claim_command(
         self, session_id: str, request_id: str, payload: dict

@@ -5,6 +5,30 @@ import pytest
 from core.workspace_journal import WorkspaceJournal
 
 
+def test_clear_checkpoint_requires_claim_and_preserves_exact_identity(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "clear.db")
+    target = {"session_id": "11111111-2222-4333-8444-555555555555", "provider": "claude", "cwd": str(tmp_path)}
+    payload = {"action": "clear_session", "payload": {"confirmed": True}}
+    with pytest.raises(ValueError, match="unfinished"):
+        journal.prepare_clear("source", "clear", target)
+    journal.claim_command("source", "clear", payload)
+    journal.prepare_clear("source", "clear", target)
+    journal.prepare_clear("source", "clear", target)
+    with pytest.raises(ValueError, match="different identity"):
+        journal.prepare_clear("source", "clear", {**target, "session_id": "22222222-2222-4333-8444-555555555555"})
+    reopened = WorkspaceJournal(journal.path)
+    assert reopened.has_pending_clear("source")
+    assert reopened.command_receipt("source", "clear", payload) == (True, None)
+    assert reopened.clear_target(target["session_id"]) == {**target, "committed": False}
+    receipt = reopened.complete_clear("source", "clear")
+    assert receipt == {"ok": True, "result": target}
+    assert journal.command_receipt("source", "clear", payload) == (True, receipt)
+    assert journal.clear_target(target["session_id"])["committed"]
+    assert not journal.has_pending_clear("source")
+    with pytest.raises(ValueError, match="already finished"):
+        journal.complete_clear("source", "clear")
+
+
 def test_fork_checkpoint_survives_reopen_and_requires_exact_source_request(tmp_path):
     path = tmp_path / "fork.db"
     journal = WorkspaceJournal(path)

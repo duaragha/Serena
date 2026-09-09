@@ -2,6 +2,27 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Host clear checkpoint/routing (2026-09-09): added an explicit confirmed
+clear_session host command and private durable workspace_clears records. Native
+begin is recorded before lease transfer. The host reserves the target and removes
+the source owner alias before acknowledgement, then atomically commits the clear
+checkpoint with its successful command receipt. Repeated source requests return
+that receipt even after the source owner moves. Unconfirmed delivery never reruns
+clear, and an unresolved checkpoint blocks fresh source attachment after restart.
+An occupied target is never overwritten; ordinary preflight rejection does not
+disable an unchanged owner. Queued sibling messages block clear. A page for the
+exact pending native ID can use read-only journal metadata when its transcript
+has not yet been created; this does not launch anything or claim persisted native
+history exists. This is not yet integrated with the main chat-list catalog or a
+visible clear/navigation control.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_journal.py tests/test_workspace_app.py -q`: initial exit 0, 52 passed, including desktop/mobile existing pane regressions and no-launch pending page coverage.
+- `SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0. Extended real-host proof recorded clear, attached the target to the retained native PID without resolving/spawning another session, replayed the exact source receipt, accepted a target local command, preserved source events and reopened the durable committed checkpoint. All native children reaped; zero model turns/cost and no user credentials.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py ui/workspace_app.py tests/test_workspace_host.py tests/test_workspace_app.py scripts/verify-workspace-claude-clear-transport.py`: exit 0, all checks passed.
+- Expanded combined tests first exited 1 (54 passed, one Codex browser resume timeout); the isolated browser node reran exit 0, 1 passed. Inspection independently identified an early-click gap: the HTML resume button was enabled before module handler installation. It is now initially disabled and enabled after registration, covered by deliberately delaying the module. The new delayed-load test initially exited 1 due to Playwright string-predicate unsafe-eval under CSP; changed test waits to function predicates without weakening CSP. `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --tb=short`: final exit 0, 5 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q -k clear`: exit 0, 8 passed, 37 deselected, after rejecting occupied targets before acquiring a nested lock. Existing target owners cannot be replaced or create reciprocal lock waits.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py`: exit 0 after bootstrap change. Existing native exact ownership, source desktop/mobile controls, file mentions, skills/plugins, forks and cleanup passed; no console/HTTP errors or horizontal overflow. No installed-app or Windows proof is claimed.
+
 Owner clear handoff (2026-09-09): ClaudeWorkspace now has private two-phase
 clear methods. Active turns, permissions, elicitation and nonterminal or unknown
 background tasks block clear. Native begin drains old output before changing the

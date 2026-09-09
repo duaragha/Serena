@@ -14,6 +14,8 @@ import psutil
 from core.workspace_claude import ClaudeWorkspace
 from core.workspace_claude_client import ClaudeTypeScriptClient
 from core.workspace_claude_transport import ClaudeSdkTransport
+from core.workspace_host import WorkspaceHost
+from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpcError
 
@@ -116,6 +118,51 @@ async def main():
         await owner.close()
     assert not psutil.pid_exists(native_pid)
     print("PASS: real owner/client lease and event routing handoff; new input completed; original events untouched")
+
+    def create_owner(**kwargs):
+        return ClaudeWorkspace(**kwargs, client_factory=lambda options: ClaudeTypeScriptClient(
+            options=options, sdk_path=sdk, node_path=node),
+            lease_factory=lambda sid: SessionLease(sid, directory=leases))
+
+    def resolve(sid):
+        assert sid == source, "Target must attach to retained owner, not launch a new process"
+        return {"session_id": sid, "provider": "claude", "cwd": root}
+
+    host = WorkspaceHost(journal=WorkspaceJournal(Path(root) / "host.db"), resolve=resolve,
+                         factories={"claude": create_owner})
+    try:
+        assert (await asyncio.to_thread(host.attach, source))["ok"]
+        native_pid = host._sessions[source][0].client.owned_pid
+        receipt = await asyncio.to_thread(host.command, source, "explicit-clear", "clear_session", {"confirmed": True})
+        assert receipt["ok"], receipt
+        target = receipt["result"]["session_id"]
+        assert source not in host._sessions
+        assert (await asyncio.to_thread(host.command, source, "explicit-clear", "clear_session", {"confirmed": True})) == receipt
+        assert (await asyncio.to_thread(host.attach, target))["ok"]
+        assert host._sessions[target][0].client.owned_pid == native_pid
+        before = host.events(source)
+        sent = await asyncio.to_thread(host.command, target, "new-input", "submit",
+                                      {"inputs": [{"type": "text", "text": "/effort low"}]})
+        assert sent["ok"], sent
+        turn_id = sent["result"]["turn"]["id"]
+        async with asyncio.timeout(25):
+            while True:
+                completions = [entry["event"]["params"]["turn"] for entry in host.events(target)["events"]
+                               if entry["event"]["method"] == "turn/completed"]
+                completed_turn = next((turn for turn in completions if turn["id"] == turn_id), None)
+                if completed_turn:
+                    break
+                await asyncio.sleep(0.02)
+        assert completed_turn["providerOriginal"]["total_cost_usd"] == 0
+        assert completed_turn["providerOriginal"]["num_turns"] == 0
+        assert host.events(source) == before
+        reopened = WorkspaceJournal(host.journal.path)
+        assert reopened.clear_target(target)["committed"]
+        assert not reopened.has_pending_clear(source)
+        print("PASS: real host clear checkpoint, exact target attach without spawn, source receipt replay, target input and durable journal routing")
+    finally:
+        await asyncio.to_thread(host.shutdown)
+    assert not psutil.pid_exists(native_pid)
 
 
 asyncio.run(main())

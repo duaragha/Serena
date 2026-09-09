@@ -92,6 +92,8 @@ class WorkspaceHost:
                 retry = getattr(owner, "can_retry_attachment", None)
                 if owner.state not in {"closed", "unavailable"} or retry is None or not retry():
                     return self._status(sid)
+            if await asyncio.to_thread(self.journal.has_pending_clear, sid):
+                raise ValueError("A native clear handoff is unconfirmed; this source cannot be resumed automatically")
             target = await asyncio.to_thread(self.resolve, sid)
             if target.get("session_id") != sid:
                 raise ValueError("Resolver returned a different session")
@@ -165,6 +167,8 @@ class WorkspaceHost:
             return None
         key = f"bridge:{request_id}"
         async with self._locks.setdefault(sid, asyncio.Lock()):
+            if sid not in self._sessions:
+                return None
             owner, actual_provider = self._sessions[sid]
             if provider != actual_provider:
                 return {
@@ -302,6 +306,7 @@ class WorkspaceHost:
             "load_earlier",
             "shell_command",
             "fork_session",
+            "clear_session",
             "register_fork",
             "context_usage",
             "permissions",
@@ -320,6 +325,12 @@ class WorkspaceHost:
 
     async def _command(self, sid, request_id, action, payload):
         async with self._locks.setdefault(sid, asyncio.Lock()):
+            if action == "clear_session":
+                found, prior = await asyncio.to_thread(self.journal.command_receipt, sid, request_id,
+                                                       {"action": action, "payload": payload})
+                if found:
+                    return prior or {"ok": False, "uncertain": True,
+                                     "error": "Clear outcome is unconfirmed; it will not be repeated"}
             if sid not in self._sessions:
                 raise ValueError("Explicitly attach this session before sending controls")
             recorded_payload = payload
@@ -436,6 +447,13 @@ class WorkspaceHost:
                     retryable = True  # Registration is idempotent and cannot create a native fork.
                     await asyncio.to_thread(self.register_fork, result)
                     result["indexed"] = True
+                elif action == "clear_session":
+                    if provider != "claude" or payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
+                        raise ValueError("Explicit confirmation for a Claude session clear is required")
+                    if owner.state != "ready" or self._bridge_queues.get(sid):
+                        retryable = True
+                        raise ValueError("Finish active and queued work before clearing")
+                    return await self._clear_session(sid, request_id, owner)
                 elif action == "fork_session":
                     if provider not in {"claude", "codex"} or payload or self.register_fork is None:
                         raise ValueError("Native fork requires a supported session, no payload and an available catalog")
@@ -555,6 +573,43 @@ class WorkspaceHost:
         except Exception as error:
             # Creation already happened, including after an interrupted receipt.
             return {**target, "indexed": False, "error": str(error)}
+
+    async def _clear_session(self, sid, request_id, owner):
+        transitioned = False
+        try:
+            target = await owner.begin_clear()
+            transitioned = True
+            await asyncio.to_thread(self.journal.prepare_clear, sid, request_id, target)
+            new_sid = target["session_id"]
+            if new_sid in self._sessions:
+                raise ValueError("Clear target already has a workspace owner")
+            async with self._locks.setdefault(new_sid, asyncio.Lock()):
+                if new_sid in self._sessions:
+                    raise ValueError("Clear target already has a workspace owner")
+
+                async def publish(event):
+                    decorated = await asyncio.to_thread(self.uploads.decorate_event, new_sid, event)
+                    await asyncio.to_thread(self.journal.append, new_sid, decorated)
+
+                # Reserve before acknowledgement; never retain an old-ID alias
+                # that could send source-chat input into the new conversation.
+                self._sessions[new_sid] = (owner, "claude")
+                del self._sessions[sid]
+                await owner.commit_clear(new_sid, publish=publish)
+                receipt = await asyncio.to_thread(self.journal.complete_clear, sid, request_id)
+                return receipt
+        except BaseException:
+            if transitioned or owner.state != "ready":
+                owner.state = "unavailable"
+            raise
+
+    def describe_pending_session(self, sid):
+        """Read-only catalog fallback; never claims a transcript exists yet."""
+        target = self.journal.clear_target(sid)
+        if target is None:
+            return None
+        return {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],
+                "title": "New Claude conversation", "native_persistence_pending": True}
 
     @staticmethod
     def _validate_session(sid):
