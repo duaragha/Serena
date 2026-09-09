@@ -1,5 +1,6 @@
 """Installed SDK control handshake in isolated storage; no user prompt or inference."""
 
+import argparse
 import asyncio
 import json
 import os
@@ -15,7 +16,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from core.billing import METERED_AUTH_ENV_VARS, strip_metered_auth_env
 
 
-async def main():
+async def main(local_effort=False):
     binary = shutil.which("claude")
     if not binary:
         raise RuntimeError("Installed Claude CLI is unavailable")
@@ -77,6 +78,20 @@ async def main():
             print(
                 "No resume, user message, tool execution, or inference request sent; config isolated"
             )
+            if local_effort:
+                from claude_agent_sdk import ResultMessage
+
+                await client.query("/effort high")
+                result = None
+                async with asyncio.timeout(30):
+                    async for message in client.receive_response():
+                        if isinstance(message, ResultMessage):
+                            result = message
+                assert result is not None and not result.is_error
+                assert result.num_turns == 0 and result.total_cost_usd == 0
+                assert result.duration_api_ms == 0
+                assert "Set effort level to high (this session only)" in result.result
+                print("PASS: native /effort high acknowledged session-only change; zero model turns, API duration and cost")
         finally:
             await client.disconnect()
         assert process.returncode is not None
@@ -84,4 +99,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--local-effort", action="store_true")
+    asyncio.run(main(parser.parse_args().local_effort))

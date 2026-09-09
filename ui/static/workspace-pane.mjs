@@ -111,6 +111,9 @@ export class WorkspacePane {
     footer.insertBefore(this.mcpButton, this.stop);
     const permissions=this.button('Permission mode','shield',()=>this.openPermissions());
     permissions.hidden=!['Codex','Claude'].includes(provider) || !controls.permissions;footer.insertBefore(permissions,this.stop);
+    this.claudeEffortButton=this.button('Claude reasoning effort','gauge',()=>this.openClaudeEffort());
+    this.claudeEffortButton.hidden=provider!=='Claude' || !controls.models || !controls.commands;
+    footer.insertBefore(this.claudeEffortButton,this.stop);
     this.queueButton = this.button('Queued sibling messages', 'messages-square', () => this.openBridgeQueue());
     this.queueButton.hidden=true; footer.insertBefore(this.queueButton, this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
@@ -233,6 +236,45 @@ export class WorkspacePane {
     window.lucide?.createIcons();
     try { const result=await this.controls.commands(); if(!dialog.open || this.disposed)return; commands=result.data; render(); }
     catch(error){if(dialog.open)status.textContent=error.message;}
+  }
+
+  async openClaudeEffort() {
+    if(this.effortDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Claude reasoning effort');
+    const status=node('p','','Loading...');status.setAttribute('role','status');
+    const form=node('form');const label=node('label','','Effort');const select=node('select');select.setAttribute('aria-label','Claude effort level');label.append(select);
+    const apply=node('button','','Apply');apply.type='submit';apply.disabled=true;
+    const close=this.button('Close reasoning effort','x',()=>dialog.close());
+    let levels=[];
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(apply.disabled || this.sending)return;
+      if(!['ready','completed','interrupted','failed'].includes(this.conversation.status)){status.textContent='Finish the current turn before changing effort';return;}
+      if(!levels.includes(select.value))return;
+      apply.disabled=true;this.sending=true;this.render();
+      try {
+        // The native local command owns acknowledgement; never infer settings
+        // from a successful transport receipt or consume the composer's draft.
+        await this.controls.submit({text:`/effort ${select.value}`,files:[],options:{}});
+        dialog.close();
+      } catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{this.sending=false;apply.disabled=false;this.render();}
+    });
+    form.append(label,apply);dialog.append(node('h3','','Reasoning effort'),close,status,form);
+    dialog.addEventListener('close',()=>dialog.remove());this.effortDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();
+    try {
+      const commands=await this.controls.commands();
+      const command=commands.data.find(c=>c.name==='effort');
+      if(!command || command.unavailableReason)throw Error(command?.unavailableReason || 'Claude did not advertise an effort command');
+      const catalog=await this.controls.models();if(!dialog.open || this.disposed)return;
+      const current=this.conversation.metadata.model;
+      const model=catalog.data.find(m=>m.model===current || m.claudeCapabilities?.resolvedModel===current) || (!current && catalog.data.find(m=>m.model==='default'));
+      levels=(model?.claudeCapabilities?.supportedEffortLevels || []).filter(level=>['low','medium','high','xhigh','max'].includes(level));
+      if(!model?.claudeCapabilities?.supportsEffort || !levels.length)throw Error('Effort choices are unavailable for the current model');
+      for(const level of levels){const option=node('option','',level);option.value=level;select.append(option);}
+      const choose=node('option','','Select effort');choose.value='';choose.disabled=true;select.prepend(choose);select.value='';
+      select.addEventListener('change',()=>{apply.disabled=!levels.includes(select.value);});
+      status.textContent='';select.focus();
+    }catch(error){if(dialog.open)status.textContent=error.message;}
   }
 
   async openPermissions() {
@@ -816,6 +858,7 @@ export class WorkspacePane {
     this.mcpDialog?.close();
     this.contextDialog?.close();
     this.permissionsDialog?.close();
+    this.effortDialog?.close();
     this.queueDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
     this.historyImageUrls.clear();

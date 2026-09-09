@@ -2,6 +2,31 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude now has an explicit reasoning-effort control. It discovers the native
+effort command and current model's advertised levels, then sends `/effort LEVEL`
+through the existing exact-session submit path. It does not consume draft text
+or attachments, switch models, or claim application from the transport receipt;
+the native response is the acknowledgement. Busy turns are rejected, and an
+unconfirmed send leaves the dialog available for receipt-preserving retry.
+
+Research: https://code.claude.com/docs/en/model-config and
+https://code.claude.com/docs/en/agent-sdk/agent-loop (accessed 2026-09-09), plus the
+installed SDK catalog and native CLI result. Python SDK has no public runtime
+effort setter; the local slash command was verified instead. Fast mode remains
+unfinished; the isolated native init reports `sdk_opt_in_required` and no silent
+opt-in or metered fallback has been added.
+
+```sh
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py --local-effort
+# exit 0: native session-only effort acknowledgement, num_turns=0,
+# duration_api_ms=0, total_cost_usd=0; isolated owned CLI reaped, exit 0
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q --basetemp=/tmp/serena-effort-browser-final
+# exit 0: 40 passed in 31.11s, including effort dialog at 390/1600 pixels,
+# unchanged drafts, busy rejection, failure/retry and populated toolbar layout
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-claude.py tests/test_workspace_pane.py
+# exit 0: all checks passed
+```
+
 Served-page attachment verification now exercises a real multipart HTTP upload
 from Chromium, provider-specific image conversion, exact-session preview access,
 foreign-session rejection, and reload without resending. Provider owners in this

@@ -60,6 +60,45 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+def test_claude_effort_uses_native_command_without_consuming_draft(pane, tmp_path, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      const root=pane.root;const Constructor=pane.constructor;pane.dispose();root.replaceChildren();
+      controls.commands=async()=>({data:[{name:'effort'}]});
+      controls.models=async()=>({data:[{model:'default',claudeCapabilities:{resolvedModel:'claude-proof',supportsEffort:true,supportedEffortLevels:['low','high','xhigh']}}]});
+      window.pane=new Constructor(root,{sessionId:'exact',provider:'Claude',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',model:'claude-proof',turns:[]}}});
+      emit({method:'workspace/settings',params:{model:'claude-proof'}});
+    }""")
+    draft = page.get_by_role("textbox", name="Message Claude")
+    draft.fill("Keep this draft")
+    page.get_by_role("button", name="Claude reasoning effort", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Claude reasoning effort")
+    select = dialog.get_by_role("combobox", name="Claude effort level")
+    select.select_option("xhigh")
+    assert page.evaluate("calls") == []
+    page.evaluate("emit({method:'turn/started',params:{turn:{id:'busy',status:'inProgress'}}})")
+    dialog.get_by_role("button", name="Apply", exact=True).click()
+    dialog.get_by_text("Finish the current turn before changing effort").wait_for()
+    assert page.evaluate("calls") == []
+    page.evaluate("emit({method:'turn/completed',params:{turn:{id:'busy',status:'completed'}}})")
+    page.evaluate("window.failSubmit=true")
+    dialog.get_by_role("button", name="Apply", exact=True).click()
+    dialog.get_by_text("Submission unconfirmed").wait_for()
+    assert draft.input_value() == "Keep this draft"
+    assert dialog.is_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / f"claude-effort-{width}.png"))
+    page.evaluate("window.failSubmit=false")
+    dialog.get_by_role("button", name="Apply", exact=True).click()
+    dialog.wait_for(state="hidden")
+    assert draft.input_value() == "Keep this draft"
+    assert page.evaluate("calls") == [["submit", {"text": "/effort xhigh", "files": []}]] * 2
+    assert not errors
+
+
 @pytest.mark.parametrize("provider", ["Codex", "Claude"])
 @pytest.mark.parametrize("width", [390, 1600])
 def test_complete_control_surface_fits_without_auto_actions(pane, tmp_path, provider, width):
