@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude MCP connections now have an explicit pane dialog for native status,
+reconnect, enable and disable. Opening/closing a pane does not change connections.
+Mutations validate the server against the current owner's native inventory and
+require an idle owner, preserving tools during active turns. Stable command IDs
+prevent replays from repeating mutations. Configs, headers, credentials and raw
+connection errors are omitted from status responses/receipts; only name/status
+are exposed. Authentication/config editing and detailed sanitized diagnostics are
+not yet implemented. Python SDK 0.2.121 exposes these public controls but no
+elicitation callback; Claude form handling remains a real parity gap.
+Source: https://code.claude.com/docs/en/agent-sdk/python (accessed 2026-09-09) and
+installed `ClaudeSDKClient` public methods. No private protocol monkeypatch added.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_pane.py -q --basetemp=/tmp/serena-claude-mcp-control-verification
+# exit 0: 56 passed in 24.65s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_mcp_connections_explicit_controls_and_failure_state -q --basetemp=/tmp/serena-claude-mcp-layout
+# exit 0: 1 passed in 0.75s; mobile overflow fixed and screenshot reviewed
+node --test tests/workspace-connection.test.mjs
+# exit 0: 8 passed, 0 failed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py
+# exit 0: installed CLI reports local MCP connected, disabled, connected after
+# enable and reconnect; no inference/tool call/user session; owned child exit 0
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_host.py tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-claude.py
+# exit 0: All checks passed!
+```
+
 Native Codex MCP form and URL requests now have explicit answer controls. Typed
 fields are checked against the requested schema on the owner before sending;
 invalid/stale answers are rejected. Tool-call permission requests show arguments

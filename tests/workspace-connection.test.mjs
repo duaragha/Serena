@@ -94,6 +94,21 @@ test('background controls use exact process ID and disposal sends no stop',async
   ]);
 });
 
+test('MCP controls target only the selected session and never run on disposal',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'claude-exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push([url,JSON.parse(options.body)]);return response({ok:true,result:{data:[]}});
+  }});
+  assert.deepEqual(calls,[]);
+  await conn.controls().mcpServers();
+  await conn.controls().mcpServerControl('local','disable');
+  conn.dispose();
+  assert.deepEqual(calls.map(([url,body])=>[url,body.action,body.payload]),[
+    ['/api/workspace/claude-exact/commands','mcp_servers',{}],
+    ['/api/workspace/claude-exact/commands','mcp_server_control',{name:'local',action:'disable'}],
+  ]);
+});
+
 test('answer receipts persist only a fingerprint while preserving retry identity',async()=>{
   const saved=storage(), ids=[];
   const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

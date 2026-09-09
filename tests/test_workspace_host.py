@@ -64,6 +64,35 @@ def host(tmp_path):
     value.shutdown()
 
 
+def test_mcp_controls_require_attach_and_replay_without_repeating(tmp_path):
+    calls = []
+    class McpOwner(Owner):
+        async def list_mcp_servers(self):
+            return {"data": []}
+        async def control_mcp_server(self, name, action):
+            calls.append((self.sid, name, action))
+            return {"data": []}
+    value = WorkspaceHost(
+        journal=WorkspaceJournal(tmp_path / "mcp.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+        factories={"claude": McpOwner},
+    )
+    try:
+        with pytest.raises(ValueError, match="Explicitly attach"):
+            value.command("exact", "before", "mcp_servers", {})
+        value.attach("exact")
+        assert value.command("exact", "list", "mcp_servers", {})["result"] == {"data": []}
+        payload = {"name": "local", "action": "reconnect"}
+        first = value.command("exact", "retry", "mcp_server_control", payload)
+        assert first["ok"]
+        assert value.command("exact", "retry", "mcp_server_control", payload) == first
+        assert calls == [("exact", "local", "reconnect")]
+        assert not value.command("exact", "bad", "mcp_server_control", {"name": "local"})["ok"]
+        assert not McpOwner.instances[-1].sent
+    finally:
+        value.shutdown()
+
+
 def test_command_discovery_is_provider_scoped_and_never_submits(tmp_path):
     class CommandOwner(Owner):
         async def list_commands(self):

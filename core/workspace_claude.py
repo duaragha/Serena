@@ -180,6 +180,44 @@ class ClaudeWorkspace:
         await self.publish(self.events.event("workspace/models", result))
         return result
 
+    async def list_mcp_servers(self):
+        if self.client is None or self.state in {"closed", "unavailable"}:
+            raise RuntimeError("Claude is not attached")
+        response = await self.client.get_mcp_status()
+        servers = response.get("mcpServers") if isinstance(response, dict) else None
+        if not isinstance(servers, list):
+            raise ValueError("Claude returned an invalid MCP status")
+        result = {"data": []}
+        names = set()
+        for server in servers:
+            if (
+                not isinstance(server, dict)
+                or not isinstance(server.get("name"), str)
+                or not server["name"]
+                or server["name"] in names
+                or server.get("status") not in {"connected", "pending", "failed", "needs-auth", "disabled"}
+            ):
+                raise ValueError("Claude returned an invalid MCP server")
+            names.add(server["name"])
+            # Configs may contain tokens, headers, or credentials. Do not journal them.
+            result["data"].append({"name": server["name"], "status": server["status"]})
+        return result
+
+    async def control_mcp_server(self, name, action):
+        async with self._control:
+            if self.state != "ready":
+                raise RuntimeError("Wait for Claude's current turn before changing MCP connections")
+            if not isinstance(name, str) or action not in {"reconnect", "enable", "disable"}:
+                raise ValueError("An exact MCP server and supported action are required")
+            servers = (await self.list_mcp_servers())["data"]
+            if name not in {server["name"] for server in servers}:
+                raise ValueError("MCP server is not configured in this session")
+            if action == "reconnect":
+                await self.client.reconnect_mcp_server(name)
+            else:
+                await self.client.toggle_mcp_server(name, action == "enable")
+            return await self.list_mcp_servers()
+
     async def list_commands(self):
         if self.client is None or self.state in {"closed", "unavailable"}:
             raise RuntimeError("Claude is not attached")

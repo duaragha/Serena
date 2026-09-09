@@ -80,6 +80,41 @@ def make(tmp_path):
     return owner, events
 
 
+def test_mcp_controls_use_current_session_and_strip_connection_secrets(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        calls = []
+        servers = [{"name": "local", "status": "failed", "config": {"token": "secret"}, "error": "secret"}]
+        async def status():
+            return {"mcpServers": servers}
+        async def reconnect(name):
+            calls.append(("reconnect", name))
+            servers[0]["status"] = "connected"
+        async def toggle(name, enabled):
+            calls.append(("toggle", name, enabled))
+            servers[0]["status"] = "connected" if enabled else "disabled"
+        try:
+            await owner.open()
+            owner.client.get_mcp_status = status
+            owner.client.reconnect_mcp_server = reconnect
+            owner.client.toggle_mcp_server = toggle
+            assert await owner.list_mcp_servers() == {"data": [{"name": "local", "status": "failed"}]}
+            assert not calls
+            assert (await owner.control_mcp_server("local", "reconnect"))["data"][0]["status"] == "connected"
+            assert (await owner.control_mcp_server("local", "disable"))["data"][0]["status"] == "disabled"
+            with pytest.raises(ValueError, match="not configured"):
+                await owner.control_mcp_server("other-session", "enable")
+            owner.state = "running"
+            with pytest.raises(RuntimeError, match="current turn"):
+                await owner.control_mcp_server("local", "enable")
+            assert calls == [("reconnect", "local"), ("toggle", "local", False)]
+            assert not owner.client.sent
+            assert "secret" not in str(events)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 def test_exact_resume_configuration_and_billing_overlay(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-inherit")
     monkeypatch.setenv("CLAUDE_CODE_USE_FUTURE_PROVIDER", "1")

@@ -35,6 +35,7 @@ async def main():
                 setting_sources=[],
                 strict_mcp_config=True,
                 tools=[],
+                mcp_servers={"serena-proof": {"command": sys.executable, "args": [str(Path(__file__).with_name("verify-workspace-mcp.py")), "--serve"]}},
                 system_prompt="",
             )
         )
@@ -54,6 +55,21 @@ async def main():
             assert models and models[0].get("value")
             await client.set_model(models[0]["value"])
             print("PASS: installed SDK accepted an advertised model through the existing control connection")
+            async def wait_status(expected):
+                async with asyncio.timeout(25):
+                    while True:
+                        servers = (await client.get_mcp_status())["mcpServers"]
+                        if any(server["name"] == "serena-proof" and server["status"] == expected for server in servers):
+                            return
+                        await asyncio.sleep(0.1)
+            await wait_status("connected")
+            await client.toggle_mcp_server("serena-proof", False)
+            await wait_status("disabled")
+            await client.toggle_mcp_server("serena-proof", True)
+            await wait_status("connected")
+            await client.reconnect_mcp_server("serena-proof")
+            await wait_status("connected")
+            print("PASS: local MCP status, disable, enable and reconnect through one native control connection")
             print("PASS: installed Claude SDK control initialization and owned process identity")
             print(
                 "No resume, user message, tool execution, or inference request sent; config isolated"

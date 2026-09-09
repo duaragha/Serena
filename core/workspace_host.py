@@ -287,6 +287,8 @@ class WorkspaceHost:
             "compact",
             "background_tasks",
             "commands",
+            "mcp_servers",
+            "mcp_server_control",
             "terminate_background_task",
             "cancel_queued_bridge",
         } or not isinstance(payload, dict):
@@ -336,6 +338,14 @@ class WorkspaceHost:
                     self._bridge_messages.pop((sid, key), None)
                     await self._publish_bridge_queue(sid)
                     result = {"cancelled": True}
+                elif action == "mcp_servers":
+                    if provider != "claude" or payload:
+                        raise ValueError("MCP discovery requires a Claude session and no payload")
+                    result = await owner.list_mcp_servers()
+                elif action == "mcp_server_control":
+                    if provider != "claude" or set(payload) != {"name", "action"}:
+                        raise ValueError("An exact Claude MCP server and action are required")
+                    result = await owner.control_mcp_server(payload["name"], payload["action"])
                 elif action == "commands":
                     if provider != "claude" or payload:
                         raise ValueError(

@@ -103,6 +103,9 @@ export class WorkspacePane {
     this.commandsButton = this.button('Commands and skills', 'slash', () => this.openCommands());
     this.commandsButton.hidden = provider !== 'Claude' || !controls.commands;
     footer.insertBefore(this.commandsButton, this.stop);
+    this.mcpButton = this.button('MCP connections', 'plug', () => this.openMcpServers());
+    this.mcpButton.hidden = provider !== 'Claude' || !controls.mcpServers;
+    footer.insertBefore(this.mcpButton, this.stop);
     this.queueButton = this.button('Queued sibling messages', 'messages-square', () => this.openBridgeQueue());
     this.queueButton.hidden=true; footer.insertBefore(this.queueButton, this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
@@ -219,6 +222,41 @@ export class WorkspacePane {
     window.lucide?.createIcons();
     try { const result=await this.controls.commands(); if(!dialog.open || this.disposed)return; commands=result.data; render(); }
     catch(error){if(dialog.open)status.textContent=error.message;}
+  }
+
+  openMcpServers() {
+    if(this.mcpDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-mcp-dialog');dialog.setAttribute('aria-label','MCP connections');
+    const list=node('div');const status=node('p');status.setAttribute('role','status');
+    const close=this.button('Close MCP connections','x',()=>dialog.close());
+    let busy=false;
+    const refresh=this.button('Refresh MCP connections','refresh-cw',()=>load());
+    const load=async(name,action)=>{
+      if(busy || !dialog.open)return;
+      busy=true;refresh.disabled=true;
+      for(const control of list.querySelectorAll('button,input'))control.disabled=true;
+      status.textContent='Loading...';
+      try{
+        const result=action ? await this.controls.mcpServerControl(name,action) : await this.controls.mcpServers();
+        if(!dialog.open || this.disposed)return;
+        list.replaceChildren();
+        for(const server of result.data){
+          const row=node('div','aw-background-task aw-mcp-server');row.append(node('strong','',server.name),node('p','',server.status));
+          const label=node('label','','Enabled');const toggle=node('input');toggle.type='checkbox';toggle.checked=server.status!=='disabled';toggle.setAttribute('aria-label',`Enable ${server.name}`);
+          toggle.disabled=!this.controls.mcpServerControl;
+          toggle.addEventListener('change',()=>{const action=toggle.checked?'enable':'disable';toggle.checked=server.status!=='disabled';load(server.name,action);});label.prepend(toggle);
+          const reconnect=this.button(`Reconnect ${server.name}`,'refresh-cw',()=>load(server.name,'reconnect'));
+          reconnect.disabled=!this.controls.mcpServerControl || server.status==='disabled';
+          row.append(label,reconnect);list.append(row);
+        }
+        status.textContent=result.data.length ? `${result.data.length} connection${result.data.length===1?'':'s'}` : 'No MCP connections';
+        window.lucide?.createIcons();
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;refresh.disabled=false;}
+    };
+    dialog.append(node('h3','','MCP connections'),refresh,close,status,list);
+    dialog.addEventListener('close',()=>dialog.remove());this.mcpDialog=dialog;
+    this.root.append(dialog);dialog.showModal();close.focus();load();
   }
 
   openBackgroundTasks() {
@@ -688,6 +726,7 @@ export class WorkspacePane {
     this.reviewDialog?.close();
     this.tasksDialog?.close();
     this.commandsDialog?.close();
+    this.mcpDialog?.close();
     this.queueDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
     this.historyImageUrls.clear();

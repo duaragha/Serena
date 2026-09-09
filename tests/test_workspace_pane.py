@@ -60,6 +60,32 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_mcp_connections_explicit_controls_and_failure_state(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+      pane.dispose();
+      controls.mcpServers=async()=>{calls.push(['mcp-list']);return {data:[{name:'local',status:'connected'}]};};
+      controls.mcpServerControl=async(name,action)=>{calls.push([name,action]);if(action==='reconnect')throw Error('Connection unavailable');return {data:[{name,status:'disabled'}]};};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Claude',controls});
+    }""")
+    assert page.evaluate("calls") == []
+    page.get_by_role("button", name="MCP connections", exact=True).click()
+    dialog = page.get_by_role("dialog", name="MCP connections", exact=True)
+    dialog.get_by_role("button", name="Reconnect local").click()
+    dialog.get_by_text("Connection unavailable", exact=True).wait_for()
+    assert dialog.get_by_role("checkbox", name="Enable local").is_checked()
+    dialog.get_by_role("button", name="Refresh MCP connections").click()
+    dialog.get_by_role("checkbox", name="Enable local").uncheck()
+    dialog.get_by_text("disabled", exact=True).wait_for()
+    assert not dialog.get_by_role("checkbox", name="Enable local").is_checked()
+    assert dialog.evaluate("el => el.scrollWidth <= el.clientWidth")
+    page.screenshot(path=str(tmp_path / "mcp-connections-mobile.png"))
+    dialog.get_by_role("button", name="Close MCP connections").click()
+    assert page.evaluate("calls") == [["mcp-list"], ["local", "reconnect"], ["mcp-list"], ["local", "disable"]]
+    assert not errors
+
+
 def test_background_tasks_explicit_refresh_stop_and_mobile_layout(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})
