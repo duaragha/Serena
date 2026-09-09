@@ -704,6 +704,20 @@ def test_exact_resume_and_real_turn_controls(tmp_path):
     asyncio.run(run())
 
 
+def test_attachment_retry_requires_transport_and_lease_cleanup(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        assert not client.can_retry_attachment()
+        client.state = "unavailable"
+        assert not client.can_retry_attachment()
+        await client.close()
+        assert not client.can_retry_attachment()  # Fixture still exposes a process.
+        rpc.process = None
+        assert client.can_retry_attachment()
+    asyncio.run(run())
+
+
 def test_wrong_resume_never_creates_fallback_session(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
-from core.workspace_rpc import WorkspaceRpc
+from core.workspace_rpc import WorkspaceRpc, WorkspaceRpcError
 
 
 class OAuthFixture(BaseHTTPRequestHandler):
@@ -86,8 +86,18 @@ def browser_proof(sid, root, project, env, binary):
 
     from ui.workspace_app import install_workspace
 
+    attempts, failed_pids = [], []
     class NativeOwner(CodexWorkspace):
         async def open(self):
+            attempts.append(self)
+            if len(attempts) == 1:
+                original = self.rpc.request
+                async def fail_resume_once(method, params):
+                    if method == "thread/resume":
+                        failed_pids.append(self.rpc.process.pid)
+                        raise WorkspaceRpcError("Injected lookup failure after native initialization")
+                    return await original(method, params)
+                self.rpc.request = fail_resume_once
             return await super().open(binary=binary, env=env)
 
     class Quiet(WSGIRequestHandler):
@@ -119,6 +129,15 @@ def browser_proof(sid, root, project, env, binary):
                     if label == "desktop":
                         assert not host._sessions
                     page.get_by_role("button", name="Resume session", exact=True).click()
+                    if label == "desktop":
+                        retry = page.get_by_role("button", name="Retry connection", exact=True)
+                        retry.wait_for()
+                        assert len(attempts) == 1 and failed_pids
+                        assert attempts[0].can_retry_attachment() and attempts[0].rpc.process is None
+                        retry.click()
+                        retry.wait_for(state="hidden")
+                        assert len(attempts) == 2 and attempts[1].session_id == sid
+                        print("PASS: injected resume failure reaped the native process; only explicit browser retry resumed the exact persisted session")
                     page.get_by_role("button", name="MCP connections", exact=True).click()
                     button = page.get_by_role("button", name="Sign in to proof", exact=True)
                     button.wait_for()

@@ -12,6 +12,69 @@ from werkzeug.serving import make_server
 from ui.workspace_app import install_workspace
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_failed_attachment_retry_is_explicit_and_does_not_stop_uncertain_owner(tmp_path, width):
+    playwright = pytest.importorskip("playwright.sync_api")
+    owners = []
+    class Owner:
+        active_turn = None
+        def __init__(self, *, session_id, cwd, publish):
+            self.sid, self.publish = session_id, publish
+            self.state, self.closed = "closed", False
+            owners.append(self)
+        async def open(self):
+            if len(owners) == 1:
+                raise RuntimeError("Controlled preflight failure; no process launched")
+            self.state = "ready"
+            await self.publish({"method": "workspace/history", "params": {"thread": {"id": self.sid, "turns": []}}})
+        def can_retry_attachment(self):
+            return self.state == "closed"
+        async def list_models(self):
+            return {"data": []}
+        async def close(self):
+            self.closed = True
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
+    host = install_workspace(app, tmp_path / "retry.db",
+        resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+        factories={"codex": Owner}, describe=lambda sid: {"session_id": sid, "agent": "codex"})
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": width, "height": 900})
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact")
+                assert not owners
+                page.get_by_role("button", name="Resume session").click()
+                retry = page.get_by_role("button", name="Retry connection")
+                retry.wait_for()
+                assert len(owners) == 1 and not owners[0].closed
+                retry.click()
+                retry.wait_for(state="hidden")
+                assert len(owners) == 2 and owners[1].sid == "exact"
+                owners[1].state = "unavailable"
+                host.journal.append("exact", {"method": "workspace/transportClosed", "params": {"reason": "Controlled uncertain runtime"}})
+                retry.wait_for()
+                retry.click()
+                page.get_by_text("Session runtime is unavailable; retry is refused until its cleanup and ownership are confirmed", exact=True).wait_for()
+                assert len(owners) == 2 and not any(owner.closed for owner in owners)
+                assert page.locator("body").evaluate("el=>el.scrollWidth<=innerWidth")
+                page.close()
+                assert not any(owner.closed for owner in owners)
+                assert not errors
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+        host.shutdown()
+
+
 @pytest.mark.parametrize("provider", ["codex", "claude"])
 def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, provider):
     playwright = pytest.importorskip("playwright.sync_api")

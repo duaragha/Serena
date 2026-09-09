@@ -86,6 +86,28 @@ def make(tmp_path):
     return owner, events
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_attachment_retry_requires_finished_successful_cleanup(tmp_path, cleanup_fails):
+    async def run():
+        owner, _ = make(tmp_path)
+        assert owner.can_retry_attachment()
+        await owner.open()
+        assert not owner.can_retry_attachment()
+        owner.state = "unavailable"
+        assert not owner.can_retry_attachment()
+        if cleanup_fails:
+            async def failed_disconnect():
+                raise RuntimeError("Cleanup incomplete")
+            owner.client.disconnect = failed_disconnect
+            with pytest.raises(RuntimeError, match="Cleanup incomplete"):
+                await owner.close()
+            assert not owner.can_retry_attachment()
+        else:
+            await owner.close()
+            assert owner.can_retry_attachment()
+    asyncio.run(run())
+
+
 def test_reload_skills_requires_idle_and_discards_stale_catalog(tmp_path):
     async def run():
         owner, events = make(tmp_path)

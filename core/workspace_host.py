@@ -88,7 +88,10 @@ class WorkspaceHost:
     async def _attach(self, sid):
         async with self._locks.setdefault(sid, asyncio.Lock()):
             if sid in self._sessions:
-                return self._status(sid)
+                owner = self._sessions[sid][0]
+                retry = getattr(owner, "can_retry_attachment", None)
+                if owner.state not in {"closed", "unavailable"} or retry is None or not retry():
+                    return self._status(sid)
             target = await asyncio.to_thread(self.resolve, sid)
             if target.get("session_id") != sid:
                 raise ValueError("Resolver returned a different session")
@@ -119,6 +122,8 @@ class WorkspaceHost:
             "provider": provider,
             "state": owner.state,
             "turn_id": owner.active_turn,
+            **({"error": "Session runtime is unavailable; retry is refused until its cleanup and ownership are confirmed"}
+               if owner.state in {"closed", "unavailable"} else {}),
         }
 
     def events(self, session_id: str, *, after=0):

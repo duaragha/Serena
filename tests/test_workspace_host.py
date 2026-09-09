@@ -64,6 +64,40 @@ def host(tmp_path):
     value.shutdown()
 
 
+def test_explicit_reattach_only_replaces_verified_cleaned_owner(host):
+    host.attach("exact")
+    first = Owner.instances[-1]
+    first.state = "unavailable"
+    assert not host.attach("exact")["ok"]
+    assert Owner.instances == [first] and not first.closed
+    first.can_retry_attachment = lambda: False
+    assert not host.attach("exact")["ok"]
+    assert Owner.instances == [first] and not first.closed
+    first.can_retry_attachment = lambda: True
+    # Reads and repeated commands never invoke the explicit attach path.
+    host.events("exact")
+    assert Owner.instances == [first]
+    assert host.attach("exact")["ok"]
+    assert len(Owner.instances) == 2
+    assert Owner.instances[-1].sid == "exact" and not first.closed
+    assert not first.sent and not Owner.instances[-1].sent
+    assert host.attach("exact")["ok"]
+    assert len(Owner.instances) == 2
+
+
+def test_unconfirmed_receipt_survives_explicit_owner_replacement(host):
+    host.attach("exact")
+    payload = {"action": "submit", "payload": {"inputs": [{"type": "text", "text": "do not repeat"}]}}
+    host.journal.claim_command("exact", "uncertain", payload)
+    first = Owner.instances[-1]
+    first.state = "closed"
+    first.can_retry_attachment = lambda: True
+    assert host.attach("exact")["ok"]
+    result = host.command("exact", "uncertain", "submit", payload["payload"])
+    assert not result["ok"] and result["uncertain"]
+    assert not Owner.instances[-1].sent
+
+
 def test_interrupt_rejects_stale_displayed_turn_and_replays_receipt_without_stopping_new_turn(host):
     host.attach("exact")
     owner = host._sessions["exact"][0]

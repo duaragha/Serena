@@ -791,6 +791,10 @@ class CodexWorkspace:
         self._history_cursors.clear()
         self._fork_ids.clear()
 
+    def can_retry_attachment(self) -> bool:
+        return (self.state == "closed" and self.rpc.process is None
+                and self._lease is None and self._events_task is None)
+
     async def close(self) -> None:
         """Owner shutdown, not view hide or browser disconnect."""
         async with self._control_lock:

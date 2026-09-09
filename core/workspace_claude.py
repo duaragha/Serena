@@ -57,6 +57,7 @@ class ClaudeWorkspace:
         self._ready = None
         self._owner_task = None
         self._control = asyncio.Lock()
+        self._cleanup_complete = True
 
     async def open(self):
         async with self._control:
@@ -109,6 +110,7 @@ class ClaudeWorkspace:
             if hasattr(self.client, "on_elicitation"):
                 self.client.on_elicitation = self._elicitation
             lease.launching()
+            self._cleanup_complete = False
             await self.client.connect()
             pid = getattr(self.client, "owned_pid", None)
             if pid is None:
@@ -143,6 +145,7 @@ class ClaudeWorkspace:
             try:
                 if self.client:
                     await self.client.disconnect()
+                self._cleanup_complete = True
             finally:
                 if lease:
                     lease.release()
@@ -560,6 +563,10 @@ class ClaudeWorkspace:
             else PermissionResultDeny(message="Denied by user")
         )
         future.set_result(result)
+
+    def can_retry_attachment(self):
+        return (self.state in {"closed", "unavailable"} and self._cleanup_complete
+                and (self._owner_task is None or self._owner_task.done()))
 
     async def close(self):
         self._stop.set()

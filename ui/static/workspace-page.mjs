@@ -9,7 +9,7 @@ const connection = new WorkspaceConnection({
     if (accepted) reportState();
     return accepted;
   },
-  error: error => pane.error(error),
+  error: error => connectionFailed(error),
 });
 const controls = connection.controls();
 controls.openFork = sid => {
@@ -21,21 +21,35 @@ const pane = new WorkspacePane(document.querySelector('#workspace-pane'), {
   sessionId: boot.sessionId, provider: boot.provider, controls,
 });
 function reportState() {
+  if (pane.conversation.status === 'unavailable') showRetry();
   if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:pane.conversation.status},location.origin);
 }
 window.addEventListener('message', e => {
   if (e.origin === location.origin && e.source === parent && e.data?.type === 'serena-workspace-focus') pane.input.focus();
 });
 const button = document.querySelector('#workspace-connect');
+function showRetry() {
+  button.hidden = false;
+  button.disabled = false;
+  button.textContent = 'Retry connection';
+}
+function connectionFailed(error) {
+  pane.error(error);
+  showRetry();
+}
 button.addEventListener('click', async () => {
   button.disabled = true;
   try {
     await connection.connect();
+    if (pane.conversation.status === 'unavailable') {
+      showRetry();
+      return;
+    }
     button.hidden = true;
     pane.input.focus();
     if (['Codex', 'Claude'].includes(boot.provider)) connection.controls().models().catch(error => pane.error(error));
   } catch (error) {
-    pane.error(error);
+    connectionFailed(error);
     if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:'unavailable'},location.origin);
     button.disabled = false;
   }

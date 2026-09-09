@@ -2,6 +2,28 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Explicit failed-attachment retry (2026-09-09): a closed/unavailable owner can be
+replaced only on an explicit attach request and only when its provider reports
+finished successful cleanup. Codex requires no transport, lease or event task;
+Claude requires completed lifetime cleanup and a finished owner task. Unknown
+owners, running sessions and cleanup failures remain pinned. Resolver and shared
+lease admission run again for the exact session. Retry itself never closes or
+kills the prior owner. Existing command receipts survive replacement, so an
+unconfirmed submission is not replayed. The page exposes Retry connection after
+attachment/transport failures, including an unavailable event during initial
+replay, without automatically attaching. Closing the view remains inert.
+This handles safely cleaned failures, not live-orphan takeover or ambiguous
+launch recovery; full crash recovery and Windows gates remain open.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_codex.py tests/test_workspace_claude.py tests/test_workspace_app.py -q`: exit 0, 108 passed in 19.68s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_failed_attachment_retry_is_explicit_and_does_not_stop_uncertain_owner -q`: exit 0, 2 passed in 3.19s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_attachment_retry_requires_transport_and_lease_cleanup tests/test_workspace_claude.py::test_attachment_retry_requires_finished_successful_cleanup tests/test_workspace_host.py::test_explicit_reattach_only_replaces_verified_cleaned_owner tests/test_workspace_host.py::test_unconfirmed_receipt_survives_explicit_owner_replacement tests/test_workspace_app.py::test_failed_attachment_retry_is_explicit_and_does_not_stop_uncertain_owner -q`: exit 0, 7 passed in 4.10s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q`: final exit 0, 4 passed in 9.82s.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-mcp.py`: exit 0. Injected resume-lookup failure after real native initialization was cleaned up; browser retry alone resumed the exact persisted session. Native desktop/mobile OAuth/settings and owner-preservation checks also passed. The injected failure is not claimed as a real provider outage.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py`: exit 0, native exact-session controls, source desktop/mobile and cleanup passed; no user auth or inference.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_codex.py core/workspace_claude.py tests/test_workspace_host.py tests/test_workspace_app.py tests/test_workspace_codex.py tests/test_workspace_claude.py scripts/verify-workspace-codex-mcp.py`: exit 0.
+Source-only; no installed app or user runtime changed.
+
 POSIX crash containment (2026-09-09): leases now record the runtime's dedicated
 process group when it is also a separate OS session, excluding the host's own
 group. A dead CLI leader no longer proves its tools exited: surviving non-zombie
