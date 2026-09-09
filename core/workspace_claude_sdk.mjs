@@ -97,7 +97,7 @@ export class ClaudeSdkSession {
     this.requireReady();
     const allowed=['applyFlagSettings','supportedAgents','reloadSkills','reloadPlugins',
       'supportedCommands','supportedModels','setModel','setPermissionMode',
-      'mcpServerStatus','getContextUsage','interrupt'];
+      'mcpServerStatus','getContextUsage','interrupt','stopTask','reconnectMcpServer','toggleMcpServer'];
     if (!allowed.includes(method) || typeof this.stream[method]!=='function') {
       throw new Error('Unsupported native control');
     }

@@ -106,10 +106,13 @@ class ClaudeWorkspace:
             self.client = self.client_factory(options=options)
             lease.launching()
             await self.client.connect()
-            process = getattr(getattr(self.client, "_transport", None), "_process", None)
-            if process is None or not isinstance(process.pid, int):
+            pid = getattr(self.client, "owned_pid", None)
+            if pid is None:
+                process = getattr(getattr(self.client, "_transport", None), "_process", None)
+                pid = getattr(process, "pid", None)
+            if type(pid) is not int:
                 raise RuntimeError("Claude SDK did not expose a verifiable owned process")
-            lease.bind(process.pid)
+            lease.bind(pid)
             await self.publish(history)
             self.state = "ready"
             reader = asyncio.create_task(self._read())

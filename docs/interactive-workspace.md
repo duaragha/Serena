@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude owner compatibility (2026-09-09): `ClaudeTypeScriptClient` implements the
+existing ClaudeWorkspace client boundary through public SDK controls, exposes
+the actual owned PID for its shared lease, forwards permission contexts/answers,
+and preserves native records. ClaudeEvents now accepts TypeScript wire messages
+alongside Python dataclasses: stream/canonical IDs agree, subagent provenance
+does not change the parent model, tool results/tasks/completion normalize, and
+unrecognized records remain inspectable without losing their original shape.
+
+The native proof now exercises the existing ClaudeWorkspace owner with this
+client factory, real persisted history, model catalog, zero-inference command
+submission, rendered item/completion events, ready state and child cleanup.
+This proves owner compatibility for that flow, not full provider parity. The
+default client is unchanged pending dependency provisioning and MCP elicitation
+UI integration; no production rollout occurred.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_client.py tests/test_workspace_claude_wire.py tests/test_workspace_claude.py -q
+# exit 0: 28 passed
+node --test tests/workspace-claude-sdk.test.mjs tests/workspace-claude-channel.test.mjs
+# exit 0: 13 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_client.py core/workspace_claude_events.py tests/test_workspace_claude_client.py tests/test_workspace_claude_wire.py scripts/verify-workspace-claude-transport.py
+# initial exit 1: proof-script import ordering; fixed; final exit 0
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs /tmp/serena-sdk-ts/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+# exit 0: direct driver, Node channel, Python transport/shared lease and existing
+# ClaudeWorkspace owner all exercised against isolated native saved session.
+```
+
 Python native transport (2026-09-09): `workspace_claude_transport.py` connects
 the actual WorkspaceRpc implementation to the Node SDK worker. It verifies the
 reported native PID belongs to that wrapper, strips metered credentials, rejects

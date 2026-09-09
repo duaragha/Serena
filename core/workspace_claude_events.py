@@ -100,10 +100,31 @@ class ClaudeEvents:
     def receive(self, message):
         data = plain(message)
         kind = type(message).__name__
+        original = deepcopy(data)
+        if isinstance(message, dict):
+            wire_type = data.get("type")
+            kind = {
+                "assistant": "AssistantMessage", "user": "UserMessage",
+                "result": "ResultMessage", "stream_event": "StreamEvent",
+                "system": "SystemMessage",
+            }.get(wire_type, f"Native:{wire_type}")
+            if wire_type in {"assistant", "user"}:
+                body = data.get("message")
+                if not isinstance(body, dict):
+                    raise ValueError("Claude native message has no message body")
+                data.update(content=deepcopy(body.get("content", [])),
+                            model=body.get("model"), message_id=body.get("id") or data.get("uuid"))
+            elif wire_type == "system":
+                kind = {
+                    "task_started": "TaskStartedMessage", "task_progress": "TaskProgressMessage",
+                    "task_notification": "TaskNotificationMessage", "task_updated": "TaskUpdatedMessage",
+                }.get(data.get("subtype"), "SystemMessage")
+                if kind == "SystemMessage":
+                    data["data"] = deepcopy(original)
         sid = data.get("session_id") or (data.get("data") or {}).get("session_id")
         if sid and sid != self.sid:
             raise ValueError("Claude returned a different session identity")
-        raw = self.event("workspace/claude", {"recordType": kind, "record": data})
+        raw = self.event("workspace/claude", {"recordType": kind, "record": original})
         events = [raw]
         parent = data.get("parent_tool_use_id") or "root"
         origin = {"parentToolUseId": parent} if parent != "root" else {}
