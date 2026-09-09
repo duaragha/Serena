@@ -207,6 +207,39 @@ def test_command_discovery_is_provider_scoped_and_never_submits(tmp_path):
         value.shutdown()
 
 
+@pytest.mark.parametrize("registration_fails", [False, True])
+def test_fork_receipt_keeps_identity_even_if_indexing_fails(tmp_path, registration_fails):
+    class ForkOwner(Owner):
+        forks = 0
+
+        async def fork_session(self):
+            self.forks += 1
+            return {"session_id": "new-fork", "provider": "claude", "cwd": str(tmp_path)}
+
+    registered = []
+
+    def register(target):
+        registered.append(target)
+        if registration_fails:
+            raise RuntimeError("catalog unavailable")
+
+    value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "fork.db"),
+                          resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+                          factories={"claude": ForkOwner}, register_fork=register)
+    try:
+        value.attach("exact")
+        assert not value.command("exact", "bad", "fork_session", {"session_id": "other"})["ok"]
+        receipt = value.command("exact", "fork", "fork_session", {})
+        assert receipt["ok"] and receipt["result"]["session_id"] == "new-fork"
+        assert receipt["result"]["indexed"] is not registration_fails
+        assert value.command("exact", "fork", "fork_session", {}) == receipt
+        assert ForkOwner.instances[-1].forks == len(registered) == 1
+        assert "new-fork" not in value._sessions
+        assert not ForkOwner.instances[-1].sent
+    finally:
+        value.shutdown()
+
+
 def test_background_controls_require_attach_and_deduplicate_stop(host):
     with pytest.raises(ValueError, match="Explicitly attach"):
         host.command("exact", "before", "background_tasks", {})

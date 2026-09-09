@@ -2,6 +2,34 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native fork backend (2026-09-09): explicit `fork_session` controls now use the
+owned Claude session/project only, require idle state, and return a dormant
+fork rather than starting a second owner. The host records the fork identity
+before registering its exact native transcript through the existing index
+upsert. Registration never performs a global scan/prune. Missing, ambiguous,
+outside-store or mismatched identity/project files are rejected before writing.
+Catalog failure returns the created ID with `indexed:false`; the stable command
+receipt prevents the same request from forking again. No sibling link is created.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_host.py::test_fork_receipt_keeps_identity_even_if_indexing_fails tests/test_workspace_app.py -q
+# exit 0: 30 passed in 5.48s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py -q
+# exit 0: 5 passed in 0.05s
+node --test tests/workspace-claude-sdk.test.mjs
+# exit 0: 8 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_catalog.py core/workspace_claude.py core/workspace_claude_client.py core/workspace_host.py ui/workspace_app.py tests/test_workspace_catalog.py tests/test_workspace_claude.py tests/test_workspace_host.py scripts/verify-workspace-claude-transport.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron
+# exit 0: idle native owner forked through control, exact fork registered in
+# real isolated SQLite catalog, original native PID/session unchanged;
+# additional persisted-fork resume/source-preservation proof passed.
+```
+
+UI creation/navigation, indexing-failure recovery, busy-session snapshotting,
+Codex lifecycle and cross-provider context forks remain open. The current
+frozen build predates this backend slice. Do not treat this as full fork delivery.
+
 Native fork feasibility (2026-09-09): the pinned SDK's exported `forkSession`
 copies a persisted conversation without submitting a turn. Its declarations
 specify fresh message UUIDs and no copied file-checkpoint history. Official

@@ -293,6 +293,19 @@ class ClaudeWorkspace:
                 await self.client.toggle_mcp_server(name, action == "enable")
             return await self.list_mcp_servers()
 
+    async def fork_session(self):
+        async with self._control:
+            if self.state != "ready":
+                raise RuntimeError("Wait for Claude's current turn before forking")
+            fork = getattr(self.client, "fork_session", None)
+            if fork is None:
+                raise RuntimeError("This Claude runtime cannot fork sessions")
+            result = await fork()
+            sid = result.get("sessionId") if isinstance(result, dict) else None
+            if not isinstance(sid, str) or not sid or sid == self.session_id:
+                raise ValueError("Native fork did not return a new session identity")
+            return {"session_id": sid, "provider": "claude", "cwd": str(self.cwd)}
+
     async def reload_skills(self):
         async with self._control:
             if self.state != "ready":

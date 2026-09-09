@@ -136,6 +136,15 @@ async def main():
                            and event["params"]["item"].get("text") == result_text]
         assert len(visible_results) == 1, "Native local-command output was duplicated"
         assert owner.state == "ready"
+        from core.indexer import get_session
+        from core.workspace_catalog import register_fork
+
+        fork = await owner.fork_session()
+        register_fork(fork)
+        indexed = get_session(fork["session_id"])
+        assert indexed and indexed["session_id"] == fork["session_id"] and indexed["agent"] == "claude"
+        assert owner.session_id == sid and owner.client.owned_pid == original_pid and native.is_running()
+        print("PASS: idle owner forked through native control; exact fork registered in real SQLite catalog, original process unchanged")
     finally:
         await owner.close()
     assert not native.is_running()

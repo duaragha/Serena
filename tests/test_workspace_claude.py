@@ -108,6 +108,26 @@ def test_reload_skills_requires_idle_and_discards_stale_catalog(tmp_path):
     asyncio.run(run())
 
 
+def test_fork_keeps_original_owner_and_requires_idle(tmp_path):
+    async def run():
+        owner, _ = make(tmp_path)
+        calls = []
+
+        async def fork():
+            calls.append("fork")
+            return {"sessionId": "new-fork"}
+
+        owner.client = SimpleNamespace(fork_session=fork)
+        owner.state = "running"
+        with pytest.raises(RuntimeError, match="current turn"):
+            await owner.fork_session()
+        assert not calls
+        owner.state = "ready"
+        assert await owner.fork_session() == {"session_id": "new-fork", "provider": "claude", "cwd": str(tmp_path)}
+        assert calls == ["fork"] and owner.session_id == "exact" and owner.state == "ready"
+    asyncio.run(run())
+
+
 def test_native_mcp_form_validates_answers_and_retires_exact_request(tmp_path):
     async def run():
         owner, events = make(tmp_path)

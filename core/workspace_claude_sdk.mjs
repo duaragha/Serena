@@ -95,6 +95,12 @@ export class ClaudeSdkSession {
 
   async control(method,...args) {
     this.requireReady();
+    if(method==='forkSession'){
+      if(args.length)throw new Error('Fork uses only the owned session and project');
+      const result=await this.sdk.forkSession(this.sessionId,{dir:this.cwd});
+      if(!result?.sessionId || result.sessionId===this.sessionId)throw new Error('Native fork did not return a new identity');
+      return result;
+    }
     const allowed=['applyFlagSettings','supportedAgents','reloadSkills','reloadPlugins',
       'supportedCommands','supportedModels','setModel','setPermissionMode',
       'mcpServerStatus','getContextUsage','interrupt','stopTask','reconnectMcpServer','toggleMcpServer'];

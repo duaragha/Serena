@@ -30,10 +30,11 @@ def _claude_owner(**kwargs):
 
 
 class WorkspaceHost:
-    def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None):
+    def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None, register_fork=None):
         self.journal = journal
         self.uploads = WorkspaceUploads(journal.path.parent / "workspace-uploads")
         self.resolve = resolve
+        self.register_fork = register_fork
         self.factories = (
             factories
             if factories is not None
@@ -290,6 +291,7 @@ class WorkspaceHost:
             "background_tasks",
             "commands",
             "reload_skills",
+            "fork_session",
             "context_usage",
             "permissions",
             "set_permissions",
@@ -380,6 +382,20 @@ class WorkspaceHost:
                     if provider != "claude" or set(payload) != {"name", "action"}:
                         raise ValueError("An exact Claude MCP server and action are required")
                     result = await owner.control_mcp_server(payload["name"], payload["action"])
+                elif action == "fork_session":
+                    if provider != "claude" or payload or self.register_fork is None:
+                        raise ValueError("Native fork requires a Claude session, no payload and an available catalog")
+                    result = await owner.fork_session()
+                    await asyncio.to_thread(self.journal.append, sid, {
+                        "method": "workspace/sessionForked", "params": {"threadId": sid, "fork": result}
+                    })
+                    try:
+                        await asyncio.to_thread(self.register_fork, result)
+                        result = {**result, "indexed": True}
+                    except Exception as error:
+                        # The native copy already exists. Return its identity even
+                        # if catalog registration failed; never fork again on retry.
+                        result = {**result, "indexed": False, "error": str(error)}
                 elif action == "reload_skills":
                     if provider != "claude" or payload:
                         raise ValueError("Skill reload requires a Claude session and no payload")

@@ -46,6 +46,19 @@ test('missing or mismatched session never spawns',async()=>{
   }
 });
 
+test('fork is bound to owned identity and cannot spawn or redirect the driver',async()=>{
+  const seen=[];
+  const f=fixture({forkSession:async(...args)=>{seen.push(args);return {sessionId:'fork'};}});
+  await assert.rejects(f.session.control('forkSession'),/not ready/);
+  await f.session.open();
+  await assert.rejects(f.session.control('forkSession',{dir:'/other'}),/owned session/);
+  assert.deepEqual(await f.session.control('forkSession'),{sessionId:'fork'});
+  assert.deepEqual(seen,[['exact',{dir:'/project'}]]);
+  assert.equal(f.session.sessionId,'exact');
+  assert.deepEqual(f.calls,['spawn']);
+  await f.session.close();
+});
+
 test('close during lookup cannot launch a late process',async()=>{
   let resolveInfo;
   const f=fixture({getSessionInfo:()=>new Promise(done=>{resolveInfo=done;})});

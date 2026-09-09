@@ -55,6 +55,9 @@ class ClaudeTypeScriptClient:
             raise ValueError("Claude returned an invalid refreshed command catalog")
         self.info["commands"] = deepcopy(commands)
 
+    async def fork_session(self):
+        return await self.transport.control("forkSession")
+
     async def set_model(self, model):
         return await self.transport.control("setModel", model)
 

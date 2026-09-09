@@ -6,6 +6,7 @@ import secrets
 from flask import Blueprint, Response, abort
 
 from core.workspace_admission import resolve_workspace_session
+from core.workspace_catalog import register_fork
 from core.workspace_host import WorkspaceHost
 from core.workspace_journal import WorkspaceJournal
 from ui.workspace_web import local_workspace_request, workspace_blueprint
@@ -21,7 +22,7 @@ def install_workspace(
     app, state_path, *, resolve=resolve_workspace_session, factories=None, describe=_describe
 ):
     token = secrets.token_urlsafe(32)
-    host = WorkspaceHost(journal=WorkspaceJournal(state_path), resolve=resolve, factories=factories)
+    host = WorkspaceHost(journal=WorkspaceJournal(state_path), resolve=resolve, factories=factories, register_fork=register_fork)
     app.register_blueprint(workspace_blueprint(host, token=token))
     pages = Blueprint("workspace_pages", __name__)
     pages.before_request(local_workspace_request)
