@@ -2,6 +2,39 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Rebuilt desktop sidecar regression (2026-09-09, source 67bd697): rebuilt the
+actual Linux sidecar after Codex fork/history/shell additions. PyInstaller's
+PYZ table contains core.codex_history, core.workspace_catalog and
+core.workspace_codex from this feature worktree. This proves inclusion, not
+native execution of Codex through the frozen binary. The real frozen Claude
+browser proof passed at desktop/mobile sizes, including skill refresh, native
+local-command output, page reload and view-close owner preservation. The mobile
+screenshot was visually inspected; controls/text fit without horizontal overflow.
+
+```sh
+# cwd apps/desktop
+env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar
+# exit 0: sidecar built, peer MCP startup/contract/capability-refusal smoke passed
+npm test
+# exit 0: 72 passed
+# cwd repo
+SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: native driver/transport/owner/fork checks, actual frozen HTTP/native
+# desktop/mobile browser input/output/skill refresh, no browser errors or overflow;
+# all isolated children reaped, no user sessions/auth/settings used.
+```
+
+Existing optional build warnings included missing tensorboard, pycparser tables,
+AMD HIP and Windows ctypes libraries; build and native proof still passed. The
+build's peer smoke is a capability refusal check, not a Fleet run. Generated
+binary/screenshots remain under apps/desktop/build; no release, installation,
+default activation, user terminal launch or host restart was performed.
+
+Full completion remains unproven: Codex frozen interaction, installed Electron
+and Windows QA, full new/clear lifecycle, provider feature parity (especially
+Gemini), durable process-restart recovery and integration with existing runtime
+ownership/linked-work flows remain delivery work, not waived requirements.
+
 Native Codex HTTP/browser proof (2026-09-09): the history verifier now mounts
 the real workspace Flask blueprint/page/static assets around its isolated native
 session and drives them through Playwright. Desktop 1440x900 and mobile 390x900
