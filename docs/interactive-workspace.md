@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Live Codex Resume Proof
+
+`scripts/verify-workspace-codex-roundtrip.py --allow-inference` now verifies a
+real first model turn, process shutdown, exact-ID resume through CodexWorkspace,
+persisted first-turn history and real second-turn output. It uses a temporary
+CODEX_HOME/project and private copy of existing ChatGPT token authentication,
+with metered-auth environment stripped, no copied user configuration, read-only
+sandbox and no requested tools. Temporary auth/history are removed on exit.
+It does not attach to any existing user session or open a terminal.
+
+This establishes subscription-authenticated inference and native resume for an
+isolated test conversation. It does not prove normal project tools, interactive
+approvals, images, full user configuration or every CLI feature yet.
+
+```sh
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference
+# attempt 1 exit 1: Path.open opener argument rejected before provider launch
+# attempt 2 exit 1: first real turn completed; proof inspected cleared process handle
+# corrected final exit 0: exact persisted history/resume and real second output;
+# both owned processes reaped, temporary auth/history removed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q
+# exit 0: 8 passed in 0.05s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed!
+```
+
 Agent messages and plans now render Markdown using vendored markdown-it 15.0.1
 (exact renderer dependency/lockfile, local browser bundle and license). Raw HTML
 is disabled. Links permit only HTTP(S)/mailto and use noopener/noreferrer; remote
