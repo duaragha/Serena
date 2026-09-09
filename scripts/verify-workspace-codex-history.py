@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -200,6 +201,23 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                 assert json.loads(metadata_path.read_text())["resident_work"] is True
             assert forks
             print("PASS: frozen native fork created/indexed through UI, persisted scanner ownership and opened without a second owner")
+            if os.environ.get("SERENA_PROOF_ELECTRON"):
+                before = owners()
+                proof = subprocess.Popen(["node", str(repo / "scripts" / "verify-workspace-electron.cjs"),
+                    os.environ["SERENA_PROOF_ELECTRON"], os.environ["SERENA_PROOF_PLAYWRIGHT"],
+                    str(repo / "apps" / "desktop"), base, sid, str(repo / "apps" / "desktop" / "build" / "workspace-proof"),
+                    os.environ["SERENA_PROOF_XVFB"]], env=env, cwd=repo, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                try:
+                    out, err = proof.communicate(timeout=90)
+                finally:
+                    with suppress(ProcessLookupError):
+                        os.killpg(proof.pid, signal.SIGKILL)
+                    proof.wait(timeout=5)
+                print(out)
+                assert proof.returncode == 0, err
+                assert owners() == before, "Closing Electron changed the native owner"
+                print("PASS: closing the real Electron shell preserved the shared isolated native owner")
         except BaseException:
             log.seek(0)
             print(log.read()[-5000:], file=sys.stderr)

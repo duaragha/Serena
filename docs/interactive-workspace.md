@@ -2,6 +2,36 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Packaged and real Electron verification through a171230 (2026-09-09): rebuilt
+the Linux sidecar with current inline mentions, Claude permissions, Codex MCP
+and skill-setting code. Native Codex and Claude browser flows pass against that
+binary. Added an opt-in real Electron main/preload proof against the isolated
+frozen backend: sandbox/contextIsolation remain true, nodeIntegration false,
+native output and skill catalog render, and closing Electron preserves the
+existing backend owner. Real clipboard copy of native output and multiline
+paste were exercised on a private X display, without sending a model turn.
+This uses the development Electron shell with the frozen backend, not an
+installed AppImage or Windows build. Full CLI parity remains incomplete.
+The first headless-Ozone attempt exited 1 with an Electron startup SIGSEGV.
+An extracted Xvfb package supplies a private display without installing system
+packages or touching the user's display/clipboard. The first X11 attempt then
+exited 1 because the Python-distributed Playwright package exports no expect;
+the verifier now uses locator waits and Node assertions, not relaxed app policy.
+Verification commands:
+- In apps/desktop: `env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar`: exit 0, PyInstaller and bundled capability-refusal smoke passed. Optional dependency warnings remain; no Fleet run was launched.
+- In apps/desktop: `npm test`: exit 0, 72 passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: exit 0, frozen desktop/mobile local-command, mentions, plugin/skill reload, exact ownership and cleanup passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: final exit 0, repeated with clipboard checks also exit 0. Frozen desktop/mobile native controls/history/forks, real Electron window/preload/clipboard, owner preservation and cleanup passed; no user auth or inference.
+- `node --check scripts/verify-workspace-electron.cjs`: exit 0.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-history.py`: initial exit 1 for cleanup style; final exit 0 after using suppress.
+- `git diff --check`: exit 0.
+Proof tool preparation: in apps/desktop/build/proof-tools, `apt-get download xvfb`
+and `dpkg-deb -x xvfb_2%3a21.1.12-1ubuntu1.6_amd64.deb xvfb` both exited 0.
+Downloaded from the configured Ubuntu mirror; this is an ignored test artifact,
+not a runtime dependency. Inspected screenshot:
+apps/desktop/build/workspace-proof/electron-native-workspace.png. No production
+flag, installed app, release version, deployment or user service was changed.
+
 Codex skill settings (2026-09-09): the native catalog retains enabled state and
 the command dialog exposes an explicit per-skill checkbox. Writes use only a
 path rediscovered in this owner's project catalog, a strict boolean, and the
