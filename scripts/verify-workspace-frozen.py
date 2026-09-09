@@ -144,8 +144,13 @@ def main():
                         skill.write_text("---\nname: browser-proof\ndescription: Isolated browser reload proof\n---\nReturn proof.\n")
                         page.get_by_role("button", name="Commands and skills", exact=True).click()
                         dialog = page.get_by_role("dialog", name="Commands and skills", exact=True)
+                        dialog.get_by_role("button", name="Reload plugins from disk", exact=True).click()
+                        expect(dialog.get_by_role("status")).to_contain_text("0 plugin errors", timeout=15000)
+                        assert all(child.is_running() for child in children)
+                        print(f"PASS: {label_prefix} {label} explicit native plugin reload returned zero errors with existing owner alive")
                         reload = dialog.get_by_role("button", name="Reload skills from disk", exact=True)
                         reload.click()
+                        expect(reload).to_be_enabled(timeout=15000)
                         expect(dialog.locator(".aw-command").filter(has_text="/browser-proof")).to_have_count(1)
                         assert dialog.evaluate("el => el.scrollWidth <= el.clientWidth"), "Command picker overflow"
                         page.screenshot(path=str(screenshots / f"{label_prefix}-skills-{label}.png"))

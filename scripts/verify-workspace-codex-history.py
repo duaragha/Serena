@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -58,7 +59,7 @@ def browser_proof(sid, root, project, env, binary):
 
 
 def browser_roundtrip(base, sid, owners, prefix, verify_forks=False):
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import expect, sync_playwright
 
     repo = Path(__file__).resolve().parents[1]
     artifacts = repo / "apps" / "desktop" / "build" / "workspace-proof"
@@ -95,7 +96,7 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False):
                     dialog.get_by_role("button", name="Run command", exact=True).click()
                     page.locator("summary").filter(has_text=token).first.click(timeout=15000)
                     page.get_by_text(token, exact=True).wait_for(timeout=15000)
-                    page.wait_for_function("['ready','completed'].includes(document.querySelector('.aw-state').textContent)")
+                    expect(page.locator('.aw-state')).to_have_text(re.compile(r'^(ready|completed)$'))
                     actual = owners()
                     assert len(actual) == 1, actual
                     if pid is None:

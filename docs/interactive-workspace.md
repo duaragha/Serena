@@ -2,6 +2,26 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Packaged verification through d3ce099 (2026-09-09): rebuilt the Linux sidecar
+with the recent history, plugin reload, process-group cleanup and file-picker
+changes. Both providers' isolated native browser checks pass against this binary.
+The first frozen Codex run exited 1 because the verifier used string evaluation
+blocked by production CSP. Replaced it with a Playwright locator assertion;
+the application policy was not changed. Claude's packaged proof now explicitly
+reloads plugins and waits for skill reload completion before screenshots, avoiding
+a stale-list assertion introduced when plugin reload also refreshes commands.
+Commands and observed results:
+- In apps/desktop: `env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar`: exit 0, PyInstaller build and bundled capability-refusal smoke passed. Optional dependency warnings remain; no Fleet run was started.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: initial exit 1 (verifier CSP issue), final exit 0. Native desktop/mobile file search, output, history, exact forks and cleanup passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: exit 0, repeated after strengthening reload assertion also exit 0. Native plugin/skill controls, exact session input/output, fork, Electron Node worker and packaged desktop/mobile browser checks passed.
+- In apps/desktop: `npm test`: exit 0, 72 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-history.py scripts/verify-workspace-frozen.py`: exit 0.
+- `git diff --check`: exit 0.
+Screenshot inspected: apps/desktop/build/workspace-proof/frozen-skills-mobile.png
+shows the completed catalog, not Reloading. These remain Linux isolated local-
+command proofs, not model inference, Windows verification, full CLI parity or
+an installed Electron-window acceptance run. Nothing was installed or released.
+
 Codex file picker (2026-09-09): the composer now has an explicit project-file
 search dialog using the existing native app-server's fuzzyFileSearch. The host
 supplies only the owned session cwd as roots; callers cannot choose another root.
