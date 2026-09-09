@@ -2,6 +2,30 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude background tasks now appear in the shared task dialog, from native
+TaskStarted/Progress/Updated/Notification events on the exact owned session.
+Stopping calls the public SDK stop_task with the observed task ID, never an OS
+PID or parent interrupt. An acknowledgement shows "Stop requested" until a
+native terminal lifecycle event removes the task from the active list. Both
+notification and patch-only completion are handled; late updates cannot revive
+a terminal task. Paused tasks remain eligible for explicit stop. Discovery is
+limited to lifecycle events observed by this owner; reconstructing task inventory
+after owner recovery remains unverified. Dialog refresh is explicit.
+Source: installed claude-agent-sdk 0.2.121 TaskUpdatedMessage lifecycle contract
+and ClaudeSDKClient.stop_task; public Python reference linked below.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_pane.py -q --basetemp=/tmp/serena-claude-task-verification
+# exit 0: 58 passed in 22.29s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py -q --basetemp=/tmp/serena-claude-task-terminal-verification
+# exit 0: 15 passed in 0.38s; terminal late-update regression
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference --background-task
+# exit 0: isolated persisted session resumed; real background sleep task observed,
+# stopped through native exact-ID control, parent completed, owned processes reaped
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_events.py core/workspace_host.py tests/test_workspace_claude.py tests/test_workspace_pane.py scripts/verify-workspace-claude-roundtrip.py
+# exit 0: All checks passed!
+```
+
 Claude MCP connections now have an explicit pane dialog for native status,
 reconnect, enable and disable. Opening/closing a pane does not change connections.
 Mutations validate the server against the current owner's native inventory and

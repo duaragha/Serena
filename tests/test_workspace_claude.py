@@ -10,6 +10,9 @@ from claude_agent_sdk import (
     ResultMessage,
     StreamEvent,
     SystemMessage,
+    TaskNotificationMessage,
+    TaskStartedMessage,
+    TaskUpdatedMessage,
     TextBlock,
     ToolPermissionContext,
 )
@@ -78,6 +81,43 @@ def make(tmp_path):
         history=lambda sid, directory: [],
     )
     return owner, events
+
+
+def test_task_notification_terminal_state_cannot_be_resurrected_by_late_update():
+    events = ClaudeEvents("exact")
+    events.receive(TaskNotificationMessage(subtype="task_notification", data={}, task_id="native-task", status="completed", output_file="/not-read", summary="Done", uuid="end", session_id="exact"))
+    events.receive(TaskUpdatedMessage(subtype="task_updated", data={}, task_id="native-task", patch={"status": "running"}, session_id="exact"))
+    assert events.tasks["native-task"]["status"] == "completed"
+
+
+def test_native_background_task_stop_waits_for_lifecycle_without_parent_interrupt(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        stopped = []
+        async def stop(task_id):
+            stopped.append(task_id)
+        try:
+            await owner.open()
+            owner.client.stop_task = stop
+            owner.events.receive(TaskStartedMessage(subtype="task_started", data={}, task_id="native-task", description="Research", uuid="event-1", session_id="exact"))
+            owner.active_turn = "parent"
+            owner.state = "running"
+            assert (await owner.list_background_tasks())["data"][0]["processId"] == "native-task"
+            assert await owner.terminate_background_task("native-task") == {"terminated": False, "pending": True}
+            assert owner.active_turn == "parent" and not owner.client.interrupted
+            with pytest.raises(ValueError, match="not running"):
+                await owner.terminate_background_task("other-session-task")
+            owner.events.receive(TaskUpdatedMessage(subtype="task_updated", data={}, task_id="native-task", patch={"status": "killed"}, session_id="exact"))
+            assert await owner.list_background_tasks() == {"data": []}
+            with pytest.raises(ValueError, match="not running"):
+                await owner.terminate_background_task("native-task")
+            assert stopped == ["native-task"]
+            with pytest.raises(ValueError, match="identity"):
+                owner.events.receive(TaskUpdatedMessage(subtype="task_updated", data={}, task_id="foreign", patch={"status": "running"}, session_id="other"))
+            assert "foreign" not in owner.events.tasks
+        finally:
+            await owner.close()
+    asyncio.run(run())
 
 
 def test_mcp_controls_use_current_session_and_strip_connection_secrets(tmp_path):

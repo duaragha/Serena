@@ -180,6 +180,29 @@ class ClaudeWorkspace:
         await self.publish(self.events.event("workspace/models", result))
         return result
 
+    async def list_background_tasks(self):
+        if self.client is None or self.state in {"closed", "opening", "unavailable"}:
+            raise RuntimeError("Claude is not attached")
+        return {"data": [
+            {"processId": task["id"], "command": task.get("description") or task["id"],
+             "cwd": str(self.cwd), "status": task.get("status")}
+            for task in self.events.tasks.values()
+            if task.get("status") in {"running", "pending", "paused"}
+        ]}
+
+    async def terminate_background_task(self, task_id):
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("An exact Claude task ID is required")
+        async with self._control:
+            current = await self.list_background_tasks()
+            if not any(task["processId"] == task_id for task in current["data"]):
+                raise ValueError("Task is not running in this Claude session")
+            await self.client.stop_task(task_id)
+            # The SDK acknowledgement is not completion; native lifecycle events decide.
+            current = await self.list_background_tasks()
+            pending = any(task["processId"] == task_id for task in current["data"])
+            return {"terminated": not pending, "pending": pending}
+
     async def list_mcp_servers(self):
         if self.client is None or self.state in {"closed", "unavailable"}:
             raise RuntimeError("Claude is not attached")

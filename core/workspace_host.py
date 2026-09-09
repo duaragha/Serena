@@ -353,12 +353,12 @@ class WorkspaceHost:
                         )
                     result = await owner.list_commands()
                 elif action == "background_tasks":
-                    if provider != "codex" or payload:
-                        raise ValueError("Background tasks require a Codex session and no payload")
+                    if provider not in {"codex", "claude"} or payload:
+                        raise ValueError("Background tasks require a supported session and no payload")
                     result = await owner.list_background_tasks()
                 elif action == "terminate_background_task":
-                    if provider != "codex" or set(payload) != {"processId"}:
-                        raise ValueError("An exact Codex background process is required")
+                    if provider not in {"codex", "claude"} or set(payload) != {"processId"}:
+                        raise ValueError("An exact native background task is required")
                     result = await owner.terminate_background_task(payload["processId"])
                 elif action == "compact":
                     if provider != "codex" or payload:

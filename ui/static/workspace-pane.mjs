@@ -98,7 +98,7 @@ export class WorkspacePane {
     this.compactButton.hidden=provider !== 'Codex' || !controls.compact;
     footer.insertBefore(this.compactButton,this.stop);
     this.tasksButton = this.button('Background tasks', 'list-tree', () => this.openBackgroundTasks());
-    this.tasksButton.hidden = provider !== 'Codex' || !controls.backgroundTasks;
+    this.tasksButton.hidden = !['Codex','Claude'].includes(provider) || !controls.backgroundTasks;
     footer.insertBefore(this.tasksButton, this.stop);
     this.commandsButton = this.button('Commands and skills', 'slash', () => this.openCommands());
     this.commandsButton.hidden = provider !== 'Claude' || !controls.commands;
@@ -284,8 +284,8 @@ export class WorkspacePane {
             stop.disabled = true;
             try {
               const result = await this.controls.terminateBackgroundTask(task.processId);
-              status.textContent = result.terminated ? 'Task stopped' : 'Task was already stopped';
-              row.remove();
+              status.textContent = result.pending ? 'Stop requested' : result.terminated ? 'Task stopped' : 'Task was already stopped';
+              if(!result.pending)row.remove();
             } catch(error) { status.textContent = error.message; stop.disabled = false; }
           });
           stop.disabled = !this.controls.terminateBackgroundTask;

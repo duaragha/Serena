@@ -20,7 +20,7 @@ from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease
 
 
-async def main(bridge=False):
+async def main(bridge=False, background_task=False):
     binary = shutil.which("claude")
     if not binary:
         raise RuntimeError("Installed Claude unavailable")
@@ -82,6 +82,10 @@ async def main(bridge=False):
 
             async def publish(event):
                 events.append(event)
+                if background_task and event.get("method") == "workspace/claudeApproval":
+                    params = event["params"]
+                    allowed = params["tool"] == "Bash" and params["input"].get("command") == "sleep 60" and params["input"].get("run_in_background") is True
+                    await owner.answer(event["id"], {"decision": "allow" if allowed else "deny"})
                 if event.get("method") == "turn/completed":
                     finished.set()
 
@@ -134,6 +138,21 @@ async def main(bridge=False):
             print(
                 "PASS: native /context output rendered as commandOutput; advertised commands discovered on same session"
             )
+            if background_task:
+                finished.clear()
+                await owner.submit([{"type": "text", "text": "Transport test: use Bash exactly once with command sleep 60 and run_in_background true. Do not run anything else. Once started, reply STARTED without waiting for or stopping the task. The test controller will stop it."}])
+                async with asyncio.timeout(120):
+                    while not (await owner.list_background_tasks())["data"]:
+                        await asyncio.sleep(0.1)
+                task = (await owner.list_background_tasks())["data"][0]
+                await owner.terminate_background_task(task["processId"])
+                async with asyncio.timeout(15):
+                    while (await owner.list_background_tasks())["data"]:
+                        await asyncio.sleep(0.1)
+                assert owner.events.tasks[task["processId"]]["status"] in {"stopped", "killed"}
+                await asyncio.wait_for(finished.wait(), 60)
+                assert [event for event in events if event.get("method") == "turn/completed"][-1]["params"]["turn"]["status"] == "completed"
+                print("PASS: native background task discovered and stopped by exact ID; parent turn completed normally")
             if bridge:
                 await owner.close()
                 owner = None
@@ -189,5 +208,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--allow-inference", action="store_true", required=True)
     parser.add_argument("--bridge", action="store_true")
+    parser.add_argument("--background-task", action="store_true")
     args = parser.parse_args()
-    asyncio.run(main(bridge=args.bridge))
+    asyncio.run(main(bridge=args.bridge, background_task=args.background_task))

@@ -86,6 +86,24 @@ def test_mcp_connections_explicit_controls_and_failure_state(pane, tmp_path):
     assert not errors
 
 
+def test_claude_task_stop_does_not_claim_completion_on_acknowledgement(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      pane.dispose();
+      controls.backgroundTasks=async()=>({data:[{processId:'claude-task',command:'Research',cwd:'/project'}]});
+      controls.terminateBackgroundTask=async id=>{calls.push(['stop-task',id]);return {terminated:false,pending:true};};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Claude',controls});
+    }""")
+    page.get_by_role("button", name="Background tasks", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Background tasks", exact=True)
+    dialog.get_by_role("button", name="Stop task claude-task").click()
+    dialog.get_by_text("Stop requested", exact=True).wait_for()
+    assert dialog.get_by_text("Research", exact=True).is_visible()
+    assert dialog.get_by_role("button", name="Stop task claude-task").is_disabled()
+    assert page.evaluate("calls") == [["stop-task", "claude-task"]]
+    assert not errors
+
+
 def test_background_tasks_explicit_refresh_stop_and_mobile_layout(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

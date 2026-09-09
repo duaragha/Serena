@@ -17,6 +17,7 @@ class ClaudeEvents:
         self.message_ids = {}
         self.tools = {}
         self.capabilities = {}
+        self.tasks = {}
 
     def event(self, method, params):
         return {"method": method, "params": {"threadId": self.sid, **params}}
@@ -99,7 +100,26 @@ class ClaudeEvents:
         raw = self.event("workspace/claude", {"recordType": kind, "record": data})
         events = [raw]
         parent = data.get("parent_tool_use_id") or "root"
-        if kind == "SystemMessage" and data.get("subtype") == "init":
+        if kind in {"TaskStartedMessage", "TaskProgressMessage", "TaskNotificationMessage", "TaskUpdatedMessage"}:
+            task_id = data.get("task_id")
+            if not isinstance(task_id, str) or not task_id:
+                raise ValueError("Claude task event has no task identity")
+            task = deepcopy(self.tasks.get(task_id, {"id": task_id}))
+            terminal = task.get("status") in {"completed", "failed", "stopped", "killed"}
+            previous_status = task.get("status")
+            if kind == "TaskUpdatedMessage":
+                patch = data.get("patch") or {}
+                task.update({key: deepcopy(patch[key]) for key in ("status", "description", "usage") if key in patch})
+                if data.get("status"):
+                    task["status"] = data["status"]
+            else:
+                task.update({key: deepcopy(data[key]) for key in ("description", "usage", "summary") if data.get(key) is not None})
+                task["status"] = data.get("status") or "running"
+            if terminal:
+                task["status"] = previous_status
+            self.tasks[task_id] = task
+            events.append(self.event("workspace/backgroundTask", {"task": deepcopy(task)}))
+        elif kind == "SystemMessage" and data.get("subtype") == "init":
             self.capabilities = deepcopy(data["data"])
             events.append(
                 self.event(
