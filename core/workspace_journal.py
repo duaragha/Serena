@@ -80,6 +80,25 @@ class WorkspaceJournal:
             if changed != 1:
                 raise ValueError("Command is missing or already finished")
 
+    def fork_checkpoint(self, session_id: str, request_id: str) -> dict | None:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT event FROM workspace_events WHERE session_id=? "
+                "AND json_extract(event, '$.method')='workspace/sessionForked' "
+                "AND json_extract(event, '$.params.requestId')=? LIMIT 2",
+                (session_id, request_id),
+            ).fetchall()
+        if len(rows) > 1:
+            raise ValueError("Fork checkpoint is ambiguous; creation will not be repeated")
+        if not rows:
+            return None
+        target = json.loads(rows[0][0])["params"]["fork"]
+        if not isinstance(target, dict) or target.get("provider") != "claude" or any(
+            not isinstance(target.get(key), str) or not target[key] for key in ("session_id", "cwd")
+        ) or target["session_id"] == session_id:
+            raise ValueError("Fork checkpoint has an invalid identity")
+        return target
+
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=10)
 

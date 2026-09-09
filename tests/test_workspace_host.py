@@ -257,6 +257,37 @@ def test_fork_receipt_keeps_identity_even_if_indexing_fails(tmp_path, registrati
         value.shutdown()
 
 
+@pytest.mark.parametrize("checkpoint_count", [0, 1, 2])
+def test_interrupted_fork_receipt_recovers_only_unique_checkpoint(tmp_path, checkpoint_count):
+    path = tmp_path / "interrupted.db"
+    journal = WorkspaceJournal(path)
+    journal.claim_command("exact", "fork", {"action": "fork_session", "payload": {}})
+    target = {"session_id": "saved-fork", "provider": "claude", "cwd": str(tmp_path)}
+    for _ in range(checkpoint_count):
+        journal.append("exact", {"method": "workspace/sessionForked", "params": {"threadId": "exact", "requestId": "fork", "fork": target}})
+    registered = []
+    # Owner has no fork method: recovery must never call the native creator.
+    value = WorkspaceHost(journal=WorkspaceJournal(path),
+                          resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+                          factories={"claude": Owner}, register_fork=registered.append)
+    try:
+        value.attach("exact")
+        if checkpoint_count == 2:
+            with pytest.raises(ValueError, match="ambiguous"):
+                value.command("exact", "fork", "fork_session", {})
+        else:
+            receipt = value.command("exact", "fork", "fork_session", {})
+            if checkpoint_count:
+                assert receipt == {"ok": True, "result": {**target, "indexed": True}}
+                assert value.command("exact", "fork", "fork_session", {}) == receipt
+            else:
+                assert receipt["uncertain"] and not receipt["ok"]
+        assert registered == ([target] if checkpoint_count == 1 else [])
+        assert "saved-fork" not in value._sessions
+    finally:
+        value.shutdown()
+
+
 def test_background_controls_require_attach_and_deduplicate_stop(host):
     with pytest.raises(ValueError, match="Explicitly attach"):
         host.command("exact", "before", "background_tasks", {})

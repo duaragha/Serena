@@ -2,6 +2,28 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Interrupted fork confirmation (2026-09-09): fork events now bind the created
+identity to the exact creation request ID. A retry with an unfinished command
+receipt can recover a unique persisted checkpoint, register the existing fork
+and finish the receipt without invoking the native creator. Missing checkpoints
+remain uncertain; ambiguous checkpoints reject recovery rather than guessing.
+Older events lacking the request binding are not inferred from timestamps.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_journal.py tests/test_workspace_host.py::test_interrupted_fork_receipt_recovers_only_unique_checkpoint tests/test_workspace_host.py::test_fork_receipt_keeps_identity_even_if_indexing_fails -q
+# exit 0: 9 passed in 2.86s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_journal.py core/workspace_host.py tests/test_workspace_journal.py tests/test_workspace_host.py scripts/verify-workspace-claude-transport.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron
+# exit 0: actual native fork checkpoint and unfinished receipt reopened;
+# registration/confirmation restored with unchanged native transcript set and
+# owner PID. Existing native resume, skill reload and cleanup checks passed.
+```
+
+The proof reopens durable state around a real already-admitted owner; it does not
+kill the app or demonstrate full host restart. The smaller window before any
+fork checkpoint is durable remains a deliberate fail-closed ambiguity boundary.
+
 Fork catalog recovery (2026-09-09): completed fork identity/creation receipt is
 saved in session-scoped browser storage before clearing the pending request.
 After reload, the dialog can retry registration of that exact recorded fork.

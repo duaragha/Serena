@@ -5,6 +5,21 @@ import pytest
 from core.workspace_journal import WorkspaceJournal
 
 
+def test_fork_checkpoint_survives_reopen_and_requires_exact_source_request(tmp_path):
+    path = tmp_path / "fork.db"
+    journal = WorkspaceJournal(path)
+    target = {"session_id": "fork", "provider": "claude", "cwd": str(tmp_path)}
+    record = {"method": "workspace/sessionForked", "params": {"threadId": "source", "requestId": "request", "fork": target}}
+    journal.append("source", record)
+    restored = WorkspaceJournal(path)
+    assert restored.fork_checkpoint("source", "request") == target
+    assert restored.fork_checkpoint("other", "request") is None
+    assert restored.fork_checkpoint("source", "other") is None
+    restored.append("source", record)
+    with pytest.raises(ValueError, match="ambiguous"):
+        restored.fork_checkpoint("source", "request")
+
+
 def test_reopen_replay_and_session_isolation(tmp_path):
     path = tmp_path / "events.db"
     journal = WorkspaceJournal(path)

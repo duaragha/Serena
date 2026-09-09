@@ -323,6 +323,12 @@ class WorkspaceHost:
                 {"action": action, "payload": recorded_payload},
             )
             if not claimed:
+                if result is None and action == "fork_session" and not payload and self._sessions[sid][1] == "claude":
+                    target = await asyncio.to_thread(self.journal.fork_checkpoint, sid, request_id)
+                    if target is not None:
+                        receipt = {"ok": True, "result": await self._register_created_fork(target)}
+                        await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                        return receipt
                 return (
                     result
                     if result is not None
@@ -404,15 +410,9 @@ class WorkspaceHost:
                         raise ValueError("Wait for Claude's current turn before forking")
                     result = await owner.fork_session()
                     await asyncio.to_thread(self.journal.append, sid, {
-                        "method": "workspace/sessionForked", "params": {"threadId": sid, "fork": result}
+                        "method": "workspace/sessionForked", "params": {"threadId": sid, "requestId": request_id, "fork": result}
                     })
-                    try:
-                        await asyncio.to_thread(self.register_fork, result)
-                        result = {**result, "indexed": True}
-                    except Exception as error:
-                        # The native copy already exists. Return its identity even
-                        # if catalog registration failed; never fork again on retry.
-                        result = {**result, "indexed": False, "error": str(error)}
+                    result = await self._register_created_fork(result)
                 elif action == "reload_skills":
                     if provider != "claude" or payload:
                         raise ValueError("Skill reload requires a Claude session and no payload")
@@ -488,6 +488,16 @@ class WorkspaceHost:
                     receipt["retryable"] = True
             await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
             return receipt
+
+    async def _register_created_fork(self, target):
+        try:
+            if self.register_fork is None:
+                raise RuntimeError("Fork catalog is unavailable")
+            await asyncio.to_thread(self.register_fork, target)
+            return {**target, "indexed": True}
+        except Exception as error:
+            # Creation already happened, including after an interrupted receipt.
+            return {**target, "indexed": False, "error": str(error)}
 
     @staticmethod
     def _validate_session(sid):

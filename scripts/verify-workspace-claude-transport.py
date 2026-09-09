@@ -138,13 +138,28 @@ async def main():
         assert owner.state == "ready"
         from core.indexer import get_session
         from core.workspace_catalog import register_fork
+        from core.workspace_host import WorkspaceHost
+        from core.workspace_journal import WorkspaceJournal
 
         fork = await owner.fork_session()
-        register_fork(fork)
+        checkpoint_path = root / "fork-checkpoint.db"
+        checkpoint = WorkspaceJournal(checkpoint_path)
+        checkpoint.claim_command(sid, "interrupted", {"action": "fork_session", "payload": {}})
+        checkpoint.append(sid, {"method": "workspace/sessionForked", "params": {
+            "threadId": sid, "requestId": "interrupted", "fork": fork}})
+        # Reopen durable state with the actual already-admitted owner. No second
+        # runtime is admitted or created while recovering the unfinished receipt.
+        recovery = WorkspaceHost(journal=WorkspaceJournal(checkpoint_path), resolve=None, register_fork=register_fork)
+        recovery._sessions[sid] = (owner, "claude")
+        before = set((root / "config/projects").glob("*/*.jsonl"))
+        receipt = await recovery._command(sid, "interrupted", "fork_session", {})
+        assert receipt["ok"] and receipt["result"]["session_id"] == fork["session_id"] and receipt["result"]["indexed"]
+        assert await recovery._command(sid, "interrupted", "fork_session", {}) == receipt
+        assert set((root / "config/projects").glob("*/*.jsonl")) == before
         indexed = get_session(fork["session_id"])
         assert indexed and indexed["session_id"] == fork["session_id"] and indexed["agent"] == "claude"
         assert owner.session_id == sid and owner.client.owned_pid == original_pid and native.is_running()
-        print("PASS: idle owner forked through native control; exact fork registered in real SQLite catalog, original process unchanged")
+        print("PASS: native fork checkpoint reopened with unfinished receipt; exact fork indexed without another transcript or owner, original process unchanged")
     finally:
         await owner.close()
     assert not native.is_running()
