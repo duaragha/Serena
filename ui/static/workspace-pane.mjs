@@ -99,7 +99,7 @@ export class WorkspacePane {
     this.send = this.button('Send message', 'arrow-up'); this.send.type = 'submit';
     footer.append(attach, this.modelSelect, this.effortSelect, this.tierSelect, this.stop, this.send);
     this.mentionButton=this.button('Mention project file','file-search',()=>this.openFileSearch());
-    this.mentionButton.hidden=provider!=='Codex' || !controls.searchFiles;
+    this.mentionButton.hidden=!['Claude','Codex'].includes(provider) || !controls.searchFiles;
     footer.insertBefore(this.mentionButton,this.modelSelect);
     this.reviewButton = this.button('Review changes', 'scan-eye', () => this.openReview());
     this.reviewButton.hidden = provider !== 'Codex' || !controls.review;

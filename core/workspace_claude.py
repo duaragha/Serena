@@ -331,6 +331,13 @@ class ClaudeWorkspace:
             commands = await self.list_commands()
             return {**result, **commands}
 
+    async def search_files(self, query):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise RuntimeError("Claude session is unavailable")
+        from core.workspace_files import search_project_files
+
+        return await asyncio.to_thread(search_project_files, self.cwd, query)
+
     async def list_commands(self):
         if self.client is None or self.state in {"closed", "unavailable"}:
             raise RuntimeError("Claude is not attached")

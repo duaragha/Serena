@@ -2,6 +2,23 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude project file picker (2026-09-09): the same composer picker now works for
+Claude. Its public SDK has no file-search control in the pinned declaration, so
+names-only lookup runs locally against the already attached owner's cwd, without
+calling the model. Git projects use tracked/untracked non-ignored names; inherited
+GIT_* overrides are stripped. Non-Git projects use a bounded walk excluding
+generated directories. Output, time, entry and result limits bound enumeration;
+outside-root symlinks are excluded. No file contents are opened by lookup.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_files.py tests/test_workspace_pane.py::test_project_file_picker_preserves_draft_and_never_sends -q`: exit 0, 5 passed in 1.52s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py::test_file_search_requires_attached_owner_and_does_not_submit tests/test_workspace_host.py -q`: initial exit 1, 1 failed/32 passed. The existing which() mock replaced Git as well as Claude; narrowed that fixture to Claude only.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_files.py -q`: exit 0, 31 passed in 0.47s after fixture correction.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_files.py core/workspace_claude.py core/workspace_host.py tests/test_workspace_files.py tests/test_workspace_claude.py scripts/verify-workspace-frozen.py`: exit 0.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py`: exit 0; actual Claude/source-server desktop/mobile picker, same owner, draft insertion, native local-command input/output, plugin/skill reload and fork checks all passed.
+- `git diff --check`: exit 0.
+Source-only since the preceding packaged build. File content interpretation,
+inline @ autocomplete, Gemini parity and full delivery are not claimed here.
+
 Packaged verification through d3ce099 (2026-09-09): rebuilt the Linux sidecar
 with the recent history, plugin reload, process-group cleanup and file-picker
 changes. Both providers' isolated native browser checks pass against this binary.

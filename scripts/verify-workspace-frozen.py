@@ -180,6 +180,20 @@ def main():
                                     and item["event"]["params"].get("turnId") == turn["id"]
                                     and item["event"]["params"]["item"].get("text") == result_text]
                         assert len(matching) == 1, "Frozen native command result duplicated"
+                        mention_file = root / "workspace-claude-mention-proof.py"
+                        mention_file.write_text("# Isolated names-only file picker proof\n")
+                        try:
+                            page.get_by_role("button", name="Mention project file", exact=True).click()
+                            picker = page.get_by_role("dialog", name="Mention project file")
+                            search = picker.get_by_role("searchbox", name="Find project file")
+                            search.fill("workspace-claude-mention-proof")
+                            search.press("Enter")
+                            picker.get_by_role("button", name="workspace-claude-mention-proof.py", exact=True).click()
+                            expect(page.get_by_role("textbox", name="Message Claude", exact=True)).to_have_value("@workspace-claude-mention-proof.py ")
+                            assert all(child.is_running() for child in children)
+                            print(f"PASS: {label_prefix} {label} Claude project file picker inserted a draft mention with existing owner alive")
+                        finally:
+                            mention_file.unlink()
                         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), label
                         assert not errors, errors
                         page.screenshot(path=str(screenshots / f"{label_prefix}-{label}.png"))

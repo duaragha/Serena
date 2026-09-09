@@ -24,7 +24,9 @@ from core.workspace_claude_events import ClaudeEvents
 
 @pytest.fixture(autouse=True)
 def installed_binary(monkeypatch):
-    monkeypatch.setattr("core.workspace_claude.shutil.which", lambda name: "/controlled/claude")
+    from shutil import which
+
+    monkeypatch.setattr("core.workspace_claude.shutil.which", lambda name: "/controlled/claude" if name == "claude" else which(name))
 
 
 class Client:
@@ -105,6 +107,22 @@ def test_reload_skills_requires_idle_and_discards_stale_catalog(tmp_path):
         assert await owner.reload_skills() == {"data": [{"name": "fresh"}]}
         assert calls == ["reload"]
         assert events[-1]["method"] == "workspace/commands"
+    asyncio.run(run())
+
+
+def test_file_search_requires_attached_owner_and_does_not_submit(tmp_path):
+    async def run():
+        owner, _ = make(tmp_path)
+        (tmp_path / "selected.py").write_text("contents not returned")
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await owner.search_files("selected")
+        await owner.open()
+        try:
+            assert await owner.search_files("selected") == {"paths": ["selected.py"]}
+            assert not owner.client.sent
+            assert owner.session_id == "exact"
+        finally:
+            await owner.close()
     asyncio.run(run())
 
 
