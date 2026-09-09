@@ -2,6 +2,25 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native completed-turn duration now renders as a compact outcome line, with
+failed/interrupted labels and no clock-based guesses for absent values. Codex
+last-request token usage and Claude result input/output usage appear in the
+footer. No cumulative-token-to-context-percentage conversion is made. The Claude
+live resume proof now also asserts native duration and usage publication.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_pane.py -q
+# exit 0: 27 passed in 10.02s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_native_usage_and_completed_duration_are_not_invented -q
+# exit 0: 1 passed in 0.67s
+node --test tests/workspace-events.test.mjs
+# exit 0: 5 passed, 0 failed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference
+# exit 0: native resume/output plus duration and usage, owned processes reaped
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_events.py scripts/verify-workspace-claude-roundtrip.py tests/test_workspace_pane.py
+# exit 0: All checks passed!
+```
+
 The conversation initially mounts the most recent 100 items, loading earlier
 items in 100-item increments on upward scroll or the keyboard-accessible earlier
 control. Incoming items preserve an away-from-tail reader's window and scroll

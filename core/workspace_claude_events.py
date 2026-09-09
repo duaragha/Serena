@@ -141,9 +141,12 @@ class ClaudeEvents:
                             "id": self.turn,
                             "status": "failed" if data["is_error"] else "completed",
                             "providerOriginal": data,
+                            "durationMs": data.get("duration_ms"),
                         }
                     },
                 )
             )
+            if isinstance(data.get("usage"), dict):
+                events.append(self.event("workspace/claudeUsage", {"usage": data["usage"]}))
             self.turn = None
         return events

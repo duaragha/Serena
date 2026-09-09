@@ -5,6 +5,15 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('provider usage is retained without deriving invented context percentages', () => {
+  const model = new WorkspaceConversation('exact');
+  model.apply(wrap(1,{method:'thread/tokenUsage/updated',params:{threadId:'exact',tokenUsage:{last:{totalTokens:1234},total:{totalTokens:90000},modelContextWindow:null}}}));
+  assert.equal(model.metadata.tokenUsage.last.totalTokens,1234);
+  assert.equal(model.metadata.tokenUsage.modelContextWindow,null);
+  model.apply(wrap(2,{method:'workspace/claudeUsage',params:{threadId:'exact',usage:{input_tokens:12,output_tokens:34}}}));
+  assert.deepEqual(model.metadata.claudeUsage,{input_tokens:12,output_tokens:34});
+});
+
 test('history, streaming and completion update one real item', () => {
   const model = new WorkspaceConversation('exact');
   model.apply(wrap(1,history));

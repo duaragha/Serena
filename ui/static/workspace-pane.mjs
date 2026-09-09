@@ -123,6 +123,8 @@ export class WorkspacePane {
       navigator.clipboard.writeText(sessionId).catch(e => this.error(e));
     });
     identity.append(node('span', '', sessionId.slice(0, 8)), copy);
+    this.usageLabel = node('span', 'aw-usage');
+    identity.append(this.usageLabel);
     root.replaceChildren(head, this.log, this.questionArea, this.alert, this.form, identity);
     this.refreshIcons();
     this.render();
@@ -479,8 +481,10 @@ export class WorkspacePane {
     const ordered = [this.earlier];
     let skip = Math.max(0, count - this.visibleItemLimit);
     for (const turn of this.conversation.turns.values()) {
+      let visibleTurn = false;
       for (const item of turn.items.values()) {
         if (skip-- > 0) continue;
+        visibleTurn = true;
         const key = JSON.stringify([turn.id,item.id]); keys.add(key);
         const signature = JSON.stringify(item);
         const prior = this.rendered.get(key);
@@ -495,6 +499,20 @@ export class WorkspacePane {
         this.rendered.set(key, {signature,element});
         ordered.push(element);
       }
+      if (visibleTurn && ['completed','failed','interrupted'].includes(turn.status) && Number.isFinite(turn.durationMs) && turn.durationMs >= 0) {
+        const key = JSON.stringify([turn.id,null]); keys.add(key);
+        const signature = JSON.stringify([turn.status,turn.durationMs]);
+        let summary = this.rendered.get(key);
+        if (summary?.signature !== signature) {
+          const seconds = Math.round(turn.durationMs / 1000);
+          const elapsed = seconds >= 60 ? `${Math.floor(seconds/60)}m ${seconds%60}s` : `${seconds}s`;
+          const label = turn.status === 'completed' ? 'Worked for' : turn.status === 'failed' ? 'Failed after' : 'Interrupted after';
+          const element = node('div', 'aw-turn-summary', `${label} ${elapsed}`);
+          summary?.element.remove();
+          summary = {signature,element}; this.rendered.set(key,summary);
+        }
+        ordered.push(summary.element);
+      }
     }
     for (const [key, prior] of this.rendered) if (!keys.has(key)) { this.releaseHistoryImages(prior.element); prior.element.remove(); this.rendered.delete(key); }
     let cursor = this.log.firstChild;
@@ -503,6 +521,10 @@ export class WorkspacePane {
       cursor = element.nextSibling;
     }
     this.status.textContent = this.conversation.status;
+    const tokens = this.conversation.metadata.tokenUsage?.last?.totalTokens;
+    const usage = this.conversation.metadata.claudeUsage;
+    this.usageLabel.textContent = Number.isFinite(tokens) && tokens >= 0 ? `Last request: ${tokens.toLocaleString()} tokens` :
+      Number.isFinite(usage?.input_tokens) && Number.isFinite(usage?.output_tokens) ? `Turn: ${usage.input_tokens.toLocaleString()} input / ${usage.output_tokens.toLocaleString()} output` : '';
     this.stop.hidden = this.conversation.status !== 'running';
     this.reviewButton.disabled = !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.compactButton.disabled = this.reviewButton.disabled;

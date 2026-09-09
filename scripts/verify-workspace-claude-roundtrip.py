@@ -102,6 +102,9 @@ async def main():
             await asyncio.wait_for(finished.wait(), 120)
             completion = [event for event in events if event.get("method") == "turn/completed"][-1]
             assert completion["params"]["turn"]["status"] == "completed", completion
+            duration = completion["params"]["turn"]["durationMs"]
+            assert isinstance(duration, (int, float)) and duration >= 0
+            assert any(event.get("method") == "workspace/claudeUsage" for event in events)
             assert any(
                 "SERENA_CLAUDE_RESUME_PROOF" in json.dumps(event)
                 for event in events

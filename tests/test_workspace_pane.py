@@ -201,6 +201,20 @@ def test_failed_send_keeps_draft_after_reload(pane):
     assert not errors
 
 
+def test_native_usage_and_completed_duration_are_not_invented(pane):
+    page, errors = pane
+    assert page.locator("#left .aw-usage").inner_text() == ""
+    assert page.locator("#left .aw-turn-summary").count() == 0
+    page.evaluate("""emit({method:'thread/tokenUsage/updated',params:{threadId:'exact',tokenUsage:{last:{totalTokens:1234},total:{totalTokens:99999}}}});
+      emit({method:'turn/completed',params:{threadId:'exact',turn:{id:'t',status:'completed',durationMs:42000}}});""")
+    page.get_by_text("Last request: 1,234 tokens", exact=True).wait_for()
+    page.get_by_text("Worked for 42s", exact=True).wait_for()
+    page.evaluate("emit({method:'turn/completed',params:{threadId:'exact',turn:{id:'t',status:'failed',durationMs:65000}}})")
+    page.get_by_text("Failed after 1m 5s", exact=True).wait_for()
+    assert page.locator("#left .aw-turn-summary").count() == 1
+    assert not errors
+
+
 def test_long_history_mounts_recent_items_and_preserves_reader_position(pane):
     page, errors = pane
     page.evaluate("emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'long',status:'completed',items:Array.from({length:350},(_,i)=>({id:'item-'+i,type:'agentMessage',text:'Message '+i}))}]}}})")
