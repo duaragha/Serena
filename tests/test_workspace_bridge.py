@@ -138,6 +138,53 @@ def test_busy_bridge_queue_is_fifo_and_acknowledges_without_mutual_wait(host):
     assert not value._bridge_queues["exact"]
 
 
+def test_queue_edit_preserves_receipt_and_order_and_rejects_stale_edits(host):
+    value, provider = host
+    value.attach("exact")
+    owner = value._sessions["exact"][0]
+    owner.state = "running"
+    assert value.bridge("exact", provider, "original", "edit-me")["queued"]
+    assert value.bridge("exact", provider, "second", "second")["queued"]
+    payload = {"request_id": "edit-me", "expected_prompt": "original", "prompt": "corrected"}
+    result = value.command("exact", "edit-control", "edit_queued_bridge", payload)
+    assert result["result"] == {"edited": True}
+    assert value.command("exact", "edit-control", "edit_queued_bridge", payload) == result
+    assert not value.command("exact", "stale-edit", "edit_queued_bridge", {**payload, "prompt": "stale overwrite"})["ok"]
+    assert not owner.sent and owner.state == "running"
+    queued = value.events("exact")["events"][-1]["event"]["params"]["requests"]
+    assert queued == [{"id": "edit-me", "prompt": "corrected"}, {"id": "second", "prompt": "second"}]
+    owner.state = "ready"
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        first = value.bridge("exact", provider, "original", "edit-me")
+        second = value.bridge("exact", provider, "second", "second")
+        if not first.get("pending") and not second.get("pending"):
+            break
+        time.sleep(0.02)
+    assert first["ok"] and second["ok"]
+    assert [inputs[0]["text"] for inputs in owner.sent] == ["corrected", "second"]
+    late = value.command("exact", "late-edit", "edit_queued_bridge", {**payload, "expected_prompt": "corrected"})
+    assert not late["ok"] and "no longer queued" in late["error"]
+    assert len(owner.sent) == 2
+
+
+def test_queue_edit_rolls_back_if_journal_publication_fails(host, monkeypatch):
+    value, provider = host
+    value.attach("exact")
+    owner = value._sessions["exact"][0]
+    owner.state = "running"
+    value.bridge("exact", provider, "original", "queued")
+    append = value.journal.append
+    def fail_append(*args, **kwargs):
+        raise OSError("Journal write failed")
+    monkeypatch.setattr(value.journal, "append", fail_append)
+    result = value.command("exact", "edit-failed", "edit_queued_bridge", {"request_id": "queued", "expected_prompt": "original", "prompt": "replacement"})
+    assert not result["ok"] and "Journal write failed" in result["error"]
+    assert value._bridge_messages[("exact", "bridge:queued")] == "original"
+    assert not owner.sent
+    monkeypatch.setattr(value.journal, "append", append)
+
+
 def test_queued_message_cancellation_never_submits_or_interrupts(host):
     value, provider = host
     value.attach("exact")

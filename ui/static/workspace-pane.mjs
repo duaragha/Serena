@@ -198,8 +198,28 @@ export class WorkspacePane {
         try{await this.controls.cancelQueuedBridge(request.id);}
         catch(error){this.error(error);cancel.disabled=false;}
       });
-      row.append(cancel); this.queueList.append(row);
+      const actions=node('div','aw-queue-actions');
+      if(this.controls.editQueuedBridge)actions.append(this.button(`Edit queued message ${request.id}`,'pencil',()=>this.openQueueEdit(request)));
+      actions.append(cancel);row.append(actions); this.queueList.append(row);
     }
+  }
+
+  openQueueEdit(request) {
+    if(this.queueEditDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Edit queued message');
+    const form=node('form');const text=node('textarea');text.setAttribute('aria-label','Queued message text');text.rows=6;text.value=request.prompt;
+    const status=node('p');status.setAttribute('role','status');
+    const save=node('button','','Save');save.type='submit';
+    const close=this.button('Discard queue edit','x',()=>dialog.close());
+    form.append(text,save);dialog.append(node('h3','','Edit queued message'),close,status,form);
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(save.disabled || !text.value.trim())return;
+      save.disabled=true;text.disabled=true;
+      try{await this.controls.editQueuedBridge(request.id,text.value,request.prompt);dialog.close();}
+      catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{save.disabled=false;text.disabled=false;}
+    });
+    dialog.addEventListener('close',()=>dialog.remove());this.queueEditDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();text.focus();
   }
 
   async openCommands() {
@@ -923,6 +943,7 @@ export class WorkspacePane {
     this.contextDialog?.close();
     this.permissionsDialog?.close();
     this.eventsDialog?.close();
+    this.queueEditDialog?.close();
     this.effortDialog?.close();
     this.queueDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);

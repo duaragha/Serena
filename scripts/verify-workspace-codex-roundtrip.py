@@ -199,6 +199,11 @@ async def main(review=False, compact=False, permissions=False, bridge=False, ski
                         "proof-bridge",
                     )
                     assert response.get("queued"), "Proof did not encounter the running native turn"
+                    edited = await asyncio.to_thread(
+                        host.command, sid, "edit-control", "edit_queued_bridge",
+                        {"request_id": "proof-bridge", "expected_prompt": "Reply exactly SERENA_BRIDGE_PROOF", "prompt": "Reply exactly SERENA_EDITED_BRIDGE_PROOF"},
+                    )
+                    assert edited["result"] == {"edited": True}
                     async with asyncio.timeout(120):
                         while response.get("pending"):
                             await asyncio.sleep(0.1)
@@ -211,7 +216,8 @@ async def main(review=False, compact=False, permissions=False, bridge=False, ski
                             )
                     assert response["ok"] and response["session_id"] == sid
                     assert response["turn_id"] != warm["result"]["turn"]["id"]
-                    assert "SERENA_BRIDGE_PROOF" in response["response"]
+                    assert "SERENA_EDITED_BRIDGE_PROOF" in response["response"]
+                    print("PASS: edited queued text reached the exact native session; original bridge receipt retained")
                     cancelled = await asyncio.to_thread(
                         host.bridge, sid, "codex", "SERENA_CANCELLED_BRIDGE_PROOF", "cancel-bridge"
                     )

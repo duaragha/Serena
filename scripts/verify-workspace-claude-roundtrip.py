@@ -187,6 +187,8 @@ async def main(bridge=False, background_task=False):
                 )
                 try:
                     assert (await asyncio.to_thread(host.attach, sid))["ok"]
+                    warm = await asyncio.to_thread(host.command, sid, "queue-warm", "submit", {"inputs": [{"type": "text", "text": "Do not use tools. Count from 1 to 80, one number per line."}]})
+                    assert warm["ok"]
                     response = await asyncio.to_thread(
                         host.bridge,
                         sid,
@@ -194,10 +196,18 @@ async def main(bridge=False, background_task=False):
                         "Do not use tools. Reply exactly SERENA_CLAUDE_BRIDGE_PROOF",
                         "bridge-proof",
                     )
+                    assert response.get("queued"), "Native turn completed before queue proof"
+                    edited = await asyncio.to_thread(host.command, sid, "queue-edit", "edit_queued_bridge", {"request_id": "bridge-proof", "expected_prompt": "Do not use tools. Reply exactly SERENA_CLAUDE_BRIDGE_PROOF", "prompt": "Do not use tools. Reply exactly SERENA_CLAUDE_EDITED_BRIDGE_PROOF"})
+                    assert edited["result"] == {"edited": True}
+                    async with asyncio.timeout(120):
+                        while response.get("pending"):
+                            await asyncio.sleep(0.1)
+                            response = await asyncio.to_thread(host.bridge, sid, "claude", "Do not use tools. Reply exactly SERENA_CLAUDE_BRIDGE_PROOF", "bridge-proof")
                     assert response["ok"] and response["session_id"] == sid
-                    assert "SERENA_CLAUDE_BRIDGE_PROOF" in response["response"]
+                    assert "SERENA_CLAUDE_EDITED_BRIDGE_PROOF" in response["response"]
+                    assert response["turn_id"] != warm["result"]["turn"]["id"]
                     print(
-                        "PASS: native Claude host bridge returned the exact resumed session's output"
+                        "PASS: edited queued text reached native Claude through the exact resumed owner; original receipt preserved"
                     )
                 finally:
                     await asyncio.to_thread(host.shutdown)

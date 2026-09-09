@@ -61,6 +61,38 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_queue_edit_keeps_draft_and_targets_original_message(pane, tmp_path, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      controls.cancelQueuedBridge=async id=>calls.push(['cancel',id]);
+      controls.editQueuedBridge=async(id,text,expected)=>{calls.push(['edit',id,text,expected]);if(window.failEdit)throw Error('Edit unconfirmed');};
+      emit({method:'workspace/bridgeQueue',params:{count:1,requests:[{id:'q',prompt:'original'}]}});
+    }""")
+    draft = page.get_by_role("textbox", name="Message Claude")
+    draft.fill("Main draft")
+    page.get_by_role("button", name="Queued sibling messages").click()
+    page.get_by_role("button", name="Edit queued message q", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Edit queued message", exact=True)
+    editor = dialog.get_by_role("textbox", name="Queued message text")
+    editor.fill("Corrected message")
+    page.evaluate("emit({method:'workspace/bridgeQueue',params:{count:2,requests:[{id:'q',prompt:'original'},{id:'other',prompt:'second'}]}})")
+    assert editor.input_value() == "Corrected message"
+    page.evaluate("window.failEdit=true")
+    dialog.get_by_role("button", name="Save", exact=True).click()
+    dialog.get_by_text("Edit unconfirmed", exact=True).wait_for()
+    assert editor.input_value() == "Corrected message"
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / f"queue-edit-{width}.png"))
+    page.evaluate("window.failEdit=false")
+    dialog.get_by_role("button", name="Save", exact=True).click()
+    dialog.wait_for(state="hidden")
+    assert draft.input_value() == "Main draft"
+    assert page.evaluate("calls") == [["edit", "q", "Corrected message", "original"]] * 2
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_event_inspector_pages_lazily_without_session_actions(pane, tmp_path, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})

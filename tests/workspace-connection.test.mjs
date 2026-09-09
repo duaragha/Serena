@@ -11,6 +11,16 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('queue editing routes replacement and original text through a stable control receipt',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{calls.push(JSON.parse(options.body));throw Error('response lost');}});
+  for(let i=0;i<2;i++)await assert.rejects(conn.controls().editQueuedBridge('q','new','old'),/response lost/);
+  assert.deepEqual(calls[0],calls[1]);
+  assert.equal(calls[0].action,'edit_queued_bridge');
+  assert.deepEqual(calls[0].payload,{request_id:'q',prompt:'new',expected_prompt:'old'});
+  conn.dispose();
+});
+
 test('event inspector reads exact-session pages without moving live replay or sending commands',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{calls.push([url,options.method]);return response({events:[],cursor:200,has_more:false});}});

@@ -214,6 +214,7 @@ class WorkspaceHost:
                     if owner.state in {"closed", "unavailable", "uncertain", "opening"}:
                         raise RuntimeError("Session unavailable; queued bridge was not submitted")
                     if queue[0] == key and owner.state == "ready":
+                        prompt = self._bridge_messages[(sid, key)]
                         queue.remove(key)
                         self._bridge_messages.pop((sid, key), None)
                         await self._publish_bridge_queue(sid)
@@ -294,6 +295,7 @@ class WorkspaceHost:
             "mcp_server_control",
             "terminate_background_task",
             "cancel_queued_bridge",
+            "edit_queued_bridge",
         } or not isinstance(payload, dict):
             raise ValueError("Unsupported workspace control")
         return self._dispatch(self._command(sid, request_id, action, deepcopy(payload)), timeout)
@@ -327,7 +329,22 @@ class WorkspaceHost:
                 )
             owner, provider = self._sessions[sid]
             try:
-                if action == "cancel_queued_bridge":
+                if action == "edit_queued_bridge":
+                    if set(payload) != {"request_id", "prompt", "expected_prompt"} or any(not isinstance(payload[field], str) for field in payload) or not payload["prompt"].strip():
+                        raise ValueError("An exact queued message, original text and non-empty replacement are required")
+                    key = f"bridge:{payload['request_id']}"
+                    if key not in self._bridge_queues.get(sid, []):
+                        raise ValueError("Message is no longer queued; running turns are not changed")
+                    if self._bridge_messages[(sid, key)] != payload["expected_prompt"]:
+                        raise ValueError("Queued message changed; reopen it before editing")
+                    self._bridge_messages[(sid, key)] = payload["prompt"]
+                    try:
+                        await self._publish_bridge_queue(sid)
+                    except BaseException:
+                        self._bridge_messages[(sid, key)] = payload["expected_prompt"]
+                        raise
+                    result = {"edited": True}
+                elif action == "cancel_queued_bridge":
                     if set(payload) != {"request_id"} or not isinstance(payload["request_id"], str):
                         raise ValueError("An exact queued bridge ID is required")
                     key = f"bridge:{payload['request_id']}"

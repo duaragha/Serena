@@ -2,6 +2,29 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Queued sibling messages can now be edited by exact request ID. Dispatch reads the
+latest saved text under the same session lock, preserving FIFO and the original
+sender's receipt identity. Updates compare the displayed original text, reject
+stale editors and already-dispatched turns, and roll back if journal publication
+fails. The separate edit dialog keeps drafts intact through queue refreshes and
+delivery errors; closing it never cancels or submits the queued message.
+
+```sh
+node --test tests/workspace-connection.test.mjs
+# exit 0: 12 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_bridge.py -q --basetemp=/tmp/serena-queue-edit-final
+# exit 0: 22 passed in 4.38s, both provider routes, FIFO, stale edits,
+# stable receipts, late rejection and journal failure rollback
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_queue_edit_keeps_draft_and_targets_original_message -q --basetemp=/tmp/serena-queue-edit-browser
+# exit 0: 2 passed in 1.87s; mobile/desktop screenshots reviewed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --bridge
+# exit 1 BEFORE queue proof: isolated copied refresh token rejected as already
+# used. No login/config repair attempted; Codex native edit proof remains open.
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference --bridge
+# exit 0: native busy turn followed by edited queued prompt, exact resumed
+# session output and original receipt retained; owned processes cleaned up
+```
+
 The browser's duplicate raw-event cache is limited to 100 records and an
 approximately 1 MiB serialized-string budget. Oversized records are not retained
 in that cache; ordered replay and the disk journal are unchanged. This does not

@@ -122,6 +122,7 @@ export class WorkspaceConnection {
       mcpServers: () => this.command('mcp_servers', {}),
       mcpServerControl: (name, action) => this.command('mcp_server_control', {name, action}),
       cancelQueuedBridge: request_id => this.command('cancel_queued_bridge', {request_id}),
+      editQueuedBridge: (request_id, prompt, expected_prompt) => this.command('edit_queued_bridge', {request_id, prompt, expected_prompt}),
       backgroundTasks: () => this.command('background_tasks', {}),
       terminateBackgroundTask: processId => this.command('terminate_background_task', {processId}),
       review: target => this.command('review', {target}),
