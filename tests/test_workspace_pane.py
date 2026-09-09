@@ -61,6 +61,50 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_inline_file_completion_selects_without_sending(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {controls.searchFiles=async query=>{
+      calls.push(['search',query]);return {paths:['src/first.py','src/with space.py']};
+    };}""")
+    composer=page.get_by_role('textbox',name='Message Claude')
+    composer.fill('review @src')
+    suggestions=page.get_by_role('listbox',name='Project file suggestions')
+    suggestions.get_by_role('option',name='src/first.py').wait_for()
+    composer.press('ArrowDown')
+    composer.press('Enter')
+    assert composer.input_value() == 'review @"src/with space.py" '
+    assert page.evaluate('calls') == [['search','src']]
+    assert suggestions.is_hidden()
+    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+    assert not errors
+
+
+def test_inline_completion_discards_stale_results_and_escape_does_not_interrupt(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      window.pending={};controls.searchFiles=query=>new Promise(resolve=>{pending[query]=resolve;});
+      emit({method:'turn/started',params:{turn:{id:'working',status:'inProgress'}}});
+    }""")
+    composer=page.get_by_role('textbox',name='Message Claude')
+    composer.fill('@old')
+    page.wait_for_function('!!pending.old')
+    composer.fill('@new')
+    page.wait_for_function('!!pending.new')
+    composer.press('Enter')
+    assert composer.input_value() == '@new'
+    assert page.evaluate('calls') == []
+    page.evaluate("pending.new({paths:['new.py']})")
+    page.get_by_role('option',name='new.py',exact=True).wait_for()
+    page.evaluate("pending.old({paths:['old.py']})")
+    assert page.get_by_role('option',name='old.py',exact=True).count() == 0
+    composer.press('Escape')
+    assert page.get_by_role('listbox',name='Project file suggestions').is_hidden()
+    assert page.evaluate('calls') == []
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_project_file_picker_preserves_draft_and_never_sends(pane, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})

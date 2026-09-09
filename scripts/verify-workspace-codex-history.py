@@ -86,6 +86,12 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False):
                     search.press("Enter")
                     picker.get_by_role("button", name="workspace-mention-proof.py", exact=True).click()
                     assert "@workspace-mention-proof.py" in page.get_by_role("textbox", name="Message Codex").input_value()
+                    composer = page.get_by_role("textbox", name="Message Codex")
+                    composer.fill("inspect @workspace-mention")
+                    page.get_by_role("option", name="workspace-mention-proof.py", exact=True).wait_for()
+                    page.screenshot(path=str(artifacts / f"{prefix}-mentions-{label}.png"))
+                    composer.press("Enter")
+                    assert composer.input_value() == "inspect @workspace-mention-proof.py "
                     print(f"PASS: {prefix} {label} native project file search inserted a draft mention without submitting a turn")
                     page.get_by_role("button", name="Run shell command", exact=True).wait_for(state="visible")
                     page.get_by_role("button", name="Run shell command", exact=True).click()

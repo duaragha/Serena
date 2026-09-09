@@ -2,6 +2,22 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Inline project mentions (2026-09-09): Claude and Codex composers now complete
+@path fragments using their existing attached-owner names-only searches.
+Debounced results are bound to the draft and caret; stale results are discarded.
+Arrow keys, Enter/Tab selection and Escape do not submit or interrupt a turn.
+Paths containing spaces are quoted. Disposal cancels pending UI work, not the
+native owner. This remains source-only, not installed or released.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q`: exit 0, 67 passed in 44.82s; recovery rerun exit 0, 67 passed in 65.08s. An earlier run failed because crypto.randomUUID was unavailable in the non-secure fixture; element IDs now use a module counter.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py scripts/verify-workspace-codex-history.py scripts/verify-workspace-frozen.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py`: exit 0; desktop/mobile native completion, real command output, exact history/reopen, same owner after closing the page, and isolated cleanup passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py`: exit 0; desktop/mobile native completion, local-command input/output, skills/plugins, exact forks and owner preservation passed without user credentials or inference.
+Inspected source-mentions-mobile.png and codex-native-mentions-mobile.png under
+apps/desktop/build/workspace-proof: results fit above the composer without
+horizontal overflow. These checks do not establish model inference, Windows,
+Gemini support or complete CLI parity.
+
 Claude project file picker (2026-09-09): the same composer picker now works for
 Claude. Its public SDK has no file-search control in the pinned declaration, so
 names-only lookup runs locally against the already attached owner's cwd, without

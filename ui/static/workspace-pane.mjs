@@ -1,6 +1,7 @@
 import {WorkspaceConversation} from './workspace-events.mjs';
 import {renderWorkspaceMarkdown} from './workspace-markdown.mjs';
 import {renderElicitation} from './workspace-elicitation.mjs';
+import {installFileMentions} from './workspace-mentions.mjs';
 
 const node = (tag, cls, text) => {
   const el = document.createElement(tag);
@@ -128,6 +129,9 @@ export class WorkspacePane {
     this.queueButton = this.button('Queued sibling messages', 'messages-square', () => this.openBridgeQueue());
     this.queueButton.hidden=true; footer.insertBefore(this.queueButton, this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
+    this.disposeMentions=installFileMentions({input:this.input,form:this.form,
+      enabled:()=>['Claude','Codex'].includes(this.provider) && typeof this.controls.searchFiles==='function',
+      search:query=>this.controls.searchFiles(query),persist:()=>this.persistDraft()});
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
       if(e.key==='Escape' && !e.isComposing && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && this.conversation.status==='running'){
@@ -1131,6 +1135,7 @@ export class WorkspacePane {
   }
 
   dispose() {
+    this.disposeMentions?.();
     this.reviewDialog?.close();
     this.tasksDialog?.close();
     this.commandsDialog?.close();

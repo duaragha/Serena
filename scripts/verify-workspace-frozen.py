@@ -190,6 +190,12 @@ def main():
                             search.press("Enter")
                             picker.get_by_role("button", name="workspace-claude-mention-proof.py", exact=True).click()
                             expect(page.get_by_role("textbox", name="Message Claude", exact=True)).to_have_value("@workspace-claude-mention-proof.py ")
+                            composer = page.get_by_role("textbox", name="Message Claude", exact=True)
+                            composer.fill("inspect @workspace-claude-mention")
+                            page.get_by_role("option", name="workspace-claude-mention-proof.py", exact=True).wait_for()
+                            page.screenshot(path=str(screenshots / f"{label_prefix}-mentions-{label}.png"))
+                            composer.press("Tab")
+                            expect(composer).to_have_value("inspect @workspace-claude-mention-proof.py ")
                             assert all(child.is_running() for child in children)
                             print(f"PASS: {label_prefix} {label} Claude project file picker inserted a draft mention with existing owner alive")
                         finally:
