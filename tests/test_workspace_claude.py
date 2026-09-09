@@ -84,6 +84,60 @@ def make(tmp_path):
     return owner, events
 
 
+def test_native_mcp_form_validates_answers_and_retires_exact_request(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        request = {"serverName": "Planner", "message": "Choose count",
+                   "requestedSchema": {"type": "object", "properties": {"count": {"type": "integer", "minimum": 1}}, "required": ["count"]}}
+        pending = asyncio.create_task(owner._elicitation(request, "native-form"))
+        await asyncio.sleep(0)
+        event = events[-1]
+        assert event["method"] == "mcpServer/elicitation/request"
+        assert event["id"] == "claude-mcp:native-form"
+        assert event["params"]["threadId"] == "exact"
+        assert event["params"]["mode"] == "form"
+        assert "mode" not in request
+        with pytest.raises(ValueError, match="does not match"):
+            await owner.answer(event["id"], {"action": "accept", "content": {"count": "bad"}})
+        assert not pending.done()
+        answer = {"action": "accept", "content": {"count": 2}}
+        await owner.answer(event["id"], answer)
+        assert await pending == answer
+        assert owner.elicitations == {}
+        assert events[-1]["method"] == "serverRequest/resolved"
+        with pytest.raises(ValueError, match="no longer pending"):
+            await owner.answer(event["id"], answer)
+    asyncio.run(run())
+
+
+def test_native_mcp_cancellation_does_not_answer_or_interrupt_parent(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        owner.active_turn = "running-parent"
+        pending = asyncio.create_task(owner._elicitation({"mode": "url", "url": "https://example.com"}, "url"))
+        await asyncio.sleep(0)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert owner.elicitations == {}
+        assert owner.active_turn == "running-parent"
+        assert events[-1]["params"]["requestId"] == "claude-mcp:url"
+    asyncio.run(run())
+
+
+def test_owner_shutdown_cancels_mcp_form_without_accepting_it(tmp_path):
+    async def run():
+        owner, _ = make(tmp_path)
+        await owner.open()
+        pending = asyncio.create_task(owner._elicitation({"mode": "form", "requestedSchema": {}}, "shutdown"))
+        await asyncio.sleep(0)
+        await owner.close()
+        assert await pending == {"action": "cancel", "content": None}
+        assert owner.elicitations == {}
+        assert not owner.client.interrupted
+    asyncio.run(run())
+
+
 def test_authoritative_tool_message_before_block_stop_keeps_complete_input():
     converter = ClaudeEvents("exact")
     converter.turn = "turn"

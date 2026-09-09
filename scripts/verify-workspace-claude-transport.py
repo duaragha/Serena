@@ -1,5 +1,6 @@
 """Called by the isolated native driver proof, never against a user's session."""
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -69,10 +70,24 @@ async def main():
     print("PASS: Python WorkspaceRpc -> native Claude, exact session input/output, actual PID bound to shared lease, duplicate owner rejected, native child/wrapper reaped and lease recoverable")
     completed_turn = asyncio.get_running_loop().create_future()
     events = []
+    discovery_form = os.environ.get("SERENA_PROOF_DISCOVERY_FORM") == "1"
+    form_receipt = root / "form-result.json"
+    if discovery_form:
+        (root / ".mcp.json").write_text(json.dumps({"mcpServers": {"form_proof": {
+            "command": sys.executable,
+            "args": [str(Path(__file__).with_name("workspace-claude-form-fixture.py")), str(form_receipt)],
+        }}}), encoding="utf-8")
+        (root / ".claude").mkdir(exist_ok=True)
+        (root / ".claude" / "settings.local.json").write_text(
+            json.dumps({"enabledMcpjsonServers": ["form_proof"]}), encoding="utf-8")
 
     async def publish_pane(event):
         events.append(event)
-        if event.get("method") == "turn/completed" and not completed_turn.done():
+        if event.get("method") == "mcpServer/elicitation/request":
+            assert event["params"]["serverName"] == "form_proof"
+            assert event["params"]["message"] == "Choose proof count"
+            await owner.answer(event["id"], {"action": "accept", "content": {"count": 2}})
+        elif event.get("method") == "turn/completed" and not completed_turn.done():
             completed_turn.set_result(event["params"]["turn"])
         elif event.get("method") == "workspace/error" and not completed_turn.done():
             completed_turn.set_exception(RuntimeError(event["params"]["reason"]))
@@ -82,10 +97,17 @@ async def main():
                             lease_factory=lambda session_id: SessionLease(session_id, directory=root / "leases"))
     try:
         await owner.open()
+        await owner.submit([{"type": "text", "text": "/effort low"}])
+        if discovery_form:
+            async with asyncio.timeout(15):
+                while not form_receipt.exists():
+                    await asyncio.sleep(0.05)
+            native_form_result = json.loads(form_receipt.read_text())
+            assert native_form_result["content"] == {"count": 2}, native_form_result
+            print("PASS: real local MCP form crossed native SDK, Node channel, Python transport and pane owner; validated answer returned to the requesting MCP server without inference")
         assert any(event["method"] == "workspace/history" for event in events)
         assert (await owner.list_models())["data"]
         native = psutil.Process(owner.client.owned_pid)
-        await owner.submit([{"type": "text", "text": "/effort low"}])
         turn = await asyncio.wait_for(completed_turn, 15)
         assert turn["status"] == "completed"
         assert turn["providerOriginal"]["num_turns"] == 0

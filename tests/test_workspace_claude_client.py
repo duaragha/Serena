@@ -64,3 +64,16 @@ def test_permission_context_and_answer_conversion():
         with pytest.raises(RuntimeError, match="No interactive elicitation"):
             await client._request("claude/elicitation", {"request": {}})
     asyncio.run(run())
+
+
+def test_mcp_cancel_omits_nullable_content_on_native_wire():
+    async def run():
+        async def cancelled(request, native_id):
+            assert native_id == "native"
+            return {"action": "cancel", "content": None}
+
+        options = SimpleNamespace(resume="exact", cwd="/project", cli_path="claude", env={})
+        client = ClaudeTypeScriptClient(options=options, sdk_path="sdk", node_path="node",
+                                        transport_factory=Transport, on_elicitation=cancelled)
+        assert await client._request("claude/elicitation", {"request": {}, "nativeRequestId": "native"}) == {"action": "cancel"}
+    asyncio.run(run())

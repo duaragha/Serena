@@ -79,7 +79,9 @@ class ClaudeTypeScriptClient:
         if method == "claude/elicitation":
             if self.on_elicitation is None:
                 raise RuntimeError("No interactive elicitation handler is installed")
-            return await self.on_elicitation(request, params.get("nativeRequestId"))
+            answer = await self.on_elicitation(request, params.get("nativeRequestId"))
+            # MCP ElicitResult has optional object content, not a nullable field.
+            return {key: value for key, value in answer.items() if key != "content" or value is not None}
         if method != "claude/canUseTool":
             raise ValueError("Unknown Claude interactive request")
         context = SimpleNamespace(tool_use_id=options.get("toolUseID"),

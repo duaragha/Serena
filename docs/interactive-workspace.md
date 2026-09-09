@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude MCP form UI route (2026-09-09): the public SDK client's elicitation
+callback now reaches ClaudeWorkspace and the existing shared form renderer.
+Requests use a provider-prefixed native ID, exact thread identity, form-mode
+default, and the same typed schema validator as Codex. Invalid replies leave the
+form pending; native cancellation retires it; explicit owner shutdown cancels
+rather than accepts. Optional native content is omitted for cancel/decline,
+instead of sending the renderer's nullable field to the SDK.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_pane.py::test_mcp_form_collects_typed_fields_and_safe_url -q
+# exit 0: 28 passed, including browser form typing and unsafe URL rejection
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_client.py tests/test_workspace_claude.py scripts/verify-workspace-claude-transport.py scripts/workspace-claude-form-fixture.py
+# exit 0
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs /tmp/serena-sdk-ts/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+# exit 0: existing native owner/input/output/lease regression; not a form proof
+```
+
+The attempted zero-inference MCP discovery form did NOT pass. Instrumentation
+proved the server entered tools/list and connected, but native Claude returned
+`action: cancel, content: null` without emitting an elicitation question to this
+channel. Earlier runs timed out because the fixture asserted before persisting
+that response; the last instrumented run exited 1 with the actual cancellation.
+The fixture/experimental `--discovery-form` flag preserve this diagnostic. This
+does not establish behavior for an MCP form raised during a normal tool call.
+Next: exercise that normal tool-call path through the public SDK owner. Do not
+claim native form roundtrip parity based on the passing unit/browser tests.
+
 Claude owner compatibility (2026-09-09): `ClaudeTypeScriptClient` implements the
 existing ClaudeWorkspace client boundary through public SDK controls, exposes
 the actual owned PID for its shared lease, forwards permission contexts/answers,

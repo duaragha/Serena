@@ -10,7 +10,8 @@ import {fileURLToPath} from 'node:url';
 import {createInterface} from 'node:readline';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
-const [sdkPath,cliPath,pythonPath]=process.argv.slice(2);
+const [sdkPath,cliPath,pythonPath,formMode]=process.argv.slice(2);
+assert(!formMode || formMode==='--discovery-form','Unknown proof mode');
 assert(sdkPath && cliPath,'SDK module and installed CLI paths required');
 const root=await mkdtemp(join(tmpdir(),'serena-claude-driver-'));
 const path=process.env.PATH;
@@ -111,7 +112,8 @@ try {
   console.log('PASS: real JSONL worker performed no automatic launch, resumed the exact session, routed input/output, reported actual child PID and reaped it before acknowledging close');
   if(pythonPath) {
     const python=spawn(resolve(pythonPath),[fileURLToPath(new URL('./verify-workspace-claude-transport.py',import.meta.url)),
-      resolve(sdkPath),resolve(cliPath),sid,root],{env:{...process.env,SERENA_EVIDENCE_KIND:'live'},stdio:['ignore','inherit','inherit']});
+      resolve(sdkPath),resolve(cliPath),sid,root],{env:{...process.env,SERENA_EVIDENCE_KIND:'live',
+        SERENA_PROOF_DISCOVERY_FORM:formMode?'1':''},stdio:['ignore','inherit','inherit']});
     children.push(python);
     const pythonExit=new Promise((done,reject)=>{python.once('exit',(code,signal)=>done({code,signal}));python.once('error',reject);});
     exits.push(pythonExit);pythonExit.catch(()=>{});

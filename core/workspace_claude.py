@@ -49,6 +49,7 @@ class ClaudeWorkspace:
         self.events = ClaudeEvents(session_id)
         self.questions = {}
         self.question_inputs = {}
+        self.elicitations = {}
         self.model_catalog = None
         self.permission_mode = None
         self._stop = asyncio.Event()
@@ -104,6 +105,8 @@ class ClaudeWorkspace:
                 env=env,
             )
             self.client = self.client_factory(options=options)
+            if hasattr(self.client, "on_elicitation"):
+                self.client.on_elicitation = self._elicitation
             lease.launching()
             await self.client.connect()
             pid = getattr(self.client, "owned_pid", None)
@@ -125,6 +128,9 @@ class ClaudeWorkspace:
             elif not isinstance(error, asyncio.CancelledError):
                 await self.publish({"method": "workspace/error", "params": {"reason": str(error)}})
         finally:
+            for future, _ in list(self.elicitations.values()):
+                if not future.done():
+                    future.set_result({"action": "cancel", "content": None})
             for future in list(self.questions.values()):
                 if not future.done():
                     future.set_result(
@@ -430,7 +436,34 @@ class ClaudeWorkspace:
                 self.events.event("serverRequest/resolved", {"requestId": request_id})
             )
 
+    async def _elicitation(self, request, native_request_id):
+        if not isinstance(request, dict):
+            raise ValueError("Invalid Claude MCP request")
+        request_id = "claude-mcp:" + (str(native_request_id) if native_request_id else str(uuid4()))
+        if request_id in self.elicitations:
+            raise ValueError("Duplicate Claude MCP request")
+        params = deepcopy(request)
+        params.setdefault("mode", "form")
+        params["threadId"] = self.session_id
+        future = asyncio.get_running_loop().create_future()
+        self.elicitations[request_id] = (future, params)
+        try:
+            await self.publish({"id": request_id, "method": "mcpServer/elicitation/request", "params": params})
+            return await future
+        finally:
+            self.elicitations.pop(request_id, None)
+            await self.publish(self.events.event("serverRequest/resolved", {"requestId": request_id}))
+
     async def answer(self, request_id, answer):
+        if request_id in self.elicitations:
+            from core.workspace_elicitation import validate_reply
+
+            future, params = self.elicitations[request_id]
+            if future.done():
+                raise ValueError("Claude MCP request is no longer pending")
+            validate_reply(params, answer)
+            future.set_result(deepcopy(answer))
+            return
         future = self.questions.get(request_id)
         if future is None or future.done():
             raise ValueError("Claude request is no longer pending")
