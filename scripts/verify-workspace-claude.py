@@ -81,17 +81,29 @@ async def main(local_effort=False):
             if local_effort:
                 from claude_agent_sdk import ResultMessage
 
+                from core.workspace_claude_events import ClaudeEvents
+
                 await client.query("/effort high")
                 result = None
+                converter = None
+                converted = []
                 async with asyncio.timeout(30):
                     async for message in client.receive_response():
+                        if converter is None and getattr(message, "subtype", None) == "init":
+                            converter = ClaudeEvents(message.data["session_id"])
+                            converter.turn = "isolated-local-command"
+                        if converter is not None:
+                            converted.extend(converter.receive(message))
                         if isinstance(message, ResultMessage):
                             result = message
                 assert result is not None and not result.is_error
                 assert result.num_turns == 0 and result.total_cost_usd == 0
                 assert result.duration_api_ms == 0
                 assert "Set effort level to high (this session only)" in result.result
+                models = [event["params"].get("model") for event in converted if event["method"] == "workspace/settings"]
+                assert models and all(model and model != "<synthetic>" for model in models)
                 print("PASS: native /effort high acknowledged session-only change; zero model turns, API duration and cost")
+                print("PASS: actual synthetic command response retains native model identity in pane events")
         finally:
             await client.disconnect()
         assert process.returncode is not None

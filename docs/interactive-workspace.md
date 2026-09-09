@@ -2,6 +2,22 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude model identity now ignores `<synthetic>` local-command responses and
+subagent models when updating the parent pane. Original native records remain
+intact. History restores the last real assistant model when one exists, without
+inventing a model for command-only sessions. This is last-observed model evidence,
+not a claim that the SDK init cache tracks every out-of-band setting change.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py -q --basetemp=/tmp/serena-claude-model-identity-final
+# exit 0: 19 passed in 0.42s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py --local-effort
+# exit 0: actual native synthetic response passed through ClaudeEvents;
+# model identity retained, zero model turns/cost, owned CLI reaped
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_events.py tests/test_workspace_claude.py scripts/verify-workspace-claude.py
+# exit 0: all checks passed
+```
+
 Claude now has an explicit reasoning-effort control. It discovers the native
 effort command and current model's advertised levels, then sends `/effort LEVEL`
 through the existing exact-session submit path. It does not consume draft text

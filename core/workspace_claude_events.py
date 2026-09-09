@@ -67,6 +67,7 @@ class ClaudeEvents:
 
     def history(self, records):
         turns = []
+        model = None
         for record in records:
             source = plain(record)
             if source.get("session_id") != self.sid:
@@ -74,6 +75,9 @@ class ClaudeEvents:
             message = source["message"]
             content = message.get("content", [])
             user = source["type"] == "user"
+            candidate = message.get("model")
+            if not user and isinstance(candidate, str) and candidate and candidate != "<synthetic>":
+                model = candidate
             tool_result = isinstance(content, list) and any(
                 b.get("type") == "tool_result" for b in content
             )
@@ -88,7 +92,7 @@ class ClaudeEvents:
                     turns[-1]["items"].append(item)
         return {
             "method": "workspace/history",
-            "params": {"thread": {"id": self.sid, "turns": turns}, "provider": "claude"},
+            "params": {"thread": {"id": self.sid, "turns": turns, **({"model": model} if model else {})}, "provider": "claude"},
         }
 
     def receive(self, message):
@@ -152,7 +156,7 @@ class ClaudeEvents:
             if message_id:
                 for item in self.blocks(data["content"], message_id, user=kind == "UserMessage"):
                     events.append(self.event("item/completed", {"turnId": self.turn, "item": item}))
-            if data.get("model"):
+            if parent == "root" and data.get("model") and data["model"] != "<synthetic>":
                 events.append(self.event("workspace/settings", {"model": data["model"]}))
         elif kind == "ResultMessage" and self.turn:
             if (

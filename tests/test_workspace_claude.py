@@ -83,6 +83,37 @@ def make(tmp_path):
     return owner, events
 
 
+def test_synthetic_command_output_does_not_replace_the_selected_model():
+    converter = ClaudeEvents("exact")
+    converter.turn = "effort-command"
+    events = converter.receive(AssistantMessage(
+        content=[TextBlock(text="Set effort level to high (this session only)")],
+        model="<synthetic>", message_id="local-result",
+    ))
+    assert not any(event["method"] == "workspace/settings" for event in events)
+    assert any(event["method"] == "item/completed" for event in events)
+    assert events[0]["params"]["record"]["model"] == "<synthetic>"
+    events = converter.receive(AssistantMessage(
+        content=[TextBlock(text="Subagent response")], model="child-model", message_id="child",
+        parent_tool_use_id="agent-tool",
+    ))
+    assert not any(event["method"] == "workspace/settings" for event in events)
+    events = converter.receive(AssistantMessage(
+        content=[TextBlock(text="Actual response")], model="claude-native-model", message_id="real",
+    ))
+    assert [event["params"]["model"] for event in events if event["method"] == "workspace/settings"] == ["claude-native-model"]
+
+
+def test_history_restores_last_real_model_not_local_command_placeholder():
+    converter = ClaudeEvents("exact")
+    def record(number, model, kind="assistant"):
+        return {"session_id": "exact", "uuid": str(number), "type": kind,
+                "message": {"model": model, "content": [{"type": "text", "text": "content"}]}}
+    records = [record(1, "old"), record(2, "current"), record(3, "<synthetic>"), record(4, "user-value", "user")]
+    assert converter.history(records)["params"]["thread"]["model"] == "current"
+    assert "model" not in converter.history([record(1, "<synthetic>")])["params"]["thread"]
+
+
 def test_permission_modes_change_only_after_native_acknowledgement(tmp_path):
     async def run():
         owner, events = make(tmp_path)
