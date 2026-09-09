@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Persisted command history (2026-09-09): exact native slash-command envelopes
+now render as readable command text, retaining the complete source record in
+`providerOriginal`. A bounded structural parser rejects partial/malformed markup,
+DTD/instructions, unknown structure, nested content and unmatched command labels;
+those records remain verbatim rather than losing text. Actual native seeded
+history was verified through the source owner. The earlier frozen build has not
+yet been rebuilt with this change.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_wire.py tests/test_workspace_claude.py -q
+# exit 0: 42 passed in 1.03s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_events.py tests/test_workspace_claude_wire.py scripts/verify-workspace-claude-transport.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron
+# exit 0: persisted native slash commands normalized with originals retained;
+# output not duplicated; exact-session ownership and cleanup checks passed.
+```
+
 Native command presentation repair (2026-09-09): suppress the second visible
 result only when it exactly matches the latest root assistant message in that
 same turn. Child output, previous-turn matches, different results and errors

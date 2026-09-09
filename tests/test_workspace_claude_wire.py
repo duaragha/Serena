@@ -9,6 +9,33 @@ def event(events, method):
     return next(item["params"] for item in events if item["method"] == method)
 
 
+@pytest.mark.parametrize("array", [False, True])
+def test_history_command_is_readable_without_losing_original(array):
+    raw = "<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args>low</command-args>"
+    content = [{"type": "text", "text": raw}] if array else raw
+    record = {"session_id": "exact", "uuid": "command", "type": "user", "message": {"content": content}}
+    original = deepcopy(record)
+    history = ClaudeEvents("exact").history([record])
+    item = history["params"]["thread"]["turns"][0]["items"][0]
+    assert item["content"] == [{"type": "text", "text": "/effort low"}]
+    assert item["providerOriginal"] == original
+    assert record == original
+
+
+@pytest.mark.parametrize("raw", [
+    "explain <command-name>/effort</command-name>",
+    "<command-name>/effort</command-name><command-message>effort</command-message>",
+    "<command-name>/effort</command-name><command-message>other</command-message><command-args>low</command-args>",
+    "<command-name>/effort</command-name><command-message>effort</command-message><command-args><b>low</b></command-args>",
+    '<!DOCTYPE command [<!ENTITY x "expanded">]><command-name>/effort</command-name>',
+    "<command-name>/effort</command-name><command-message>effort</command-message><command-args>low</command-args> do not omit this",
+])
+def test_history_does_not_rewrite_partial_or_ambiguous_markup(raw):
+    record = {"session_id": "exact", "uuid": "user", "type": "user", "message": {"content": raw}}
+    item = ClaudeEvents("exact").history([record])["params"]["thread"]["turns"][0]["items"][0]
+    assert item["content"] == [{"type": "text", "text": raw}]
+
+
 def test_native_init_keeps_raw_record_and_sets_capabilities():
     converter = ClaudeEvents("exact")
     message = {"type": "system", "subtype": "init", "session_id": "exact",

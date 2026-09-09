@@ -5,10 +5,35 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from dataclasses import asdict, is_dataclass
+from xml.etree import ElementTree
 
 
 def plain(value):
     return asdict(value) if is_dataclass(value) else deepcopy(value)
+
+
+def history_command(content):
+    """Recognize only the complete native slash-command envelope."""
+    if isinstance(content, list):
+        if len(content) != 1 or content[0].get("type") != "text":
+            return None
+        content = content[0].get("text")
+    if not isinstance(content, str) or len(content) > 65536 or "<!" in content or "<?" in content:
+        return None
+    if not content.lstrip().startswith("<command-name>"):
+        return None
+    try:
+        root = ElementTree.fromstring(f"<command>{content}</command>")
+    except ElementTree.ParseError:
+        return None
+    if [child.tag for child in root] != ["command-name", "command-message", "command-args"]:
+        return None
+    if (root.text or "").strip() or any(child.attrib or len(child) or (child.tail or "").strip() for child in root):
+        return None
+    name, label, args = ((child.text or "").strip() for child in root)
+    if not name.startswith("/") or len(name) < 2 or any(char.isspace() for char in name) or label != name[1:]:
+        return None
+    return name + (f" {args}" if args else "")
 
 
 class ClaudeEvents:
@@ -86,7 +111,10 @@ class ClaudeEvents:
             )
             if not turns or (user and not tool_result):
                 turns.append({"id": source["uuid"], "status": "completed", "items": []})
-            items = self.blocks(content, message.get("id") or source["uuid"], user=user)
+            command = history_command(content) if user else None
+            items = self.blocks(command if command is not None else content, message.get("id") or source["uuid"], user=user)
+            if command is not None:
+                items[0]["providerOriginal"] = deepcopy(source)
             for item in items:
                 prior = next((i for i in turns[-1]["items"] if i["id"] == item["id"]), None)
                 if prior:

@@ -106,6 +106,11 @@ async def main():
             assert native_form_result["content"] == {"count": 2}, native_form_result
             print("PASS: real local MCP form crossed native SDK, Node channel, Python transport and pane owner; validated answer returned to the requesting MCP server without inference")
         assert any(event["method"] == "workspace/history" for event in events)
+        history = next(event["params"]["thread"] for event in events if event["method"] == "workspace/history")
+        commands = [item for turn in history["turns"] for item in turn["items"]
+                    if item.get("type") == "userMessage" and item.get("providerOriginal")]
+        assert commands, "Native persisted slash commands were not normalized"
+        assert all(item["content"][0]["text"].startswith("/effort ") for item in commands)
         assert (await owner.list_models())["data"]
         native = psutil.Process(owner.client.owned_pid)
         turn = await asyncio.wait_for(completed_turn, 15)
