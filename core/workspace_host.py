@@ -291,6 +291,7 @@ class WorkspaceHost:
             "background_tasks",
             "commands",
             "reload_skills",
+            "set_skill_enabled",
             "reload_plugins",
             "search_files",
             "load_earlier",
@@ -392,6 +393,13 @@ class WorkspaceHost:
                     if provider not in {"codex", "claude"} or payload:
                         raise ValueError("MCP discovery requires a supported session and no payload")
                     result = await owner.list_mcp_servers()
+                elif action == "set_skill_enabled":
+                    if provider != "codex" or set(payload) != {"path", "enabled"}:
+                        raise ValueError("An exact Codex skill path and enabled state are required")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Finish the current Codex turn before changing skills")
+                    result = await owner.set_skill_enabled(payload["path"], payload["enabled"])
                 elif action == "mcp_server_control":
                     if provider != "claude" or set(payload) != {"name", "action"}:
                         raise ValueError("An exact Claude MCP server and action are required")

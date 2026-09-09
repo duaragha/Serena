@@ -61,6 +61,34 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_codex_skill_toggle_waits_for_confirmation_and_preserves_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      pane.dispose();window.enabled=true;
+      controls.commands=async()=>({data:[{kind:'skill',name:'proof',path:'/skills/proof/SKILL.md',enabled,unavailableReason:enabled?'':'Skill is disabled'}]});
+      controls.setSkillEnabled=(path,value)=>new Promise(resolve=>{calls.push([path,value]);window.finish=async()=>{enabled=value;resolve({...await controls.commands(),effectiveEnabled:value});};});
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+    }""")
+    composer = page.get_by_role('textbox', name='Message Codex').first
+    composer.fill('keep this draft')
+    page.get_by_role('button', name='Commands and skills', exact=True).click()
+    toggle = page.get_by_role('checkbox', name='Enable skill proof')
+    toggle.wait_for()
+    assert page.evaluate('calls') == []
+    toggle.click()
+    assert toggle.is_disabled() and toggle.is_checked()
+    page.evaluate('finish()')
+    page.get_by_text('Skill disabled', exact=True).wait_for()
+    assert not toggle.is_checked() and not toggle.is_disabled()
+    assert page.get_by_role('dialog').get_by_role('button').filter(has_text='$proof').is_disabled()
+    assert page.evaluate('calls') == [['/skills/proof/SKILL.md', False]]
+    page.get_by_role('button', name='Close commands').click()
+    assert composer.input_value() == 'keep this draft'
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 @pytest.mark.parametrize("apply_rules", [False, True])
 def test_claude_permission_suggestions_require_explicit_selection(pane, width, apply_rules):
     page, errors = pane

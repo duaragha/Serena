@@ -205,6 +205,25 @@ def test_codex_mcp_actions_are_explicit_and_receipted(host):
     assert calls == ["local", "reload"]
 
 
+def test_codex_skill_setting_requires_exact_payload_and_reuses_receipt(host):
+    host.attach("exact")
+    owner = Owner.instances[-1]
+    calls = []
+    async def setting(path, enabled):
+        calls.append((path, enabled))
+        return {"data": [], "effectiveEnabled": enabled}
+    owner.set_skill_enabled = setting
+    payload = {"path": "/native/SKILL.md", "enabled": False}
+    first = host.command("exact", "skill", "set_skill_enabled", payload)
+    assert first["ok"]
+    assert host.command("exact", "skill", "set_skill_enabled", payload) == first
+    assert not host.command("exact", "bad-skill", "set_skill_enabled", {**payload, "name": "injected"})["ok"]
+    owner.state = "running"
+    rejected = host.command("exact", "busy-skill", "set_skill_enabled", payload)
+    assert not rejected["ok"] and rejected["retryable"]
+    assert calls == [("/native/SKILL.md", False)]
+
+
 def test_mcp_controls_require_attach_and_replay_without_repeating(tmp_path):
     calls = []
     class McpOwner(Owner):

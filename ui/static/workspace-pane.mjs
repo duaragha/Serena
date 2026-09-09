@@ -350,7 +350,7 @@ export class WorkspacePane {
     const close = this.button('Close commands', 'x', () => dialog.close());
     const status = node('p', '', 'Loading...'); status.setAttribute('role','status');
     const list = node('div', 'aw-command-list');
-    let commands=[];
+    let commands=[],busy=false;
     const render = () => {
       list.replaceChildren();
       const query=search.value.toLowerCase();
@@ -358,6 +358,7 @@ export class WorkspacePane {
       for (const command of matching) {
         const button=node('button','aw-command'); button.type='button';
         button.append(node('strong','',`${command.kind==='skill'?'$':'/'}${command.name}`),node('small','',command.kind==='skill'?command.path:command.argumentHint || ''),node('span','',command.description || ''));
+        button.disabled=busy;
         if(command.unavailableReason){button.disabled=true;button.title=command.unavailableReason;button.append(node('small','',command.unavailableReason));}
         button.addEventListener('click',()=>{
           if(command.kind==='skill'){
@@ -366,21 +367,41 @@ export class WorkspacePane {
           }else this.input.value=`/${command.name} ${this.input.value}`;
           this.persistDraft(); dialog.close(); this.input.focus();
         });
-        list.append(button);
+        if(this.provider==='Codex' && command.kind==='skill' && typeof command.enabled==='boolean' && this.controls.setSkillEnabled){
+          const row=node('div','aw-skill-row');
+          const label=node('label','','Enabled in Codex settings');
+          const toggle=node('input');toggle.type='checkbox';toggle.checked=command.enabled;toggle.disabled=busy;
+          toggle.setAttribute('aria-label',`Enable skill ${command.name}`);label.prepend(toggle);
+          toggle.addEventListener('change',async()=>{
+            const requested=toggle.checked;toggle.checked=command.enabled;
+            if(busy)return;
+            busy=true;reload.disabled=true;plugins.disabled=true;render();status.textContent='Saving skill setting...';
+            try{
+              const result=await this.controls.setSkillEnabled(command.path,requested);
+              if(!dialog.open || this.disposed)return;
+              commands=result.data;busy=false;render();
+              status.textContent=result.effectiveEnabled===requested ? `Skill ${requested?'enabled':'disabled'}` : `Policy kept skill ${result.effectiveEnabled?'enabled':'disabled'}`;
+            }catch(error){if(dialog.open){busy=false;render();status.textContent=error.message;}}
+            finally{busy=false;reload.disabled=false;plugins.disabled=false;}
+          });
+          row.append(button,label);list.append(row);
+        }else list.append(button);
       }
       status.textContent=matching.length ? `${matching.length} command${matching.length === 1 ? '' : 's'}` : 'No matching commands';
     };
     search.addEventListener('input',render);
     const reload = this.button('Reload skills from disk', 'refresh-cw', async () => {
+      if(busy)return;
+      busy=true;render();
       reload.disabled=true; plugins.disabled=true; status.textContent='Reloading...';
       try {
-        const result=await this.controls.reloadSkills();
+        const result=await (this.provider==='Codex'?this.controls.commands():this.controls.reloadSkills());
         if(!dialog.open || this.disposed)return;
-        commands=result.data; render();
-      } catch(error){if(dialog.open)status.textContent=error.message;}
-      finally{reload.disabled=false;plugins.disabled=false;}
+        commands=result.data;busy=false;render();
+      } catch(error){if(dialog.open){busy=false;render();status.textContent=error.message;}}
+      finally{busy=false;reload.disabled=false;plugins.disabled=false;}
     });
-    reload.hidden=this.provider!=='Claude' || !this.controls.reloadSkills;
+    reload.hidden=this.provider==='Codex'?!this.controls.commands:this.provider!=='Claude' || !this.controls.reloadSkills;
     reload.disabled=true;
     const plugins = this.button('Reload plugins from disk', 'plug', async () => {
       plugins.disabled=true;reload.disabled=true;status.textContent='Reloading plugins...';

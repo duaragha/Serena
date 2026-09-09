@@ -130,6 +130,7 @@ export class WorkspaceConnection {
       commands: () => this.command('commands', {}),
       reloadSkills: () => this.command('reload_skills', {}),
       reloadPlugins: () => this.command('reload_plugins', {}),
+      setSkillEnabled: (path, enabled) => this.command('set_skill_enabled', {path, enabled}),
       searchFiles: query => this.command('search_files', {query}),
       loadEarlier: cursor => this.command('load_earlier', {cursor}),
       shellCommand: (command,confirmed) => this.command('shell_command', {command,confirmed}),

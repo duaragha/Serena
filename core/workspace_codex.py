@@ -274,9 +274,28 @@ class CodexWorkspace:
                 raise WorkspaceRpcError("Codex returned duplicate skill paths")
             paths.add(skill["path"])
             commands.append({"name": skill["name"], "path": skill["path"], "kind": "skill",
+                             "enabled": skill["enabled"],
                              "description": skill.get("description", ""),
                              "unavailableReason": "Skill is disabled" if not skill["enabled"] else ""})
         return {"data": commands}
+
+    async def set_skill_enabled(self, path, enabled):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions:
+                raise WorkspaceRpcError("Finish the current Codex turn before changing skills")
+            if not isinstance(path, str) or type(enabled) is not bool:
+                raise ValueError("An exact skill path and boolean enabled state are required")
+            catalog = await self.list_commands()
+            if not any(skill["path"] == path for skill in catalog["data"]):
+                raise ValueError("Skill is not in this project's native catalog")
+            if self.state != "ready":
+                raise WorkspaceRpcError("Session changed during skill lookup")
+            result = await self.rpc.request("skills/config/write", {"path": path, "enabled": enabled})
+            if not isinstance(result, dict) or type(result.get("effectiveEnabled")) is not bool:
+                raise WorkspaceRpcError("Skill configuration change was not confirmed")
+            catalog = await self.list_commands()
+            await self.publish({"method": "workspace/commands", "params": deepcopy(catalog)})
+            return {**catalog, "path": path, "effectiveEnabled": result["effectiveEnabled"]}
 
     async def list_mcp_servers(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:

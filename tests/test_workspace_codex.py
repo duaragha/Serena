@@ -51,6 +51,39 @@ def test_mcp_login_exact_server_pending_guard_and_native_completion(tmp_path, ur
     asyncio.run(run())
 
 
+def test_skill_configuration_is_exact_explicit_and_uses_effective_native_state(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        path = str(tmp_path / "SKILL.md")
+        calls, enabled = [], True
+        async def request(method, params):
+            nonlocal enabled
+            calls.append((method, params))
+            if method == "skills/list":
+                return {"data": [{"cwd": str(tmp_path), "errors": [], "skills": [{"name": "proof", "path": path, "enabled": enabled}]}]}
+            assert method == "skills/config/write" and params == {"path": path, "enabled": False}
+            enabled = False
+            return {"effectiveEnabled": False}
+        rpc.request = request
+        try:
+            for bad_path, value in [("/not-discovered", False), (path, "false"), (path, 0)]:
+                with pytest.raises(ValueError):
+                    await client.set_skill_enabled(bad_path, value)
+            assert not any(method == "skills/config/write" for method, _ in calls)
+            result = await client.set_skill_enabled(path, False)
+            assert result["effectiveEnabled"] is False
+            assert result["data"][0]["unavailableReason"] == "Skill is disabled"
+            assert result["data"][0]["enabled"] is False
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.set_skill_enabled(path, True)
+            assert len([call for call in calls if call[0] == "skills/config/write"]) == 1
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_native_file_search_is_bound_to_owned_project(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

@@ -2,6 +2,30 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex skill settings (2026-09-09): the native catalog retains enabled state and
+the command dialog exposes an explicit per-skill checkbox. Writes use only a
+path rediscovered in this owner's project catalog, a strict boolean, and the
+native skills/config/write API. Busy turns are refused before mutation. The
+effective native result and reloaded catalog drive the display; toggles remain
+at their last confirmed value while saving. Unknown paths cannot be injected.
+Command receipt reuse avoids replaying uncertain writes. Drafts are unchanged,
+and neither opening the dialog nor closing a view invokes a skill or starts work.
+Codex now also has explicit catalog reload in the same dialog.
+Source: https://learn.chatgpt.com/docs/app-server (accessed 2026-09-09) documents
+skills/list with forceReload and skills/config/write by path. Installed native
+SkillsConfigWriteParams/Response schemas establish the boolean effectiveEnabled
+response. This does not add skill creation/deletion or Claude/Gemini management.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py::test_codex_skill_setting_requires_exact_payload_and_reuses_receipt -q`: exit 0, 32 passed in 0.52s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_skill_toggle_waits_for_confirmation_and_preserves_draft -q`: initial exit 1, 2 failed because Playwright uncheck retried while the intentionally pending checkbox remained checked/disabled. Changed automation to click once and assert pending/confirmed states separately; final exit 0, 2 passed in 1.53s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_skill_toggle_waits_for_confirmation_and_preserves_draft tests/test_workspace_pane.py::test_plugin_reload_is_explicit_refreshes_commands_and_reports_native_errors tests/test_workspace_pane.py::test_codex_skill_selection_persists_and_sends_exact_path_only_on_submit tests/test_workspace_pane.py::test_command_picker_preserves_draft_and_displays_native_output tests/test_workspace_pane.py::test_command_picker_reload_is_explicit_and_keeps_draft -q`: exit 0, 7 passed in 4.32s.
+- `node --test tests/workspace-connection.test.mjs`: exit 0, 19 passed, including exact skill path and lost-response receipt reuse.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py`: exit 0, repeated after spacing correction also exit 0. Native desktop/mobile skill disable/re-enable through real configuration, draft preservation, subsequent native command output and same owner after view close. Isolated home only; no inference or credentials used.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-codex-history.py`: exit 0.
+- `git diff --check`: exit 0.
+Inspected apps/desktop/build/workspace-proof/codex-native-skills-mobile.png:
+bounded dialog and correctly spaced dark checkbox. Not packaged or released.
+
 Codex MCP OAuth and reload (2026-09-09): the connection dialog now invokes native
 MCP login and configuration reload on its existing owner. Login is restricted to
 an exact configured server advertising OAuth, never a caller-supplied URL or

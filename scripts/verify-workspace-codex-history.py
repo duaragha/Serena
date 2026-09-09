@@ -93,6 +93,22 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False):
                     composer.press("Enter")
                     assert composer.input_value() == "inspect @workspace-mention-proof.py "
                     print(f"PASS: {prefix} {label} native project file search inserted a draft mention without submitting a turn")
+                    draft = composer.input_value()
+                    page.get_by_role("button", name="Commands and skills", exact=True).click()
+                    skill_dialog = page.get_by_role("dialog", name="Commands and skills")
+                    skill_dialog.get_by_role("searchbox", name="Search commands").fill("workspace-setting-proof")
+                    toggle = skill_dialog.get_by_role("checkbox", name="Enable skill workspace-setting-proof", exact=True)
+                    expect(toggle).to_be_checked()
+                    toggle.click()
+                    expect(toggle).not_to_be_checked()
+                    expect(skill_dialog.get_by_role("button").filter(has_text="$workspace-setting-proof")).to_be_disabled()
+                    page.screenshot(path=str(artifacts / f"{prefix}-skills-{label}.png"))
+                    toggle.click()
+                    expect(toggle).to_be_checked()
+                    expect(skill_dialog.get_by_role("button").filter(has_text="$workspace-setting-proof")).to_be_enabled()
+                    skill_dialog.get_by_role("button", name="Close commands").click()
+                    assert composer.input_value() == draft
+                    print(f"PASS: {prefix} {label} native skill disabled and re-enabled through persistent configuration; draft unchanged")
                     page.get_by_role("button", name="Run shell command", exact=True).wait_for(state="visible")
                     page.get_by_role("button", name="Run shell command", exact=True).click()
                     dialog = page.get_by_role("dialog", name="Run shell command")
@@ -212,6 +228,9 @@ async def main():
         root = Path(temporary)
         home, project = root / "home", root / "project"
         (home / ".codex").mkdir(parents=True)
+        skill = home / ".codex" / "skills" / "workspace-setting-proof" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("---\nname: workspace-setting-proof\ndescription: Isolated skill configuration proof\n---\nNo model invocation is needed.\n")
         project.mkdir()
         mention_fixture = project / "workspace-mention-proof.py"
         mention_fixture.write_text("# Isolated native file-search fixture\n")
