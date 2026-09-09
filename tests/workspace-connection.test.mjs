@@ -221,6 +221,28 @@ test('MCP controls target only the selected session and never run on disposal',a
   ]);
 });
 
+test('Codex MCP login and reload keep exact session and uncertain login receipt',async()=>{
+  const saved=storage(),calls=[];
+  let fail=true;
+  const conn=new WorkspaceConnection({sessionId:'codex-exact',token:'s',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    const body=JSON.parse(options.body);calls.push([url,body]);
+    if(fail)throw Error('lost reply');
+    return response({ok:true,result:{status:'pending'}});
+  }});
+  assert.deepEqual(calls,[]);
+  await assert.rejects(conn.controls().mcpLogin('local'),/lost reply/);
+  fail=false;
+  await conn.controls().mcpLogin('local');
+  assert.equal(calls[0][1].request_id,calls[1][1].request_id);
+  await conn.controls().mcpReload();
+  conn.dispose();
+  assert.deepEqual(calls.map(([url,body])=>[url,body.action,body.payload]),[
+    ['/api/workspace/codex-exact/commands','mcp_login',{name:'local'}],
+    ['/api/workspace/codex-exact/commands','mcp_login',{name:'local'}],
+    ['/api/workspace/codex-exact/commands','mcp_reload',{}],
+  ]);
+});
+
 test('answer receipts persist only a fingerprint while preserving retry identity',async()=>{
   const saved=storage(), ids=[];
   const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

@@ -555,21 +555,41 @@ export class WorkspacePane {
     const dialog=node('dialog','aw-review-dialog aw-mcp-dialog');dialog.setAttribute('aria-label','MCP connections');
     const list=node('div');const status=node('p');status.setAttribute('role','status');
     const close=this.button('Close MCP connections','x',()=>dialog.close());
-    let busy=false;
+    let busy=false,refreshPending=false;
     const refresh=this.button('Refresh MCP connections','refresh-cw',()=>load());
+    const reload=this.button('Reload MCP configuration','rotate-cw',()=>load(null,'reload'));
+    reload.hidden=this.provider!=='Codex' || !this.controls.mcpReload;
     const load=async(name,action)=>{
       if(busy || !dialog.open)return;
-      busy=true;refresh.disabled=true;
+      busy=true;refresh.disabled=true;reload.disabled=true;
       for(const control of list.querySelectorAll('button,input'))control.disabled=true;
       status.textContent='Loading...';
       try{
-        const result=action ? await this.controls.mcpServerControl(name,action) : await this.controls.mcpServers();
+        let result;
+        if(action==='login') {await this.controls.mcpLogin(name);result=await this.controls.mcpServers();}
+        else if(action==='reload')result=await this.controls.mcpReload();
+        else result=action ? await this.controls.mcpServerControl(name,action) : await this.controls.mcpServers();
         if(!dialog.open || this.disposed)return;
         list.replaceChildren();
         for(const server of result.data){
           const row=node('div','aw-background-task aw-mcp-server');row.append(node('strong','',server.name),node('p','',server.status));
           if(this.provider==='Codex'){
             row.append(node('p','',`Authentication: ${server.authStatus || 'unknown'}`),node('p','',`${server.toolCount ?? 0} tools`));
+            if(this.controls.mcpLogin && ['notLoggedIn','oAuth'].includes(server.authStatus)){
+              const login=this.button(`Sign in to ${server.name}`,'log-in',()=>load(server.name,'login'));
+              login.disabled=['pending','uncertain'].includes(server.login?.status);row.append(login);
+            }
+            if(server.login){
+              row.append(node('p','',`Login: ${server.login.status}`));
+              if(server.login.error)row.append(node('p','',server.login.error));
+              if(server.login.status==='pending' && server.login.authorizationUrl){
+                try{
+                  const url=new URL(server.login.authorizationUrl);
+                  if(!['https:','http:'].includes(url.protocol) || url.username || url.password)throw Error('Unsafe authorization URL');
+                  const link=node('a','','Continue authorization');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';row.append(link);
+                }catch{row.append(node('p','','Authorization URL unavailable'));}
+              }
+            }
             list.append(row);continue;
           }
           const label=node('label','','Enabled');const toggle=node('input');toggle.type='checkbox';toggle.checked=server.status!=='disabled';toggle.setAttribute('aria-label',`Enable ${server.name}`);
@@ -582,10 +602,14 @@ export class WorkspacePane {
         status.textContent=result.data.length ? `${result.data.length} connection${result.data.length===1?'':'s'}` : 'No MCP connections';
         window.lucide?.createIcons();
       }catch(error){if(dialog.open)status.textContent=error.message;}
-      finally{busy=false;refresh.disabled=false;}
+      finally{
+        busy=false;refresh.disabled=false;reload.disabled=false;
+        if(refreshPending){refreshPending=false;load();}
+      }
     };
-    dialog.append(node('h3','','MCP connections'),refresh,close,status,list);
-    dialog.addEventListener('close',()=>dialog.remove());this.mcpDialog=dialog;
+    dialog.append(node('h3','','MCP connections'),refresh,reload,close,status,list);
+    this.refreshMcp=()=>{if(busy)refreshPending=true;else load();};
+    dialog.addEventListener('close',()=>{this.refreshMcp=null;dialog.remove();});this.mcpDialog=dialog;
     this.root.append(dialog);dialog.showModal();close.focus();load();
   }
 
@@ -676,6 +700,7 @@ export class WorkspacePane {
       this.controls.replay?.(this.conversation.sequence);
       return false;
     }
+    if(['mcpServer/oauthLogin/completed','mcpServer/startupStatus/updated'].includes(envelope.event?.method))this.refreshMcp?.();
     if(older){
       if(this.frame){cancelAnimationFrame(this.frame);this.frame=0;}
       const count=[...this.conversation.turns.values()].reduce((n,t)=>n+t.items.size,0);

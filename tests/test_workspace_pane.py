@@ -542,6 +542,38 @@ def test_codex_skill_selection_persists_and_sends_exact_path_only_on_submit(pane
     assert not errors
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+def test_codex_mcp_login_and_reload_are_explicit_and_wait_for_native_completion(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      pane.dispose();window.login=null;
+      controls.mcpServers=async()=>({data:[{name:'proof',status:'authenticationRequired',authStatus:'notLoggedIn',toolCount:0,login}]});
+      controls.mcpLogin=async name=>{calls.push(['login',name]);login={status:'pending',authorizationUrl:'https://auth.example/authorize?state=proof'};return login;};
+      controls.mcpReload=async()=>{calls.push(['reload']);return controls.mcpServers();};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      window.seq=0;
+    }""")
+    page.get_by_role('button', name='MCP connections', exact=True).click()
+    login = page.get_by_role('button', name='Sign in to proof')
+    login.wait_for()
+    assert page.evaluate('calls') == []
+    login.click()
+    link = page.get_by_role('link', name='Continue authorization')
+    link.wait_for()
+    assert link.get_attribute('href') == 'https://auth.example/authorize?state=proof'
+    assert login.is_disabled()
+    assert len(page.context.pages) == 1
+    page.evaluate("login={status:'succeeded'};emit({method:'mcpServer/oauthLogin/completed',params:{threadId:'exact',name:'proof',success:true}})")
+    page.get_by_text('Login: succeeded', exact=True).wait_for()
+    assert link.count() == 0
+    page.get_by_role('button', name='Reload MCP configuration').click()
+    page.wait_for_function("calls.length===2")
+    assert page.evaluate('calls') == [['login','proof'],['reload']]
+    assert page.get_by_role('dialog').evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert not errors
+
+
 def test_codex_mcp_inventory_shows_unknown_state_without_unsupported_mutations(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

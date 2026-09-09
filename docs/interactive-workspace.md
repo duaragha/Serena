@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex MCP OAuth and reload (2026-09-09): the connection dialog now invokes native
+MCP login and configuration reload on its existing owner. Login is restricted to
+an exact configured server advertising OAuth, never a caller-supplied URL or
+thread ID. An outstanding/uncertain login cannot be started twice. Authorization
+URLs are displayed as explicit links, not opened automatically; only native
+completion changes the pending status to success/failure. Completed flows drop
+the old URL. Refresh notifications arriving during a load are queued, not lost.
+Busy turns reject mutations before dispatch. Stable command receipts preserve
+retry identity; closing the view does not close the owner. Enable/disable and
+arbitrary MCP configuration editing are still not implemented for Codex.
+Source: https://learn.chatgpt.com/docs/app-server (accessed 2026-09-09), plus
+installed native generated McpServerOauthLoginParams/Response and completion
+schemas under apps/desktop/build/workspace-schema. The protocol supplies the
+authorization URL and completion notification; configuration reload queues a
+refresh from disk.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py::test_codex_mcp_actions_are_explicit_and_receipted -q`: initial exit 1, 1 failed/30 passed; added the missing host command allowlist entries.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py::test_codex_mcp_actions_are_explicit_and_receipted tests/test_workspace_pane.py::test_codex_mcp_login_and_reload_are_explicit_and_wait_for_native_completion tests/test_workspace_pane.py::test_codex_mcp_inventory_shows_unknown_state_without_unsupported_mutations tests/test_workspace_pane.py::test_mcp_connections_explicit_controls_and_failure_state -q`: exit 1, 3 failed/32 passed; corrected the replacement-pane fixture sequence and a misplaced refreshPending declaration.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py::test_codex_mcp_login_and_reload_are_explicit_and_wait_for_native_completion tests/test_workspace_pane.py::test_codex_mcp_inventory_shows_unknown_state_without_unsupported_mutations tests/test_workspace_pane.py::test_mcp_connections_explicit_controls_and_failure_state -q`: final exit 0, 67 passed in 10.31s.
+- `node --test tests/workspace-connection.test.mjs`: exit 0, 18 passed including lost-login-response receipt reuse.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-mcp.py`: exit 0, repeated after visual correction also exit 0. Real native Codex, isolated configuration/home, local OAuth discovery/registration/token endpoints, explicit browser authorization, native success notification and reload; desktop/mobile, page/console/HTTP checks, same owner after view close. No inference or user credentials. Only the disposable loopback provider was authorized.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-codex-mcp.py`: initial exit 1 for loop callback binding in proof; corrected, final exit 0.
+- `git diff --check`: exit 0.
+Inspected apps/desktop/build/workspace-proof/codex-mcp-mobile.png: neon-black
+dialog, explicit pink authorization link, pending state and bounded mobile
+layout. Source-only, not packaged/installed/released; full delivery gates remain.
+
 Claude suggested permission updates (2026-09-09): native canUseTool suggestions
 now cross the client and owner into the approval UI. Nothing is preselected.
 The UI shows the exact rule and labels its destination, including persistent

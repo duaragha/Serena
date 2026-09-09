@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from core.billing import strip_metered_auth_env
@@ -56,6 +57,7 @@ class CodexWorkspace:
         self._fork_ids: set[str] = set()
         self.history_cursor: str | None = None
         self._history_cursors: set[str] = set()
+        self._mcp_logins: dict[str, dict] = {}
 
     async def _history_page(self, cursor=None):
         params = {"threadId": self.session_id, "limit": 50, "sortDirection": "desc", "itemsView": "full"}
@@ -303,13 +305,50 @@ class CodexWorkspace:
                 # Auth state or a nonempty tool catalog does not prove a live connection.
                 data.append({"name": server["name"], "status": status or "unknown",
                              "authStatus": server.get("authStatus", "unknown"),
-                             "toolCount": len(server["tools"])})
+                             "toolCount": len(server["tools"]),
+                             **({"login": deepcopy(self._mcp_logins[server["name"]])} if server["name"] in self._mcp_logins else {})})
             cursor = page.get("nextCursor")
             if not cursor:
                 return {"data": data}
             if not isinstance(cursor, str) or cursor in cursors or len(cursors) >= 100:
                 raise WorkspaceRpcError("MCP inventory pagination did not advance")
             cursors.add(cursor)
+
+    async def reload_mcp(self):
+        async with self._control_lock:
+            if self.state != "ready":
+                raise WorkspaceRpcError("Finish the current Codex turn before reloading MCP")
+            await self.rpc.request("config/mcpServer/reload", {})
+            return await self.list_mcp_servers()
+
+    async def login_mcp(self, name):
+        async with self._control_lock:
+            if self.state != "ready":
+                raise WorkspaceRpcError("Finish the current Codex turn before MCP login")
+            if not isinstance(name, str) or not name:
+                raise ValueError("An exact configured MCP server is required")
+            prior = self._mcp_logins.get(name)
+            if prior and prior["status"] in {"pending", "uncertain"}:
+                return deepcopy(prior)
+            servers = (await self.list_mcp_servers())["data"]
+            server = next((item for item in servers if item["name"] == name), None)
+            if server is None or server["authStatus"] not in {"notLoggedIn", "oAuth"}:
+                raise ValueError("This configured MCP server does not advertise OAuth login")
+            # Reserve before the RPC: a transport timeout must not start another login.
+            login = self._mcp_logins[name] = {"status": "pending"}
+            try:
+                result = await self.rpc.request("mcpServer/oauth/login", {"name": name, "threadId": self.session_id})
+                url = result.get("authorizationUrl") if isinstance(result, dict) else None
+                parts = urlsplit(url) if isinstance(url, str) else None
+                if not parts or parts.scheme not in {"https", "http"} or not parts.hostname or parts.username or parts.password or any(char.isspace() for char in url):
+                    raise WorkspaceRpcError("Codex returned an invalid MCP authorization URL")
+                if login["status"] == "pending":
+                    login["authorizationUrl"] = url
+                return deepcopy(login)
+            except BaseException:
+                if login["status"] == "pending":
+                    login["status"] = "uncertain"
+                raise
 
     async def list_background_tasks(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
@@ -622,7 +661,14 @@ class CodexWorkspace:
                     raise WorkspaceRpcError("Received an event for a different coding session")
                 if "id" in event:
                     self.questions[event["id"]] = deepcopy(event)
-                if method == "turn/started":
+                if method == "mcpServer/oauthLogin/completed":
+                    login = self._mcp_logins.get(params.get("name"))
+                    if login is not None and type(params.get("success")) is bool:
+                        login.clear()
+                        login.update({"status": "succeeded" if params["success"] else "failed"})
+                        if not params["success"]:
+                            login["error"] = str(params.get("error") or "MCP login failed")
+                elif method == "turn/started":
                     self.active_turn = params["turn"]["id"]
                     self.state = "running"
                 elif method == "turn/completed":
@@ -663,6 +709,7 @@ class CodexWorkspace:
         self.thread = None
         self.settings = {}
         self.model_catalog = None
+        self._mcp_logins.clear()
         self.questions.clear()
         self._completed.clear()
         self.history_cursor = None

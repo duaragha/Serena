@@ -181,6 +181,30 @@ def test_codex_mcp_discovery_uses_attached_owner_without_claude_mutations(host):
     assert not owner.sent
 
 
+def test_codex_mcp_actions_are_explicit_and_receipted(host):
+    host.attach("exact")
+    owner = Owner.instances[-1]
+    calls = []
+    async def login(name):
+        calls.append(name)
+        return {"status": "pending"}
+    async def reload():
+        calls.append("reload")
+        return {"data": []}
+    owner.login_mcp, owner.reload_mcp = login, reload
+    assert calls == []
+    result = host.command("exact", "login", "mcp_login", {"name": "local"})
+    assert result["ok"]
+    assert host.command("exact", "login", "mcp_login", {"name": "local"}) == result
+    assert calls == ["local"]
+    assert host.command("exact", "reload", "mcp_reload", {})["ok"]
+    assert not host.command("exact", "bad-reload", "mcp_reload", {"threadId": "other"})["ok"]
+    owner.state = "running"
+    result = host.command("exact", "busy", "mcp_login", {"name": "local"})
+    assert not result["ok"] and result["retryable"]
+    assert calls == ["local", "reload"]
+
+
 def test_mcp_controls_require_attach_and_replay_without_repeating(tmp_path):
     calls = []
     class McpOwner(Owner):

@@ -8,6 +8,49 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_rpc import WorkspaceRpcError
 
 
+@pytest.mark.parametrize("url", ["https://auth.example/authorize?state=one", "javascript:alert(1)"])
+def test_mcp_login_exact_server_pending_guard_and_native_completion(tmp_path, url):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "mcpServerStatus/list":
+                return {"data": [{"name": "local", "tools": {}, "authStatus": "notLoggedIn"}]}
+            if method == "mcpServer/oauth/login":
+                assert params == {"name": "local", "threadId": "exact-session"}
+                return {"authorizationUrl": url}
+            assert method == "config/mcpServer/reload" and params == {}
+            return {}
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError):
+                await client.login_mcp("other")
+            if url.startswith("https"):
+                assert (await client.login_mcp("local"))["authorizationUrl"] == url
+                assert (await client.login_mcp("local"))["status"] == "pending"
+            else:
+                with pytest.raises(WorkspaceRpcError, match="authorization URL"):
+                    await client.login_mcp("local")
+                assert (await client.login_mcp("local"))["status"] == "uncertain"
+            assert len([call for call in calls if call[0] == "mcpServer/oauth/login"]) == 1
+            await rpc.events.put({"method": "mcpServer/oauthLogin/completed", "params": {"threadId": "exact-session", "name": "local", "success": False, "error": "Denied"}})
+            await asyncio.sleep(0)
+            assert (await client.list_mcp_servers())["data"][0]["login"] == {"status": "failed", "error": "Denied"}
+            assert (await client.reload_mcp())["data"][0]["name"] == "local"
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.reload_mcp()
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.login_mcp("local")
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+        assert not client._mcp_logins
+    asyncio.run(run())
+
+
 def test_native_file_search_is_bound_to_owned_project(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

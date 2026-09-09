@@ -302,6 +302,8 @@ class WorkspaceHost:
             "set_permissions",
             "mcp_servers",
             "mcp_server_control",
+            "mcp_login",
+            "mcp_reload",
             "terminate_background_task",
             "cancel_queued_bridge",
             "edit_queued_bridge",
@@ -394,6 +396,13 @@ class WorkspaceHost:
                     if provider != "claude" or set(payload) != {"name", "action"}:
                         raise ValueError("An exact Claude MCP server and action are required")
                     result = await owner.control_mcp_server(payload["name"], payload["action"])
+                elif action in {"mcp_login", "mcp_reload"}:
+                    if provider != "codex" or set(payload) != ({"name"} if action == "mcp_login" else set()):
+                        raise ValueError("An exact Codex MCP action is required")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Finish the current Codex turn before changing MCP connections")
+                    result = await owner.login_mcp(payload["name"]) if action == "mcp_login" else await owner.reload_mcp()
                 elif action == "register_fork":
                     if provider not in {"claude", "codex"} or set(payload) != {"fork_request_id"} or not isinstance(payload["fork_request_id"], str) or self.register_fork is None:
                         raise ValueError("An exact fork creation receipt is required")
