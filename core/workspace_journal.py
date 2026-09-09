@@ -58,6 +58,19 @@ class WorkspaceJournal:
             )
             return True, None
 
+    def command_receipt(self, session_id: str, request_id: str, payload: dict):
+        encoded = json.dumps(payload, sort_keys=True, allow_nan=False)
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT payload, result FROM workspace_commands WHERE session_id=? AND request_id=?",
+                (session_id, request_id),
+            ).fetchone()
+        if row is None:
+            return False, None
+        if row[0] != encoded:
+            raise ValueError("Request ID was already used with different content")
+        return True, json.loads(row[1]) if row[1] is not None else None
+
     def finish_command(self, session_id: str, request_id: str, result: dict) -> None:
         with closing(self._connect()) as conn, conn:
             changed = conn.execute(
@@ -96,6 +109,13 @@ class WorkspaceJournal:
                 "INSERT INTO workspace_events VALUES (?, ?, ?)", (session_id, sequence, encoded)
             )
         return {"sequence": sequence, "event": json.loads(encoded)}
+
+    def latest_sequence(self, session_id: str) -> int:
+        with closing(self._connect()) as conn:
+            return conn.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM workspace_events WHERE session_id=?",
+                (session_id,),
+            ).fetchone()[0]
 
     def read(self, session_id: str, *, after: int = 0, limit: int = 200) -> dict:
         if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 500:

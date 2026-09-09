@@ -13,11 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.billing import strip_metered_auth_env
 from core.workspace_codex import CodexWorkspace
+from core.workspace_host import WorkspaceHost
+from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
 
 
-async def main(review=False, compact=False, permissions=False):
+async def main(review=False, compact=False, permissions=False, bridge=False):
     binary = shutil.which("codex")
     if not binary:
         raise RuntimeError("Installed Codex unavailable")
@@ -119,6 +121,54 @@ async def main(review=False, compact=False, permissions=False):
             print(
                 "PASS: exact persisted ID/history resumed through CodexWorkspace; real second-turn output received"
             )
+            if bridge:
+                await owner.close()
+                owner = None
+
+                class BridgeOwner(CodexWorkspace):
+                    async def open(self):
+                        return await super().open(binary=binary, env=env)
+
+                host = WorkspaceHost(
+                    journal=WorkspaceJournal(root / "bridge.db"),
+                    resolve=lambda session: {
+                        "session_id": session,
+                        "provider": "codex",
+                        "cwd": str(project),
+                    },
+                    factories={
+                        "codex": lambda **kwargs: BridgeOwner(
+                            **kwargs,
+                            lease_factory=lambda session: SessionLease(
+                                session, directory=root / "leases"
+                            ),
+                        )
+                    },
+                )
+                try:
+                    assert (await asyncio.to_thread(host.attach, sid))["ok"]
+                    response = await asyncio.to_thread(
+                        host.bridge,
+                        sid,
+                        "codex",
+                        "Reply exactly SERENA_BRIDGE_PROOF",
+                        "proof-bridge",
+                    )
+                    assert response["ok"] and response["session_id"] == sid
+                    assert "SERENA_BRIDGE_PROOF" in response["response"]
+                    same = await asyncio.to_thread(
+                        host.bridge,
+                        sid,
+                        "codex",
+                        "Reply exactly SERENA_BRIDGE_PROOF",
+                        "proof-bridge",
+                    )
+                    assert same == response
+                    print(
+                        "PASS: native host bridge returns exact-session output; repeated request reuses receipt"
+                    )
+                finally:
+                    await asyncio.to_thread(host.shutdown)
             if permissions:
                 finished.clear()
                 before = len(published)
@@ -185,5 +235,15 @@ if __name__ == "__main__":
     parser.add_argument("--review", action="store_true")
     parser.add_argument("--compact", action="store_true")
     parser.add_argument("--permissions", action="store_true")
+    parser.add_argument("--bridge", action="store_true")
     args = parser.parse_args()
-    asyncio.run(main(review=args.review, compact=args.compact, permissions=args.permissions))
+    if args.bridge and (args.review or args.compact or args.permissions):
+        parser.error("--bridge must run independently of other optional controls")
+    asyncio.run(
+        main(
+            review=args.review,
+            compact=args.compact,
+            permissions=args.permissions,
+            bridge=args.bridge,
+        )
+    )

@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+The existing /api/codex-bridge and /api/claude-bridge routes now prefer an already
+attached structured owner. They submit to the same session, wait for that exact
+turn's native completion, and collect only its output. Unknown owners still use
+the unchanged terminal path; busy, mismatched or unavailable structured owners
+never fall back. No bridge call attaches or focuses a structured pane.
+Stable request_id receipts prevent re-submission after observation timeout or
+host restart, including unresolved receipts. Responses expose the ID for polling
+retries. Legacy callers without an ID receive a new one per HTTP request; they
+must reuse the returned ID to obtain retry deduplication. Busy-owner queueing,
+Fleet/work-bridge reservations and process-crash recovery remain separate gaps.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_bridge.py tests/test_workspace_host.py tests/test_workspace_journal.py -q --basetemp=/tmp/serena-workspace-bridge-verification
+# exit 0: 22 passed in 7.82s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_bridge.py -q --basetemp=/tmp/serena-workspace-bridge-routes-verification
+# exit 0: 8 passed in 3.47s; real existing Flask endpoints, terminal fallback forbidden
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_bridge.py tests/test_workspace_journal.py -q --basetemp=/tmp/serena-workspace-bridge-receipts-verification
+# exit 0: 13 passed in 1.62s; restart receipt protection
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --bridge
+# exit 0: real Codex response through host bridge, same persisted ID, receipt replay
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference --bridge
+# exit 0: real Claude response through host bridge, same persisted ID
+# Both proofs reap owned processes and remove isolated auth/history.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py ui/workspace_bridge.py tests/test_workspace_bridge.py scripts/verify-workspace-codex-roundtrip.py scripts/verify-workspace-claude-roundtrip.py
+# exit 0: All checks passed!
+```
+
 Codex permission requests now render explicit network/filesystem group selection,
 defaulting to no grants and turn scope. Session scope requires selection. The
 adapter accepts only exact requested groups, preserving deny entries and rejecting

@@ -15,10 +15,12 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
 
 from core.billing import METERED_AUTH_ENV_VARS, strip_metered_auth_env
 from core.workspace_claude import ClaudeWorkspace
+from core.workspace_host import WorkspaceHost
+from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease
 
 
-async def main():
+async def main(bridge=False):
     binary = shutil.which("claude")
     if not binary:
         raise RuntimeError("Installed Claude unavailable")
@@ -132,6 +134,41 @@ async def main():
             print(
                 "PASS: native /context output rendered as commandOutput; advertised commands discovered on same session"
             )
+            if bridge:
+                await owner.close()
+                owner = None
+                host = WorkspaceHost(
+                    journal=WorkspaceJournal(root / "bridge.db"),
+                    resolve=lambda session: {
+                        "session_id": session,
+                        "provider": "claude",
+                        "cwd": str(project),
+                    },
+                    factories={
+                        "claude": lambda **kwargs: ClaudeWorkspace(
+                            **kwargs,
+                            lease_factory=lambda session: SessionLease(
+                                session, directory=root / "leases"
+                            ),
+                        )
+                    },
+                )
+                try:
+                    assert (await asyncio.to_thread(host.attach, sid))["ok"]
+                    response = await asyncio.to_thread(
+                        host.bridge,
+                        sid,
+                        "claude",
+                        "Do not use tools. Reply exactly SERENA_CLAUDE_BRIDGE_PROOF",
+                        "bridge-proof",
+                    )
+                    assert response["ok"] and response["session_id"] == sid
+                    assert "SERENA_CLAUDE_BRIDGE_PROOF" in response["response"]
+                    print(
+                        "PASS: native Claude host bridge returned the exact resumed session's output"
+                    )
+                finally:
+                    await asyncio.to_thread(host.shutdown)
         finally:
             try:
                 if owner:
@@ -151,5 +188,6 @@ async def main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--allow-inference", action="store_true", required=True)
-    parser.parse_args()
-    asyncio.run(main())
+    parser.add_argument("--bridge", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(main(bridge=args.bridge))

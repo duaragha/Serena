@@ -11613,13 +11613,16 @@ def api_runtime_context():
 @app.route("/api/codex-bridge", methods=["POST"])
 def api_codex_bridge():
     from core.codex_bridge import call_codex_via_bridge
+    from ui.workspace_bridge import structured_bridge
     data = request.get_json(silent=True) or {}
     target_sid = (data.get("target_sid") or "").strip()
     prompt = data.get("prompt") or ""
     timeout = float(data.get("timeout") or 300.0)
     if not target_sid or not prompt:
         return jsonify({"ok": False, "message": "target_sid and prompt are required"}), 400
-    result = call_codex_via_bridge(target_sid, prompt, timeout=timeout)
+    result = structured_bridge("codex", target_sid, prompt, timeout)
+    if result is None:
+        result = call_codex_via_bridge(target_sid, prompt, timeout=timeout)
     return jsonify(result)
 
 
@@ -11674,13 +11677,16 @@ def api_claude_bridge():
     `chats ask-claude` so codex (or any caller) can feed a prompt into a
     linked claude session and get its reply back."""
     from core.claude_bridge import call_claude_via_bridge
+    from ui.workspace_bridge import structured_bridge
     data = request.get_json(silent=True) or {}
     target_sid = (data.get("target_sid") or "").strip()
     prompt = data.get("prompt") or ""
     timeout = float(data.get("timeout") or 300.0)
     if not target_sid or not prompt:
         return jsonify({"ok": False, "message": "target_sid and prompt are required"}), 400
-    result = call_claude_via_bridge(target_sid, prompt, timeout=timeout)
+    result = structured_bridge("claude", target_sid, prompt, timeout)
+    if result is None:
+        result = call_claude_via_bridge(target_sid, prompt, timeout=timeout)
     return jsonify(result)
 
 

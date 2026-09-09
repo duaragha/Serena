@@ -119,6 +119,96 @@ class WorkspaceHost:
         # Reading a journal must never resume a process or create the loop.
         return self.journal.read(session_id, after=after)
 
+    def bridge(self, sid, provider, prompt, request_id, *, timeout=300):
+        """Use an already attached owner; None alone permits legacy fallback."""
+        self._validate_session(sid)
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("A bridge prompt is required")
+        if not isinstance(request_id, str) or not 1 <= len(request_id) <= 100:
+            raise ValueError("A stable bridge request ID is required")
+        found, receipt = self.journal.command_receipt(
+            sid, f"bridge:{request_id}", {"provider": provider, "prompt": prompt}
+        )
+        if found:
+            return receipt or {
+                "ok": False,
+                "pending": True,
+                "response": "",
+                "message": "Prior bridge delivery is unconfirmed; do not resend as a new request",
+            }
+        if self._loop is None:
+            return None
+        result = self._dispatch(self._bridge(sid, provider, prompt, request_id), timeout)
+        if result is not None and result.get("pending"):
+            result.update(
+                response="", message="Bridge is still pending; do not resend as a new request"
+            )
+        return result
+
+    async def _bridge(self, sid, provider, prompt, request_id):
+        if sid not in self._sessions:
+            return None
+        key = f"bridge:{request_id}"
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            owner, actual_provider = self._sessions[sid]
+            if provider != actual_provider:
+                return {
+                    "ok": False,
+                    "response": "",
+                    "message": "Target belongs to another provider",
+                }
+            claimed, prior = await asyncio.to_thread(
+                self.journal.claim_command, sid, key, {"provider": provider, "prompt": prompt}
+            )
+            if not claimed:
+                return prior or {"ok": False, "pending": True}
+            cursor = await asyncio.to_thread(self.journal.latest_sequence, sid)
+            try:
+                # Busy owners reject submission. Never steer or interrupt an
+                # unrelated turn merely because a sibling requested a reply.
+                result = await owner.submit([{"type": "text", "text": prompt}])
+                turn_id = result["turn"]["id"]
+            except Exception as error:
+                receipt = {"ok": False, "response": "", "message": str(error)}
+                await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+                return receipt
+        texts = {}
+        receipt = None
+        while receipt is None:
+            page = await asyncio.to_thread(self.journal.read, sid, after=cursor)
+            for envelope in page["events"]:
+                event = envelope["event"]
+                method, params = event["method"], event.get("params", {})
+                if method in {"workspace/error", "workspace/transportClosed"}:
+                    receipt = {"ok": False, "message": params.get("reason", "Session unavailable")}
+                    break
+                if params.get("turnId") == turn_id:
+                    if method == "item/agentMessage/delta":
+                        item_id = params["itemId"]
+                        texts[item_id] = texts.get(item_id, "") + params.get("delta", "")
+                    elif method == "item/completed" and params.get("item", {}).get("type") in {
+                        "agentMessage",
+                        "commandOutput",
+                    }:
+                        item = params["item"]
+                        texts[item["id"]] = item.get("text", "")
+                turn = params.get("turn") or {}
+                if method == "turn/completed" and turn.get("id") == turn_id:
+                    for item in turn.get("items", []):
+                        if item.get("type") in {"agentMessage", "commandOutput"}:
+                            texts[item["id"]] = item.get("text", "")
+                    receipt = {
+                        "ok": turn.get("status") == "completed",
+                        "message": f"finished ({turn.get('status', 'unknown')})",
+                    }
+                    break
+            cursor = page["cursor"]
+            if receipt is None and not page["has_more"]:
+                await asyncio.sleep(0.1)
+        receipt.update(response="\n\n".join(texts.values()), session_id=sid, turn_id=turn_id)
+        await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+        return receipt
+
     def command(self, sid: str, request_id: str, action: str, payload: dict, *, timeout=35):
         self._validate_session(sid)
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
@@ -159,7 +249,9 @@ class WorkspaceHost:
             try:
                 if action == "commands":
                     if provider != "claude" or payload:
-                        raise ValueError("Command discovery requires a Claude session and no payload")
+                        raise ValueError(
+                            "Command discovery requires a Claude session and no payload"
+                        )
                     result = await owner.list_commands()
                 elif action == "background_tasks":
                     if provider != "codex" or payload:
