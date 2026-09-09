@@ -11,6 +11,21 @@ export class WorkspaceConversation {
     this.models = [];
     this.commands = [];
     this.otherEvents = [];
+    this.otherEventSizes = [];
+    this.otherEventBytes = 0;
+    this.otherEventsOmitted = 0;
+  }
+
+  rememberEvent(event) {
+    const bytes = JSON.stringify(event).length * 2;
+    // Full records stay in the disk journal. This is only a recent browser cache.
+    if (bytes > 1024 * 1024) { this.otherEventsOmitted++; return; }
+    while (this.otherEvents.length >= 100 || this.otherEventBytes + bytes > 1024 * 1024) {
+      this.otherEvents.shift(); this.otherEventBytes -= this.otherEventSizes.shift();
+      this.otherEventsOmitted++;
+    }
+    this.otherEvents.push(structuredClone(event));
+    this.otherEventSizes.push(bytes); this.otherEventBytes += bytes;
   }
 
   turn(id) {
@@ -85,12 +100,12 @@ export class WorkspaceConversation {
       this.questions.clear();
     } else if (method === 'error') {
       this.error = p.error?.message || p.message || 'Agent reported an error';
-      this.otherEvents.push(structuredClone(event));
+      this.rememberEvent(event);
     } else if ('id' in event) {
       this.questions.set(event.id, structuredClone(event));
     } else {
       // New provider event types remain inspectable instead of being discarded.
-      this.otherEvents.push(structuredClone(event));
+      this.rememberEvent(event);
     }
     this.sequence = sequence;
     return true;

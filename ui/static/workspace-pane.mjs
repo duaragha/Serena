@@ -39,6 +39,8 @@ export class WorkspacePane {
     this.status = node('span', 'aw-state', 'Connecting');
     this.status.setAttribute('role', 'status');
     head.append(this.status);
+    const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
+    eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.log = node('div', 'aw-transcript');
     this.log.tabIndex = 0;
     this.log.setAttribute('aria-label', `${provider} messages and tool output`);
@@ -236,6 +238,38 @@ export class WorkspacePane {
     window.lucide?.createIcons();
     try { const result=await this.controls.commands(); if(!dialog.open || this.disposed)return; commands=result.data; render(); }
     catch(error){if(dialog.open)status.textContent=error.message;}
+  }
+
+  async openEvents() {
+    if(this.eventsDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-events-dialog');dialog.setAttribute('aria-label','Session events');
+    const status=node('p');status.setAttribute('role','status');const list=node('div');
+    const navigation=node('div','aw-event-navigation');
+    const close=this.button('Close session events','x',()=>dialog.close());
+    let after=0, cursor=0, busy=false;const previous=[];
+    const back=this.button('Previous event page','arrow-left',()=>{if(!busy && previous.length){after=previous.pop();load();}});
+    const next=this.button('Next event page','arrow-right',()=>{if(!busy){previous.push(after);after=cursor;load();}});
+    const refresh=this.button('Refresh event page','refresh-cw',()=>load());
+    const load=async()=>{
+      if(busy)return;busy=true;back.disabled=next.disabled=refresh.disabled=true;list.replaceChildren();status.textContent='Loading...';
+      try{
+        const page=await this.controls.events(after);if(!dialog.open || this.disposed)return;
+        if(!Array.isArray(page.events) || !Number.isSafeInteger(page.cursor) || page.cursor<after)throw Error('Invalid event page');
+        cursor=page.cursor;
+        for(const envelope of page.events){
+          const detail=node('details','aw-tool');detail.append(node('summary','',`${envelope.sequence} ${envelope.event.method}`));
+          detail.addEventListener('toggle',()=>{
+            if(detail.open && !detail.querySelector('pre'))detail.append(node('pre','',JSON.stringify(envelope.event,null,2)));
+            else if(!detail.open)detail.querySelector('pre')?.remove();
+          });list.append(detail);
+        }
+        status.textContent=page.events.length?`${page.events[0].sequence} - ${cursor}`:'No events';
+        next.disabled=!page.has_more || cursor<=after;
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;back.disabled=!previous.length;refresh.disabled=false;}
+    };
+    navigation.append(back,refresh,next);dialog.append(node('h3','','Session events'),close,status,list,navigation);
+    dialog.addEventListener('close',()=>{dialog.replaceChildren();dialog.remove();if(this.eventsDialog===dialog)this.eventsDialog=null;});this.eventsDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();await load();
   }
 
   async openClaudeEffort() {
@@ -888,6 +922,7 @@ export class WorkspacePane {
     this.mcpDialog?.close();
     this.contextDialog?.close();
     this.permissionsDialog?.close();
+    this.eventsDialog?.close();
     this.effortDialog?.close();
     this.queueDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);

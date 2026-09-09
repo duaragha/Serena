@@ -60,6 +60,44 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+def test_event_inspector_pages_lazily_without_session_actions(pane, tmp_path, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      const root=pane.root;const Constructor=pane.constructor;pane.dispose();root.replaceChildren();window.eventReads=[];
+      controls.events=async after=>{eventReads.push(after);if(window.failEvents)throw Error('Journal unavailable');return {events:[{sequence:after+1,event:{method:'native-event',params:{text:'<img src=x onerror=window.bad=true>'}}}],cursor:after+1,has_more:after===0};};
+      window.pane=new Constructor(root,{sessionId:'exact',provider:'Claude',controls});
+    }""")
+    assert page.evaluate("eventReads") == []
+    page.get_by_role("button", name="Session events", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Session events")
+    dialog.get_by_text("1 native-event", exact=True).wait_for()
+    assert dialog.locator("pre").count() == 0
+    dialog.get_by_text("1 native-event", exact=True).click()
+    assert "<img" in dialog.locator("pre").inner_text()
+    assert dialog.locator("img").count() == 0
+    dialog.get_by_role("button", name="Next event page").click()
+    dialog.get_by_text("2 native-event", exact=True).wait_for()
+    assert dialog.get_by_role("button", name="Next event page").is_disabled()
+    assert dialog.locator("pre").count() == 0
+    dialog.get_by_role("button", name="Previous event page").click()
+    dialog.get_by_text("1 native-event", exact=True).wait_for()
+    page.evaluate("window.failEvents=true")
+    dialog.get_by_role("button", name="Refresh event page").click()
+    dialog.get_by_text("Journal unavailable").wait_for()
+    assert dialog.locator("details").count() == 0
+    page.evaluate("window.failEvents=false")
+    dialog.get_by_role("button", name="Refresh event page").click()
+    dialog.get_by_text("1 native-event", exact=True).wait_for()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / f"event-inspector-{width}.png"))
+    dialog.get_by_role("button", name="Close session events").click()
+    assert page.evaluate("calls") == []
+    assert page.evaluate("eventReads") == [0, 1, 0, 0, 0]
+    assert not errors
+
+
 def test_streaming_tool_input_keeps_one_expanded_call(pane):
     page, errors = pane
     page.evaluate("emit({method:'item/started',params:{turnId:'t',item:{id:'streamed',type:'claudeToolCall',tool:'Bash',input:{},inputStreaming:true,inputJson:'{\"command\":',status:'inProgress'}}})")

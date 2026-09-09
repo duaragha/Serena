@@ -11,6 +11,17 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('event inspector reads exact-session pages without moving live replay or sending commands',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{calls.push([url,options.method]);return response({events:[],cursor:200,has_more:false});}});
+  conn.cursor=500;
+  await conn.controls().events(200);
+  assert.equal(conn.cursor,500);
+  assert.throws(()=>conn.controls().events(-1),/cursor/);
+  conn.dispose();
+  assert.deepEqual(calls,[['/api/workspace/exact/events?after=200','GET']]);
+});
+
 test('steering targets the displayed turn and never falls back to submit', async () => {
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'secret',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

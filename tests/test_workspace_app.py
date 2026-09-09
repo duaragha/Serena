@@ -116,6 +116,11 @@ function setTermStatus(status){window.lastStatus=status;}
             page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact")
             page.get_by_role("textbox", name=f"Message {provider.capitalize()}").wait_for()
             assert not owners
+            page.get_by_role("button", name="Session events", exact=True).click()
+            inspector = page.get_by_role("dialog", name="Session events")
+            inspector.get_by_text("No events", exact=True).wait_for()
+            assert not owners and host._loop is None
+            inspector.get_by_role("button", name="Close session events").click()
             page.get_by_role("button", name="Resume session").click()
             page.get_by_role("button", name="Resume session").wait_for(state="hidden")
             page.get_by_role("textbox", name=f"Message {provider.capitalize()}").fill(
@@ -166,6 +171,11 @@ function setTermStatus(status){window.lastStatus=status;}
                 token,
             )
             assert previews == [200, "image/png", len(raw), 400]
+            page.get_by_role("button", name="Session events", exact=True).click()
+            inspector = page.get_by_role("dialog", name="Session events")
+            inspector.get_by_text("1 workspace/history", exact=True).click()
+            assert '"id": "exact"' in inspector.locator("pre").inner_text()
+            inspector.get_by_role("button", name="Close session events").click()
             page.screenshot(path=str(tmp_path / "mounted-workspace.png"))
             page.reload()
             page.get_by_role("button", name="Resume session").click()

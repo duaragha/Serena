@@ -5,6 +5,21 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('raw event cache is count and size bounded without losing replay position',()=>{
+  const model=new WorkspaceConversation('exact');
+  for(let sequence=1;sequence<=1000;sequence++)model.apply(wrap(sequence,{method:'workspace/claude',params:{record:{text:'delta'}}}));
+  assert.equal(model.otherEvents.length,100);
+  assert.equal(model.otherEventsOmitted,900);
+  assert.equal(model.sequence,1000);
+  model.apply(wrap(1001,{method:'large/native',params:{text:'x'.repeat(600000)}}));
+  assert.equal(model.otherEvents.length,100);
+  assert.equal(model.otherEventsOmitted,901);
+  assert.equal(model.sequence,1001);
+  for(let sequence=1002;sequence<1100;sequence++)model.apply(wrap(sequence,{method:'medium/native',params:{text:'x'.repeat(50000)}}));
+  assert.ok(model.otherEventBytes<=1024*1024);
+  assert.equal(model.otherEventSizes.length,model.otherEvents.length);
+});
+
 test('native history model reaches controls without overwriting explicit resume settings',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,{method:'workspace/history',params:{thread:{id:'exact',model:'last-real',turns:[]}}}));

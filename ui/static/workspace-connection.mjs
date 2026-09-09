@@ -103,6 +103,10 @@ export class WorkspaceConnection {
 
   controls() {
     return {
+      events: after => {
+        if (!Number.isSafeInteger(after) || after < 0) throw Error('Invalid event cursor');
+        return this.request(`/events?after=${after}`);
+      },
       image: async token => {
         if (this.stopped || !/^[a-f0-9]{32}$/.test(token)) throw Error('Image preview unavailable');
         const fetcher = this.fetcher;

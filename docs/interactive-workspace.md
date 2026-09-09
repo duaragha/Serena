@@ -2,6 +2,26 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+The browser's duplicate raw-event cache is limited to 100 records and an
+approximately 1 MiB serialized-string budget. Oversized records are not retained
+in that cache; ordered replay and the disk journal are unchanged. This does not
+bound the entire conversation/history model or image storage, which remain gaps.
+A read-only Session events inspector fetches one journal page at a time, renders
+raw bodies only on expansion, and releases the page on close. Its independent
+cursor never advances live replay, sends commands, attaches or stops an owner.
+
+```sh
+node --test tests/workspace-events.test.mjs tests/workspace-connection.test.mjs
+# exit 0: 18 passed, including cache bounds and independent read-only paging
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_event_inspector_pages_lazily_without_session_actions -q --basetemp=/tmp/serena-event-inspector
+# exit 0: 2 passed in 2.64s; desktop/mobile screenshots reviewed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --basetemp=/tmp/serena-event-inspector-served
+# exit 0: 2 passed in 5.14s; real HTTP journal access before/after attachment,
+# no launch when reading an empty journal, exact-session native history visible
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py tests/test_workspace_app.py
+# exit 0: all checks passed
+```
+
 Claude tool calls now stream into one pane item from native content-block start
 and input-JSON deltas. Partial JSON is explicitly labelled as receiving input,
 never treated as a complete command. Complete objects use the standard JSON
