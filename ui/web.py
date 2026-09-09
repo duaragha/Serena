@@ -13189,8 +13189,13 @@ def ws_terminal(ws, tid):
             chunk = pty_terminal.read_available(tid, max_bytes=65536, timeout=0.05)
             if chunk is None:
                 pty_dead.set()
+                # A pane that died seconds after it opened may have said why.
+                # Codex's writer-lock refusal is the case that kept looking
+                # like a mystery; hand the renderer the reason and it stays
+                # on screen instead of vanishing into "Session ended."
+                reason = pty_terminal.explain_early_exit(tid)
                 try:
-                    ws.send(json.dumps({"exit": True}))
+                    ws.send(json.dumps({"error": reason} if reason else {"exit": True}))
                 except Exception:
                     pass
                 stop_reader.set()
