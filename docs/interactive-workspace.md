@@ -2,6 +2,21 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Unsent composer text now persists in sessionStorage keyed by provider and full
+session ID. Reload never submits it. Only a confirmed send clears matching text;
+newer text and failed-send drafts remain. This does not persist file objects or
+promise draft recovery after the browser session is destroyed.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q
+# initial 11-test run: exit 0, 11 passed in 5.86s
+# added race fixture: terminated hung run exit 143; next run exit 1,
+# 1 failed/11 passed due to wait_for_function invoking the resolver function
+# corrected fixture final run: exit 0, 12 passed in 6.25s
+node --check ui/static/workspace-pane.mjs
+# exit 0
+```
+
 Codex composer steering is now wired through the upload/receipt path. A running
 turn changes the send action to "Steer running turn". The browser captures the
 displayed turn ID before uploads, the host requires it, and the adapter rejects

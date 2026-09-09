@@ -167,6 +167,55 @@ def test_codex_running_composer_steers_exact_turn(pane):
     assert not errors
 
 
+def test_draft_reload_is_session_scoped_and_never_sends(pane):
+    page, errors = pane
+    page.locator("#left textarea").fill("unsent Claude text\nsecond line")
+    page.locator("#right textarea").fill("different Codex draft")
+    assert page.evaluate("calls.length") == 0
+    page.reload()
+    page.wait_for_function("window.pane && pane.conversation.sequence === 1")
+    assert page.locator("#left textarea").input_value() == "unsent Claude text\nsecond line"
+    assert page.locator("#right textarea").input_value() == "different Codex draft"
+    assert page.evaluate("calls.length") == 0
+    page.locator("#left").get_by_role("button", name="Send message", exact=True).click()
+    page.wait_for_function("calls.length === 1")
+    page.wait_for_function("document.querySelector('#left textarea').value === ''")
+    page.reload()
+    page.wait_for_function("window.pane && pane.conversation.sequence === 1")
+    assert page.locator("#left textarea").input_value() == ""
+    assert page.locator("#right textarea").input_value() == "different Codex draft"
+    assert page.evaluate("calls.length") == 0
+    assert not errors
+
+
+def test_failed_send_keeps_draft_after_reload(pane):
+    page, errors = pane
+    page.locator("#left textarea").fill("keep after failure")
+    page.evaluate("window.failSubmit=true")
+    page.locator("#left").get_by_role("button", name="Send message", exact=True).click()
+    page.get_by_role("alert").filter(has_text="Submission unconfirmed").wait_for()
+    page.reload()
+    page.wait_for_function("window.pane && pane.conversation.sequence === 1")
+    assert page.locator("#left textarea").input_value() == "keep after failure"
+    assert page.evaluate("calls.length") == 0
+    assert not errors
+
+
+def test_confirmed_send_does_not_erase_newer_draft(pane):
+    page, errors = pane
+    page.evaluate("() => { controls.submit=()=>new Promise(resolve=>window.finishSend=resolve); }")
+    page.locator("#left textarea").fill("sending now")
+    page.locator("#left").get_by_role("button", name="Send message", exact=True).click()
+    page.wait_for_function("typeof window.finishSend === 'function'")
+    page.locator("#left textarea").fill("next thought")
+    page.evaluate("window.finishSend({})")
+    page.wait_for_function("!pane.sending")
+    page.reload()
+    page.wait_for_function("window.pane && pane.conversation.sequence === 1")
+    assert page.locator("#left textarea").input_value() == "next thought"
+    assert not errors
+
+
 def test_claude_questions_send_selected_and_custom_answers(pane, tmp_path):
     page, errors = pane
     page.evaluate("""emit({id:'ask',method:'workspace/claudeApproval',params:{threadId:'exact',tool:'AskUserQuestion',input:{questions:[

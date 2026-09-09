@@ -10,10 +10,12 @@ const icon = name => { const el = node('i'); el.dataset.lucide = name; return el
 
 /** A real session view. Controls are supplied by the session owner, not a CLI scraper. */
 export class WorkspacePane {
-  constructor(root, {sessionId, provider, model = '', controls}) {
+  constructor(root, {sessionId, provider, model = '', controls, draftStorage}) {
     this.root = root;
     this.provider = provider;
     this.controls = controls;
+    this.draftStorage = draftStorage;
+    this.draftKey = `serena-workspace-draft:${provider.toLowerCase()}:${sessionId}`;
     this.conversation = new WorkspaceConversation(sessionId);
     this.rendered = new Map();
     this.files = [];
@@ -43,6 +45,12 @@ export class WorkspacePane {
     this.input.placeholder = `Message ${provider}...`;
     this.input.setAttribute('aria-label', `Message ${provider}`);
     this.input.rows = 2;
+    try {
+      this.draftStorage ??= window.sessionStorage;
+      this.input.value = this.draftStorage.getItem(this.draftKey) || '';
+    }
+    catch (error) { this.error(new Error(`Draft storage unavailable: ${error.message}`)); }
+    this.input.addEventListener('input', () => this.persistDraft());
     this.attachments = node('div', 'aw-attachments');
     const footer = node('div', 'aw-composer-tools');
     this.fileInput = node('input');
@@ -80,6 +88,7 @@ export class WorkspacePane {
       e.preventDefault();
       const text = e.clipboardData.getData('text/plain');
       if (text) this.input.setRangeText(text, this.input.selectionStart, this.input.selectionEnd, 'end');
+      this.persistDraft();
       this.files.push(...files); this.renderAttachments();
     });
     this.form.addEventListener('dragover', e => {
@@ -111,6 +120,13 @@ export class WorkspacePane {
   refreshIcons() { window.lucide?.createIcons({root: this.root}); }
   error(error) { this.alert.hidden = false; this.alert.textContent = error.message || String(error); }
 
+  persistDraft() {
+    try {
+      if (this.input.value) this.draftStorage.setItem(this.draftKey, this.input.value);
+      else this.draftStorage.removeItem(this.draftKey);
+    } catch (error) { this.error(new Error(`Draft could not be saved: ${error.message}`)); }
+  }
+
   receive(envelope) {
     if (this.disposed) return false;
     try {
@@ -138,7 +154,7 @@ export class WorkspacePane {
       if (this.tierSelect.value) options.serviceTier = this.tierSelect.value === '__default' ? null : this.tierSelect.value;
       if (this.canSteer()) await this.controls.steer({text, files, expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else await this.controls.submit({text, files, options});
-      if (this.input.value === text) this.input.value = '';
+      if (this.input.value === text) { this.input.value = ''; this.persistDraft(); }
       this.files = this.files.filter(file => !files.includes(file));
       this.renderAttachments();
     } catch (error) { this.error(error); }
