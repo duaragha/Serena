@@ -29,7 +29,7 @@
 .serena-workspace .main{min-height:0}.serena-workspace #viewChats{position:relative}
 .serena-workspace .project-sidebar{display:none;position:absolute;top:72px;left:12px;z-index:9900;width:300px;max-width:calc(100vw - 24px);max-height:min(65vh,600px);min-width:0;border:1px solid #67405d;border-radius:7px;background:#130b14;box-shadow:0 16px 40px #000b;padding:8px 0}
 .serena-workspace .project-sidebar.workspace-open{display:block}.serena-workspace [data-divider="proj-chats"]{display:none}
-.serena-workspace .chat-list-col{flex:0 0 var(--chats-w,280px);min-width:220px;max-width:440px;background:#0b080c;border:0}
+.serena-workspace .chat-list-col{flex:0 0 var(--chats-w,267px);min-width:220px;max-width:440px;background:#0b080c;border:0}
 .workspace-project-wrap{padding:16px 13px 10px;flex-shrink:0}
 #workspaceProject{width:100%;display:flex;align-items:center;gap:10px;padding:10px;border:1px solid #3f2940;border-radius:6px;background:#140d16;color:var(--menu);text-align:left}
 #workspaceProject>svg:first-child{width:29px;height:29px;padding:5px;border-radius:5px;background:#302031;color:var(--accent)}
@@ -44,7 +44,8 @@
 .serena-workspace .group-header{font:10px var(--mono);border:0;background:#0b080c;padding:13px 9px 7px;color:#c4a8c1}
 .serena-workspace .session-row{display:grid;grid-template-columns:14px 14px minmax(0,1fr) auto;grid-template-rows:auto auto;align-items:center;column-gap:4px;row-gap:5px;padding:10px 9px;margin:2px 0;border:1px solid transparent;border-radius:5px;min-height:55px;background:transparent}
 .serena-workspace .session-row.focused{background:#251323;border-color:#54304b;box-shadow:inset 2px 0 var(--accent)}
-.serena-workspace .session-row.selected{background:#29142d;border-color:#784465}.serena-workspace .session-row.has-group{border-left:1px solid transparent}
+.serena-workspace .session-row.selected{background:#29142d;border-color:#784465}.serena-workspace .session-row.has-group{border-left:1px solid transparent;box-shadow:none}
+.serena-workspace .session-row.focused.has-group{box-shadow:inset 2px 0 var(--accent)}
 .serena-workspace .session-star{grid-column:1;grid-row:1;width:14px;font-size:12px}.serena-workspace .session-link{grid-column:2;grid-row:1;width:13px;margin:0}
 .serena-workspace .session-title{grid-column:3/5;grid-row:1;min-width:0;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;font-weight:500}
 .serena-workspace .session-title-main{min-width:0}.serena-workspace .session-title .agent-icon{width:12px;height:12px;margin-right:4px}
@@ -57,21 +58,24 @@
 .serena-workspace .conv-header{padding:17px 23px;background:#030203;border-bottom:1px solid var(--border)}
 .serena-workspace .conv-header-top{gap:9px}.serena-workspace .conv-header h2{font:500 18px 'Segoe UI',Arial,sans-serif;line-height:1.4;overflow-wrap:anywhere}
 .workspace-breadcrumb{font:10px var(--mono);color:var(--text-dim);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.serena-workspace .conv-header .meta{font:9px var(--mono);color:#b79db5;margin-top:4px;max-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.serena-workspace .conv-header .meta{display:none}
 .serena-workspace .conv-view-toggle{border-radius:5px;background:#120c14;padding:2px}.serena-workspace .view-tab{font:11px 'Segoe UI',Arial,sans-serif;padding:5px 10px;border-radius:4px}.serena-workspace .view-tab.active{background:#321d2d;color:var(--accent)}
 .serena-workspace .conv-hide{font:10px 'Segoe UI',Arial,sans-serif;border-radius:5px;padding:5px 8px}
 .workspace-agents{display:flex;gap:5px;flex-shrink:0;min-height:43px;align-items:center;padding:5px 14px;border-bottom:1px solid var(--border);background:#09060a;overflow-x:auto}
 .workspace-agents:empty{display:none}.workspace-agents button{display:flex;align-items:center;gap:6px;color:var(--text-dim);border:0;background:transparent;padding:6px 10px;border-radius:5px;font:11px 'Segoe UI',Arial,sans-serif;white-space:nowrap}
 .workspace-agents button.active{background:#2d1928;color:var(--accent)}.workspace-agents button:hover{color:var(--text-bright)}.workspace-agents .agent-icon{margin:0;width:13px;height:13px}
 .workspace-agents>button>svg{width:14px;height:14px}
-.workspace-agents:not(:empty)+#codeTabs:not(:has([data-tabid]:not([data-tabid="__term__"]))){display:none}
+.workspace-session-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;flex-shrink:0;padding-right:15px;border-bottom:1px solid var(--border);background:#09060a}
+.workspace-session-toolbar .workspace-agents{border:0;min-width:0;padding:5px 14px}
+.workspace-session-toolbar .conv-view-toggle{margin-left:auto;flex-shrink:0}
+#convContent:has(.workspace-agents:not(:empty)) #codeTabs:not(:has([data-tabid]:not([data-tabid="__term__"]))){display:none}
 .serena-workspace .code-tabs{background:#09060a}.serena-workspace .code-tab{font:10px var(--mono);padding:6px 12px}
 .serena-workspace .term-statusbar{background:#080609;border-bottom:1px solid #201622;padding:4px 12px;min-height:29px;gap:8px}
 .serena-workspace .term-status{font:10px var(--mono);color:#c1a9c3}.serena-workspace .term-status.error{color:#ff838c}
 .serena-workspace #termMounts{background:#000}.workspace-terminal-head{display:flex;align-items:center;gap:8px;min-height:37px;height:37px;flex-shrink:0;padding:0 12px;border-bottom:1px solid #2e2030;background:#09060a;font:11px 'Segoe UI',Arial,sans-serif;color:#e5d5e8}
 .workspace-terminal-head .agent-icon{margin:0}.workspace-terminal-head button{margin-left:auto;border:0;background:transparent;color:#b5a0b9;font:9px var(--mono);padding:5px;cursor:pointer}
 .workspace-terminal-body{flex:1;min-height:0;min-width:0;width:100%;overflow:hidden}.serena-workspace #termMounts>.term-pane{display:flex;flex-direction:column;padding:0}.serena-workspace #termMounts>.term-pane.hidden{display:none}
-.serena-workspace .panel-files{flex:0 0 var(--files-w,230px);min-width:170px;max-width:450px;background:#0b080c;overflow-y:auto}
+.serena-workspace .panel-files{flex:0 0 var(--files-w,219px);min-width:170px;max-width:450px;background:#0b080c;overflow-y:auto}
 .workspace-inspector-tabs{display:flex;gap:5px;padding:8px 10px;border-bottom:1px solid var(--border);flex-shrink:0}.workspace-inspector-tabs button{padding:5px 8px;font:11px 'Segoe UI',Arial,sans-serif;border:0;border-radius:5px;background:transparent;color:var(--text-dim)}
 .workspace-inspector-tabs button.active{background:#2e1929;color:var(--accent)}.workspace-inspector-tabs span{color:var(--green);font:9px var(--mono)}
 .serena-workspace .files-header{border:0;padding:13px 14px;background:transparent}.serena-workspace .files-root{font:11px var(--mono);text-transform:none;color:#e3bddb}
@@ -93,3 +97,16 @@
 @media(max-width:760px){.serena-workspace .tab-bar{overflow-x:auto;overflow-y:hidden;min-height:43px;height:43px;padding:0 7px}.serena-workspace .tab{flex-shrink:0;height:43px}.serena-workspace .tab .count{display:none}.workspace-topbar{height:52px;gap:8px}.workspace-top-actions{gap:5px}.workspace-avatar,.workspace-divider{display:none}.serena-workspace .live-usage-compact{gap:5px;font-size:9px;padding:3px 6px}.serena-workspace .live-usage-chip{gap:4px}.serena-workspace .conv-header-top{flex-wrap:wrap}.serena-workspace .conv-header-text{flex-basis:100%}.serena-workspace .conv-header h2{font-size:16px}.serena-workspace .panel-files{position:absolute;right:0;top:0;bottom:0;width:260px;z-index:100;background:#0b080c;border-left:1px solid var(--border-bright)}.serena-workspace #convFilesDivider{display:none}.serena-workspace .chat-list-col{position:absolute;left:0;top:0;bottom:0;width:270px;z-index:101;border-right:1px solid #553348;max-width:85vw}.serena-workspace [data-divider="chats-conv"]{display:none}.serena-workspace:not(.workspace-mobile-chats) .chat-list-col{display:none}.serena-workspace .project-sidebar{top:70px}.serena-workspace .term-statusbar{flex-wrap:wrap}.serena-workspace .term-session-ids{flex-wrap:wrap}.serena-workspace .settings-wrap{padding:20px}.workspace-terminal-head{padding:0 7px;font-size:10px}.workspace-terminal-head button{font-size:8px}}
 @media(prefers-reduced-motion:reduce){.serena-workspace *{scroll-behavior:auto;transition:none}}
 @media(max-width:760px){.serena-workspace .panel-files:not(.workspace-mobile-files){display:none}}
+/* Match the approved shell's proportions without altering terminal rendering. */
+.serena-workspace .pane-divider{width:1px;min-width:1px;flex-basis:1px;position:relative;overflow:visible;background:var(--border)}
+.serena-workspace .pane-divider::after{content:'';position:absolute;inset:0 -4px;z-index:5;cursor:col-resize}
+.serena-workspace .conv-header{min-height:80px;display:flex;align-items:center;padding:14px 24px}
+.serena-workspace .conv-header-top{width:100%}
+.serena-workspace .workspace-terminal-head{height:48px;min-height:48px;padding:8px 17px}
+.serena-workspace .workspace-terminal-body{padding:16px 18px 0}
+.serena-workspace .files-tree{flex:0 1 auto}
+.serena-workspace .workspace-context{margin:15px 14px;padding:17px 0}
+.serena-workspace #fdOrb{display:none}
+.serena-workspace #fdInputRow{box-shadow:none;background:#0b080c;border-radius:6px}
+@media(min-width:1700px){.serena-workspace .chat-list-col{flex-basis:var(--chats-w,290px)}.serena-workspace .panel-files{flex-basis:var(--files-w,250px)}.workspace-topbar{height:61px}.serena-workspace .conv-header{min-height:87px}}
+@media(max-width:760px){.workspace-session-toolbar{padding-right:7px}.workspace-session-toolbar .workspace-agents{padding-left:7px}.serena-workspace .workspace-terminal-body{padding:8px 4px 0}}
