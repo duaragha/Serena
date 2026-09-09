@@ -39,6 +39,12 @@ def register_fork(target):
     if meta is None or meta.session_id != sid or Path(meta.cwd).resolve() != Path(target["cwd"]).resolve():
         raise ValueError("Native fork metadata does not match its project and identity")
     with _index_update_lock():
+        if provider == "codex":
+            from core.metadata import set_resident_work
+
+            # Native app-server forks use an extension origin. Persist explicit
+            # ownership so the normal scanner does not prune this admitted chat.
+            set_resident_work(sid)
         conn = _get_db()
         try:
             _upsert_session(conn, meta, agent=provider)

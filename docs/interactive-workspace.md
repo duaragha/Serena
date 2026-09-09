@@ -2,6 +2,45 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Frozen Codex admission and fork ownership (2026-09-09): the packaged proof now
+seeds an isolated real catalog through normal registration and launches the
+built sidecar with normal index/admission logic. It initially failed with 404:
+startup indexing pruned app-server-origin sessions because their origin is
+extension-like and only CLI or explicitly Serena-owned work survives scanning.
+Validated Codex registration now calls the existing set_resident_work marker
+under the index lock before upsert. It does not admit arbitrary extension chats,
+rewrite transcripts or create linked groups. Invalid targets still fail before
+metadata/catalog writes. The binary was rebuilt with this correction.
+
+The frozen desktop/mobile browser proof now passes exact-session attach, native
+command execution, precise stdout and completed state, older history loading,
+and page-close owner preservation. It also creates a native fork through the
+packaged UI, verifies persisted scanner ownership, and opens the new view without
+launching a second owner. Its catalog and HOME are isolated; no user auth/session
+or installed host is touched. Screenshot inspection caught an overly broad
+output assertion (pending JSON also contained the command); tightened to exact
+stdout plus completed state, rerun successfully, then inspected mobile again.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py -q
+# exit 0: 12 passed in 0.08s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_catalog.py tests/test_workspace_catalog.py scripts/verify-workspace-codex-history.py
+# exit 0: All checks passed!
+# cwd apps/desktop
+env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar
+# exit 0: rebuilt with ownership fix; existing capability-refusal smoke passed
+# cwd repo
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: final strict-output native frozen desktop/mobile proof, normal admission,
+# UI fork/catalog/ownership, history, command receipts and child cleanup.
+```
+
+Generated screenshots: apps/desktop/build/workspace-proof/codex-frozen-desktop.png
+and codex-frozen-mobile.png. The proof accepts an optional frozen binary; without
+one it retains the source HTTP harness. This verifies the packaged Linux backend
+in Chromium, not the installed Electron shell or Windows. Remaining provider
+parity and full delivery gates are unchanged.
+
 Rebuilt desktop sidecar regression (2026-09-09, source 67bd697): rebuilt the
 actual Linux sidecar after Codex fork/history/shell additions. PyInstaller's
 PYZ table contains core.codex_history, core.workspace_catalog and

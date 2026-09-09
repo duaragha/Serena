@@ -3,10 +3,16 @@ import asyncio
 import json
 import os
 import shutil
+import signal
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -19,7 +25,6 @@ from core.workspace_rpc import WorkspaceRpc
 
 def browser_proof(sid, root, project, env, binary):
     from flask import Flask
-    from playwright.sync_api import sync_playwright
     from werkzeug.serving import WSGIRequestHandler, make_server
 
     from ui.workspace_app import install_workspace
@@ -40,10 +45,26 @@ def browser_proof(sid, root, project, env, binary):
     server = make_server("127.0.0.1", 0, app, threaded=True, request_handler=QuietRequests)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    try:
+        def owners():
+            return [owner.rpc.process.pid for owner, _ in host._sessions.values()
+                    if owner.rpc.process and owner.rpc.process.returncode is None]
+        browser_roundtrip(f"http://127.0.0.1:{server.server_port}", sid, owners, "codex-native")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        host.shutdown()
+
+
+def browser_roundtrip(base, sid, owners, prefix, verify_forks=False):
+    from playwright.sync_api import sync_playwright
+
+    repo = Path(__file__).resolve().parents[1]
     artifacts = repo / "apps" / "desktop" / "build" / "workspace-proof"
     artifacts.mkdir(parents=True, exist_ok=True)
-    try:
-        with sync_playwright() as playwright:
+    forks = []
+    with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             try:
                 pid = None
@@ -53,9 +74,9 @@ def browser_proof(sid, root, project, env, binary):
                     page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
                     page.on("console", lambda message, errors=errors: errors.append(message.text) if message.type == "error" else None)
                     page.on("response", lambda response, errors=errors: errors.append(f"HTTP {response.status}: {response.url}") if response.status >= 400 and not response.url.endswith("favicon.ico") else None)
-                    page.goto(f"http://127.0.0.1:{server.server_port}/workspace/{sid}")
+                    page.goto(f"{base}/workspace/{sid}")
                     if pid is None:
-                        assert not host._sessions, "Page load launched an owner"
+                        assert not owners(), "Page load launched an owner"
                     page.get_by_role("button", name="Resume session", exact=True).click()
                     page.get_by_role("button", name="Run shell command", exact=True).wait_for(state="visible")
                     page.get_by_role("button", name="Run shell command", exact=True).click()
@@ -65,27 +86,107 @@ def browser_proof(sid, root, project, env, binary):
                     dialog.get_by_role("checkbox").check()
                     dialog.get_by_role("button", name="Run command", exact=True).click()
                     page.locator("summary").filter(has_text=token).first.click(timeout=15000)
-                    page.locator("pre").filter(has_text=token).first.wait_for(timeout=15000)
-                    owner = host._sessions[sid][0]
+                    page.get_by_text(token, exact=True).wait_for(timeout=15000)
+                    page.wait_for_function("['ready','completed'].includes(document.querySelector('.aw-state').textContent)")
+                    actual = owners()
+                    assert len(actual) == 1, actual
                     if pid is None:
-                        pid = owner.rpc.process.pid
-                    assert owner.rpc.process.pid == pid
+                        pid = actual[0]
+                    assert actual == [pid]
                     assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
-                    page.screenshot(path=str(artifacts / f"codex-native-{label}.png"))
+                    page.screenshot(path=str(artifacts / f"{prefix}-{label}.png"))
                     if label == "desktop":
                         page.get_by_role("button", name="Load earlier messages", exact=True).click()
                         page.locator("summary").filter(has_text="SERENA_HISTORY_000").first.wait_for(state="attached", timeout=10000)
+                        if verify_forks:
+                            page.get_by_role("button", name="Fork conversation", exact=True).click()
+                            dialog = page.get_by_role("dialog", name="Fork conversation")
+                            dialog.get_by_role("button", name="Create fork", exact=True).click()
+                            dialog.get_by_role("button", name="Open fork", exact=True).wait_for(timeout=10000)
+                            fork_id = dialog.locator("code").inner_text()
+                            assert fork_id != sid
+                            dialog.get_by_role("button", name="Open fork", exact=True).click()
+                            page.wait_for_url(f"{base}/workspace/{fork_id}")
+                            page.get_by_role("button", name="Resume session", exact=True).wait_for()
+                            assert owners() == [pid], "Opening fork view launched another owner"
+                            forks.append(fork_id)
                     assert not errors, errors
                     page.close()
-                    assert owner.rpc.process.returncode is None, "Closing page cancelled owner"
-                    print(f"PASS: {label} real HTTP pane explicitly attached, ran native command and rendered output; same owner survived page close")
+                    assert owners() == [pid], "Closing page cancelled owner"
+                    print(f"PASS: {prefix} {label} explicitly attached, ran native command and rendered output; same owner survived page close")
             finally:
                 browser.close()
-    finally:
-        server.shutdown()
-        thread.join(timeout=5)
-        server.server_close()
-        host.shutdown()
+    return forks
+
+
+def frozen_browser_proof(sid, root, project, env, frozen):
+    import psutil
+
+    repo = Path(__file__).resolve().parents[1]
+    env = {**env, "CHATS_DATA_DIR": str(root / "frozen-data"), "SERENA_STRUCTURED_WORKSPACE": "1",
+           "SERENA_CALL_RUNTIME": "lazy", "SERENA_RUNTIME_LEASE_DIR": str(root / "frozen-leases"),
+           "DBUS_SESSION_BUS_ADDRESS": f"unix:path={root}/unavailable-bus", "XDG_RUNTIME_DIR": str(root / "xdg")}
+    Path(env["XDG_RUNTIME_DIR"]).mkdir()
+    seed = subprocess.run([sys.executable, "-c", """
+import sys
+from pathlib import Path
+from core.workspace_catalog import register_fork
+from core.codex_scanner import parse_codex_metadata
+import os
+paths=list((Path(os.environ['CODEX_HOME'])/'sessions').rglob('*'+sys.argv[1]+'.jsonl'))
+assert len(paths)==1
+metadata=parse_codex_metadata(paths[0])
+assert metadata.session_id==sys.argv[1]
+register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metadata.cwd})
+""", sid], env={**env, "PYTHONPATH": str(repo)}, cwd=project, text=True, capture_output=True)
+    assert seed.returncode == 0, seed.stderr
+    with socket.socket() as port_socket:
+        port_socket.bind(("127.0.0.1", 0))
+        port = port_socket.getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    with (root / "frozen.log").open("w+") as log:
+        process = subprocess.Popen([str(Path(frozen).resolve()), "--host", "127.0.0.1", "--port", str(port)],
+                                   cwd=project, env=env, stdout=log, stderr=log, start_new_session=True)
+        children = []
+        try:
+            deadline = time.monotonic() + 30
+            while True:
+                assert process.poll() is None, "Frozen sidecar exited before readiness"
+                try:
+                    with urlopen(base + f"/workspace/{sid}", timeout=1) as response:
+                        assert response.status == 200
+                    break
+                except (URLError, TimeoutError):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Frozen workspace did not become ready") from None
+                    time.sleep(0.1)
+            def owners():
+                return [child.pid for child in psutil.Process(process.pid).children(recursive=True)
+                        if child.name() == "codex" and "app-server" in child.cmdline()]
+            forks = browser_roundtrip(base, sid, owners, "codex-frozen", verify_forks=True)
+            for fork_id in forks:
+                metadata_path = Path(env["HOME"]) / ".claude" / "projects" / ".chats-meta" / f"{fork_id}.json"
+                assert json.loads(metadata_path.read_text())["resident_work"] is True
+            assert forks
+            print("PASS: frozen native fork created/indexed through UI, persisted scanner ownership and opened without a second owner")
+        except BaseException:
+            log.seek(0)
+            print(log.read()[-5000:], file=sys.stderr)
+            raise
+        finally:
+            if process.poll() is None:
+                children = psutil.Process(process.pid).children(recursive=True)
+                os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            _, alive = psutil.wait_procs(children, timeout=5)
+            for child in alive:
+                child.kill()
+            _, alive = psutil.wait_procs(alive, timeout=5)
+            assert not alive, "Frozen proof leaked owned children"
 
 
 async def main():
@@ -160,7 +261,10 @@ async def main():
             if owner:
                 await owner.close()
             await rpc.close()
-        await asyncio.to_thread(browser_proof, sid, root, project, env, binary)
+        if len(sys.argv) > 1:
+            await asyncio.to_thread(frozen_browser_proof, sid, root, project, env, sys.argv[1])
+        else:
+            await asyncio.to_thread(browser_proof, sid, root, project, env, binary)
         assert not list(project.iterdir())
         print("PASS: isolated project untouched; native owners closed; no credentials used")
 

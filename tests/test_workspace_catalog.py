@@ -1,10 +1,27 @@
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from core.workspace_catalog import register_fork
+
+
+def test_codex_registration_marks_owned_before_upsert(tmp_path, monkeypatch):
+    sid = str(uuid4())
+    home = tmp_path / "codex"
+    path = home / "sessions" / f"rollout-2026-09-09T00-00-00-{sid}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"type": "session_meta", "payload": {"id": sid, "cwd": str(tmp_path)}}) + "\n")
+    calls = []
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setattr("core.metadata.set_resident_work", lambda target: calls.append(("owned", target)))
+    monkeypatch.setattr("core.indexer._index_update_lock", nullcontext)
+    monkeypatch.setattr("core.indexer._get_db", lambda: SimpleNamespace(commit=lambda: calls.append("commit"), close=lambda: calls.append("close")))
+    monkeypatch.setattr("core.indexer._upsert_session", lambda conn, meta, agent: calls.append(("index", meta.session_id, agent)))
+    register_fork({"session_id": sid, "provider": "codex", "cwd": str(tmp_path)})
+    assert calls == [("owned", sid), ("index", sid, "codex"), "commit", "close"]
 
 
 @pytest.mark.parametrize("case", ["missing", "ambiguous", "wrong-project", "wrong-id", "outside", "missing-history"])
