@@ -46,6 +46,7 @@ class WorkspaceHost:
         self._sessions = {}
         self._locks = {}
         self._operations = set()
+        self._bridge_queues = {}
 
     async def _run(self, coroutine):
         task = asyncio.current_task()
@@ -141,7 +142,10 @@ class WorkspaceHost:
         result = self._dispatch(self._bridge(sid, provider, prompt, request_id), timeout)
         if result is not None and result.get("pending"):
             result.update(
-                response="", message="Bridge is still pending; do not resend as a new request"
+                response="",
+                message=result.get(
+                    "message", "Bridge is still pending; do not resend as a new request"
+                ),
             )
         return result
 
@@ -162,19 +166,66 @@ class WorkspaceHost:
             )
             if not claimed:
                 return prior or {"ok": False, "pending": True}
-            cursor = await asyncio.to_thread(self.journal.latest_sequence, sid)
-            try:
-                # Busy owners reject submission. Never steer or interrupt an
-                # unrelated turn merely because a sibling requested a reply.
-                result = await owner.submit([{"type": "text", "text": prompt}])
-                turn_id = result["turn"]["id"]
-            except Exception as error:
-                receipt = {"ok": False, "response": "", "message": str(error)}
-                await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
-                return receipt
+            queue = self._bridge_queues.setdefault(sid, [])
+            queue.append(key)
+            queued = owner.state in {"running", "submitting"} or len(queue) > 1
+            await asyncio.to_thread(
+                self.journal.append,
+                sid,
+                {
+                    "method": "workspace/bridgeQueue",
+                    "params": {"threadId": sid, "count": len(queue)},
+                },
+            )
+        delivery = self._deliver_bridge(sid, owner, prompt, key)
+        if queued:
+            # A sibling may itself be waiting inside a tool call. Return the
+            # queue acknowledgement now, not a mutual wait until both time out.
+            asyncio.create_task(self._run(delivery))
+            return {
+                "ok": True,
+                "pending": True,
+                "queued": True,
+                "message": "Queued behind the current turn; reuse request_id to collect the reply",
+            }
+        return await delivery
+
+    async def _deliver_bridge(self, sid, owner, prompt, key):
+        queue = self._bridge_queues[sid]
+        try:
+            while True:
+                async with self._locks[sid]:
+                    if self._stopped:
+                        raise RuntimeError("Host stopped; queued bridge was not submitted")
+                    if owner.state in {"closed", "unavailable", "uncertain", "opening"}:
+                        raise RuntimeError("Session unavailable; queued bridge was not submitted")
+                    if queue[0] == key and owner.state == "ready":
+                        cursor = await asyncio.to_thread(self.journal.latest_sequence, sid)
+                        result = await owner.submit([{"type": "text", "text": prompt}])
+                        turn_id = result["turn"]["id"]
+                        break
+                await asyncio.sleep(0.1)
+        except Exception as error:
+            receipt = {"ok": False, "response": "", "message": str(error)}
+            await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+            return receipt
+        finally:
+            if key in queue:
+                queue.remove(key)
+            await asyncio.to_thread(
+                self.journal.append,
+                sid,
+                {
+                    "method": "workspace/bridgeQueue",
+                    "params": {"threadId": sid, "count": len(queue)},
+                },
+            )
         texts = {}
         receipt = None
         while receipt is None:
+            if self._stopped:
+                receipt = {"ok": False, "message": "Host stopped before bridge completion"}
+                break
             page = await asyncio.to_thread(self.journal.read, sid, after=cursor)
             for envelope in page["events"]:
                 event = envelope["event"]

@@ -147,6 +147,14 @@ async def main(review=False, compact=False, permissions=False, bridge=False):
                 )
                 try:
                     assert (await asyncio.to_thread(host.attach, sid))["ok"]
+                    warm = await asyncio.to_thread(
+                        host.command,
+                        sid,
+                        "warm-turn",
+                        "submit",
+                        {"inputs": [{"type": "text", "text": "Reply exactly SERENA_BUSY_PROOF"}]},
+                    )
+                    assert warm["ok"]
                     response = await asyncio.to_thread(
                         host.bridge,
                         sid,
@@ -154,7 +162,19 @@ async def main(review=False, compact=False, permissions=False, bridge=False):
                         "Reply exactly SERENA_BRIDGE_PROOF",
                         "proof-bridge",
                     )
+                    assert response.get("queued"), "Proof did not encounter the running native turn"
+                    async with asyncio.timeout(120):
+                        while response.get("pending"):
+                            await asyncio.sleep(0.1)
+                            response = await asyncio.to_thread(
+                                host.bridge,
+                                sid,
+                                "codex",
+                                "Reply exactly SERENA_BRIDGE_PROOF",
+                                "proof-bridge",
+                            )
                     assert response["ok"] and response["session_id"] == sid
+                    assert response["turn_id"] != warm["result"]["turn"]["id"]
                     assert "SERENA_BRIDGE_PROOF" in response["response"]
                     same = await asyncio.to_thread(
                         host.bridge,

@@ -106,7 +106,52 @@ def test_bridge_wrong_provider_or_busy_owner_does_not_fallback(host):
     assert not value.bridge("exact", "wrong", "hello", "wrong")["ok"]
     owner.state = "running"
     result = value.bridge("exact", provider, "hello", "busy")
-    assert not result["ok"] and "busy" in result["message"]
+    assert result["queued"] and result["pending"]
+    assert not owner.sent
+
+
+def test_busy_bridge_queue_is_fifo_and_acknowledges_without_mutual_wait(host):
+    value, provider = host
+    value.attach("exact")
+    owner = value._sessions["exact"][0]
+    owner.state = "running"
+    assert value.bridge("exact", provider, "first", "first")["queued"]
+    assert value.bridge("exact", provider, "second", "second")["queued"]
+    assert not owner.sent
+    assert value.bridge("exact", provider, "first", "first")["pending"]
+
+    async def answer(request_id, payload):
+        owner.state = "ready"
+        return {}
+
+    owner.answer = answer
+    assert value.command("exact", "approval", "answer", {"request_id": 1, "answer": {}})["ok"]
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        first = value.bridge("exact", provider, "first", "first")
+        second = value.bridge("exact", provider, "second", "second")
+        if not first.get("pending") and not second.get("pending"):
+            break
+        time.sleep(0.02)
+    assert first["ok"] and second["ok"] and not second.get("pending")
+    assert [inputs[0]["text"] for inputs in owner.sent] == ["first", "second"]
+    assert not value._bridge_queues["exact"]
+
+
+def test_queued_bridge_fails_without_submission_when_owner_dies(host):
+    value, provider = host
+    value.attach("exact")
+    owner = value._sessions["exact"][0]
+    owner.state = "running"
+    assert value.bridge("exact", provider, "hello", "r")["queued"]
+    owner.state = "unavailable"
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        result = value.bridge("exact", provider, "hello", "r")
+        if not result.get("pending"):
+            break
+        time.sleep(0.02)
+    assert not result["ok"] and not result.get("pending")
     assert not owner.sent
 
 
@@ -170,5 +215,5 @@ def test_existing_http_bridge_routes_prefer_structured_owner(host, monkeypatch):
             base_url="http://127.0.0.1",
             json={"target_sid": "exact", "prompt": "second", "request_id": "http-busy"},
         )
-        assert not busy.json["ok"]
+        assert busy.json["queued"] and busy.json["pending"]
         assert len(owner.sent) == 1

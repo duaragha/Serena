@@ -2,15 +2,41 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Busy structured sessions now queue sibling bridge messages FIFO. The caller gets
+an immediate queued acknowledgement, avoiding two siblings synchronously waiting
+on one another. The same receipt retrieves the eventual reply; each delivery
+starts only when the owner is ready, without steering/interruption or a second
+process. Queue waiting releases the command lock so permissions remain answerable.
+The pane header shows the queued count. Shutdown/unavailable owners settle queued
+requests as not submitted; crash-unconfirmed receipts still prevent automatic
+replay. Queue editing/cancellation and crash recovery remain incomplete.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_bridge.py tests/test_workspace_host.py -q --basetemp=/tmp/serena-workspace-bridge-queue-final
+# exit 0: 27 passed in 7.39s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_bridge.py::test_busy_bridge_queue_is_fifo_and_acknowledges_without_mutual_wait tests/test_workspace_pane.py::test_bridge_queue_count_tracks_native_host_events -q --basetemp=/tmp/serena-workspace-bridge-queue-ui
+# exit 0: 3 passed in 1.87s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --bridge
+# exit 0: now asserts queued acknowledgement during a real running turn and a
+# distinct subsequent turn ID, then exact output and receipt reuse; process cleanup
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_bridge.py tests/test_workspace_pane.py scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed!
+```
+
+Initial queue suite exited 1 with four teardown timeouts (27 passed): pending
+deliveries didn't observe host shutdown. Added shutdown checks before dispatch
+and while collecting results; final run above is clean. Both providers have
+fixture queue coverage; native busy-queue proof currently covers Codex only.
+
 The existing /api/codex-bridge and /api/claude-bridge routes now prefer an already
 attached structured owner. They submit to the same session, wait for that exact
 turn's native completion, and collect only its output. Unknown owners still use
-the unchanged terminal path; busy, mismatched or unavailable structured owners
+the unchanged terminal path; mismatched or unavailable structured owners
 never fall back. No bridge call attaches or focuses a structured pane.
 Stable request_id receipts prevent re-submission after observation timeout or
 host restart, including unresolved receipts. Responses expose the ID for polling
 retries. Legacy callers without an ID receive a new one per HTTP request; they
-must reuse the returned ID to obtain retry deduplication. Busy-owner queueing,
+must reuse the returned ID to obtain retry deduplication. Queued-message controls,
 Fleet/work-bridge reservations and process-crash recovery remain separate gaps.
 
 ```sh

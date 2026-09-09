@@ -48,6 +48,8 @@ export class WorkspaceConversation {
       this.metadata.tokenUsage = p.tokenUsage;
     } else if (method === 'workspace/claudeUsage') {
       this.metadata.claudeUsage = p.usage;
+    } else if (method === 'workspace/bridgeQueue') {
+      this.metadata.bridgeQueueCount = p.count;
     } else if (method === 'workspace/activity') {
       this.status = p.status;
     } else if (method === 'workspace/commands') {

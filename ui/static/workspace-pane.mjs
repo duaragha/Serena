@@ -631,6 +631,7 @@ export class WorkspacePane {
       cursor = element.nextSibling;
     }
     this.status.textContent = this.conversation.status;
+    if (this.conversation.metadata.bridgeQueueCount > 0) this.status.textContent += ` / ${this.conversation.metadata.bridgeQueueCount} queued`;
     const tokens = this.conversation.metadata.tokenUsage?.last?.totalTokens;
     const usage = this.conversation.metadata.claudeUsage;
     this.usageLabel.textContent = Number.isFinite(tokens) && tokens >= 0 ? `Last request: ${tokens.toLocaleString()} tokens` :

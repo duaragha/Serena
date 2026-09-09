@@ -142,6 +142,16 @@ def test_permission_prompt_defaults_to_no_grants_and_exact_selected_scope(pane, 
     assert not errors
 
 
+def test_bridge_queue_count_tracks_native_host_events(pane):
+    page, errors = pane
+    page.evaluate("""() => emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:2}})""")
+    page.wait_for_function("document.querySelector('#left .aw-state').textContent.includes('2 queued')")
+    page.evaluate("""() => emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:0}})""")
+    page.wait_for_function("!document.querySelector('#left .aw-state').textContent.includes('queued')")
+    assert page.evaluate("calls") == []
+    assert not errors
+
+
 def test_real_items_tool_expansion_and_injection_safety(pane, tmp_path):
     page, errors = pane
     assert page.locator("#left .aw-item").count() == 4
