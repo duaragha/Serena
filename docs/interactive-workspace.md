@@ -2,6 +2,29 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude context breakdown is now an explicit native control, not another /context
+conversation turn. The dialog displays provider totals, capacity, percentage,
+model and category counts, marks deferred entries, and clears stale data on
+refresh failure. Unknown/nonfinite data is rejected rather than guessed. Native
+memory-file paths and detailed tool/agent metadata are not returned by this view.
+Opening or closing the pane never requests a context read or launches an owner.
+Source: installed ClaudeSDKClient.get_context_usage and ContextUsageResponse,
+documented at https://code.claude.com/docs/en/agent-sdk/python (accessed 2026-09-09).
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_pane.py -q --basetemp=/tmp/serena-context-breakdown-verification
+# exit 0: 48 passed in 18.02s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_context_control_reads_attached_claude_without_query -q --basetemp=/tmp/serena-context-routing
+# exit 0: 1 passed in 0.23s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_context_breakdown_is_explicit_and_clears_stale_data_on_failure -q --basetemp=/tmp/serena-context-layout
+# exit 0: 1 passed in 0.76s; missing dialog icons fixed, mobile screenshot reviewed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference
+# exit 0: exact persisted session, native context control without another turn,
+# owned processes reaped and isolated storage removed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_host.py tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-claude-roundtrip.py
+# exit 0: All checks passed!
+```
+
 Skill inputs now also work for Codex steering. The adapter validates selections,
 then rechecks the active turn after discovery before sending native turn/steer;
 there is no turn/start fallback. The browser/host carry skills separately from

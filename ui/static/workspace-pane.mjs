@@ -140,6 +140,8 @@ export class WorkspacePane {
     identity.append(node('span', '', sessionId.slice(0, 8)), copy);
     this.usageLabel = node('span', 'aw-usage');
     identity.append(this.usageLabel);
+    const context=this.button('Context breakdown','chart-pie',()=>this.openContext());
+    context.hidden=provider!=='Claude' || !controls.contextUsage;identity.append(context);
     root.replaceChildren(head, this.log, this.questionArea, this.alert, this.form, identity);
     this.renderAttachments();
     this.refreshIcons();
@@ -229,6 +231,31 @@ export class WorkspacePane {
     window.lucide?.createIcons();
     try { const result=await this.controls.commands(); if(!dialog.open || this.disposed)return; commands=result.data; render(); }
     catch(error){if(dialog.open)status.textContent=error.message;}
+  }
+
+  openContext() {
+    if(this.contextDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-context-dialog');dialog.setAttribute('aria-label','Context breakdown');
+    const status=node('p');status.setAttribute('role','status');const content=node('div');
+    const close=this.button('Close context breakdown','x',()=>dialog.close());
+    const refresh=this.button('Refresh context breakdown','refresh-cw',()=>load());
+    let busy=false;
+    const load=async()=>{
+      if(busy || !dialog.open)return;
+      busy=true;refresh.disabled=true;status.textContent='Loading...';
+      try{
+        const usage=await this.controls.contextUsage();
+        if(!dialog.open || this.disposed)return;
+        content.replaceChildren(node('p','',usage.model),node('p','',`${usage.totalTokens.toLocaleString()} / ${usage.maxTokens.toLocaleString()} tokens`));
+        const progress=node('progress');progress.max=100;progress.value=Math.min(100,usage.percentage);progress.setAttribute('aria-label','Context used');content.append(progress);
+        const list=node('dl');
+        for(const category of usage.categories){list.append(node('dt','',category.name+(category.isDeferred?' (deferred)':'')),node('dd','',category.tokens.toLocaleString()));}
+        content.append(list);status.textContent=`${usage.percentage.toFixed(1)}% used`;
+      }catch(error){if(dialog.open){content.replaceChildren();status.textContent=error.message;}}
+      finally{busy=false;refresh.disabled=false;}
+    };
+    dialog.append(node('h3','','Context breakdown'),refresh,close,status,content);
+    dialog.addEventListener('close',()=>dialog.remove());this.contextDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();load();
   }
 
   openMcpServers() {
@@ -753,6 +780,7 @@ export class WorkspacePane {
     this.tasksDialog?.close();
     this.commandsDialog?.close();
     this.mcpDialog?.close();
+    this.contextDialog?.close();
     this.queueDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
     this.historyImageUrls.clear();

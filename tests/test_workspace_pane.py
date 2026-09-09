@@ -60,6 +60,31 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_context_breakdown_is_explicit_and_clears_stale_data_on_failure(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+      pane.dispose();
+      controls.contextUsage=async()=>{calls.push(['context']);if(calls.length>1)throw Error('Context unavailable');return {model:'Native model',totalTokens:1500,maxTokens:10000,percentage:15,categories:[{name:'Messages',tokens:1400},{name:'Deferred tools',tokens:100,isDeferred:true}]};};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Claude',controls});
+    }""")
+    assert page.evaluate("calls") == []
+    page.get_by_role("button", name="Context breakdown", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Context breakdown", exact=True)
+    dialog.get_by_text("15.0% used", exact=True).wait_for()
+    assert dialog.get_by_role("button", name="Close context breakdown").locator("svg").count() == 1
+    assert dialog.get_by_text("1,500 / 10,000 tokens", exact=True).is_visible()
+    assert dialog.get_by_text("Deferred tools (deferred)", exact=True).is_visible()
+    assert dialog.evaluate("el=>el.scrollWidth<=el.clientWidth")
+    page.screenshot(path=str(tmp_path / "context-mobile.png"))
+    dialog.get_by_role("button", name="Refresh context breakdown").click()
+    dialog.get_by_text("Context unavailable", exact=True).wait_for()
+    assert dialog.get_by_text("1,500 / 10,000 tokens", exact=True).count() == 0
+    dialog.get_by_role("button", name="Close context breakdown").click()
+    assert page.evaluate("calls") == [["context"], ["context"]]
+    assert not errors
+
+
 def test_codex_skill_selection_persists_and_sends_exact_path_only_on_submit(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

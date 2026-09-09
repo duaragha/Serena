@@ -8,6 +8,7 @@ with a second CLI. Missing process identity fails attachment closed.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import shutil
 from copy import deepcopy
@@ -179,6 +180,24 @@ class ClaudeWorkspace:
         }
         await self.publish(self.events.event("workspace/models", result))
         return result
+
+    async def context_usage(self):
+        if self.client is None or self.state in {"closed", "opening", "unavailable"}:
+            raise RuntimeError("Claude is not attached")
+        result = await self.client.get_context_usage()
+        if not isinstance(result, dict) or any(type(result.get(key)) is not int or result[key] < 0 for key in ("totalTokens", "maxTokens")) or result["maxTokens"] == 0:
+            raise ValueError("Claude returned invalid context totals")
+        percentage = result.get("percentage")
+        if type(percentage) not in {int, float} or not math.isfinite(percentage) or percentage < 0:
+            raise ValueError("Claude returned an invalid context percentage")
+        if not isinstance(result.get("model"), str) or not isinstance(result.get("categories"), list):
+            raise ValueError("Claude returned an invalid context breakdown")
+        categories = []
+        for category in result["categories"]:
+            if not isinstance(category, dict) or not isinstance(category.get("name"), str) or type(category.get("tokens")) is not int or category["tokens"] < 0:
+                raise ValueError("Claude returned an invalid context category")
+            categories.append({"name": category["name"], "tokens": category["tokens"], "isDeferred": category.get("isDeferred") is True})
+        return {**{key: result[key] for key in ("model", "totalTokens", "maxTokens", "percentage")}, "categories": categories}
 
     async def list_background_tasks(self):
         if self.client is None or self.state in {"closed", "opening", "unavailable"}:

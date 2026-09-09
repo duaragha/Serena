@@ -135,6 +135,9 @@ async def main(bridge=False, background_task=False):
             catalog = await owner.list_commands()
             assert any(c["name"] == "context" for c in catalog["data"])
             assert owner.state == "ready"
+            usage = await owner.context_usage()
+            assert usage["maxTokens"] > 0 and usage["totalTokens"] >= 0 and usage["categories"]
+            print("PASS: native context breakdown read without submitting another turn")
             print(
                 "PASS: native /context output rendered as commandOutput; advertised commands discovered on same session"
             )

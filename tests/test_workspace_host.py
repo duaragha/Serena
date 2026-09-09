@@ -64,6 +64,22 @@ def host(tmp_path):
     value.shutdown()
 
 
+def test_context_control_reads_attached_claude_without_query(tmp_path):
+    class ContextOwner(Owner):
+        async def context_usage(self):
+            return {"model": "native", "percentage": 15}
+    value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "context.db"), resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)}, factories={"claude": ContextOwner})
+    try:
+        with pytest.raises(ValueError, match="Explicitly attach"):
+            value.command("exact", "before", "context_usage", {})
+        value.attach("exact")
+        assert value.command("exact", "read", "context_usage", {})["result"] == {"model": "native", "percentage": 15}
+        assert not value.command("exact", "invalid", "context_usage", {"query": True})["ok"]
+        assert not ContextOwner.instances[-1].sent
+    finally:
+        value.shutdown()
+
+
 def test_host_routes_skill_steering_to_exact_existing_owner(host):
     host.attach("exact")
     owner = Owner.instances[-1]

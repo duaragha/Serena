@@ -83,6 +83,27 @@ def make(tmp_path):
     return owner, events
 
 
+def test_context_breakdown_uses_native_totals_without_submitting(tmp_path):
+    async def run():
+        owner, _ = make(tmp_path)
+        usage = {"totalTokens": 1500, "maxTokens": 10000, "percentage": 15.0, "model": "native", "categories": [{"name": "Messages", "tokens": 1500}], "memoryFiles": [{"path": "private"}]}
+        async def context():
+            return usage
+        try:
+            await owner.open()
+            owner.client.get_context_usage = context
+            result = await owner.context_usage()
+            assert result["percentage"] == 15.0 and result["totalTokens"] == 1500
+            assert "memoryFiles" not in result
+            assert not owner.client.sent
+            usage["percentage"] = float("nan")
+            with pytest.raises(ValueError, match="percentage"):
+                await owner.context_usage()
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 def test_task_notification_terminal_state_cannot_be_resurrected_by_late_update():
     events = ClaudeEvents("exact")
     events.receive(TaskNotificationMessage(subtype="task_notification", data={}, task_id="native-task", status="completed", output_file="/not-read", summary="Done", uuid="end", session_id="exact"))

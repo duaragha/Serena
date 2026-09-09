@@ -287,6 +287,7 @@ class WorkspaceHost:
             "compact",
             "background_tasks",
             "commands",
+            "context_usage",
             "mcp_servers",
             "mcp_server_control",
             "terminate_background_task",
@@ -338,6 +339,10 @@ class WorkspaceHost:
                     self._bridge_messages.pop((sid, key), None)
                     await self._publish_bridge_queue(sid)
                     result = {"cancelled": True}
+                elif action == "context_usage":
+                    if provider != "claude" or payload:
+                        raise ValueError("Context breakdown requires a Claude session and no payload")
+                    result = await owner.context_usage()
                 elif action == "mcp_servers":
                     if provider not in {"codex", "claude"} or payload:
                         raise ValueError("MCP discovery requires a supported session and no payload")
