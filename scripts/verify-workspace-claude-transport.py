@@ -4,7 +4,6 @@ import json
 import os
 import shutil
 import sys
-from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,9 +11,8 @@ import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.workspace_claude import ClaudeWorkspace
-from core.workspace_claude_client import ClaudeTypeScriptClient
 from core.workspace_claude_transport import ClaudeSdkTransport
+from core.workspace_host import _claude_owner
 from core.workspace_lease import SessionLease, SessionOwnedError
 
 
@@ -92,11 +90,11 @@ async def main():
         elif event.get("method") == "workspace/error" and not completed_turn.done():
             completed_turn.set_exception(RuntimeError(event["params"]["reason"]))
 
-    owner = ClaudeWorkspace(session_id=sid, cwd=root, publish=publish_pane,
-                            client_factory=partial(ClaudeTypeScriptClient, sdk_path=sdk, node_path=shutil.which("node")),
-                            lease_factory=lambda session_id: SessionLease(session_id, directory=root / "leases"))
+    owner = _claude_owner(session_id=sid, cwd=root, publish=publish_pane,
+                          lease_factory=lambda session_id: SessionLease(session_id, directory=root / "leases"))
     try:
         await owner.open()
+        assert owner.client.transport.command[2] == str(Path(sdk).resolve())
         await owner.submit([{"type": "text", "text": "/effort low"}])
         if discovery_form:
             async with asyncio.timeout(15):

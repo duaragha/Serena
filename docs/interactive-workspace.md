@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Source runtime provisioning (2026-09-09): `runtimes/claude-sdk` now pins SDK
+0.3.266 with a generated npm lockfile. `workspace_claude_runtime.py` validates
+installed package identity/version and resolves Node without installing or
+launching anything. Missing/mismatched SDK or Node fails explicitly. The
+structured host's default Claude factory now uses this public SDK client;
+ordinary terminal routes and workspace activation flags are unchanged.
+
+```sh
+# From runtimes/claude-sdk:
+npm install --ignore-scripts --omit=optional --no-audit --no-fund
+# exit 0: 102 packages installed; node_modules ignored, lockfile retained
+# From repository root:
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_runtime.py tests/test_workspace_host.py -q
+# exit 0: 23 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_runtime.py core/workspace_host.py tests/test_workspace_claude_runtime.py scripts/verify-workspace-claude-transport.py
+# exit 0
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+# exit 0: native proofs now use provisioned dependency and default host factory,
+# not an injected client factory or temporary SDK path; exact session and cleanup.
+```
+
+`SERENA_WORKSPACE_RUNTIME_ROOT` and `SERENA_WORKSPACE_NODE` support explicit
+packaged locations. Frozen Electron resource inclusion and platform runtime
+provisioning are NOT implemented yet; source installation is not an installed-app
+release. Next: package those resources without relying on system Node or /tmp.
+
 Native Claude MCP tool-call form verified (2026-09-09): the isolated subscription
 proof now optionally resumes with ClaudeTypeScriptClient and registers a local
 MCP tool fixture. Only that fixture tool is approved; its native elicitation

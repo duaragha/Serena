@@ -24,8 +24,9 @@ from core.workspace_uploads import WorkspaceUploads
 def _claude_owner(**kwargs):
     # Keep the optional SDK dependency out of ordinary Codex-only startup.
     from core.workspace_claude import ClaudeWorkspace
+    from core.workspace_claude_runtime import client_factory
 
-    return ClaudeWorkspace(**kwargs)
+    return ClaudeWorkspace(client_factory=client_factory(), **kwargs)
 
 
 class WorkspaceHost:
