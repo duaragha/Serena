@@ -104,6 +104,30 @@ class CodexWorkspace:
                 await self._close()
                 raise
 
+    async def list_commands(self) -> dict:
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        result = await self.rpc.request("skills/list", {"cwds": [str(self.cwd)], "forceReload": True})
+        pages = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(pages, list) or len(pages) != 1 or not isinstance(pages[0], dict) or pages[0].get("cwd") != str(self.cwd):
+            raise WorkspaceRpcError("Codex returned skills for a different project")
+        page = pages[0]
+        if page.get("errors"):
+            raise WorkspaceRpcError("Codex could not load every skill; fix the skill errors before selecting")
+        if not isinstance(page.get("skills"), list):
+            raise WorkspaceRpcError("Codex returned an invalid skill catalog")
+        commands, paths = [], set()
+        for skill in page["skills"]:
+            if not isinstance(skill, dict) or any(not isinstance(skill.get(key), str) or not skill[key] for key in ("name", "path")) or not isinstance(skill.get("enabled"), bool):
+                raise WorkspaceRpcError("Codex returned an invalid skill")
+            if skill["path"] in paths:
+                raise WorkspaceRpcError("Codex returned duplicate skill paths")
+            paths.add(skill["path"])
+            commands.append({"name": skill["name"], "path": skill["path"], "kind": "skill",
+                             "description": skill.get("description", ""),
+                             "unavailableReason": "Skill is disabled" if not skill["enabled"] else ""})
+        return {"data": commands}
+
     async def list_mcp_servers(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")
@@ -236,6 +260,17 @@ class CodexWorkspace:
             if not inputs:
                 raise ValueError("A message or attachment is required")
             params = deepcopy(options or {})
+            skills = params.pop("skills", [])
+            selected = []
+            if not isinstance(skills, list):
+                raise ValueError("Selected skills must be a list")
+            if skills:
+                if not isinstance(skills, list) or len(skills) > 20 or any(not isinstance(path, str) for path in skills) or len(set(skills)) != len(skills):
+                    raise ValueError("Select distinct skills from the current project")
+                catalog = {item["path"]: item for item in (await self.list_commands())["data"] if not item["unavailableReason"]}
+                if any(path not in catalog for path in skills):
+                    raise ValueError("Selected skill is no longer enabled in this project")
+                selected = [{"type": "skill", "name": catalog[path]["name"], "path": path} for path in skills]
             allowed = {
                 "model",
                 "effort",
@@ -247,7 +282,7 @@ class CodexWorkspace:
             if params.keys() - allowed:
                 raise ValueError("Unsupported turn option")
             await self._validate_model_options(params)
-            params.update(threadId=self.session_id, input=deepcopy(inputs))
+            params.update(threadId=self.session_id, input=deepcopy(inputs) + selected)
             self.state = "submitting"
             try:
                 result = await self.rpc.request("turn/start", params)

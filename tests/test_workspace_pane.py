@@ -60,6 +60,32 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_codex_skill_selection_persists_and_sends_exact_path_only_on_submit(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+      pane.dispose();
+      controls.commands=async()=>({data:[{kind:'skill',name:'proof',path:'/project/.agents/skills/proof/SKILL.md',description:'Proof skill'}]});
+      controls.submit=async message=>{calls.push(['submit',message.options]);};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+    }""")
+    page.get_by_role("button", name="Commands and skills", exact=True).click()
+    page.get_by_role("button", name="$proof", exact=False).wait_for()
+    page.screenshot(path=str(tmp_path / "codex-skills-mobile.png"))
+    page.get_by_role("button", name="$proof", exact=False).click()
+    assert page.evaluate("calls") == []
+    assert page.get_by_role("button", name="Remove skill proof").is_visible()
+    page.evaluate("""() => {pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});}""")
+    assert page.get_by_role("button", name="Remove skill proof").is_visible()
+    page.locator('#left').get_by_role("button", name="Send message", exact=True).click()
+    page.wait_for_function("calls.length===1")
+    assert page.evaluate("calls[0]") == ["submit", {"skills": ["/project/.agents/skills/proof/SKILL.md"]}]
+    assert page.get_by_role("button", name="Remove skill proof").count() == 0
+    assert not errors
+
+
 def test_codex_mcp_inventory_shows_unknown_state_without_unsupported_mutations(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

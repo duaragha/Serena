@@ -347,9 +347,9 @@ class WorkspaceHost:
                         raise ValueError("An exact Claude MCP server and action are required")
                     result = await owner.control_mcp_server(payload["name"], payload["action"])
                 elif action == "commands":
-                    if provider != "claude" or payload:
+                    if provider not in {"claude", "codex"} or payload:
                         raise ValueError(
-                            "Command discovery requires a Claude session and no payload"
+                            "Command discovery requires a supported session and no payload"
                         )
                     result = await owner.list_commands()
                 elif action == "background_tasks":

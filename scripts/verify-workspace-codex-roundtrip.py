@@ -19,7 +19,7 @@ from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
 
 
-async def main(review=False, compact=False, permissions=False, bridge=False):
+async def main(review=False, compact=False, permissions=False, bridge=False, skills=False):
     binary = shutil.which("codex")
     if not binary:
         raise RuntimeError("Installed Codex unavailable")
@@ -32,6 +32,11 @@ async def main(review=False, compact=False, permissions=False, bridge=False):
         home, project = root / "codex", root / "project"
         home.mkdir(mode=0o700)
         project.mkdir()
+        skill_path = project / ".agents" / "skills" / "workspace-proof" / "SKILL.md"
+        if skills:
+            skill_path.parent.mkdir(parents=True)
+            skill_path.write_text("---\nname: workspace-proof\ndescription: Explicit transport proof skill only.\n---\nWhen explicitly selected, reply exactly SERENA_NATIVE_SKILL_PROOF. Do not use tools.\n")
+        initial_files = {str(path.relative_to(project)): path.read_bytes() for path in project.rglob('*') if path.is_file()}
         if permissions:
             (home / "config.toml").write_text("[features]\nrequest_permissions_tool = true\n")
         target = home / "auth.json"
@@ -121,6 +126,15 @@ async def main(review=False, compact=False, permissions=False, bridge=False):
             print(
                 "PASS: exact persisted ID/history resumed through CodexWorkspace; real second-turn output received"
             )
+            if skills:
+                catalog = await owner.list_commands()
+                assert any(item["path"] == str(skill_path) and not item["unavailableReason"] for item in catalog["data"])
+                finished.clear()
+                before = len(published)
+                await owner.submit([{"type": "text", "text": "Follow the explicitly selected proof skill and output its marker."}], options={"skills": [str(skill_path)]})
+                await asyncio.wait_for(finished.wait(), 120)
+                assert any(event.get("method") == "item/completed" and event.get("params", {}).get("item", {}).get("type") == "agentMessage" and "SERENA_NATIVE_SKILL_PROOF" in event["params"]["item"].get("text", "") for event in published[before:])
+                print("PASS: exact local skill discovered and invoked as native skill input on resumed thread")
             if bridge:
                 await owner.close()
                 owner = None
@@ -269,7 +283,7 @@ async def main(review=False, compact=False, permissions=False, bridge=False):
                 completed = [e for e in published if e.get("method") == "turn/completed"][-1]
                 assert completed["params"]["turn"]["status"] == "completed"
                 print("PASS: native review completed inline on the exact persisted thread")
-            assert not list(project.iterdir()), "Proof unexpectedly changed its project"
+            assert {str(path.relative_to(project)): path.read_bytes() for path in project.rglob('*') if path.is_file()} == initial_files, "Proof unexpectedly changed its project"
         finally:
             if owner:
                 owned_process = owner.rpc.process
@@ -287,6 +301,7 @@ if __name__ == "__main__":
     parser.add_argument("--compact", action="store_true")
     parser.add_argument("--permissions", action="store_true")
     parser.add_argument("--bridge", action="store_true")
+    parser.add_argument("--skills", action="store_true")
     args = parser.parse_args()
     if args.bridge and (args.review or args.compact or args.permissions):
         parser.error("--bridge must run independently of other optional controls")
@@ -296,5 +311,6 @@ if __name__ == "__main__":
             compact=args.compact,
             permissions=args.permissions,
             bridge=args.bridge,
+            skills=args.skills,
         )
     )

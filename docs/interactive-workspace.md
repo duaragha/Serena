@@ -2,6 +2,35 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex skills are now selectable through native skills/list for the exact project.
+The picker shows the skill path, keeps selected skills with the draft, and never
+auto-sends. Submission re-reads the native catalog, rejects stale/disabled/foreign
+paths, and sends typed skill inputs with exact name/path on the existing thread.
+Selections survive view recreation and failed sends; successful sends clear only
+the submitted selections. Skill-bearing steering is still unavailable and reports
+that constraint without dropping the draft. Skill configuration editing and the
+remaining Codex CLI commands are not implemented by this picker.
+Source: https://learn.chatgpt.com/docs/app-server (accessed 2026-09-09), installed
+SkillsListParams/Response and native user-input schemas.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_pane.py tests/test_workspace_host.py -q --basetemp=/tmp/serena-native-skills-final
+# exit 0: 62 passed in 21.74s; mobile skill picker screenshot reviewed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_skill_selection_persists_and_sends_exact_path_only_on_submit -q --basetemp=/tmp/serena-native-skills-browser
+# exit 0: 1 passed in 0.69s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --skills
+# exit 0: exact resumed thread, real local skill invocation and marker response,
+# unchanged project fixture bytes, owned process cleanup
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_pane.py scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed!
+```
+
+Initial browser run exited 1 (45 passed): the fixture reused replay sequence
+numbers after recreation and selected both panes' send buttons. The fixture now
+replays from sequence 1 and selects its exact pane. Initial live skill proof
+exited 1 after successful invocation because the old empty-project assertion
+rejected the proof's own skill file; it now checks an exact baseline file snapshot.
+
 Codex MCP inventory is now available in the shared connections panel. It uses
 native mcpServerStatus/list with the exact threadId, bounded cursor pagination,
 and toolsAndAuthOnly. Runtime connection state, auth state and tool count remain

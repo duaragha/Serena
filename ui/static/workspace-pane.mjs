@@ -23,6 +23,7 @@ export class WorkspacePane {
     this.visibleItemLimit = 100;
     this.lastItemCount = 0;
     this.files = [];
+    this.selectedSkills = [];
     this.previews = new Map();
     this.historyImageUrls = new Set();
     this.sending = false;
@@ -58,6 +59,8 @@ export class WorkspacePane {
     try {
       this.draftStorage ??= window.sessionStorage;
       this.input.value = this.draftStorage.getItem(this.draftKey) || '';
+      const skills=JSON.parse(this.draftStorage.getItem(`${this.draftKey}:skills`) || '[]');
+      if(provider==='Codex' && Array.isArray(skills))this.selectedSkills=skills.filter(s=>typeof s?.name==='string' && typeof s?.path==='string');
     }
     catch (error) { this.error(new Error(`Draft storage unavailable: ${error.message}`)); }
     this.input.addEventListener('input', () => this.persistDraft());
@@ -101,7 +104,7 @@ export class WorkspacePane {
     this.tasksButton.hidden = !['Codex','Claude'].includes(provider) || !controls.backgroundTasks;
     footer.insertBefore(this.tasksButton, this.stop);
     this.commandsButton = this.button('Commands and skills', 'slash', () => this.openCommands());
-    this.commandsButton.hidden = provider !== 'Claude' || !controls.commands;
+    this.commandsButton.hidden = !['Claude','Codex'].includes(provider) || !controls.commands;
     footer.insertBefore(this.commandsButton, this.stop);
     this.mcpButton = this.button('MCP connections', 'plug', () => this.openMcpServers());
     this.mcpButton.hidden = !['Claude','Codex'].includes(provider) || !controls.mcpServers;
@@ -138,6 +141,7 @@ export class WorkspacePane {
     this.usageLabel = node('span', 'aw-usage');
     identity.append(this.usageLabel);
     root.replaceChildren(head, this.log, this.questionArea, this.alert, this.form, identity);
+    this.renderAttachments();
     this.refreshIcons();
     this.render();
   }
@@ -205,10 +209,13 @@ export class WorkspacePane {
       const matching=commands.filter(c => [c.name,c.description,...(c.aliases||[])].join(' ').toLowerCase().includes(query));
       for (const command of matching) {
         const button=node('button','aw-command'); button.type='button';
-        button.append(node('strong','',`/${command.name}`),node('small','',command.argumentHint || ''),node('span','',command.description || ''));
+        button.append(node('strong','',`${command.kind==='skill'?'$':'/'}${command.name}`),node('small','',command.kind==='skill'?command.path:command.argumentHint || ''),node('span','',command.description || ''));
         if(command.unavailableReason){button.disabled=true;button.title=command.unavailableReason;button.append(node('small','',command.unavailableReason));}
         button.addEventListener('click',()=>{
-          this.input.value=`/${command.name} ${this.input.value}`;
+          if(command.kind==='skill'){
+            if(!this.selectedSkills.some(s=>s.path===command.path))this.selectedSkills.push({name:command.name,path:command.path});
+            this.persistSkills();this.renderAttachments();
+          }else this.input.value=`/${command.name} ${this.input.value}`;
           this.persistDraft(); dialog.close(); this.input.focus();
         });
         list.append(button);
@@ -354,23 +361,29 @@ export class WorkspacePane {
 
   async submit() {
     const text = this.input.value;
-    if (this.sending || this.send.disabled || (!text.trim() && !this.files.length)) return;
+    if (this.sending || this.send.disabled || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const files = [...this.files];
+    const skills = [...this.selectedSkills];
     this.sending = true; this.send.disabled = true; this.alert.hidden = true;
     try {
       // Uploads and text are submitted through one session-owner operation.
       const options = {};
+      if(skills.length){
+        if(this.canSteer())throw Error('Send selected skills after the current turn finishes');
+        options.skills=skills.map(s=>s.path);
+      }
       if (this.modelSelect.value) options.model = this.modelSelect.value;
       if (this.effortSelect.value) options.effort = this.effortSelect.value;
       if (this.tierSelect.value) options.serviceTier = this.tierSelect.value === '__default' ? null : this.tierSelect.value;
       if (this.provider === 'Codex' && text.trim() === '/compact') {
-        if (files.length || !this.controls.compact) throw Error('Compaction does not accept attachments');
+        if (files.length || skills.length || !this.controls.compact) throw Error('Compaction does not accept attachments or skills');
         await this.controls.compact();
       }
       else if (this.canSteer()) await this.controls.steer({text, files, expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else await this.controls.submit({text, files, options});
       if (this.input.value === text) { this.input.value = ''; this.persistDraft(); }
       this.files = this.files.filter(file => !files.includes(file));
+      this.selectedSkills=this.selectedSkills.filter(skill=>!skills.includes(skill));this.persistSkills();
       this.renderAttachments();
     } catch (error) { this.error(error); }
     finally { this.sending = false; if (!this.disposed) this.render(); }
@@ -380,11 +393,21 @@ export class WorkspacePane {
     return this.provider === 'Codex' && this.conversation.status === 'running' && typeof this.controls.steer === 'function';
   }
 
+  persistSkills() {
+    try {this.draftStorage.setItem(`${this.draftKey}:skills`,JSON.stringify(this.selectedSkills));}
+    catch(error){this.error(error);}
+  }
+
   renderAttachments() {
     for (const [file, url] of this.previews) {
       if (!this.files.includes(file)) { URL.revokeObjectURL(url); this.previews.delete(file); }
     }
     this.attachments.replaceChildren();
+    for(const skill of this.selectedSkills){
+      const row=node('span','aw-attachment',`$${skill.name}`);row.title=skill.path;
+      row.append(this.button(`Remove skill ${skill.name}`,'x',()=>{this.selectedSkills=this.selectedSkills.filter(s=>s.path!==skill.path);this.persistSkills();this.renderAttachments();}));
+      this.attachments.append(row);
+    }
     for (const file of this.files) {
       const row = node('span', 'aw-attachment', file.name);
       if (/^image\/(png|jpeg|gif|webp)$/.test(file.type)) {

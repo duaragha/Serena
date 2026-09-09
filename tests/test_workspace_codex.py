@@ -72,6 +72,34 @@ class Rpc:
         self.closed = True
 
 
+def test_selected_skills_are_revalidated_and_sent_as_native_skill_inputs(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        original = rpc.request
+        path = str(tmp_path / "SKILL.md")
+        async def request(method, params):
+            if method == "skills/list":
+                assert params == {"cwds": [str(tmp_path)], "forceReload": True}
+                return {"data": [{"cwd": str(tmp_path), "errors": [], "skills": [{"name": "proof", "path": path, "enabled": True, "description": "Proof"}]}]}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            assert (await client.list_commands())["data"][0]["kind"] == "skill"
+            for selected in (["/foreign/SKILL.md"], [path, path], {}):
+                with pytest.raises(ValueError):
+                    await client.submit([{"type": "text", "text": "Run"}], options={"skills": selected})
+            assert not any(method == "turn/start" for method, _ in rpc.calls)
+            await client.submit([{"type": "text", "text": "Run"}], options={"skills": [path]})
+            turn = [params for method, params in rpc.calls if method == "turn/start"][-1]
+            assert turn["threadId"] == "exact-session"
+            assert turn["input"][-1] == {"type": "skill", "name": "proof", "path": path}
+            assert "skills" not in turn
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_mcp_inventory_paginates_exact_thread_without_inventing_connection_status(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)
