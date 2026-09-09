@@ -201,6 +201,25 @@ def test_failed_send_keeps_draft_after_reload(pane):
     assert not errors
 
 
+def test_long_history_mounts_recent_items_and_preserves_reader_position(pane):
+    page, errors = pane
+    page.evaluate("emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'long',status:'completed',items:Array.from({length:350},(_,i)=>({id:'item-'+i,type:'agentMessage',text:'Message '+i}))}]}}})")
+    page.wait_for_function("pane.rendered.size === 100")
+    assert page.locator("#left [data-item-id='item-349']").count() == 1
+    assert page.locator("#left [data-item-id='item-0']").count() == 0
+    assert page.evaluate("pane.conversation.turns.get('long').items.size") == 350
+    page.evaluate("pane.log.scrollTop=0")
+    page.wait_for_function("pane.rendered.size >= 200")
+    page.evaluate("pane.log.scrollTop=300")
+    page.wait_for_timeout(50)
+    before = page.evaluate("pane.log.scrollTop")
+    page.evaluate("emit({method:'item/completed',params:{threadId:'exact',turnId:'long',item:{id:'new',type:'agentMessage',text:'New arrival'}}})")
+    page.wait_for_function("pane.rendered.has(JSON.stringify(['long','new']))")
+    assert abs(page.evaluate("pane.log.scrollTop") - before) < 2
+    assert page.evaluate("pane.conversation.turns.get('long').items.size") == 351
+    assert not errors
+
+
 def test_review_dialog_routes_explicit_target_without_submitting_message(pane):
     page, errors = pane
     page.evaluate("""() => {
@@ -271,6 +290,9 @@ def test_history_image_renders_without_base64_text(pane, provider):
     page.wait_for_function("document.querySelector('.aw-history-image')?.naturalWidth === 8")
     assert data not in page.locator("#left").inner_text()
     assert page.locator(".aw-history-image").get_attribute("src").startswith("blob:")
+    assert page.evaluate("pane.historyImageUrls.size") == 1
+    page.evaluate("emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'text',text:'image replaced'}]}}})")
+    page.wait_for_function("pane.historyImageUrls.size === 0")
     page.evaluate("pane.dispose()")
     assert page.evaluate("pane.historyImageUrls.size") == 0
     assert not errors

@@ -19,6 +19,8 @@ export class WorkspacePane {
     this.draftKey = `serena-workspace-draft:${provider.toLowerCase()}:${sessionId}`;
     this.conversation = new WorkspaceConversation(sessionId);
     this.rendered = new Map();
+    this.visibleItemLimit = 100;
+    this.lastItemCount = 0;
     this.files = [];
     this.previews = new Map();
     this.historyImageUrls = new Set();
@@ -38,6 +40,11 @@ export class WorkspacePane {
     this.log = node('div', 'aw-transcript');
     this.log.tabIndex = 0;
     this.log.setAttribute('aria-label', `${provider} messages and tool output`);
+    this.earlier = this.button('Load earlier messages', 'arrow-up', () => this.loadEarlier());
+    this.earlier.classList.add('aw-load-earlier');
+    this.log.addEventListener('scroll', () => {
+      if (this.log.scrollTop < 40 && !this.earlier.hidden) this.loadEarlier();
+    });
     this.questionArea = node('div', 'aw-questions');
     this.alert = node('div', 'aw-error');
     this.alert.setAttribute('role', 'alert');
@@ -347,7 +354,8 @@ export class WorkspacePane {
       blob = new Blob([bytes], {type:source.media_type});
     }
     if (!['image/png','image/jpeg','image/gif','image/webp'].includes(blob.type) || blob.size > 25 * 1024 * 1024) throw Error('Unsupported image');
-    if (this.disposed) return;
+    await Promise.resolve();
+    if (this.disposed || !image.isConnected) return;
     const url = URL.createObjectURL(blob);
     this.historyImageUrls.add(url);
     image.src = url;
@@ -443,14 +451,36 @@ export class WorkspacePane {
     // Only the provider's resolution event dismisses the question.
   }
 
+  releaseHistoryImages(element) {
+    for (const image of element.querySelectorAll('.aw-history-image')) {
+      if (this.historyImageUrls.delete(image.src)) URL.revokeObjectURL(image.src);
+    }
+  }
+
+  loadEarlier() {
+    if (this.disposed || this.visibleItemLimit >= this.lastItemCount) return;
+    const height = this.log.scrollHeight, top = this.log.scrollTop;
+    this.visibleItemLimit += 100;
+    this.render();
+    this.log.scrollTop = top + this.log.scrollHeight - height;
+  }
+
   render() {
     if (this.disposed) return;
     this.renderModelControls();
     const follow = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 60;
     const keys = new Set();
-    const ordered = [];
+    let count = 0;
+    for (const turn of this.conversation.turns.values()) count += turn.items.size;
+    // Keep the reader's existing window when new items arrive away from the tail.
+    if (!follow && count > this.lastItemCount && this.lastItemCount) this.visibleItemLimit += count - this.lastItemCount;
+    this.lastItemCount = count;
+    this.earlier.hidden = count <= this.visibleItemLimit;
+    const ordered = [this.earlier];
+    let skip = Math.max(0, count - this.visibleItemLimit);
     for (const turn of this.conversation.turns.values()) {
       for (const item of turn.items.values()) {
+        if (skip-- > 0) continue;
         const key = JSON.stringify([turn.id,item.id]); keys.add(key);
         const signature = JSON.stringify(item);
         const prior = this.rendered.get(key);
@@ -459,13 +489,14 @@ export class WorkspacePane {
         if (prior) {
           const wasOpen = prior.element.querySelector('details')?.open;
           if (wasOpen && element.querySelector('details')) element.querySelector('details').open = true;
+          this.releaseHistoryImages(prior.element);
           prior.element.replaceWith(element);
         } else this.log.append(element);
         this.rendered.set(key, {signature,element});
         ordered.push(element);
       }
     }
-    for (const [key, prior] of this.rendered) if (!keys.has(key)) { prior.element.remove(); this.rendered.delete(key); }
+    for (const [key, prior] of this.rendered) if (!keys.has(key)) { this.releaseHistoryImages(prior.element); prior.element.remove(); this.rendered.delete(key); }
     let cursor = this.log.firstChild;
     for (const element of ordered) {
       if (element !== cursor) this.log.insertBefore(element, cursor);

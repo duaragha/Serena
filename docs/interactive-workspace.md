@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+The conversation initially mounts the most recent 100 items, loading earlier
+items in 100-item increments on upward scroll or the keyboard-accessible earlier
+control. Incoming items preserve an away-from-tail reader's window and scroll
+position. Removed/replaced images release their blob URLs, and late preview
+requests cannot create orphan URLs. This bounds initial DOM work, not total
+retained provider history: state/journal paging remains a separate performance gap.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q
+# exit 0: 18 passed in 9.69s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_history_image_renders_without_base64_text tests/test_workspace_pane.py::test_long_history_mounts_recent_items_and_preserves_reader_position -q
+# exit 0: 3 passed in 1.39s after image-lifecycle adjustment
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_history_image_renders_without_base64_text -q
+# exit 0: image replacement releases URLs for both providers
+node --check ui/static/workspace-pane.mjs
+# exit 0
+```
+
 Codex context compaction is available through its explicit toolbar control and
 the exact `/compact` composer command. It calls thread/compact/start on the owned
 session. The acknowledgement leaves it busy until native turn completion; a

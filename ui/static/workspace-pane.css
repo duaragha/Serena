@@ -38,6 +38,7 @@
 .aw-question input[type=radio],.aw-question input[type=checkbox]{display:inline-block;width:auto;margin:0 8px 0 0;accent-color:#ff85cb}
 .aw-message{white-space:normal;overflow-wrap:anywhere}.aw-message p{margin:0 0 12px}.aw-message p:last-child{margin-bottom:0}
 .aw-history-image{display:block;max-width:100%;max-height:320px;width:auto;height:auto;object-fit:contain;margin:8px 0}
+.aw-load-earlier{display:block;margin:0 auto 16px}.aw-load-earlier[hidden]{display:none}
 .aw-review-dialog{box-sizing:border-box;width:420px;max-width:calc(100vw - 24px);background:#110d12;color:#eee;border:1px solid #63455d;border-radius:6px;padding:20px}.aw-review-dialog::backdrop{background:#000a}
 .aw-review-dialog h2{font-size:16px;margin:0 0 16px}.aw-review-dialog label{display:block;margin-bottom:14px}.aw-review-dialog label[hidden]{display:none}.aw-review-dialog select,.aw-review-dialog textarea{box-sizing:border-box;display:block;width:100%;margin-top:6px;background:#000;color:inherit;border:1px solid #63455d;padding:8px}.aw-review-dialog button{margin-right:8px}
 .aw-message h1,.aw-message h2,.aw-message h3{font-size:15px;line-height:1.5;margin:16px 0 8px}
