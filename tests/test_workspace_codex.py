@@ -72,6 +72,35 @@ class Rpc:
         self.closed = True
 
 
+def test_permission_profiles_enforce_policy_confirmation_and_exact_thread(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        original = rpc.request
+        async def request(method, params):
+            if method == "permissionProfile/list":
+                assert params["cwd"] == str(tmp_path)
+                return {"data": [{"id": ":read-only", "allowed": True}, {"id": "blocked", "allowed": False}], "nextCursor": None}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match="confirmation"):
+                await client.set_permissions(":read-only")
+            with pytest.raises(ValueError, match="blocked"):
+                await client.set_permissions("blocked", True)
+            assert not any(method == "thread/settings/update" for method, _ in rpc.calls)
+            assert (await client.set_permissions(":read-only", True))["mode"] == ":read-only"
+            updates = [params for method, params in rpc.calls if method == "thread/settings/update"]
+            assert updates == [{"threadId": "exact-session", "permissions": ":read-only"}]
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="current Codex turn"):
+                await client.set_permissions(":read-only", True)
+            assert not any(method == "turn/start" for method, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_skill_steering_preserves_turn_and_rechecks_after_discovery(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

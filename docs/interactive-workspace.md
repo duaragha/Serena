@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex permission profiles now use native permissionProfile/list and
+thread/settings/update. Profiles are discovered for the owner's project with
+bounded pagination; managed disallowed entries are disabled in the picker and
+rejected again at submission. Every profile change requires confirmation and an
+idle owner, changes only subsequent-turn settings, and never writes user config
+or launches another turn. The last acknowledged profile is shown; initial legacy
+sandbox settings are not mislabeled as a named profile. Legacy sandbox editing,
+granular approvals and automatic live profile tracking remain unfinished.
+Sources: https://learn.chatgpt.com/docs/app-server and
+https://learn.chatgpt.com/docs/permissions (accessed 2026-09-09), installed native
+PermissionProfileList and ThreadSettingsUpdate schemas.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_pane.py::test_codex_permission_profile_picker_disables_managed_denials -q --basetemp=/tmp/serena-codex-profiles-final
+# exit 0: 18 passed in 0.89s; disabled DOM property and keyboard selection checked
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-mcp.py --inventory-only
+# exit 0: native :read-only profile allowed and acknowledged on exact idle thread,
+# no inference/tool call/copied auth/user session, owned process reaped
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_pane.py scripts/verify-workspace-mcp.py
+# exit 0: All checks passed!
+```
+
+Initial combined run exited 1 (69 passed): Playwright's is_disabled helper did
+not recognize the disabled option. Direct DOM inspection and keyboard navigation
+verified it was disabled; the regression test now checks both explicitly.
+
 Claude permission modes now use native set_permission_mode on the existing owner,
 with an explicit Apply action and a separate confirmation for bypassPermissions.
 Changes require an idle owner with no pending questions; native rejection leaves

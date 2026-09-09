@@ -104,6 +104,47 @@ class CodexWorkspace:
                 await self._close()
                 raise
 
+    async def permissions(self):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        profiles, seen, cursors, cursor = [], set(), set(), None
+        while True:
+            params = {"cwd": str(self.cwd), "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            page = await self.rpc.request("permissionProfile/list", params)
+            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+                raise WorkspaceRpcError("Codex returned an invalid permission catalog")
+            for profile in page["data"]:
+                if not isinstance(profile, dict) or not isinstance(profile.get("id"), str) or not profile["id"] or type(profile.get("allowed")) is not bool or profile["id"] in seen:
+                    raise WorkspaceRpcError("Codex returned an invalid permission profile")
+                seen.add(profile["id"])
+                profiles.append({"id": profile["id"], "allowed": profile["allowed"], "description": profile.get("description") or ""})
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return {"mode": self.settings.get("permissionProfile"), "modes": [p["id"] for p in profiles], "profiles": profiles}
+            if not isinstance(cursor, str) or cursor in cursors or len(cursors) >= 100:
+                raise WorkspaceRpcError("Permission catalog pagination did not advance")
+            cursors.add(cursor)
+
+    async def set_permissions(self, mode, confirmed=False):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions:
+                raise WorkspaceRpcError("Finish the current Codex turn before changing permissions")
+            if confirmed is not True:
+                raise ValueError("Changing a permission profile requires explicit confirmation")
+            profiles = (await self.permissions())["profiles"]
+            if not isinstance(mode, str) or not any(p["id"] == mode and p["allowed"] for p in profiles):
+                raise ValueError("Permission profile is unavailable or blocked by policy")
+            if self.state != "ready":
+                raise WorkspaceRpcError("Session changed during permission lookup")
+            result = await self.rpc.request("thread/settings/update", {"threadId": self.session_id, "permissions": mode})
+            if not isinstance(result, dict):
+                raise WorkspaceRpcError("Permission profile change was not confirmed")
+            self.settings["permissionProfile"] = mode
+            await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
+            return {"mode": mode, "modes": [p["id"] for p in profiles], "profiles": profiles}
+
     async def list_commands(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")

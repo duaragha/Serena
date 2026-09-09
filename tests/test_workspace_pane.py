@@ -60,6 +60,31 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_codex_permission_profile_picker_disables_managed_denials(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      pane.dispose();
+      controls.permissions=async()=>({mode:null,modes:[':read-only','blocked'],profiles:[{id:':read-only',allowed:true},{id:'blocked',allowed:false}]});
+      controls.setPermissions=async(mode,confirmed)=>{calls.push([mode,confirmed]);return {mode};};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+    }""")
+    page.get_by_role("button", name="Permission mode", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Permission mode", exact=True)
+    select = dialog.get_by_role("combobox", name="Permission mode")
+    select.select_option(":read-only")
+    assert select.locator("option[value=blocked]").evaluate("el=>el.disabled"), select.evaluate("el=>el.outerHTML")
+    select.focus()
+    select.press("ArrowDown")
+    assert select.input_value() == ":read-only"
+    dialog.get_by_role("button", name="Apply", exact=True).click()
+    assert page.evaluate("calls") == []
+    dialog.get_by_role("checkbox", name="Apply this permission profile to subsequent turns").check()
+    dialog.get_by_role("button", name="Apply", exact=True).click()
+    page.wait_for_function("calls.length===1")
+    assert page.evaluate("calls") == [[":read-only", True]]
+    assert not errors
+
+
 def test_permission_mode_requires_explicit_apply_and_bypass_confirmation(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

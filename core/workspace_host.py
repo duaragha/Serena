@@ -342,12 +342,12 @@ class WorkspaceHost:
                     await self._publish_bridge_queue(sid)
                     result = {"cancelled": True}
                 elif action == "permissions":
-                    if provider != "claude" or payload:
-                        raise ValueError("Permission modes require a Claude session and no payload")
+                    if provider not in {"codex", "claude"} or payload:
+                        raise ValueError("Permission modes require a supported session and no payload")
                     result = await owner.permissions()
                 elif action == "set_permissions":
-                    if provider != "claude" or set(payload) != {"mode", "confirmed"} or type(payload["confirmed"]) is not bool:
-                        raise ValueError("An explicit Claude permission mode is required")
+                    if provider not in {"codex", "claude"} or set(payload) != {"mode", "confirmed"} or type(payload["confirmed"]) is not bool:
+                        raise ValueError("An explicit native permission mode is required")
                     result = await owner.set_permissions(payload["mode"], payload["confirmed"])
                 elif action == "context_usage":
                     if provider != "claude" or payload:

@@ -102,6 +102,11 @@ async def main(inventory_only=False):
                             break
                         await asyncio.sleep(0.1)
                 print("PASS: adapter reads exact-thread native MCP inventory and live connection status")
+                profiles = await owner.permissions()
+                assert any(profile["id"] == ":read-only" and profile["allowed"] for profile in profiles["profiles"])
+                changed = await owner.set_permissions(":read-only", True)
+                assert changed["mode"] == ":read-only"
+                print("PASS: native allowed permission profile selected on exact idle thread without a turn")
                 print("No inference, tool call, copied authentication, or user session used")
                 return
             await rpc.request(
