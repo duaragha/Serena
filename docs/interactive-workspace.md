@@ -2,6 +2,40 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude now has an explicit searchable command/skill picker using get_server_info
+commands plus the native init command names. Selecting inserts into the draft,
+never auto-sends. Native aliases/descriptions are searchable; identity-switching
+commands are unavailable and rejected before query. Terminal-only commands
+advertised by init are labeled unavailable pending native equivalents.
+Zero-model-turn ResultMessage.result output is normalized as commandOutput so
+commands such as /context actually display their result, without duplicating
+normal model replies. Live /context on an isolated resumed subscription session
+confirmed output, readiness and command discovery. This does not prove every
+advertised command works or complete the session-switching requirement.
+Source: https://code.claude.com/docs/en/agent-sdk/slash-commands
+(redirects to SDK skills/commands documentation, accessed 2026-09-09).
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_pane.py -q --basetemp=/tmp/serena-workspace-commands-verification
+# exit 0: 46 passed in 15.28s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_command_picker_preserves_draft_and_displays_native_output -q --basetemp=/tmp/serena-workspace-command-icon-verification
+# exit 0: 1 passed in 0.76s; final close-icon assertion
+node --test tests/workspace-events.test.mjs tests/workspace-connection.test.mjs
+# exit 0: 11 passed, 0 failed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py
+# exit 0: installed command inventory, no inference
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference
+# exit 0: real resume/response, native /context commandOutput and command catalog,
+# owned processes reaped; isolated storage removed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_events.py core/workspace_host.py tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-claude.py scripts/verify-workspace-claude-roundtrip.py
+# exit 0: All checks passed!
+```
+
+Earlier browser check exited 1 because it asserted before the animation-frame
+render; added an explicit wait. Another run exited 1 when its shared pytest temp
+directory disappeared (SQLite/file setup errors); isolated basetemp run above
+passed. Mobile screenshot reviewed; missing close icon fixed and guarded.
+
 Codex background tasks now have an explicit native list/refresh/stop panel.
 Listing follows provider pagination; stopping rechecks membership in this exact
 thread and uses the app-server processId, never an OS PID or turn interruption.

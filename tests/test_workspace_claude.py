@@ -128,6 +128,42 @@ def test_missing_or_mismatched_native_session_never_launches(tmp_path, native_id
     asyncio.run(run())
 
 
+def test_command_catalog_and_session_switch_guard(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        try:
+            await owner.open()
+
+            async def info():
+                return {
+                    "commands": [
+                        {"name": "context"},
+                        {"name": "clear", "aliases": ["reset", "new"]},
+                    ]
+                }
+
+            owner.client.get_server_info = info
+            owner.events.capabilities = {
+                "slash_commands": ["context", "extra", "color"],
+                "terminal_slash_commands": ["color"],
+            }
+            result = await owner.list_commands()
+            assert [c["name"] for c in result["data"]] == ["context", "clear", "extra", "color"]
+            assert result["data"][1]["unavailableReason"]
+            assert result["data"][-1]["unavailableReason"]
+            assert events[-1]["method"] == "workspace/commands"
+            for name in ("clear", "new", "reset", "resume", "fork"):
+                with pytest.raises(ValueError, match="Session switching"):
+                    await owner.submit([{"type": "text", "text": f"/{name} target"}])
+            assert not owner.client.sent
+            await owner.submit([{"type": "text", "text": "/context"}])
+            assert owner.client.sent[0][0] == "exact"
+        finally:
+            await owner.close()
+
+    asyncio.run(run())
+
+
 def test_advertised_model_selection_uses_existing_client(tmp_path):
     async def run():
         owner, events = make(tmp_path)
@@ -293,6 +329,29 @@ def test_real_sdk_messages_stream_to_same_item_and_complete(tmp_path):
             await owner.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("num_turns, expected", [(0, 1), (1, 0)])
+def test_local_command_result_is_visible_without_duplicating_model_response(num_turns, expected):
+    converter = ClaudeEvents("exact")
+    converter.turn = "turn"
+    events = converter.receive(
+        ResultMessage(
+            subtype="success",
+            duration_ms=5,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=num_turns,
+            session_id="exact",
+            result="## Context Usage",
+        )
+    )
+    results = [e for e in events if e["method"] == "item/completed"]
+    assert len(results) == expected
+    if results:
+        assert results[0]["params"]["item"]["type"] == "commandOutput"
+        assert results[0]["params"]["item"]["text"] == "## Context Usage"
+    assert converter.turn is None
 
 
 def test_history_merges_tool_result_without_losing_tool_input():

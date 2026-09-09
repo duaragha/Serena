@@ -64,6 +64,27 @@ def host(tmp_path):
     value.shutdown()
 
 
+def test_command_discovery_is_provider_scoped_and_never_submits(tmp_path):
+    class CommandOwner(Owner):
+        async def list_commands(self):
+            return {"data": [{"name": "context"}]}
+
+    value = WorkspaceHost(
+        journal=WorkspaceJournal(tmp_path / "commands.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+        factories={"claude": CommandOwner},
+    )
+    try:
+        value.attach("exact")
+        assert value.command("exact", "list", "commands", {})["result"] == {
+            "data": [{"name": "context"}]
+        }
+        assert not value.command("exact", "bad", "commands", {"run": "context"})["ok"]
+        assert not CommandOwner.instances[-1].sent
+    finally:
+        value.shutdown()
+
+
 def test_background_controls_require_attach_and_deduplicate_stop(host):
     with pytest.raises(ValueError, match="Explicitly attach"):
         host.command("exact", "before", "background_tasks", {})

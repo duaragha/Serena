@@ -16,6 +16,7 @@ class ClaudeEvents:
         self.turn = None
         self.message_ids = {}
         self.tools = {}
+        self.capabilities = {}
 
     def event(self, method, params):
         return {"method": method, "params": {"threadId": self.sid, **params}}
@@ -99,6 +100,7 @@ class ClaudeEvents:
         events = [raw]
         parent = data.get("parent_tool_use_id") or "root"
         if kind == "SystemMessage" and data.get("subtype") == "init":
+            self.capabilities = deepcopy(data["data"])
             events.append(
                 self.event(
                     "workspace/settings",
@@ -133,6 +135,25 @@ class ClaudeEvents:
             if data.get("model"):
                 events.append(self.event("workspace/settings", {"model": data["model"]}))
         elif kind == "ResultMessage" and self.turn:
+            if (
+                data.get("num_turns") == 0
+                and isinstance(data.get("result"), str)
+                and data["result"]
+            ):
+                events.append(
+                    self.event(
+                        "item/completed",
+                        {
+                            "turnId": self.turn,
+                            "item": {
+                                "id": f"{self.turn}:command-result",
+                                "type": "commandOutput",
+                                "text": data["result"],
+                                "status": "failed" if data["is_error"] else "completed",
+                            },
+                        },
+                    )
+                )
             events.append(
                 self.event(
                     "turn/completed",

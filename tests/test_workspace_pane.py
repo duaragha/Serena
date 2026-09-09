@@ -85,6 +85,36 @@ def test_background_tasks_explicit_refresh_stop_and_mobile_layout(pane, tmp_path
     assert not errors
 
 
+def test_command_picker_preserves_draft_and_displays_native_output(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+      controls.commands=async()=>({data:[{name:'context',description:'Inspect context usage',argumentHint:''},{name:'clear',unavailableReason:'Session switching unavailable'}]});
+      pane.commandsButton.hidden=false;
+      pane.input.value='existing draft';
+    }""")
+    page.get_by_role("button", name="Commands and skills", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Commands and skills", exact=True)
+    assert dialog.get_by_role("button", name="Close commands").locator("svg").count() == 1
+    assert dialog.get_by_role("button", name="/clear", exact=False).is_disabled()
+    dialog.get_by_role("searchbox").fill("usage")
+    assert dialog.locator(".aw-command").count() == 1
+    page.screenshot(path=str(tmp_path / "commands-mobile.png"))
+    dialog.get_by_role("button", name="/context", exact=False).click()
+    assert (
+        page.get_by_role("textbox", name="Message Claude").input_value()
+        == "/context existing draft"
+    )
+    assert page.evaluate("calls") == []
+    page.evaluate(
+        """() => emit({method:'item/completed',params:{turnId:'t',item:{id:'result',type:'commandOutput',text:'## Context Usage\\n\\nNative result'}}})"""
+    )
+    page.get_by_role("heading", name="Context Usage").wait_for(state="visible")
+    assert page.get_by_text("Command result", exact=True).is_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    assert not errors
+
+
 def test_real_items_tool_expansion_and_injection_safety(pane, tmp_path):
     page, errors = pane
     assert page.locator("#left .aw-item").count() == 4

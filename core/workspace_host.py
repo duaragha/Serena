@@ -132,6 +132,7 @@ class WorkspaceHost:
             "review",
             "compact",
             "background_tasks",
+            "commands",
             "terminate_background_task",
         } or not isinstance(payload, dict):
             raise ValueError("Unsupported workspace control")
@@ -156,7 +157,11 @@ class WorkspaceHost:
                 )
             owner, provider = self._sessions[sid]
             try:
-                if action == "background_tasks":
+                if action == "commands":
+                    if provider != "claude" or payload:
+                        raise ValueError("Command discovery requires a Claude session and no payload")
+                    result = await owner.list_commands()
+                elif action == "background_tasks":
                     if provider != "codex" or payload:
                         raise ValueError("Background tasks require a Codex session and no payload")
                     result = await owner.list_background_tasks()

@@ -115,6 +115,23 @@ async def main():
             print(
                 "PASS: exact Claude ID/history resumed through workspace adapter; real second response received"
             )
+            finished.clear()
+            before = len(events)
+            await owner.submit([{"type": "text", "text": "/context"}])
+            await asyncio.wait_for(finished.wait(), 30)
+            results = [
+                e["params"]["item"]
+                for e in events[before:]
+                if e["method"] == "item/completed"
+                and e["params"]["item"]["type"] == "commandOutput"
+            ]
+            assert len(results) == 1 and "Context Usage" in results[0]["text"]
+            catalog = await owner.list_commands()
+            assert any(c["name"] == "context" for c in catalog["data"])
+            assert owner.state == "ready"
+            print(
+                "PASS: native /context output rendered as commandOutput; advertised commands discovered on same session"
+            )
         finally:
             try:
                 if owner:

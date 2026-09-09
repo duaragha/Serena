@@ -99,6 +99,9 @@ export class WorkspacePane {
     this.tasksButton = this.button('Background tasks', 'list-tree', () => this.openBackgroundTasks());
     this.tasksButton.hidden = provider !== 'Codex' || !controls.backgroundTasks;
     footer.insertBefore(this.tasksButton, this.stop);
+    this.commandsButton = this.button('Commands and skills', 'slash', () => this.openCommands());
+    this.commandsButton.hidden = provider !== 'Claude' || !controls.commands;
+    footer.insertBefore(this.commandsButton, this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
@@ -149,6 +152,41 @@ export class WorkspacePane {
       if (this.input.value) this.draftStorage.setItem(this.draftKey, this.input.value);
       else this.draftStorage.removeItem(this.draftKey);
     } catch (error) { this.error(new Error(`Draft could not be saved: ${error.message}`)); }
+  }
+
+  async openCommands() {
+    if (this.commandsDialog?.open) return;
+    const dialog = node('dialog', 'aw-review-dialog aw-commands-dialog');
+    dialog.setAttribute('aria-label', 'Commands and skills');
+    const search = node('input'); search.type='search'; search.placeholder='Search commands';
+    search.setAttribute('aria-label','Search commands');
+    const close = this.button('Close commands', 'x', () => dialog.close());
+    const status = node('p', '', 'Loading...'); status.setAttribute('role','status');
+    const list = node('div', 'aw-command-list');
+    let commands=[];
+    const render = () => {
+      list.replaceChildren();
+      const query=search.value.toLowerCase();
+      const matching=commands.filter(c => [c.name,c.description,...(c.aliases||[])].join(' ').toLowerCase().includes(query));
+      for (const command of matching) {
+        const button=node('button','aw-command'); button.type='button';
+        button.append(node('strong','',`/${command.name}`),node('small','',command.argumentHint || ''),node('span','',command.description || ''));
+        if(command.unavailableReason){button.disabled=true;button.title=command.unavailableReason;button.append(node('small','',command.unavailableReason));}
+        button.addEventListener('click',()=>{
+          this.input.value=`/${command.name} ${this.input.value}`;
+          this.persistDraft(); dialog.close(); this.input.focus();
+        });
+        list.append(button);
+      }
+      status.textContent=matching.length ? `${matching.length} command${matching.length === 1 ? '' : 's'}` : 'No matching commands';
+    };
+    search.addEventListener('input',render);
+    dialog.append(node('h3','','Commands and skills'),close,search,status,list);
+    dialog.addEventListener('close',()=>dialog.remove());
+    this.commandsDialog=dialog; this.root.append(dialog); dialog.showModal(); search.focus();
+    window.lucide?.createIcons();
+    try { const result=await this.controls.commands(); if(!dialog.open || this.disposed)return; commands=result.data; render(); }
+    catch(error){if(dialog.open)status.textContent=error.message;}
   }
 
   openBackgroundTasks() {
@@ -352,8 +390,8 @@ export class WorkspacePane {
         } else message.append(node('div', '', part.text ?? part.path ?? part.url ?? JSON.stringify(part)));
       }
       entry.append(message);
-    } else if (['agentMessage','plan','enteredReviewMode','exitedReviewMode'].includes(item.type)) {
-      entry.append(node('div', 'aw-author', item.type === 'plan' ? 'Plan' : item.type.endsWith('ReviewMode') ? 'Review' : this.provider));
+    } else if (['agentMessage','commandOutput','plan','enteredReviewMode','exitedReviewMode'].includes(item.type)) {
+      entry.append(node('div', 'aw-author', item.type === 'commandOutput' ? 'Command result' : item.type === 'plan' ? 'Plan' : item.type.endsWith('ReviewMode') ? 'Review' : this.provider));
       const message = node('div', 'aw-message');
       message.innerHTML = renderWorkspaceMarkdown(item.text ?? item.review);
       for (const block of message.querySelectorAll('pre')) {
@@ -585,6 +623,7 @@ export class WorkspacePane {
   dispose() {
     this.reviewDialog?.close();
     this.tasksDialog?.close();
+    this.commandsDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
     this.historyImageUrls.clear();
     this.disposed = true;

@@ -180,6 +180,32 @@ class ClaudeWorkspace:
         await self.publish(self.events.event("workspace/models", result))
         return result
 
+    async def list_commands(self):
+        if self.client is None or self.state in {"closed", "unavailable"}:
+            raise RuntimeError("Claude is not attached")
+        info = await self.client.get_server_info()
+        commands = (info or {}).get("commands")
+        if not isinstance(commands, list):
+            raise ValueError("Claude did not advertise a command catalog")
+        result = {"data": []}
+        names = {item.get("name") for item in commands if isinstance(item, dict)}
+        commands = list(commands) + [
+            {"name": name}
+            for name in self.events.capabilities.get("slash_commands", [])
+            if isinstance(name, str) and name not in names
+        ]
+        for command in commands:
+            if not isinstance(command, dict) or not isinstance(command.get("name"), str):
+                raise ValueError("Claude returned an invalid command catalog")
+            item = deepcopy(command)
+            if item["name"] in {"clear", "reset", "new", "resume", "fork"}:
+                item["unavailableReason"] = "Session switching is not implemented in this pane"
+            elif item["name"] in self.events.capabilities.get("terminal_slash_commands", []):
+                item["unavailableReason"] = "Claude reports this command requires a terminal"
+            result["data"].append(item)
+        await self.publish(self.events.event("workspace/commands", result))
+        return result
+
     async def submit(self, inputs, *, options=None):
         async with self._control:
             if self.state != "ready":
@@ -189,6 +215,15 @@ class ClaudeWorkspace:
                 raise ValueError("Unsupported Claude per-turn settings")
             if not isinstance(inputs, list) or not inputs:
                 raise ValueError("A message or attachment is required")
+            text = "".join(part.get("text", "") for part in inputs if part.get("type") == "text")
+            if text.strip().split(maxsplit=1)[:1] in [
+                ["/clear"],
+                ["/reset"],
+                ["/new"],
+                ["/resume"],
+                ["/fork"],
+            ]:
+                raise ValueError("Session switching is not implemented in this pane")
             if "model" in options:
                 if self.model_catalog is None:
                     await self.list_models()

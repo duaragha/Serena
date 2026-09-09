@@ -46,6 +46,9 @@ async def main():
             info = await client.get_server_info()
             assert isinstance(info, dict) and info
             print("Advertised control keys:", ", ".join(sorted(info)))
+            commands = info.get("commands")
+            assert isinstance(commands, list)
+            print("Advertised commands:", ", ".join(command["name"] for command in commands))
             print("Advertised models:", json.dumps(info.get("models", [])))
             models = info.get("models", [])
             assert models and models[0].get("value")

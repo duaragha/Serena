@@ -9,6 +9,7 @@ export class WorkspaceConversation {
     this.error = null;
     this.metadata = {};
     this.models = [];
+    this.commands = [];
     this.otherEvents = [];
   }
 
@@ -49,6 +50,8 @@ export class WorkspaceConversation {
       this.metadata.claudeUsage = p.usage;
     } else if (method === 'workspace/activity') {
       this.status = p.status;
+    } else if (method === 'workspace/commands') {
+      this.commands = p.data || [];
     } else if (method === 'workspace/models') {
       this.models = p.data || [];
       Object.assign(this.metadata, p.settings || {});
