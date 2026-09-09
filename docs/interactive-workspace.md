@@ -131,6 +131,46 @@ SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/pytho
 # exit 0: second owner rejected, initialize/initialized successful, child reaped with exit 0
 ```
 
-Next: connect adapters to the journal and pane through the host, implement Claude/
-Antigravity control and the remaining capability matrix, then prove full provider
-parity and migrate the real app. The replacement remains disabled and incomplete.
+`core/workspace_host.py` now owns adapters on a persistent event loop independent
+of HTTP requests. Concurrent attachment reuses one owner, HTTP timeouts do not
+cancel operations, and reads never launch anything. Explicit host shutdown waits
+for admitted operations and reaps owners; closing a view never invokes it.
+The journal also records command IDs before dispatch and confirmed receipts after
+dispatch. An incomplete receipt is uncertain and is never automatically reissued.
+
+`ui/workspace_web.py` supplies authenticated loopback-only control/replay routes
+through a blueprint factory. It rejects cross-origin requests and unexpected Host
+values. It is NOT registered by the production app yet: production admission must
+resolve the exact indexed session and reject pre-existing PTY/external writers.
+The host requires this resolver from its caller; test resolvers are not admission
+proof for user sessions. No arbitrary provider RPC proxy is exposed.
+
+`ui/static/workspace-connection.mjs` connects the real pane to those HTTP routes.
+Pending send IDs survive view reload through sessionStorage. Replay advances only
+after the view accepts each event; disposal stops polling, without stopping work.
+Uploads currently fail explicitly instead of silently sending only the text.
+Owner-bound file transport remains required before production use.
+
+The real-browser integration test mounts the actual blueprint and pane, sends
+through local HTTP, receives journaled adapter output, reloads, and verifies the
+same owner. Its provider is a controlled test fixture, not a live model. A separate
+host test runs real subprocess pipes through the Codex adapter and event journal.
+The safe installed-Codex host proof initializes a real app-server probe, attaches
+twice to the same owner, reads the persisted event, and explicitly reaps it. It
+does not resume a real conversation, start a turn, or establish provider parity.
+
+Exact host/connection verification (2026-09-09):
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py tests/test_workspace_host.py tests/test_workspace_journal.py -q
+# exit 0: 15 passed in 4.27s
+node --test tests/workspace-connection.test.mjs tests/workspace-events.test.mjs
+# exit 0: 8 passed, 0 failed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-host.py
+# exit 0: one installed Codex initialization probe, repeated attach/replay, child reaped with exit 0
+```
+
+Next: implement production admission and owner-bound uploads, mount the connected
+pane in the app, implement Claude/Antigravity control and the remaining capability
+matrix, then prove full provider parity and migrate the real app. The replacement
+remains disabled and incomplete.

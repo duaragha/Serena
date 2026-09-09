@@ -7,6 +7,7 @@ control/event stream across renderer reconnects without retaining it all in RAM.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -16,6 +17,13 @@ class WorkspaceJournal:
     def __init__(self, path: Path) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Create private storage before SQLite also creates its WAL/SHM files.
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
         with closing(self._connect()) as conn, conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""CREATE TABLE IF NOT EXISTS workspace_events (
@@ -24,6 +32,40 @@ class WorkspaceJournal:
                 event TEXT NOT NULL,
                 PRIMARY KEY (session_id, sequence)
             )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS workspace_commands (
+                session_id TEXT NOT NULL, request_id TEXT NOT NULL,
+                payload TEXT NOT NULL, result TEXT,
+                PRIMARY KEY (session_id, request_id)
+            )""")
+
+    def claim_command(
+        self, session_id: str, request_id: str, payload: dict
+    ) -> tuple[bool, dict | None]:
+        encoded = json.dumps(payload, sort_keys=True, allow_nan=False)
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT payload, result FROM workspace_commands WHERE session_id=? AND request_id=?",
+                (session_id, request_id),
+            ).fetchone()
+            if row:
+                if row[0] != encoded:
+                    raise ValueError("Request ID was already used with different content")
+                return False, json.loads(row[1]) if row[1] is not None else None
+            conn.execute(
+                "INSERT INTO workspace_commands VALUES (?, ?, ?, NULL)",
+                (session_id, request_id, encoded),
+            )
+            return True, None
+
+    def finish_command(self, session_id: str, request_id: str, result: dict) -> None:
+        with closing(self._connect()) as conn, conn:
+            changed = conn.execute(
+                "UPDATE workspace_commands SET result=? WHERE session_id=? AND request_id=? AND result IS NULL",
+                (json.dumps(result, allow_nan=False), session_id, request_id),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("Command is missing or already finished")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=10)

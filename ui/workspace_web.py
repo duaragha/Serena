@@ -1,0 +1,56 @@
+"""Opt-in rich workspace endpoints. No import-time providers or automatic attach."""
+
+from __future__ import annotations
+
+import ipaddress
+import secrets
+from urllib.parse import urlsplit
+
+from flask import Blueprint, jsonify, request
+
+
+def workspace_blueprint(host, *, token: str):
+    if len(token) < 32:
+        raise ValueError("Workspace control token is too short")
+    bp = Blueprint("structured_workspace", __name__, url_prefix="/api/workspace")
+
+    @bp.before_request
+    def authorize():
+        try:
+            peer = ipaddress.ip_address(request.remote_addr or "")
+            local_host = ipaddress.ip_address(urlsplit(request.host_url).hostname or "")
+            if not peer.is_loopback or not local_host.is_loopback:
+                raise ValueError()
+        except ValueError:
+            return jsonify(ok=False, error="Workspace control is loopback-only"), 403
+        origin = request.headers.get("Origin")
+        if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+            return jsonify(ok=False, error="Cross-origin workspace request rejected"), 403
+        supplied = request.headers.get("X-Serena-Workspace-Token", "")
+        if not secrets.compare_digest(supplied, token):
+            return jsonify(ok=False, error="Workspace authentication required"), 403
+
+    @bp.errorhandler(ValueError)
+    def invalid(error):
+        return jsonify(ok=False, error=str(error)), 400
+
+    @bp.errorhandler(RuntimeError)
+    def unavailable(error):
+        return jsonify(ok=False, error=str(error)), 409
+
+    @bp.post("/<sid>/attach")
+    def attach(sid):
+        return jsonify(host.attach(sid))
+
+    @bp.get("/<sid>/events")
+    def events(sid):
+        return jsonify(host.events(sid, after=int(request.args.get("after", "0"))))
+
+    @bp.post("/<sid>/commands")
+    def command(sid):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) != {"request_id", "action", "payload"}:
+            raise ValueError("Expected request_id, action and payload")
+        return jsonify(host.command(sid, data["request_id"], data["action"], data["payload"]))
+
+    return bp

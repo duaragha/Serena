@@ -86,16 +86,17 @@ export class WorkspacePane {
   error(error) { this.alert.hidden = false; this.alert.textContent = error.message || String(error); }
 
   receive(envelope) {
-    if (this.disposed) return;
+    if (this.disposed) return false;
     try {
-      if (!this.conversation.apply(envelope)) return;
+      if (!this.conversation.apply(envelope)) return true;
     } catch (error) {
       this.error(error);
       this.send.disabled = true;
       this.controls.replay?.(this.conversation.sequence);
-      return;
+      return false;
     }
     if (!this.frame) this.frame = requestAnimationFrame(() => { this.frame = 0; this.render(); });
+    return true;
   }
 
   async submit() {
