@@ -2,6 +2,34 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Fork catalog recovery (2026-09-09): completed fork identity/creation receipt is
+saved in session-scoped browser storage before clearing the pending request.
+After reload, the dialog can retry registration of that exact recorded fork.
+The backend resolves only this source session's confirmed creation receipt;
+recovery cannot invoke native fork or start its owner. Registration is idempotent
+and retryable after storage failure, including while the source is working.
+Creating another fork explicitly clears the saved completed-fork display.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_fork_receipt_keeps_identity_even_if_indexing_fails tests/test_workspace_pane.py::test_saved_fork_recovery_never_recreates_session tests/test_workspace_pane.py::test_fork_dialog_never_creates_or_opens_automatically -q
+# exit 0: 5 passed in 3.64s
+node --test tests/workspace-connection.test.mjs
+# exit 0: 15 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-frozen.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py
+# exit 0: temporarily replace only the isolated catalog path with a directory,
+# force real SQLite-open failure after native fork creation, restore catalog,
+# reload browser, recover identical fork and open its view without starting it.
+# Desktop/mobile native input/output, skill reload, history, ownership and
+# post-navigation console/HTTP/page-error checks also passed; children reaped.
+```
+
+This covers confirmed creation followed by catalog failure. A host crash between
+native fork creation and durable confirmation is still an ambiguity boundary:
+do not recreate the fork automatically. Full host-crash recovery and remaining
+provider/session lifecycle gates are not claimed complete.
+
 Native fork UI (2026-09-09): explicit create/open actions now use the native
 backend. Neither opening the dialog nor opening a created fork view starts its
 owner. The embedded pane sends an origin/source/session-checked navigation

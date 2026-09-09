@@ -11,6 +11,24 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('saved fork survives reload and registration retries never create a new fork',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    const body=JSON.parse(options.body);calls.push(body);
+    return response({ok:true,result:{session_id:'fork',indexed:body.action==='register_fork'}});
+  }};
+  let conn=new WorkspaceConnection(options);
+  const fork=await conn.controls().forkSession();conn.dispose();
+  conn=new WorkspaceConnection(options);
+  assert.deepEqual(conn.controls().lastFork(),fork);
+  const recovered=await conn.controls().recoverFork(fork.request_id);
+  assert.equal(recovered.request_id,fork.request_id);
+  assert(recovered.indexed);
+  assert.deepEqual(calls.map(item=>item.action),['fork_session','register_fork']);
+  assert.deepEqual(calls[1].payload,{fork_request_id:calls[0].request_id});
+  conn.controls().clearForkReceipt();assert.equal(conn.controls().lastFork(),null);conn.dispose();
+});
+
 test('fork retry after lost response or reload keeps exact receipt; busy refusal permits later intent',async()=>{
   const saved=storage(),calls=[];
   let mode='lost';

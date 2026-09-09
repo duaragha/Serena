@@ -8,6 +8,7 @@ export class WorkspaceConnection {
     this.fetcher = fetcher;
     this.storage = storage;
     this.key = `serena-workspace-pending:${sessionId}`;
+    this.forkKey = `serena-workspace-fork:${sessionId}`;
     this.pending = JSON.parse(storage.getItem(this.key) || '{}');
     this.uploadKey = `serena-workspace-uploads:${sessionId}`;
     this.uploads = JSON.parse(storage.getItem(this.uploadKey) || '{}');
@@ -82,9 +83,14 @@ export class WorkspaceConnection {
       }
       throw Error(result.error || 'Control delivery is unconfirmed');
     }
+    let value=result.result;
+    if(action==='fork_session' || action==='register_fork'){
+      value={...value,request_id:action==='fork_session'?request_id:payload.fork_request_id};
+      this.storage.setItem(this.forkKey,JSON.stringify(value));
+    }
     delete this.pending[signature];
     this.storage.setItem(this.key, JSON.stringify(this.pending));
-    return result.result;
+    return value;
   }
 
   async sendMessage(action, {text, files = [], options = {}, expectedTurnId}) {
@@ -124,6 +130,9 @@ export class WorkspaceConnection {
       commands: () => this.command('commands', {}),
       reloadSkills: () => this.command('reload_skills', {}),
       forkSession: () => this.command('fork_session', {}),
+      recoverFork: fork_request_id => this.command('register_fork', {fork_request_id}),
+      lastFork: () => JSON.parse(this.storage.getItem(this.forkKey) || 'null'),
+      clearForkReceipt: () => this.storage.setItem(this.forkKey,'null'),
       contextUsage: () => this.command('context_usage', {}),
       permissions: () => this.command('permissions', {}),
       setPermissions: (mode, confirmed) => this.command('set_permissions', {mode, confirmed}),

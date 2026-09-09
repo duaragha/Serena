@@ -181,7 +181,30 @@ def main():
                         if source:
                             page.get_by_role("button", name="Fork conversation", exact=True).click()
                             fork_dialog = page.get_by_role("dialog", name="Fork conversation", exact=True)
-                            fork_dialog.get_by_role("button", name="Create fork", exact=True).click()
+                            if label == "mobile":
+                                # Fail only this isolated catalog's open; native copy and
+                                # the separate command journal remain available.
+                                index = Path(env["CHATS_DATA_DIR"]) / "index.db"
+                                backup = index.with_suffix(".proof-backup")
+                                index.rename(backup)
+                                try:
+                                    index.mkdir()
+                                    fork_dialog.get_by_role("button", name="Create fork", exact=True).click()
+                                    expect(fork_dialog.get_by_role("button", name="Retry fork registration", exact=True)).to_be_visible(timeout=15000)
+                                    saved_sid = fork_dialog.locator("code").inner_text()
+                                finally:
+                                    if index.is_dir():
+                                        index.rmdir()
+                                    backup.rename(index)
+                                page.reload()
+                                page.get_by_role("button", name="Resume session", exact=True).click()
+                                page.get_by_role("button", name="Fork conversation", exact=True).click()
+                                expect(fork_dialog.locator("code")).to_have_text(saved_sid)
+                                fork_dialog.get_by_role("button", name="Retry fork registration", exact=True).click()
+                                expect(fork_dialog.locator("code")).to_have_text(saved_sid)
+                                print("PASS: real catalog-open failure recovered same native fork after page reload")
+                            else:
+                                fork_dialog.get_by_role("button", name="Create fork", exact=True).click()
                             expect(fork_dialog.get_by_role("status")).to_have_text("Fork created", timeout=15000)
                             fork_sid = fork_dialog.locator("code").inner_text()
                             assert fork_sid != sid
@@ -194,6 +217,7 @@ def main():
                             assert set(child.pid for child in psutil.Process(process.pid).children(recursive=True)) == set(child.pid for child in children)
                             print(f"PASS: {label_prefix} {label} browser created native fork and opened exact view without launching its owner")
                         page.close()
+                        assert not errors, errors
                         assert all(child.is_running() for child in children), "Closing a view killed its session"
                         print(f"PASS: {label_prefix} {label} browser reloaded added/removed native skill and sent local command; completed, no page/console/HTTP errors or horizontal overflow; closing view retained owner")
                 finally:

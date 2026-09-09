@@ -595,6 +595,24 @@ def test_closing_pending_fork_cannot_start_second_creation(pane):
     assert not errors
 
 
+def test_saved_fork_recovery_never_recreates_session(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      const saved={session_id:'11111111-1111-4111-8111-111111111111',request_id:'original',indexed:false,error:'Catalog unavailable'};
+      controls.lastFork=()=>saved;controls.recoverFork=async id=>{calls.push(['recover',id]);return {...saved,indexed:true};};
+      controls.forkSession=async()=>{throw Error('Must not recreate fork');};controls.openFork=()=>{};
+      pane.forkButton.hidden=false;
+    }""")
+    page.get_by_role("button", name="Fork conversation", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Fork conversation", exact=True)
+    assert dialog.get_by_text("Catalog unavailable", exact=True).is_visible()
+    assert page.evaluate("calls") == []
+    dialog.get_by_role("button", name="Retry fork registration", exact=True).click()
+    dialog.get_by_role("button", name="Open fork", exact=True).wait_for()
+    assert page.evaluate("calls") == [["recover", "original"]]
+    assert not errors
+
+
 def test_permission_prompt_defaults_to_no_grants_and_exact_selected_scope(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

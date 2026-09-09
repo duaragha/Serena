@@ -240,6 +240,19 @@ def test_fork_receipt_keeps_identity_even_if_indexing_fails(tmp_path, registrati
         assert ForkOwner.instances[-1].forks == len(registered) == 1
         assert "new-fork" not in value._sessions
         assert not ForkOwner.instances[-1].sent
+        assert not value.command("exact", "foreign", "register_fork", {"fork_request_id": "missing"})["ok"]
+        assert len(registered) == 1
+        if registration_fails:
+            failed = value.command("exact", "registration-failed", "register_fork", {"fork_request_id": "fork"})
+            assert not failed["ok"] and failed["retryable"]
+        registration_fails = False
+        ForkOwner.instances[-1].state = "running"
+        recovered = value.command("exact", "recover", "register_fork", {"fork_request_id": "fork"})
+        assert recovered["ok"] and recovered["result"]["indexed"]
+        assert recovered["result"]["session_id"] == "new-fork"
+        writes = len(registered)
+        assert value.command("exact", "recover", "register_fork", {"fork_request_id": "fork"}) == recovered
+        assert len(registered) == writes and ForkOwner.instances[-1].forks == 1
     finally:
         value.shutdown()
 

@@ -292,6 +292,7 @@ class WorkspaceHost:
             "commands",
             "reload_skills",
             "fork_session",
+            "register_fork",
             "context_usage",
             "permissions",
             "set_permissions",
@@ -383,6 +384,18 @@ class WorkspaceHost:
                     if provider != "claude" or set(payload) != {"name", "action"}:
                         raise ValueError("An exact Claude MCP server and action are required")
                     result = await owner.control_mcp_server(payload["name"], payload["action"])
+                elif action == "register_fork":
+                    if provider != "claude" or set(payload) != {"fork_request_id"} or not isinstance(payload["fork_request_id"], str) or self.register_fork is None:
+                        raise ValueError("An exact fork creation receipt is required")
+                    found, prior = await asyncio.to_thread(self.journal.command_receipt, sid,
+                                                          payload["fork_request_id"], {"action": "fork_session", "payload": {}})
+                    if not found or not prior or not prior.get("ok"):
+                        raise ValueError("Fork creation is not confirmed for this session")
+                    target = prior["result"]
+                    result = {key: target[key] for key in ("session_id", "provider", "cwd")}
+                    retryable = True  # Registration is idempotent and cannot create a native fork.
+                    await asyncio.to_thread(self.register_fork, result)
+                    result["indexed"] = True
                 elif action == "fork_session":
                     if provider != "claude" or payload or self.register_fork is None:
                         raise ValueError("Native fork requires a Claude session, no payload and an available catalog")

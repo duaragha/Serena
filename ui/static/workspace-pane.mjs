@@ -230,6 +230,8 @@ export class WorkspacePane {
 
   openFork() {
     if(this.forkDialog?.open || this.forkCreating)return;
+    try{this.createdFork ??= this.controls.lastFork?.();}
+    catch(error){this.error(error);return;}
     const dialog=node('dialog','aw-review-dialog');
     dialog.setAttribute('aria-label','Fork conversation');
     const status=node('p');status.setAttribute('role','status');
@@ -253,10 +255,21 @@ export class WorkspacePane {
       finally{this.forkCreating=false;if(!this.disposed)this.render();}
     });
     const another=this.button('Create another fork','plus',()=>{
+      try{this.controls.clearForkReceipt?.();}
+      catch(error){status.textContent=error.message;return;}
       this.createdFork=null;identity.textContent='';status.textContent='';
       create.hidden=false;create.disabled=false;open.hidden=true;another.hidden=true;
     });
     another.hidden=true;
+    const recover=this.button('Retry fork registration','refresh-cw',async()=>{
+      recover.disabled=true;
+      try{
+        this.createdFork=await this.controls.recoverFork(this.createdFork.request_id);
+        if(dialog.open && !this.disposed)render();
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{recover.disabled=false;}
+    });
+    recover.hidden=true;
     const render=()=>{
       const result=this.createdFork;
       if(!result)return;
@@ -264,8 +277,9 @@ export class WorkspacePane {
       status.textContent=result.indexed?'Fork created':(result.error || 'Fork created; catalog registration failed');
       open.hidden=!result.indexed;create.hidden=true;
       another.hidden=!result.indexed;
+      recover.hidden=Boolean(result.indexed) || !result.request_id || !this.controls.recoverFork;
     };
-    dialog.append(node('h3','','Fork conversation'),close,identity,status,create,open,another);
+    dialog.append(node('h3','','Fork conversation'),close,identity,status,create,open,another,recover);
     dialog.addEventListener('close',()=>dialog.remove());
     this.forkDialog=dialog;this.root.append(dialog);render();dialog.showModal();
     window.lucide?.createIcons();
