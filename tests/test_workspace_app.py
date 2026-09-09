@@ -1,9 +1,12 @@
 import asyncio
+import base64
+import io
 import threading
 from pathlib import Path
 
 import pytest
 from flask import Flask
+from PIL import Image
 from werkzeug.serving import make_server
 
 from ui.workspace_app import install_workspace
@@ -38,8 +41,10 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
                     "params": {
                         "threadId": self.sid,
                         "turnId": "t",
-                        "itemId": "i",
-                        "delta": "controlled provider output",
+                        "itemId": f"i-{len(self.sent)}",
+                        "delta": "controlled provider output"
+                        if len(self.sent) == 1
+                        else "controlled upload output",
                     },
                 }
             )
@@ -119,11 +124,54 @@ function setTermStatus(status){window.lastStatus=status;}
             page.get_by_role("button", name="Send message", exact=True).click()
             page.get_by_text("controlled provider output", exact=True).wait_for()
             assert owners[0].sent == [[{"type": "text", "text": "real mounted page control"}]]
+            image = io.BytesIO()
+            Image.new("RGB", (8, 8), "pink").save(image, format="PNG")
+            raw = image.getvalue()
+            page.locator('input[type="file"]').set_input_files(
+                {"name": "screenshot.png", "mimeType": "image/png", "buffer": raw}
+            )
+            page.wait_for_function(
+                "document.querySelector('.aw-attachment img').naturalWidth === 8"
+            )
+            assert len(owners[0].sent) == 1
+            with page.expect_response(lambda r: r.url.endswith("/uploads")) as uploaded:
+                page.get_by_role("button", name="Send message", exact=True).click()
+            token = uploaded.value.json()["upload"]["token"]
+            page.get_by_text("controlled upload output", exact=True).wait_for()
+            assert len(owners) == 1 and owners[0].sid == "exact"
+            if provider == "codex":
+                assert owners[0].sent[1] == [
+                    {"type": "localImage", "path": str(host.uploads.resolve("exact", token)[0])}
+                ]
+                assert Path(owners[0].sent[1][0]["path"]).read_bytes() == raw
+            else:
+                assert owners[0].sent[1] == [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": base64.b64encode(raw).decode("ascii"),
+                        },
+                    }
+                ]
+            previews = page.evaluate(
+                """async token => {
+              const boot = JSON.parse(document.querySelector('#workspace-boot').textContent);
+              const options = {headers:{'X-Serena-Workspace-Token':boot.token}};
+              const own = await fetch(`/api/workspace/exact/attachments/${token}`, options);
+              const foreign = await fetch(`/api/workspace/another-session/attachments/${token}`, options);
+              return [own.status, own.headers.get('content-type'), (await own.arrayBuffer()).byteLength, foreign.status];
+            }""",
+                token,
+            )
+            assert previews == [200, "image/png", len(raw), 400]
             page.screenshot(path=str(tmp_path / "mounted-workspace.png"))
             page.reload()
             page.get_by_role("button", name="Resume session").click()
             page.get_by_text("controlled provider output", exact=True).wait_for()
             assert len(owners) == 1 and not owners[0].closed
+            assert len(owners[0].sent) == 2
             assert not errors
             page.goto(f"http://127.0.0.1:{server.server_port}/parent")
             page.evaluate("_startStructuredPane('exact', {})")

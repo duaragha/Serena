@@ -2,6 +2,25 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Served-page attachment verification now exercises a real multipart HTTP upload
+from Chromium, provider-specific image conversion, exact-session preview access,
+foreign-session rejection, and reload without resending. Provider owners in this
+test are controlled fixtures; this is not an additional live inference claim.
+Initial event replay failure now rejects connection instead of hiding the Resume
+button and implying success. The existing owner is neither stopped nor replaced.
+
+```sh
+node --test tests/workspace-connection.test.mjs
+# exit 0: 10 passed, 0 failed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --basetemp=/tmp/serena-served-upload-final
+# exit 0: 2 passed in 4.05s
+```
+
+A separately recorded `SERENA_EVIDENCE_KIND=live node --input-type=module -e ...`
+probe used a real isolated HTTP listener: event replay returned 503, connect
+rejected without automatic polling, then explicit retry succeeded (exit 0).
+No real provider, user session, or production service was launched by that probe.
+
 Integrated workspace verification after the control additions:
 
 ```sh

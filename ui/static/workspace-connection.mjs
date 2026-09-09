@@ -36,14 +36,15 @@ export class WorkspaceConnection {
   async connect() {
     const result = await this.request('/attach', {});
     if (!result.ok) throw Error(result.error || 'Session attachment is not confirmed');
-    await this.poll();
+    await this.poll({required: true});
     return result;
   }
 
-  async poll() {
+  async poll({required = false} = {}) {
     if (this.polling || this.stopped) return;
     clearTimeout(this.timer);
     this.polling = true;
+    let failed = false;
     try {
       let page;
       do {
@@ -56,10 +57,12 @@ export class WorkspaceConnection {
         }
       } while (page.has_more && !this.stopped);
     } catch (error) {
+      failed = true;
+      if (required) throw error;
       if (!this.stopped) this.error(error);
     } finally {
       this.polling = false;
-      if (!this.stopped) this.timer = setTimeout(() => this.poll(), 250);
+      if (!this.stopped && !(required && failed)) this.timer = setTimeout(() => this.poll(), 250);
     }
   }
 

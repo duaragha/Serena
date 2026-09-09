@@ -144,3 +144,23 @@ test('a rejected render leaves the replay cursor before the failed event',async(
   assert.equal(conn.cursor,0);
   assert.match(errors[0],/not accepted/);
 });
+
+test('initial replay failure rejects attachment without cancelling the owner or advancing the cursor',async()=>{
+  const calls=[], errors=[];
+  let unavailable=true;
+  const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:storage(),receive:()=>true,error:e=>errors.push(e),fetcher:async(url)=>{
+    calls.push(url);
+    if(url.endsWith('/attach')) return response({ok:true});
+    if(unavailable) throw Error('history unavailable');
+    return response({events:[{sequence:1,event:{method:'history'}}],has_more:false});
+  }});
+  try {
+    await assert.rejects(conn.connect(),/history unavailable/);
+    assert.equal(conn.cursor,0);
+    assert.deepEqual(errors,[]);
+    unavailable=false;
+    await conn.connect();
+    assert.equal(conn.cursor,1);
+    assert.deepEqual(calls,['/api/workspace/s/attach','/api/workspace/s/events?after=0','/api/workspace/s/attach','/api/workspace/s/events?after=0']);
+  } finally { conn.dispose(); }
+});
