@@ -2,6 +2,30 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex background tasks now have an explicit native list/refresh/stop panel.
+Listing follows provider pagination; stopping rechecks membership in this exact
+thread and uses the app-server processId, never an OS PID or turn interruption.
+Closing the panel sends no controls. Claude has no equivalent control exposed
+yet. The installed protocol's list/terminate APIs remain experimental.
+Source: https://learn.chatgpt.com/docs/app-server (accessed 2026-09-09),
+plus installed v2 ThreadBackgroundTerminals schemas.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py -q
+# exit 0: 43 passed in 17.01s
+node --test tests/workspace-connection.test.mjs
+# exit 0: 6 passed, 0 failed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference
+# exit 0: native empty background-task list on exact resumed thread, real response,
+# owned processes reaped and isolated storage removed. Stop tested with fixtures,
+# not a real running background command; do not infer that stronger proof.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed!
+```
+
+Playwright verified explicit opening, exact stop ID, no close cancellation,
+literal command rendering, and 390px layout; mobile screenshot inspected.
+
 Native completed-turn duration now renders as a compact outcome line, with
 failed/interrupted labels and no clock-based guesses for absent values. Codex
 last-request token usage and Claude result input/output usage appear in the

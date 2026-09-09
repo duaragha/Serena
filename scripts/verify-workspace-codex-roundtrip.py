@@ -96,6 +96,8 @@ async def main(review=False, compact=False):
             await owner.open(binary=binary, env=env)
             assert owner.thread["id"] == sid
             assert "SERENA_FIRST_PROOF" in json.dumps(owner.thread)
+            assert await owner.list_background_tasks() == {"data": []}
+            print("PASS: native background-task discovery on the exact resumed thread")
             await owner.submit([{"type": "text", "text": "Reply exactly SERENA_RESUME_PROOF"}])
             await asyncio.wait_for(finished.wait(), 120)
             completed = [e for e in published if e.get("method") == "turn/completed"][-1]

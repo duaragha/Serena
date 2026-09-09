@@ -64,6 +64,31 @@ def host(tmp_path):
     value.shutdown()
 
 
+def test_background_controls_require_attach_and_deduplicate_stop(host):
+    with pytest.raises(ValueError, match="Explicitly attach"):
+        host.command("exact", "before", "background_tasks", {})
+    assert not Owner.instances
+    host.attach("exact")
+    calls = []
+
+    async def tasks():
+        return {"data": []}
+
+    async def stop(process_id):
+        calls.append(process_id)
+        return {"terminated": True}
+
+    owner = Owner.instances[0]
+    owner.list_background_tasks = tasks
+    owner.terminate_background_task = stop
+    assert host.command("exact", "list", "background_tasks", {})["result"] == {"data": []}
+    assert not host.command("exact", "bad", "terminate_background_task", {"pid": "p"})["ok"]
+    for _ in range(2):
+        assert host.command("exact", "stop", "terminate_background_task", {"processId": "p"})["ok"]
+    assert calls == ["p"]
+    assert not owner.closed
+
+
 def test_polling_never_launches_and_concurrent_attach_has_one_owner(host):
     assert host.events("exact")["events"] == []
     assert host._loop is None

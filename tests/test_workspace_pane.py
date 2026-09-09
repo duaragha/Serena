@@ -60,6 +60,31 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_background_tasks_explicit_refresh_stop_and_mobile_layout(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+      pane.dispose();
+      controls.backgroundTasks=async()=>{calls.push(['list']);return {data:[{processId:'native-p',command:'<img src=x onerror=alert(1)> '+ 'x'.repeat(300),cwd:'/project'}]};};
+      controls.terminateBackgroundTask=async id=>{calls.push(['stop',id]);return {terminated:true};};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+    }""")
+    assert page.evaluate("calls") == []
+    page.get_by_role("button", name="Background tasks", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Background tasks", exact=True)
+    assert dialog.locator("img").count() == 0
+    assert dialog.get_by_text("1 running", exact=True).is_visible()
+    assert page.evaluate(
+        "document.querySelector('.aw-tasks-dialog').scrollWidth <= document.querySelector('.aw-tasks-dialog').clientWidth"
+    )
+    page.screenshot(path=str(tmp_path / "background-tasks-mobile.png"))
+    dialog.get_by_role("button", name="Stop task native-p").click()
+    assert dialog.get_by_text("Task stopped", exact=True).is_visible()
+    dialog.get_by_role("button", name="Close background tasks").click()
+    assert page.evaluate("calls") == [["list"], ["stop", "native-p"]]
+    assert not errors
+
+
 def test_real_items_tool_expansion_and_injection_safety(pane, tmp_path):
     page, errors = pane
     assert page.locator("#left .aw-item").count() == 4
@@ -209,7 +234,9 @@ def test_native_usage_and_completed_duration_are_not_invented(pane):
       emit({method:'turn/completed',params:{threadId:'exact',turn:{id:'t',status:'completed',durationMs:42000}}});""")
     page.get_by_text("Last request: 1,234 tokens", exact=True).wait_for()
     page.get_by_text("Worked for 42s", exact=True).wait_for()
-    page.evaluate("emit({method:'turn/completed',params:{threadId:'exact',turn:{id:'t',status:'failed',durationMs:65000}}})")
+    page.evaluate(
+        "emit({method:'turn/completed',params:{threadId:'exact',turn:{id:'t',status:'failed',durationMs:65000}}})"
+    )
     page.get_by_text("Failed after 1m 5s", exact=True).wait_for()
     assert page.locator("#left .aw-turn-summary").count() == 1
     assert not errors
@@ -217,7 +244,9 @@ def test_native_usage_and_completed_duration_are_not_invented(pane):
 
 def test_long_history_mounts_recent_items_and_preserves_reader_position(pane):
     page, errors = pane
-    page.evaluate("emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'long',status:'completed',items:Array.from({length:350},(_,i)=>({id:'item-'+i,type:'agentMessage',text:'Message '+i}))}]}}})")
+    page.evaluate(
+        "emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'long',status:'completed',items:Array.from({length:350},(_,i)=>({id:'item-'+i,type:'agentMessage',text:'Message '+i}))}]}}})"
+    )
     page.wait_for_function("pane.rendered.size === 100")
     assert page.locator("#left [data-item-id='item-349']").count() == 1
     assert page.locator("#left [data-item-id='item-0']").count() == 0
@@ -227,7 +256,9 @@ def test_long_history_mounts_recent_items_and_preserves_reader_position(pane):
     page.evaluate("pane.log.scrollTop=300")
     page.wait_for_timeout(50)
     before = page.evaluate("pane.log.scrollTop")
-    page.evaluate("emit({method:'item/completed',params:{threadId:'exact',turnId:'long',item:{id:'new',type:'agentMessage',text:'New arrival'}}})")
+    page.evaluate(
+        "emit({method:'item/completed',params:{threadId:'exact',turnId:'long',item:{id:'new',type:'agentMessage',text:'New arrival'}}})"
+    )
     page.wait_for_function("pane.rendered.has(JSON.stringify(['long','new']))")
     assert abs(page.evaluate("pane.log.scrollTop") - before) < 2
     assert page.evaluate("pane.conversation.turns.get('long').items.size") == 351
@@ -305,7 +336,9 @@ def test_history_image_renders_without_base64_text(pane, provider):
     assert data not in page.locator("#left").inner_text()
     assert page.locator(".aw-history-image").get_attribute("src").startswith("blob:")
     assert page.evaluate("pane.historyImageUrls.size") == 1
-    page.evaluate("emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'text',text:'image replaced'}]}}})")
+    page.evaluate(
+        "emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'text',text:'image replaced'}]}}})"
+    )
     page.wait_for_function("pane.historyImageUrls.size === 0")
     page.evaluate("pane.dispose()")
     assert page.evaluate("pane.historyImageUrls.size") == 0

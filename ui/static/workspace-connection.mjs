@@ -107,6 +107,8 @@ export class WorkspaceConnection {
         return response.blob();
       },
       models: () => this.command('models', {}),
+      backgroundTasks: () => this.command('background_tasks', {}),
+      terminateBackgroundTask: processId => this.command('terminate_background_task', {processId}),
       review: target => this.command('review', {target}),
       compact: () => this.command('compact', {}),
       submit: message => this.sendMessage('submit', message),

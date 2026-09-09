@@ -96,6 +96,9 @@ export class WorkspacePane {
     });
     this.compactButton.hidden=provider !== 'Codex' || !controls.compact;
     footer.insertBefore(this.compactButton,this.stop);
+    this.tasksButton = this.button('Background tasks', 'list-tree', () => this.openBackgroundTasks());
+    this.tasksButton.hidden = provider !== 'Codex' || !controls.backgroundTasks;
+    footer.insertBefore(this.tasksButton, this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
@@ -146,6 +149,48 @@ export class WorkspacePane {
       if (this.input.value) this.draftStorage.setItem(this.draftKey, this.input.value);
       else this.draftStorage.removeItem(this.draftKey);
     } catch (error) { this.error(new Error(`Draft could not be saved: ${error.message}`)); }
+  }
+
+  openBackgroundTasks() {
+    if (this.tasksDialog?.open) return;
+    const dialog = node('dialog', 'aw-review-dialog aw-tasks-dialog');
+    dialog.setAttribute('aria-label', 'Background tasks');
+    const heading = node('h3', '', 'Background tasks');
+    const list = node('div', 'aw-task-list');
+    const status = node('p'); status.setAttribute('role', 'status');
+    const refresh = this.button('Refresh background tasks', 'refresh-cw', () => load());
+    const close = this.button('Close background tasks', 'x', () => dialog.close());
+    let busy = false;
+    const load = async () => {
+      if (busy || !dialog.open) return;
+      busy = true; refresh.disabled = true; status.textContent = 'Loading...';
+      try {
+        const result = await this.controls.backgroundTasks();
+        if (!dialog.open || this.disposed) return;
+        list.replaceChildren();
+        for (const task of result.data) {
+          const row = node('div', 'aw-background-task');
+          const command = node('pre', '', task.command);
+          const location = node('small', '', task.cwd);
+          const stop = this.button(`Stop task ${task.processId}`, 'square', async () => {
+            stop.disabled = true;
+            try {
+              const result = await this.controls.terminateBackgroundTask(task.processId);
+              status.textContent = result.terminated ? 'Task stopped' : 'Task was already stopped';
+              row.remove();
+            } catch(error) { status.textContent = error.message; stop.disabled = false; }
+          });
+          stop.disabled = !this.controls.terminateBackgroundTask;
+          row.append(command, location, stop); list.append(row);
+        }
+        status.textContent = result.data.length ? `${result.data.length} running` : 'No running background tasks';
+        window.lucide?.createIcons();
+      } catch(error) { if (dialog.open) status.textContent = error.message; }
+      finally { busy = false; refresh.disabled = false; }
+    };
+    dialog.append(heading, refresh, close, status, list);
+    dialog.addEventListener('close', () => dialog.remove());
+    this.tasksDialog = dialog; this.root.append(dialog); dialog.showModal(); close.focus(); load();
   }
 
   openReview() {
@@ -539,6 +584,7 @@ export class WorkspacePane {
 
   dispose() {
     this.reviewDialog?.close();
+    this.tasksDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
     this.historyImageUrls.clear();
     this.disposed = true;

@@ -103,6 +103,46 @@ class CodexWorkspace:
                 await self._close()
                 raise
 
+    async def list_background_tasks(self) -> dict:
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        data, cursors, cursor = [], set(), None
+        while True:
+            params = {"threadId": self.session_id, "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            page = await self.rpc.request("thread/backgroundTerminals/list", params)
+            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+                raise WorkspaceRpcError("Provider returned an invalid background task list")
+            for task in page["data"]:
+                if not isinstance(task, dict) or any(
+                    not isinstance(task.get(key), str)
+                    for key in ("processId", "itemId", "command", "cwd")
+                ):
+                    raise WorkspaceRpcError("Provider returned an invalid background task")
+            data.extend(deepcopy(page["data"]))
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return {"data": data}
+            if not isinstance(cursor, str) or cursor in cursors or len(cursors) >= 100:
+                raise WorkspaceRpcError("Background task pagination did not advance")
+            cursors.add(cursor)
+
+    async def terminate_background_task(self, process_id: str) -> dict:
+        if not isinstance(process_id, str) or not process_id or len(process_id) > 256:
+            raise ValueError("An exact background process ID is required")
+        async with self._control_lock:
+            current = await self.list_background_tasks()
+            if not any(task["processId"] == process_id for task in current["data"]):
+                raise ValueError("Background task is no longer running in this session")
+            result = await self.rpc.request(
+                "thread/backgroundTerminals/terminate",
+                {"threadId": self.session_id, "processId": process_id},
+            )
+            if not isinstance(result, dict) or not isinstance(result.get("terminated"), bool):
+                raise WorkspaceRpcError("Background task termination is unconfirmed")
+            return result
+
     async def list_models(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")

@@ -72,6 +72,49 @@ class Rpc:
         self.closed = True
 
 
+def test_background_tasks_paginate_and_stop_only_exact_session_process(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+
+        async def request(method, params):
+            calls.append((method, params))
+            assert params["threadId"] == "exact-session"
+            if method.endswith("/terminate"):
+                return {"terminated": True}
+            if params.get("cursor") == "next":
+                return {"data": [], "nextCursor": None}
+            return {
+                "data": [
+                    {"processId": "p1", "itemId": "i1", "command": "sleep 30", "cwd": "/project"}
+                ],
+                "nextCursor": "next",
+            }
+
+        rpc.request = request
+        try:
+            assert len((await client.list_background_tasks())["data"]) == 1
+            assert (await client.terminate_background_task("p1"))["terminated"]
+            with pytest.raises(ValueError, match="no longer running"):
+                await client.terminate_background_task("foreign-process")
+            stops = [p for m, p in calls if m.endswith("/terminate")]
+            assert stops == [{"threadId": "exact-session", "processId": "p1"}]
+            assert client.state == "ready"
+            assert not any(m in {"turn/start", "turn/interrupt"} for m, _ in calls)
+
+            async def looping(method, params):
+                return {"data": [], "nextCursor": "loop"}
+
+            rpc.request = looping
+            with pytest.raises(WorkspaceRpcError, match="pagination"):
+                await client.list_background_tasks()
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
 async def make(tmp_path):
     events = []
 

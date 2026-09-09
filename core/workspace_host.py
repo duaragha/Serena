@@ -131,6 +131,8 @@ class WorkspaceHost:
             "models",
             "review",
             "compact",
+            "background_tasks",
+            "terminate_background_task",
         } or not isinstance(payload, dict):
             raise ValueError("Unsupported workspace control")
         return self._dispatch(self._command(sid, request_id, action, deepcopy(payload)), timeout)
@@ -154,7 +156,15 @@ class WorkspaceHost:
                 )
             owner, provider = self._sessions[sid]
             try:
-                if action == "compact":
+                if action == "background_tasks":
+                    if provider != "codex" or payload:
+                        raise ValueError("Background tasks require a Codex session and no payload")
+                    result = await owner.list_background_tasks()
+                elif action == "terminate_background_task":
+                    if provider != "codex" or set(payload) != {"processId"}:
+                        raise ValueError("An exact Codex background process is required")
+                    result = await owner.terminate_background_task(payload["processId"])
+                elif action == "compact":
                     if provider != "codex" or payload:
                         raise ValueError("Compaction requires a Codex session and no payload")
                     result = await owner.compact()

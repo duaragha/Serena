@@ -78,6 +78,22 @@ test('files upload once and stable attachment IDs survive a lost send response',
   assert.deepEqual(sends[0].payload.inputs,[{type:'text',text:'read'},{type:'upload',token:'bound-token'}]);
 });
 
+test('background controls use exact process ID and disposal sends no stop',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'secret',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push([url,JSON.parse(options.body)]);
+    return response({ok:true,result:{data:[]}});
+  }});
+  assert.equal(calls.length,0);
+  await conn.controls().backgroundTasks();
+  await conn.controls().terminateBackgroundTask('native-p');
+  conn.dispose();
+  assert.deepEqual(calls.map(([url,body])=>[url,body.action,body.payload]),[
+    ['/api/workspace/exact/commands','background_tasks',{}],
+    ['/api/workspace/exact/commands','terminate_background_task',{processId:'native-p'}],
+  ]);
+});
+
 test('a rejected render leaves the replay cursor before the failed event',async()=>{
   const errors=[];
   const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:storage(),receive:()=>false,error:e=>errors.push(e.message),fetcher:async()=>response({events:[{sequence:1,event:{method:'bad'}}],has_more:false})});
