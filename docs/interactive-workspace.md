@@ -2,6 +2,36 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Combined workspace regression (2026-09-09), after skill reload and command
+presentation changes:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace*.py -q
+# exit 0: 208 passed in 52.56s
+node --test tests/workspace-markdown.test.mjs tests/workspace-claude-channel.test.mjs tests/workspace-claude-sdk.test.mjs tests/workspace-connection.test.mjs tests/workspace-events.test.mjs
+# exit 0: 36 passed, 0 failed, 0 skipped
+# From apps/desktop:
+SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar
+# exit 0: rebuilt onedir backend and startup/capability-refusal smoke passed
+# From repository root:
+SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: actual rebuilt backend, desktop/mobile native command roundtrips,
+# user-skill add/remove reload from browser, no duplicate command result,
+# no raw command envelope in visible history, no page/console/HTTP errors,
+# no horizontal overflow, close-view owner preservation and process cleanup.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-frozen.py
+# exit 0: All checks passed!
+```
+
+These cover the workspace subsystem, including browser and transport tests;
+they are not proof of full provider feature parity or a release certification.
+The refreshed screenshots under `apps/desktop/build/workspace-proof/` now include
+`frozen-skills-desktop.png` and `frozen-skills-mobile.png`. Visual inspection of
+the real mobile command picker and desktop conversation found readable controls
+and no overlap. This supersedes the older artifact limitations below for the
+command-history, result-deduplication and skill-reload slices only. No installer,
+Windows or default-UI migration was performed.
+
 Native skill reload (2026-09-09): Claude's command picker has an explicit refresh
 control backed by public `reloadSkills()` then `supportedCommands()`. It updates
 the cached catalog, removes stale initial skill names, requires an idle attached

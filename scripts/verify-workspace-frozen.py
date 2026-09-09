@@ -136,6 +136,20 @@ def main():
                         page.goto(f"{base}/workspace/{sid}")
                         page.get_by_role("button", name="Resume session", exact=True).click()
                         expect(page.get_by_role("button", name="Resume session", exact=True)).to_be_hidden()
+                        skill = config / "skills/browser-proof/SKILL.md"
+                        skill.parent.mkdir(parents=True, exist_ok=True)
+                        skill.write_text("---\nname: browser-proof\ndescription: Isolated browser reload proof\n---\nReturn proof.\n")
+                        page.get_by_role("button", name="Commands and skills", exact=True).click()
+                        dialog = page.get_by_role("dialog", name="Commands and skills", exact=True)
+                        reload = dialog.get_by_role("button", name="Reload skills from disk", exact=True)
+                        reload.click()
+                        expect(dialog.locator(".aw-command").filter(has_text="/browser-proof")).to_have_count(1)
+                        assert dialog.evaluate("el => el.scrollWidth <= el.clientWidth"), "Command picker overflow"
+                        page.screenshot(path=str(screenshots / f"frozen-skills-{label}.png"))
+                        skill.unlink()
+                        reload.click()
+                        expect(dialog.locator(".aw-command").filter(has_text="/browser-proof")).to_have_count(0)
+                        dialog.get_by_role("button", name="Close commands", exact=True).click()
                         before = len(completed)
                         page.get_by_role("textbox", name="Message Claude", exact=True).fill("/effort medium")
                         page.get_by_role("button", name="Send message", exact=True).click()
@@ -152,12 +166,18 @@ def main():
                             page.wait_for_timeout(50)
                         expect(page.locator(".aw-state")).to_have_text("completed")
                         expect(page.get_by_role("textbox", name="Message Claude", exact=True)).to_have_value("")
+                        assert "<command-name>" not in page.locator(".aw-transcript").inner_text()
+                        result_text = turn["providerOriginal"]["result"]
+                        matching = [item for item in events if item["event"]["method"] == "item/completed"
+                                    and item["event"]["params"].get("turnId") == turn["id"]
+                                    and item["event"]["params"]["item"].get("text") == result_text]
+                        assert len(matching) == 1, "Frozen native command result duplicated"
                         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), label
                         assert not errors, errors
                         page.screenshot(path=str(screenshots / f"frozen-{label}.png"))
                         page.close()
                         assert all(child.is_running() for child in children), "Closing a view killed its session"
-                        print(f"PASS: frozen {label} browser sent native local command; completed, no page/console/HTTP errors or horizontal overflow; closing view retained owner")
+                        print(f"PASS: frozen {label} browser reloaded added/removed native skill and sent local command; completed, no page/console/HTTP errors or horizontal overflow; closing view retained owner")
                 finally:
                     browser.close()
         except HTTPError as error:
