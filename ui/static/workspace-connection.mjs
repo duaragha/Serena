@@ -116,6 +116,7 @@ export class WorkspaceConnection {
       },
       models: () => this.command('models', {}),
       commands: () => this.command('commands', {}),
+      reloadSkills: () => this.command('reload_skills', {}),
       contextUsage: () => this.command('context_usage', {}),
       permissions: () => this.command('permissions', {}),
       setPermissions: (mode, confirmed) => this.command('set_permissions', {mode, confirmed}),

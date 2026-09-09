@@ -40,6 +40,10 @@ def test_compatibility_controls_and_native_records():
         await client.toggle_mcp_server("server", False)
         assert ("stopTask", "task") in client.transport.calls
         assert ("toggleMcpServer", "server", False) in client.transport.calls
+        client.info["commands"] = [{"name": "removed"}]
+        await client.reload_skills()
+        assert (await client.get_server_info())["commands"] == []
+        assert client.transport.calls[-2:] == [("reloadSkills",), ("supportedCommands",)]
         wire = {"type": "assistant", "session_id": "exact", "message": {"content": []}}
         await client.messages.put(wire)
         assert await anext(client.receive_messages()) == wire

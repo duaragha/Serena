@@ -177,8 +177,14 @@ def test_mcp_controls_require_attach_and_replay_without_repeating(tmp_path):
 
 def test_command_discovery_is_provider_scoped_and_never_submits(tmp_path):
     class CommandOwner(Owner):
+        reloads = 0
+
         async def list_commands(self):
             return {"data": [{"name": "context"}]}
+
+        async def reload_skills(self):
+            self.reloads += 1
+            return {"data": [{"name": "fresh"}]}
 
     value = WorkspaceHost(
         journal=WorkspaceJournal(tmp_path / "commands.db"),
@@ -191,6 +197,11 @@ def test_command_discovery_is_provider_scoped_and_never_submits(tmp_path):
             "data": [{"name": "context"}]
         }
         assert not value.command("exact", "bad", "commands", {"run": "context"})["ok"]
+        refreshed = value.command("exact", "reload", "reload_skills", {})
+        assert refreshed["result"] == {"data": [{"name": "fresh"}]}
+        assert value.command("exact", "reload", "reload_skills", {}) == refreshed
+        assert CommandOwner.instances[-1].reloads == 1
+        assert not value.command("exact", "bad-reload", "reload_skills", {"path": "/elsewhere"})["ok"]
         assert not CommandOwner.instances[-1].sent
     finally:
         value.shutdown()

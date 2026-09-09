@@ -528,6 +528,25 @@ def test_command_picker_preserves_draft_and_displays_native_output(pane, tmp_pat
     assert not errors
 
 
+def test_command_picker_reload_is_explicit_and_keeps_draft(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      controls.commands=async()=>({data:[{name:'old'}]});
+      controls.reloadSkills=async()=>{calls.push('reload');return {data:[{name:'fresh'}]};};
+      pane.commandsButton.hidden=false;pane.input.value='draft';
+    }""")
+    page.get_by_role("button", name="Commands and skills", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Commands and skills", exact=True)
+    dialog.get_by_role("button", name="/old", exact=True).wait_for()
+    assert page.evaluate("calls") == []
+    dialog.get_by_role("button", name="Reload skills from disk", exact=True).click()
+    dialog.get_by_role("button", name="/fresh", exact=True).wait_for()
+    assert dialog.get_by_role("button", name="/old", exact=True).count() == 0
+    assert page.evaluate("calls") == ["reload"]
+    assert page.get_by_role("textbox", name="Message Claude").input_value() == "draft"
+    assert not errors
+
+
 def test_permission_prompt_defaults_to_no_grants_and_exact_selected_scope(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

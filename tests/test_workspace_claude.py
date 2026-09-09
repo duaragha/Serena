@@ -84,6 +84,30 @@ def make(tmp_path):
     return owner, events
 
 
+def test_reload_skills_requires_idle_and_discards_stale_catalog(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        calls = []
+
+        async def reload():
+            calls.append("reload")
+
+        async def info():
+            return {"commands": [{"name": "fresh"}]}
+
+        owner.client = SimpleNamespace(reload_skills=reload, get_server_info=info)
+        owner.state = "running"
+        with pytest.raises(RuntimeError, match="current turn"):
+            await owner.reload_skills()
+        assert not calls
+        owner.state = "ready"
+        owner.events.capabilities["slash_commands"] = ["removed"]
+        assert await owner.reload_skills() == {"data": [{"name": "fresh"}]}
+        assert calls == ["reload"]
+        assert events[-1]["method"] == "workspace/commands"
+    asyncio.run(run())
+
+
 def test_native_mcp_form_validates_answers_and_retires_exact_request(tmp_path):
     async def run():
         owner, events = make(tmp_path)

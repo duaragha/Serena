@@ -289,6 +289,7 @@ class WorkspaceHost:
             "compact",
             "background_tasks",
             "commands",
+            "reload_skills",
             "context_usage",
             "permissions",
             "set_permissions",
@@ -379,6 +380,10 @@ class WorkspaceHost:
                     if provider != "claude" or set(payload) != {"name", "action"}:
                         raise ValueError("An exact Claude MCP server and action are required")
                     result = await owner.control_mcp_server(payload["name"], payload["action"])
+                elif action == "reload_skills":
+                    if provider != "claude" or payload:
+                        raise ValueError("Skill reload requires a Claude session and no payload")
+                    result = await owner.reload_skills()
                 elif action == "commands":
                     if provider not in {"claude", "codex"} or payload:
                         raise ValueError(

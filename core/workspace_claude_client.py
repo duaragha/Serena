@@ -48,6 +48,13 @@ class ClaudeTypeScriptClient:
     async def get_server_info(self):
         return deepcopy(self.info)
 
+    async def reload_skills(self):
+        await self.transport.control("reloadSkills")
+        commands = await self.transport.control("supportedCommands")
+        if not isinstance(commands, list) or any(not isinstance(item, dict) or not isinstance(item.get("name"), str) for item in commands):
+            raise ValueError("Claude returned an invalid refreshed command catalog")
+        self.info["commands"] = deepcopy(commands)
+
     async def set_model(self, model):
         return await self.transport.control("setModel", model)
 

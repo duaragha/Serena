@@ -2,6 +2,31 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native skill reload (2026-09-09): Claude's command picker has an explicit refresh
+control backed by public `reloadSkills()` then `supportedCommands()`. It updates
+the cached catalog, removes stale initial skill names, requires an idle attached
+owner, preserves drafts and uses existing idempotent command receipts. It does
+not restart a session or run a skill. Provider/payload checks reject other routes.
+The locked SDK 0.3.266 declarations establish the control contract; official
+filesystem discovery and command semantics were checked at
+https://code.claude.com/docs/en/agent-sdk/skills (accessed 2026-09-09).
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_client.py tests/test_workspace_claude.py tests/test_workspace_host.py::test_command_discovery_is_provider_scoped_and_never_submits tests/test_workspace_pane.py::test_command_picker_reload_is_explicit_and_keeps_draft -q
+# exit 0: 30 passed in 2.13s, including browser interaction
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_client.py core/workspace_host.py tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-claude-transport.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron
+# exit 0: add and remove a skill in the isolated native user's skill directory
+# after attach; refreshed catalog reflects both changes with unchanged native PID.
+# Existing exact-session input/output, history and cleanup checks also passed.
+```
+
+First live attempt exited 1: its project fixture under temporary HOME was not
+discovered. Moving the fixture to the isolated CLAUDE_CONFIG_DIR skills location
+passed. This proves user-skill reload; it does not establish arbitrary project
+directory discovery or skill execution. No inference or user settings were used.
+
 Persisted command history (2026-09-09): exact native slash-command envelopes
 now render as readable command text, retaining the complete source record in
 `providerOriginal`. A bounded structural parser rejects partial/malformed markup,

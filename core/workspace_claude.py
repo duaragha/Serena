@@ -293,6 +293,18 @@ class ClaudeWorkspace:
                 await self.client.toggle_mcp_server(name, action == "enable")
             return await self.list_mcp_servers()
 
+    async def reload_skills(self):
+        async with self._control:
+            if self.state != "ready":
+                raise RuntimeError("Wait for Claude's current turn before reloading skills")
+            reload = getattr(self.client, "reload_skills", None)
+            if reload is None:
+                raise RuntimeError("This Claude runtime cannot reload skills")
+            await reload()
+            # The initial catalog may include skills removed from disk since attach.
+            self.events.capabilities["slash_commands"] = []
+            return await self.list_commands()
+
     async def list_commands(self):
         if self.client is None or self.state in {"closed", "unavailable"}:
             raise RuntimeError("Claude is not attached")

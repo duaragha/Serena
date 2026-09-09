@@ -94,6 +94,17 @@ async def main():
                           lease_factory=lambda session_id: SessionLease(session_id, directory=root / "leases"))
     try:
         await owner.open()
+        original_pid = owner.client.owned_pid
+        skill = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "skills/workspace-proof/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("---\nname: workspace-proof\ndescription: Isolated reload proof\n---\nReturn the word proof.\n")
+        refreshed = await owner.reload_skills()
+        assert any(command["name"] == "workspace-proof" for command in refreshed["data"]), [item["name"] for item in refreshed["data"]]
+        skill.unlink()
+        refreshed = await owner.reload_skills()
+        assert not any(command["name"] == "workspace-proof" for command in refreshed["data"]), [item["name"] for item in refreshed["data"]]
+        assert owner.client.owned_pid == original_pid, "Skill reload replaced the native session process"
+        print("PASS: native skill added and removed after attach; explicit reload refreshed catalog without replacing session")
         assert owner.client.transport.command[2] == str(Path(sdk).resolve())
         if os.environ.get("SERENA_WORKSPACE_NODE_MODE") == "electron":
             assert owner.client.transport.command[0] == str(Path(os.environ["SERENA_WORKSPACE_NODE"]).resolve())

@@ -254,12 +254,24 @@ export class WorkspacePane {
       status.textContent=matching.length ? `${matching.length} command${matching.length === 1 ? '' : 's'}` : 'No matching commands';
     };
     search.addEventListener('input',render);
-    dialog.append(node('h3','','Commands and skills'),close,search,status,list);
+    const reload = this.button('Reload skills from disk', 'refresh-cw', async () => {
+      reload.disabled=true; status.textContent='Reloading...';
+      try {
+        const result=await this.controls.reloadSkills();
+        if(!dialog.open || this.disposed)return;
+        commands=result.data; render();
+      } catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{reload.disabled=false;}
+    });
+    reload.hidden=this.provider!=='Claude' || !this.controls.reloadSkills;
+    reload.disabled=true;
+    dialog.append(node('h3','','Commands and skills'),close,reload,search,status,list);
     dialog.addEventListener('close',()=>dialog.remove());
     this.commandsDialog=dialog; this.root.append(dialog); dialog.showModal(); search.focus();
     window.lucide?.createIcons();
     try { const result=await this.controls.commands(); if(!dialog.open || this.disposed)return; commands=result.data; render(); }
     catch(error){if(dialog.open)status.textContent=error.message;}
+    finally{reload.disabled=false;}
   }
 
   async openEvents() {
