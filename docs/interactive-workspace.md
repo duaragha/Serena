@@ -2,6 +2,41 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex lifecycle investigation (2026-09-09): installed native 0.153.4 supports
+`thread/fork`, but its paginated history stores a `history_base` parent thread,
+exclusive ordinal and byte offset in session metadata. A fork's local response
+records alone are NOT its full history. Current `core/codex*` readers contain no
+handling for this reference. Do not enable Codex fork/catalog UI by reusing the
+Claude file-copy assumptions; implement bounded, validated ancestor traversal
+and coverage first, including missing ancestors, cycles and subsequent parent
+messages. Native `thread/read`/`thread/items/list` returned empty lists for the
+injected ungrouped fixture, so this proof does not claim rendered turn history.
+
+Official protocol checked at https://developers.openai.com/codex/app-server/
+(accessed 2026-09-09): `thread/fork` copies stored context and `thread/inject_items`
+persists items without starting a turn. The executable's actual persisted format
+is the evidence for the reference semantics above. The proof seeds only isolated
+fixture input, checks the exact referenced prefix and unchanged source, shuts
+down the first process, then resumes the exact fork in a fresh process. It uses
+no credentials, no `turn/start` and a loopback-only OpenAI base URL. It does not
+prove model generation or a complete Codex fork user interface.
+
+```sh
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-lifecycle.py
+# exit 0: bounded fork history, exact fresh-process resume, source/project
+# unchanged, native children reaped, no credentials or model turns.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_rpc.py -q
+# exit 0: 22 passed in 0.46s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-lifecycle.py
+# exit 0: All checks passed!
+```
+
+Earlier proof attempts exited 1: missing isolated CODEX_HOME directory (fixed),
+then incorrect assumptions that injected items appear as turns and forks contain
+copied local records. The final proof validates actual native shared-history
+metadata instead. Initial unauthenticated native prewarming logged HTTP 401;
+the final run directs that endpoint to loopback and never borrows user auth.
+
 Interrupted fork confirmation (2026-09-09): fork events now bind the created
 identity to the exact creation request ID. A retry with an unfinished command
 receipt can recover a unique persisted checkpoint, register the existing fork
