@@ -115,6 +115,33 @@ def test_command_picker_preserves_draft_and_displays_native_output(pane, tmp_pat
     assert not errors
 
 
+def test_permission_prompt_defaults_to_no_grants_and_exact_selected_scope(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate(
+        """() => emit({id:91,method:'item/permissions/requestApproval',params:{threadId:'exact',cwd:'/project',permissions:{network:{enabled:true},fileSystem:{read:['/project/private']}},reason:'Need selected access'}})"""
+    )
+    field = page.get_by_role("checkbox", name="Network access", exact=True)
+    field.wait_for()
+    assert not field.is_checked()
+    assert not page.get_by_role("checkbox", name="File access", exact=True).is_checked()
+    assert page.get_by_role("combobox", name="Grant duration").input_value() == "turn"
+    assert page.evaluate("calls") == []
+    field.check()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / "permissions-mobile.png"))
+    page.get_by_role("combobox", name="Grant duration").select_option("session")
+    page.get_by_role("button", name="Grant selected", exact=True).click()
+    assert page.evaluate("calls") == [
+        ["answer", 91, {"permissions": {"network": {"enabled": True}}, "scope": "session"}]
+    ]
+    assert page.get_by_role("combobox", name="Grant duration").is_disabled()
+    assert page.get_by_text("Need selected access", exact=True).is_visible()
+    page.evaluate("""() => emit({method:'serverRequest/resolved',params:{requestId:91}})""")
+    page.get_by_text("Need selected access", exact=True).wait_for(state="hidden")
+    assert not errors
+
+
 def test_real_items_tool_expansion_and_injection_safety(pane, tmp_path):
     page, errors = pane
     assert page.locator("#left .aw-item").count() == 4

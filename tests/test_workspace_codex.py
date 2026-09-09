@@ -369,6 +369,47 @@ def test_ambiguous_submission_cannot_be_retried_as_new_turn(tmp_path):
     asyncio.run(run())
 
 
+def test_permission_grants_cannot_expand_profile_or_drop_deny_entries(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        permissions = {
+            "network": {"enabled": True},
+            "fileSystem": {
+                "entries": [
+                    {"access": "write", "path": {"type": "path", "path": "/project"}},
+                    {"access": "deny", "path": {"type": "path", "path": "/project/private"}},
+                ]
+            },
+        }
+        question = {
+            "method": "item/permissions/requestApproval",
+            "params": {"permissions": permissions},
+        }
+        for granted in (
+            {"network": {"enabled": False}},
+            {"fileSystem": {"write": ["/"]}},
+            {"fileSystem": {"entries": permissions["fileSystem"]["entries"][:1]}},
+            {"unexpected": {}},
+        ):
+            client.questions[7] = question
+            with pytest.raises(ValueError):
+                await client.answer(7, {"permissions": granted, "scope": "turn"})
+        assert not rpc.calls
+        for scope, granted in (
+            ("turn", {}),
+            ("turn", {"network": permissions["network"]}),
+            ("session", permissions),
+        ):
+            client.questions[7] = question
+            await client.answer(7, {"permissions": granted, "scope": scope})
+            assert rpc.calls[-1] == ("answer", (7, {"permissions": granted, "scope": scope}))
+            assert 7 not in client.questions
+        with pytest.raises(WorkspaceRpcError, match="no longer pending"):
+            await client.answer(7, {"permissions": permissions, "scope": "session"})
+
+    asyncio.run(run())
+
+
 def test_approval_validation_and_stale_resolution(tmp_path):
     async def run():
         client, rpc, events = await make(tmp_path)

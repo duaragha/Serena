@@ -36,6 +36,7 @@
 .aw-question p{white-space:pre-wrap;overflow-wrap:anywhere}.aw-question button{border:1px solid #63455d;margin:3px;font-size:11px}.aw-question label{display:block;margin:10px 0}
 .aw-question input{display:block;width:100%;background:#000;border:1px solid #63455d;border-radius:4px;padding:7px}
 .aw-question input[type=radio],.aw-question input[type=checkbox]{display:inline-block;width:auto;margin:0 8px 0 0;accent-color:#ff85cb}
+.aw-question fieldset{min-width:0}.aw-question pre{white-space:pre-wrap;overflow-wrap:anywhere}.aw-question select{display:block;background:#080808;color:inherit;border:1px solid #63455d;padding:7px;margin-top:6px;max-width:100%;font:inherit}
 .aw-message{white-space:normal;overflow-wrap:anywhere}.aw-message p{margin:0 0 12px}.aw-message p:last-child{margin-bottom:0}
 .aw-history-image{display:block;max-width:100%;max-height:320px;width:auto;height:auto;object-fit:contain;margin:8px 0}
 .aw-load-earlier{display:block;margin:0 auto 16px}.aw-load-earlier[hidden]{display:none}

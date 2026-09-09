@@ -2,6 +2,31 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex permission requests now render explicit network/filesystem group selection,
+defaulting to no grants and turn scope. Session scope requires selection. The
+adapter accepts only exact requested groups, preserving deny entries and rejecting
+expanded access; requests remain visible until native resolution. Per-path
+selection inside a filesystem group is not implemented. The installed
+request_permissions_tool feature is under development and off by default; the
+workspace does not enable it. Its isolated live proof enables it only in temporary
+CODEX_HOME, receives a real request, denies it through the adapter, and observes
+serverRequest/resolved. No permission was granted or network tool executed.
+Source: https://learn.chatgpt.com/docs/app-server (accessed 2026-09-09),
+installed PermissionsRequestApproval schemas and `codex features list`.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_pane.py -q --basetemp=/tmp/serena-workspace-permission-verification
+# exit 0: 34 passed in 14.53s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_pane.py::test_permission_prompt_defaults_to_no_grants_and_exact_selected_scope -q --basetemp=/tmp/serena-workspace-permission-final-verification
+# exit 0: 13 passed in 0.72s; type-exact validation and mobile layout
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --permissions
+# initial exit 1: tool disabled, no permission request produced
+# final exit 0 after isolated feature opt-in: request denied and natively resolved;
+# same resumed ID, owned processes reaped, isolated storage removed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py tests/test_workspace_codex.py tests/test_workspace_pane.py scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed!
+```
+
 Claude now has an explicit searchable command/skill picker using get_server_info
 commands plus the native init command names. Selecting inserts into the draft,
 never auto-sends. Native aliases/descriptions are searchable; identity-switching

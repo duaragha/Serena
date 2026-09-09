@@ -8,6 +8,7 @@ thread when resumption fails. Raw protocol events are retained for the renderer.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 from collections import deque
@@ -337,6 +338,24 @@ class CodexWorkspace:
                 or answer["decision"] not in decisions
             ):
                 raise ValueError("Invalid approval decision")
+        elif method == "item/permissions/requestApproval":
+            requested = question["params"].get("permissions")
+            granted = answer.get("permissions")
+            if (
+                set(answer) != {"permissions", "scope"}
+                or answer["scope"] not in {"turn", "session"}
+                or not isinstance(requested, dict)
+                or not isinstance(granted, dict)
+                or granted.keys() - {"network", "fileSystem"}
+            ):
+                raise ValueError("Invalid permission grant")
+            # Grant only exact requested groups. In particular, never remove a
+            # deny entry from a filesystem profile and accidentally widen it.
+            for key, value in granted.items():
+                if key not in requested or json.dumps(value, sort_keys=True) != json.dumps(
+                    requested[key], sort_keys=True
+                ):
+                    raise ValueError("Permission grant exceeds the requested access")
         elif method == "item/tool/requestUserInput":
             expected = {q["id"] for q in question["params"].get("questions", [])}
             answers = answer.get("answers")

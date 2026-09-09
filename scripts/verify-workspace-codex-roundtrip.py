@@ -17,7 +17,7 @@ from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
 
 
-async def main(review=False, compact=False):
+async def main(review=False, compact=False, permissions=False):
     binary = shutil.which("codex")
     if not binary:
         raise RuntimeError("Installed Codex unavailable")
@@ -30,6 +30,8 @@ async def main(review=False, compact=False):
         home, project = root / "codex", root / "project"
         home.mkdir(mode=0o700)
         project.mkdir()
+        if permissions:
+            (home / "config.toml").write_text("[features]\nrequest_permissions_tool = true\n")
         target = home / "auth.json"
         with open(target, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
             json.dump({"auth_mode": "chatgpt", "tokens": auth["tokens"]}, stream)
@@ -55,7 +57,11 @@ async def main(review=False, compact=False):
                     "cwd": str(project),
                     "sandbox": "read-only",
                     "approvalPolicy": "never",
-                    "developerInstructions": "This is a transport verification. Do not use tools. Reply with only the exact text requested.",
+                    "developerInstructions": (
+                        "This is a transport verification. Use no tools except request_permissions when explicitly asked. Never execute commands or edit files."
+                        if permissions
+                        else "This is a transport verification. Do not use tools. Reply with only the exact text requested."
+                    ),
                     "config": {"features.shell_tool": False, "web_search": "disabled"},
                 },
             )
@@ -84,6 +90,8 @@ async def main(review=False, compact=False):
 
             async def publish(event):
                 published.append(event)
+                if permissions and event.get("method") == "item/permissions/requestApproval":
+                    await owner.answer(event["id"], {"permissions": {}, "scope": "turn"})
                 if event.get("method") == "turn/completed":
                     finished.set()
 
@@ -111,6 +119,29 @@ async def main(review=False, compact=False):
             print(
                 "PASS: exact persisted ID/history resumed through CodexWorkspace; real second-turn output received"
             )
+            if permissions:
+                finished.clear()
+                before = len(published)
+                await owner.submit(
+                    [
+                        {
+                            "type": "text",
+                            "text": "Call request_permissions to request network access only, explaining this is an isolated permission UI verification. Do not perform network access or any other tool call. After the answer, reply PERMISSION_PROOF_DONE.",
+                        }
+                    ],
+                    options={"approvalPolicy": "on-request"},
+                )
+                await asyncio.wait_for(finished.wait(), 90)
+                assert any(
+                    e.get("method") == "item/permissions/requestApproval"
+                    for e in published[before:]
+                ), "Provider did not produce a permission request"
+                assert any(
+                    e.get("method") == "serverRequest/resolved" for e in published[before:]
+                ), "Provider did not resolve the denied request"
+                print(
+                    "PASS: native permissions request denied through exact session adapter and resolved"
+                )
             if compact:
                 finished.clear()
                 await owner.compact()
@@ -153,5 +184,6 @@ if __name__ == "__main__":
     parser.add_argument("--allow-inference", action="store_true", required=True)
     parser.add_argument("--review", action="store_true")
     parser.add_argument("--compact", action="store_true")
+    parser.add_argument("--permissions", action="store_true")
     args = parser.parse_args()
-    asyncio.run(main(review=args.review, compact=args.compact))
+    asyncio.run(main(review=args.review, compact=args.compact, permissions=args.permissions))

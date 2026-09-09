@@ -461,6 +461,33 @@ export class WorkspacePane {
           button.addEventListener('click', () => this.answer(id, {decision}, form));
           form.append(button);
         }
+      } else if (question.method === 'item/permissions/requestApproval') {
+        form.append(node('p', '', p.reason || 'Additional permissions requested'));
+        if (p.cwd) form.append(node('small', '', p.cwd));
+        const fields = [];
+        for (const [key, title] of [['network','Network access'],['fileSystem','File access']]) {
+          if (!p.permissions?.[key]) continue;
+          const group = node('fieldset');
+          const label = node('label', '', title);
+          const input = node('input'); input.type='checkbox';
+          label.prepend(input); group.append(label, node('pre','',JSON.stringify(p.permissions[key],null,2)));
+          form.append(group); fields.push([key,input]);
+        }
+        const label = node('label', '', 'Grant duration');
+        const scope = node('select');
+        for (const [value,title] of [['turn','This turn'],['session','This session']]) {
+          const option=node('option','',title); option.value=value; scope.append(option);
+        }
+        label.append(scope); form.append(label);
+        const deny=node('button','','Deny'); deny.type='button';
+        deny.addEventListener('click',()=>this.answer(id,{permissions:{},scope:'turn'},form));
+        const grant=node('button','','Grant selected'); grant.type='submit';
+        form.append(deny,grant);
+        form.addEventListener('submit',event=>{
+          event.preventDefault();
+          const permissions=Object.fromEntries(fields.filter(([,input])=>input.checked).map(([key])=>[key,p.permissions[key]]));
+          this.answer(id,{permissions,scope:scope.value},form);
+        });
       } else if (question.method === 'workspace/claudeApproval' && p.tool === 'AskUserQuestion') {
         const fields = [];
         for (const [index, q] of (p.input?.questions || []).entries()) {
@@ -529,7 +556,7 @@ export class WorkspacePane {
   }
 
   async answer(id, value, form) {
-    const controls = [...form.querySelectorAll('button,input')];
+    const controls = [...form.querySelectorAll('button,input,select,textarea')];
     controls.forEach(el => { el.disabled = true; });
     try { await this.controls.answer(id, value); }
     catch (error) { this.error(error); controls.forEach(el => { el.disabled = false; }); }
