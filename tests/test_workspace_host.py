@@ -98,6 +98,40 @@ def test_crash_ambiguous_command_is_not_repeated(host):
     assert Owner.instances[0].sent == []
 
 
+def test_claude_input_routing_and_duplicate_receipt(host):
+    import base64
+
+    from PIL import Image
+
+    host.factories = {"claude": Owner}
+    host.resolve = lambda sid: {"session_id": sid, "provider": "claude", "cwd": "."}
+    assert host.events("claude-exact")["events"] == []
+    assert Owner.instances == []
+    assert host.attach("claude-exact")["provider"] == "claude"
+    stream = io.BytesIO()
+    Image.new("RGB", (8, 8), "green").save(stream, format="PNG")
+    raw = stream.getvalue()
+    upload = host.uploads.save("claude-exact", "photo.png", io.BytesIO(raw))
+    payload = {
+        "inputs": [
+            {"type": "text", "text": "look at this"},
+            {"type": "upload", "token": upload["token"]},
+        ]
+    }
+    receipt = host.command("claude-exact", "once", "submit", payload)
+    assert receipt["ok"]
+    assert host.command("claude-exact", "once", "submit", payload) == receipt
+    owner = Owner.instances[0]
+    assert owner.sid == "claude-exact"
+    assert len(owner.sent) == 1
+    assert base64.b64decode(owner.sent[0][1]["source"]["data"]) == raw
+    host.attach("different")
+    rejected = host.command("different", "not-yours", "submit", payload)
+    assert not rejected["ok"]
+    assert Owner.instances[1].sent == []
+    assert not owner.closed
+
+
 def test_explicit_shutdown_waits_for_admitted_attach_and_is_idempotent(host):
     assert host.attach("exact", timeout=0.001)["pending"]
     host.shutdown()

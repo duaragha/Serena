@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -109,6 +110,12 @@ class WorkspaceUploads:
             raise ValueError("Attachment is unavailable in this session") from error
 
     def codex_inputs(self, sid: str, inputs: list[dict]) -> list[dict]:
+        return self._inputs(sid, inputs, provider="codex")
+
+    def claude_inputs(self, sid: str, inputs: list[dict]) -> list[dict]:
+        return self._inputs(sid, inputs, provider="claude")
+
+    def _inputs(self, sid: str, inputs: list[dict], *, provider: str) -> list[dict]:
         if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_ATTACHMENTS + 1:
             raise ValueError("Invalid message or attachment count")
         result = []
@@ -124,7 +131,22 @@ class WorkspaceUploads:
             elif item.get("type") == "upload" and set(item) == {"type", "token"}:
                 path, record = self.resolve(sid, item["token"])
                 if record["media_type"].startswith("image/"):
-                    result.append({"type": "localImage", "path": str(path)})
+                    if provider == "claude":
+                        raw = path.read_bytes()
+                        if hashlib.sha256(raw).hexdigest() != record["sha256"]:
+                            raise ValueError("Attachment changed after upload")
+                        result.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": record["media_type"],
+                                    "data": base64.b64encode(raw).decode("ascii"),
+                                },
+                            }
+                        )
+                    else:
+                        result.append({"type": "localImage", "path": str(path)})
                 else:
                     result.append(
                         {

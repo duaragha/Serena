@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Latest input integration: the host can now map session-bound uploads to Claude
+SDK image content blocks and preserve text/document references. It uses the same
+command receipt guard as Codex; replay cannot send a second message. The default
+factory and admission still exclude Claude pending native-session verification.
+The image proof below verifies encoding/storage, not model image understanding.
+Claude's outgoing user events currently retain image payloads in the journal;
+reference-based image history and bounded rendering remain to implement.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_uploads.py tests/test_workspace_host.py tests/test_workspace_claude.py -q
+# exit 0: 20 passed in 2.63s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-host.py
+# exit 0: exact attachment bytes, Claude image encoding, no upload-triggered launch;
+# one installed Codex initialization probe, repeated attachment, child exit 0
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_uploads.py core/workspace_host.py tests/test_workspace_uploads.py tests/test_workspace_host.py scripts/verify-workspace-host.py
+# exit 0: All checks passed!
+```
+
 Raghav approved the conversation panes in `_artifacts/serena-ui-concept`,
 including styled messages, tool runs, diffs and composers, with all existing
 CLI capabilities. A transcript viewer, cosmetic terminal theme, or reduced

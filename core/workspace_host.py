@@ -140,11 +140,13 @@ class WorkspaceHost:
                 elif action == "submit":
                     if payload.keys() - {"inputs", "options"}:
                         raise ValueError("Unsupported submit fields")
-                    if provider != "codex":
+                    mapper = {
+                        "codex": self.uploads.codex_inputs,
+                        "claude": self.uploads.claude_inputs,
+                    }.get(provider)
+                    if mapper is None:
                         raise ValueError("Provider input mapping is not implemented")
-                    inputs = await asyncio.to_thread(
-                        self.uploads.codex_inputs, sid, payload["inputs"]
-                    )
+                    inputs = await asyncio.to_thread(mapper, sid, payload["inputs"])
                     result = await owner.submit(inputs, options=payload.get("options"))
                 elif action == "steer":
                     if set(payload) != {"inputs"}:

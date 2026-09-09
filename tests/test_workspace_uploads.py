@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import os
@@ -57,3 +58,40 @@ def test_invalid_image_size_and_arbitrary_paths_are_rejected(tmp_path, monkeypat
         uploads.codex_inputs("exact", [{"type": "localImage", "path": "/etc/passwd"}])
     with pytest.raises(ValueError, match="Invalid attachment"):
         uploads.resolve("exact", "../../etc/passwd")
+
+
+def test_claude_native_image_and_document_inputs(tmp_path):
+    uploads = WorkspaceUploads(tmp_path)
+    raw = png()
+    image = uploads.save("exact", "photo.png", io.BytesIO(raw))
+    document = uploads.save("exact", "notes.txt", io.BytesIO(b"notes"))
+    inputs = [
+        {"type": "text", "text": "inspect these"},
+        {"type": "upload", "token": image["token"]},
+        {"type": "upload", "token": document["token"]},
+    ]
+    mapped = uploads.claude_inputs("exact", inputs)
+    assert mapped[0] == inputs[0]
+    assert mapped[1] == {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": base64.b64encode(raw).decode("ascii"),
+        },
+    }
+    assert "notes.txt" in mapped[2]["text"]
+    assert inputs[1]["type"] == "upload"
+    with pytest.raises(ValueError, match="unavailable"):
+        uploads.claude_inputs("other", inputs)
+    with pytest.raises(ValueError, match="arbitrary"):
+        uploads.claude_inputs("exact", [mapped[1]])
+
+
+def test_claude_rejects_changed_image(tmp_path):
+    uploads = WorkspaceUploads(tmp_path)
+    record = uploads.save("exact", "photo.png", io.BytesIO(png()))
+    path, _ = uploads.resolve("exact", record["token"])
+    path.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="changed"):
+        uploads.claude_inputs("exact", [{"type": "upload", "token": record["token"]}])

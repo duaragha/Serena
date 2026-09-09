@@ -1,11 +1,14 @@
 """Safe installed-Codex host proof: initialization only, no coding thread or turn."""
 
+import base64
 import io
 import os
 import shutil
 import sys
 import tempfile
 from pathlib import Path
+
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -71,6 +74,18 @@ def main():
             else:
                 raise AssertionError("Attachment crossed session ownership")
             print("PASS: private attachment persisted byte-for-byte; cross-session lookup rejected")
+            image = io.BytesIO()
+            Image.new("RGB", (8, 8), "green").save(image, format="PNG")
+            raw = image.getvalue()
+            picture = host.uploads.save("probe-only", "proof.png", io.BytesIO(raw))
+            mapped = host.uploads.claude_inputs(
+                "probe-only", [{"type": "upload", "token": picture["token"]}]
+            )
+            assert mapped[0]["type"] == "image"
+            assert mapped[0]["source"]["media_type"] == "image/png"
+            assert base64.b64decode(mapped[0]["source"]["data"]) == raw
+            assert not owners
+            print("PASS: Claude image mapping preserves bytes without launching a provider")
             assert host.attach("probe-only")["ok"]
             process = owners[0].rpc.process
             assert host.attach("probe-only")["ok"]
