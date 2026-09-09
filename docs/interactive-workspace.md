@@ -2,6 +2,25 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex context compaction is available through its explicit toolbar control and
+the exact `/compact` composer command. It calls thread/compact/start on the owned
+session. The acknowledgement leaves it busy until native turn completion; a
+contextCompaction item shows progress/completion. No new thread or transcript-only
+substitute is involved. The live isolated compaction proof passed.
+Reference: https://learn.chatgpt.com/docs/app-server (accessed 2026-09-09).
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py -q
+# exit 0: 38 passed in 13.38s
+node --test tests/workspace-events.test.mjs tests/workspace-connection.test.mjs
+# exit 0: 9 passed, 0 failed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --compact
+# exit 0: exact session resume, native compaction completion and ready state;
+# owned processes reaped, isolated storage removed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_pane.py scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed!
+```
+
 Codex now exposes an explicit Review changes dialog for uncommitted changes,
 base branch, commit, or custom instructions. The host only accepts the typed
 target; the adapter forces review/start delivery=inline, verifies reviewThreadId,

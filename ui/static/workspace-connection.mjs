@@ -108,6 +108,7 @@ export class WorkspaceConnection {
       },
       models: () => this.command('models', {}),
       review: target => this.command('review', {target}),
+      compact: () => this.command('compact', {}),
       submit: message => this.sendMessage('submit', message),
       steer: message => this.sendMessage('steer', message),
       interrupt: () => this.command('interrupt', {}),

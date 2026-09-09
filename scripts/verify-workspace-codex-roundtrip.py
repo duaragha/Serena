@@ -17,7 +17,7 @@ from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
 
 
-async def main(review=False):
+async def main(review=False, compact=False):
     binary = shutil.which("codex")
     if not binary:
         raise RuntimeError("Installed Codex unavailable")
@@ -109,6 +109,19 @@ async def main(review=False):
             print(
                 "PASS: exact persisted ID/history resumed through CodexWorkspace; real second-turn output received"
             )
+            if compact:
+                finished.clear()
+                await owner.compact()
+                await asyncio.wait_for(finished.wait(), 120)
+                completion = [e for e in published if e.get("method") == "turn/completed"][-1]
+                assert completion["params"]["turn"]["status"] == "completed"
+                assert any(
+                    e.get("method") == "item/completed"
+                    and e.get("params", {}).get("item", {}).get("type") == "contextCompaction"
+                    for e in published
+                )
+                assert owner.state == "ready"
+                print("PASS: native context compaction completed on the same thread; owner ready")
             if review:
                 finished.clear()
                 result = await owner.review(
@@ -137,5 +150,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--allow-inference", action="store_true", required=True)
     parser.add_argument("--review", action="store_true")
+    parser.add_argument("--compact", action="store_true")
     args = parser.parse_args()
-    asyncio.run(main(review=args.review))
+    asyncio.run(main(review=args.review, compact=args.compact))

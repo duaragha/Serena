@@ -43,6 +43,8 @@ export class WorkspaceConversation {
         Object.assign(turn, source, {items: new Map((source.items || []).map(i => [i.id, i]))});
       }
       this.status = [...this.turns.values()].some(t => t.status === 'inProgress') ? 'running' : 'ready';
+    } else if (method === 'workspace/activity') {
+      this.status = p.status;
     } else if (method === 'workspace/models') {
       this.models = p.data || [];
       Object.assign(this.metadata, p.settings || {});
@@ -56,6 +58,7 @@ export class WorkspaceConversation {
       this.status = method === 'turn/started' ? 'running' : (p.turn.status || 'completed');
     } else if (method === 'item/started' || method === 'item/completed') {
       if (!p.item?.id) throw new Error('Missing provider item');
+      if (p.item.type === 'contextCompaction') p.item.status = method === 'item/completed' ? 'completed' : 'inProgress';
       this.turn(p.turnId).items.set(p.item.id, p.item);
     } else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
       const item = this.item(p.turnId, p.itemId, method.includes('/plan/') ? 'plan' : 'agentMessage');

@@ -216,8 +216,31 @@ def test_review_dialog_routes_explicit_target_without_submitting_message(pane):
     page.wait_for_function("calls.length === 1")
     assert page.evaluate("calls[0]") == ["review", {"type": "baseBranch", "branch": "main"}]
     dialog.wait_for(state="hidden")
-    page.evaluate("right.receive({sequence:2,event:{method:'item/completed',params:{threadId:'other',turnId:'review-turn',item:{id:'review-result',type:'exitedReviewMode',review:'**No findings**'}}}})")
+    page.evaluate(
+        "right.receive({sequence:2,event:{method:'item/completed',params:{threadId:'other',turnId:'review-turn',item:{id:'review-result',type:'exitedReviewMode',review:'**No findings**'}}}})"
+    )
     page.locator("#right .aw-message strong").filter(has_text="No findings").wait_for()
+    assert not errors
+
+
+def test_compact_command_is_native_and_waits_for_provider_completion(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      pane.provider='Codex';controls.compact=async()=>{
+        calls.push(['compact']);emit({method:'workspace/activity',params:{threadId:'exact',status:'compacting'}});
+      };
+    }""")
+    page.locator("#left textarea").fill("/compact")
+    page.locator("#left").get_by_role("button", name="Send message", exact=True).click()
+    page.wait_for_function("calls.length===1")
+    assert page.evaluate("calls") == [["compact"]]
+    assert (
+        page.locator("#left").get_by_role("button", name="Send message", exact=True).is_disabled()
+    )
+    page.evaluate("""emit({method:'item/completed',params:{threadId:'exact',turnId:'c',item:{id:'compaction',type:'contextCompaction'}}});
+      emit({method:'turn/completed',params:{threadId:'exact',turn:{id:'c',status:'completed'}}});""")
+    page.get_by_text("Context compaction", exact=True).wait_for()
+    page.wait_for_function("!pane.send.disabled")
     assert not errors
 
 

@@ -130,6 +130,7 @@ class WorkspaceHost:
             "answer",
             "models",
             "review",
+            "compact",
         } or not isinstance(payload, dict):
             raise ValueError("Unsupported workspace control")
         return self._dispatch(self._command(sid, request_id, action, deepcopy(payload)), timeout)
@@ -153,7 +154,11 @@ class WorkspaceHost:
                 )
             owner, provider = self._sessions[sid]
             try:
-                if action == "review":
+                if action == "compact":
+                    if provider != "codex" or payload:
+                        raise ValueError("Compaction requires a Codex session and no payload")
+                    result = await owner.compact()
+                elif action == "review":
                     if provider != "codex" or set(payload) != {"target"}:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])

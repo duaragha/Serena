@@ -253,6 +253,45 @@ def test_review_stays_inline_and_rejects_busy_or_unknown_targets(tmp_path):
     asyncio.run(run())
 
 
+def test_compaction_ack_does_not_make_session_ready_before_completion(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        try:
+            await client.open(binary="codex", env={})
+
+            async def request(method, params):
+                rpc.calls.append((method, params))
+                return {}
+
+            rpc.request = request
+            await client.compact()
+            assert rpc.calls[-1] == ("thread/compact/start", {"threadId": "exact-session"})
+            assert client.state == "submitting"
+            with pytest.raises(WorkspaceRpcError, match="not ready"):
+                await client.submit([{"type": "text", "text": "too early"}])
+            await rpc.events.put(
+                {
+                    "method": "turn/started",
+                    "params": {"threadId": "exact-session", "turn": {"id": "compact-1"}},
+                }
+            )
+            await rpc.events.put(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "exact-session",
+                        "turn": {"id": "compact-1", "status": "completed"},
+                    },
+                }
+            )
+            await asyncio.sleep(0.01)
+            assert client.state == "ready"
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
 def test_fast_completion_is_not_overwritten_by_start_reply(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

@@ -255,6 +255,24 @@ class CodexWorkspace:
                     self.state = "uncertain"
                 raise
 
+    async def compact(self) -> dict:
+        async with self._control_lock:
+            if self.state != "ready":
+                raise WorkspaceRpcError("Session is not ready for compaction")
+            self.state = "submitting"
+            try:
+                await self.publish(
+                    {
+                        "method": "workspace/activity",
+                        "params": {"threadId": self.session_id, "status": "compacting"},
+                    }
+                )
+                return await self.rpc.request("thread/compact/start", {"threadId": self.session_id})
+            except BaseException:
+                if self.state == "submitting":
+                    self.state = "uncertain"
+                raise
+
     async def interrupt(self) -> Any:
         if not self.active_turn:
             raise WorkspaceRpcError("No running turn to interrupt")

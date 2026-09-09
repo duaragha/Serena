@@ -82,6 +82,13 @@ export class WorkspacePane {
     this.reviewButton = this.button('Review changes', 'scan-eye', () => this.openReview());
     this.reviewButton.hidden = provider !== 'Codex' || !controls.review;
     footer.insertBefore(this.reviewButton, this.stop);
+    this.compactButton = this.button('Compact conversation', 'minimize-2', async () => {
+      this.compactButton.disabled=true;
+      try { await this.controls.compact(); }
+      catch(error){ this.error(error); this.render(); }
+    });
+    this.compactButton.hidden=provider !== 'Codex' || !controls.compact;
+    footer.insertBefore(this.compactButton,this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
@@ -190,7 +197,11 @@ export class WorkspacePane {
       if (this.modelSelect.value) options.model = this.modelSelect.value;
       if (this.effortSelect.value) options.effort = this.effortSelect.value;
       if (this.tierSelect.value) options.serviceTier = this.tierSelect.value === '__default' ? null : this.tierSelect.value;
-      if (this.canSteer()) await this.controls.steer({text, files, expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
+      if (this.provider === 'Codex' && text.trim() === '/compact') {
+        if (files.length || !this.controls.compact) throw Error('Compaction does not accept attachments');
+        await this.controls.compact();
+      }
+      else if (this.canSteer()) await this.controls.steer({text, files, expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else await this.controls.submit({text, files, options});
       if (this.input.value === text) { this.input.value = ''; this.persistDraft(); }
       this.files = this.files.filter(file => !files.includes(file));
@@ -300,6 +311,9 @@ export class WorkspacePane {
         block.append(copy);
       }
       entry.append(message);
+    } else if (item.type === 'contextCompaction') {
+      entry.append(node('div', 'aw-author', 'Context compaction'));
+      entry.append(node('div', '', item.status === 'completed' ? 'Completed' : 'In progress'));
     } else if (item.type === 'fileChange') {
       for (const change of item.changes || []) {
         entry.append(node('div', 'aw-file-name', change.path));
@@ -460,6 +474,7 @@ export class WorkspacePane {
     this.status.textContent = this.conversation.status;
     this.stop.hidden = this.conversation.status !== 'running';
     this.reviewButton.disabled = !['ready','completed','interrupted','failed'].includes(this.conversation.status);
+    this.compactButton.disabled = this.reviewButton.disabled;
     const steering = this.canSteer();
     this.send.title = steering ? 'Steer running turn' : 'Send message';
     this.send.setAttribute('aria-label', this.send.title);
