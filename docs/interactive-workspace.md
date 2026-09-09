@@ -2,6 +2,40 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native Codex HTTP/browser proof (2026-09-09): the history verifier now mounts
+the real workspace Flask blueprint/page/static assets around its isolated native
+session and drives them through Playwright. Desktop 1440x900 and mobile 390x900
+explicitly click Resume, confirm/run print-only commands, expand command output,
+and observe native stdout/exit status. Desktop also loads the oldest native page
+through the real history button. Both pages share the same native owner PID;
+page close leaves it alive, and proof teardown closes it explicitly. Initial page
+load is asserted not to create an owner. No model credentials or inference used.
+
+The resolver/descriptor admit only the proof's known isolated session, rather
+than testing production index admission. The rest is the real HTTP command,
+journal, adapter, native executable, renderer and event polling path. No console,
+page or HTTP errors were observed. Both screenshots were visually inspected:
+output/exit status readable, controls within viewport, no horizontal overflow.
+Artifacts: `apps/desktop/build/workspace-proof/codex-native-desktop.png` and
+`apps/desktop/build/workspace-proof/codex-native-mobile.png` (generated, not tracked).
+
+```sh
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py
+# exit 0: native history/receipt checks plus real desktop/mobile HTTP attach,
+# shell output rendering, oldest-page load and unchanged owner after page close.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py tests/test_workspace_pane.py::test_shell_dialog_requires_explicit_confirmation_and_keeps_chat_draft tests/test_workspace_pane.py::test_native_older_history_is_explicit_and_preserves_scroll -q
+# exit 0: 5 passed in 6.31s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-history.py
+# exit 0: All checks passed!
+```
+
+First browser proof exited 1 because it waited for output inside a collapsed
+command detail; it now explicitly expands that real control. Initial lint
+flagged unbound loop variables in error callbacks; bound each page's error list
+and reran successfully. This does not prove installed Electron, Windows, model
+generation, approval interactions or full cross-provider parity. Those delivery
+gates remain open.
+
 Native Codex shell action (2026-09-09): the pane now offers an explicit Run shell
 command dialog. Its outside-sandbox confirmation is required by the backend,
 not merely the UI. Commands use `thread/shellCommand` on the exact owned session,

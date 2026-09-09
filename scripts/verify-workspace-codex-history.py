@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -14,6 +15,77 @@ from core.workspace_host import WorkspaceHost
 from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
+
+
+def browser_proof(sid, root, project, env, binary):
+    from flask import Flask
+    from playwright.sync_api import sync_playwright
+    from werkzeug.serving import WSGIRequestHandler, make_server
+
+    from ui.workspace_app import install_workspace
+
+    repo = Path(__file__).resolve().parents[1]
+    class NativeOwner(CodexWorkspace):
+        async def open(self):
+            return await super().open(binary=binary, env=env)
+    app = Flask(__name__, static_folder=str(repo / "ui" / "static"))
+    host = install_workspace(app, root / "browser.db",
+        resolve=lambda requested: {"session_id": sid, "provider": "codex", "cwd": str(project)} if requested == sid else None,
+        describe=lambda requested: {"session_id": sid, "agent": "codex"} if requested == sid else None,
+        factories={"codex": lambda **kwargs: NativeOwner(**kwargs,
+            lease_factory=lambda session: SessionLease(session, directory=root / "leases"))})
+    class QuietRequests(WSGIRequestHandler):
+        def log_request(self, code="-", size="-"):
+            pass
+    server = make_server("127.0.0.1", 0, app, threaded=True, request_handler=QuietRequests)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    artifacts = repo / "apps" / "desktop" / "build" / "workspace-proof"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            try:
+                pid = None
+                for label, width in (("desktop", 1440), ("mobile", 390)):
+                    page = browser.new_page(viewport={"width": width, "height": 900})
+                    errors = []
+                    page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
+                    page.on("console", lambda message, errors=errors: errors.append(message.text) if message.type == "error" else None)
+                    page.on("response", lambda response, errors=errors: errors.append(f"HTTP {response.status}: {response.url}") if response.status >= 400 and not response.url.endswith("favicon.ico") else None)
+                    page.goto(f"http://127.0.0.1:{server.server_port}/workspace/{sid}")
+                    if pid is None:
+                        assert not host._sessions, "Page load launched an owner"
+                    page.get_by_role("button", name="Resume session", exact=True).click()
+                    page.get_by_role("button", name="Run shell command", exact=True).wait_for(state="visible")
+                    page.get_by_role("button", name="Run shell command", exact=True).click()
+                    dialog = page.get_by_role("dialog", name="Run shell command")
+                    token = f"SERENA_BROWSER_{label.upper()}"
+                    dialog.get_by_role("textbox", name="Shell command").fill(f"printf {token}")
+                    dialog.get_by_role("checkbox").check()
+                    dialog.get_by_role("button", name="Run command", exact=True).click()
+                    page.locator("summary").filter(has_text=token).first.click(timeout=15000)
+                    page.locator("pre").filter(has_text=token).first.wait_for(timeout=15000)
+                    owner = host._sessions[sid][0]
+                    if pid is None:
+                        pid = owner.rpc.process.pid
+                    assert owner.rpc.process.pid == pid
+                    assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
+                    page.screenshot(path=str(artifacts / f"codex-native-{label}.png"))
+                    if label == "desktop":
+                        page.get_by_role("button", name="Load earlier messages", exact=True).click()
+                        page.locator("summary").filter(has_text="SERENA_HISTORY_000").first.wait_for(state="attached", timeout=10000)
+                    assert not errors, errors
+                    page.close()
+                    assert owner.rpc.process.returncode is None, "Closing page cancelled owner"
+                    print(f"PASS: {label} real HTTP pane explicitly attached, ran native command and rendered output; same owner survived page close")
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        host.shutdown()
 
 
 async def main():
@@ -88,6 +160,7 @@ async def main():
             if owner:
                 await owner.close()
             await rpc.close()
+        await asyncio.to_thread(browser_proof, sid, root, project, env, binary)
         assert not list(project.iterdir())
         print("PASS: isolated project untouched; native owners closed; no credentials used")
 
