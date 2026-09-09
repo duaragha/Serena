@@ -106,6 +106,9 @@ class ClaudeEvents:
         raw = self.event("workspace/claude", {"recordType": kind, "record": data})
         events = [raw]
         parent = data.get("parent_tool_use_id") or "root"
+        origin = {"parentToolUseId": parent} if parent != "root" else {}
+        if origin and data.get("model") and data["model"] != "<synthetic>":
+            origin["sourceModel"] = data["model"]
         if kind in {"TaskStartedMessage", "TaskProgressMessage", "TaskNotificationMessage", "TaskUpdatedMessage"}:
             task_id = data.get("task_id")
             if not isinstance(task_id, str) or not task_id:
@@ -143,7 +146,7 @@ class ClaudeEvents:
             if message_id and event["type"] == "content_block_start" and event.get("content_block", {}).get("type") == "tool_use":
                 block = event["content_block"]
                 item = self.blocks([block], message_id)[0]
-                item.update(inputStreaming=True, inputJson="")
+                item.update(inputStreaming=True, inputJson="", **origin)
                 self.tools[item["id"]] = deepcopy(item)
                 self.streaming_tools[key] = item["id"]
                 events.append(self.event("item/started", {"turnId": self.turn, "item": item}))
@@ -180,6 +183,7 @@ class ClaudeEvents:
                             "turnId": self.turn,
                             "itemId": f"{message_id}:{event['index']}",
                             "delta": event["delta"]["text"],
+                            **origin,
                         },
                     )
                 )
@@ -187,7 +191,9 @@ class ClaudeEvents:
             message_id = data.get("message_id") or data.get("uuid") or self.message_ids.get(parent)
             if message_id:
                 for item in self.blocks(data["content"], message_id, user=kind == "UserMessage"):
+                    item.update(origin)
                     if item["type"] == "claudeToolCall":
+                        self.tools[item["id"]] = deepcopy(item)
                         # The SDK may emit the authoritative tool before its
                         # trailing stream stop. Late fragments must not replace it.
                         self.streaming_tools = {key: value for key, value in self.streaming_tools.items() if value != item["id"]}

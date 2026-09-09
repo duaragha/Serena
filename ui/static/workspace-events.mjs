@@ -88,6 +88,8 @@ export class WorkspaceConversation {
       this.turn(p.turnId).items.set(p.item.id, p.item);
     } else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
       const item = this.item(p.turnId, p.itemId, method.includes('/plan/') ? 'plan' : 'agentMessage');
+      if (typeof p.parentToolUseId === 'string') item.parentToolUseId = p.parentToolUseId;
+      if (typeof p.sourceModel === 'string') item.sourceModel = p.sourceModel;
       item.text = (item.text || '') + (p.delta || '');
     } else if (method === 'item/commandExecution/outputDelta') {
       const item = this.item(p.turnId, p.itemId, 'commandExecution');

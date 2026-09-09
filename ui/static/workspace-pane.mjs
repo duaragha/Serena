@@ -641,6 +641,12 @@ export class WorkspacePane {
 
   renderItem(item) {
     const entry = node('article', 'aw-item'); entry.dataset.itemId = item.id;
+    if(item.parentToolUseId){
+      entry.dataset.parentToolUseId=item.parentToolUseId;
+      const origin=node('details','aw-agent-origin');
+      origin.append(node('summary','',item.sourceModel?`Subagent - ${item.sourceModel}`:'Subagent'),node('code','',`Parent tool: ${item.parentToolUseId}`));
+      entry.append(origin);
+    }
     if (item.type === 'userMessage') {
       entry.append(node('div', 'aw-author', 'Raghav'));
       const message = node('div', 'aw-user-message');
@@ -656,7 +662,7 @@ export class WorkspacePane {
       }
       entry.append(message);
     } else if (['agentMessage','commandOutput','plan','enteredReviewMode','exitedReviewMode'].includes(item.type)) {
-      entry.append(node('div', 'aw-author', item.type === 'commandOutput' ? 'Command result' : item.type === 'plan' ? 'Plan' : item.type.endsWith('ReviewMode') ? 'Review' : this.provider));
+      entry.append(node('div', 'aw-author', item.type === 'commandOutput' ? 'Command result' : item.type === 'plan' ? 'Plan' : item.type.endsWith('ReviewMode') ? 'Review' : item.parentToolUseId ? 'Subagent response' : this.provider));
       const message = node('div', 'aw-message');
       message.innerHTML = renderWorkspaceMarkdown(item.text ?? item.review);
       for (const block of message.querySelectorAll('pre')) {
@@ -898,8 +904,8 @@ export class WorkspacePane {
         if (prior?.signature === signature) { ordered.push(prior.element); continue; }
         const element = this.renderItem(item);
         if (prior) {
-          const wasOpen = prior.element.querySelector('details')?.open;
-          if (wasOpen && element.querySelector('details')) element.querySelector('details').open = true;
+          const details=element.querySelectorAll('details');
+          prior.element.querySelectorAll('details').forEach((old,index)=>{if(old.open && details[index])details[index].open=true;});
           this.releaseHistoryImages(prior.element);
           prior.element.replaceWith(element);
         } else this.log.append(element);

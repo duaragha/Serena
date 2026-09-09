@@ -60,6 +60,34 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_subagent_provenance_is_visible_for_messages_and_tools(pane, tmp_path):
+    page, errors = pane
+    page.evaluate("""() => {
+      emit({method:'workspace/settings',params:{model:'parent-model'}});
+      emit({method:'item/agentMessage/delta',params:{turnId:'t',itemId:'child-message',delta:'Child output',parentToolUseId:'agent-parent'}});
+      emit({method:'item/started',params:{turnId:'t',item:{id:'child-tool',type:'claudeToolCall',tool:'Bash',input:{command:'pwd'},parentToolUseId:'agent-parent',status:'inProgress'}}});
+    }""")
+    child = page.locator('[data-item-id="child-message"]')
+    child.get_by_text("Subagent response", exact=True).wait_for()
+    child.locator(".aw-agent-origin summary").click()
+    assert child.get_by_text("Parent tool: agent-parent", exact=True).is_visible()
+    tool = page.locator('[data-item-id="child-tool"]')
+    tool.locator(".aw-tool > summary").first.click()
+    page.evaluate("""() => {
+      emit({method:'item/completed',params:{turnId:'t',item:{id:'child-message',type:'agentMessage',text:'Complete child output',parentToolUseId:'agent-parent',sourceModel:'child-model'}}});
+      emit({method:'item/completed',params:{turnId:'t',item:{id:'child-tool',type:'claudeToolCall',tool:'Bash',input:{command:'pwd'},output:'project',parentToolUseId:'agent-parent',status:'completed'}}});
+    }""")
+    child.get_by_text("Subagent - child-model", exact=True).wait_for()
+    assert child.get_by_text("Parent tool: agent-parent", exact=True).is_visible()
+    assert tool.locator(".aw-tool-output").inner_text() == "project"
+    assert tool.locator(".aw-tool").first.evaluate("el=>el.open")
+    assert page.locator("#left .aw-head small").inner_text() == "parent-model"
+    page.set_viewport_size({"width": 390, "height": 900})
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / "subagent-provenance-mobile.png"))
+    assert not errors
+
+
 def test_escape_interrupts_only_focused_running_turn_not_dialog_or_draft(pane):
     page, errors = pane
     draft = page.get_by_role("textbox", name="Message Claude")

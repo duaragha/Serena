@@ -19,6 +19,7 @@
 .aw-tool{border-top:1px solid #302730;border-bottom:1px solid #302730;font-size:10px}
 .aw-events-dialog{max-height:80vh;overflow:auto}.aw-event-navigation{display:flex;justify-content:space-between;margin-top:12px}.aw-events-dialog summary{overflow-wrap:anywhere}
 .aw-queue-actions{display:flex;flex-direction:column;gap:4px}.aw-review-dialog textarea{box-sizing:border-box;width:100%;resize:vertical;background:#080808;color:inherit;border:1px solid #63455d;padding:8px;font:inherit}
+.aw-agent-origin{font-size:10px;color:#cba9d1;margin-bottom:8px;overflow-wrap:anywhere}.aw-agent-origin summary{cursor:pointer}.aw-agent-origin code{display:block;white-space:pre-wrap;padding:6px 0}
 .aw-tool summary{display:flex;gap:8px;align-items:center;cursor:pointer;padding:10px 0;overflow-wrap:anywhere}
 .aw-tool summary:before{content:'>';color:#a89bad}.aw-tool[open] summary:before{content:'v'}
 .aw-tool small{margin-left:auto;color:#a89bad;flex-shrink:0}

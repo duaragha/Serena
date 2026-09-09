@@ -5,6 +5,17 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('subagent provenance survives streaming and completion without replacing parent model',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,{method:'workspace/settings',params:{model:'parent-model'}}));
+  model.apply(wrap(2,{method:'item/agentMessage/delta',params:{turnId:'t',itemId:'child',delta:'partial',parentToolUseId:'agent-tool'}}));
+  assert.equal(model.turns.get('t').items.get('child').parentToolUseId,'agent-tool');
+  model.apply(wrap(3,{method:'item/completed',params:{turnId:'t',item:{id:'child',type:'agentMessage',text:'complete',parentToolUseId:'agent-tool',sourceModel:'child-model'}}}));
+  assert.equal(model.turns.get('t').items.size,1);
+  assert.equal(model.turns.get('t').items.get('child').sourceModel,'child-model');
+  assert.equal(model.metadata.model,'parent-model');
+});
+
 test('raw event cache is count and size bounded without losing replay position',()=>{
   const model=new WorkspaceConversation('exact');
   for(let sequence=1;sequence<=1000;sequence++)model.apply(wrap(sequence,{method:'workspace/claude',params:{record:{text:'delta'}}}));

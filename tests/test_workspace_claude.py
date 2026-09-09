@@ -108,6 +108,7 @@ def test_tool_arguments_stream_separately_for_parent_and_subagent():
         events = stream({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {}}}, parent)
         assert events[-1]["params"]["item"]["inputStreaming"] is True
         assert events[-1]["params"]["item"]["id"] == tool_id
+        assert events[-1]["params"]["item"].get("parentToolUseId") == parent
     events = stream({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '{"command":'} })
     first = events[-1]["params"]["item"]
     assert first["input"] == {} and first["inputJson"] == '{"command":'
@@ -142,6 +143,8 @@ def test_synthetic_command_output_does_not_replace_the_selected_model():
         parent_tool_use_id="agent-tool",
     ))
     assert not any(event["method"] == "workspace/settings" for event in events)
+    child = next(event["params"]["item"] for event in events if event["method"] == "item/completed")
+    assert child["parentToolUseId"] == "agent-tool" and child["sourceModel"] == "child-model"
     events = converter.receive(AssistantMessage(
         content=[TextBlock(text="Actual response")], model="claude-native-model", message_id="real",
     ))

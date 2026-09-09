@@ -2,6 +2,25 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude child-message and child-tool provenance now survives normalization,
+streaming and completed messages. The pane labels subagent output, exposes the
+native parent-tool ID, and shows the reported child model without updating the
+parent's model selection. Independent expanded details remain open during item
+updates. This does not yet supply historical sidechain discovery or a complete
+agent-management view; native subagent execution was not launched for this slice.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_pane.py::test_subagent_provenance_is_visible_for_messages_and_tools -q --basetemp=/tmp/serena-subagent-provenance-final
+# exit 0: 22 passed in 1.26s; native SDK record fixtures and mobile browser view
+node --test tests/workspace-events.test.mjs
+# exit 0: 8 passed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py --local-effort
+# exit 0: root native-control regression proof; zero inference, child process
+# reaped. This is not live subagent execution evidence.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_events.py tests/test_workspace_claude.py tests/test_workspace_pane.py
+# exit 0: all checks passed
+```
+
 Escape in the focused composer now requests interruption of its displayed
 running turn. The stop button shares that path and an in-flight guard. Idle
 Escape, IME composition, key repeats, dialog dismissal and view disposal do not
