@@ -27,6 +27,7 @@ button.addEventListener('click', async () => {
     await connection.connect();
     button.hidden = true;
     pane.input.focus();
+    connection.controls().models().catch(error => pane.error(error));
   } catch (error) {
     pane.error(error);
     if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:'unavailable'},location.origin);

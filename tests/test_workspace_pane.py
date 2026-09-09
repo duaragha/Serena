@@ -99,6 +99,43 @@ def test_pasted_image_drop_preview_and_mobile_cleanup(pane, tmp_path):
     assert not errors
 
 
+def test_advertised_model_effort_selection_reaches_submit_and_header(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+      window.optionsSent=null;
+      controls.submit=async value=>{window.optionsSent=value.options;};
+      emit({method:'workspace/models',params:{settings:{model:'configured',reasoningEffort:'medium'},data:[
+        {model:'configured',displayName:'Configured',supportedReasoningEfforts:[{reasoningEffort:'medium'}],defaultReasoningEffort:'medium'},
+        {model:'chosen',displayName:'Provider advertised model',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'xhigh'}],defaultReasoningEffort:'low',serviceTiers:[{id:'fast',name:'Fast',description:'Provider speed option'}]}
+      ]}});
+    }""")
+    page.get_by_role("combobox", name="Model", exact=True).first.select_option("chosen")
+    effort = page.get_by_role("combobox", name="Reasoning effort").first
+    assert effort.input_value() == "low"
+    assert effort.locator("option").all_text_contents() == ["Default (low)", "low", "xhigh"]
+    effort.select_option("xhigh")
+    page.get_by_role("combobox", name="Speed tier").first.select_option("fast")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / "workspace-mobile-model-controls.png"))
+    page.get_by_role("textbox", name="Message Claude").fill("selected model")
+    page.get_by_role("button", name="Send message", exact=True).first.click()
+    page.wait_for_function("window.optionsSent !== null")
+    assert page.evaluate("window.optionsSent") == {
+        "model": "chosen",
+        "effort": "xhigh",
+        "serviceTier": "fast",
+    }
+    page.evaluate(
+        "emit({method:'workspace/settings',params:{model:'chosen',reasoningEffort:'xhigh'}})"
+    )
+    page.locator("#left .aw-head small").filter(has_text="chosen").wait_for()
+    page.get_by_role("combobox", name="Model", exact=True).first.select_option('')
+    assert effort.input_value() == ''
+    assert page.get_by_role("combobox", name="Speed tier").first.input_value() == ''
+    assert not errors
+
+
 def test_composer_upload_failure_retains_draft_and_closing_does_not_cancel(pane):
     page, errors = pane
     composer = page.get_by_role("textbox", name="Message Claude")

@@ -108,7 +108,7 @@ class WorkspaceHost:
         self._validate_session(sid)
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
             raise ValueError("A stable request ID is required")
-        if action not in {"submit", "steer", "interrupt", "answer"} or not isinstance(
+        if action not in {"submit", "steer", "interrupt", "answer", "models"} or not isinstance(
             payload, dict
         ):
             raise ValueError("Unsupported workspace control")
@@ -133,7 +133,11 @@ class WorkspaceHost:
                 )
             owner, provider = self._sessions[sid]
             try:
-                if action == "submit":
+                if action == "models":
+                    if payload or provider != "codex":
+                        raise ValueError("Model discovery is unavailable for this request")
+                    result = await owner.list_models()
+                elif action == "submit":
                     if payload.keys() - {"inputs", "options"}:
                         raise ValueError("Unsupported submit fields")
                     if provider != "codex":

@@ -245,6 +245,43 @@ owner on reload, and no owner cancellation on frame removal. Provider output
 is a controlled fixture. The standalone page screenshot was visually inspected;
 this does not yet establish whole-app visual parity or live model behavior.
 
+Model/effort/speed controls now use Codex's advertised catalog, not alias guesses.
+The adapter pages `model/list`, rejects stuck pagination, journals the catalog,
+and validates requested model/effort/service-tier combinations before `turn/start`.
+Changing models without an explicit effort uses that model's advertised default;
+leaving the controls unchanged does not override resumed settings. The header
+updates from resumed settings and accepted turn options. Catalog discovery is
+available only after explicit attachment; it does not create a second owner.
+
+Official documentation rechecked 2026-09-09:
+https://learn.chatgpt.com/docs/app-server (Models / List models). It documents
+catalog discovery before rendering selectors, effort options, hidden models and
+input modalities. Installed JSON schemas additionally confirm `serviceTiers`
+entries with id/name/description and the exact `turn/start` option names.
+
+The native selectors include only advertised effort/speed values. Returning to
+the session-model option clears pending effort/speed overrides. Mobile inspection
+confirmed they wrap rather than squeezing the model name into a few characters.
+Provider selection does not get relabeled as a different agent or model.
+
+Model controls verification (2026-09-09):
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_pane.py tests/test_workspace_host.py tests/test_workspace_app.py -q
+# exit 0: 24 passed in 7.89s
+node --test tests/workspace-connection.test.mjs tests/workspace-events.test.mjs
+# exit 0: 8 passed, 0 failed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_advertised_model_effort_selection_reaches_submit_and_header -q
+# exit 0 after mobile/default-reset edits: 1 passed in 0.59s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-rpc.py
+# exit 0: installed provider advertised 6 models on its first page, each with
+# effort options; initialization/ownership check and clean child exit 0
+```
+
+The live proof reads the installed catalog without resuming a conversation or
+running inference. Selection/validation/dispatch tests use controlled protocol
+responses and therefore do not prove an actual model turn in the new interface.
+
 Next: implement attachment/session deletion, Claude/Antigravity control and the remaining capability
 matrix, then prove full provider parity and migrate the real app. The replacement
 remains disabled and incomplete.

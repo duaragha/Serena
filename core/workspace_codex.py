@@ -40,6 +40,8 @@ class CodexWorkspace:
         self._lease_factory = lease_factory
         self._lease: SessionLease | None = None
         self.thread: dict | None = None
+        self.settings: dict = {}
+        self.model_catalog: list[dict] | None = None
         self.active_turn: str | None = None
         self.state = "closed"
         self.questions: dict[int | str, dict] = {}
@@ -84,6 +86,11 @@ class CodexWorkspace:
                         "Codex returned a different session; refusing attachment"
                     )
                 self.thread = deepcopy(thread)
+                self.settings = {
+                    key: deepcopy(result[key])
+                    for key in ("model", "reasoningEffort", "serviceTier")
+                    if key in result
+                }
                 for turn in thread.get("turns", []):
                     if turn.get("status") == "inProgress":
                         self.active_turn = turn["id"]
@@ -95,6 +102,56 @@ class CodexWorkspace:
             except BaseException:
                 await self._close()
                 raise
+
+    async def list_models(self) -> dict:
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        models, seen, cursor = [], set(), None
+        while True:
+            params = {"limit": 100, "includeHidden": False}
+            if cursor:
+                params["cursor"] = cursor
+            page = await self.rpc.request("model/list", params)
+            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+                raise WorkspaceRpcError("Provider returned an invalid model catalog")
+            models.extend(deepcopy(page["data"]))
+            cursor = page.get("nextCursor")
+            if not cursor:
+                break
+            if not isinstance(cursor, str) or cursor in seen or len(seen) >= 100:
+                raise WorkspaceRpcError("Provider model pagination did not advance")
+            seen.add(cursor)
+        self.model_catalog = models
+        result = {"data": models, "settings": deepcopy(self.settings)}
+        await self.publish({"method": "workspace/models", "params": result})
+        return deepcopy(result)
+
+    async def _validate_model_options(self, options):
+        if not {"model", "effort", "serviceTier"}.intersection(options):
+            return
+        if self.model_catalog is None:
+            await self.list_models()
+        model_id = options.get("model") or self.settings.get("model")
+        model = next((m for m in self.model_catalog if m.get("model") == model_id), None)
+        if model is None:
+            raise ValueError("Selected model is not advertised by this provider")
+        if (
+            "model" in options
+            and options["model"] != self.settings.get("model")
+            and "effort" not in options
+        ):
+            default = model.get("defaultReasoningEffort")
+            if not isinstance(default, str):
+                raise ValueError("Provider did not advertise a default effort for this model")
+            options["effort"] = default
+        effort = options.get("effort")
+        if effort is not None and effort not in {
+            e.get("reasoningEffort") for e in model.get("supportedReasoningEfforts", [])
+        }:
+            raise ValueError("Selected effort is not supported by this model")
+        tier = options.get("serviceTier")
+        if tier is not None and tier not in {t.get("id") for t in model.get("serviceTiers", [])}:
+            raise ValueError("Selected speed tier is not supported by this model")
 
     async def submit(self, inputs: list[dict], *, options: dict | None = None) -> dict:
         async with self._control_lock:
@@ -113,6 +170,7 @@ class CodexWorkspace:
             }
             if params.keys() - allowed:
                 raise ValueError("Unsupported turn option")
+            await self._validate_model_options(params)
             params.update(threadId=self.session_id, input=deepcopy(inputs))
             self.state = "submitting"
             try:
@@ -127,6 +185,16 @@ class CodexWorkspace:
                 else:
                     self.active_turn = None
                     self.state = "ready"
+                for source, target in (
+                    ("model", "model"),
+                    ("effort", "reasoningEffort"),
+                    ("serviceTier", "serviceTier"),
+                ):
+                    if source in params:
+                        self.settings[target] = params[source]
+                await self.publish(
+                    {"method": "workspace/settings", "params": deepcopy(self.settings)}
+                )
                 return result
             except BaseException:
                 # A timeout is not proof that Codex rejected the message. Do not
@@ -243,6 +311,8 @@ class CodexWorkspace:
         self.state = "closed"
         self.active_turn = None
         self.thread = None
+        self.settings = {}
+        self.model_catalog = None
         self.questions.clear()
         self._completed.clear()
 

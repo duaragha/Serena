@@ -304,11 +304,20 @@ def test_host_routes_real_bidirectional_pipes_into_replay(tmp_path, monkeypatch)
             "exact", "one", "submit", {"inputs": [{"type": "text", "text": "through real pipes"}]}
         )["ok"]
         deadline = time.monotonic() + 3
-        while len(host.events("exact")["events"]) < 2 and time.monotonic() < deadline:
+        while (
+            not any(
+                e["event"]["method"] == "item/agentMessage/delta"
+                for e in host.events("exact")["events"]
+            )
+            and time.monotonic() < deadline
+        ):
             time.sleep(0.01)
-        assert (
-            host.events("exact")["events"][-1]["event"]["params"]["delta"] == "through real pipes"
-        )
+        deltas = [
+            e
+            for e in host.events("exact")["events"]
+            if e["event"]["method"] == "item/agentMessage/delta"
+        ]
+        assert deltas[0]["event"]["params"]["delta"] == "through real pipes"
         assert host.attach("exact")["ok"]
         assert owners[0].rpc.process is process
     finally:

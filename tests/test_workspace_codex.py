@@ -25,7 +25,26 @@ class Rpc:
         if method == "initialize":
             return {}
         if method == "thread/resume":
-            return {"thread": {"id": self.sid, "turns": []}}
+            return {
+                "thread": {"id": self.sid, "turns": []},
+                "model": "chosen-model",
+                "reasoningEffort": "high",
+            }
+        if method == "model/list":
+            return {
+                "data": [
+                    {
+                        "model": "chosen-model",
+                        "displayName": "Chosen model",
+                        "defaultReasoningEffort": "high",
+                        "supportedReasoningEfforts": [
+                            {"reasoningEffort": "high"},
+                            {"reasoningEffort": "low"},
+                        ],
+                    }
+                ],
+                "nextCursor": None,
+            }
         if method == "turn/start":
             if self.timeout:
                 raise TimeoutError()
@@ -65,6 +84,88 @@ async def make(tmp_path):
         session_id=rpc.sid, cwd=tmp_path, publish=publish, rpc=rpc, lease_factory=lambda sid: lease
     )
     return client, rpc, events
+
+
+def test_model_discovery_and_unsupported_effort_never_starts_turn(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        try:
+            await client.open(binary="codex")
+            catalog = await client.list_models()
+            assert catalog["settings"] == {"model": "chosen-model", "reasoningEffort": "high"}
+            assert catalog["data"][0]["model"] == "chosen-model"
+            assert events[-1]["method"] == "workspace/models"
+            for options in (
+                {"model": "invented"},
+                {"model": "chosen-model", "effort": "unsupported"},
+                {"serviceTier": "invented-fast"},
+            ):
+                with pytest.raises(ValueError):
+                    await client.submit([{"type": "text", "text": "message"}], options=options)
+            assert not any(method == "turn/start" for method, _ in rpc.calls)
+            assert client.state == "ready"
+            await client.submit([{"type": "text", "text": "message"}], options={"effort": "low"})
+            assert rpc.calls[-1][1]["effort"] == "low"
+            assert "model" not in rpc.calls[-1][1]
+            assert events[-1] == {
+                "method": "workspace/settings",
+                "params": {"model": "chosen-model", "reasoningEffort": "low"},
+            }
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_changed_model_without_effort_uses_advertised_default(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        try:
+            await client.open(binary="codex")
+            client.model_catalog = [
+                {
+                    "model": "new-model",
+                    "defaultReasoningEffort": "low",
+                    "supportedReasoningEfforts": [{"reasoningEffort": "low"}],
+                    "serviceTiers": [{"id": "fast"}],
+                }
+            ]
+            await client.submit(
+                [{"type": "text", "text": "hello"}],
+                options={"model": "new-model", "serviceTier": "fast"},
+            )
+            assert rpc.calls[-1][1]["effort"] == "low"
+            assert rpc.calls[-1][1]["serviceTier"] == "fast"
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_model_catalog_pagination_and_loop_rejection(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        try:
+            await client.open(binary="codex")
+            original = rpc.request
+            repeat = False
+
+            async def paged(method, params):
+                if method != "model/list":
+                    return await original(method, params)
+                if params.get("cursor"):
+                    return {"data": [{"model": "second"}], "nextCursor": "next" if repeat else None}
+                return {"data": [{"model": "first"}], "nextCursor": "next"}
+
+            rpc.request = paged
+            assert [m["model"] for m in (await client.list_models())["data"]] == ["first", "second"]
+            repeat = True
+            with pytest.raises(WorkspaceRpcError, match="pagination"):
+                await client.list_models()
+        finally:
+            await client.close()
+
+    asyncio.run(run())
 
 
 def test_exact_resume_and_real_turn_controls(tmp_path):

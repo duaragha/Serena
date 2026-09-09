@@ -26,7 +26,8 @@ export class WorkspacePane {
     const head = node('header', 'aw-head');
     const badge = node('span', 'aw-badge', provider.slice(0, 1).toUpperCase());
     badge.dataset.provider = provider.toLowerCase();
-    head.append(badge, node('strong', '', provider), node('small', '', model));
+    this.modelLabel = node('small', '', model);
+    head.append(badge, node('strong', '', provider), this.modelLabel);
     this.status = node('span', 'aw-state', 'Connecting');
     this.status.setAttribute('role', 'status');
     head.append(this.status);
@@ -52,6 +53,14 @@ export class WorkspacePane {
       this.renderAttachments();
     });
     const attach = this.button('Attach files', 'paperclip', () => this.fileInput.click());
+    this.modelSelect = node('select', 'aw-model-select');
+    this.modelSelect.setAttribute('aria-label', 'Model'); this.modelSelect.title = 'Model';
+    this.effortSelect = node('select', 'aw-effort-select');
+    this.effortSelect.setAttribute('aria-label', 'Reasoning effort'); this.effortSelect.title = 'Reasoning effort';
+    this.tierSelect = node('select', 'aw-effort-select');
+    this.tierSelect.setAttribute('aria-label', 'Speed tier'); this.tierSelect.title = 'Speed tier'; this.tierSelect.hidden = true;
+    this.modelSelect.hidden = this.effortSelect.hidden = true;
+    this.modelSelect.addEventListener('change', () => this.renderEfforts(true));
     this.stop = this.button('Interrupt turn', 'square', async () => {
       this.stop.disabled = true;
       try { await this.controls.interrupt(); } catch (e) { this.error(e); }
@@ -59,7 +68,7 @@ export class WorkspacePane {
     });
     this.stop.hidden = true;
     this.send = this.button('Send message', 'arrow-up'); this.send.type = 'submit';
-    footer.append(attach, this.stop, this.send);
+    footer.append(attach, this.modelSelect, this.effortSelect, this.tierSelect, this.stop, this.send);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
@@ -123,7 +132,11 @@ export class WorkspacePane {
     this.sending = true; this.send.disabled = true; this.alert.hidden = true;
     try {
       // Uploads and text are submitted through one session-owner operation.
-      await this.controls.submit({text, files});
+      const options = {};
+      if (this.modelSelect.value) options.model = this.modelSelect.value;
+      if (this.effortSelect.value) options.effort = this.effortSelect.value;
+      if (this.tierSelect.value) options.serviceTier = this.tierSelect.value === '__default' ? null : this.tierSelect.value;
+      await this.controls.submit({text, files, options});
       if (this.input.value === text) this.input.value = '';
       this.files = this.files.filter(file => !files.includes(file));
       this.renderAttachments();
@@ -150,6 +163,53 @@ export class WorkspacePane {
       this.attachments.append(row);
     }
     this.refreshIcons();
+  }
+
+  renderModelControls() {
+    const models = this.conversation.models;
+    const signature = JSON.stringify([models, this.conversation.metadata.model, this.conversation.metadata.reasoningEffort, this.conversation.metadata.serviceTier]);
+    if (this.modelSignature === signature) return;
+    this.modelSignature = signature;
+    if (this.conversation.metadata.model) this.modelLabel.textContent = this.conversation.metadata.model;
+    const selected = this.modelSelect.value;
+    this.modelSelect.replaceChildren();
+    const unchanged = node('option', '', this.conversation.metadata.model || 'Session model');
+    unchanged.value = ''; this.modelSelect.append(unchanged);
+    for (const model of models) {
+      if (model.hidden || !model.model) continue;
+      const option = node('option', '', model.displayName || model.model);
+      option.value = model.model; this.modelSelect.append(option);
+    }
+    this.modelSelect.value = [...this.modelSelect.options].some(o => o.value === selected) ? selected : '';
+    this.modelSelect.hidden = !models.length;
+    this.renderEfforts(false);
+  }
+
+  renderEfforts(changedModel) {
+    const selected = this.effortSelect.value;
+    const model = this.conversation.models.find(m => m.model === (this.modelSelect.value || this.conversation.metadata.model));
+    this.effortSelect.replaceChildren();
+    const unchanged = node('option', '', this.modelSelect.value ? `Default (${model?.defaultReasoningEffort || 'provider'})` : (this.conversation.metadata.reasoningEffort || 'Session effort'));
+    unchanged.value = ''; this.effortSelect.append(unchanged);
+    for (const effort of model?.supportedReasoningEfforts || []) {
+      const option = node('option', '', effort.reasoningEffort);
+      option.value = effort.reasoningEffort; option.title = effort.description || '';
+      this.effortSelect.append(option);
+    }
+    const value = changedModel ? (this.modelSelect.value ? model?.defaultReasoningEffort : '') : selected;
+    this.effortSelect.value = [...this.effortSelect.options].some(o => o.value === value) ? value : '';
+    this.effortSelect.hidden = !model;
+    const tier = this.tierSelect.value;
+    this.tierSelect.replaceChildren();
+    const same = node('option', '', this.conversation.metadata.serviceTier || 'Session speed'); same.value = '';
+    const standard = node('option', '', 'Provider default'); standard.value = '__default';
+    this.tierSelect.append(same, standard);
+    for (const service of model?.serviceTiers || []) {
+      const option = node('option', '', service.name || service.id); option.value = service.id; option.title = service.description || '';
+      this.tierSelect.append(option);
+    }
+    this.tierSelect.value = changedModel ? (this.modelSelect.value ? '__default' : '') : ([...this.tierSelect.options].some(o => o.value === tier) ? tier : '');
+    this.tierSelect.hidden = !(model?.serviceTiers?.length);
   }
 
   renderItem(item) {
@@ -237,6 +297,7 @@ export class WorkspacePane {
 
   render() {
     if (this.disposed) return;
+    this.renderModelControls();
     const follow = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 60;
     const keys = new Set();
     const ordered = [];

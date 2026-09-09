@@ -8,6 +8,7 @@ export class WorkspaceConversation {
     this.status = 'connecting';
     this.error = null;
     this.metadata = {};
+    this.models = [];
     this.otherEvents = [];
   }
 
@@ -42,6 +43,11 @@ export class WorkspaceConversation {
         Object.assign(turn, source, {items: new Map((source.items || []).map(i => [i.id, i]))});
       }
       this.status = [...this.turns.values()].some(t => t.status === 'inProgress') ? 'running' : 'ready';
+    } else if (method === 'workspace/models') {
+      this.models = p.data || [];
+      Object.assign(this.metadata, p.settings || {});
+    } else if (method === 'workspace/settings') {
+      Object.assign(this.metadata, p);
     } else if (method === 'turn/started' || method === 'turn/completed') {
       const turn = this.turn(p.turn.id);
       const items = turn.items;

@@ -49,10 +49,19 @@ async def main():
         )
         assert isinstance(result, dict) and result.get("userAgent"), result
         await rpc.notify("initialized", {})
+        catalog = await rpc.request(
+            "model/list", {"limit": 100, "includeHidden": False}, timeout=20
+        )
+        assert isinstance(catalog.get("data"), list) and catalog["data"], catalog
+        for model in catalog["data"]:
+            assert model.get("model") and isinstance(model.get("supportedReasoningEfforts"), list)
+        print(
+            f"PASS: installed provider advertised {len(catalog['data'])} models on the first page with effort options"
+        )
         print(
             "PASS: installed Codex app-server initialize/initialized over real bidirectional pipes"
         )
-        print("No thread/start, thread/resume, turn/start, approval, or model request sent")
+        print("No thread/start, thread/resume, turn/start, approval, or inference request sent")
     finally:
         try:
             await rpc.close()

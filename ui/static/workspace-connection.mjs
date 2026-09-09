@@ -79,7 +79,8 @@ export class WorkspaceConnection {
 
   controls() {
     return {
-      submit: async ({text, files = []}) => {
+      models: () => this.command('models', {}),
+      submit: async ({text, files = [], options = {}}) => {
         if (files.length > 16) throw Error('Attach up to 16 files per message');
         const inputs = text ? [{type: 'text', text}] : [];
         for (const file of files) {
@@ -95,7 +96,7 @@ export class WorkspaceConnection {
           }
           inputs.push({type: 'upload', token: this.uploads[key]});
         }
-        return this.command('submit', {inputs});
+        return this.command('submit', {inputs, ...(Object.keys(options).length ? {options} : {})});
       },
       interrupt: () => this.command('interrupt', {}),
       answer: (request_id, answer) => this.command('answer', {request_id, answer}),

@@ -47,6 +47,9 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path):
         async def close(self):
             self.closed = True
 
+        async def list_models(self):
+            return {"data": []}
+
     app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
     host = install_workspace(
         app,
