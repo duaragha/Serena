@@ -203,9 +203,11 @@ class CodexWorkspace:
                     self.state = "uncertain"
                 raise
 
-    async def steer(self, inputs: list[dict]) -> Any:
+    async def steer(self, inputs: list[dict], *, expected_turn_id: str | None = None) -> Any:
         if not self.active_turn or self.state != "running":
             raise WorkspaceRpcError("No running turn to steer")
+        if expected_turn_id is not None and expected_turn_id != self.active_turn:
+            raise WorkspaceRpcError("The running turn changed; steering was not sent")
         return await self.rpc.request(
             "turn/steer",
             {

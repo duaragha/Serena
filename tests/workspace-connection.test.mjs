@@ -11,6 +11,19 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('steering targets the displayed turn and never falls back to submit', async () => {
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'secret',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body)); return response({ok:true,result:{}});
+  }});
+  await assert.rejects(conn.controls().steer({text:'change direction'}),/identity/);
+  assert.equal(calls.length,0);
+  await conn.controls().steer({text:'change direction',expectedTurnId:'running-1'});
+  assert.equal(calls[0].action,'steer');
+  assert.deepEqual(calls[0].payload,{inputs:[{type:'text',text:'change direction'}],expectedTurnId:'running-1'});
+  conn.dispose();
+});
+
 test('construction has no launch; explicit connect replays and dispose sends nothing', async () => {
   const calls = [], events = [];
   const conn = new WorkspaceConnection({sessionId:'exact',token:'secret',storage:storage(),

@@ -185,7 +185,13 @@ def test_exact_resume_and_real_turn_controls(tmp_path):
             assert rpc.calls[-1][1]["threadId"] == "exact-session"
             with pytest.raises(WorkspaceRpcError):
                 await client.submit(inputs)
-            await client.steer([{"type": "text", "text": "correction"}])
+            previous_calls = list(rpc.calls)
+            with pytest.raises(WorkspaceRpcError, match="turn changed"):
+                await client.steer(
+                    [{"type": "text", "text": "correction"}], expected_turn_id="old-turn"
+                )
+            assert rpc.calls == previous_calls
+            await client.steer([{"type": "text", "text": "correction"}], expected_turn_id="turn-1")
             assert rpc.calls[-1][1]["expectedTurnId"] == "turn-1"
             await client.interrupt()
             assert rpc.calls[-1] == (

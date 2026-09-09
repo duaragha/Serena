@@ -152,6 +152,21 @@ def test_claude_permission_is_explicit_and_waits_for_resolution(pane):
     assert not errors
 
 
+def test_codex_running_composer_steers_exact_turn(pane):
+    page, errors = pane
+    page.evaluate("""pane.provider='Codex'; controls.steer=async value=>calls.push(['steer',value]);
+      emit({method:'turn/started',params:{threadId:'exact',turn:{id:'running-1',status:'inProgress'}}});""")
+    page.get_by_role("button", name="Steer running turn").wait_for()
+    page.locator("#left textarea").fill("use the other file")
+    page.get_by_role("button", name="Steer running turn").click()
+    page.wait_for_function("calls.length === 1")
+    assert page.evaluate("calls[0]") == [
+        "steer",
+        {"text": "use the other file", "files": [], "expectedTurnId": "running-1"},
+    ]
+    assert not errors
+
+
 def test_claude_questions_send_selected_and_custom_answers(pane, tmp_path):
     page, errors = pane
     page.evaluate("""emit({id:'ask',method:'workspace/claudeApproval',params:{threadId:'exact',tool:'AskUserQuestion',input:{questions:[

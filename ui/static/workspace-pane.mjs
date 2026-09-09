@@ -136,12 +136,17 @@ export class WorkspacePane {
       if (this.modelSelect.value) options.model = this.modelSelect.value;
       if (this.effortSelect.value) options.effort = this.effortSelect.value;
       if (this.tierSelect.value) options.serviceTier = this.tierSelect.value === '__default' ? null : this.tierSelect.value;
-      await this.controls.submit({text, files, options});
+      if (this.canSteer()) await this.controls.steer({text, files, expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
+      else await this.controls.submit({text, files, options});
       if (this.input.value === text) this.input.value = '';
       this.files = this.files.filter(file => !files.includes(file));
       this.renderAttachments();
     } catch (error) { this.error(error); }
     finally { this.sending = false; if (!this.disposed) this.render(); }
+  }
+
+  canSteer() {
+    return this.provider === 'Codex' && this.conversation.status === 'running' && typeof this.controls.steer === 'function';
   }
 
   renderAttachments() {
@@ -367,7 +372,10 @@ export class WorkspacePane {
     }
     this.status.textContent = this.conversation.status;
     this.stop.hidden = this.conversation.status !== 'running';
-    this.send.disabled = this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
+    const steering = this.canSteer();
+    this.send.title = steering ? 'Steer running turn' : 'Send message';
+    this.send.setAttribute('aria-label', this.send.title);
+    this.send.disabled = this.sending || (!steering && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     if (this.conversation.error) this.error(this.conversation.error);
     this.renderQuestions(); this.refreshIcons();
     if (follow) this.log.scrollTop = this.log.scrollHeight;

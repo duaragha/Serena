@@ -2,6 +2,23 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex composer steering is now wired through the upload/receipt path. A running
+turn changes the send action to "Steer running turn". The browser captures the
+displayed turn ID before uploads, the host requires it, and the adapter rejects
+a changed turn before dispatch. It never falls back to starting a new turn.
+Claude streaming steering and explicit queue management remain separate gaps.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py -q
+# exit 0: 27 passed in 6.69s
+node --test tests/workspace-connection.test.mjs
+# exit 0: 5 passed, 0 failed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_exact_resume_and_real_turn_controls -q
+# exit 0: 1 passed in 0.04s after adding stale-turn rejection assertions
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-rpc.py
+# exit 0: installed initialization/models/ownership proof only; no model turn sent
+```
+
 ## Antigravity Protocol Finding (2026-09-09)
 
 Installed `agy --help` (exit 0) exposes stream-json input/output and exact

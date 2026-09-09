@@ -77,10 +77,8 @@ export class WorkspaceConnection {
     return result.result;
   }
 
-  controls() {
-    return {
-      models: () => this.command('models', {}),
-      submit: async ({text, files = [], options = {}}) => {
+  async sendMessage(action, {text, files = [], options = {}, expectedTurnId}) {
+        if (action === 'steer' && !expectedTurnId) throw Error('Running turn identity is unavailable');
         if (files.length > 16) throw Error('Attach up to 16 files per message');
         const inputs = text ? [{type: 'text', text}] : [];
         for (const file of files) {
@@ -96,8 +94,14 @@ export class WorkspaceConnection {
           }
           inputs.push({type: 'upload', token: this.uploads[key]});
         }
-        return this.command('submit', {inputs, ...(Object.keys(options).length ? {options} : {})});
-      },
+        return this.command(action, {inputs, ...(action === 'steer' ? {expectedTurnId} : {}), ...(action === 'submit' && Object.keys(options).length ? {options} : {})});
+  }
+
+  controls() {
+    return {
+      models: () => this.command('models', {}),
+      submit: message => this.sendMessage('submit', message),
+      steer: message => this.sendMessage('steer', message),
       interrupt: () => this.command('interrupt', {}),
       answer: (request_id, answer) => this.command('answer', {request_id, answer}),
     };

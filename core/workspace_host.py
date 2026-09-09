@@ -163,14 +163,18 @@ class WorkspaceHost:
                     inputs = await asyncio.to_thread(mapper, sid, payload["inputs"])
                     result = await owner.submit(inputs, options=payload.get("options"))
                 elif action == "steer":
-                    if set(payload) != {"inputs"}:
-                        raise ValueError("Steering requires inputs only")
+                    if (
+                        set(payload) != {"inputs", "expectedTurnId"}
+                        or not isinstance(payload["expectedTurnId"], str)
+                        or not payload["expectedTurnId"]
+                    ):
+                        raise ValueError("Steering requires inputs and the expected running turn")
                     if provider != "codex":
                         raise ValueError("Provider input mapping is not implemented")
                     inputs = await asyncio.to_thread(
                         self.uploads.codex_inputs, sid, payload["inputs"]
                     )
-                    result = await owner.steer(inputs)
+                    result = await owner.steer(inputs, expected_turn_id=payload["expectedTurnId"])
                 elif action == "interrupt":
                     if payload:
                         raise ValueError("Interrupt takes no payload")
