@@ -72,6 +72,32 @@ class Rpc:
         self.closed = True
 
 
+def test_skill_steering_preserves_turn_and_rechecks_after_discovery(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        client.state, client.active_turn = "running", "original"
+        async def skills():
+            return {"data": [{"name": "proof", "path": "/skill", "unavailableReason": ""}]}
+        client.list_commands = skills
+        try:
+            await client.steer([{"type": "text", "text": ""}], expected_turn_id="original", skills=["/skill"])
+            request = [params for method, params in rpc.calls if method == "turn/steer"][-1]
+            assert request["expectedTurnId"] == "original"
+            assert request["input"][-1] == {"type": "skill", "name": "proof", "path": "/skill"}
+            async def raced():
+                client.active_turn = "replacement"
+                return await skills()
+            client.list_commands = raced
+            with pytest.raises(WorkspaceRpcError, match="turn changed"):
+                await client.steer([{"type": "text", "text": ""}], expected_turn_id="original", skills=["/skill"])
+            assert len([m for m, _ in rpc.calls if m == "turn/steer"]) == 1
+            assert not any(m == "turn/start" for m, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_selected_skills_are_revalidated_and_sent_as_native_skill_inputs(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

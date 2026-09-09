@@ -253,6 +253,18 @@ class CodexWorkspace:
         if tier is not None and tier not in {t.get("id") for t in model.get("serviceTiers", [])}:
             raise ValueError("Selected speed tier is not supported by this model")
 
+    async def _skill_inputs(self, skills):
+        if not isinstance(skills, list):
+            raise ValueError("Selected skills must be a list")
+        if not skills:
+            return []
+        if len(skills) > 20 or any(not isinstance(path, str) for path in skills) or len(set(skills)) != len(skills):
+            raise ValueError("Select distinct skills from the current project")
+        catalog = {item["path"]: item for item in (await self.list_commands())["data"] if not item["unavailableReason"]}
+        if any(path not in catalog for path in skills):
+            raise ValueError("Selected skill is no longer enabled in this project")
+        return [{"type": "skill", "name": catalog[path]["name"], "path": path} for path in skills]
+
     async def submit(self, inputs: list[dict], *, options: dict | None = None) -> dict:
         async with self._control_lock:
             if self.state != "ready":
@@ -260,17 +272,7 @@ class CodexWorkspace:
             if not inputs:
                 raise ValueError("A message or attachment is required")
             params = deepcopy(options or {})
-            skills = params.pop("skills", [])
-            selected = []
-            if not isinstance(skills, list):
-                raise ValueError("Selected skills must be a list")
-            if skills:
-                if not isinstance(skills, list) or len(skills) > 20 or any(not isinstance(path, str) for path in skills) or len(set(skills)) != len(skills):
-                    raise ValueError("Select distinct skills from the current project")
-                catalog = {item["path"]: item for item in (await self.list_commands())["data"] if not item["unavailableReason"]}
-                if any(path not in catalog for path in skills):
-                    raise ValueError("Selected skill is no longer enabled in this project")
-                selected = [{"type": "skill", "name": catalog[path]["name"], "path": path} for path in skills]
+            selected = await self._skill_inputs(params.pop("skills", []))
             allowed = {
                 "model",
                 "effort",
@@ -314,17 +316,21 @@ class CodexWorkspace:
                     self.state = "uncertain"
                 raise
 
-    async def steer(self, inputs: list[dict], *, expected_turn_id: str | None = None) -> Any:
+    async def steer(self, inputs: list[dict], *, expected_turn_id: str | None = None, skills=None) -> Any:
+        turn_id = self.active_turn
         if not self.active_turn or self.state != "running":
             raise WorkspaceRpcError("No running turn to steer")
         if expected_turn_id is not None and expected_turn_id != self.active_turn:
+            raise WorkspaceRpcError("The running turn changed; steering was not sent")
+        selected = await self._skill_inputs([] if skills is None else skills)
+        if self.active_turn != turn_id or self.state != "running":
             raise WorkspaceRpcError("The running turn changed; steering was not sent")
         return await self.rpc.request(
             "turn/steer",
             {
                 "threadId": self.session_id,
                 "expectedTurnId": self.active_turn,
-                "input": deepcopy(inputs),
+                "input": deepcopy(inputs) + selected,
             },
         )
 

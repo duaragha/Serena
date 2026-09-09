@@ -94,6 +94,20 @@ test('background controls use exact process ID and disposal sends no stop',async
   ]);
 });
 
+test('skill-only sends and steering keep native selections and the expected turn',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body));return response({ok:true,result:{}});
+  }});
+  await conn.controls().submit({text:'',options:{skills:['/skill']}});
+  await conn.controls().steer({text:'',options:{skills:['/skill']},expectedTurnId:'working'});
+  assert.deepEqual(calls.map(({action,payload})=>({action,payload})),[
+    {action:'submit',payload:{inputs:[{type:'text',text:''}],options:{skills:['/skill']}}},
+    {action:'steer',payload:{inputs:[{type:'text',text:''}],skills:['/skill'],expectedTurnId:'working'}},
+  ]);
+  conn.dispose();
+});
+
 test('MCP controls target only the selected session and never run on disposal',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'claude-exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

@@ -385,7 +385,8 @@ class WorkspaceHost:
                     result = await owner.submit(inputs, options=payload.get("options"))
                 elif action == "steer":
                     if (
-                        set(payload) != {"inputs", "expectedTurnId"}
+                        set(payload) - {"inputs", "expectedTurnId", "skills"}
+                        or not {"inputs", "expectedTurnId"} <= payload.keys()
                         or not isinstance(payload["expectedTurnId"], str)
                         or not payload["expectedTurnId"]
                     ):
@@ -395,7 +396,10 @@ class WorkspaceHost:
                     inputs = await asyncio.to_thread(
                         self.uploads.codex_inputs, sid, payload["inputs"]
                     )
-                    result = await owner.steer(inputs, expected_turn_id=payload["expectedTurnId"])
+                    kwargs = {"expected_turn_id": payload["expectedTurnId"]}
+                    if "skills" in payload:
+                        kwargs["skills"] = payload["skills"]
+                    result = await owner.steer(inputs, **kwargs)
                 elif action == "interrupt":
                     if payload:
                         raise ValueError("Interrupt takes no payload")

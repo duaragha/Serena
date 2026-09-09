@@ -369,7 +369,6 @@ export class WorkspacePane {
       // Uploads and text are submitted through one session-owner operation.
       const options = {};
       if(skills.length){
-        if(this.canSteer())throw Error('Send selected skills after the current turn finishes');
         options.skills=skills.map(s=>s.path);
       }
       if (this.modelSelect.value) options.model = this.modelSelect.value;
@@ -379,7 +378,7 @@ export class WorkspacePane {
         if (files.length || skills.length || !this.controls.compact) throw Error('Compaction does not accept attachments or skills');
         await this.controls.compact();
       }
-      else if (this.canSteer()) await this.controls.steer({text, files, expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
+      else if (this.canSteer()) await this.controls.steer({text, files, ...(skills.length?{options:{skills:options.skills}}:{}), expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else await this.controls.submit({text, files, options});
       if (this.input.value === text) { this.input.value = ''; this.persistDraft(); }
       this.files = this.files.filter(file => !files.includes(file));

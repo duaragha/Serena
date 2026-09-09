@@ -2,13 +2,36 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Skill inputs now also work for Codex steering. The adapter validates selections,
+then rechecks the active turn after discovery before sending native turn/steer;
+there is no turn/start fallback. The browser/host carry skills separately from
+model settings, and plain-text steering retains its previous payload shape.
+Fixed a skill-only send defect: the connection previously sent an empty inputs
+list, rejected by upload validation, despite the pane fixture passing. It now
+sends an empty text part alongside the native skill selection. Transport and
+host routing tests cover this path rather than only a mocked pane callback.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_pane.py::test_codex_running_composer_steers_exact_turn tests/test_workspace_codex.py -q --basetemp=/tmp/serena-skill-steer-final
+# exit 0: 34 passed in 3.51s
+node --test tests/workspace-connection.test.mjs
+# exit 0: 9 passed, 0 failed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --skills
+# exit 0: real skill-only turn plus native skill steering on the original active
+# turn, marker response, exactly one completion, owned processes reaped
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed!
+```
+
+Initial combined tests exited 1 (62 passed): plain steering unnecessarily added
+an empty options object. It now omits options when there are no selected skills.
+
 Codex skills are now selectable through native skills/list for the exact project.
 The picker shows the skill path, keeps selected skills with the draft, and never
 auto-sends. Submission re-reads the native catalog, rejects stale/disabled/foreign
 paths, and sends typed skill inputs with exact name/path on the existing thread.
 Selections survive view recreation and failed sends; successful sends clear only
-the submitted selections. Skill-bearing steering is still unavailable and reports
-that constraint without dropping the draft. Skill configuration editing and the
+the submitted selections. Skill-bearing steering is covered above. Skill configuration editing and the
 remaining Codex CLI commands are not implemented by this picker.
 Source: https://learn.chatgpt.com/docs/app-server (accessed 2026-09-09), installed
 SkillsListParams/Response and native user-input schemas.

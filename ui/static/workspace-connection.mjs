@@ -81,7 +81,7 @@ export class WorkspaceConnection {
   async sendMessage(action, {text, files = [], options = {}, expectedTurnId}) {
         if (action === 'steer' && !expectedTurnId) throw Error('Running turn identity is unavailable');
         if (files.length > 16) throw Error('Attach up to 16 files per message');
-        const inputs = text ? [{type: 'text', text}] : [];
+        const inputs = text || options.skills?.length ? [{type: 'text', text: text || ''}] : [];
         for (const file of files) {
           if (!file.size || file.size > 25 * 1024 * 1024) throw Error('Attach non-empty files no larger than 25 MB');
           const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
@@ -95,7 +95,7 @@ export class WorkspaceConnection {
           }
           inputs.push({type: 'upload', token: this.uploads[key]});
         }
-        return this.command(action, {inputs, ...(action === 'steer' ? {expectedTurnId} : {}), ...(action === 'submit' && Object.keys(options).length ? {options} : {})});
+        return this.command(action, {inputs, ...(action === 'steer' ? {expectedTurnId, ...(options.skills?.length ? {skills:options.skills} : {})} : {}), ...(action === 'submit' && Object.keys(options).length ? {options} : {})});
   }
 
   controls() {

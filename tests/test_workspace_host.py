@@ -64,6 +64,20 @@ def host(tmp_path):
     value.shutdown()
 
 
+def test_host_routes_skill_steering_to_exact_existing_owner(host):
+    host.attach("exact")
+    owner = Owner.instances[-1]
+    received = []
+    async def steer(inputs, *, expected_turn_id, skills):
+        received.append((inputs, expected_turn_id, skills))
+        return {"turnId": expected_turn_id}
+    owner.steer = steer
+    result = host.command("exact", "skill-steer", "steer", {"inputs": [{"type": "text", "text": ""}], "expectedTurnId": "active", "skills": ["/skill"]})
+    assert result["ok"]
+    assert received == [([{"type": "text", "text": ""}], "active", ["/skill"])]
+    assert not owner.sent
+
+
 def test_codex_mcp_discovery_uses_attached_owner_without_claude_mutations(host):
     host.attach("exact")
     owner = Owner.instances[-1]

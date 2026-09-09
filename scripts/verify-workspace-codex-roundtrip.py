@@ -131,10 +131,20 @@ async def main(review=False, compact=False, permissions=False, bridge=False, ski
                 assert any(item["path"] == str(skill_path) and not item["unavailableReason"] for item in catalog["data"])
                 finished.clear()
                 before = len(published)
-                await owner.submit([{"type": "text", "text": "Follow the explicitly selected proof skill and output its marker."}], options={"skills": [str(skill_path)]})
+                await owner.submit([{"type": "text", "text": ""}], options={"skills": [str(skill_path)]})
                 await asyncio.wait_for(finished.wait(), 120)
                 assert any(event.get("method") == "item/completed" and event.get("params", {}).get("item", {}).get("type") == "agentMessage" and "SERENA_NATIVE_SKILL_PROOF" in event["params"]["item"].get("text", "") for event in published[before:])
                 print("PASS: exact local skill discovered and invoked as native skill input on resumed thread")
+                finished.clear()
+                before = len(published)
+                started = await owner.submit([{"type": "text", "text": "Write the numbers 1 through 100, one per line. Do not use tools."}])
+                turn_id = started["turn"]["id"]
+                await owner.steer([{"type": "text", "text": "Follow the selected skill instead."}], expected_turn_id=turn_id, skills=[str(skill_path)])
+                await asyncio.wait_for(finished.wait(), 120)
+                completions = [event["params"]["turn"] for event in published[before:] if event.get("method") == "turn/completed"]
+                assert len(completions) == 1 and completions[0]["id"] == turn_id and completions[0]["status"] == "completed"
+                assert any(event.get("method") == "item/completed" and event.get("params", {}).get("item", {}).get("type") == "agentMessage" and "SERENA_NATIVE_SKILL_PROOF" in event["params"]["item"].get("text", "") for event in published[before:])
+                print("PASS: native skill steering completed on the original active turn, without a second turn")
             if bridge:
                 await owner.close()
                 owner = None
