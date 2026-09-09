@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,7 @@ class Rpc:
         self.closed = False
         self.race = False
         self.timeout = False
+        self.process = SimpleNamespace(pid=12345)
 
     async def start(self, command, **kwargs):
         self.command, self.options = command, kwargs
@@ -58,7 +60,10 @@ async def make(tmp_path):
         events.append(event)
 
     rpc = Rpc()
-    client = CodexWorkspace(session_id=rpc.sid, cwd=tmp_path, publish=publish, rpc=rpc)
+    lease = SimpleNamespace(launching=lambda: None, bind=lambda pid: None, release=lambda: None)
+    client = CodexWorkspace(
+        session_id=rpc.sid, cwd=tmp_path, publish=publish, rpc=rpc, lease_factory=lambda sid: lease
+    )
     return client, rpc, events
 
 

@@ -74,7 +74,8 @@ use, so queued events do not accumulate without a bound in a resident host.
 `core/workspace_codex.py` now implements exact-ID resume, submit, steer,
 interrupt, approval/question responses and provider event publication. It keeps
 ambiguous submissions unavailable for retry instead of starting duplicate turns.
-Session ownership must be integrated before this adapter is exposed to routes.
+Session ownership is now enforced with the shared lease described below;
+the adapter is still not exposed to app routes.
 It is not a complete command surface yet: advanced permission grants, MCP
 elicitation, commands/plugins/settings controls and recovery remain to implement.
 
@@ -101,6 +102,35 @@ tests, not evidence of live Claude/Codex sessions in the custom interface. The
 component still needs richer Markdown, attachment previews, command/settings
 controls, pending-request schemas, full history paging and runtime integration.
 
-Next: single-owner admission integrated with existing PTYs, connect adapters to
-the journal and pane, implement Claude/Antigravity control and the remaining
-capability matrix, then prove full provider parity and migrate the real app.
+`core/workspace_lease.py` now provides machine-local OS file locks and atomically
+persisted owner/child identities. Both `CodexWorkspace.open` and PTY spawn/register/
+migrate acquire the same per-session lease. Child identity includes process birth
+time to avoid PID-reuse mistakes. A live orphan or an ambiguous interrupted launch
+blocks admission instead of authorizing a duplicate writer. Lease files are not
+unlinked; replacing a locked inode would defeat cross-process exclusion.
+
+The lease contract only covers participating runtimes. Older hosts and manually
+launched CLI sessions do not hold it. The route admission gate must still inspect
+existing runtime registrations, and rollout must not migrate a busy unleased
+session by launching another process. Windows locking is implemented but has not
+been executed on Windows. Ambiguous-launch recovery needs an explicit, verified
+recovery path, not blanket removal of lock metadata.
+
+Verification: 49 scoped lease/controller/PTY/sleep/retry tests pass, including real process
+exclusion and pseudo-to-durable migration with an unchanged child PID. Missing
+POSIX executables are rejected before the launch marker, leaving the session retryable. The live
+installed-Codex probe rejects a second owner, handshakes without a thread/turn,
+then reaps the child and reacquires the lease (exit 0).
+
+Exact ownership verification (2026-09-09):
+
+```sh
+env SERENA_RUNTIME_LEASE_DIR=/tmp/serena-structured-lease-verification /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_lease.py tests/test_workspace_codex.py tests/test_pty_terminal_runtime.py tests/test_terminal_spawn_retry.py tests/test_terminal_sleep.py -q
+# exit 0: 49 passed in 11.31s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-rpc.py
+# exit 0: second owner rejected, initialize/initialized successful, child reaped with exit 0
+```
+
+Next: connect adapters to the journal and pane through the host, implement Claude/
+Antigravity control and the remaining capability matrix, then prove full provider
+parity and migrate the real app. The replacement remains disabled and incomplete.

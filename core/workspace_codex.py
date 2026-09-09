@@ -1,6 +1,6 @@
 """Codex rich-client control, separate from the restricted resident brain.
 
-The caller must hold the session ownership lease before opening this adapter.
+This adapter holds a session lease shared with the PTY registry.
 This module has no UI/socket-disconnect lifecycle and never falls back to a new
 thread when resumption fails. Raw protocol events are retained for the renderer.
 """
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from core.billing import strip_metered_auth_env
+from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc, WorkspaceRpcError
 
 
@@ -28,6 +29,7 @@ class CodexWorkspace:
         cwd: Path,
         publish: Callable[[dict], Awaitable[None]],
         rpc: WorkspaceRpc | None = None,
+        lease_factory: Callable[[str], SessionLease] = SessionLease,
     ) -> None:
         if not session_id or not cwd.is_dir():
             raise ValueError("A persisted session ID and existing project directory are required")
@@ -35,6 +37,8 @@ class CodexWorkspace:
         self.cwd = cwd.resolve()
         self.rpc = rpc or WorkspaceRpc()
         self.publish = publish
+        self._lease_factory = lease_factory
+        self._lease: SessionLease | None = None
         self.thread: dict | None = None
         self.active_turn: str | None = None
         self.state = "closed"
@@ -54,11 +58,14 @@ class CodexWorkspace:
             self.state = "opening"
             self._history_ready.clear()
             try:
+                self._lease = self._lease_factory(self.session_id)
+                self._lease.launching()
                 await self.rpc.start(
                     [executable, "app-server", "--stdio"],
                     cwd=self.cwd,
                     env=strip_metered_auth_env(dict(os.environ if env is None else env)),
                 )
+                self._lease.bind(self.rpc.process.pid)
                 await self.rpc.request(
                     "initialize",
                     {
@@ -227,7 +234,12 @@ class CodexWorkspace:
             self._events_task.cancel()
             await asyncio.gather(self._events_task, return_exceptions=True)
             self._events_task = None
-        await self.rpc.close()
+        try:
+            await self.rpc.close()
+        finally:
+            if self._lease:
+                self._lease.release()
+                self._lease = None
         self.state = "closed"
         self.active_turn = None
         self.thread = None
