@@ -15,6 +15,38 @@ function fixture() {
   return {channel,messages,calls,get options(){return options;}};
 }
 
+test('clear handoff has explicit private methods with exact payloads',async()=>{
+  const f=fixture();
+  await f.channel.receive({id:1,method:'begin_clear',params:{}});
+  assert.match(f.messages.at(-1).error.message,/open session/);
+  assert.deepEqual(f.calls,[]);
+  await f.channel.receive({id:2,method:'open'});
+  const target='11111111-2222-4333-8444-555555555555';
+  f.channel.session.beginClear=async()=>{f.calls.push('clear');return {sessionId:target};};
+  f.channel.session.commitClear=async sid=>{assert.equal(sid,target);f.calls.push('commit');return {sessionId:sid};};
+  await f.channel.receive({id:3,method:'begin_clear',params:{unexpected:true}});
+  assert.ok(f.messages.at(-1).error);
+  await f.channel.receive({id:4,method:'begin_clear',params:{}});
+  assert.deepEqual(f.messages.at(-1).result,{sessionId:target});
+  await f.channel.receive({id:5,method:'commit_clear',params:{sessionId:target,unexpected:true}});
+  assert.ok(f.messages.at(-1).error);
+  await f.channel.receive({id:6,method:'commit_clear',params:{sessionId:target}});
+  assert.deepEqual(f.calls,['create','clear','commit']);
+});
+
+test('pending permission prevents native clear dispatch',async()=>{
+  const f=fixture();
+  await f.channel.receive({id:1,method:'open'});
+  f.channel.session.beginClear=async()=>assert.fail('must not clear');
+  const question=f.channel.ask('canUseTool',{toolName:'Bash'});
+  const rejected=assert.rejects(question,/owner closed/);
+  await new Promise(done=>setImmediate(done));
+  await f.channel.receive({id:2,method:'begin_clear',params:{}});
+  assert.match(f.messages.at(-1).error.message,/pending approvals/);
+  await f.channel.close();
+  await rejected;
+});
+
 test('no automatic open; native events and explicit session controls share channel',async()=>{
   const f=fixture();
   assert.deepEqual(f.calls,[]);

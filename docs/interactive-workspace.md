@@ -2,6 +2,22 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Private clear transport boundary (2026-09-09): the JSONL worker now exposes
+explicit begin_clear/commit_clear requests, not generic renderer controls.
+Python freezes input before beginning and installs the new identity before the
+worker publishes buffered target events. Only an exact successful acknowledgement
+unfreezes input. Duplicate commits, unexpected interactions, cancellation,
+timeouts and malformed identities cannot replay clear or reopen input.
+The host/owner/client/catalog handoff is still unimplemented; these private
+methods are not exposed in the pane. No installed app or shared checkout changed.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_transport.py -q`: exit 0, 16 passed.
+- `node --test tests/workspace-claude-sdk.test.mjs tests/workspace-claude-channel.test.mjs`: exit 0, 25 passed.
+- `SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0. Real Python transport, JSONL worker and native Claude completed clear and subsequent local command on the same PID, preserved original history, and reaped the child. Zero model turns/cost; isolated home, no user credentials.
+- Scoped Ruff initially exited 1 for proof-script import ordering; corrected before final verification.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_transport.py tests/test_workspace_claude_transport.py scripts/verify-workspace-claude-clear-transport.py`: final exit 0, all checks passed. `git diff --check`: exit 0.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_transport.py tests/test_workspace_claude.py -q`: exit 0, 48 passed including owner regressions.
+
 Paused native clear boundary (2026-09-09): ClaudeSdkSession now has internal
 beginClear/commitClear methods. Begin refuses queued or unfinished input, submits
 one UUID-tagged /clear, buffers transition output and validates the matching

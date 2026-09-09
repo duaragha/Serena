@@ -7,6 +7,7 @@ import contextlib
 import os
 import sys
 from pathlib import Path
+from uuid import UUID
 
 import psutil
 
@@ -30,6 +31,9 @@ class ClaudeSdkTransport:
         self.failure = None
         self.closing = False
         self.process_ready = asyncio.Event()
+        self.transition_pending = False
+        self.transition_target = None
+        self.transition_committing = False
 
     async def open(self, *, env=None):
         if self.started or self.closing:
@@ -85,6 +89,8 @@ class ClaudeSdkTransport:
                     self.owned_pid = pid
                     self.process_ready.set()
                 elif method in {"claude/canUseTool", "claude/elicitation"}:
+                    if self.transition_pending:
+                        raise WorkspaceRpcError("Unexpected interaction during session handoff")
                     request_id = event["id"]
                     if request_id in self.questions:
                         raise WorkspaceRpcError("Duplicate interactive request")
@@ -121,8 +127,54 @@ class ClaudeSdkTransport:
             await self.publish({"type": "transport_error", "error": str(error)})
 
     def _ready(self):
-        if self.failure or self.closing or self.owned_pid is None:
+        if self.failure or self.closing or self.owned_pid is None or self.transition_pending:
             raise WorkspaceRpcError(str(self.failure or "Claude transport is not ready"))
+
+    async def begin_clear(self):
+        self._ready()
+        if self.questions:
+            raise WorkspaceRpcError("Resolve pending interactions before clearing")
+        self.transition_pending = True
+        try:
+            result = await self.rpc.request("begin_clear", {})
+            sid = result.get("sessionId") if isinstance(result, dict) else None
+            if not isinstance(sid, str) or str(UUID(sid)) != sid or sid == self.session_id:
+                raise WorkspaceRpcError("Native clear returned an invalid session identity")
+            self.transition_target = sid
+            if self.failure or self.closing:
+                raise WorkspaceRpcError("Transport closed during clear")
+            return {"sessionId": sid}
+        except asyncio.CancelledError:
+            self.failure = WorkspaceRpcError("Clear outcome is unconfirmed after cancellation")
+            raise
+        except Exception as error:
+            self.failure = WorkspaceRpcError(f"Clear outcome is unconfirmed: {error}")
+            raise self.failure from error
+
+    async def commit_clear(self, session_id):
+        if (self.failure or self.closing or self.transition_committing or not self.transition_pending
+                or self.transition_target is None or session_id != self.transition_target):
+            raise WorkspaceRpcError("Exact pending session handoff is required")
+        # The worker emits buffered new-session events before its acknowledgement.
+        # Install their identity first, but keep all input blocked until the ack.
+        self.session_id = session_id
+        self.transition_committing = True
+        try:
+            result = await self.rpc.request("commit_clear", {"sessionId": session_id})
+            if not isinstance(result, dict) or result.get("sessionId") != session_id:
+                raise WorkspaceRpcError("Native session handoff was not confirmed")
+            if self.failure or self.closing:
+                raise self.failure or WorkspaceRpcError("Transport closed during handoff")
+            self.transition_pending = False
+            self.transition_target = None
+            self.transition_committing = False
+            return result
+        except asyncio.CancelledError:
+            self.failure = WorkspaceRpcError("Session handoff is unconfirmed after cancellation")
+            raise
+        except Exception as error:
+            self.failure = WorkspaceRpcError(f"Session handoff is unconfirmed: {error}")
+            raise self.failure from error
 
     async def send(self, message):
         self._ready()

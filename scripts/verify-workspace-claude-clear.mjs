@@ -8,7 +8,7 @@ import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
-const [sdkPath,cliPath]=process.argv.slice(2);
+const [sdkPath,cliPath,pythonPath]=process.argv.slice(2);
 assert(sdkPath && cliPath);
 const root=await mkdtemp(join(tmpdir(),'serena-clear-proof-'));
 const path=process.env.PATH;
@@ -80,6 +80,13 @@ try{
   await driver.close();await exits[2];
   assert.deepEqual(await sdk.getSessionMessages(original,{dir:root}),before);
   console.log('PASS: production SDK driver paused at the new identity until exact acknowledgement; same native process accepted subsequent input; original history preserved');
+  if(pythonPath){
+    const proof=spawn(resolve(pythonPath),[resolve('scripts/verify-workspace-claude-clear-transport.py'),resolve(sdkPath),resolve(cliPath),process.execPath,root,original],
+      {env:process.env,stdio:'inherit'});
+    const code=await new Promise((done,reject)=>{proof.once('exit',done);proof.once('error',reject);});
+    assert.equal(code,0,'Real worker transport clear proof failed');
+    assert.deepEqual(await sdk.getSessionMessages(original,{dir:root}),before);
+  }
   console.log('PASS: native clear identity/persistence observed with zero inference and isolated home; no user session touched');
 }finally{
   stopped=true;wake?.();seed?.close();stream?.close();

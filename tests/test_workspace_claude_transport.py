@@ -6,6 +6,107 @@ import pytest
 from core.workspace_claude_transport import ClaudeSdkTransport
 from core.workspace_rpc import WorkspaceRpcError
 
+TARGET = "11111111-2222-4333-8444-555555555555"
+
+
+def test_clear_blocks_input_until_exact_handoff_ack(monkeypatch, tmp_path):
+    async def run():
+        transport, output = make(monkeypatch, tmp_path)
+        await transport.open()
+        original = transport.rpc.request
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def request(method, params, **kwargs):
+            if method == "begin_clear":
+                return {"sessionId": TARGET}
+            if method == "commit_clear":
+                assert params == {"sessionId": TARGET}
+                await transport.rpc.events.put({"method": "claude/message", "params": {
+                    "message": {"type": "system", "session_id": TARGET}}})
+                entered.set()
+                await release.wait()
+                return {"sessionId": TARGET}
+            return await original(method, params, **kwargs)
+
+        transport.rpc.request = request
+        assert await transport.begin_clear() == {"sessionId": TARGET}
+        assert transport.session_id == "exact"
+        with pytest.raises(WorkspaceRpcError):
+            await transport.commit_clear("wrong")
+        with pytest.raises(WorkspaceRpcError):
+            await transport.begin_clear()
+        task = asyncio.create_task(transport.commit_clear(TARGET))
+        await entered.wait()
+        await asyncio.sleep(0)
+        assert output == [{"type": "system", "session_id": TARGET}]
+        for call in (transport.send({"session_id": TARGET}),
+                     transport.control("supportedAgents"), transport.commit_clear(TARGET)):
+            with pytest.raises(WorkspaceRpcError):
+                await call
+        release.set()
+        await task
+        await transport.send({"session_id": TARGET})
+        with pytest.raises(WorkspaceRpcError):
+            await transport.send({"session_id": "exact"})
+        assert transport.owned_pid == 22
+        await transport.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("phase", ["begin_clear", "commit_clear"])
+@pytest.mark.parametrize("failure", ["cancel", "timeout", "identity"])
+def test_unconfirmed_clear_never_retries_or_unblocks(monkeypatch, tmp_path, phase, failure):
+    async def run():
+        transport, _ = make(monkeypatch, tmp_path)
+        await transport.open()
+        calls = []
+
+        async def request(method, params, **kwargs):
+            calls.append(method)
+            if method == phase:
+                if failure == "cancel":
+                    raise asyncio.CancelledError()
+                if failure == "timeout":
+                    raise TimeoutError("lost acknowledgement")
+                return {"sessionId": "invalid"}
+            return {"sessionId": TARGET}
+
+        transport.rpc.request = request
+        if phase == "commit_clear":
+            await transport.begin_clear()
+        with pytest.raises(asyncio.CancelledError if failure == "cancel" else WorkspaceRpcError):
+            await (transport.begin_clear() if phase == "begin_clear" else transport.commit_clear(TARGET))
+        before = list(calls)
+        for call in (transport.begin_clear(), transport.commit_clear(TARGET),
+                     transport.send({"session_id": transport.session_id})):
+            with pytest.raises(WorkspaceRpcError):
+                await call
+        assert calls == before
+        assert transport.failure and transport.transition_pending
+        await transport.close()
+    asyncio.run(run())
+
+
+def test_clear_refuses_pending_and_unexpected_interactions(monkeypatch, tmp_path):
+    async def run():
+        transport, output = make(monkeypatch, tmp_path)
+        await transport.open()
+        transport.questions["q"] = asyncio.create_task(asyncio.sleep(60))
+        with pytest.raises(WorkspaceRpcError, match="pending interactions"):
+            await transport.begin_clear()
+        assert not transport.transition_pending
+        task = transport.questions.pop("q")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        transport.transition_pending = True
+        await transport.rpc.events.put({"id": "new", "method": "claude/elicitation", "params": {}})
+        await transport.reader
+        assert "during session handoff" in str(transport.failure)
+        assert not transport.questions and not transport.rpc.answers
+        assert output[-1]["type"] == "transport_error"
+        await transport.close()
+    asyncio.run(run())
+
 
 class FakeRpc:
     def __init__(self):

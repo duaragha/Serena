@@ -53,6 +53,14 @@ export class ClaudeSdkChannel {
           if (!Array.isArray(params.args)) throw new Error('Control arguments must be an array');
           result=await this.session.control(params.method,...params.args);
           break;
+        case 'begin_clear':
+          if(!this.session || Object.keys(params).length || this.pending.size)throw new Error('Clear requires an open session without pending approvals');
+          result=await this.session.beginClear();
+          break;
+        case 'commit_clear':
+          if(!this.session || Object.keys(params).length!==1 || typeof params.sessionId!=='string')throw new Error('Exact pending session identity required');
+          result=await this.session.commitClear(params.sessionId);
+          break;
         case 'close':
           await this.close();
           result={closed:true};
