@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex MCP enablement (2026-09-09): the connections dialog now has an explicit
+persistent user-setting checkbox backed by native config/value/write. The
+server name must exist in current effective configuration; a uniquely identified
+base user layer, absolute file path and expected version are required. Native
+quoted key paths preserve dots/quotes in names. No arbitrary file/key reaches
+the client API. Busy sessions, ambiguous layers and stale versions fail before
+an unsafe write. Reload and a fresh effective read follow confirmed writes;
+overrides are reported rather than pretending the requested state took effect.
+Missing runtime status remains unknown, independently of configured enablement.
+Only name/boolean/write-availability metadata is exposed, not config secrets.
+Read-only dialog opening and closing a view do not mutate settings or owners.
+Native evidence: official https://learn.chatgpt.com/docs/app-server and
+https://learn.chatgpt.com/docs/extend/mcp, accessed 2026-09-09; installed
+ConfigReadParams, ConfigValueWriteParams and ConfigWriteResponse schemas.
+Isolated native probes confirmed config layer versions and quoted-name writes,
+both exit 0. This implements base user settings, not a profile/project editor.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py::test_codex_mcp_setting_requires_exact_payload_and_reuses_receipt tests/test_workspace_pane.py::test_codex_mcp_setting_waits_for_effective_confirmation tests/test_workspace_pane.py::test_codex_mcp_inventory_shows_unknown_state_without_unsupported_mutations -q`: exit 0, 38 passed in 3.52s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py::test_codex_mcp_setting_waits_for_effective_confirmation tests/test_workspace_pane.py::test_codex_mcp_login_and_reload_are_explicit_and_wait_for_native_completion tests/test_workspace_pane.py::test_codex_mcp_inventory_shows_unknown_state_without_unsupported_mutations tests/test_workspace_pane.py::test_mcp_connections_explicit_controls_and_failure_state -q`: exit 0, 75 passed in 12.95s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q`: final exit 0, 39 passed in 0.35s after adding ambiguous-layer and changed-session rejection coverage.
+- `node --test tests/workspace-connection.test.mjs`: exit 0, 20 passed including exact session and stable request identity after response loss.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-mcp.py`: exit 0, repeated after final runtime adjustment also exit 0. Native OAuth/reload and explicit disable/re-enable on desktop/mobile; unrelated config unchanged, same owner retained, no user auth/settings or inference used.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-codex-mcp.py`: exit 0, all checks passed.
+Inspected apps/desktop/build/workspace-proof/codex-mcp-settings-mobile.png.
+This source-only slice is not packaged, installed or released.
+
 Claude history conversion (2026-09-09): replaced repeated scans of the current
 turn's item list with a per-turn ID index. Tool/result updates retain original
 order, and the index resets between turns. This removes quadratic lookup work;

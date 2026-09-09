@@ -144,6 +144,7 @@ export class WorkspaceConnection {
       mcpServers: () => this.command('mcp_servers', {}),
       mcpLogin: name => this.command('mcp_login', {name}),
       mcpReload: () => this.command('mcp_reload', {}),
+      setMcpEnabled: (name, enabled) => this.command('set_mcp_enabled', {name, enabled}),
       mcpServerControl: (name, action) => this.command('mcp_server_control', {name, action}),
       cancelQueuedBridge: request_id => this.command('cancel_queued_bridge', {request_id}),
       editQueuedBridge: (request_id, prompt, expected_prompt) => this.command('edit_queued_bridge', {request_id, prompt, expected_prompt}),

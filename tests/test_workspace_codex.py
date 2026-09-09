@@ -16,6 +16,8 @@ def test_mcp_login_exact_server_pending_guard_and_native_completion(tmp_path, ur
         calls = []
         async def request(method, params):
             calls.append((method, params))
+            if method == "config/read":
+                return {"config": {}}
             if method == "mcpServerStatus/list":
                 return {"data": [{"name": "local", "tools": {}, "authStatus": "notLoggedIn"}]}
             if method == "mcpServer/oauth/login":
@@ -406,6 +408,8 @@ def test_mcp_inventory_paginates_exact_thread_without_inventing_connection_statu
         await client.open(binary="codex")
         calls = []
         async def request(method, params):
+            if method == "config/read":
+                return {"config": {}}
             calls.append((method, params))
             if not params.get("cursor"):
                 return {"data": [{"name": "first", "tools": {"tool": {}}, "authStatus": "oAuth", "runtimeStatus": None}], "nextCursor": "next"}
@@ -423,6 +427,101 @@ def test_mcp_inventory_paginates_exact_thread_without_inventing_connection_statu
             rpc.request = stuck
             with pytest.raises(WorkspaceRpcError, match="pagination"):
                 await client.list_mcp_servers()
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("overridden", [False, True])
+def test_mcp_setting_uses_native_versioned_write_and_effective_state(tmp_path, overridden):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        name, enabled, calls = 'proof.dot"quoted', True, []
+        config_path = str(tmp_path / "config.toml")
+        async def request(method, params):
+            nonlocal enabled
+            calls.append((method, params))
+            if method == "config/read":
+                assert params == {"includeLayers": True, "cwd": str(tmp_path)}
+                return {"config": {"mcp_servers": {name: {"enabled": enabled, "env": {"TOKEN": "private-token"}}}}, "layers": [
+                    {"name": {"type": "user", "file": config_path}, "version": "version-one"}]}
+            if method == "config/value/write":
+                assert params == {"keyPath": 'mcp_servers."proof.dot\\"quoted".enabled', "value": False,
+                                  "mergeStrategy": "replace", "filePath": config_path, "expectedVersion": "version-one"}
+                enabled = overridden
+                return {"status": "okOverridden" if overridden else "ok"}
+            if method == "mcpServerStatus/list":
+                return {"data": []}
+            assert method == "config/mcpServer/reload" and params == {}
+            return {}
+        rpc.request = request
+        try:
+            for bad_name, value in [("other", False), (name, "false"), (name, 0)]:
+                with pytest.raises(ValueError):
+                    await client.set_mcp_enabled(bad_name, value)
+            assert not any(method == "config/value/write" for method, _ in calls)
+            result = await client.set_mcp_enabled(name, False)
+            assert result["effectiveEnabled"] is overridden
+            assert bool(result["notice"]) is overridden
+            assert result["data"][0]["enabled"] is overridden
+            assert result["data"][0]["settingsWritable"] is True
+            assert "private-token" not in str(result)
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.set_mcp_enabled(name, True)
+            assert len([call for call in calls if call[0] == "config/value/write"]) == 1
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_mcp_setting_version_conflict_does_not_reload_or_retry(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append(method)
+            if method == "config/read":
+                return {"config": {"mcp_servers": {"proof": {}}}, "layers": [
+                    {"name": {"type": "user", "file": str(tmp_path / "config.toml")}, "version": "old"}]}
+            assert method == "config/value/write"
+            raise WorkspaceRpcError("Version conflict")
+        rpc.request = request
+        try:
+            with pytest.raises(WorkspaceRpcError, match="Version conflict"):
+                await client.set_mcp_enabled("proof", False)
+            assert calls == ["config/read", "config/value/write"]
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("mode", ["missing", "profile", "relative", "no-version", "busy"])
+def test_mcp_setting_refuses_ambiguous_writer_or_changed_session(tmp_path, mode):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append(method)
+            assert method == "config/read"
+            layer = {"name": {"type": "user", "file": str(tmp_path / "config.toml")}, "version": "one"}
+            if mode == "profile":
+                layer["name"]["profile"] = "selected"
+            if mode == "relative":
+                layer["name"]["file"] = "config.toml"
+            if mode == "no-version":
+                layer.pop("version")
+            if mode == "busy":
+                client.state = "running"
+            return {"config": {"mcp_servers": {"proof": {}}}, "layers": [] if mode == "missing" else [layer]}
+        rpc.request = request
+        try:
+            with pytest.raises((ValueError, WorkspaceRpcError)):
+                await client.set_mcp_enabled("proof", False)
+            assert calls == ["config/read"]
         finally:
             await client.close()
     asyncio.run(run())

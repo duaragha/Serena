@@ -297,6 +297,53 @@ class CodexWorkspace:
             await self.publish({"method": "workspace/commands", "params": deepcopy(catalog)})
             return {**catalog, "path": path, "effectiveEnabled": result["effectiveEnabled"]}
 
+    async def _mcp_config(self):
+        result = await self.rpc.request("config/read", {"includeLayers": True, "cwd": str(self.cwd)})
+        if not isinstance(result, dict) or not isinstance(result.get("config"), dict):
+            raise WorkspaceRpcError("Codex returned invalid MCP configuration")
+        servers = result["config"].get("mcp_servers", {})
+        if not isinstance(servers, dict) or any(
+            not isinstance(name, str) or not name or not isinstance(value, dict)
+            or type(value.get("enabled", True)) is not bool for name, value in servers.items()
+        ):
+            raise WorkspaceRpcError("Codex returned invalid MCP settings")
+        users = [layer for layer in result.get("layers") or [] if isinstance(layer, dict)
+                 and isinstance(layer.get("name"), dict) and layer["name"].get("type") == "user"
+                 and not layer["name"].get("profile")]
+        user = users[0] if len(users) == 1 else None
+        if user and (not isinstance(user.get("version"), str) or not user["version"]
+                     or not isinstance(user["name"].get("file"), str) or not Path(user["name"]["file"]).is_absolute()):
+            user = None
+        return servers, user
+
+    async def set_mcp_enabled(self, name, enabled):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions:
+                raise WorkspaceRpcError("Finish the current Codex turn before changing MCP settings")
+            if not isinstance(name, str) or type(enabled) is not bool:
+                raise ValueError("An exact MCP server name and boolean enabled state are required")
+            servers, user = await self._mcp_config()
+            if name not in servers or user is None:
+                raise ValueError("MCP server has no safely writable Codex user settings")
+            if self.state != "ready" or self.questions:
+                raise WorkspaceRpcError("Session changed during MCP settings lookup")
+            result = await self.rpc.request("config/value/write", {
+                "keyPath": f"mcp_servers.{json.dumps(name, ensure_ascii=False)}.enabled",
+                "value": enabled, "mergeStrategy": "replace",
+                "filePath": user["name"]["file"], "expectedVersion": user["version"],
+            })
+            if not isinstance(result, dict) or result.get("status") not in {"ok", "okOverridden"}:
+                raise WorkspaceRpcError("MCP configuration change was not confirmed")
+            await self.rpc.request("config/mcpServer/reload", {})
+            inventory = await self.list_mcp_servers()
+            current = next((server for server in inventory["data"] if server["name"] == name), {})
+            if type(current.get("enabled")) is not bool:
+                raise WorkspaceRpcError("MCP settings were saved but their effective state is unavailable")
+            notice = ""
+            if current["enabled"] != enabled:
+                notice = "Saved in Codex user settings; another configuration layer overrides this setting."
+            return {**inventory, "effectiveEnabled": current["enabled"], "notice": notice}
+
     async def list_mcp_servers(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")
@@ -328,10 +375,19 @@ class CodexWorkspace:
                              **({"login": deepcopy(self._mcp_logins[server["name"]])} if server["name"] in self._mcp_logins else {})})
             cursor = page.get("nextCursor")
             if not cursor:
-                return {"data": data}
+                break
             if not isinstance(cursor, str) or cursor in cursors or len(cursors) >= 100:
                 raise WorkspaceRpcError("MCP inventory pagination did not advance")
             cursors.add(cursor)
+        servers, user = await self._mcp_config()
+        for name, settings in servers.items():
+            item = next((server for server in data if server["name"] == name), None)
+            if item is None:
+                item = {"name": name, "status": "unknown",
+                        "authStatus": "unknown", "toolCount": 0}
+                data.append(item)
+            item.update(enabled=settings.get("enabled", True), settingsWritable=user is not None)
+        return {"data": data}
 
     async def reload_mcp(self):
         async with self._control_lock:

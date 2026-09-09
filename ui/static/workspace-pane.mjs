@@ -589,6 +589,7 @@ export class WorkspacePane {
         let result;
         if(action==='login') {await this.controls.mcpLogin(name);result=await this.controls.mcpServers();}
         else if(action==='reload')result=await this.controls.mcpReload();
+        else if(this.provider==='Codex' && ['enable','disable'].includes(action))result=await this.controls.setMcpEnabled(name,action==='enable');
         else result=action ? await this.controls.mcpServerControl(name,action) : await this.controls.mcpServers();
         if(!dialog.open || this.disposed)return;
         list.replaceChildren();
@@ -596,6 +597,12 @@ export class WorkspacePane {
           const row=node('div','aw-background-task aw-mcp-server');row.append(node('strong','',server.name),node('p','',server.status));
           if(this.provider==='Codex'){
             row.append(node('p','',`Authentication: ${server.authStatus || 'unknown'}`),node('p','',`${server.toolCount ?? 0} tools`));
+            if(typeof server.enabled==='boolean'){
+              const label=node('label','','Enabled in Codex user settings');const toggle=node('input');toggle.type='checkbox';toggle.checked=server.enabled;
+              toggle.setAttribute('aria-label',`Enable ${server.name}`);toggle.disabled=!server.settingsWritable || !this.controls.setMcpEnabled;
+              toggle.addEventListener('change',()=>{const action=toggle.checked?'enable':'disable';toggle.checked=server.enabled;load(server.name,action);});
+              label.prepend(toggle);row.append(label);
+            }
             if(this.controls.mcpLogin && ['notLoggedIn','oAuth'].includes(server.authStatus)){
               const login=this.button(`Sign in to ${server.name}`,'log-in',()=>load(server.name,'login'));
               login.disabled=['pending','uncertain'].includes(server.login?.status);row.append(login);
@@ -620,7 +627,7 @@ export class WorkspacePane {
           reconnect.disabled=!this.controls.mcpServerControl || server.status==='disabled';
           row.append(label,reconnect);list.append(row);
         }
-        status.textContent=result.data.length ? `${result.data.length} connection${result.data.length===1?'':'s'}` : 'No MCP connections';
+        status.textContent=result.notice || (result.data.length ? `${result.data.length} connection${result.data.length===1?'':'s'}` : 'No MCP connections');
         window.lucide?.createIcons();
       }catch(error){if(dialog.open)status.textContent=error.message;}
       finally{

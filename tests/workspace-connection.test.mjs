@@ -243,6 +243,23 @@ test('Codex MCP login and reload keep exact session and uncertain login receipt'
   ]);
 });
 
+test('MCP settings retain exact session and request identity after a lost reply',async()=>{
+  const calls=[];let fail=true;
+  const conn=new WorkspaceConnection({sessionId:'codex-exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    const body=JSON.parse(options.body);calls.push([url,body]);
+    if(fail)throw Error('lost reply');
+    return response({ok:true,result:{data:[],effectiveEnabled:false}});
+  }});
+  assert.deepEqual(calls,[]);
+  await assert.rejects(conn.controls().setMcpEnabled('proof.dot',false),/lost reply/);
+  fail=false;await conn.controls().setMcpEnabled('proof.dot',false);conn.dispose();
+  assert.equal(calls.length,2);
+  assert.equal(calls[0][1].request_id,calls[1][1].request_id);
+  assert.equal(calls[0][0],'/api/workspace/codex-exact/commands');
+  assert.equal(calls[0][1].action,'set_mcp_enabled');
+  assert.deepEqual(calls[0][1].payload,{name:'proof.dot',enabled:false});
+});
+
 test('skill settings are explicit exact-path commands with stable retry identity',async()=>{
   const calls=[];
   let fail=true;

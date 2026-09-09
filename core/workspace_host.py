@@ -305,6 +305,7 @@ class WorkspaceHost:
             "mcp_server_control",
             "mcp_login",
             "mcp_reload",
+            "set_mcp_enabled",
             "terminate_background_task",
             "cancel_queued_bridge",
             "edit_queued_bridge",
@@ -400,6 +401,13 @@ class WorkspaceHost:
                         retryable = True
                         raise ValueError("Finish the current Codex turn before changing skills")
                     result = await owner.set_skill_enabled(payload["path"], payload["enabled"])
+                elif action == "set_mcp_enabled":
+                    if provider != "codex" or set(payload) != {"name", "enabled"} or type(payload["enabled"]) is not bool:
+                        raise ValueError("An exact Codex MCP server and boolean enabled state are required")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Finish the current Codex turn before changing MCP settings")
+                    result = await owner.set_mcp_enabled(payload["name"], payload["enabled"])
                 elif action == "mcp_server_control":
                     if provider != "claude" or set(payload) != {"name", "action"}:
                         raise ValueError("An exact Claude MCP server and action are required")

@@ -205,6 +205,25 @@ def test_codex_mcp_actions_are_explicit_and_receipted(host):
     assert calls == ["local", "reload"]
 
 
+def test_codex_mcp_setting_requires_exact_payload_and_reuses_receipt(host):
+    host.attach("exact")
+    owner = Owner.instances[-1]
+    calls = []
+    async def setting(name, enabled):
+        calls.append((name, enabled))
+        return {"data": [], "effectiveEnabled": enabled}
+    owner.set_mcp_enabled = setting
+    assert not host.command("exact", "bad", "set_mcp_enabled", {"name": "local", "enabled": False, "filePath": "/other"})["ok"]
+    assert not host.command("exact", "bad-type", "set_mcp_enabled", {"name": "local", "enabled": "false"})["ok"]
+    result = host.command("exact", "setting", "set_mcp_enabled", {"name": "local", "enabled": False})
+    assert result["ok"]
+    assert host.command("exact", "setting", "set_mcp_enabled", {"name": "local", "enabled": False}) == result
+    owner.state = "running"
+    busy = host.command("exact", "busy", "set_mcp_enabled", {"name": "local", "enabled": True})
+    assert not busy["ok"] and busy["retryable"]
+    assert calls == [("local", False)]
+
+
 def test_codex_skill_setting_requires_exact_payload_and_reuses_receipt(host):
     host.attach("exact")
     owner = Owner.instances[-1]

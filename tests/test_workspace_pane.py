@@ -602,6 +602,31 @@ def test_codex_mcp_login_and_reload_are_explicit_and_wait_for_native_completion(
     assert not errors
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_codex_mcp_setting_waits_for_effective_confirmation(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      pane.dispose();window.enabled=true;
+      controls.mcpServers=async()=>({data:[{name:'proof',status:'unknown',enabled,settingsWritable:true}]});
+      controls.setMcpEnabled=(name,value)=>{calls.push([name,value]);return new Promise(resolve=>window.finishSetting=async()=>{enabled=value;resolve({...await controls.mcpServers(),notice:'Saved in Codex user settings; another configuration layer overrides this setting.'});});};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+    }""")
+    page.get_by_role('button', name='MCP connections', exact=True).click()
+    toggle = page.get_by_role('checkbox', name='Enable proof')
+    toggle.wait_for()
+    assert page.evaluate('calls') == []
+    toggle.click()
+    assert toggle.is_checked() and toggle.is_disabled()
+    page.evaluate('finishSetting()')
+    page.wait_for_function("!document.querySelector('.aw-mcp-server input').checked")
+    assert not toggle.is_disabled()
+    page.get_by_text('Saved in Codex user settings; another configuration layer overrides this setting.', exact=True).wait_for()
+    assert page.evaluate('calls') == [['proof', False]]
+    assert page.get_by_role('dialog').evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert not errors
+
+
 def test_codex_mcp_inventory_shows_unknown_state_without_unsupported_mutations(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

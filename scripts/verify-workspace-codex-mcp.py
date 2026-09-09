@@ -136,12 +136,21 @@ def browser_proof(sid, root, project, env, binary):
                     expect(link).to_have_count(0)
                     page.get_by_role("button", name="Reload MCP configuration").click()
                     expect(page.get_by_role("button", name="Reload MCP configuration")).to_be_enabled()
+                    toggle = page.get_by_role("checkbox", name="Enable proof", exact=True)
+                    expect(toggle).to_be_checked()
+                    toggle.click()
+                    expect(toggle).not_to_be_checked()
+                    expect(toggle).to_be_enabled()
+                    toggle.click()
+                    expect(toggle).to_be_checked()
+                    expect(toggle).to_be_enabled()
+                    page.screenshot(path=str(artifacts / f"codex-mcp-settings-{label}.png"))
                     assert page.get_by_role("dialog").evaluate("el=>el.scrollWidth<=el.clientWidth")
                     popup.value.close()
                     page.close()
                     assert owner.rpc.process.pid == pid and owner.rpc.process.returncode is None
                     assert not errors, errors
-                    print(f"PASS: native {label} OAuth browser flow and reload; no auto-authorization, same owner after closing view")
+                    print(f"PASS: native {label} OAuth, reload and explicit disable/re-enable; no auto-authorization, same owner after closing view")
             finally:
                 browser.close()
     finally:
@@ -203,9 +212,19 @@ async def main():
                 assert server.tokens == 1
                 result = await owner.reload_mcp()
                 assert result["data"][0]["authStatus"] == "oAuth", result
+                before = (home / "config.toml").read_text()
+                disabled = await owner.set_mcp_enabled("proof", False)
+                assert disabled["effectiveEnabled"] is False, disabled
+                enabled = await owner.set_mcp_enabled("proof", True)
+                assert enabled["effectiveEnabled"] is True, enabled
+                import tomllib
+                prior_config, current_config = tomllib.loads(before), tomllib.loads((home / "config.toml").read_text())
+                current_config["mcp_servers"]["proof"].pop("enabled")
+                assert current_config == prior_config, "Toggle altered unrelated configuration"
                 assert owner.rpc.process.pid == pid and owner.session_id == sid
                 assert not any(event.get("method") == "turn/started" for event in events)
                 print("PASS: native exact-session OAuth remained pending until explicit loopback callback; one token exchange; native completion and configuration reload preserved owner; no inference or user credentials")
+                print("PASS: native versioned settings disable/re-enable preserved all unrelated configuration and exact owner")
             finally:
                 await rpc.close()
                 if owner:
