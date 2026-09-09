@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import warnings
+from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
 
@@ -111,6 +112,34 @@ class WorkspaceUploads:
 
     def codex_inputs(self, sid: str, inputs: list[dict]) -> list[dict]:
         return self._inputs(sid, inputs, provider="codex")
+
+    def decorate_event(self, sid: str, event: dict) -> dict:
+        result = deepcopy(event)
+        params = result.get("params", {})
+        items = [params.get("item", {})]
+        if result.get("method") == "workspace/history":
+            items = [
+                item
+                for turn in params.get("thread", {}).get("turns", [])
+                for item in turn.get("items", [])
+            ]
+        for item in items:
+            if item.get("type") != "userMessage":
+                continue
+            for part in item.get("content", []):
+                if part.get("type") != "localImage" or not isinstance(part.get("path"), str):
+                    continue
+                path = Path(part["path"])
+                if path.parent.parent != self._directory(sid):
+                    continue
+                try:
+                    resolved, record = self.resolve(sid, path.parent.name)
+                    if resolved == path and record["media_type"].startswith("image/"):
+                        part["previewToken"] = record["token"]
+                        part["name"] = record["name"]
+                except ValueError:
+                    pass
+        return result
 
     def claude_inputs(self, sid: str, inputs: list[dict]) -> list[dict]:
         return self._inputs(sid, inputs, provider="claude")

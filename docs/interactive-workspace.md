@@ -2,6 +2,26 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Sent-image rendering now supports Claude base64 image blocks as bounded blob
+previews, and Codex images uploaded through this workspace as authenticated,
+session-bound previews. The host adds preview tokens only for validated paths in
+that exact session's upload directory. Arbitrary historical filesystem paths
+remain text; they are not exposed through a general file-reading endpoint.
+Preview GETs do not attach a runtime and use no-store/nosniff headers. Blob URLs
+are released when the pane is disposed. Claude raw image storage in journals and
+full history retention/windowing still need work.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_uploads.py tests/test_workspace_host.py tests/test_workspace_pane.py -q
+# exit 0: 31 passed in 9.90s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_history_image_renders_without_base64_text -q
+# exit 0: 2 passed in 0.95s, browser decoded both provider preview forms
+node --test tests/workspace-connection.test.mjs
+# exit 0: 5 passed, 0 failed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_uploads.py core/workspace_host.py ui/workspace_web.py tests/test_workspace_uploads.py tests/test_workspace_host.py tests/test_workspace_pane.py
+# initial exit 1: test import grouping; corrected exit 0: All checks passed!
+```
+
 Claude now has a verified isolated subscription inference/resume round trip as
 well. Its model selector is populated from the installed SDK's advertised models;
 selection calls set_model on the existing client before submission, rejects

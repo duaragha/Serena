@@ -90,7 +90,8 @@ class WorkspaceHost:
                 raise ValueError("This provider has no verified structured adapter yet")
 
             async def publish(event):
-                await asyncio.to_thread(self.journal.append, sid, event)
+                decorated = await asyncio.to_thread(self.uploads.decorate_event, sid, event)
+                await asyncio.to_thread(self.journal.append, sid, decorated)
 
             owner = factory(session_id=sid, cwd=Path(target["cwd"]), publish=publish)
             # Reserve before the first awaited provider operation. Repeated

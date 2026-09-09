@@ -21,6 +21,7 @@ export class WorkspacePane {
     this.rendered = new Map();
     this.files = [];
     this.previews = new Map();
+    this.historyImageUrls = new Set();
     this.sending = false;
     this.disposed = false;
     this.frame = 0;
@@ -240,7 +241,14 @@ export class WorkspacePane {
       entry.append(node('div', 'aw-author', 'Raghav'));
       const message = node('div', 'aw-user-message');
       for (const part of item.content || []) {
-        message.append(node('div', '', part.text ?? part.path ?? part.url ?? JSON.stringify(part)));
+        if (part.previewToken || part.type === 'image') {
+          const image = node('img', 'aw-history-image');
+          image.alt = part.name || 'Attached image';
+          message.append(image);
+          this.loadHistoryImage(image, part).catch(() => {
+            image.replaceWith(node('span', '', 'Attached image unavailable'));
+          });
+        } else message.append(node('div', '', part.text ?? part.path ?? part.url ?? JSON.stringify(part)));
       }
       entry.append(message);
     } else if (item.type === 'agentMessage' || item.type === 'plan') {
@@ -277,6 +285,22 @@ export class WorkspacePane {
       entry.append(detail);
     }
     return entry;
+  }
+
+  async loadHistoryImage(image, part) {
+    let blob;
+    if (part.previewToken) blob = await this.controls.image(part.previewToken);
+    else {
+      const source = part.source;
+      if (source?.type !== 'base64' || typeof source.data !== 'string' || source.data.length > 35 * 1024 * 1024) throw Error('Unsupported image');
+      const bytes = Uint8Array.from(atob(source.data), character => character.charCodeAt(0));
+      blob = new Blob([bytes], {type:source.media_type});
+    }
+    if (!['image/png','image/jpeg','image/gif','image/webp'].includes(blob.type) || blob.size > 25 * 1024 * 1024) throw Error('Unsupported image');
+    if (this.disposed) return;
+    const url = URL.createObjectURL(blob);
+    this.historyImageUrls.add(url);
+    image.src = url;
   }
 
   renderQuestions() {
@@ -409,6 +433,8 @@ export class WorkspacePane {
   }
 
   dispose() {
+    for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
+    this.historyImageUrls.clear();
     this.disposed = true;
     for (const url of this.previews.values()) URL.revokeObjectURL(url);
     this.previews.clear();

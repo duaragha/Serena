@@ -95,3 +95,26 @@ def test_claude_rejects_changed_image(tmp_path):
     path.write_bytes(b"changed")
     with pytest.raises(ValueError, match="changed"):
         uploads.claude_inputs("exact", [{"type": "upload", "token": record["token"]}])
+
+
+def test_only_owned_image_paths_get_preview_tokens(tmp_path):
+    uploads = WorkspaceUploads(tmp_path)
+    record = uploads.save("exact", "photo.png", io.BytesIO(png()))
+    path, _ = uploads.resolve("exact", record["token"])
+    event = {
+        "method": "item/completed",
+        "params": {
+            "item": {
+                "type": "userMessage",
+                "content": [
+                    {"type": "localImage", "path": str(path)},
+                    {"type": "localImage", "path": "/private/photo.png"},
+                ],
+            }
+        },
+    }
+    decorated = uploads.decorate_event("exact", event)
+    assert decorated["params"]["item"]["content"][0]["previewToken"] == record["token"]
+    assert "previewToken" not in decorated["params"]["item"]["content"][1]
+    assert uploads.decorate_event("different", event) == event
+    assert "previewToken" not in event["params"]["item"]["content"][0]

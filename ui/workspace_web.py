@@ -6,7 +6,7 @@ import ipaddress
 import secrets
 from urllib.parse import urlsplit
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 
 
 def local_workspace_request():
@@ -64,6 +64,16 @@ def workspace_blueprint(host, *, token: str):
     @bp.get("/<sid>/events")
     def events(sid):
         return jsonify(host.events(sid, after=int(request.args.get("after", "0"))))
+
+    @bp.get("/<sid>/attachments/<attachment_id>")
+    def attachment(sid, attachment_id):
+        path, record = host.uploads.resolve(sid, attachment_id)
+        if not record["media_type"].startswith("image/"):
+            raise ValueError("Only validated image previews are available")
+        response = send_file(path, mimetype=record["media_type"], conditional=False)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @bp.post("/<sid>/commands")
     def command(sid):

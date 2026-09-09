@@ -98,6 +98,33 @@ def test_crash_ambiguous_command_is_not_repeated(host):
     assert Owner.instances[0].sent == []
 
 
+def test_image_preview_requires_auth_and_exact_session_without_launch(host):
+    from PIL import Image
+
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "green").save(image, format="PNG")
+    raw = image.getvalue()
+    record = host.uploads.save("exact", "image.png", io.BytesIO(raw))
+    app = Flask(__name__)
+    token = "s" * 40
+    app.register_blueprint(workspace_blueprint(host, token=token))
+    headers = {"X-Serena-Workspace-Token": token}
+    url = f"/api/workspace/exact/attachments/{record['token']}"
+    with app.test_client() as client:
+        assert client.get(url, base_url="http://127.0.0.1").status_code == 403
+        response = client.get(url, base_url="http://127.0.0.1", headers=headers)
+        assert response.status_code == 200 and response.data == raw
+        assert response.mimetype == "image/png"
+        assert response.headers["Cache-Control"] == "no-store"
+        assert (
+            client.get(
+                url.replace("/exact/", "/different/"), base_url="http://127.0.0.1", headers=headers
+            ).status_code
+            == 400
+        )
+    assert Owner.instances == [] and host._loop is None
+
+
 def test_claude_input_routing_and_duplicate_receipt(host):
     import base64
 

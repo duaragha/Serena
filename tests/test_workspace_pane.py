@@ -201,6 +201,38 @@ def test_failed_send_keeps_draft_after_reload(pane):
     assert not errors
 
 
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_history_image_renders_without_base64_text(pane, provider):
+    import base64
+    import io
+
+    from PIL import Image
+
+    page, errors = pane
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "green").save(image, format="PNG")
+    data = base64.b64encode(image.getvalue()).decode()
+    if provider == "codex":
+        page.evaluate(
+            "data => {controls.image=async token=>{window.imageToken=token;return new Blob([Uint8Array.from(atob(data),c=>c.charCodeAt(0))],{type:'image/png'});};}",
+            data,
+        )
+        page.evaluate(
+            "emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'localImage',previewToken:'owned-token',path:'/not-rendered.png'}]}}})"
+        )
+    else:
+        page.evaluate(
+            "data => emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'image',source:{type:'base64',media_type:'image/png',data}}]}}})",
+            data,
+        )
+    page.wait_for_function("document.querySelector('.aw-history-image')?.naturalWidth === 8")
+    assert data not in page.locator("#left").inner_text()
+    assert page.locator(".aw-history-image").get_attribute("src").startswith("blob:")
+    page.evaluate("pane.dispose()")
+    assert page.evaluate("pane.historyImageUrls.size") == 0
+    assert not errors
+
+
 def test_markdown_code_copy_and_mobile_layout(pane, tmp_path):
     page, errors = pane
     page.evaluate("""() => {
@@ -210,7 +242,9 @@ def test_markdown_code_copy_and_mobile_layout(pane, tmp_path):
       }}});
     }""")
     page.get_by_role("heading", name="Result").wait_for()
-    assert page.get_by_role("link", name="documentation").get_attribute("rel") == "noopener noreferrer"
+    assert (
+        page.get_by_role("link", name="documentation").get_attribute("rel") == "noopener noreferrer"
+    )
     assert page.locator(".aw-message img").count() == 0
     page.get_by_role("button", name="Copy code", exact=True).click()
     page.wait_for_function("window.copied === 'const value = 1;\\n'")

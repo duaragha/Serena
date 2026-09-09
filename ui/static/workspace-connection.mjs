@@ -99,6 +99,13 @@ export class WorkspaceConnection {
 
   controls() {
     return {
+      image: async token => {
+        if (this.stopped || !/^[a-f0-9]{32}$/.test(token)) throw Error('Image preview unavailable');
+        const fetcher = this.fetcher;
+        const response = await fetcher(`${this.base}/attachments/${token}`, {credentials:'same-origin',headers:{'X-Serena-Workspace-Token':this.token}});
+        if (!response.ok) throw Error('Image preview unavailable in this session');
+        return response.blob();
+      },
       models: () => this.command('models', {}),
       submit: message => this.sendMessage('submit', message),
       steer: message => this.sendMessage('steer', message),
