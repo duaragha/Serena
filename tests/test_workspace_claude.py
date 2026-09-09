@@ -86,6 +86,136 @@ def make(tmp_path):
     return owner, events
 
 
+def test_clear_moves_lease_converter_and_output_before_native_ack(tmp_path):
+    async def run():
+        owner, original = make(tmp_path)
+        await owner.open()
+        target = "11111111-2222-4333-8444-555555555555"
+        changes, new_events = [], []
+        new_lease = SimpleNamespace(release=lambda: changes.append("release-new"))
+
+        def transfer(sid):
+            assert sid == target and owner.state == "committing-handoff"
+            changes.append("transfer")
+            return new_lease
+
+        owner._lease.transfer_after_transition = transfer
+        owner._lease.release = lambda: changes.append("release-old")
+
+        async def begin():
+            assert owner.state == "clearing"
+            return {"sessionId": target}
+
+        async def publish(event):
+            new_events.append(event)
+
+        async def commit(sid):
+            assert changes == ["transfer"]
+            assert owner.session_id == owner.events.sid == sid == target
+            assert new_events[0]["method"] == "workspace/history"
+            await owner.client.messages.put({"type": "result", "session_id": sid,
+                                             "subtype": "success", "result": "cleared"})
+            await asyncio.sleep(0)
+            assert owner.state == "committing-handoff"
+            return {"sessionId": sid}
+
+        owner.client.begin_clear, owner.client.commit_clear = begin, commit
+        source_history = list(original)
+        assert (await owner.begin_clear())["session_id"] == target
+        assert owner.session_id == "exact" and owner.state == "awaiting-handoff"
+        with pytest.raises(RuntimeError):
+            await owner.submit([{"type": "text", "text": "no"}])
+        with pytest.raises(RuntimeError):
+            await owner.commit_clear("wrong", publish=publish)
+        await owner.commit_clear(target, publish=publish)
+        assert owner.state == "ready" and original == source_history
+        assert new_events[0]["params"]["thread"]["id"] == target
+        assert all(event["params"].get("threadId") == target for event in new_events[1:])
+        await owner.close()
+        assert changes == ["transfer", "release-new"]
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("busy", ["turn", "question", "elicitation", "task", "unknown-task"])
+def test_clear_refuses_any_old_session_work(tmp_path, busy):
+    async def run():
+        owner, _ = make(tmp_path)
+        await owner.open()
+        if busy == "turn":
+            owner.active_turn = "turn"
+        elif busy == "question":
+            owner.questions["q"] = asyncio.get_running_loop().create_future()
+        elif busy == "elicitation":
+            owner.elicitations["q"] = (asyncio.get_running_loop().create_future(), {})
+        else:
+            owner.events.tasks["task"] = {"status": "running" if busy == "task" else "unknown"}
+        with pytest.raises(RuntimeError, match="Finish active work"):
+            await owner.begin_clear()
+        assert owner.state == "ready" and owner.session_id == "exact"
+        await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["lease", "publish", "ack", "cancel"])
+def test_clear_handoff_failure_retains_correct_lease_and_blocks_input(tmp_path, failure):
+    async def run():
+        owner, _ = make(tmp_path)
+        await owner.open()
+        target = "11111111-2222-4333-8444-555555555555"
+        released = []
+        old_lease = owner._lease
+        old_lease.release = lambda: released.append("old")
+        new_lease = SimpleNamespace(release=lambda: released.append("new"))
+
+        def transfer(sid):
+            if failure == "lease":
+                raise RuntimeError("target occupied")
+            return new_lease
+
+        async def begin():
+            return {"sessionId": target}
+
+        async def publish(event):
+            if failure == "publish":
+                raise RuntimeError("disk full")
+
+        async def commit(sid):
+            if failure == "cancel":
+                raise asyncio.CancelledError()
+            raise RuntimeError("ack missing")
+
+        old_lease.transfer_after_transition = transfer
+        owner.client.begin_clear, owner.client.commit_clear = begin, commit
+        await owner.begin_clear()
+        with pytest.raises(asyncio.CancelledError if failure == "cancel" else RuntimeError):
+            await owner.commit_clear(target, publish=publish)
+        assert owner.state == "unavailable" and not owner.can_retry_attachment()
+        assert released == []
+        with pytest.raises(RuntimeError):
+            await owner.begin_clear()
+        await owner.close()
+        assert released == ["old" if failure == "lease" else "new"]
+    asyncio.run(run())
+
+
+def test_clear_refuses_handoff_when_draining_reveals_background_work(tmp_path):
+    async def run():
+        owner, _ = make(tmp_path)
+        await owner.open()
+
+        async def begin():
+            owner.events.tasks["late"] = {"status": "running"}
+            return {"sessionId": "11111111-2222-4333-8444-555555555555"}
+
+        owner.client.begin_clear = begin
+        with pytest.raises(RuntimeError, match="no longer quiescent"):
+            await owner.begin_clear()
+        assert owner.state == "unavailable" and owner.session_id == "exact"
+        assert owner._clear_target is None
+        await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_attachment_retry_requires_finished_successful_cleanup(tmp_path, cleanup_fails):
     async def run():

@@ -13,7 +13,7 @@ import os
 import shutil
 from copy import deepcopy
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -58,6 +58,8 @@ class ClaudeWorkspace:
         self._owner_task = None
         self._control = asyncio.Lock()
         self._cleanup_complete = True
+        self._lease = None
+        self._clear_target = None
 
     async def open(self):
         async with self._control:
@@ -78,12 +80,12 @@ class ClaudeWorkspace:
             await asyncio.shield(self._ready)
 
     async def _lifetime(self, history):
-        lease, reader = None, None
+        reader = None
         try:
             binary = shutil.which("claude")
             if not binary:
                 raise RuntimeError("Installed Claude CLI is unavailable")
-            lease = self.lease_factory(self.session_id)
+            self._lease = self.lease_factory(self.session_id)
             inherited = dict(os.environ)
             clean = strip_metered_auth_env(inherited)
             # SDK overlays its env onto os.environ. Empty blocked values so
@@ -109,7 +111,7 @@ class ClaudeWorkspace:
             self.client = self.client_factory(options=options)
             if hasattr(self.client, "on_elicitation"):
                 self.client.on_elicitation = self._elicitation
-            lease.launching()
+            self._lease.launching()
             self._cleanup_complete = False
             await self.client.connect()
             pid = getattr(self.client, "owned_pid", None)
@@ -118,7 +120,7 @@ class ClaudeWorkspace:
                 pid = getattr(process, "pid", None)
             if type(pid) is not int:
                 raise RuntimeError("Claude SDK did not expose a verifiable owned process")
-            lease.bind(pid)
+            self._lease.bind(pid)
             await self.publish(history)
             self.state = "ready"
             reader = asyncio.create_task(self._read())
@@ -147,14 +149,14 @@ class ClaudeWorkspace:
                     await self.client.disconnect()
                 self._cleanup_complete = True
             finally:
-                if lease:
-                    lease.release()
+                if self._lease:
+                    self._lease.release()
 
     async def _read(self):
         try:
             async for message in self.client.receive_messages():
                 for event in self.events.receive(message):
-                    if event["method"] == "turn/completed":
+                    if event["method"] == "turn/completed" and self.state not in {"clearing", "awaiting-handoff", "committing-handoff", "unavailable", "closed"}:
                         self.active_turn = None
                         self.state = "ready"
                     await self.publish(event)
@@ -309,6 +311,56 @@ class ClaudeWorkspace:
             if not isinstance(sid, str) or not sid or sid == self.session_id:
                 raise ValueError("Native fork did not return a new session identity")
             return {"session_id": sid, "provider": "claude", "cwd": str(self.cwd)}
+
+    async def begin_clear(self):
+        async with self._control:
+            if (self.state != "ready" or self.active_turn or self.questions or self.elicitations
+                    or any(task.get("status") not in {"completed", "failed", "stopped", "killed"}
+                           for task in self.events.tasks.values())):
+                raise RuntimeError("Finish active work and interactions before clearing Claude")
+            begin = getattr(self.client, "begin_clear", None)
+            if begin is None or self._lease is None:
+                raise RuntimeError("This Claude runtime cannot transfer session ownership")
+            self.state = "clearing"
+            try:
+                result = await begin()
+                sid = result.get("sessionId") if isinstance(result, dict) else None
+                if not isinstance(sid, str) or str(UUID(sid)) != sid or sid == self.session_id:
+                    raise ValueError("Native clear returned an invalid new identity")
+                if (self.state != "clearing" or self._stop.is_set() or self.questions or self.elicitations
+                        or any(task.get("status") not in {"completed", "failed", "stopped", "killed"}
+                               for task in self.events.tasks.values())):
+                    raise RuntimeError("Claude is no longer quiescent after draining clear output")
+                self._clear_target = sid
+                self.state = "awaiting-handoff"
+                return {"session_id": sid, "provider": "claude", "cwd": str(self.cwd)}
+            except BaseException:
+                self.state = "unavailable"
+                raise
+
+    async def commit_clear(self, session_id, *, publish):
+        """Internal: host must checkpoint and reserve the target before calling."""
+        async with self._control:
+            if (self.state != "awaiting-handoff" or session_id != self._clear_target
+                    or not callable(publish) or self._stop.is_set()):
+                raise RuntimeError("Exact pending Claude handoff is required")
+            self.state = "committing-handoff"
+            try:
+                self._lease = self._lease.transfer_after_transition(session_id)
+                self.session_id = session_id
+                self.events = ClaudeEvents(session_id)
+                self.publish = publish
+                await self.publish(self.events.history([]))
+                result = await self.client.commit_clear(session_id)
+                if (result.get("sessionId") != session_id or self.state != "committing-handoff"
+                        or self._stop.is_set()):
+                    raise RuntimeError("Claude handoff was not confirmed")
+                self._clear_target = None
+                self.state = "ready"
+                return {"session_id": session_id, "provider": "claude", "cwd": str(self.cwd)}
+            except BaseException:
+                self.state = "unavailable"
+                raise
 
     async def reload_skills(self):
         async with self._control:

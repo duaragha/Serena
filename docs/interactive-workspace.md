@@ -2,6 +2,26 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Owner clear handoff (2026-09-09): ClaudeWorkspace now has private two-phase
+clear methods. Active turns, permissions, elicitation and nonterminal or unknown
+background tasks block clear. Native begin drains old output before changing the
+converter; any late background work prevents handoff. Commit transfers the lease
+first, installs the new converter/output sink and emits an empty new-session
+history, then acknowledges the native transition. Both transport and client use
+output fences so buffered clear-completion records cannot finish a subsequent
+user turn. Input remains blocked throughout. Failure pins the owner unavailable;
+cleanup releases the current lease, including a transferred lease, rather than
+the retired source lease. The host must still checkpoint/reserve the target and
+route it into the catalog before invoking these private methods. No clear button
+or installed-app activation is claimed.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_claude_transport.py -q`: first exit 1 (1 failed, 63 passed); a new test assumed history used top-level threadId rather than the existing thread.id schema. Corrected fixture assertion; subsequent exit 0, 65 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_claude_transport.py tests/test_workspace_lease.py -q`: exit 0, 80 passed after late-background-work regression coverage.
+- `SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: first extended owner proof exited 1 because it inspected lease.pid instead of lease.child.pid; corrected assertion. Subsequent exit 0: actual owner/client/native worker transferred ownership, retained its native PID, completed a new local command and preserved source events/history. No credentials or model inference.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_client.py core/workspace_claude_transport.py scripts/verify-workspace-claude-clear-transport.py tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_claude_transport.py`: exit 0, all checks passed after correcting the new proof imports.
+- Repeated the native clear proof with explicit zero-cost/zero-turn assertions on the owner result: exit 0. `git diff --check`: exit 0.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py`: exit 0. Existing source desktop/mobile native controls, commands, skills/plugins, forks, exact ownership and cleanup passed; no browser console/HTTP errors or horizontal overflow. This does not exercise a user-facing clear button, installed AppImage or Windows.
+
 Private clear transport boundary (2026-09-09): the JSONL worker now exposes
 explicit begin_clear/commit_clear requests, not generic renderer controls.
 Python freezes input before beginning and installs the new identity before the

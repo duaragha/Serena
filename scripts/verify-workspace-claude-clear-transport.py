@@ -11,7 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import psutil
 
+from core.workspace_claude import ClaudeWorkspace
+from core.workspace_claude_client import ClaudeTypeScriptClient
 from core.workspace_claude_transport import ClaudeSdkTransport
+from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpcError
 
 
@@ -71,6 +74,48 @@ async def main():
     assert transport.rpc.process is None
     assert native_pid is not None and not psutil.pid_exists(native_pid)
     print("PASS: real Python/JSONL/native clear handoff, blocked input, exact subsequent session, child reaped")
+
+    old_events, new_events = [], []
+    finished = asyncio.Event()
+
+    async def old_publish(event):
+        old_events.append(event)
+
+    async def new_publish(event):
+        new_events.append(event)
+        if event["method"] == "turn/completed":
+            finished.set()
+
+    leases = Path(root) / "leases"
+    owner = ClaudeWorkspace(session_id=source, cwd=root, publish=old_publish,
+                            client_factory=lambda options: ClaudeTypeScriptClient(
+                                options=options, sdk_path=sdk, node_path=node),
+                            lease_factory=lambda sid: SessionLease(sid, directory=leases))
+    try:
+        await owner.open()
+        native_pid = owner.client.owned_pid
+        original_events = list(old_events)
+        target = (await owner.begin_clear())["session_id"]
+        await owner.commit_clear(target, publish=new_publish)
+        assert owner.state == "ready" and owner.client.options.resume == target
+        assert owner._lease.record["child"]["pid"] == native_pid
+        assert owner.client.owned_pid == native_pid and old_events == original_events
+        assert new_events[0]["params"]["thread"]["id"] == target
+        finished.clear()
+        await owner.submit([{"type": "text", "text": "/effort low"}])
+        await asyncio.wait_for(finished.wait(), 25)
+        assert owner.state == "ready" and owner.client.owned_pid == native_pid
+        completed_turn = next(event["params"]["turn"] for event in reversed(new_events)
+                              if event["method"] == "turn/completed")
+        assert completed_turn["providerOriginal"]["total_cost_usd"] == 0
+        assert completed_turn["providerOriginal"]["num_turns"] == 0
+        assert old_events == original_events
+        print(json.dumps({"ownerSource": source, "ownerTarget": target,
+                          "sameNativeProcess": True, "leaseTransferred": True}))
+    finally:
+        await owner.close()
+    assert not psutil.pid_exists(native_pid)
+    print("PASS: real owner/client lease and event routing handoff; new input completed; original events untouched")
 
 
 asyncio.run(main())

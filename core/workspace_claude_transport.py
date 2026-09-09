@@ -79,7 +79,10 @@ class ClaudeSdkTransport:
                 event = await self.rpc.events.get()
                 method = event["method"]
                 params = event.get("params") or {}
-                if method == "claude/process":
+                if method == "_local_barrier" and isinstance(event.get("future"), asyncio.Future):
+                    if not event["future"].done():
+                        event["future"].set_result(None)
+                elif method == "claude/process":
                     pid = params.get("pid")
                     if type(pid) is not int or self.owned_pid is not None:
                         raise WorkspaceRpcError("Invalid or duplicate native process identity")
@@ -130,6 +133,17 @@ class ClaudeSdkTransport:
         if self.failure or self.closing or self.owned_pid is None or self.transition_pending:
             raise WorkspaceRpcError(str(self.failure or "Claude transport is not ready"))
 
+    async def _drain_events(self):
+        # RPC replies and event delivery have separate consumers.
+        barrier = asyncio.get_running_loop().create_future()
+        await self.rpc.events.put({"method": "_local_barrier", "future": barrier})
+        try:
+            await asyncio.wait({barrier, self.reader}, return_when=asyncio.FIRST_COMPLETED)
+            if self.failure or self.closing or not barrier.done():
+                raise WorkspaceRpcError("Output did not drain before handoff")
+        finally:
+            barrier.cancel()
+
     async def begin_clear(self):
         self._ready()
         if self.questions:
@@ -143,6 +157,7 @@ class ClaudeSdkTransport:
             self.transition_target = sid
             if self.failure or self.closing:
                 raise WorkspaceRpcError("Transport closed during clear")
+            await self._drain_events()
             return {"sessionId": sid}
         except asyncio.CancelledError:
             self.failure = WorkspaceRpcError("Clear outcome is unconfirmed after cancellation")
@@ -165,6 +180,7 @@ class ClaudeSdkTransport:
                 raise WorkspaceRpcError("Native session handoff was not confirmed")
             if self.failure or self.closing:
                 raise self.failure or WorkspaceRpcError("Transport closed during handoff")
+            await self._drain_events()
             self.transition_pending = False
             self.transition_target = None
             self.transition_committing = False

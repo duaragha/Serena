@@ -37,6 +37,10 @@ class ClaudeTypeScriptClient:
             message = await self.messages.get()
             if message is None:
                 return
+            if isinstance(message, asyncio.Future):
+                if not message.done():
+                    message.set_result(None)
+                continue
             if message.get("type") == "transport_error":
                 raise RuntimeError(message["error"])
             yield message
@@ -59,6 +63,23 @@ class ClaudeTypeScriptClient:
 
     async def fork_session(self):
         return await self.transport.control("forkSession")
+
+    async def begin_clear(self):
+        result = await self.transport.begin_clear()
+        await self._drain_messages()
+        return result
+
+    async def _drain_messages(self):
+        # The owner publishes all earlier events before consuming this fence.
+        fence = asyncio.get_running_loop().create_future()
+        await self.messages.put(fence)
+        await asyncio.wait_for(fence, 10)
+
+    async def commit_clear(self, session_id):
+        result = await self.transport.commit_clear(session_id)
+        await self._drain_messages()
+        self.options.resume = session_id
+        return result
 
     async def reload_plugins(self):
         result = await self.transport.control("reloadPlugins")

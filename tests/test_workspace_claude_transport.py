@@ -18,6 +18,8 @@ def test_clear_blocks_input_until_exact_handoff_ack(monkeypatch, tmp_path):
 
         async def request(method, params, **kwargs):
             if method == "begin_clear":
+                await transport.rpc.events.put({"method": "claude/message", "params": {
+                    "message": {"type": "assistant", "session_id": "exact"}}})
                 return {"sessionId": TARGET}
             if method == "commit_clear":
                 assert params == {"sessionId": TARGET}
@@ -30,6 +32,7 @@ def test_clear_blocks_input_until_exact_handoff_ack(monkeypatch, tmp_path):
 
         transport.rpc.request = request
         assert await transport.begin_clear() == {"sessionId": TARGET}
+        assert output == [{"type": "assistant", "session_id": "exact"}]
         assert transport.session_id == "exact"
         with pytest.raises(WorkspaceRpcError):
             await transport.commit_clear("wrong")
@@ -38,7 +41,8 @@ def test_clear_blocks_input_until_exact_handoff_ack(monkeypatch, tmp_path):
         task = asyncio.create_task(transport.commit_clear(TARGET))
         await entered.wait()
         await asyncio.sleep(0)
-        assert output == [{"type": "system", "session_id": TARGET}]
+        assert output == [{"type": "assistant", "session_id": "exact"},
+                          {"type": "system", "session_id": TARGET}]
         for call in (transport.send({"session_id": TARGET}),
                      transport.control("supportedAgents"), transport.commit_clear(TARGET)):
             with pytest.raises(WorkspaceRpcError):

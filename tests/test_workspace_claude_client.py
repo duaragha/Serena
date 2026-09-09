@@ -26,6 +26,38 @@ class Transport:
         self.calls.append(("send", message))
 
 
+def test_clear_waits_for_old_output_to_be_consumed_before_identity_handoff():
+    async def run():
+        client = ClaudeTypeScriptClient(options=SimpleNamespace(resume="old", cwd="/project", cli_path="claude", env={}),
+                                        sdk_path="sdk", node_path="node", transport_factory=Transport)
+        target = "new"
+
+        async def begin():
+            await client.messages.put({"type": "assistant", "session_id": "old"})
+            return {"sessionId": target}
+
+        async def commit(sid):
+            assert sid == target
+            return {"sessionId": sid}
+
+        client.transport.begin_clear, client.transport.commit_clear = begin, commit
+        transition = asyncio.create_task(client.begin_clear())
+        await asyncio.sleep(0)
+        assert not transition.done()
+        messages = client.receive_messages()
+        assert (await anext(messages))["session_id"] == "old"
+        assert not transition.done()
+        consumer = asyncio.create_task(anext(messages))
+        assert (await transition)["sessionId"] == target
+        assert client.options.resume == "old"
+        await client.commit_clear(target)
+        assert client.options.resume == target
+        await client.messages.put(None)
+        with pytest.raises(StopAsyncIteration):
+            await consumer
+    asyncio.run(run())
+
+
 def test_compatibility_controls_and_native_records():
     async def run():
         options = SimpleNamespace(resume="exact", cwd="/project", cli_path="claude", env={})
