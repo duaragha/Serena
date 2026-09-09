@@ -138,6 +138,45 @@ def test_busy_bridge_queue_is_fifo_and_acknowledges_without_mutual_wait(host):
     assert not value._bridge_queues["exact"]
 
 
+def test_queued_message_cancellation_never_submits_or_interrupts(host):
+    value, provider = host
+    value.attach("exact")
+    owner = value._sessions["exact"][0]
+    owner.state = "running"
+    assert value.bridge("exact", provider, "cancel me", "queued")["queued"]
+    queue = value.events("exact")["events"][-1]["event"]["params"]
+    assert queue["requests"] == [{"id": "queued", "prompt": "cancel me"}]
+    cancelled = value.command(
+        "exact", "cancel-request", "cancel_queued_bridge", {"request_id": "queued"}
+    )
+    assert cancelled["result"] == {"cancelled": True}
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        result = value.bridge("exact", provider, "cancel me", "queued")
+        if not result.get("pending"):
+            break
+        time.sleep(0.02)
+    assert not result["ok"] and "cancelled before submission" in result["message"]
+    assert owner.state == "running" and not owner.sent
+    assert not value.command(
+        "exact", "stale-cancel", "cancel_queued_bridge", {"request_id": "queued"}
+    )["ok"]
+    assert not value._bridge_queues["exact"] and not value._bridge_messages
+
+
+def test_cancel_queue_cannot_interrupt_already_dispatched_turn(host):
+    value, provider = host
+    value.attach("exact")
+    value.bridge("exact", provider, "hello", "sent", timeout=0.005)
+    deadline = time.monotonic() + 3
+    while not value._sessions["exact"][0].sent and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert value._sessions["exact"][0].sent
+    result = value.command("exact", "cancel-late", "cancel_queued_bridge", {"request_id": "sent"})
+    assert not result["ok"] and "running turns are not cancelled" in result["error"]
+    assert len(value._sessions["exact"][0].sent) == 1
+
+
 def test_queued_bridge_fails_without_submission_when_owner_dies(host):
     value, provider = host
     value.attach("exact")

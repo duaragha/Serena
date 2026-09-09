@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Queued sibling messages now have a native queue panel with exact-request cancel.
+Cancellation and dispatch share the owner lock; a request leaves the cancellable
+queue before submission. A late cancel cannot interrupt a running turn. Queue
+events include the prompt and ID, and list updates are serialized under the same
+lock. Closing the panel sends nothing. Editing queued prompts and post-crash
+recovery remain unfinished.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_bridge.py tests/test_workspace_pane.py -q --basetemp=/tmp/serena-queue-cancel-verification
+# exit 0: 40 passed in 26.39s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_queue_dialog_cancels_only_selected_request_and_waits_for_host -q --basetemp=/tmp/serena-queue-cancel-layout
+# exit 0: 1 passed in 1.04s; mobile screenshot reviewed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_bridge.py::test_cancel_queue_cannot_interrupt_already_dispatched_turn -q --basetemp=/tmp/serena-queue-cancel-race-final
+# exit 0: 2 passed in 0.67s
+node --test tests/workspace-events.test.mjs tests/workspace-connection.test.mjs
+# exit 0: 11 passed, 0 failed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --bridge
+# exit 0: native running turn preserved, cancelled queued prompt absent from user
+# turns, next queued reply completed, receipt replay and owned process cleanup
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_bridge.py tests/test_workspace_pane.py scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed!
+```
+
+The first late-cancel test exited 1 because 5ms did not prove dispatch had
+occurred. It now observes the actual submission before testing the late cancel.
+
 Busy structured sessions now queue sibling bridge messages FIFO. The caller gets
 an immediate queued acknowledgement, avoiding two siblings synchronously waiting
 on one another. The same receipt retrieves the eventual reply; each delivery

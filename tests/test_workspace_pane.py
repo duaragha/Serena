@@ -144,11 +144,43 @@ def test_permission_prompt_defaults_to_no_grants_and_exact_selected_scope(pane, 
 
 def test_bridge_queue_count_tracks_native_host_events(pane):
     page, errors = pane
-    page.evaluate("""() => emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:2}})""")
-    page.wait_for_function("document.querySelector('#left .aw-state').textContent.includes('2 queued')")
-    page.evaluate("""() => emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:0}})""")
-    page.wait_for_function("!document.querySelector('#left .aw-state').textContent.includes('queued')")
+    page.evaluate(
+        """() => emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:2}})"""
+    )
+    page.wait_for_function(
+        "document.querySelector('#left .aw-state').textContent.includes('2 queued')"
+    )
+    page.evaluate(
+        """() => emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:0}})"""
+    )
+    page.wait_for_function(
+        "!document.querySelector('#left .aw-state').textContent.includes('queued')"
+    )
     assert page.evaluate("calls") == []
+    assert not errors
+
+
+def test_queue_dialog_cancels_only_selected_request_and_waits_for_host(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+      controls.cancelQueuedBridge=async id=>calls.push(['cancel',id]);
+      emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:1,requests:[{id:'queued-1',prompt:'<img src=x onerror=alert(1)> Please review the change.'}]}});
+    }""")
+    page.get_by_role("button", name="Queued sibling messages", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Queued sibling messages", exact=True)
+    assert dialog.locator("img").count() == 0
+    assert page.evaluate("calls") == []
+    page.screenshot(path=str(tmp_path / "queued-message-mobile.png"))
+    dialog.get_by_role("button", name="Cancel queued message queued-1").click()
+    assert page.evaluate("calls") == [["cancel", "queued-1"]]
+    assert dialog.get_by_role("button", name="Cancel queued message queued-1").is_disabled()
+    page.evaluate(
+        """() => emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:0,requests:[]}})"""
+    )
+    dialog.get_by_text("No queued messages", exact=True).wait_for()
+    dialog.get_by_role("button", name="Close queue").click()
+    assert page.evaluate("calls") == [["cancel", "queued-1"]]
     assert not errors
 
 

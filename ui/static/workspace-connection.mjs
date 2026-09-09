@@ -108,6 +108,7 @@ export class WorkspaceConnection {
       },
       models: () => this.command('models', {}),
       commands: () => this.command('commands', {}),
+      cancelQueuedBridge: request_id => this.command('cancel_queued_bridge', {request_id}),
       backgroundTasks: () => this.command('background_tasks', {}),
       terminateBackgroundTask: processId => this.command('terminate_background_task', {processId}),
       review: target => this.command('review', {target}),

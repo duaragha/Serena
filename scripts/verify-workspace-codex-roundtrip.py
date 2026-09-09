@@ -155,6 +155,18 @@ async def main(review=False, compact=False, permissions=False, bridge=False):
                         {"inputs": [{"type": "text", "text": "Reply exactly SERENA_BUSY_PROOF"}]},
                     )
                     assert warm["ok"]
+                    cancelled = await asyncio.to_thread(
+                        host.bridge, sid, "codex", "SERENA_CANCELLED_BRIDGE_PROOF", "cancel-bridge"
+                    )
+                    assert cancelled.get("queued")
+                    cancellation = await asyncio.to_thread(
+                        host.command,
+                        sid,
+                        "cancel-control",
+                        "cancel_queued_bridge",
+                        {"request_id": "cancel-bridge"},
+                    )
+                    assert cancellation["result"]["cancelled"]
                     response = await asyncio.to_thread(
                         host.bridge,
                         sid,
@@ -176,6 +188,25 @@ async def main(review=False, compact=False, permissions=False, bridge=False):
                     assert response["ok"] and response["session_id"] == sid
                     assert response["turn_id"] != warm["result"]["turn"]["id"]
                     assert "SERENA_BRIDGE_PROOF" in response["response"]
+                    cancelled = await asyncio.to_thread(
+                        host.bridge, sid, "codex", "SERENA_CANCELLED_BRIDGE_PROOF", "cancel-bridge"
+                    )
+                    assert (
+                        not cancelled["ok"]
+                        and "cancelled before submission" in cancelled["message"]
+                    )
+                    page = host.events(sid)
+                    assert not page["has_more"]
+                    for envelope in page["events"]:
+                        event = envelope["event"]
+                        if (
+                            event["method"] in {"item/started", "item/completed"}
+                            and event.get("params", {}).get("item", {}).get("type") == "userMessage"
+                        ):
+                            assert "SERENA_CANCELLED_BRIDGE_PROOF" not in json.dumps(event)
+                    print(
+                        "PASS: queued cancellation stayed out of native user turns; running turn preserved"
+                    )
                     same = await asyncio.to_thread(
                         host.bridge,
                         sid,

@@ -50,6 +50,7 @@ export class WorkspaceConversation {
       this.metadata.claudeUsage = p.usage;
     } else if (method === 'workspace/bridgeQueue') {
       this.metadata.bridgeQueueCount = p.count;
+      this.metadata.bridgeQueue = p.requests || [];
     } else if (method === 'workspace/activity') {
       this.status = p.status;
     } else if (method === 'workspace/commands') {

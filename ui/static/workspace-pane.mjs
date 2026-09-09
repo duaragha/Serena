@@ -102,6 +102,8 @@ export class WorkspacePane {
     this.commandsButton = this.button('Commands and skills', 'slash', () => this.openCommands());
     this.commandsButton.hidden = provider !== 'Claude' || !controls.commands;
     footer.insertBefore(this.commandsButton, this.stop);
+    this.queueButton = this.button('Queued sibling messages', 'messages-square', () => this.openBridgeQueue());
+    this.queueButton.hidden=true; footer.insertBefore(this.queueButton, this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
@@ -152,6 +154,35 @@ export class WorkspacePane {
       if (this.input.value) this.draftStorage.setItem(this.draftKey, this.input.value);
       else this.draftStorage.removeItem(this.draftKey);
     } catch (error) { this.error(new Error(`Draft could not be saved: ${error.message}`)); }
+  }
+
+  openBridgeQueue() {
+    if(this.queueDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-tasks-dialog');
+    dialog.setAttribute('aria-label','Queued sibling messages');
+    dialog.append(node('h3','','Queued sibling messages'),this.button('Close queue','x',()=>dialog.close()));
+    this.queueList=node('div'); dialog.append(this.queueList);
+    dialog.addEventListener('close',()=>dialog.remove());
+    this.queueDialog=dialog; this.queueSignature=null;
+    this.root.append(dialog); dialog.showModal(); this.renderBridgeQueue(); this.refreshIcons();
+  }
+
+  renderBridgeQueue() {
+    if(!this.queueDialog?.open)return;
+    const requests=this.conversation.metadata.bridgeQueue || [];
+    const signature=JSON.stringify(requests);
+    if(signature===this.queueSignature)return;
+    this.queueSignature=signature; this.queueList.replaceChildren();
+    if(!requests.length)this.queueList.append(node('p','','No queued messages'));
+    for(const request of requests){
+      const row=node('div','aw-background-task'); row.append(node('pre','',request.prompt));
+      const cancel=this.button(`Cancel queued message ${request.id}`,'x',async()=>{
+        cancel.disabled=true;
+        try{await this.controls.cancelQueuedBridge(request.id);}
+        catch(error){this.error(error);cancel.disabled=false;}
+      });
+      row.append(cancel); this.queueList.append(row);
+    }
   }
 
   async openCommands() {
@@ -632,6 +663,8 @@ export class WorkspacePane {
     }
     this.status.textContent = this.conversation.status;
     if (this.conversation.metadata.bridgeQueueCount > 0) this.status.textContent += ` / ${this.conversation.metadata.bridgeQueueCount} queued`;
+    this.queueButton.hidden = !this.controls.cancelQueuedBridge || !(this.conversation.metadata.bridgeQueueCount > 0);
+    this.renderBridgeQueue();
     const tokens = this.conversation.metadata.tokenUsage?.last?.totalTokens;
     const usage = this.conversation.metadata.claudeUsage;
     this.usageLabel.textContent = Number.isFinite(tokens) && tokens >= 0 ? `Last request: ${tokens.toLocaleString()} tokens` :
@@ -652,6 +685,7 @@ export class WorkspacePane {
     this.reviewDialog?.close();
     this.tasksDialog?.close();
     this.commandsDialog?.close();
+    this.queueDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
     this.historyImageUrls.clear();
     this.disposed = true;

@@ -47,6 +47,8 @@ class WorkspaceHost:
         self._locks = {}
         self._operations = set()
         self._bridge_queues = {}
+        self._bridge_messages = {}
+        self._bridge_cancelled = set()
 
     async def _run(self, coroutine):
         task = asyncio.current_task()
@@ -168,15 +170,9 @@ class WorkspaceHost:
                 return prior or {"ok": False, "pending": True}
             queue = self._bridge_queues.setdefault(sid, [])
             queue.append(key)
+            self._bridge_messages[(sid, key)] = prompt
             queued = owner.state in {"running", "submitting"} or len(queue) > 1
-            await asyncio.to_thread(
-                self.journal.append,
-                sid,
-                {
-                    "method": "workspace/bridgeQueue",
-                    "params": {"threadId": sid, "count": len(queue)},
-                },
-            )
+            await self._publish_bridge_queue(sid)
         delivery = self._deliver_bridge(sid, owner, prompt, key)
         if queued:
             # A sibling may itself be waiting inside a tool call. Return the
@@ -190,16 +186,35 @@ class WorkspaceHost:
             }
         return await delivery
 
+    async def _publish_bridge_queue(self, sid):
+        requests = [
+            {"id": key.removeprefix("bridge:"), "prompt": self._bridge_messages[(sid, key)]}
+            for key in self._bridge_queues.get(sid, [])
+        ]
+        await asyncio.to_thread(
+            self.journal.append,
+            sid,
+            {
+                "method": "workspace/bridgeQueue",
+                "params": {"threadId": sid, "count": len(requests), "requests": requests},
+            },
+        )
+
     async def _deliver_bridge(self, sid, owner, prompt, key):
         queue = self._bridge_queues[sid]
         try:
             while True:
                 async with self._locks[sid]:
+                    if (sid, key) in self._bridge_cancelled:
+                        raise RuntimeError("Queued bridge cancelled before submission")
                     if self._stopped:
                         raise RuntimeError("Host stopped; queued bridge was not submitted")
                     if owner.state in {"closed", "unavailable", "uncertain", "opening"}:
                         raise RuntimeError("Session unavailable; queued bridge was not submitted")
                     if queue[0] == key and owner.state == "ready":
+                        queue.remove(key)
+                        self._bridge_messages.pop((sid, key), None)
+                        await self._publish_bridge_queue(sid)
                         cursor = await asyncio.to_thread(self.journal.latest_sequence, sid)
                         result = await owner.submit([{"type": "text", "text": prompt}])
                         turn_id = result["turn"]["id"]
@@ -210,16 +225,12 @@ class WorkspaceHost:
             await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
             return receipt
         finally:
-            if key in queue:
-                queue.remove(key)
-            await asyncio.to_thread(
-                self.journal.append,
-                sid,
-                {
-                    "method": "workspace/bridgeQueue",
-                    "params": {"threadId": sid, "count": len(queue)},
-                },
-            )
+            async with self._locks[sid]:
+                if key in queue:
+                    queue.remove(key)
+                self._bridge_messages.pop((sid, key), None)
+                self._bridge_cancelled.discard((sid, key))
+                await self._publish_bridge_queue(sid)
         texts = {}
         receipt = None
         while receipt is None:
@@ -275,6 +286,7 @@ class WorkspaceHost:
             "background_tasks",
             "commands",
             "terminate_background_task",
+            "cancel_queued_bridge",
         } or not isinstance(payload, dict):
             raise ValueError("Unsupported workspace control")
         return self._dispatch(self._command(sid, request_id, action, deepcopy(payload)), timeout)
@@ -298,7 +310,21 @@ class WorkspaceHost:
                 )
             owner, provider = self._sessions[sid]
             try:
-                if action == "commands":
+                if action == "cancel_queued_bridge":
+                    if set(payload) != {"request_id"} or not isinstance(payload["request_id"], str):
+                        raise ValueError("An exact queued bridge ID is required")
+                    key = f"bridge:{payload['request_id']}"
+                    queue = self._bridge_queues.get(sid, [])
+                    if key not in queue:
+                        raise ValueError(
+                            "Message is no longer queued; running turns are not cancelled"
+                        )
+                    self._bridge_cancelled.add((sid, key))
+                    queue.remove(key)
+                    self._bridge_messages.pop((sid, key), None)
+                    await self._publish_bridge_queue(sid)
+                    result = {"cancelled": True}
+                elif action == "commands":
                     if provider != "claude" or payload:
                         raise ValueError(
                             "Command discovery requires a Claude session and no payload"
