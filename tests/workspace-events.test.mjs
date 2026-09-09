@@ -5,6 +5,16 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('older pages prepend without overwriting live turns or changing working status',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,{method:'workspace/history',params:{historyCursor:'older',thread:{id:'exact',turns:[{id:'live',status:'inProgress',items:[{id:'a',type:'agentMessage',text:'current'}]}]}}}));
+  model.apply(wrap(2,{method:'workspace/historyPage',params:{threadId:'exact',historyCursor:null,turns:[{id:'old',status:'completed',items:[]},{id:'live',status:'completed',items:[]}]}}));
+  assert.deepEqual([...model.turns.keys()],['old','live']);
+  assert.equal(model.turns.get('live').items.get('a').text,'current');
+  assert.equal(model.status,'running');
+  assert.equal(model.metadata.historyCursor,null);
+});
+
 test('subagent provenance survives streaming and completion without replacing parent model',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,{method:'workspace/settings',params:{model:'parent-model'}}));

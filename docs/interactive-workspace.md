@@ -2,6 +2,46 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native Codex history pagination (2026-09-09): paginated sessions now request
+the newest 50 turns with `itemsView:full`, reverse them into chronological order,
+and retain an opaque older-page cursor. Current/in-progress resume turns take
+precedence over corresponding historical snapshots. Explicit Load earlier reads
+the exact owned session/cursor, persists a historyPage event, and prepends older
+turns without overwriting live turns or changing working state. Cursor cycles,
+malformed pages and stale requests reject without advancing. Stable host receipts
+prevent repeating the same confirmed page action.
+
+The renderer preserves its visible anchor when a page arrives after command
+acknowledgement. Automatic top-scroll expansion applies only to already-loaded
+messages, not native page fetches. Normal DOM windowing remains in place.
+Initial investigation suspected missing resume turns; the actual native fixture
+returned all 51 on resume. Therefore this is verified bounded pane history and
+explicit paging, not evidence that the installed CLI was dropping those turns.
+The initial native resume response and retained journal can still be large;
+this change does not claim a fully bounded backend-memory implementation.
+
+Official paging contract: https://developers.openai.com/codex/app-server/
+(accessed 2026-09-09), List thread turns, full items and descending cursor order.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_older_history_uses_exact_owner_cursor_and_receipt tests/test_workspace_codex.py tests/test_workspace_pane.py::test_native_older_history_is_explicit_and_preserves_scroll -q
+# exit 0: 27 passed in 0.96s
+node --test tests/workspace-events.test.mjs tests/workspace-connection.test.mjs
+# exit 0: 24 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-codex-history.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py
+# exit 0: 51 native print-only shell turns, fresh owner resume with 50 recent
+# full turns, explicit final older turn; project untouched, owners closed.
+```
+
+Earlier proof exited 1 because all resume turns were inadvertently merged back
+into the bounded page; corrected to keep matching/current turns only. The first
+browser run exited 1 because the old scroll handler fetched a native page without
+a click; corrected and rerun. No credentials or model calls are used by the
+native proof, only isolated explicit `printf` commands. This is not installed
+Electron QA or completion of the full provider-parity contract.
+
 Codex fork controls (2026-09-09): idle exact-owner `thread/fork` now feeds the
 same explicit create/register/open workflow as Claude. The owner validates the
 new UUID/project, retains its source identity/PID and routes confirmed fork

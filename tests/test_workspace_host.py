@@ -85,6 +85,22 @@ def test_interrupt_rejects_stale_displayed_turn_and_replays_receipt_without_stop
     assert not invalid["ok"]
 
 
+def test_older_history_uses_exact_owner_cursor_and_receipt(host):
+    host.attach("exact")
+    owner = Owner.instances[-1]
+    calls = []
+    async def older(cursor):
+        calls.append((owner.sid, cursor))
+        return {"turns": [], "historyCursor": None}
+    owner.load_earlier = older
+    assert not host.command("exact", "bad-history", "load_earlier", {"cursor": 1})["ok"]
+    payload = {"cursor": "opaque"}
+    result = host.command("exact", "history", "load_earlier", payload)
+    assert result["ok"] and calls == [("exact", "opaque")]
+    assert host.command("exact", "history", "load_earlier", payload) == result
+    assert len(calls) == 1
+
+
 def test_permission_mode_control_requires_explicit_boolean_confirmation(tmp_path):
     calls = []
     class PermissionOwner(Owner):

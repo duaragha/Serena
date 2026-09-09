@@ -291,6 +291,7 @@ class WorkspaceHost:
             "background_tasks",
             "commands",
             "reload_skills",
+            "load_earlier",
             "fork_session",
             "register_fork",
             "context_usage",
@@ -413,6 +414,10 @@ class WorkspaceHost:
                         "method": "workspace/sessionForked", "params": {"threadId": sid, "requestId": request_id, "fork": result}
                     })
                     result = await self._register_created_fork(result)
+                elif action == "load_earlier":
+                    if provider != "codex" or set(payload) != {"cursor"} or not isinstance(payload["cursor"], str):
+                        raise ValueError("An exact Codex history cursor is required")
+                    result = await owner.load_earlier(payload["cursor"])
                 elif action == "reload_skills":
                     if provider != "claude" or payload:
                         raise ValueError("Skill reload requires a Claude session and no payload")

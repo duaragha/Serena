@@ -582,6 +582,29 @@ def test_fork_dialog_never_creates_or_opens_automatically(pane, tmp_path, indexe
     assert not errors
 
 
+def test_native_older_history_is_explicit_and_preserves_scroll(pane):
+    page, errors = pane
+    page.evaluate("""()=>{
+      controls.loadEarlier=async cursor=>calls.push(['older',cursor]);
+      emit({method:'workspace/history',params:{historyCursor:'page-2',thread:{id:'exact',turns:[{id:'recent',status:'completed',items:Array.from({length:20},(_,i)=>({id:'recent-'+i,type:'agentMessage',text:'Recent message '+i+' '.repeat(3)+'content '.repeat(30)}))}]}}});
+      pane.render();pane.log.scrollTop=0;
+    }""")
+    button = page.get_by_role("button", name="Load earlier messages")
+    assert button.is_visible() and page.evaluate("calls") == []
+    button.click()
+    assert page.evaluate("calls") == [["older", "page-2"]]
+    # Delivery is deliberately later than the command acknowledgement.
+    page.evaluate("""()=>{
+      window.anchor=pane.rendered.get(JSON.stringify(['recent','recent-0'])).element;
+      window.anchorY=anchor.getBoundingClientRect().top;
+      emit({method:'workspace/historyPage',params:{threadId:'exact',historyCursor:null,turns:[{id:'old',status:'completed',items:[{id:'old-0',type:'agentMessage',text:'The oldest real message.'}]}]}});
+    }""")
+    assert abs(page.evaluate("anchor.getBoundingClientRect().top-anchorY")) < 2
+    assert page.get_by_text("The oldest real message.", exact=True).count() == 1
+    assert button.is_hidden()
+    assert not errors
+
+
 def test_closing_pending_fork_cannot_start_second_creation(pane):
     page, errors = pane
     page.evaluate("""() => {

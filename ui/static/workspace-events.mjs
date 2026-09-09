@@ -60,6 +60,13 @@ export class WorkspaceConversation {
         Object.assign(turn, source, {items: new Map((source.items || []).map(i => [i.id, i]))});
       }
       this.status = [...this.turns.values()].some(t => t.status === 'inProgress') ? 'running' : 'ready';
+    } else if (method === 'workspace/historyPage') {
+      const older = new Map();
+      for (const source of p.turns || []) {
+        older.set(source.id, {...source,items:new Map((source.items || []).map(i=>[i.id,i]))});
+      }
+      this.turns=new Map([...older,...this.turns]);
+      this.metadata.historyCursor=p.historyCursor;
     } else if (method === 'thread/tokenUsage/updated') {
       this.metadata.tokenUsage = p.tokenUsage;
     } else if (method === 'workspace/claudeUsage') {

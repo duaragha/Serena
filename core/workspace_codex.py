@@ -54,6 +54,35 @@ class CodexWorkspace:
         self._fork_ready = asyncio.Event()
         self._fork_ready.set()
         self._fork_ids: set[str] = set()
+        self.history_cursor: str | None = None
+        self._history_cursors: set[str] = set()
+
+    async def _history_page(self, cursor=None):
+        params = {"threadId": self.session_id, "limit": 50, "sortDirection": "desc", "itemsView": "full"}
+        if cursor is not None:
+            params["cursor"] = cursor
+        page = await self.rpc.request("thread/turns/list", params)
+        if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+            raise WorkspaceRpcError("Codex returned invalid paginated history")
+        ids = set()
+        for turn in page["data"]:
+            if not isinstance(turn, dict) or not isinstance(turn.get("id"), str) or not turn["id"] or turn["id"] in ids or not isinstance(turn.get("items"), list):
+                raise WorkspaceRpcError("Codex returned invalid history turns")
+            ids.add(turn["id"])
+        following = page.get("nextCursor")
+        if following is not None and (not isinstance(following, str) or not following or following == cursor or following in self._history_cursors):
+            raise WorkspaceRpcError("Codex history pagination did not advance")
+        return {"turns": list(reversed(page["data"])), "historyCursor": following}
+
+    async def load_earlier(self, cursor):
+        async with self._control_lock:
+            if self.state in {"closed", "opening", "unavailable"} or not cursor or cursor != self.history_cursor:
+                raise WorkspaceRpcError("History cursor is stale or session unavailable")
+            page = await self._history_page(cursor)
+            await self.publish({"method": "workspace/historyPage", "params": {"threadId": self.session_id, **deepcopy(page)}})
+            self._history_cursors.add(cursor)
+            self.history_cursor = page["historyCursor"]
+            return page
 
     async def fork_session(self):
         async with self._control_lock:
@@ -110,6 +139,13 @@ class CodexWorkspace:
                     raise WorkspaceRpcError(
                         "Codex returned a different session; refusing attachment"
                     )
+                if thread.get("historyMode") == "paginated":
+                    page = await self._history_page()
+                    turns = {turn["id"]: turn for turn in page["turns"]}
+                    turns.update({turn["id"]: turn for turn in thread.get("turns", [])
+                                  if turn["id"] in turns or turn.get("status") == "inProgress"})
+                    thread["turns"] = list(turns.values())
+                    self.history_cursor = result["historyCursor"] = page["historyCursor"]
                 self.thread = deepcopy(thread)
                 self.settings = {
                     key: deepcopy(result[key])

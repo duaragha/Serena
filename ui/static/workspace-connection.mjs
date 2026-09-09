@@ -129,6 +129,7 @@ export class WorkspaceConnection {
       models: () => this.command('models', {}),
       commands: () => this.command('commands', {}),
       reloadSkills: () => this.command('reload_skills', {}),
+      loadEarlier: cursor => this.command('load_earlier', {cursor}),
       forkSession: () => this.command('fork_session', {}),
       recoverFork: fork_request_id => this.command('register_fork', {fork_request_id}),
       lastFork: () => JSON.parse(this.storage.getItem(this.forkKey) || 'null'),

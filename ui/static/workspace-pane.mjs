@@ -52,7 +52,7 @@ export class WorkspacePane {
     this.earlier = this.button('Load earlier messages', 'arrow-up', () => this.loadEarlier());
     this.earlier.classList.add('aw-load-earlier');
     this.log.addEventListener('scroll', () => {
-      if (this.log.scrollTop < 40 && !this.earlier.hidden) this.loadEarlier();
+      if (this.log.scrollTop < 40 && this.visibleItemLimit < this.lastItemCount) this.loadEarlier();
     });
     this.questionArea = node('div', 'aw-questions');
     this.alert = node('div', 'aw-error');
@@ -579,6 +579,8 @@ export class WorkspacePane {
 
   receive(envelope) {
     if (this.disposed) return false;
+    const older=envelope.event?.method==='workspace/historyPage';
+    const scroll=older?{height:this.log.scrollHeight,top:this.log.scrollTop,count:[...this.conversation.turns.values()].reduce((n,t)=>n+t.items.size,0)}:null;
     try {
       if (!this.conversation.apply(envelope)) return true;
     } catch (error) {
@@ -587,7 +589,12 @@ export class WorkspacePane {
       this.controls.replay?.(this.conversation.sequence);
       return false;
     }
-    if (!this.frame) this.frame = requestAnimationFrame(() => { this.frame = 0; this.render(); });
+    if(older){
+      if(this.frame){cancelAnimationFrame(this.frame);this.frame=0;}
+      const count=[...this.conversation.turns.values()].reduce((n,t)=>n+t.items.size,0);
+      this.visibleItemLimit+=Math.max(0,count-scroll.count);this.lastItemCount=count;
+      this.render();this.log.scrollTop=scroll.top+this.log.scrollHeight-scroll.height;
+    } else if (!this.frame) this.frame = requestAnimationFrame(() => { this.frame = 0; this.render(); });
     return true;
   }
 
@@ -945,9 +952,18 @@ export class WorkspacePane {
     }
   }
 
-  loadEarlier() {
-    if (this.disposed || this.visibleItemLimit >= this.lastItemCount) return;
+  async loadEarlier() {
+    if (this.disposed || this.loadingEarlier) return;
     const height = this.log.scrollHeight, top = this.log.scrollTop;
+    if (this.visibleItemLimit >= this.lastItemCount) {
+      const cursor=this.conversation.metadata.historyCursor;
+      if (!cursor || !this.controls.loadEarlier) return;
+      this.loadingEarlier=true;this.earlier.disabled=true;
+      try { await this.controls.loadEarlier(cursor); }
+      catch(error) { this.error(error); }
+      finally { this.loadingEarlier=false;this.earlier.disabled=false; }
+      return;
+    }
     this.visibleItemLimit += 100;
     this.render();
     this.log.scrollTop = top + this.log.scrollHeight - height;
@@ -963,7 +979,7 @@ export class WorkspacePane {
     // Keep the reader's existing window when new items arrive away from the tail.
     if (!follow && count > this.lastItemCount && this.lastItemCount) this.visibleItemLimit += count - this.lastItemCount;
     this.lastItemCount = count;
-    this.earlier.hidden = count <= this.visibleItemLimit;
+    this.earlier.hidden = count <= this.visibleItemLimit && !(this.conversation.metadata.historyCursor && this.controls.loadEarlier);
     const ordered = [this.earlier];
     let skip = Math.max(0, count - this.visibleItemLimit);
     for (const turn of this.conversation.turns.values()) {

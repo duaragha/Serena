@@ -8,6 +8,57 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_rpc import WorkspaceRpcError
 
 
+def test_paginated_resume_and_explicit_older_page(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        original = rpc.request
+        requests = []
+        async def request(method, params):
+            if method == "thread/resume":
+                return {"thread": {"id": rpc.sid, "historyMode": "paginated", "turns": []}}
+            if method == "thread/turns/list":
+                requests.append(params)
+                ids = ["newer", "middle"] if "cursor" not in params else ["oldest"]
+                return {"data": [{"id": sid, "status": "completed", "items": []} for sid in ids],
+                        "nextCursor": None if "cursor" in params else "older"}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            history = await client.open(binary="codex")
+            assert [t["id"] for t in history["thread"]["turns"]] == ["middle", "newer"]
+            assert history["historyCursor"] == "older" and len(requests) == 1
+            with pytest.raises(WorkspaceRpcError, match="stale"):
+                await client.load_earlier("wrong")
+            await client.load_earlier("older")
+            assert events[-1]["method"] == "workspace/historyPage"
+            assert events[-1]["params"]["turns"][0]["id"] == "oldest"
+            assert client.history_cursor is None and client.state == "ready"
+            assert requests == [{"threadId": rpc.sid, "limit": 50, "sortDirection": "desc", "itemsView": "full"},
+                                {"threadId": rpc.sid, "limit": 50, "sortDirection": "desc", "itemsView": "full", "cursor": "older"}]
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("bad", [{"data": [] , "nextCursor": "same"}, {"data": [{}]}, {"data": None}])
+def test_history_page_rejection_does_not_advance_cursor(tmp_path, bad):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        await client.open(binary="codex")
+        client.history_cursor = "same"
+        async def request(method, params):
+            return bad
+        rpc.request = request
+        before = len(events)
+        try:
+            with pytest.raises(WorkspaceRpcError):
+                await client.load_earlier("same")
+            assert client.history_cursor == "same" and len(events) == before
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_fork_preserves_owner_and_filters_only_created_thread(tmp_path):
     async def run():
         client, rpc, published = await make(tmp_path)
