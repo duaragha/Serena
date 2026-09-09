@@ -1,9 +1,11 @@
 """Real subprocess pipes; no provider calls, sessions, credentials or PTYs."""
 
 import asyncio
+import contextlib
 import os
 import sys
 
+import psutil
 import pytest
 
 from core.workspace_rpc import WorkspaceRpc, WorkspaceRpcError
@@ -35,6 +37,41 @@ for line in sys.stdin:
     elif 'result' in msg:
         emit({'method':'answerObserved', 'params':msg})
 """
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX owned process groups")
+@pytest.mark.parametrize("inherit_output", [False, True])
+def test_owner_close_removes_child_even_after_leader_exits(tmp_path, inherit_output):
+    peer = r"""
+import json, subprocess, sys
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+    stdin=subprocess.DEVNULL, stdout=None if sys.argv[1]=='True' else subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL)
+for line in sys.stdin:
+    msg=json.loads(line)
+    print(json.dumps({'id':msg['id'],'result':{'pid':child.pid}}),flush=True)
+"""
+    async def run():
+        rpc = WorkspaceRpc()
+        child = None
+        try:
+            await rpc.start([sys.executable, '-u', '-c', peer, str(inherit_output)], cwd=tmp_path, env=dict(os.environ))
+            pid = (await rpc.request('child', {}))['pid']
+            child = psutil.Process(pid)
+            assert os.getpgid(pid) == rpc.process.pid
+            assert os.getpgid(pid) != os.getpgrp()
+            await asyncio.wait_for(rpc.close(), 8)
+            for _ in range(100):
+                if not child.is_running() or child.status() == psutil.STATUS_ZOMBIE:
+                    break
+                await asyncio.sleep(.01)
+            assert not child.is_running() or child.status() == psutil.STATUS_ZOMBIE
+        finally:
+            if child:
+                with contextlib.suppress(psutil.NoSuchProcess):
+                    child.kill()
+            await rpc.close()
+    asyncio.run(run())
 
 
 def test_bidirectional_approval_does_not_block_other_requests(tmp_path):

@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import signal
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,7 @@ class WorkspaceRpc:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=os.name != "nt",
                 limit=16 * 1024 * 1024,
             )
             self._tasks = [asyncio.create_task(self._read()), asyncio.create_task(self._stderr())]
@@ -153,13 +156,24 @@ class WorkspaceRpc:
                 await asyncio.wait_for(process.wait(), 2)
             except TimeoutError:
                 with contextlib.suppress(ProcessLookupError):
-                    process.terminate()
+                    if os.name != "nt":
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        process.terminate()
                 try:
                     await asyncio.wait_for(process.wait(), 2)
                 except TimeoutError:
                     with contextlib.suppress(ProcessLookupError):
-                        process.kill()
+                        if os.name != "nt":
+                            os.killpg(process.pid, signal.SIGKILL)
+                        else:
+                            process.kill()
                     await process.wait()
+            # The leader may exit normally while shell/MCP children survive.
+            # Only explicit owner close reaches here, never renderer disposal.
+            if os.name != "nt":
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
             for task in self._tasks:
                 task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)

@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+POSIX owner shutdown (2026-09-09): a marked isolated subprocess proof reproduced
+an orphaned worker: parent exit 0, child_survived_owner_close true. The proof
+terminated its own child and exited 0; no provider was launched. WorkspaceRpc
+now starts an owned POSIX session/process group. Explicit owner shutdown signals
+that group on timeout and removes remaining group members after leader exit.
+This also handles a child retaining stdout after the leader exits. Browser
+disposal still never closes the owner. Processes deliberately escaping the group
+are not covered; Windows tree containment and safe crash recovery remain open.
+Do not add automatic resume based solely on the parent process disappearing.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_rpc.py -q`: exit 0, 7 passed in 2.32s; real subprocess child cleanup with inherited and detached stdout, distinct host/child process groups.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_claude_transport.py tests/test_workspace_host.py -q`: exit 0, 67 passed in 5.90s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_rpc.py tests/test_workspace_rpc.py`: initial exit 1, import order and suppress style; corrected, final exit 0.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py`: exit 0, native commands/history/reopen and desktop/mobile output, page-close preservation and owner cleanup.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0, exact native session input/output, plugin/skill controls, fork, lease and process cleanup.
+- `git diff --check`: exit 0.
+Source only; not rebuilt, installed, released, or a full recovery implementation.
+
 Claude plugin reload (2026-09-09): Commands and skills now includes an explicit
 Reload plugins control backed by the pinned SDK's public Query.reloadPlugins().
 It refreshes the command catalog, retains native plugin/agent/MCP metadata in the
