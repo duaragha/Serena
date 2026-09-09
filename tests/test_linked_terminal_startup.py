@@ -20,7 +20,7 @@ def _function(name):
 @pytest.mark.parametrize("entry", ["claude", "codex", "gemini"])
 def test_opening_any_member_starts_all_three_once(entry):
     functions = "\n".join(_function(name) for name in (
-        "_agentOf", "_linkedGroupSids", "_startLinkedTerminals",
+        "_agentOf", "_pendingPartnersOf", "_linkedGroupSids", "_startLinkedTerminals",
     ))
     script = r"""
 const assert = require('node:assert/strict');
