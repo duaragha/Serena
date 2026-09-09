@@ -152,6 +152,36 @@ def test_claude_permission_is_explicit_and_waits_for_resolution(pane):
     assert not errors
 
 
+def test_claude_questions_send_selected_and_custom_answers(pane, tmp_path):
+    page, errors = pane
+    page.evaluate("""emit({id:'ask',method:'workspace/claudeApproval',params:{threadId:'exact',tool:'AskUserQuestion',input:{questions:[
+      {question:'Which database?',multiSelect:false,options:[{label:'Postgres'},{label:'SQLite'}]},
+      {question:'Which checks?',multiSelect:true,options:[{label:'Unit'},{label:'Browser'}]}
+    ]}}})""")
+    page.get_by_role("radio", name="Postgres", exact=True).check()
+    page.get_by_role("checkbox", name="Unit", exact=True).check()
+    page.get_by_role("checkbox", name="Browser", exact=True).check()
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.screenshot(path=str(tmp_path / "claude-question-mobile.png"))
+    page.get_by_role("group", name="Which database?").get_by_label("Custom answer").fill("MariaDB")
+    page.get_by_role("button", name="Answer", exact=True).click()
+    page.wait_for_function("calls.length === 1")
+    assert page.evaluate("calls[0]") == [
+        "answer",
+        "ask",
+        {
+            "answers": {
+                "Which database?": "MariaDB",
+                "Which checks?": "Unit, Browser",
+            }
+        },
+    ]
+    assert page.get_by_role("group", name="Which database?").is_visible()
+    page.evaluate("emit({method:'serverRequest/resolved',params:{requestId:'ask'}})")
+    page.get_by_role("group", name="Which database?").wait_for(state="hidden")
+    assert not errors
+
+
 def test_composer_upload_failure_retains_draft_and_closing_does_not_cancel(pane):
     page, errors = pane
     composer = page.get_by_role("textbox", name="Message Claude")

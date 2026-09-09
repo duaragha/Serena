@@ -47,6 +47,7 @@ class ClaudeWorkspace:
         self.client = None
         self.events = ClaudeEvents(session_id)
         self.questions = {}
+        self.question_inputs = {}
         self._stop = asyncio.Event()
         self._ready = None
         self._owner_task = None
@@ -226,6 +227,7 @@ class ClaudeWorkspace:
             raise RuntimeError("Duplicate Claude permission request")
         future = asyncio.get_running_loop().create_future()
         self.questions[request_id] = future
+        self.question_inputs[request_id] = (tool, deepcopy(inputs))
         try:
             await self.publish(
                 {
@@ -243,6 +245,7 @@ class ClaudeWorkspace:
             return await future
         finally:
             self.questions.pop(request_id, None)
+            self.question_inputs.pop(request_id, None)
             await self.publish(
                 self.events.event("serverRequest/resolved", {"requestId": request_id})
             )
@@ -251,14 +254,36 @@ class ClaudeWorkspace:
         future = self.questions.get(request_id)
         if future is None or future.done():
             raise ValueError("Claude request is no longer pending")
+        tool, inputs = self.question_inputs[request_id]
+        if tool == "AskUserQuestion" and isinstance(answer, dict) and set(answer) == {"answers"}:
+            answers = answer["answers"]
+            questions = inputs.get("questions", [])
+            expected = {q.get("question") for q in questions}
+            if (
+                not expected
+                or None in expected
+                or len(expected) != len(questions)
+                or not isinstance(answers, dict)
+                or set(answers) != expected
+                or any(
+                    not isinstance(value, str) or not value.strip() for value in answers.values()
+                )
+            ):
+                raise ValueError("Answer every pending Claude question")
+            future.set_result(
+                PermissionResultAllow(updated_input={**inputs, "answers": deepcopy(answers)})
+            )
+            return
         if (
             not isinstance(answer, dict)
             or set(answer) != {"decision"}
             or answer["decision"] not in {"allow", "deny"}
         ):
             raise ValueError("An explicit allow or deny decision is required")
+        if tool == "AskUserQuestion" and answer["decision"] == "allow":
+            raise ValueError("Claude questions require answers, not approval")
         result = (
-            PermissionResultAllow()
+            PermissionResultAllow(updated_input=inputs)
             if answer["decision"] == "allow"
             else PermissionResultDeny(message="Denied by user")
         )

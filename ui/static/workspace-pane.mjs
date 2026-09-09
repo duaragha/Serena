@@ -262,6 +262,40 @@ export class WorkspacePane {
           button.addEventListener('click', () => this.answer(id, {decision}, form));
           form.append(button);
         }
+      } else if (question.method === 'workspace/claudeApproval' && p.tool === 'AskUserQuestion') {
+        const fields = [];
+        for (const [index, q] of (p.input?.questions || []).entries()) {
+          const group = node('fieldset');
+          group.append(node('legend', '', q.question));
+          const choices = [];
+          for (const option of q.options || []) {
+            const label = node('label', '', option.label);
+            const choice = node('input');
+            choice.type = q.multiSelect ? 'checkbox' : 'radio';
+            choice.name = `claude-${id}-${index}`; choice.value = option.label;
+            label.prepend(choice); label.title = option.description || '';
+            group.append(label); choices.push(choice);
+          }
+          const label = node('label', '', 'Custom answer');
+          const custom = node('input'); custom.type = 'text';
+          label.append(custom); group.append(label); form.append(group);
+          fields.push({question:q.question, choices, custom, multi:q.multiSelect});
+        }
+        const send = node('button', '', 'Answer'); send.type = 'submit'; form.append(send);
+        const deny = node('button', '', 'Dismiss'); deny.type = 'button';
+        deny.addEventListener('click', () => this.answer(id, {decision:'deny'}, form)); form.append(deny);
+        form.addEventListener('submit', e => {
+          e.preventDefault();
+          const answers = Object.fromEntries(fields.map(field => {
+            const selected = field.choices.filter(choice => choice.checked).map(choice => choice.value);
+            const custom = field.custom.value.trim();
+            return [field.question, field.multi ? [...selected, ...(custom ? [custom] : [])].join(', ') : custom || selected[0] || ''];
+          }));
+          if (!fields.length || Object.values(answers).some(value => !value)) {
+            this.error(new Error('Answer every question before submitting.')); return;
+          }
+          this.answer(id, {answers}, form);
+        });
       } else if (question.method === 'workspace/claudeApproval') {
         form.append(node('p', '', p.title || `Allow ${p.tool || 'Claude tool'}?`));
         form.append(node('pre', '', JSON.stringify(p.input || {}, null, 2)));

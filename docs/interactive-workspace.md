@@ -2,6 +2,25 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude clarifying questions now have native radio/checkbox/custom-answer controls.
+Answers are keyed by the original question, returned through SDK updated_input,
+and validated against the pending request. Plain approval cannot bypass answering.
+Ordinary tool approvals now echo their original input for older CLI compatibility.
+Reference: https://code.claude.com/docs/en/agent-sdk/user-input (accessed 2026-09-09).
+Browser verification includes mobile rendering; the installed control probe is
+still initialization-only, not proof of a model-generated question round trip.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_pane.py -q
+# exit 0: 16 passed in 4.37s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_claude_questions_send_selected_and_custom_answers -q
+# exit 0: 1 passed in 0.65s after mobile checkbox/radio layout adjustment
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py
+# exit 0: installed SDK/CLI handshake; owned child exit 0; no query/resume
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py tests/test_workspace_claude.py tests/test_workspace_pane.py
+# exit 0: All checks passed!
+```
+
 Latest input integration: the host can now map session-bound uploads to Claude
 SDK image content blocks and preserve text/document references. It uses the same
 command receipt guard as Codex; replay cannot send a second message. The

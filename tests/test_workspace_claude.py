@@ -121,6 +121,38 @@ def test_missing_or_mismatched_native_session_never_launches(tmp_path, native_id
     asyncio.run(run())
 
 
+def test_clarifying_answers_preserve_question_contract_and_reject_empty_approval(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        inputs = {"questions": [{"question": "Which database?", "multiSelect": False}]}
+        task = asyncio.create_task(
+            owner._permission(
+                "AskUserQuestion", inputs, ToolPermissionContext(tool_use_id="question")
+            )
+        )
+        await asyncio.sleep(0)
+        assert not task.done()
+        for invalid in [
+            {"decision": "allow"},
+            {"answers": {}},
+            {"answers": {"Which database?": ""}},
+        ]:
+            with pytest.raises(ValueError):
+                await owner.answer("question", invalid)
+        assert not task.done()
+        await owner.answer("question", {"answers": {"Which database?": "Postgres"}})
+        result = await task
+        assert result.behavior == "allow"
+        assert result.updated_input == {**inputs, "answers": {"Which database?": "Postgres"}}
+        assert "answers" not in inputs
+        assert not owner.questions and not owner.question_inputs
+        assert events[-1]["method"] == "serverRequest/resolved"
+        with pytest.raises(ValueError, match="no longer pending"):
+            await owner.answer("question", {"answers": {"Which database?": "SQLite"}})
+
+    asyncio.run(run())
+
+
 def test_ambiguous_send_cannot_repeat_and_wrong_identity_closes(tmp_path):
     async def run():
         owner, events = make(tmp_path)

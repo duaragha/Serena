@@ -35,4 +35,6 @@
 .aw-questions{max-height:40%;overflow:auto;flex-shrink:0}.aw-question{border-top:1px solid #50354a;padding:14px 25px;background:#160d18}
 .aw-question p{white-space:pre-wrap;overflow-wrap:anywhere}.aw-question button{border:1px solid #63455d;margin:3px;font-size:11px}.aw-question label{display:block;margin:10px 0}
 .aw-question input{display:block;width:100%;background:#000;border:1px solid #63455d;border-radius:4px;padding:7px}
+.aw-question input[type=radio],.aw-question input[type=checkbox]{display:inline-block;width:auto;margin:0 8px 0 0;accent-color:#ff85cb}
+.aw-question fieldset{min-width:0;border:0;padding:0;margin:0 0 14px}.aw-question legend{white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:760px){.aw-head{padding:8px 12px}.aw-transcript{padding:18px 14px}.aw-composer{margin:8px 12px 0}.aw-identity{padding:6px 12px}.aw-question{padding:12px}}
