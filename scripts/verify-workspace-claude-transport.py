@@ -113,6 +113,12 @@ async def main():
         assert turn["providerOriginal"]["num_turns"] == 0
         assert turn["providerOriginal"]["total_cost_usd"] == 0
         assert any(event["method"] == "item/completed" for event in events)
+        result_text = turn["providerOriginal"]["result"]
+        assert result_text
+        visible_results = [event["params"]["item"] for event in events
+                           if event["method"] == "item/completed"
+                           and event["params"]["item"].get("text") == result_text]
+        assert len(visible_results) == 1, "Native local-command output was duplicated"
         assert owner.state == "ready"
     finally:
         await owner.close()

@@ -20,6 +20,7 @@ class ClaudeEvents:
         self.streaming_tools = {}
         self.capabilities = {}
         self.tasks = {}
+        self.last_root_text = None
 
     def event(self, method, params):
         return {"method": method, "params": {"threadId": self.sid, **params}}
@@ -211,7 +212,12 @@ class ClaudeEvents:
         elif kind in {"AssistantMessage", "UserMessage"} and self.turn:
             message_id = data.get("message_id") or data.get("uuid") or self.message_ids.get(parent)
             if message_id:
-                for item in self.blocks(data["content"], message_id, user=kind == "UserMessage"):
+                items = self.blocks(data["content"], message_id, user=kind == "UserMessage")
+                if kind == "AssistantMessage" and parent == "root":
+                    self.last_root_text = (self.turn, "".join(
+                        item["text"] for item in items if item["type"] == "agentMessage"
+                    ))
+                for item in items:
                     item.update(origin)
                     if item["type"] == "claudeToolCall":
                         self.tools[item["id"]] = deepcopy(item)
@@ -226,6 +232,9 @@ class ClaudeEvents:
                 data.get("num_turns") == 0
                 and isinstance(data.get("result"), str)
                 and data["result"]
+                # Some local commands emit both an assistant message and an
+                # identical final result. Keep the raw result, not a second row.
+                and (data.get("is_error") or self.last_root_text != (self.turn, data["result"]))
             ):
                 events.append(
                     self.event(
@@ -257,5 +266,6 @@ class ClaudeEvents:
             if isinstance(data.get("usage"), dict):
                 events.append(self.event("workspace/claudeUsage", {"usage": data["usage"]}))
             self.turn = None
+            self.last_root_text = None
             self.streaming_tools.clear()
         return events

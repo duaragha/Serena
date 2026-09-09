@@ -79,3 +79,28 @@ def test_native_local_result_finishes_turn_with_usage_and_unknown_records_surviv
     assert event(converter.receive(unknown), "workspace/claude")["record"] == unknown
     with pytest.raises(ValueError, match="different session"):
         converter.receive({**unknown, "session_id": "wrong"})
+
+
+@pytest.mark.parametrize("parent, next_turn, error, text, rows", [
+    (None, False, False, "Effort set to low", 0),
+    ("child-tool", False, False, "Effort set to low", 1),
+    (None, True, False, "Effort set to low", 1),
+    (None, False, True, "Effort set to low", 1),
+    (None, False, False, "Different result", 1),
+])
+def test_local_result_dedup_is_exact_root_turn_only(parent, next_turn, error, text, rows):
+    converter = ClaudeEvents("exact")
+    converter.turn = "first"
+    assistant = {"type": "assistant", "session_id": "exact", "parent_tool_use_id": parent,
+                 "message": {"id": "message", "model": "<synthetic>",
+                             "content": [{"type": "text", "text": "Effort set to low"}]}}
+    assert event(converter.receive(assistant), "item/completed")["item"]["text"] == "Effort set to low"
+    if next_turn:
+        converter.turn = "second"
+    result = {"type": "result", "session_id": "exact", "num_turns": 0,
+              "is_error": error, "result": text, "duration_ms": 4}
+    events = converter.receive(result)
+    assert len([item for item in events if item["method"] == "item/completed"]) == rows
+    assert event(events, "workspace/claude")["record"] == result
+    assert event(events, "turn/completed")["turn"]["status"] == ("failed" if error else "completed")
+    assert converter.last_root_text is None

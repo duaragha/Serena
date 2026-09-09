@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native command presentation repair (2026-09-09): suppress the second visible
+result only when it exactly matches the latest root assistant message in that
+same turn. Child output, previous-turn matches, different results and errors
+remain visible. Raw provider records and completion evidence are unchanged.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_wire.py tests/test_workspace_claude.py -q
+# exit 0: 34 passed in 0.54s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_events.py tests/test_workspace_claude_wire.py scripts/verify-workspace-claude-transport.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron
+# exit 0: actual native result now has exactly one visible item; source owner,
+# native resume, process ownership and Electron Node-mode checks passed.
+```
+
+This correction is in source, not the previous frozen screenshots/build.
+Raw command markup in replayed history remains open.
+
 Frozen native browser roundtrip (2026-09-09): `verify-workspace-frozen.py`
 starts the built sidecar with isolated HOME, index, leases and an inaccessible
 private D-Bus address. It resumes only the seeded test session, sends a native
