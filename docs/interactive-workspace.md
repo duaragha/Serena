@@ -2,6 +2,20 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Earlier-history attachment previews (2026-09-09): the upload decorator now
+handles workspace/historyPage as well as the initial workspace/history event.
+Older user images receive preview tokens only after the same session/path/hash
+validation. Foreign-session or changed files remain undecorated; original
+provider records are unchanged. This repairs preview loss when loading earlier
+messages, not cross-session/fork attachment access or retention policy.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_uploads.py::test_all_history_pages_decorate_only_unchanged_session_images -q`: before the fix, exit 1, 1 failed/1 passed; the older-page case lacked previewToken.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_uploads.py tests/test_workspace_app.py -q`: exit 0, 12 passed in 7.94s.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-history-images.py`: initial exit 1 because a string-form Playwright wait violated production CSP. Changed the proof to a function-form wait and the actual image class; no CSP policy changed. Final exit 0: desktop/mobile decoded the 96x64 owned image through real session-bound HTTP, no foreign preview fetched, reopening replayed the older page with one owner and one history request. Provider history was controlled fixture data; no CLI/inference or user files involved.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_uploads.py tests/test_workspace_uploads.py scripts/verify-workspace-history-images.py`: exit 0.
+Inspected apps/desktop/build/workspace-proof/history-images-mobile.png; image
+visible and content contained. Source-only, not packaged or installed.
+
 Explicit failed-attachment retry (2026-09-09): a closed/unavailable owner can be
 replaced only on an explicit attach request and only when its provider reports
 finished successful cleanup. Codex requires no transport, lease or event task;

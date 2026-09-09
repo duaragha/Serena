@@ -118,3 +118,29 @@ def test_only_owned_image_paths_get_preview_tokens(tmp_path):
     assert "previewToken" not in decorated["params"]["item"]["content"][1]
     assert uploads.decorate_event("different", event) == event
     assert "previewToken" not in event["params"]["item"]["content"][0]
+
+
+@pytest.mark.parametrize("method", ["workspace/history", "workspace/historyPage"])
+def test_all_history_pages_decorate_only_unchanged_session_images(tmp_path, method):
+    from copy import deepcopy
+    uploads = WorkspaceUploads(tmp_path)
+    own = uploads.save("exact", "owned.png", io.BytesIO(png()))
+    other = uploads.save("different", "foreign.png", io.BytesIO(png()))
+    own_path, _ = uploads.resolve("exact", own["token"])
+    other_path, _ = uploads.resolve("different", other["token"])
+    turns = [{"id": "old", "items": [{"type": "userMessage", "content": [
+        {"type": "localImage", "path": str(own_path)},
+        {"type": "localImage", "path": str(other_path)}]}]}]
+    params = {"thread": {"id": "exact", "turns": turns}} if method == "workspace/history" else {"threadId": "exact", "turns": turns, "historyCursor": "older"}
+    event = {"method": method, "params": params}
+    before = deepcopy(event)
+    def content(result):
+        value = result["params"]
+        return (value["thread"]["turns"] if "thread" in value else value["turns"])[0]["items"][0]["content"]
+    result = uploads.decorate_event("exact", event)
+    assert content(result)[0]["previewToken"] == own["token"]
+    assert content(result)[0]["name"] == "owned.png"
+    assert "previewToken" not in content(result)[1]
+    assert event == before
+    own_path.write_bytes(b"changed")
+    assert "previewToken" not in content(uploads.decorate_event("exact", event))[0]

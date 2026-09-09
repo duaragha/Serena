@@ -117,10 +117,12 @@ class WorkspaceUploads:
         result = deepcopy(event)
         params = result.get("params", {})
         items = [params.get("item", {})]
-        if result.get("method") == "workspace/history":
+        if result.get("method") in {"workspace/history", "workspace/historyPage"}:
+            turns = (params.get("thread", {}).get("turns", [])
+                     if result["method"] == "workspace/history" else params.get("turns", []))
             items = [
                 item
-                for turn in params.get("thread", {}).get("turns", [])
+                for turn in turns
                 for item in turn.get("items", [])
             ]
         for item in items:
