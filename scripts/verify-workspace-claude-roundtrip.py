@@ -209,6 +209,28 @@ async def main(bridge=False, background_task=False):
                     print(
                         "PASS: edited queued text reached native Claude through the exact resumed owner; original receipt preserved"
                     )
+                    running = await asyncio.to_thread(host.command, sid, "interrupt-warm", "submit", {"inputs": [{"type": "text", "text": "Do not use tools. Count from 1 to 100, one number per line."}]})
+                    turn_id = running["result"]["turn"]["id"]
+                    rejected = await asyncio.to_thread(host.command, sid, "stale-interrupt", "interrupt", {"expectedTurnId": "not-the-active-turn"})
+                    assert not rejected["ok"]
+                    stopped = await asyncio.to_thread(host.command, sid, "exact-interrupt", "interrupt", {"expectedTurnId": turn_id})
+                    assert stopped["ok"]
+                    async with asyncio.timeout(30):
+                        while host._sessions[sid][0].state != "ready":
+                            await asyncio.sleep(0.1)
+                    after = 0
+                    completion = None
+                    while True:
+                        page = await asyncio.to_thread(host.events, sid, after=after)
+                        for envelope in page["events"]:
+                            event = envelope["event"]
+                            if event["method"] == "turn/completed" and event["params"]["turn"]["id"] == turn_id:
+                                completion = event["params"]["turn"]
+                        if not page["has_more"]:
+                            break
+                        after = page["cursor"]
+                    assert completion is not None
+                    print(f"PASS: stale stop rejected, exact native turn interrupted, owner ready; native completion status={completion['status']}")
                 finally:
                     await asyncio.to_thread(host.shutdown)
         finally:

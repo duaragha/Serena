@@ -27,6 +27,7 @@ export class WorkspacePane {
     this.previews = new Map();
     this.historyImageUrls = new Set();
     this.sending = false;
+    this.interrupting = false;
     this.disposed = false;
     this.frame = 0;
     root.classList.add('agent-workspace-pane');
@@ -84,11 +85,9 @@ export class WorkspacePane {
     this.tierSelect.setAttribute('aria-label', 'Speed tier'); this.tierSelect.title = 'Speed tier'; this.tierSelect.hidden = true;
     this.modelSelect.hidden = this.effortSelect.hidden = true;
     this.modelSelect.addEventListener('change', () => this.renderEfforts(true));
-    this.stop = this.button('Interrupt turn', 'square', async () => {
-      this.stop.disabled = true;
-      try { await this.controls.interrupt(); } catch (e) { this.error(e); }
-      finally { if (!this.disposed) this.stop.disabled = false; }
-    });
+    this.stop = this.button('Interrupt turn', 'square', () => this.interrupt());
+    this.stop.title = 'Interrupt turn (Escape)';
+    this.stop.setAttribute('aria-keyshortcuts','Escape');
     this.stop.hidden = true;
     this.send = this.button('Send message', 'arrow-up'); this.send.type = 'submit';
     footer.append(attach, this.modelSelect, this.effortSelect, this.tierSelect, this.stop, this.send);
@@ -121,6 +120,9 @@ export class WorkspacePane {
     this.form.append(this.input, this.attachments, footer, this.fileInput);
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
+      if(e.key==='Escape' && !e.isComposing && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && this.conversation.status==='running'){
+        e.preventDefault();e.stopPropagation();this.interrupt();return;
+      }
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.form.requestSubmit(); }
     });
     this.input.addEventListener('paste', e => {
@@ -514,6 +516,16 @@ export class WorkspacePane {
     }
     if (!this.frame) this.frame = requestAnimationFrame(() => { this.frame = 0; this.render(); });
     return true;
+  }
+
+  async interrupt() {
+    if(this.disposed || this.interrupting || this.conversation.status!=='running')return;
+    const turns=[...this.conversation.turns.values()].filter(turn=>turn.status==='inProgress');
+    if(turns.length!==1){this.error(Error('Running turn identity is unavailable'));return;}
+    this.interrupting=true;this.render();
+    try{await this.controls.interrupt(turns[0].id);}
+    catch(error){this.error(error);}
+    finally{this.interrupting=false;if(!this.disposed)this.render();}
   }
 
   async submit() {
@@ -924,6 +936,7 @@ export class WorkspacePane {
     this.usageLabel.textContent = Number.isFinite(tokens) && tokens >= 0 ? `Last request: ${tokens.toLocaleString()} tokens` :
       Number.isFinite(usage?.input_tokens) && Number.isFinite(usage?.output_tokens) ? `Turn: ${usage.input_tokens.toLocaleString()} input / ${usage.output_tokens.toLocaleString()} output` : '';
     this.stop.hidden = this.conversation.status !== 'running';
+    this.stop.disabled = this.interrupting;
     this.reviewButton.disabled = !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.compactButton.disabled = this.reviewButton.disabled;
     const steering = this.canSteer();

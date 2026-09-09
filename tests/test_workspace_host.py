@@ -64,6 +64,27 @@ def host(tmp_path):
     value.shutdown()
 
 
+def test_interrupt_rejects_stale_displayed_turn_and_replays_receipt_without_stopping_new_turn(host):
+    host.attach("exact")
+    owner = host._sessions["exact"][0]
+    calls = []
+    async def interrupt():
+        calls.append(owner.active_turn)
+        return {"interrupted": True}
+    owner.interrupt = interrupt
+    owner.active_turn = "current"
+    stale = host.command("exact", "stale", "interrupt", {"expectedTurnId": "old"})
+    assert not stale["ok"] and "no longer active" in stale["error"]
+    assert calls == []
+    current = host.command("exact", "stop", "interrupt", {"expectedTurnId": "current"})
+    assert current["ok"] and calls == ["current"]
+    owner.active_turn = "next"
+    assert host.command("exact", "stop", "interrupt", {"expectedTurnId": "current"}) == current
+    assert calls == ["current"]
+    invalid = host.command("exact", "invalid", "interrupt", {"expectedTurnId": None})
+    assert not invalid["ok"]
+
+
 def test_permission_mode_control_requires_explicit_boolean_confirmation(tmp_path):
     calls = []
     class PermissionOwner(Owner):

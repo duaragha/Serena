@@ -433,8 +433,10 @@ class WorkspaceHost:
                         kwargs["skills"] = payload["skills"]
                     result = await owner.steer(inputs, **kwargs)
                 elif action == "interrupt":
-                    if payload:
-                        raise ValueError("Interrupt takes no payload")
+                    if payload and (set(payload) != {"expectedTurnId"} or not isinstance(payload["expectedTurnId"], str) or not payload["expectedTurnId"]):
+                        raise ValueError("Interrupt requires an exact expected turn ID")
+                    if payload and payload["expectedTurnId"] != owner.active_turn:
+                        raise ValueError("Displayed turn is no longer active; current turn was not interrupted")
                     result = await owner.interrupt()
                 else:
                     if set(payload) != {"request_id", "answer"}:

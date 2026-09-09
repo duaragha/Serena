@@ -60,6 +60,34 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_escape_interrupts_only_focused_running_turn_not_dialog_or_draft(pane):
+    page, errors = pane
+    draft = page.get_by_role("textbox", name="Message Claude")
+    draft.fill("Keep my draft")
+    draft.press("Escape")
+    assert page.evaluate("calls") == []
+    page.evaluate("""() => {
+      controls.interrupt=id=>{calls.push(['interrupt',id]);return new Promise(resolve=>window.finishInterrupt=resolve);};
+      controls.cancelQueuedBridge=async()=>{};
+      emit({method:'turn/started',params:{turn:{id:'running-exact',status:'inProgress'}}});
+      emit({method:'workspace/bridgeQueue',params:{count:1,requests:[{id:'q',prompt:'queued'}]}});
+    }""")
+    page.get_by_role("button", name="Queued sibling messages").click()
+    page.keyboard.press("Escape")
+    page.get_by_role("dialog", name="Queued sibling messages").wait_for(state="hidden")
+    assert page.evaluate("calls") == []
+    draft.press("Escape")
+    draft.press("Escape")
+    assert page.evaluate("calls") == [["interrupt", "running-exact"]]
+    assert page.get_by_role("button", name="Interrupt turn").is_disabled()
+    assert draft.input_value() == "Keep my draft"
+    page.evaluate("finishInterrupt();emit({method:'turn/completed',params:{turn:{id:'running-exact',status:'interrupted'}}})")
+    page.get_by_role("button", name="Interrupt turn").wait_for(state="hidden")
+    draft.press("Escape")
+    assert page.evaluate("calls") == [["interrupt", "running-exact"]]
+    assert not errors
+
+
 @pytest.mark.parametrize("width", [390, 1600])
 def test_queue_edit_keeps_draft_and_targets_original_message(pane, tmp_path, width):
     page, errors = pane

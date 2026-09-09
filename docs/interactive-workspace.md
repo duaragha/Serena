@@ -2,6 +2,26 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Escape in the focused composer now requests interruption of its displayed
+running turn. The stop button shares that path and an in-flight guard. Idle
+Escape, IME composition, key repeats, dialog dismissal and view disposal do not
+interrupt. The browser sends expectedTurnId; the host rejects stale targets under
+the session lock and preserves receipt replay without stopping a later turn.
+Legacy callers omitting expectedTurnId retain the prior API contract.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_pane.py::test_escape_interrupts_only_focused_running_turn_not_dialog_or_draft -q --basetemp=/tmp/serena-scoped-interrupt
+# exit 0: 21 passed in 8.77s
+node --test tests/workspace-connection.test.mjs
+# exit 0: 13 passed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference --bridge
+# exit 0: stale stop rejected, exact native stop accepted, matching turn
+# completed and owner returned ready; owned processes cleaned up
+```
+
+Claude reported the interrupted turn with native failed status; this slice does
+not relabel provider failures as interruption based solely on a button click.
+
 Queued sibling messages can now be edited by exact request ID. Dispatch reads the
 latest saved text under the same session lock, preserving FIFO and the original
 sender's receipt identity. Updates compare the displayed original text, reject

@@ -11,6 +11,15 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('interrupt carries displayed turn identity to the exact session',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{calls.push([url,JSON.parse(options.body)]);return response({ok:true,result:{}});}});
+  await conn.controls().interrupt('displayed');conn.dispose();
+  assert.equal(calls[0][0],'/api/workspace/exact/commands');
+  assert.equal(calls[0][1].action,'interrupt');
+  assert.deepEqual(calls[0][1].payload,{expectedTurnId:'displayed'});
+});
+
 test('queue editing routes replacement and original text through a stable control receipt',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{calls.push(JSON.parse(options.body));throw Error('response lost');}});

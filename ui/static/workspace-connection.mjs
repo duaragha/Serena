@@ -129,7 +129,7 @@ export class WorkspaceConnection {
       compact: () => this.command('compact', {}),
       submit: message => this.sendMessage('submit', message),
       steer: message => this.sendMessage('steer', message),
-      interrupt: () => this.command('interrupt', {}),
+      interrupt: expectedTurnId => this.command('interrupt', expectedTurnId === undefined ? {} : {expectedTurnId}),
       answer: (request_id, answer) => this.command('answer', {request_id, answer}),
     };
   }
