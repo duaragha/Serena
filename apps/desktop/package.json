@@ -49,6 +49,11 @@
       {
         "from": "build/sidecar/serena-web-sidecar",
         "to": "sidecar"
+      },
+      {
+        "from": "../../runtimes/claude-sdk",
+        "to": "runtimes/claude-sdk",
+        "filter": ["package.json", "node_modules/**/*", "!node_modules/.bin/**/*"]
       }
     ],
     "linux": {

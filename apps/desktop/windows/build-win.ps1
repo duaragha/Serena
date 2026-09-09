@@ -62,6 +62,8 @@ New-Item -ItemType Directory -Path $SidecarDist -Force | Out-Null
 New-Item -ItemType Directory -Path $PyInstallerWork -Force | Out-Null
 
 Write-Host "[windows] building the PyInstaller onedir sidecar"
+& npm.cmd --prefix (Join-Path $RepoRoot "runtimes\claude-sdk") ci --ignore-scripts --omit=optional --no-audit --no-fund
+Assert-LastExitCode "Claude workspace SDK provisioning"
 & $Python -m PyInstaller `
     --noconfirm `
     --clean `

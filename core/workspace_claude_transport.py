@@ -37,6 +37,10 @@ class ClaudeSdkTransport:
         inherited = dict(os.environ if env is None else env)
         clean = strip_metered_auth_env(inherited)
         clean.update({key: "" for key in set(METERED_AUTH_ENV_VARS) | (inherited.keys() - clean.keys())})
+        if clean.get("SERENA_WORKSPACE_NODE_MODE") == "electron":
+            clean["ELECTRON_RUN_AS_NODE"] = "1"
+        else:
+            clean.pop("ELECTRON_RUN_AS_NODE", None)
         await self.rpc.start(self.command, cwd=self.cwd, env=clean)
         self.reader = asyncio.create_task(self._read())
         try:

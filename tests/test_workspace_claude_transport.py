@@ -145,3 +145,16 @@ def test_answers_only_the_exact_pending_rpc_request(monkeypatch, tmp_path):
         assert transport.rpc.answers == [("wire-1", {"action": "accept", "content": {"choice": "one"}})]
         await transport.close()
     asyncio.run(run())
+
+
+def test_electron_node_mode_is_scoped_to_worker(monkeypatch, tmp_path):
+    async def run():
+        transport, _ = make(monkeypatch, tmp_path)
+        await transport.open(env={"SERENA_WORKSPACE_NODE_MODE": "electron"})
+        assert transport.rpc.calls[0][1]["ELECTRON_RUN_AS_NODE"] == "1"
+        await transport.close()
+        transport, _ = make(monkeypatch, tmp_path)
+        await transport.open(env={"ELECTRON_RUN_AS_NODE": "1"})
+        assert "ELECTRON_RUN_AS_NODE" not in transport.rpc.calls[0][1]
+        await transport.close()
+    asyncio.run(run())

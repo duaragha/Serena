@@ -417,6 +417,7 @@ async function startBackend() {
       detached: process.platform !== 'win32',
       env: {
         ...process.env,
+        ...launch.env,
         PYTHONUNBUFFERED: '1',
         SERENA_CALL_RUNTIME: 'lazy',
       },

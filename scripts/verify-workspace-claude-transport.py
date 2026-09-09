@@ -95,6 +95,8 @@ async def main():
     try:
         await owner.open()
         assert owner.client.transport.command[2] == str(Path(sdk).resolve())
+        if os.environ.get("SERENA_WORKSPACE_NODE_MODE") == "electron":
+            assert owner.client.transport.command[0] == str(Path(os.environ["SERENA_WORKSPACE_NODE"]).resolve())
         await owner.submit([{"type": "text", "text": "/effort low"}])
         if discovery_form:
             async with asyncio.timeout(15):
@@ -116,6 +118,8 @@ async def main():
         await owner.close()
     assert not native.is_running()
     print("PASS: existing ClaudeWorkspace owner used public SDK client, replayed history, listed native models, converted real command output/completion for pane, returned ready and reaped CLI")
+    if os.environ.get("SERENA_WORKSPACE_NODE_MODE") == "electron":
+        print("PASS: default owner ran SDK worker using Electron in Node mode; no desktop window launched")
 
 
 if __name__ == "__main__":

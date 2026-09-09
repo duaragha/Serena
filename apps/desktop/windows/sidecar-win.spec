@@ -18,6 +18,9 @@ sys.path.insert(0, str(REPO_ROOT))
 datas = []
 for source, destination in (
     (REPO_ROOT / "ui" / "static", "ui/static"),
+    (REPO_ROOT / "core" / "workspace_claude_worker.mjs", "core"),
+    (REPO_ROOT / "core" / "workspace_claude_channel.mjs", "core"),
+    (REPO_ROOT / "core" / "workspace_claude_sdk.mjs", "core"),
     (REPO_ROOT / "fleet" / "gemini_research_agent.md", "fleet"),
     (REPO_ROOT / "static", "static"),
     (REPO_ROOT / "voice" / "call" / "vocabulary.txt", "voice/call"),

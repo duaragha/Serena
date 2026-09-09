@@ -10,7 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {createInterface} from 'node:readline';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
-const [sdkPath,cliPath,pythonPath,formMode]=process.argv.slice(2);
+const [sdkPath,cliPath,pythonPath,formMode,electronPath]=process.argv.slice(2);
 assert(!formMode || formMode==='--discovery-form','Unknown proof mode');
 assert(sdkPath && cliPath,'SDK module and installed CLI paths required');
 const root=await mkdtemp(join(tmpdir(),'serena-claude-driver-'));
@@ -113,7 +113,8 @@ try {
   if(pythonPath) {
     const python=spawn(resolve(pythonPath),[fileURLToPath(new URL('./verify-workspace-claude-transport.py',import.meta.url)),
       resolve(sdkPath),resolve(cliPath),sid,root],{env:{...process.env,SERENA_EVIDENCE_KIND:'live',
-        SERENA_PROOF_DISCOVERY_FORM:formMode?'1':''},stdio:['ignore','inherit','inherit']});
+        SERENA_PROOF_DISCOVERY_FORM:formMode?'1':'',
+        ...(electronPath?{SERENA_WORKSPACE_NODE:resolve(electronPath),SERENA_WORKSPACE_NODE_MODE:'electron'}:{})},stdio:['ignore','inherit','inherit']});
     children.push(python);
     const pythonExit=new Promise((done,reject)=>{python.once('exit',(code,signal)=>done({code,signal}));python.once('error',reject);});
     exits.push(pythonExit);pythonExit.catch(()=>{});

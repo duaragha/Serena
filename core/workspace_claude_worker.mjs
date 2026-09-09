@@ -24,7 +24,7 @@ async function reap() {
 }
 const channel=new ClaudeSdkChannel({write,
   sessionOptions:{sdk,sessionId,cwd,
-    options:{pathToClaudeCodeExecutable:resolve(cliPath),env:{...process.env},
+    options:{pathToClaudeCodeExecutable:resolve(cliPath),env:{...process.env,ELECTRON_RUN_AS_NODE:''},
       settingSources:['user','project','local'],systemPrompt:{type:'preset',preset:'claude_code'},
       includePartialMessages:true},
     spawnOwned:options=>{

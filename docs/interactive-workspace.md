@@ -2,6 +2,37 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Desktop runtime packaging wiring (2026-09-09): both Linux and Windows recipes
+now provision the locked SDK and include it outside app.asar, plus all three
+native worker modules in their PyInstaller data. Desktop backend environment
+supplies packaged resource and Electron executable paths. Only the SDK worker
+gets Electron's Node-mode environment flag; the native Claude CLI does not.
+Source: https://www.electronjs.org/docs/latest/tutorial/fuses, accessed 2026-09-09
+(RunAsNode is enabled by default and controls ELECTRON_RUN_AS_NODE support).
+
+```sh
+node --test apps/desktop/tests/shell.test.js
+# exit 0: 9 passed, launch environment and both packaging recipes
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_transport.py -q
+# exit 0: 7 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_transport.py tests/test_workspace_claude_transport.py scripts/verify-workspace-claude-transport.py
+# exit 0
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron
+# exit 0: default owner runs public SDK worker with the real Electron executable
+# in Node mode, exact native session input/output and cleanup; no GUI launched.
+# From apps/desktop:
+npm test
+# initial exit 1: missing local js-yaml dependency (52 pass, one load failure)
+npm ci --ignore-scripts --no-audit --no-fund
+# exit 0: 329 packages, existing dependency deprecation warnings
+npm test
+# exit 0: 70 passed
+```
+
+This is build wiring plus Linux runtime evidence, not an installer build or
+Windows execution proof. Frozen artifacts, shared-backend runtime discovery,
+and actual installed-app QA remain required. No release, restart or deployment.
+
 Source runtime provisioning (2026-09-09): `runtimes/claude-sdk` now pins SDK
 0.3.266 with a generated npm lockfile. `workspace_claude_runtime.py` validates
 installed package identity/version and resolves Node without installing or

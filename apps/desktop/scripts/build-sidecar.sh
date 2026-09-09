@@ -21,6 +21,7 @@ if ! "$python_bin" -c 'import PyInstaller' 2>/dev/null; then
 fi
 
 site_packages="$($python_bin -c 'import site; print(site.getsitepackages()[0])')"
+npm --prefix "$repo_root/runtimes/claude-sdk" ci --ignore-scripts --omit=optional --no-audit --no-fund
 rm -rf "$pyinstaller_work" "$sidecar_dist"
 mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
 
@@ -40,6 +41,9 @@ mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
   --collect-all numpy \
   --collect-submodules Xlib \
   --add-data "$repo_root/ui/static:ui/static" \
+  --add-data "$repo_root/core/workspace_claude_worker.mjs:core" \
+  --add-data "$repo_root/core/workspace_claude_channel.mjs:core" \
+  --add-data "$repo_root/core/workspace_claude_sdk.mjs:core" \
   --add-data "$repo_root/fleet/gemini_research_agent.md:fleet" \
   "$desktop_dir/sidecar.py"
 
