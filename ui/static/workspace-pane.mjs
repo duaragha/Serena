@@ -46,6 +46,9 @@ export class WorkspacePane {
     this.forkButton.hidden=!['Claude','Codex'].includes(provider) || !controls.forkSession || !controls.openFork;
     this.forkButton.disabled=true;
     head.append(this.forkButton);
+    this.shellButton=this.button('Run shell command','terminal',()=>this.openShell());
+    this.shellButton.hidden=provider!=='Codex' || !controls.shellCommand;
+    head.append(this.shellButton);
     this.log = node('div', 'aw-transcript');
     this.log.tabIndex = 0;
     this.log.setAttribute('aria-label', `${provider} messages and tool output`);
@@ -436,6 +439,25 @@ export class WorkspacePane {
       status.textContent=result.mode?`Last confirmed: ${labels[result.mode] || result.mode}`:'Current mode unavailable';
       confirmLabel.hidden=!codex && select.value!=='bypassPermissions';apply.disabled=!result.modes.length;
     }catch(error){if(dialog.open)status.textContent=error.message;}
+  }
+
+  openShell() {
+    if(this.shellDialog?.open || this.shellSubmitting)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Run shell command');
+    const close=this.button('Close shell command','x',()=>dialog.close());
+    const input=node('textarea');input.setAttribute('aria-label','Shell command');input.rows=4;
+    const confirm=node('input');confirm.type='checkbox';
+    const label=node('label');label.append(confirm,document.createTextNode('Run outside the Codex sandbox'));
+    const status=node('p');status.setAttribute('role','status');
+    const run=this.button('Run command','play',async()=>{
+      if(this.shellSubmitting || !confirm.checked || !input.value.trim())return;
+      this.shellSubmitting=true;run.disabled=true;input.disabled=true;confirm.disabled=true;
+      try {await this.controls.shellCommand(input.value,true);if(dialog.open)dialog.close();}
+      catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{this.shellSubmitting=false;run.disabled=false;input.disabled=false;confirm.disabled=false;}
+    });
+    dialog.append(node('h3','','Run shell command'),close,input,label,status,run);
+    dialog.addEventListener('close',()=>dialog.remove());this.shellDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();input.focus();
   }
 
   openContext() {
@@ -1039,6 +1061,7 @@ export class WorkspacePane {
     this.send.setAttribute('aria-label', this.send.title);
     this.send.disabled = this.sending || (!steering && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.forkButton.disabled=this.forkCreating || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
+    this.shellButton.disabled=this.shellSubmitting || !['ready','running','completed','interrupted'].includes(this.conversation.status);
     if (this.conversation.error) this.error(this.conversation.error);
     this.renderQuestions(); this.refreshIcons();
     if (follow) this.log.scrollTop = this.log.scrollHeight;

@@ -2,6 +2,39 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native Codex shell action (2026-09-09): the pane now offers an explicit Run shell
+command dialog. Its outside-sandbox confirmation is required by the backend,
+not merely the UI. Commands use `thread/shellCommand` on the exact owned session,
+preserve native timeout defaults and stream through existing real command-output
+rendering. They are not submitted as model prompts. Idle and running sessions
+are supported; unavailable/uncertain or approval-blocked sessions refuse input.
+Unconfirmed delivery becomes uncertain and cannot be silently repeated. Stable
+host receipts ensure a repeated confirmed click/request does not execute twice.
+The original chat composer draft is unchanged; creating/closing the dialog never
+runs a command. This action is currently Codex only.
+
+Official semantics checked at https://developers.openai.com/codex/app-server/
+(accessed 2026-09-09), thread/shellCommand: explicit commands run outside the
+Codex sandbox, as standalone idle turns or auxiliary actions in an active turn.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q
+# exit 0: 27 passed in 0.14s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_shell_dialog_requires_explicit_confirmation_and_keeps_chat_draft -q
+# exit 0: 2 passed in 1.67s, 390px and 1600px layouts; no modal overflow
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_pane.py scripts/verify-workspace-codex-history.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py
+# exit 0: actual explicit host/owner command produced native output and exit 0,
+# exactly one completed turn after replaying its receipt; pagination still passed.
+```
+
+The first browser check exited 1 because the test locator matched both Codex
+composers; scoped to the intended pane and rerun. Native proof is an isolated
+print-only command with no model/auth use. It verifies idle command execution,
+not active-turn auxiliary output or installed browser interaction; those remain
+integration checks, along with Claude parity and full delivery gates.
+
 Combined regression and history retry (2026-09-09): all workspace Python/browser
 tests plus Codex history readers passed together after fork/pagination integration.
 Code review then found a confirmed failed history read remained pinned to its

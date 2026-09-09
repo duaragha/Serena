@@ -292,6 +292,7 @@ class WorkspaceHost:
             "commands",
             "reload_skills",
             "load_earlier",
+            "shell_command",
             "fork_session",
             "register_fork",
             "context_usage",
@@ -414,6 +415,10 @@ class WorkspaceHost:
                         "method": "workspace/sessionForked", "params": {"threadId": sid, "requestId": request_id, "fork": result}
                     })
                     result = await self._register_created_fork(result)
+                elif action == "shell_command":
+                    if provider != "codex" or set(payload) != {"command", "confirmed"}:
+                        raise ValueError("An explicit Codex shell command is required")
+                    result = await owner.shell_command(payload["command"], payload["confirmed"])
                 elif action == "load_earlier":
                     if provider != "codex" or set(payload) != {"cursor"} or not isinstance(payload["cursor"], str):
                         raise ValueError("An exact Codex history cursor is required")

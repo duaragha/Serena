@@ -47,8 +47,11 @@ async def main():
             print("PASS: 51 native print-only turns persisted without inference")
             await rpc.close()
             events = []
+            completed = asyncio.Event()
             async def publish(event):
                 events.append(event)
+                if event.get("method") == "turn/completed":
+                    completed.set()
             owner = CodexWorkspace(session_id=sid, cwd=project, publish=publish,
                                    lease_factory=lambda session: SessionLease(session, directory=root / "leases"))
             history = await owner.open(binary=binary, env=env)
@@ -69,6 +72,18 @@ async def main():
             assert owner.state == "ready" and owner.session_id == sid
             print("PASS: native resumed history loads 50 recent turns, then exact oldest full turn on demand")
             print("PASS: host rejects stale history with retryable receipt and routes valid read to unchanged native owner")
+            completed.clear()
+            start = len(events)
+            payload = {"command": "printf SERENA_EXPLICIT_SHELL", "confirmed": True}
+            shell = await host._command(sid, "explicit-shell", "shell_command", payload)
+            assert shell["ok"], shell
+            await asyncio.wait_for(completed.wait(), 10)
+            assert await host._command(sid, "explicit-shell", "shell_command", payload) == shell
+            assert owner.state == "ready"
+            results = [e["params"]["item"] for e in events[start:] if e.get("method") == "item/completed"]
+            assert any("SERENA_EXPLICIT_SHELL" in json.dumps(item) and item.get("exitCode") == 0 for item in results), results
+            assert sum(e.get("method") == "turn/completed" for e in events[start:]) == 1
+            print("PASS: explicit host shell command produced native output and exit 0 exactly once; repeated receipt did not rerun")
         finally:
             if owner:
                 await owner.close()

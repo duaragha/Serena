@@ -582,6 +582,29 @@ def test_fork_dialog_never_creates_or_opens_automatically(pane, tmp_path, indexe
     assert not errors
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+def test_shell_dialog_requires_explicit_confirmation_and_keeps_chat_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""async()=>{
+      const {WorkspacePane}=await import('/workspace-pane.mjs');
+      controls.shellCommand=async(command,confirmed)=>calls.push([command,confirmed]);
+      pane.dispose();pane=new WorkspacePane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      pane.conversation.status='ready';pane.render();pane.input.value='unsent draft';
+    }""")
+    page.get_by_role('button', name='Run shell command', exact=True).click()
+    dialog = page.get_by_role('dialog', name='Run shell command')
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    dialog.get_by_role('textbox', name='Shell command').fill('printf hello')
+    dialog.get_by_role('button', name='Run command', exact=True).click()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('checkbox').check()
+    dialog.get_by_role('button', name='Run command', exact=True).click()
+    assert page.evaluate('calls') == [['printf hello', True]]
+    assert page.locator('#left').get_by_role('textbox', name='Message Codex').input_value() == 'unsent draft'
+    assert not errors
+
+
 def test_native_older_history_is_explicit_and_preserves_scroll(pane):
     page, errors = pane
     page.evaluate("""()=>{

@@ -164,6 +164,29 @@ class CodexWorkspace:
                 await self._close()
                 raise
 
+    async def shell_command(self, command, confirmed):
+        async with self._control_lock:
+            if confirmed is not True:
+                raise ValueError("Running outside the Codex sandbox requires explicit confirmation")
+            if not isinstance(command, str) or not command.strip() or len(command) > 32768 or "\0" in command:
+                raise ValueError("A non-empty shell command is required")
+            if self.state not in {"ready", "running"} or self.questions:
+                raise WorkspaceRpcError("Codex session is not available for shell input")
+            if self.state == "ready":
+                self.state = "submitting"
+            try:
+                result = await self.rpc.request("thread/shellCommand", {
+                    "threadId": self.session_id, "command": command,
+                })
+                if not isinstance(result, dict):
+                    raise WorkspaceRpcError("Shell command delivery was not confirmed")
+                if self.state == "submitting":
+                    self.state = "running"
+                return {"accepted": True}
+            except BaseException:
+                self.state = "uncertain"
+                raise
+
     async def permissions(self):
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")

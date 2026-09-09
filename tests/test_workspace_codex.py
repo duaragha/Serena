@@ -8,6 +8,46 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_rpc import WorkspaceRpcError
 
 
+def test_shell_command_requires_confirmation_and_preserves_exact_input(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        try:
+            with pytest.raises(ValueError, match="confirmation"):
+                await client.shell_command("printf hello", False)
+            with pytest.raises(ValueError, match="non-empty"):
+                await client.shell_command("", True)
+            command = "printf '%s' 'hello world'"
+            assert await client.shell_command(command, True) == {"accepted": True}
+            assert rpc.calls[-1] == ("thread/shellCommand", {"threadId": "exact-session", "command": command})
+            assert client.state == "running"
+            assert not any(method == "turn/start" for method, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_shell_command_timeout_is_uncertain_not_retried(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append(method)
+            raise TimeoutError()
+        rpc.request = request
+        try:
+            with pytest.raises(TimeoutError):
+                await client.shell_command("printf hello", True)
+            assert client.state == "uncertain"
+            with pytest.raises(WorkspaceRpcError):
+                await client.shell_command("printf hello", True)
+            assert calls == ["thread/shellCommand"]
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_paginated_resume_and_explicit_older_page(tmp_path):
     async def run():
         client, rpc, events = await make(tmp_path)
