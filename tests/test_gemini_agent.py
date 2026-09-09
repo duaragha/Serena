@@ -180,7 +180,7 @@ def test_gemini_appears_everywhere_the_other_agents_do() -> None:
     # next test pins to include gemini; a hand-written gemini pill no longer
     # exists to grep for.
     assert "picker.innerHTML = _AGENT_PANE_ORDER.map(a =>" in page, "cannot start a Gemini chat"
-    assert """'" data-agent="' + a + '"'""" in page, "the pill lost its agent attribute"
+    assert """data-agent="' + a + '\"""" in page, "the pill lost its agent attribute"
     assert "filterGemini" in page, "no sidebar filter"
     assert "liveUsageCompactHtml('gemini'" in page, "no limits pill"
     assert "_GEMINI_SVG" in page, "no agent badge"
