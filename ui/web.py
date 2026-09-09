@@ -2917,19 +2917,21 @@ body.pane-dragging * {
               <h2 id="convTitle"></h2>
               <div class="meta" id="convMeta"></div>
             </div>
-            <div class="conv-view-toggle" role="tablist" aria-label="View mode">
-              <button class="view-tab" id="viewReadBtn" onclick="setConvMode('read')" title="Transcript (read-only)">Read</button>
-              <button class="view-tab active" id="viewLiveBtn" onclick="setConvMode('live')" title="Resume inline (live Claude session)">Code</button>
-            </div>
             <button class="conv-hide" onclick="closeConv()"
                     title="Hide this pane without stopping its work">Hide</button>
             <button class="workspace-icon" id="workspaceFork" title="Fork with shared context" aria-label="Fork with shared context"><i data-lucide="git-fork"></i></button>
             <button class="workspace-icon" onclick="toggleFilesPane()" title="Toggle project files" aria-label="Toggle project files"><i data-lucide="panel-right"></i></button>
           </div>
         </div>
+        <div class="workspace-session-toolbar">
+          <div id="workspaceAgents" class="workspace-agents" aria-label="Agent panes"></div>
+          <div class="conv-view-toggle" role="tablist" aria-label="View mode">
+            <button class="view-tab" id="viewReadBtn" onclick="setConvMode('read')" title="Transcript (read-only)">Read</button>
+            <button class="view-tab active" id="viewLiveBtn" onclick="setConvMode('live')" title="Resume exact session">Code</button>
+          </div>
+        </div>
         <div class="conv-body" id="convBody"></div>
         <div class="conv-terminal hidden" id="convTerminal">
-          <div id="workspaceAgents" class="workspace-agents" aria-label="Agent panes"></div>
           <div class="code-tabs" id="codeTabs"></div>
           <div class="code-pane-wrap" id="codePaneWrap">
             <div class="code-pane term-pane" id="termPane">
@@ -10558,8 +10560,9 @@ function showPrompt({ title = 'Enter value', body = '', placeholder = '', defaul
 // LEFT pane (the right-side pane absorbs the rest via flex:1).
 // ═══════════════════════════════════════════════════════════════
 (function setupPaneDividers() {
-  const STORAGE_KEY = 'serena.paneSizes.v1';
-  const DEFAULTS = { 'proj-w': '8%', 'chats-w': '20%', 'files-w': '9%' };
+  // Keep legacy sizes intact, but do not apply their percentage layout to the new shell.
+  const STORAGE_KEY = 'serena.workspacePaneSizes.v1';
+  const DEFAULTS = { 'proj-w': '8%', 'chats-w': '267px', 'files-w': '219px' };
   const VAR_BY_DIVIDER = {
     'proj-chats':  '--proj-w',
     'chats-conv':  '--chats-w',

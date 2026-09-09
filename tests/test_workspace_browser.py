@@ -153,6 +153,23 @@ def test_navigation_projects_and_drafts_do_not_spawn(workspace):
     assert not errors
 
 
+def test_mockup_proportions_ignore_legacy_sizes_and_keep_new_resize(workspace):
+    page, calls, errors, _ = workspace
+    page.evaluate("localStorage.setItem('serena.paneSizes.v1', JSON.stringify({'chats-w':'20%', 'files-w':'9%'}))")
+    page.reload()
+    page.wait_for_function("allSessions.length === 4 && !!window.SerenaWorkspace")
+    assert round(page.locator('#chatListCol').bounding_box()['width']) == 267
+    assert round(page.locator('#filesPane').bounding_box()['width']) == 219
+    assert not page.locator('#fdOrb').is_visible()
+    page.evaluate("localStorage.setItem('serena.workspacePaneSizes.v1', JSON.stringify({'chats-w':'310px'}))")
+    page.reload()
+    page.wait_for_function("!!window.SerenaWorkspace")
+    assert round(page.locator('#chatListCol').bounding_box()['width']) == 310
+    assert page.evaluate("JSON.parse(localStorage.getItem('serena.paneSizes.v1'))['chats-w']") == '20%'
+    assert not any(path == '/api/spawn-terminal' for path, _ in calls)
+    assert not errors
+
+
 def test_split_switching_keeps_exact_runtimes_and_input(workspace, tmp_path):
     page, calls, errors, rows = workspace
     page.evaluate("(sid)=>openConv(sid)", rows[0]["session_id"])
@@ -161,6 +178,9 @@ def test_split_switching_keeps_exact_runtimes_and_input(workspace, tmp_path):
     page.screenshot(path=str(tmp_path / "workspace-desktop.png"))
     print("Screenshot:", tmp_path / "workspace-desktop.png")
     assert page.locator(".workspace-terminal-head").count() == 3
+    assert page.locator('.workspace-session-toolbar #viewReadBtn').is_visible()
+    assert page.locator('.workspace-session-toolbar #viewLiveBtn').is_visible()
+    assert not page.locator('#convMeta').is_visible()
     page.get_by_role("button", name="Show Codex pane", exact=True).click()
     assert page.locator("#termMounts>.term-pane:not(.hidden)").count() == 1
     page.evaluate("termSessions.get(activeTermSid).term.input('hello')")
