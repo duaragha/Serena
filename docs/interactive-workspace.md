@@ -2,6 +2,30 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Python native transport (2026-09-09): `workspace_claude_transport.py` connects
+the actual WorkspaceRpc implementation to the Node SDK worker. It verifies the
+reported native PID belongs to that wrapper, strips metered credentials, rejects
+foreign-session input/output, handles interactive requests concurrently with
+native output, forwards exact RPC answers, and propagates native cancellation.
+Shutdown requests child reaping before the bounded transport fallback. Admission
+and SessionLease remain the caller's responsibility, as in the existing owner.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_transport.py -q
+# exit 0: 6 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_transport.py tests/test_workspace_claude_transport.py scripts/verify-workspace-claude-transport.py
+# exit 0: all checks passed
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs /tmp/serena-sdk-ts/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+# exit 0: prior direct/Node proofs plus Python WorkspaceRpc -> real native CLI,
+# exact resumed local-command result, shared lease bound to actual child PID,
+# duplicate owner rejected, wrapper exit 0, child gone, lease reacquired.
+# Temporary HOME/config/session only; zero inference or user authentication.
+```
+
+Next is the SDK client/message compatibility layer inside ClaudeWorkspace;
+the existing production owner is not switched yet. Native MCP forms still need
+a complete roundtrip, beyond the tested callback forwarding/cancellation.
+
 Claude JSONL process boundary (2026-09-09):
 `workspace_claude_channel.mjs` routes explicit open/send/control/close methods,
 native message notifications and bidirectional approval/elicitation requests.
