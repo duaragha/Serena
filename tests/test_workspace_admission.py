@@ -35,7 +35,7 @@ def test_exact_session_only_no_cwd_guess_or_provider_substitution(session):
     with pytest.raises(ValueError, match="Exact"):
         admission.resolve_workspace_session("prefix")
     session["agent"] = "gemini"
-    with pytest.raises(ValueError, match="provider"):
+    with pytest.raises(ValueError, match="interactive approvals"):
         admission.resolve_workspace_session("exact")
     session["agent"] = "codex"
     session["cwd"] = "/missing-workspace-directory"
@@ -93,6 +93,19 @@ def test_registry_read_failure_does_not_assume_unowned(session, monkeypatch):
 
     monkeypatch.setattr(metadata, "get_meta", broken)
     with pytest.raises(OSError):
+        admission.resolve_workspace_session("exact")
+
+
+def test_gemini_fidelity_rejection_precedes_runtime_side_effects(session, monkeypatch):
+    from core import metadata
+
+    session["agent"] = "gemini"
+
+    def unexpected(*args):
+        raise AssertionError("Unsupported provider must not enter runtime admission")
+
+    monkeypatch.setattr(metadata, "get_meta", unexpected)
+    with pytest.raises(ValueError, match="has not been opened or changed"):
         admission.resolve_workspace_session("exact")
 
 

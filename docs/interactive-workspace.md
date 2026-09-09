@@ -2,6 +2,42 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Antigravity Protocol Finding (2026-09-09)
+
+Installed `agy --help` (exit 0) exposes stream-json input/output and exact
+`--conversation` resume, but no ACP switch. `agy help remote-control` (exit 0)
+exposes daemon start/status/stop, not a local structured-client API.
+
+Official evidence, accessed 2026-09-09:
+
+- https://antigravity.google/docs/cli/headless/ explicitly rejects control_request
+  and control_response messages (exit 2), non-text content blocks (exit 1), and
+  CLI-handled commands such as /model in a continuous stream. This is not a
+  full-fidelity custom UI transport. Pre-allowing tools would remove approval
+  interaction and is not an acceptable workaround.
+- https://antigravity.google/docs/sdk/overview/ documents a local agent SDK with
+  Gemini API-key or Vertex authentication. It does not establish compatibility
+  with this user's subscription or CLI conversation IDs. Do not silently swap
+  the provider/authentication/session store to that SDK.
+- https://antigravity.google/docs/remote-control/ describes Google's authenticated
+  remote dashboard and OS daemon. No public local embed/control contract was
+  established from this page; no daemon was started during investigation.
+
+Decision: Gemini admission reports the concrete missing controls and performs no
+launch. Gemini parity remains an unmet delivery gate, not removed from scope.
+Next research must establish an authorized subscription-compatible control path
+with exact persisted IDs; plain headless streaming alone is disproven as that path.
+
+Verification commands:
+```sh
+SERENA_EVIDENCE_KIND=live agy --help
+# exit 0: stream-json and exact conversation resume flags listed
+SERENA_EVIDENCE_KIND=live agy help remote-control
+# exit 0: start/status/stop help only; no daemon launched
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_admission.py -q
+# exit 0: 8 passed in 0.05s; Gemini refusal occurs before runtime admission
+```
+
 Claude clarifying questions now have native radio/checkbox/custom-answer controls.
 Answers are keyed by the original question, returned through SDK updated_input,
 and validated against the pending request. Plain approval cannot bypass answering.

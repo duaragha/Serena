@@ -62,6 +62,12 @@ def resolve_workspace_session(sid: str) -> dict:
     if not session or session.get("session_id") != sid:
         raise ValueError("Exact persisted session was not found")
     provider = str(session.get("agent") or "").lower()
+    if provider == "gemini":
+        raise ValueError(
+            "Antigravity's streaming interface does not support interactive approvals "
+            "or image input. A full-fidelity custom Gemini pane is not available yet; "
+            "this session has not been opened or changed."
+        )
     if provider not in {"codex", "claude"}:
         raise ValueError("This provider's structured workspace is not implemented yet")
     meta = metadata.get_meta(sid)
