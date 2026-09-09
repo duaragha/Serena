@@ -2,6 +2,34 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude JSONL process boundary (2026-09-09):
+`workspace_claude_channel.mjs` routes explicit open/send/control/close methods,
+native message notifications and bidirectional approval/elicitation requests.
+Request processing remains concurrent so an approval response cannot deadlock
+behind a control waiting for it. Native cancellation retires pending requests;
+late responses fail and owner shutdown never auto-accepts them. Stream failure
+is reported without launching a replacement session.
+
+`workspace_claude_worker.mjs` supplies the private Node subprocess entry point
+for the existing Python `WorkspaceRpc` transport. It reports the actual CLI PID,
+starts no CLI until open, and reaps its child before acknowledging close. The
+parent must still reserve/bind the existing shared lease and sanitize billing
+environment. Python owner integration is next; production still uses its current
+adapter, and runtime dependency packaging is not complete.
+
+```sh
+node --test tests/workspace-claude-channel.test.mjs tests/workspace-claude-sdk.test.mjs
+# exit 0: 13 passed
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs /tmp/serena-sdk-ts/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude
+# exit 0: direct driver proof plus real JSONL subprocess, no automatic CLI,
+# exact resumed session local-command input/output, native PID notification,
+# child absent before close response; wrapper exit 0. Zero inference/auth use.
+```
+
+The subprocess proof currently uses a small Node JSONL client; running the same
+boundary through Python WorkspaceRpc and integrating lease ownership are still
+required. Native MCP elicitation is not proved by callback unit tests.
+
 Public Claude TypeScript session driver (2026-09-09):
 `core/workspace_claude_sdk.mjs` now supports explicit exact-session resume,
 streaming user input/native output, public SDK controls, and caller-mediated

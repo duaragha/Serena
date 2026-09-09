@@ -6,6 +6,8 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {fileURLToPath} from 'node:url';
+import {createInterface} from 'node:readline';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
 const [sdkPath,cliPath]=process.argv.slice(2);
@@ -65,7 +67,49 @@ try {
   assert.equal(children.length,2,'One seed owner, then one exact resumed owner');
   assert.equal((await exits[1]).code,0);
   console.log('PASS: isolated zero-inference local session persisted, original CLI reaped, exact session resumed; driver input received matching native result, effort and agent controls acknowledged');
-  console.log(`PASS: ${children.length} sequential native processes reaped, no user authentication, sessions or settings used`);
+  const worker=spawn(process.execPath,[fileURLToPath(new URL('../core/workspace_claude_worker.mjs',import.meta.url)),
+    resolve(sdkPath),resolve(cliPath),sid,root],{env:{...process.env},stdio:['pipe','pipe','pipe']});
+  children.push(worker);
+  worker.stderr.pipe(process.stderr,{end:false});
+  const workerExit=new Promise((done,reject)=>{worker.once('exit',(code,signal)=>done({code,signal}));worker.once('error',reject);});
+  exits.push(workerExit);workerExit.catch(()=>{});
+  const pending=new Map();
+  let sequence=0,nativePid,resolveResult;
+  const nativeResult=new Promise(done=>{resolveResult=done;});
+  const lines=createInterface({input:worker.stdout,crlfDelay:Infinity});
+  const reader=(async()=>{
+    for await(const line of lines) {
+      const message=JSON.parse(line);
+      if(message.method==='claude/process')nativePid=message.params.pid;
+      else if(message.method==='claude/message' && message.params.message.type==='result')resolveResult(message.params.message);
+      else if(pending.has(message.id)) {
+        pending.get(message.id)(message);pending.delete(message.id);
+      }
+    }
+    for(const done of pending.values())done({error:{message:'Worker output closed'}});
+  })();
+  reader.catch(()=>{});
+  const call=(method,params={})=>new Promise(done=>{
+    const id=++sequence;pending.set(id,done);
+    worker.stdin.write(JSON.stringify({id,method,params})+'\n');
+  });
+  assert.match((await call('control',{method:'supportedAgents',args:[]})).error.message,/not open/);
+  assert.equal(nativePid,undefined,'Starting the wrapper cannot launch a CLI');
+  assert(!(await call('open')).error);
+  assert(Number.isInteger(nativePid) && nativePid!==worker.pid,'Actual CLI PID must be exposed');
+  assert(!(await call('send',{message:{type:'user',session_id:sid,uuid:randomUUID(),parent_tool_use_id:null,
+    message:{role:'user',content:'/effort medium'}}})).error);
+  const wireResult=await Promise.race([nativeResult,reader.then(()=>{throw new Error('Worker closed before native result');})]);
+  assert.equal(wireResult.session_id,sid);
+  assert.equal(wireResult.total_cost_usd,0);
+  assert.equal(wireResult.num_turns,0);
+  assert(!(await call('close')).error);
+  assert.throws(()=>process.kill(nativePid,0),{code:'ESRCH'},'Native CLI must be reaped before close acknowledgement');
+  worker.stdin.end();
+  assert.equal((await workerExit).code,0);
+  await reader;
+  console.log('PASS: real JSONL worker performed no automatic launch, resumed the exact session, routed input/output, reported actual child PID and reaped it before acknowledging close');
+  console.log('PASS: all isolated processes reaped; no user authentication, sessions or settings used');
 } finally {
   seed?.close();
   await driver?.close().catch(()=>{});
