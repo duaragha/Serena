@@ -2,6 +2,34 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Public Claude TypeScript session driver (2026-09-09):
+`core/workspace_claude_sdk.mjs` now supports explicit exact-session resume,
+streaming user input/native output, public SDK controls, and caller-mediated
+tool approvals/elicitation. Missing or mismatched session metadata, duplicate
+starts, late launches after cancellation and foreign-session output fail closed.
+Null elicitation responses are rejected rather than silently leaving a form
+unanswered. Constructor/read-only metadata lookup never launches a CLI.
+
+This is an internal driver, not yet wired into the production Python owner.
+Its caller must retain admission, acquire the shared session lease before open,
+bind the actual child PID through `spawnOwned`, strip metered credentials, and
+reap the child before releasing ownership. It does not replace those contracts.
+Next: integrate this boundary with the existing owner/journal and map native
+TypeScript messages without losing the Python adapter's tested behavior.
+
+```sh
+node --test tests/workspace-claude-sdk.test.mjs
+# exit 0: 7 passed
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs /tmp/serena-sdk-ts/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude
+# exit 0: isolated local command persisted a real session; original CLI exited,
+# driver resumed exact ID, sent another local command, received matching native
+# result (zero inference/cost), and reaped resumed CLI. Public effort and agent
+# controls acknowledged. No user auth/settings/session used.
+```
+
+Approval callback tests are not a native MCP elicitation roundtrip. Full SDK
+dependency packaging, owner integration and provider parity remain unfinished.
+
 Current integrated verification and next provider-runtime decision (2026-09-09):
 
 ```sh
