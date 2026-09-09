@@ -1,0 +1,5 @@
+html,body{height:100%;margin:0;background:#000;color:#d4c8db}
+body{display:flex;flex-direction:column}
+#workspace-pane{flex:1;min-height:0}
+#workspace-connect{align-self:center;flex:none;background:#190f18;border:1px solid #68455d;border-radius:4px;color:#f5a1cc;padding:8px 16px;margin:8px;font:12px ui-monospace,monospace;cursor:pointer}
+#workspace-connect:focus-visible{outline:2px solid #ff80bf;outline-offset:2px}

@@ -140,9 +140,8 @@ dispatch. An incomplete receipt is uncertain and is never automatically reissued
 
 `ui/workspace_web.py` supplies authenticated loopback-only control/replay routes
 through a blueprint factory. It rejects cross-origin requests and unexpected Host
-values. It is NOT registered by the production app yet: production admission must
-resolve the exact indexed session and reject pre-existing PTY/external writers.
-The host requires this resolver from its caller; test resolvers are not admission
+values. The app registers it only with the explicit development flag described
+below. The host requires an authoritative resolver; test resolvers are not admission
 proof for user sessions. No arbitrary provider RPC proxy is exposed.
 
 `ui/static/workspace-connection.mjs` connects the real pane to those HTTP routes.
@@ -202,7 +201,50 @@ The mobile upload screenshot was inspected; preview, names, removal and composer
 fit the 390x844 viewport. Browser provider responses remain controlled fixtures,
 not proof of live image understanding or CLI capability parity.
 
-Next: implement production admission and attachment/session deletion, mount the connected
-pane in the app, implement Claude/Antigravity control and the remaining capability
+`core/workspace_admission.py` now resolves the full indexed session ID, original
+available project and native transcript, rejects Fleet/background ownership and
+existing PTYs, and checks older/manual Codex processes for the exact session,
+open transcript or unidentified ownership in the project. Missing metadata or
+ambiguous ownership is not treated as permission to duplicate a writer. This
+preflight cannot stop a manual future process from bypassing Serena's leases.
+Cross-machine cwd fallback is deliberately not guessed by this adapter yet.
+
+`ui/workspace_app.py` mounts the native pane page at `/workspace/<sid>` and the
+control endpoints when `SERENA_STRUCTURED_WORKSPACE=1` is explicitly set in the
+host environment. The ordinary app remains unchanged without this flag. The
+page is local-only, no-store, same-origin framed and uses a restrictive CSP.
+Reading the page does not attach a provider; the user explicitly resumes it.
+Header provider identity comes from the index, not the selected adapter.
+
+With the development flag, the app's existing code-pane entrypoint mounts this
+page inside its linked-pane layout, reuses it on repeat opens, and routes focus
+to its native composer. Structured runtimes are not passed to the PTY sleep or
+resize APIs, nor given a simulated socket. Unsupported providers/new sessions
+report unavailable rather than falling back to a raw terminal. This is an
+incomplete development path, not the default or a completed parity migration.
+Structured sleep policy, bridge/Fleet controls, new-session creation, full keyboard
+integration, and all-provider support still need implementation and verification.
+
+Admission/mount verification (2026-09-09):
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_admission.py tests/test_workspace_app.py tests/test_workspace_host.py tests/test_terminal_sleep.py tests/test_terminal_spawn_retry.py -q
+# exit 0: 46 passed, 1 Python forkpty/thread deprecation warning, 12.30s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py tests/test_workspace_admission.py tests/test_terminal_spawn_retry.py -q
+# exit 0 after focus/layout edits: 8 passed in 3.37s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-mount.py --enabled
+# exit 0: actual app routes and bootstrap enabled; no owner loop or provider launch
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-mount.py
+# exit 0: routes/default flag disabled; no owner loop or provider launch
+```
+
+The mounted-page browser test uses the actual CSP, local HTTP APIs and page
+module, then the real `_startStructuredPane` function inside a controlled parent
+layout. It verifies compose/replay, repeat opens without a second frame, same
+owner on reload, and no owner cancellation on frame removal. Provider output
+is a controlled fixture. The standalone page screenshot was visually inspected;
+this does not yet establish whole-app visual parity or live model behavior.
+
+Next: implement attachment/session deletion, Claude/Antigravity control and the remaining capability
 matrix, then prove full provider parity and migrate the real app. The replacement
 remains disabled and incomplete.

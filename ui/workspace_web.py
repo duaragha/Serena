@@ -9,6 +9,20 @@ from urllib.parse import urlsplit
 from flask import Blueprint, jsonify, request
 
 
+def local_workspace_request():
+    try:
+        peer = ipaddress.ip_address(request.remote_addr or "")
+        hostname = urlsplit(request.host_url).hostname or ""
+        local_host = hostname == "localhost" or ipaddress.ip_address(hostname).is_loopback
+        if not peer.is_loopback or not local_host:
+            raise ValueError()
+    except ValueError:
+        return jsonify(ok=False, error="Workspace control is loopback-only"), 403
+    origin = request.headers.get("Origin")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return jsonify(ok=False, error="Cross-origin workspace request rejected"), 403
+
+
 def workspace_blueprint(host, *, token: str):
     if len(token) < 32:
         raise ValueError("Workspace control token is too short")
@@ -16,16 +30,9 @@ def workspace_blueprint(host, *, token: str):
 
     @bp.before_request
     def authorize():
-        try:
-            peer = ipaddress.ip_address(request.remote_addr or "")
-            local_host = ipaddress.ip_address(urlsplit(request.host_url).hostname or "")
-            if not peer.is_loopback or not local_host.is_loopback:
-                raise ValueError()
-        except ValueError:
-            return jsonify(ok=False, error="Workspace control is loopback-only"), 403
-        origin = request.headers.get("Origin")
-        if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
-            return jsonify(ok=False, error="Cross-origin workspace request rejected"), 403
+        denied = local_workspace_request()
+        if denied is not None:
+            return denied
         supplied = request.headers.get("X-Serena-Workspace-Token", "")
         if not secrets.compare_digest(supplied, token):
             return jsonify(ok=False, error="Workspace authentication required"), 403

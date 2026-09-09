@@ -63,6 +63,11 @@ app.register_blueprint(fleet_bp)
 app.register_blueprint(operator_bp)
 app.register_blueprint(webhook_bp)
 
+if os.environ.get("SERENA_STRUCTURED_WORKSPACE") == "1":
+    from ui.workspace_app import install_workspace
+
+    install_workspace(app, DATA_DIR / "workspace-events.db")
+
 
 def _is_serena_voice_session(session: dict | None) -> bool:
     return bool(session) and (
@@ -6563,11 +6568,12 @@ function _bindWebTerminalWindowFocus() {
   const refocus = () => {
     if (currentTab !== 'chats' || convMode !== 'live' || !activeTermSid) return;
     const runtime = termSessions.get(activeTermSid);
-    if (!runtime || !runtime.term) return;
+    if (!runtime || (!runtime.term && !runtime.structured)) return;
     // Never yank focus out from under a text field or an open modal.
     const el = document.activeElement;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
     if (document.getElementById('modalBackdrop')?.classList.contains('visible')) return;
+    if (runtime.structured) { runtime.focus(); return; }
     // A window resize while hidden leaves xterm measured for the old box.
     try { runtime.fit.fit(); } catch(e) {}
     _sendResizeForSid(activeTermSid);
@@ -6703,7 +6709,7 @@ let _webRuntimeSyncing = false;
 async function _syncWebRuntimePolicy() {
   if (_webRuntimeSyncing || !_webRuntimeFocusSid) return;
   const focus = termSessions.get(_webRuntimeFocusSid);
-  if (!focus) return;
+  if (!focus || focus.structured) return;
   const siblingSid = _linkedSiblingSid(_webRuntimeFocusSid);
   const sibling = siblingSid ? termSessions.get(siblingSid) : null;
   // Unsent input is the user's work in progress. Freezing a pane that holds a
@@ -6712,6 +6718,7 @@ async function _syncWebRuntimePolicy() {
   const protectedTids = [];
   const standbyTids = [];
   for (const [runtimeSid, runtime] of termSessions) {
+    if (runtime.structured) continue;
     if ((window.__termDrafts && window.__termDrafts.get(runtimeSid)) || runtime.busy) {
       protectedTids.push(runtime.tid);
     }
@@ -6719,7 +6726,7 @@ async function _syncWebRuntimePolicy() {
   }
   // The sibling is still named so the server sweeps it, but it no longer
   // sleeps on sight: every unfocused pane must prove it has been quiet first.
-  if (sibling && !standbyTids.includes(sibling.tid)) standbyTids.push(sibling.tid);
+  if (sibling && sibling.tid && !standbyTids.includes(sibling.tid)) standbyTids.push(sibling.tid);
   // A merged view has two panes on screen and only one of them holds focus.
   // Naming just the focused one let the server stop the other while the user
   // was looking straight at it.
@@ -6738,7 +6745,7 @@ async function _syncWebRuntimePolicy() {
       body: JSON.stringify({
         focus_tid: focus.tid,
         visible_tids: visibleTids,
-        standby_tids: sibling ? [sibling.tid] : [],
+        standby_tids: sibling && sibling.tid ? [sibling.tid] : [],
         all_open_tids: standbyTids,
         protected_tids: protectedTids,
         pin_both: pinned,
@@ -6927,7 +6934,7 @@ function _scrollWebTerminalTail(runtime) {
 }
 
 function _armWebTerminalTail(runtime) {
-  if (!runtime) return;
+  if (!runtime || runtime.structured) return;
   runtime.tailFollowUntil = window.SerenaTerminalLifecycle.tailDeadline(performance.now());
 }
 
@@ -6971,7 +6978,9 @@ function _activateTermPane(sid) {
     .filter(Boolean);
   for (const runtime of visibleRuntimes) _armWebTerminalTail(runtime);
   // Status reflects the now-visible session
-  if (s.ws && s.ws.readyState === 1) {
+  if (s.structured) {
+    setTermStatus(s.state || 'Ready to resume.', s.state === 'unavailable' ? 'error' : '');
+  } else if (s.ws && s.ws.readyState === 1) {
     setTermStatus('● live · cwd: ' + (s.cwd || '(unknown)') + (split ? '  ·  ⛓ split' : ''), 'live');
   } else if (s.ws && s.ws.readyState === 0) {
     setTermStatus('Connecting…');
@@ -6981,7 +6990,7 @@ function _activateTermPane(sid) {
   requestAnimationFrame(() => {
     _fitVisibleWebTerms();
     for (const runtime of visibleRuntimes) _scrollWebTerminalTail(runtime);
-    try { s.term.focus(); } catch(e) {}
+    try { if (s.structured) s.focus(); else s.term.focus(); } catch(e) {}
   });
   _scheduleWebRuntimePolicy();
 }
@@ -7023,6 +7032,44 @@ function _revealSurvivingLinkedTerminals(sid) {
   if (available.length) _activateTermPane(available.includes(activeTermSid) ? activeTermSid : available[0]);
 }
 
+function _startStructuredPane(sid, opts) {
+  if (opts.isNew) {
+    setTermStatus('New structured sessions are not implemented yet.', 'error');
+    return null;
+  }
+  if (termSessions.has(sid)) {
+    if (!opts.background) _activateTermPane(sid);
+    return termSessions.get(sid);
+  }
+  const container = document.getElementById('termMounts');
+  const mount = document.createElement('div');
+  mount.className = 'term-pane'; mount.dataset.sid = sid;
+  const frame = document.createElement('iframe');
+  frame.src = '/workspace/' + encodeURIComponent(sid);
+  frame.title = 'Session ' + sid.slice(0, 8);
+  frame.style.cssText = 'display:block;width:100%;height:100%;border:0;background:#000';
+  mount.appendChild(frame); container.appendChild(mount);
+  const runtime = {sid, mount, structured:true, state:'Ready to resume.', busy:false,
+    focus:() => frame.contentWindow?.postMessage({type:'serena-workspace-focus'}, location.origin)};
+  const receive = event => {
+    if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid || event.data?.type !== 'serena-workspace-state') return;
+    const state = event.data.state;
+    if (!['ready','running','completed','failed','interrupted','unavailable'].includes(state)) return;
+    runtime.state = state; runtime.busy = state === 'running';
+    if (state !== 'unavailable') _markActive(sid);
+    if (activeTermSid === sid) setTermStatus(state, state === 'unavailable' ? 'error' : '');
+  };
+  window.addEventListener('message', receive);
+  runtime.cancelOutput = () => window.removeEventListener('message', receive);
+  termSessions.set(sid, runtime);
+  if (opts.background) {
+    mount.classList.add('hidden');
+    if (activeTermSid) _activateTermPane(activeTermSid);
+  }
+  else { _activateTermPane(sid); _startLinkedTerminals(sid); }
+  return runtime;
+}
+
 async function startLiveTerminal(sid, opts) {
   // `opts` is for new-chat mode: { cwd: string, agent?: string, isNew: true }.
   // For existing chats (omit opts), we resume by session_id.
@@ -7036,6 +7083,7 @@ async function startLiveTerminal(sid, opts) {
     if (!opts.background) setConvMode('read');
     return null;
   }
+  if (window.SERENA?.structuredWorkspace) return _startStructuredPane(sid, opts);
   // A missing CLI/session in one pane must not block the rest of the group.
   if (!opts.background && !opts.isNew) _startLinkedTerminals(sid);
   // Already alive? Just bring its pane to front.
@@ -10906,6 +10954,7 @@ def index():
                 "home": home,
                 "homeSlug": home_slug,
                 "platform": sys.platform,
+                "structuredWorkspace": os.environ.get("SERENA_STRUCTURED_WORKSPACE") == "1",
                 # Which box this window is actually running on. Agents already
                 # get this through the SessionStart hook; the header shows the
                 # same answer so a glance settles it too.
