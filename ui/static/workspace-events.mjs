@@ -1,0 +1,78 @@
+/* Lossless provider data behind the custom conversation view. No terminal scraping. */
+export class WorkspaceConversation {
+  constructor(sessionId) {
+    this.sessionId = sessionId;
+    this.turns = new Map();
+    this.questions = new Map();
+    this.sequence = 0;
+    this.status = 'connecting';
+    this.error = null;
+    this.metadata = {};
+    this.otherEvents = [];
+  }
+
+  turn(id) {
+    if (!id) throw new Error('Missing turn identity');
+    if (!this.turns.has(id)) this.turns.set(id, {id, status: 'unknown', items: new Map()});
+    return this.turns.get(id);
+  }
+
+  item(turnId, itemId, type) {
+    if (!itemId) throw new Error('Missing item identity');
+    const turn = this.turn(turnId);
+    if (!turn.items.has(itemId)) turn.items.set(itemId, {id: itemId, type});
+    return turn.items.get(itemId);
+  }
+
+  apply(envelope) {
+    const {sequence, event} = envelope;
+    if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error('Invalid event sequence');
+    if (sequence <= this.sequence) return false;
+    if (sequence !== this.sequence + 1) throw new Error('Event gap: request replay before continuing');
+    const {method, params = {}} = event;
+    const sid = params.threadId || (method === 'workspace/history' ? params.thread?.id : null);
+    if (sid && sid !== this.sessionId) throw new Error('Event belongs to another session');
+    const p = structuredClone(params);
+    if (method === 'workspace/history') {
+      if (!p.thread || p.thread.id !== this.sessionId) throw new Error('History identity mismatch');
+      this.metadata = p;
+      this.turns.clear();
+      for (const source of p.thread.turns || []) {
+        const turn = this.turn(source.id);
+        Object.assign(turn, source, {items: new Map((source.items || []).map(i => [i.id, i]))});
+      }
+      this.status = [...this.turns.values()].some(t => t.status === 'inProgress') ? 'running' : 'ready';
+    } else if (method === 'turn/started' || method === 'turn/completed') {
+      const turn = this.turn(p.turn.id);
+      const items = turn.items;
+      Object.assign(turn, p.turn, {items});
+      for (const item of p.turn.items || []) items.set(item.id, item);
+      this.status = method === 'turn/started' ? 'running' : (p.turn.status || 'completed');
+    } else if (method === 'item/started' || method === 'item/completed') {
+      if (!p.item?.id) throw new Error('Missing provider item');
+      this.turn(p.turnId).items.set(p.item.id, p.item);
+    } else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
+      const item = this.item(p.turnId, p.itemId, method.includes('/plan/') ? 'plan' : 'agentMessage');
+      item.text = (item.text || '') + (p.delta || '');
+    } else if (method === 'item/commandExecution/outputDelta') {
+      const item = this.item(p.turnId, p.itemId, 'commandExecution');
+      item.aggregatedOutput = (item.aggregatedOutput || '') + (p.delta || '');
+    } else if (method === 'serverRequest/resolved') {
+      this.questions.delete(p.requestId);
+    } else if (method === 'workspace/transportClosed' || method === 'workspace/error') {
+      this.status = 'unavailable';
+      this.error = p.reason || 'Session connection unavailable';
+      this.questions.clear();
+    } else if (method === 'error') {
+      this.error = p.error?.message || p.message || 'Agent reported an error';
+      this.otherEvents.push(structuredClone(event));
+    } else if ('id' in event) {
+      this.questions.set(event.id, structuredClone(event));
+    } else {
+      // New provider event types remain inspectable instead of being discarded.
+      this.otherEvents.push(structuredClone(event));
+    }
+    this.sequence = sequence;
+    return true;
+  }
+}

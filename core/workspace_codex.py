@@ -1,0 +1,240 @@
+"""Codex rich-client control, separate from the restricted resident brain.
+
+The caller must hold the session ownership lease before opening this adapter.
+This module has no UI/socket-disconnect lifecycle and never falls back to a new
+thread when resumption fails. Raw protocol events are retained for the renderer.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import shutil
+from collections import deque
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
+from pathlib import Path
+from typing import Any
+
+from core.billing import strip_metered_auth_env
+from core.workspace_rpc import WorkspaceRpc, WorkspaceRpcError
+
+
+class CodexWorkspace:
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        cwd: Path,
+        publish: Callable[[dict], Awaitable[None]],
+        rpc: WorkspaceRpc | None = None,
+    ) -> None:
+        if not session_id or not cwd.is_dir():
+            raise ValueError("A persisted session ID and existing project directory are required")
+        self.session_id = session_id
+        self.cwd = cwd.resolve()
+        self.rpc = rpc or WorkspaceRpc()
+        self.publish = publish
+        self.thread: dict | None = None
+        self.active_turn: str | None = None
+        self.state = "closed"
+        self.questions: dict[int | str, dict] = {}
+        self._completed: deque[str] = deque(maxlen=64)
+        self._control_lock = asyncio.Lock()
+        self._events_task: asyncio.Task | None = None
+        self._history_ready = asyncio.Event()
+
+    async def open(self, *, binary: str | None = None, env: dict[str, str] | None = None) -> dict:
+        async with self._control_lock:
+            if self.state != "closed":
+                raise WorkspaceRpcError("Session already opened or awaiting recovery")
+            executable = binary or shutil.which("codex")
+            if not executable:
+                raise WorkspaceRpcError("Codex executable is unavailable")
+            self.state = "opening"
+            self._history_ready.clear()
+            try:
+                await self.rpc.start(
+                    [executable, "app-server", "--stdio"],
+                    cwd=self.cwd,
+                    env=strip_metered_auth_env(dict(os.environ if env is None else env)),
+                )
+                await self.rpc.request(
+                    "initialize",
+                    {
+                        "clientInfo": {"name": "serena-workspace", "version": "1"},
+                        "capabilities": {"experimentalApi": True},
+                    },
+                )
+                await self.rpc.notify("initialized", {})
+                self._events_task = asyncio.create_task(self._events())
+                # Do not set baseInstructions, disable coding tools, or override
+                # the session's configured model and permission policy here.
+                result = await self.rpc.request("thread/resume", {"threadId": self.session_id})
+                thread = result.get("thread") if isinstance(result, dict) else None
+                if not isinstance(thread, dict) or thread.get("id") != self.session_id:
+                    raise WorkspaceRpcError(
+                        "Codex returned a different session; refusing attachment"
+                    )
+                self.thread = deepcopy(thread)
+                for turn in thread.get("turns", []):
+                    if turn.get("status") == "inProgress":
+                        self.active_turn = turn["id"]
+                if self.state == "opening":
+                    self.state = "running" if self.active_turn else "ready"
+                await self.publish({"method": "workspace/history", "params": deepcopy(result)})
+                self._history_ready.set()
+                return deepcopy(result)
+            except BaseException:
+                await self._close()
+                raise
+
+    async def submit(self, inputs: list[dict], *, options: dict | None = None) -> dict:
+        async with self._control_lock:
+            if self.state != "ready":
+                raise WorkspaceRpcError("Session is not ready for a new turn")
+            if not inputs:
+                raise ValueError("A message or attachment is required")
+            params = deepcopy(options or {})
+            allowed = {
+                "model",
+                "effort",
+                "serviceTier",
+                "approvalPolicy",
+                "sandboxPolicy",
+                "collaborationMode",
+            }
+            if params.keys() - allowed:
+                raise ValueError("Unsupported turn option")
+            params.update(threadId=self.session_id, input=deepcopy(inputs))
+            self.state = "submitting"
+            try:
+                result = await self.rpc.request("turn/start", params)
+                turn = result.get("turn") if isinstance(result, dict) else None
+                if not isinstance(turn, dict) or not turn.get("id"):
+                    raise WorkspaceRpcError("Codex returned no turn identity")
+                turn_id = turn["id"]
+                if turn_id not in self._completed:
+                    self.active_turn = turn_id
+                    self.state = "running"
+                else:
+                    self.active_turn = None
+                    self.state = "ready"
+                return result
+            except BaseException:
+                # A timeout is not proof that Codex rejected the message. Do not
+                # allow a retry to create a second turn until state is reconciled.
+                if self.state == "submitting":
+                    self.state = "uncertain"
+                raise
+
+    async def steer(self, inputs: list[dict]) -> Any:
+        if not self.active_turn or self.state != "running":
+            raise WorkspaceRpcError("No running turn to steer")
+        return await self.rpc.request(
+            "turn/steer",
+            {
+                "threadId": self.session_id,
+                "expectedTurnId": self.active_turn,
+                "input": deepcopy(inputs),
+            },
+        )
+
+    async def interrupt(self) -> Any:
+        if not self.active_turn:
+            raise WorkspaceRpcError("No running turn to interrupt")
+        return await self.rpc.request(
+            "turn/interrupt",
+            {
+                "threadId": self.session_id,
+                "turnId": self.active_turn,
+            },
+        )
+
+    async def answer(self, request_id: int | str, answer: dict) -> None:
+        question = self.questions.get(request_id)
+        if question is None:
+            raise WorkspaceRpcError("Question is no longer pending in this session")
+        method = question["method"]
+        if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+            decisions = {"accept", "acceptForSession", "decline", "cancel"}
+            if (
+                set(answer) != {"decision"}
+                or not isinstance(answer["decision"], str)
+                or answer["decision"] not in decisions
+            ):
+                raise ValueError("Invalid approval decision")
+        elif method == "item/tool/requestUserInput":
+            expected = {q["id"] for q in question["params"].get("questions", [])}
+            answers = answer.get("answers")
+            if (
+                set(answer) != {"answers"}
+                or not isinstance(answers, dict)
+                or set(answers) != expected
+            ):
+                raise ValueError("Answer must address the pending questions exactly")
+            for value in answers.values():
+                if (
+                    not isinstance(value, dict)
+                    or set(value) != {"answers"}
+                    or not isinstance(value["answers"], list)
+                    or not all(isinstance(a, str) for a in value["answers"])
+                ):
+                    raise ValueError("Invalid question answer")
+        else:
+            raise WorkspaceRpcError(f"Response schema not yet implemented for {method}")
+        await self.rpc.answer(request_id, answer)
+        self.questions.pop(request_id, None)
+
+    async def _events(self) -> None:
+        try:
+            await self._history_ready.wait()
+            while True:
+                event = await self.rpc.events.get()
+                method, params = event.get("method"), event.get("params") or {}
+                thread_id = params.get("threadId")
+                if thread_id is not None and thread_id != self.session_id:
+                    raise WorkspaceRpcError("Received an event for a different coding session")
+                if "id" in event:
+                    self.questions[event["id"]] = deepcopy(event)
+                if method == "turn/started":
+                    self.active_turn = params["turn"]["id"]
+                    self.state = "running"
+                elif method == "turn/completed":
+                    turn_id = params["turn"]["id"]
+                    self._completed.append(turn_id)
+                    if self.active_turn == turn_id or (
+                        self.active_turn is None and self.state not in {"submitting", "uncertain"}
+                    ):
+                        self.active_turn = None
+                        self.state = "ready"
+                elif method == "serverRequest/resolved":
+                    self.questions.pop(params.get("requestId"), None)
+                elif method == "workspace/transportClosed":
+                    self.state = "unavailable"
+                    self.questions.clear()
+                await self.publish(deepcopy(event))
+                if method == "workspace/transportClosed":
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.state = "unavailable"
+            await self.publish({"method": "workspace/error", "params": {"reason": str(error)}})
+
+    async def _close(self) -> None:
+        if self._events_task:
+            self._events_task.cancel()
+            await asyncio.gather(self._events_task, return_exceptions=True)
+            self._events_task = None
+        await self.rpc.close()
+        self.state = "closed"
+        self.active_turn = None
+        self.thread = None
+        self.questions.clear()
+        self._completed.clear()
+
+    async def close(self) -> None:
+        """Owner shutdown, not view hide or browser disconnect."""
+        async with self._control_lock:
+            await self._close()

@@ -70,3 +70,22 @@ threads or run models. Reverse requests stay pending for explicit decisions;
 an observation timeout neither restarts nor interrupts a process. This transport
 is not yet wired into the app. It needs an event-journal consumer before runtime
 use, so queued events do not accumulate without a bound in a resident host.
+
+`core/workspace_codex.py` now implements exact-ID resume, submit, steer,
+interrupt, approval/question responses and provider event publication. It keeps
+ambiguous submissions unavailable for retry instead of starting duplicate turns.
+Session ownership must be integrated before this adapter is exposed to routes.
+It is not a complete command surface yet: advanced permission grants, MCP
+elicitation, commands/plugins/settings controls and recovery remain to implement.
+
+`ui/static/workspace-events.mjs` is the custom conversation's state model. It
+applies history and streamed items using real item IDs, detects replay gaps,
+rejects cross-session data, retains actual exit codes/diffs, and preserves
+unknown event types for inspection. It is not yet mounted as a visible pane.
+
+Verification to date: 10 Python transport/controller tests and 4 Node event-model
+tests pass. The Python transport tests exercise real subprocess pipes; controller
+tests use a protocol double. The installed-Codex live proof verifies initialization
+and clean process shutdown only, not actual coding/approval/session migration.
+Next: single-owner admission integrated with existing PTYs and a bounded replay
+journal, then mount the mockup renderer/composer against the real event contract.

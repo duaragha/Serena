@@ -76,8 +76,8 @@ class WorkspaceRpc:
         async with self._write_lock:
             if request_id not in self._questions:
                 raise WorkspaceRpcError("Request is no longer awaiting a response")
-            await self._write({"id": request_id, "result": result})
             self._questions.remove(request_id)
+            await self._write({"id": request_id, "result": result})
 
     async def _send(self, message: dict) -> None:
         async with self._write_lock:
