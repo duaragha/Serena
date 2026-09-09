@@ -610,6 +610,30 @@ def test_permission_suggestions_are_explicit_pending_and_exact(tmp_path):
     asyncio.run(run())
 
 
+def test_history_item_index_preserves_updates_and_resets_between_turns():
+    from copy import deepcopy
+
+    def record(uuid, kind, content):
+        return {"session_id": "exact", "uuid": uuid, "type": kind, "message": {"id": uuid, "content": content}}
+
+    records = [record("u1", "user", "First turn")]
+    for index in range(1000):
+        records.append(record(f"a{index}", "assistant", [{"type": "tool_use", "id": f"t{index}", "name": "Read", "input": {"file": index}}]))
+    for index in reversed(range(1000)):
+        records.append(record(f"r{index}", "user", [{"type": "tool_result", "tool_use_id": f"t{index}", "content": str(index)}]))
+    records += [record("u2", "user", "Second turn"), record("new", "assistant", [{"type": "tool_use", "id": "t0", "name": "Edit", "input": {"file": "new"}}])]
+    original = deepcopy(records)
+    turns = ClaudeEvents("exact").history(records)["params"]["thread"]["turns"]
+    assert len(turns) == 2
+    assert [item["id"] for item in turns[0]["items"][1:]] == [f"t{i}" for i in range(1000)]
+    for index, item in enumerate(turns[0]["items"][1:]):
+        assert item["input"] == {"file": index} and item["output"] == str(index)
+        assert item["tool"] == "Read" and item["status"] == "completed"
+    assert turns[1]["items"][1]["tool"] == "Edit"
+    assert turns[0]["items"][1]["tool"] == "Read"
+    assert records == original
+
+
 def test_permissions_wait_for_user_reject_stale_and_cleanup_denies(tmp_path):
     async def run():
         owner, events = make(tmp_path)

@@ -95,6 +95,7 @@ class ClaudeEvents:
 
     def history(self, records):
         turns = []
+        turn_items = {}
         model = None
         for record in records:
             source = plain(record)
@@ -111,16 +112,18 @@ class ClaudeEvents:
             )
             if not turns or (user and not tool_result):
                 turns.append({"id": source["uuid"], "status": "completed", "items": []})
+                turn_items = {}
             command = history_command(content) if user else None
             items = self.blocks(command if command is not None else content, message.get("id") or source["uuid"], user=user)
             if command is not None:
                 items[0]["providerOriginal"] = deepcopy(source)
             for item in items:
-                prior = next((i for i in turns[-1]["items"] if i["id"] == item["id"]), None)
+                prior = turn_items.get(item["id"])
                 if prior:
                     prior.update(item)
                 else:
                     turns[-1]["items"].append(item)
+                    turn_items[item["id"]] = item
         return {
             "method": "workspace/history",
             "params": {"thread": {"id": self.sid, "turns": turns, **({"model": model} if model else {})}, "provider": "claude"},

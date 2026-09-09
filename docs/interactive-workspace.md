@@ -2,6 +2,20 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude history conversion (2026-09-09): replaced repeated scans of the current
+turn's item list with a per-turn ID index. Tool/result updates retain original
+order, and the index resets between turns. This removes quadratic lookup work;
+it does not fix the SDK's whole-transcript parsing or bound history memory.
+Controlled 8,000-pair conversion measured 1.9852s before and 0.2663s after;
+a repeat under concurrent verification measured 0.5839s. These are conversion
+measurements, not total session-opening latency or a timing guarantee.
+Verification from the isolated feature worktree:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py -q`: exit 0, 30 passed in 8.13s. Regression covers reverse-arriving results, ordering, reused IDs across turns and unchanged input records.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-history.py`: exit 0; repeat preserved all 1,000/4,000/8,000 pairs in 0.2301/0.3376/0.5839s respectively.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py`: exit 0; native exact-session input/output, lease rejection, desktop/mobile command output, mentions, plugin/skill reload, forks, view-close ownership and cleanup passed. No user auth, settings or inference used.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_events.py tests/test_workspace_claude.py scripts/verify-workspace-claude-history.py`: exit 0, all checks passed.
+The packaged binary was not rebuilt for this conversion-only change.
+
 Packaged and real Electron verification through a171230 (2026-09-09): rebuilt
 the Linux sidecar with current inline mentions, Claude permissions, Codex MCP
 and skill-setting code. Native Codex and Claude browser flows pass against that
