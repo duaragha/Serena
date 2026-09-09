@@ -245,6 +245,14 @@ async def main():
             assert owner.state == "ready" and owner.session_id == sid
             print("PASS: native resumed history loads 50 recent turns, then exact oldest full turn on demand")
             print("PASS: host rejects stale history with retryable receipt and routes valid read to unchanged native owner")
+            await owner.close()
+            reopened = await owner.open(binary=binary, env=env)
+            assert reopened["thread"]["id"] == sid
+            assert len(reopened["thread"]["turns"]) == 50
+            page = await owner.load_earlier(owner.history_cursor)
+            assert len(page["turns"]) == 1 and page["historyCursor"] is None
+            assert "SERENA_HISTORY_000" in json.dumps(page)
+            print("PASS: same adapter reopened exact persisted session and loaded older history without stale cursor state")
             completed.clear()
             start = len(events)
             payload = {"command": "printf SERENA_EXPLICIT_SHELL", "confirmed": True}

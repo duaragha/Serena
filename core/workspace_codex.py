@@ -641,6 +641,9 @@ class CodexWorkspace:
         self.model_catalog = None
         self.questions.clear()
         self._completed.clear()
+        self.history_cursor = None
+        self._history_cursors.clear()
+        self._fork_ids.clear()
 
     async def close(self) -> None:
         """Owner shutdown, not view hide or browser disconnect."""

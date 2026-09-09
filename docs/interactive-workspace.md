@@ -2,6 +2,30 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Owner reconnect history (2026-09-09): closing a Codex owner now clears native
+history cursors and process-local fork notification IDs. Previously reopening
+the same adapter rejected an already-consumed but newly valid cursor as a loop.
+The regression was reproduced before correction: the paginated-resume test
+exited 1 with `Codex history pagination did not advance`. Verification after fix:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q`: exit 0, 27 passed in 0.11s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py tests/test_workspace_codex.py scripts/verify-workspace-codex-history.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py`: exit 0; now additionally closes/reopens the same adapter with the actual CLI and reads the oldest native page again before checking input/output and desktop/mobile views.
+This is explicit owner shutdown/reopen, not automatic process-crash recovery.
+
+Antigravity revalidation (2026-09-09): an isolated-HOME subprocess probe sent
+only `control_request` and `control_response` input events to installed `agy`
+with `--input-format stream-json --output-format stream-json`. Both native
+processes exited 2 with an ERROR result saying that event is not supported yet;
+both reported zero turns and zero tokens. The outer marked Python proof exited
+0 and removed its temporary home. No user credentials or sessions were used.
+`SERENA_EVIDENCE_KIND=live agy help remote-control` exited 0 and exposed only
+start/status/stop. No daemon was registered or started. Official sources checked
+again: https://antigravity.google/docs/cli/headless/ (unsupported control messages),
+https://antigravity.google/docs/sdk/overview/ (API key/Vertex SDK setup), and
+https://antigravity.google/docs/remote-control/ (hosted dashboard and OS service).
+These sources do not establish a supported local subscription-compatible custom
+UI control path. Gemini full parity is still unresolved, not waived.
+
 Pending command rendering (2026-09-09): native commandExecution items with null
 output show their command/status without dumping raw event JSON. Streamed stdout
 and the final exit code retain the expanded tool entry. Unknown event types remain

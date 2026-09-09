@@ -75,6 +75,11 @@ def test_paginated_resume_and_explicit_older_page(tmp_path):
             assert client.history_cursor is None and client.state == "ready"
             assert requests == [{"threadId": rpc.sid, "limit": 50, "sortDirection": "desc", "itemsView": "full"},
                                 {"threadId": rpc.sid, "limit": 50, "sortDirection": "desc", "itemsView": "full", "cursor": "older"}]
+            await client.close()
+            reopened = await client.open(binary="codex")
+            assert reopened["historyCursor"] == "older"
+            await client.load_earlier("older")
+            assert client.history_cursor is None and client.state == "ready"
         finally:
             await client.close()
     asyncio.run(run())
