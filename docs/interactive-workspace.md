@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native Claude clear lifecycle research (2026-09-09): current official docs at
+https://code.claude.com/docs/en/agent-sdk/slash-commands#reset-context-with-clear
+now describe /clear in streaming sessions. Search snippets returned older text
+claiming it unavailable; the fetched page and installed SDK/native runtime are
+the evidence used here. The existing pane still refuses session-switch commands.
+The new isolated native probe establishes:
+- /clear is advertised, returns a DIFFERENT session ID, zero model turns/cost.
+- The new ID is not immediately discoverable through getSessionInfo and its
+  getSessionMessages result is empty before the next prompt.
+- A subsequent local /effort command stays on that new ID and persists its
+  history. Original history records remain deeply equal to the pre-clear copy;
+  the new history contains none of their message UUIDs.
+Therefore /clear cannot be implemented by clearing DOM, loosening all identity
+checks, or closing the runtime and resuming the new ID immediately. Next
+implementation must hold input during an explicit identity-transition command,
+checkpoint the native returned ID, acquire/transfer exact-session ownership,
+retain the live runtime until native persistence is confirmed, and register the
+new conversation without changing the original's history/group links. A lost
+transition outcome must remain uncertain, never replay /clear automatically.
+This is a pending-session lifecycle, not the existing persisted-fork lifecycle.
+Verification:
+- `SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude`: initial observation exit 0. Adding an assumption that getSessionInfo must already resolve the cleared ID produced exit 1, disproving immediate close/resume. Final observational probe exit 0 with persistedBeforeNextPrompt:false, messagesAfterClear:0, original message count 1 before/after, next-session count 2. Assertions enforce changed identity, unchanged original records, no original UUIDs in new history and zero inference.
+The failed persistence assumption was removed from the probe, not from product
+requirements. This does not claim the clear feature implemented or resumable
+before first input. Only isolated temporary home/runtime data was created.
+
 Earlier-history attachment previews (2026-09-09): the upload decorator now
 handles workspace/historyPage as well as the initial workspace/history event.
 Older user images receive preview tokens only after the same session/path/hash
