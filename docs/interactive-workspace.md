@@ -2,6 +2,46 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native Codex MCP form and URL requests now have explicit answer controls. Typed
+fields are checked against the requested schema on the owner before sending;
+invalid/stale answers are rejected. Tool-call permission requests show arguments
+as inert text. Unsupported modes can be declined/cancelled, not submitted.
+URL requests offer an explicit HTTP(S) link and never open automatically.
+Nullable native defaults no longer create optional answers or break array fields.
+Command receipts store answer fingerprints instead of raw form values, in both
+the host journal and browser session storage. This does not remove values from
+provider transcripts or tool outputs that return them. Full MCP management,
+extended OpenAI forms, and persistent approval scopes remain unfinished.
+
+Evidence for this slice:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_elicitation.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py -q --basetemp=/tmp/serena-mcp-final-verification
+# exit 0: 56 passed in 17.78s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -k mcp -q --basetemp=/tmp/serena-mcp-layout-final
+# exit 0: 3 passed, 24 deselected in 1.83s; final tool-argument rendering and defaults
+node --test tests/workspace-connection.test.mjs
+# exit 0: 7 passed, 0 failed; hashed receipts preserve retry identity
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-mcp.py --allow-inference
+# exit 0: real installed Codex subscription turn, local tool approval, typed form
+# answer/result, owned process reaped and isolated configuration removed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_elicitation.py core/workspace_codex.py core/workspace_host.py tests/test_workspace_elicitation.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-mcp.py
+# exit 0: All checks passed!
+```
+
+The initial live proof attempts exited 1. Direct tool calls declined/cancelled;
+an interactive turn exposed the separate empty-schema tool approval. The actual
+form was still cancelled until the proof server removed Pydantic's root `title`,
+which is outside Codex's typed MCP root schema. The passing proof uses a compatible
+schema and receives/answers both requests; production does not silently rewrite
+third-party server schemas. This is a provider interoperability limitation, not
+proof that every existing MCP server works. The fixture mobile screenshot was
+reviewed; full integrated-app provider/browser parity remains unfinished.
+
+Sources: https://learn.chatgpt.com/docs/app-server and
+https://python-jsonschema.readthedocs.io/en/stable/validate/ (accessed 2026-09-09),
+plus installed native MCP elicitation schemas and MCP Python SDK implementation.
+
 Queued sibling messages now have a native queue panel with exact-request cancel.
 Cancellation and dispatch share the owner lock; a request leaves the cancellable
 queue before submission. A late cancel cannot interrupt a running turn. Queue

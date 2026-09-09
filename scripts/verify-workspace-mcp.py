@@ -1,0 +1,137 @@
+"""Opt-in isolated subscription turn exercising a local MCP form through Codex."""
+
+import argparse
+import asyncio
+import json
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from core.billing import strip_metered_auth_env
+from core.workspace_elicitation import validate_reply
+from core.workspace_rpc import WorkspaceRpc
+
+
+def serve():
+    from mcp.server.fastmcp import Context, FastMCP
+    from pydantic import BaseModel
+
+    class Settings(BaseModel):
+        name: str
+        count: int
+
+    server = FastMCP("Serena form proof")
+
+    @server.tool()
+    async def ask(ctx: Context) -> str:
+        schema = Settings.model_json_schema()
+        # Native typed MCP root schemas do not accept Pydantic's model title.
+        schema.pop("title", None)
+        result = await ctx.session.elicit_form("Choose proof settings", schema)
+        if result.action == "accept":
+            Settings.model_validate(result.content)
+        return result.model_dump_json()
+
+    server.run()
+
+
+async def main():
+    binary = shutil.which("codex")
+    if not binary:
+        raise RuntimeError("Codex is unavailable")
+    auth_path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
+    auth = json.loads(auth_path.read_text())
+    if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
+        raise RuntimeError("Proof requires existing ChatGPT subscription authentication")
+    with tempfile.TemporaryDirectory(prefix="serena-mcp-proof-") as directory:
+        root = Path(directory)
+        home = root / "codex"
+        home.mkdir(mode=0o700)
+        with open(home / "auth.json", "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
+            json.dump({"auth_mode": "chatgpt", "tokens": auth["tokens"]}, stream)
+        (home / "config.toml").write_text(
+            "[mcp_servers.form_proof]\ncommand = "
+            + json.dumps(sys.executable)
+            + "\nargs = "
+            + json.dumps([str(Path(__file__).resolve()), "--serve"])
+            + "\n"
+        )
+        env = strip_metered_auth_env(dict(os.environ))
+        env["CODEX_HOME"] = str(home)
+        for name in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
+            env.pop(name, None)
+        rpc = WorkspaceRpc()
+        try:
+            await rpc.start([binary, "app-server", "--stdio"], cwd=root, env=env)
+            process = rpc.process
+            await rpc.request(
+                "initialize",
+                {
+                    "clientInfo": {"name": "serena-mcp-proof", "version": "1"},
+                    "capabilities": {"experimentalApi": True},
+                },
+            )
+            await rpc.notify("initialized", {})
+            thread = await rpc.request(
+                "thread/start",
+                {
+                    "cwd": str(root), "sandbox": "read-only", "approvalPolicy": "on-request",
+                    "developerInstructions": "Transport verification only. Call the form_proof ask tool exactly once, then report its result. Use no other tools. Never execute commands or edit files.",
+                    "config": {"features.shell_tool": False, "web_search": "disabled"},
+                },
+            )
+            sid = thread["thread"]["id"]
+            await rpc.request(
+                "turn/start",
+                {"threadId": sid, "input": [{"type": "text", "text": "Call form_proof ask once to request the proof settings, then report the returned settings."}]},
+            )
+            seen = []
+            answered = False
+            returned = False
+            async with asyncio.timeout(120):
+                while True:
+                    event = await rpc.events.get()
+                    seen.append(event.get("method"))
+                    if event.get("method") == "mcpServer/elicitation/request":
+                        assert event["params"]["threadId"] == sid
+                        params = event["params"]
+                        assert params["serverName"] == "form_proof", params
+                        properties = params["requestedSchema"]["properties"]
+                        # Codex first requests approval to call this isolated MCP tool.
+                        assert set(properties) in (set(), {"name", "count"}), params
+                        answer = {"action": "accept", "content": {"name": "Proof", "count": 3} if properties else {}}
+                        validate_reply(event["params"], answer)
+                        await rpc.answer(event["id"], answer)
+                        answered = answered or bool(properties)
+                    elif "id" in event:
+                        raise RuntimeError(f"Unexpected server request: {event.get('method')}")
+                    if event.get("method") == "item/completed":
+                        item = event.get("params", {}).get("item", {})
+                        if item.get("type") == "mcpToolCall":
+                            returned = "Proof" in json.dumps(item) and "accept" in json.dumps(item)
+                    if event.get("method") == "turn/completed":
+                        assert event["params"]["turn"]["status"] == "completed", event
+                        break
+            assert answered and returned, f"Form answer/result missing; methods: {seen}"
+            print(
+                "PASS: real local MCP form received through Codex, validated, answered, and returned typed data"
+            )
+            print("One isolated subscription turn; no user session, external MCP service, or permission bypass used")
+        finally:
+            await rpc.close()
+        assert process.returncode is not None
+        print("PASS: owned Codex process reaped; isolated configuration removed")
+
+
+if __name__ == "__main__":
+    if "--serve" in sys.argv:
+        serve()
+    else:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--allow-inference", action="store_true", required=True)
+        parser.parse_args()
+        asyncio.run(main())

@@ -184,6 +184,68 @@ def test_queue_dialog_cancels_only_selected_request_and_waits_for_host(pane, tmp
     assert not errors
 
 
+def test_mcp_form_collects_typed_fields_and_safe_url(pane):
+    page, errors = pane
+    page.evaluate(
+        """() => emit({id:88,method:'mcpServer/elicitation/request',params:{threadId:'exact',mode:'form',serverName:'Planner',message:'Choose settings',requestedSchema:{type:'object',properties:{name:{type:'string'},count:{type:'integer',minimum:1},enabled:{type:'boolean'}},required:['name','count']}}})"""
+    )
+    page.get_by_role("textbox", name="name", exact=True).fill("Ada")
+    page.get_by_role("spinbutton", name="count", exact=True).fill("3")
+    page.get_by_role("checkbox", name="enabled", exact=True).check()
+    page.get_by_role("button", name="Submit", exact=True).click()
+    page.wait_for_function("calls.length === 1")
+    assert page.evaluate("calls[0]") == [
+        "answer",
+        88,
+        {"action": "accept", "content": {"name": "Ada", "count": 3, "enabled": True}},
+    ]
+    page.evaluate(
+        """() => {emit({method:'serverRequest/resolved',params:{requestId:88}});emit({id:89,method:'mcpServer/elicitation/request',params:{mode:'url',url:'javascript:alert(1)',message:'Unsafe'}});} """
+    )
+    page.get_by_role("button", name="Confirm completion").wait_for()
+    assert page.get_by_role("button", name="Confirm completion").is_disabled()
+    assert page.locator(".aw-question a").count() == 0
+    page.get_by_role("button", name="Decline", exact=True).click()
+    assert not errors
+
+
+def test_mcp_nullable_defaults_render_without_inventing_optional_answers(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => emit({id:90,method:'mcpServer/elicitation/request',params:{
+      threadId:'exact',mode:'form',serverName:'Planner',message:'Choose settings',
+      requestedSchema:{type:'object',required:null,properties:{
+        enabled:{type:'boolean',default:null},
+        colors:{type:'array',default:null,items:{type:'string',enum:['pink','green']}},
+        name:{type:'string',default:null}
+      }}
+    }})""")
+    assert not page.get_by_role("checkbox", name="enabled").is_checked()
+    assert page.get_by_role("textbox", name="name", exact=True).input_value() == ""
+    page.screenshot(path=str(tmp_path / "mcp-form-mobile.png"))
+    page.get_by_role("button", name="Submit", exact=True).click()
+    page.wait_for_function("calls.length === 1")
+    assert page.evaluate("calls[0]") == ["answer", 90, {"action": "accept", "content": {}}]
+    assert not errors
+
+
+def test_mcp_tool_permission_shows_arguments_without_executing_markup(pane):
+    page, errors = pane
+    page.evaluate("""() => emit({id:91,method:'mcpServer/elicitation/request',params:{
+      threadId:'exact',mode:'form',serverName:'Planner',message:'Allow tool?',
+      _meta:{codex_approval_kind:'mcp_tool_call',tool_params:{text:'<img src=x onerror=alert(1)>'}},
+      requestedSchema:{type:'object',properties:{}}
+    }})""")
+    page.get_by_text("Tool arguments", exact=True).click()
+    assert "<img" in page.locator(".aw-question pre").inner_text()
+    assert page.locator(".aw-question img").count() == 0
+    assert page.evaluate("calls") == []
+    page.get_by_role("button", name="Submit", exact=True).click()
+    page.wait_for_function("calls.length === 1")
+    assert page.evaluate("calls[0]") == ["answer", 91, {"action": "accept", "content": {}}]
+    assert not errors
+
+
 def test_real_items_tool_expansion_and_injection_safety(pane, tmp_path):
     page, errors = pane
     assert page.locator("#left .aw-item").count() == 4

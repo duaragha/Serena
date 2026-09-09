@@ -64,7 +64,8 @@ export class WorkspaceConnection {
   }
 
   async command(action, payload) {
-    const signature = JSON.stringify({action, payload});
+    const encoded = JSON.stringify({action, payload});
+    const signature = action === 'answer' ? 'answer:' + [...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(encoded)))].map(byte=>byte.toString(16).padStart(2,'0')).join('') : encoded;
     const request_id = this.pending[signature] || crypto.randomUUID();
     this.pending[signature] = request_id;
     // Persist before delivery. Reloading after a lost HTTP response must use

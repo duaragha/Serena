@@ -110,6 +110,31 @@ def test_background_controls_require_attach_and_deduplicate_stop(host):
     assert not owner.closed
 
 
+def test_answer_receipts_do_not_store_form_content(host):
+    import sqlite3
+
+    host.attach("exact")
+    received = []
+
+    async def answer(request_id, content):
+        received.append(content)
+        return {}
+
+    Owner.instances[0].answer = answer
+    payload = {
+        "request_id": 1,
+        "answer": {"action": "accept", "content": {"field": "private-form-value"}},
+    }
+    assert host.command("exact", "reply", "answer", payload)["ok"]
+    assert host.command("exact", "reply", "answer", payload)["ok"]
+    assert len(received) == 1
+    with sqlite3.connect(host.journal.path) as conn:
+        saved = conn.execute(
+            "SELECT payload FROM workspace_commands WHERE request_id='reply'"
+        ).fetchone()[0]
+    assert "private-form-value" not in saved and "sha256" in saved
+
+
 def test_polling_never_launches_and_concurrent_attach_has_one_owner(host):
     assert host.events("exact")["events"] == []
     assert host._loop is None

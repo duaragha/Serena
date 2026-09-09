@@ -1,5 +1,6 @@
 import {WorkspaceConversation} from './workspace-events.mjs';
 import {renderWorkspaceMarkdown} from './workspace-markdown.mjs';
+import {renderElicitation} from './workspace-elicitation.mjs';
 
 const node = (tag, cls, text) => {
   const el = document.createElement(tag);
@@ -485,7 +486,9 @@ export class WorkspacePane {
     for (const [id, question] of this.conversation.questions) {
       const form = node('form', 'aw-question');
       const p = question.params || {};
-      if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(question.method)) {
+      if (question.method === 'mcpServer/elicitation/request') {
+        renderElicitation(form,p,answer=>this.answer(id,answer,form));
+      } else if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(question.method)) {
         form.append(node('p', '', p.reason || p.command || 'Approve proposed file changes?'));
         for (const [decision, label] of [['decline','Decline'], ['accept','Approve once'], ['acceptForSession','Approve for session']]) {
           const button = node('button', '', label); button.type = 'button';

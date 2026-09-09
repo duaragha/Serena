@@ -338,6 +338,10 @@ class CodexWorkspace:
                 or answer["decision"] not in decisions
             ):
                 raise ValueError("Invalid approval decision")
+        elif method == "mcpServer/elicitation/request":
+            from core.workspace_elicitation import validate_reply
+
+            validate_reply(question["params"], answer)
         elif method == "item/permissions/requestApproval":
             requested = question["params"].get("permissions")
             granted = answer.get("permissions")

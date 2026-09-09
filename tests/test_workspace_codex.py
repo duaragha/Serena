@@ -410,6 +410,32 @@ def test_permission_grants_cannot_expand_profile_or_drop_deny_entries(tmp_path):
     asyncio.run(run())
 
 
+def test_mcp_answer_validates_before_reply_and_rejects_stale_request(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        client.questions[8] = {
+            "method": "mcpServer/elicitation/request",
+            "params": {
+                "mode": "form",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {"count": {"type": "integer"}},
+                    "required": ["count"],
+                },
+            },
+        }
+        with pytest.raises(ValueError):
+            await client.answer(8, {"action": "accept", "content": {"count": "wrong"}})
+        assert not rpc.calls and 8 in client.questions
+        answer = {"action": "accept", "content": {"count": 3}}
+        await client.answer(8, answer)
+        assert rpc.calls == [("answer", (8, answer))]
+        with pytest.raises(WorkspaceRpcError, match="no longer pending"):
+            await client.answer(8, answer)
+
+    asyncio.run(run())
+
+
 def test_approval_validation_and_stale_resolution(tmp_path):
     async def run():
         client, rpc, events = await make(tmp_path)

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
+import json
 import threading
 from collections.abc import Callable
 from copy import deepcopy
@@ -295,8 +297,18 @@ class WorkspaceHost:
         async with self._locks.setdefault(sid, asyncio.Lock()):
             if sid not in self._sessions:
                 raise ValueError("Explicitly attach this session before sending controls")
+            recorded_payload = payload
+            if action == "answer":
+                recorded_payload = {
+                    "sha256": hashlib.sha256(
+                        json.dumps(payload, sort_keys=True, allow_nan=False).encode()
+                    ).hexdigest()
+                }
             claimed, result = await asyncio.to_thread(
-                self.journal.claim_command, sid, request_id, {"action": action, "payload": payload}
+                self.journal.claim_command,
+                sid,
+                request_id,
+                {"action": action, "payload": recorded_payload},
             )
             if not claimed:
                 return (

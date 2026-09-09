@@ -94,6 +94,19 @@ test('background controls use exact process ID and disposal sends no stop',async
   ]);
 });
 
+test('answer receipts persist only a fingerprint while preserving retry identity',async()=>{
+  const saved=storage(), ids=[];
+  const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    ids.push(JSON.parse(options.body).request_id);throw Error('lost');
+  }});
+  const content={action:'accept',content:{field:'private-form-value'}};
+  await assert.rejects(conn.controls().answer(1,content),/lost/);
+  assert.ok(!saved.getItem(conn.key).includes('private-form-value'));
+  await assert.rejects(conn.controls().answer(1,content),/lost/);
+  assert.equal(ids[0],ids[1]);
+  conn.dispose();
+});
+
 test('a rejected render leaves the replay cursor before the failed event',async()=>{
   const errors=[];
   const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:storage(),receive:()=>false,error:e=>errors.push(e.message),fetcher:async()=>response({events:[{sequence:1,event:{method:'bad'}}],has_more:false})});
