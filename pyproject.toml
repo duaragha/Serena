@@ -24,6 +24,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+workspace = [
+    # Verified SDK control schema/process identity for the opt-in native pane.
+    "claude-agent-sdk==0.2.121",
+]
 voice = [
     "anthropic>=0.84.0",
     "faster-whisper>=1.1.0",

@@ -130,9 +130,25 @@ def test_advertised_model_effort_selection_reaches_submit_and_header(pane, tmp_p
         "emit({method:'workspace/settings',params:{model:'chosen',reasoningEffort:'xhigh'}})"
     )
     page.locator("#left .aw-head small").filter(has_text="chosen").wait_for()
-    page.get_by_role("combobox", name="Model", exact=True).first.select_option('')
-    assert effort.input_value() == ''
-    assert page.get_by_role("combobox", name="Speed tier").first.input_value() == ''
+    page.get_by_role("combobox", name="Model", exact=True).first.select_option("")
+    assert effort.input_value() == ""
+    assert page.get_by_role("combobox", name="Speed tier").first.input_value() == ""
+    assert not errors
+
+
+def test_claude_permission_is_explicit_and_waits_for_resolution(pane):
+    page, errors = pane
+    page.evaluate(
+        "emit({id:'claude-q',method:'workspace/claudeApproval',params:{threadId:'exact',tool:'Bash',title:'Run proposed command?',input:{command:'echo hi'}}})"
+    )
+    page.get_by_text("Run proposed command?", exact=True).wait_for()
+    assert page.evaluate("calls.length") == 0
+    page.get_by_role("button", name="Allow once", exact=True).click()
+    page.wait_for_function("calls.length === 1")
+    assert page.evaluate("calls[0]") == ["answer", "claude-q", {"decision": "allow"}]
+    assert page.get_by_text("Run proposed command?", exact=True).is_visible()
+    page.evaluate("emit({method:'serverRequest/resolved',params:{requestId:'claude-q'}})")
+    page.get_by_text("Run proposed command?", exact=True).wait_for(state="hidden")
     assert not errors
 
 

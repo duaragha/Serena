@@ -262,6 +262,14 @@ export class WorkspacePane {
           button.addEventListener('click', () => this.answer(id, {decision}, form));
           form.append(button);
         }
+      } else if (question.method === 'workspace/claudeApproval') {
+        form.append(node('p', '', p.title || `Allow ${p.tool || 'Claude tool'}?`));
+        form.append(node('pre', '', JSON.stringify(p.input || {}, null, 2)));
+        for (const [decision, label] of [['deny','Deny'], ['allow','Allow once']]) {
+          const button = node('button', '', label); button.type = 'button';
+          button.addEventListener('click', () => this.answer(id, {decision}, form));
+          form.append(button);
+        }
       } else if (question.method === 'item/tool/requestUserInput') {
         const fields = [];
         for (const q of p.questions || []) {

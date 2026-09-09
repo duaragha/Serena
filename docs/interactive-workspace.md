@@ -282,6 +282,48 @@ The live proof reads the installed catalog without resuming a conversation or
 running inference. Selection/validation/dispatch tests use controlled protocol
 responses and therefore do not prove an actual model turn in the new interface.
 
-Next: implement attachment/session deletion, Claude/Antigravity control and the remaining capability
+`core/workspace_claude.py` now implements a persistent Claude SDK owner, with
+exact native session lookup/resume, shared lease acquisition, verified child PID,
+streamed input, interruption, explicit tool permissions, ambiguous-send rejection,
+and same-task connection/cleanup. It selects the installed `claude` executable,
+not an implicitly different bundled CLI. `pyproject.toml` adds an optional
+`workspace` extra pinned to the inspected/tested SDK version 0.2.121.
+
+The adapter loads the normal Claude Code prompt and user/project/local settings,
+without brain-specific instructions or a tool allowlist. SDK environment merging
+requires blocked inherited billing variables to be explicitly emptied; simply
+omitting them would restore their parent values. Subscription OAuth stays intact.
+Existing configured permission rules remain provider-owned. Permission callbacks
+wait for explicit allow/deny, reject stale answers and deny on owner shutdown.
+
+`core/workspace_claude_events.py` maps real SDK message types and native transcript
+records into common pane events, retains original SDK records, joins text deltas
+and final blocks by message ID, preserves tool input when results arrive, and
+rejects foreign session IDs. The browser has native Claude allow/deny controls.
+
+Official streaming-input documentation rechecked 2026-09-09:
+https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode . The installed
+Python SDK source additionally confirmed resume semantics, settings-source flags,
+streamed `query()` session IDs, child ownership, and message dataclass shapes.
+
+Claude verification (2026-09-09):
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_pane.py -q
+# exit 0: 12 passed in 4.18s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py
+# exit 0: installed SDK control initialization and child identity verified;
+# isolated config, no resume/user prompt/tool/inference; child reaped with exit 0
+```
+
+Claude remains excluded by app admission and the default host factories pending
+native-resume proof, provider-specific file mapping, question/permission schemas,
+model/effort and slash-command controls, and the broader parity matrix. The tests
+use real SDK dataclasses but controlled clients; the installed SDK proof checks
+only control initialization and teardown, not a live coding turn or subscription
+billing for inference. No user's Claude process was resumed or interrupted.
+
+Next: connect and verify Claude end to end, implement attachment/session deletion,
+Antigravity control and the remaining capability
 matrix, then prove full provider parity and migrate the real app. The replacement
 remains disabled and incomplete.
