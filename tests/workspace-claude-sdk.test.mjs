@@ -20,6 +20,83 @@ function fixture(overrides={}) {
   return {session,calls,outputs,stream,get setup(){return setup;}};
 }
 
+function transitionFixture(){
+  const f=fixture(), inbox=[];let wake,closed=false;
+  f.stream[Symbol.asyncIterator]=async function*(){while(!closed){if(inbox.length)yield inbox.shift();else await new Promise(done=>{wake=done;});}};
+  f.stream.close=()=>{closed=true;wake?.();};
+  f.emit=message=>{inbox.push(message);wake?.();wake=null;};
+  return f;
+}
+
+const clearedId='11111111-2222-4333-8444-555555555555';
+test('clear blocks input until exact handoff acknowledgement and retains the runtime',async()=>{
+  const f=transitionFixture();await f.session.open();
+  const clear=f.session.beginClear();
+  const input=(await f.setup.prompt.next()).value;
+  assert.equal(input.message.content,'/clear');assert.equal(input.session_id,'exact');
+  assert.throws(()=>f.session.send({type:'user',session_id:'exact'}),/not ready/);
+  await assert.rejects(f.session.beginClear(),/not ready/);
+  f.emit({type:'result',subtype:'success',is_error:false,session_id:clearedId,user_message_uuid:input.uuid});
+  assert.deepEqual(await clear,{sessionId:clearedId});
+  assert.equal(f.session.sessionId,'exact');assert.equal(f.session.state,'awaiting-handoff');
+  assert.deepEqual(f.outputs,[]);
+  await assert.rejects(f.session.commitClear('other'),/Exact pending/);
+  assert.throws(()=>f.session.send({type:'user',session_id:clearedId}),/not ready/);
+  assert.deepEqual(await f.session.commitClear(clearedId),{sessionId:clearedId});
+  assert.equal(f.session.sessionId,clearedId);assert.equal(f.outputs[0].session_id,clearedId);
+  assert.deepEqual(f.calls,['spawn']);
+  assert.throws(()=>f.session.send({type:'user',session_id:'exact'}),/exact/);
+  f.session.send({type:'user',session_id:clearedId,message:{role:'user',content:'next'}});
+  assert.equal((await f.setup.prompt.next()).value.session_id,clearedId);
+  await f.session.close();
+});
+
+test('clear refuses consumed but unfinished input',async()=>{
+  const f=transitionFixture();await f.session.open();
+  f.session.send({type:'user',session_id:'exact',message:{role:'user',content:'running'}});
+  const sent=(await f.setup.prompt.next()).value;
+  f.emit({type:'result',session_id:'exact',user_message_uuid:'unrelated'});
+  await new Promise(done=>setTimeout(done,0));
+  await assert.rejects(f.session.beginClear(),/pending inputs/);
+  assert.equal(f.session.state,'ready');assert.equal(f.session.pending.length,0);
+  assert(f.session.outstanding.has(sent.uuid));
+  await f.session.close();
+});
+
+for(const bad of ['wrong-receipt','same-id','error','conflicting-id'])test(`clear rejects ${bad} without allowing input`,async()=>{
+  const f=transitionFixture();await f.session.open();
+  const clear=f.session.beginClear(), input=(await f.setup.prompt.next()).value;
+  if(bad==='conflicting-id')f.emit({type:'system',session_id:'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'});
+  f.emit({type:'result',subtype:'success',is_error:bad==='error',session_id:bad==='same-id'?'exact':clearedId,
+    user_message_uuid:bad==='wrong-receipt'?'unrelated':input.uuid});
+  await assert.rejects(clear,/clear/);
+  assert.equal(f.session.state,'unavailable');assert.equal(f.session.sessionId,'exact');
+  assert.throws(()=>f.session.send({type:'user',session_id:clearedId}),/not ready/);
+  await assert.rejects(f.session.close());
+});
+
+test('closing a pending clear rejects its waiter without retry',async()=>{
+  const f=transitionFixture();await f.session.open();
+  const clear=f.session.beginClear();
+  const rejected=assert.rejects(clear,/closed during transition/);
+  await f.session.close();await rejected;
+  assert.deepEqual(f.calls,['spawn']);assert.equal(f.session.transition,null);
+});
+
+test('handoff publication failure never re-enables input or repeats clear',async()=>{
+  const f=transitionFixture();await f.session.open();
+  await assert.rejects(f.session.control('beginClear'),/Unsupported/);
+  const clear=f.session.beginClear(),input=(await f.setup.prompt.next()).value;
+  f.emit({type:'result',subtype:'success',session_id:clearedId,user_message_uuid:input.uuid});
+  await clear;
+  f.session.publish=async()=>{throw Error('Journal unavailable');};
+  await assert.rejects(f.session.commitClear(clearedId),/Journal unavailable/);
+  assert.equal(f.session.state,'unavailable');
+  assert.throws(()=>f.session.send({type:'user',session_id:clearedId}),/not ready/);
+  await assert.rejects(f.session.beginClear(),/not ready/);
+  assert.deepEqual(f.calls,['spawn']);await f.session.close();
+});
+
 test('explicit exact resume, one spawn, inputs and public controls',async()=>{
   const f=fixture();
   assert.deepEqual(f.calls,[]);

@@ -1,5 +1,6 @@
 /** Public SDK boundary. Caller owns admission, session lease and child reaping. */
 import {resolve} from 'node:path';
+import {randomUUID} from 'node:crypto';
 
 export class ClaudeSdkSession {
   constructor({sdk, sessionId, cwd, options, spawnOwned, publish, request}) {
@@ -11,6 +12,7 @@ export class ClaudeSdkSession {
     this.pending=[];
     this.started=false;
     this.spawned=false;
+    this.outstanding=new Set();
   }
 
   async open() {
@@ -64,8 +66,32 @@ export class ClaudeSdkSession {
   async read() {
     try {
       for await (const message of this.stream) {
+        if(this.transition){
+          const transition=this.transition;
+          if(transition.events.length>=256)throw new Error('Session transition emitted excessive output');
+          transition.events.push(structuredClone(message));
+          if(message.session_id && message.session_id!==transition.source){
+            if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(message.session_id) || (transition.target && message.session_id!==transition.target)){
+              throw new Error('Native clear returned conflicting session identities');
+            }
+            transition.target=message.session_id;
+          }
+          if(message.type==='result'){
+            const ids=[message.user_message_uuid,...(message.user_message_uuids||[])];
+            if(this.state!=='clearing' || !ids.includes(transition.requestId) || message.is_error || message.subtype!=='success'
+               || !transition.target || message.session_id!==transition.target){
+              throw new Error('Native clear did not confirm the requested session transition');
+            }
+            this.state='awaiting-handoff';
+            transition.resolve({sessionId:transition.target});
+          }
+          continue;
+        }
         if (message.session_id && message.session_id!==this.sessionId) {
           throw new Error('Native output belongs to a different session');
+        }
+        if(message.type==='result'){
+          for(const id of [message.user_message_uuid,...(message.user_message_uuids||[])])this.outstanding.delete(id);
         }
         await this.publish(message);
       }
@@ -73,6 +99,7 @@ export class ClaudeSdkSession {
     } catch(error) {
       this.failure=error;
       this.state='unavailable';
+      this.transition?.reject(error);
       this.stopInput();
       this.stream.close();
       throw error;
@@ -84,13 +111,51 @@ export class ClaudeSdkSession {
     if (message?.type!=='user' || message.session_id!==this.sessionId) {
       throw new Error('Input must target the exact session');
     }
-    this.pending.push(structuredClone(message));
+    const queued=structuredClone(message);
+    queued.uuid ??= randomUUID();
+    if(typeof queued.uuid!=='string' || !queued.uuid || this.outstanding.has(queued.uuid))throw new Error('Unique input identity is required');
+    this.pending.push(queued);
+    this.outstanding.add(queued.uuid);
     this.wake?.();
     this.wake=null;
   }
 
   requireReady() {
     if (this.state!=='ready') throw new Error('Native session is not ready');
+  }
+
+  async beginClear() {
+    this.requireReady();
+    if(this.outstanding.size || this.pending.length)throw new Error('Finish pending inputs before clearing');
+    const requestId=randomUUID();
+    let resolve,reject;
+    const result=new Promise((done,fail)=>{resolve=done;reject=fail;});
+    result.catch(()=>{});
+    this.transition={source:this.sessionId,requestId,events:[],resolve,reject};
+    this.state='clearing';
+    this.pending.push({type:'user',uuid:requestId,session_id:this.sessionId,parent_tool_use_id:null,
+      message:{role:'user',content:'/clear'}});
+    this.wake?.();this.wake=null;
+    return result;
+  }
+
+  async commitClear(sessionId) {
+    if(this.state!=='awaiting-handoff' || !this.transition || sessionId!==this.transition.target){
+      throw new Error('Exact pending session handoff is required');
+    }
+    this.state='committing-handoff';
+    this.sessionId=sessionId;
+    try{
+      for(const event of this.transition.events){
+        if(event.session_id===sessionId)await this.publish(event);
+        if(this.state!=='committing-handoff')throw new Error('Session ended during handoff');
+      }
+      this.transition=null;
+      this.state='ready';
+      return {sessionId};
+    }catch(error){
+      this.state='unavailable';this.stopInput();this.stream.close();throw error;
+    }
   }
 
   async control(method,...args) {
@@ -118,9 +183,10 @@ export class ClaudeSdkSession {
   }
 
   async close() {
+    this.transition?.reject(new Error('Session owner closed during transition'));
     this.stopInput();
     this.stream?.close();
     try { await this.done; }
-    finally { this.state='closed'; }
+    finally { this.state='closed';this.transition=null;this.outstanding.clear(); }
   }
 }

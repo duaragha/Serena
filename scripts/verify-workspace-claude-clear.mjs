@@ -6,6 +6,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
 const [sdkPath,cliPath]=process.argv.slice(2);
 assert(sdkPath && cliPath);
@@ -15,7 +16,7 @@ for(const key of Object.keys(process.env))delete process.env[key];
 Object.assign(process.env,{PATH:path,HOME:root,CLAUDE_CONFIG_DIR:join(root,'config'),XDG_CONFIG_HOME:join(root,'xdg'),ANTHROPIC_BASE_URL:'http://127.0.0.1:9'});
 const sdk=await import(pathToFileURL(resolve(sdkPath)).href);
 const children=[],exits=[];
-let seed,stream,stopped=false,wake;
+let seed,stream,driver,stopped=false,wake;
 const queue=[],results=[],messages=[];
 const options={cwd:root,pathToClaudeCodeExecutable:resolve(cliPath),settingSources:[],tools:[],strictMcpConfig:true,env:{...process.env},
   spawnClaudeCodeProcess:options=>{
@@ -58,9 +59,31 @@ try{
   const originalIds=new Set(before.map(message=>message.uuid));
   assert(nextHistory.every(message=>!originalIds.has(message.uuid)),'Old conversation records leaked into new history');
   console.log(JSON.stringify({nextSession:next.session_id,changedIdentity:next.session_id!==original,originalMessagesBefore:before.length,originalMessagesAfter:oldHistory.length,nextMessages:nextHistory.length}));
+  const output=[];
+  driver=new ClaudeSdkSession({sdk,sessionId:original,cwd:root,options,
+    spawnOwned:options.spawnClaudeCodeProcess,publish:message=>output.push(message),
+    request:async()=>{throw new Error('Local clear unexpectedly requested permission');}});
+  await driver.open();
+  const nativePid=children.at(-1).pid;
+  const transition=await driver.beginClear();
+  assert.equal(driver.state,'awaiting-handoff');assert.equal(driver.sessionId,original);
+  assert.throws(()=>driver.send({type:'user',session_id:transition.sessionId}),/not ready/);
+  await assert.rejects(driver.commitClear(original),/Exact pending/);
+  await driver.commitClear(transition.sessionId);
+  const uuid=randomUUID();
+  driver.send({type:'user',uuid,session_id:transition.sessionId,parent_tool_use_id:null,message:{role:'user',content:'/effort low'}});
+  const end=Date.now()+20000;
+  while(!output.some(message=>message.type==='result' && message.user_message_uuid===uuid) && Date.now()<end)await new Promise(resolve=>setTimeout(resolve,20));
+  const final=output.find(message=>message.type==='result' && message.user_message_uuid===uuid);
+  assert(final);assert.equal(final.session_id,transition.sessionId);assert.equal(final.total_cost_usd,0);assert.equal(final.num_turns,0);
+  assert.equal(children.at(-1).pid,nativePid);assert.equal(children.length,3);
+  await driver.close();await exits[2];
+  assert.deepEqual(await sdk.getSessionMessages(original,{dir:root}),before);
+  console.log('PASS: production SDK driver paused at the new identity until exact acknowledgement; same native process accepted subsequent input; original history preserved');
   console.log('PASS: native clear identity/persistence observed with zero inference and isolated home; no user session touched');
 }finally{
   stopped=true;wake?.();seed?.close();stream?.close();
+  await driver?.close().catch(()=>{});
   for(const child of children)if(child.exitCode===null && child.signalCode===null)child.kill('SIGKILL');
   await Promise.allSettled(exits);await rm(root,{recursive:true,force:true});
 }

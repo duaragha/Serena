@@ -2,6 +2,26 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Paused native clear boundary (2026-09-09): ClaudeSdkSession now has internal
+beginClear/commitClear methods. Begin refuses queued or unfinished input, submits
+one UUID-tagged /clear, buffers transition output and validates the matching
+successful result/new UUID. It remains awaiting-handoff with input and ordinary
+controls blocked. Commit accepts only that exact new ID, updates routing and
+publishes its buffered events before making input ready. Conflicting identities,
+unrelated receipts, native errors, stream closure and publication failures never
+silently retry clear or reopen input. Ordinary input completion is tracked by
+message UUID rather than decrementing for unrelated result messages.
+These methods are deliberately NOT exposed by the worker control allowlist yet.
+The host must checkpoint the new identity, confirm no old background work, move
+the lease and install pending-session/catalog routing before acknowledgement.
+The user-facing clear button therefore remains unimplemented/gated.
+Verification:
+- `node --test tests/workspace-claude-sdk.test.mjs`: exit 0, 15 passed initially.
+- `node --test tests/workspace-claude-sdk.test.mjs tests/workspace-claude-channel.test.mjs`: final exit 0, 23 passed, including unfinished input, wrong/same/conflicting IDs, cancellation, unpublished transition output, acknowledgement mismatch and publication failure.
+- `SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude`: exit 0, repeated after UUID completion tracking also exit 0. Production driver stayed paused at native new ID until explicit acknowledgement, then accepted a local command on the same PID; original history remained equal. Zero model turns/cost and isolated home. This is a driver-level proof, not the complete lease/catalog/UI handoff.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py`: exit 0, existing native exact-session controls, source desktop/mobile flows and cleanup passed without user auth or inference.
+No installed app, provider setting or release changed.
+
 Identity-transfer lease primitive (2026-09-09): added
 SessionLease.transfer_after_transition for the pending Claude clear workflow.
 It requires a bound lease and unchanged owner/child birth identities, acquires
