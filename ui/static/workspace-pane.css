@@ -36,5 +36,11 @@
 .aw-question p{white-space:pre-wrap;overflow-wrap:anywhere}.aw-question button{border:1px solid #63455d;margin:3px;font-size:11px}.aw-question label{display:block;margin:10px 0}
 .aw-question input{display:block;width:100%;background:#000;border:1px solid #63455d;border-radius:4px;padding:7px}
 .aw-question input[type=radio],.aw-question input[type=checkbox]{display:inline-block;width:auto;margin:0 8px 0 0;accent-color:#ff85cb}
+.aw-message{white-space:normal;overflow-wrap:anywhere}.aw-message p{margin:0 0 12px}.aw-message p:last-child{margin-bottom:0}
+.aw-message h1,.aw-message h2,.aw-message h3{font-size:15px;line-height:1.5;margin:16px 0 8px}
+.aw-message pre{position:relative;white-space:pre;overflow:auto;background:#151217;padding:14px 42px 14px 12px;border:1px solid #302730;border-radius:4px}
+.aw-message pre button{position:absolute;right:5px;top:5px}.aw-message code{font:inherit;background:#19141b}.aw-message pre code{background:transparent}
+.aw-message table{display:block;max-width:100%;overflow:auto;border-collapse:collapse}.aw-message td,.aw-message th{padding:6px 10px;border:1px solid #302730;text-align:left}
+.aw-message a{color:#e59cce;text-decoration:underline}.aw-message blockquote{margin:12px 0;border-left:2px solid #af78aa;padding-left:12px;color:#b7a8b8}
 .aw-question fieldset{min-width:0;border:0;padding:0;margin:0 0 14px}.aw-question legend{white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:760px){.aw-head{padding:8px 12px}.aw-transcript{padding:18px 14px}.aw-composer{margin:8px 12px 0}.aw-identity{padding:6px 12px}.aw-question{padding:12px}}

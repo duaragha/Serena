@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Agent messages and plans now render Markdown using vendored markdown-it 15.0.1
+(exact renderer dependency/lockfile, local browser bundle and license). Raw HTML
+is disabled. Links permit only HTTP(S)/mailto and use noopener/noreferrer; remote
+Markdown images render as labels rather than making automatic network requests.
+Code blocks include copy controls, tables scroll within their container, and
+the mobile screenshot was inspected. Native session attachment previews are a
+separate remaining task; this does not claim arbitrary local-link routing.
+Reference: https://markdown-it.github.io/markdown-it/ (accessed 2026-09-09).
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py tests/test_workspace_app.py -q
+# initial exit 1: 1 failed/13 passed; old textContent suffix assertion expected
+# no paragraph newline. Updated assertion trims trailing rendered whitespace.
+# final exit 0: 15 passed in 11.27s
+node --test tests/workspace-markdown.test.mjs tests/workspace-connection.test.mjs tests/workspace-events.test.mjs
+# exit 0: 11 passed, 0 failed
+```
+
 Unsent composer text now persists in sessionStorage keyed by provider and full
 session ID. Reload never submits it. Only a confirmed send clears matching text;
 newer text and failed-send drafts remain. This does not persist file objects or

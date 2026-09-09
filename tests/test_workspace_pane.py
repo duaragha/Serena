@@ -201,6 +201,25 @@ def test_failed_send_keeps_draft_after_reload(pane):
     assert not errors
 
 
+def test_markdown_code_copy_and_mobile_layout(pane, tmp_path):
+    page, errors = pane
+    page.evaluate("""() => {
+      Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copied=text;}}});
+      emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'a',type:'agentMessage',text:
+        '## Result\\n\\n**Ready** with [documentation](https://example.com).\\n\\n- one\\n- two\\n\\n```js\\nconst value = 1;\\n```\\n\\n| Check | Result |\\n| --- | --- |\\n| Unit | Passed |\\n\\n![remote](https://example.com/track.png)'
+      }}});
+    }""")
+    page.get_by_role("heading", name="Result").wait_for()
+    assert page.get_by_role("link", name="documentation").get_attribute("rel") == "noopener noreferrer"
+    assert page.locator(".aw-message img").count() == 0
+    page.get_by_role("button", name="Copy code", exact=True).click()
+    page.wait_for_function("window.copied === 'const value = 1;\\n'")
+    page.set_viewport_size({"width": 390, "height": 844})
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    page.screenshot(path=str(tmp_path / "markdown-mobile.png"))
+    assert not errors
+
+
 def test_confirmed_send_does_not_erase_newer_draft(pane):
     page, errors = pane
     page.evaluate("() => { controls.submit=()=>new Promise(resolve=>window.finishSend=resolve); }")
@@ -294,7 +313,7 @@ def test_questions_resolve_only_from_provider_and_stream_does_not_collapse_tools
         "emit({method:'item/agentMessage/delta',params:{threadId:'exact',turnId:'t',itemId:'a',delta:' Updated.'}})"
     )
     page.wait_for_function(
-        "pane.log.querySelector('.aw-message').textContent.endsWith(' Updated.')"
+        "pane.log.querySelector('.aw-message').textContent.trimEnd().endsWith(' Updated.')"
     )
     assert page.locator("#left .aw-tool").evaluate("(el)=>el.open")
     assert not errors

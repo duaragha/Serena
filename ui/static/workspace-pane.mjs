@@ -1,4 +1,5 @@
 import {WorkspaceConversation} from './workspace-events.mjs';
+import {renderWorkspaceMarkdown} from './workspace-markdown.mjs';
 
 const node = (tag, cls, text) => {
   const el = document.createElement(tag);
@@ -244,7 +245,17 @@ export class WorkspacePane {
       entry.append(message);
     } else if (item.type === 'agentMessage' || item.type === 'plan') {
       entry.append(node('div', 'aw-author', item.type === 'plan' ? 'Plan' : this.provider));
-      entry.append(node('div', 'aw-message', item.text || ''));
+      const message = node('div', 'aw-message');
+      message.innerHTML = renderWorkspaceMarkdown(item.text);
+      for (const block of message.querySelectorAll('pre')) {
+        const code = block.querySelector('code');
+        if (!code) continue;
+        const copy = this.button('Copy code', 'copy', () => {
+          navigator.clipboard.writeText(code.textContent).catch(error => this.error(error));
+        });
+        block.append(copy);
+      }
+      entry.append(message);
     } else if (item.type === 'fileChange') {
       for (const change of item.changes || []) {
         entry.append(node('div', 'aw-file-name', change.path));
