@@ -2,6 +2,39 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Current integrated verification and next provider-runtime decision (2026-09-09):
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_*.py -q --basetemp=/tmp/serena-workspace-integration-current
+# exit 0: 171 passed in 62.47s
+node --test tests/workspace-*.test.mjs
+# exit 0: 23 passed
+```
+
+Package research inspected Python SDK 0.2.152 separately from the installed
+0.2.121, and TypeScript SDK 0.3.266. The newer Python public client still lacks
+elicitation and session flag-setting controls. TypeScript declares onElicitation,
+applyFlagSettings, supportedAgents and reloadSkills. Its public spawn callback
+also supplies a verifiable owned process. The isolated native probe confirms
+initialization, effort apply/clear, agent inventory and skill reload on one CLI,
+without a user message, copied login, user settings or inference:
+
+```sh
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-ts.mjs /tmp/serena-sdk-ts/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude
+# exit 0: public controls acknowledged; owned CLI exit 0
+```
+
+Research installs were temporary (`npm install --prefix /tmp/serena-sdk-ts
+--ignore-scripts --omit=optional --no-audit --no-fund
+@anthropic-ai/claude-agent-sdk@0.3.266`); no project/runtime dependency was changed.
+Sources: https://code.claude.com/docs/en/agent-sdk/typescript and published
+https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk/v/0.3.266 declarations,
+accessed 2026-09-09. The TypeScript reference page exceeded the browser fetch
+limit; package declarations and live public calls supplied the precise evidence.
+Next: replace the Python SDK control boundary compatibly, preserving exact-session
+lease, journal and billing constraints. Registration alone does not prove MCP
+elicitation roundtrip; that and full adapter migration remain unfinished.
+
 Claude child-message and child-tool provenance now survives normalization,
 streaming and completed messages. The pane labels subagent output, exposes the
 native parent-tool ID, and shows the reported child model without updating the
