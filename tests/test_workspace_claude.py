@@ -108,6 +108,30 @@ def test_reload_skills_requires_idle_and_discards_stale_catalog(tmp_path):
     asyncio.run(run())
 
 
+def test_plugin_reload_requires_idle_and_preserves_native_errors(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        calls = []
+        async def reload():
+            calls.append("reload")
+            return {"plugins": [], "error_count": 2}
+        async def info():
+            return {"commands": [{"name": "fresh"}]}
+        owner.client = SimpleNamespace(reload_plugins=reload, get_server_info=info)
+        owner.state = "running"
+        with pytest.raises(RuntimeError, match="current turn"):
+            await owner.reload_plugins()
+        assert not calls
+        owner.state = "ready"
+        owner.events.capabilities["slash_commands"] = ["removed"]
+        result = await owner.reload_plugins()
+        assert result == {"data": [{"name": "fresh"}], "plugins": [], "error_count": 2}
+        assert calls == ["reload"]
+        assert events[-2]["method"] == "workspace/plugins"
+        assert owner.state == "ready"
+    asyncio.run(run())
+
+
 def test_fork_keeps_original_owner_and_requires_idle(tmp_path):
     async def run():
         owner, _ = make(tmp_path)

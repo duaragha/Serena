@@ -2,6 +2,27 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude plugin reload (2026-09-09): Commands and skills now includes an explicit
+Reload plugins control backed by the pinned SDK's public Query.reloadPlugins().
+It refreshes the command catalog, retains native plugin/agent/MCP metadata in the
+event journal, and displays the native plugin count and error count. It neither
+installs plugins nor starts a different coding session. Busy rejection is
+retryable before native execution; uncertain delivery retains its stable receipt.
+The adapter validates the result before replacing its cached command catalog.
+The installed SDK 0.3.266 sdk.d.ts Query and SDKControlReloadPluginsResponse are
+the contract source; actual installed CLI execution confirms the control works.
+Verification (all exit 0):
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_client.py tests/test_workspace_host.py tests/test_workspace_pane.py::test_plugin_reload_is_explicit_refreshes_commands_and_reports_native_errors -q`: 38 passed in 10.05s.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_pane.py::test_plugin_reload_is_explicit_refreshes_commands_and_reports_native_errors -q`: 28 passed in 1.45s.
+- `node --test tests/workspace-connection.test.mjs`: 17 passed, including stable reload receipt and no automatic action.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_plugin_reload_is_explicit_refreshes_commands_and_reports_native_errors -q`: 2 passed in 1.77s at 390px and 1600px with no dialog overflow.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_command_discovery_is_provider_scoped_and_never_submits -q`: 1 passed in 0.61s after adding busy/retry coverage.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: native plugin reload through Python/SDK, same session/PID, zero plugin errors; isolated no-auth local-command, skills, fork, input/output, lease and cleanup proofs also passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_client.py core/workspace_host.py tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-claude-transport.py`: all checks passed.
+- `git diff --check`: clean.
+Plugin installation/removal, trust management, arbitrary plugin behavior, and
+full provider parity remain outside this completed reload slice. Not released.
+
 Owner reconnect history (2026-09-09): closing a Codex owner now clears native
 history cursors and process-local fork notification IDs. Previously reopening
 the same adapter rejected an already-consumed but newly valid cursor as a loop.

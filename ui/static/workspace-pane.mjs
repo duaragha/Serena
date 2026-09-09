@@ -319,23 +319,35 @@ export class WorkspacePane {
     };
     search.addEventListener('input',render);
     const reload = this.button('Reload skills from disk', 'refresh-cw', async () => {
-      reload.disabled=true; status.textContent='Reloading...';
+      reload.disabled=true; plugins.disabled=true; status.textContent='Reloading...';
       try {
         const result=await this.controls.reloadSkills();
         if(!dialog.open || this.disposed)return;
         commands=result.data; render();
       } catch(error){if(dialog.open)status.textContent=error.message;}
-      finally{reload.disabled=false;}
+      finally{reload.disabled=false;plugins.disabled=false;}
     });
     reload.hidden=this.provider!=='Claude' || !this.controls.reloadSkills;
     reload.disabled=true;
-    dialog.append(node('h3','','Commands and skills'),close,reload,search,status,list);
+    const plugins = this.button('Reload plugins from disk', 'plug', async () => {
+      plugins.disabled=true;reload.disabled=true;status.textContent='Reloading plugins...';
+      try {
+        const result=await this.controls.reloadPlugins();
+        if(!dialog.open || this.disposed)return;
+        commands=result.data;render();
+        status.textContent+=` · ${result.plugins.length} plugins · ${result.error_count} plugin errors`;
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{plugins.disabled=false;reload.disabled=false;}
+    });
+    plugins.hidden=this.provider!=='Claude' || !this.controls.reloadPlugins;
+    plugins.disabled=true;
+    dialog.append(node('h3','','Commands and skills'),close,reload,plugins,search,status,list);
     dialog.addEventListener('close',()=>dialog.remove());
     this.commandsDialog=dialog; this.root.append(dialog); dialog.showModal(); search.focus();
     window.lucide?.createIcons();
     try { const result=await this.controls.commands(); if(!dialog.open || this.disposed)return; commands=result.data; render(); }
     catch(error){if(dialog.open)status.textContent=error.message;}
-    finally{reload.disabled=false;}
+    finally{reload.disabled=false;plugins.disabled=false;}
   }
 
   async openEvents() {

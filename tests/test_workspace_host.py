@@ -221,6 +221,10 @@ def test_command_discovery_is_provider_scoped_and_never_submits(tmp_path):
             self.reloads += 1
             return {"data": [{"name": "fresh"}]}
 
+        async def reload_plugins(self):
+            self.reloads += 1
+            return {"data": [{"name": "plugin-command"}], "plugins": [], "error_count": 0}
+
     value = WorkspaceHost(
         journal=WorkspaceJournal(tmp_path / "commands.db"),
         resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
@@ -237,6 +241,17 @@ def test_command_discovery_is_provider_scoped_and_never_submits(tmp_path):
         assert value.command("exact", "reload", "reload_skills", {}) == refreshed
         assert CommandOwner.instances[-1].reloads == 1
         assert not value.command("exact", "bad-reload", "reload_skills", {"path": "/elsewhere"})["ok"]
+        plugins = value.command("exact", "plugins", "reload_plugins", {})
+        assert plugins["ok"]
+        assert value.command("exact", "plugins", "reload_plugins", {}) == plugins
+        assert CommandOwner.instances[-1].reloads == 2
+        assert not value.command("exact", "bad-plugins", "reload_plugins", {"path": "/elsewhere"})["ok"]
+        CommandOwner.instances[-1].state = "running"
+        busy = value.command("exact", "busy-plugins", "reload_plugins", {})
+        assert not busy["ok"] and busy["retryable"]
+        assert CommandOwner.instances[-1].reloads == 2
+        CommandOwner.instances[-1].state = "ready"
+        assert value.command("exact", "later-plugins", "reload_plugins", {})["ok"]
         assert not CommandOwner.instances[-1].sent
     finally:
         value.shutdown()

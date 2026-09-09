@@ -105,6 +105,11 @@ async def main():
         assert not any(command["name"] == "workspace-proof" for command in refreshed["data"]), [item["name"] for item in refreshed["data"]]
         assert owner.client.owned_pid == original_pid, "Skill reload replaced the native session process"
         print("PASS: native skill added and removed after attach; explicit reload refreshed catalog without replacing session")
+        plugins = await owner.reload_plugins()
+        assert isinstance(plugins["plugins"], list) and plugins["error_count"] == 0, plugins
+        assert owner.client.owned_pid == original_pid and owner.session_id == sid
+        assert any(event["method"] == "workspace/plugins" for event in events)
+        print("PASS: native plugin reload crossed Python/SDK controls, returned catalog/error count, and preserved exact session process")
         assert owner.client.transport.command[2] == str(Path(sdk).resolve())
         if os.environ.get("SERENA_WORKSPACE_NODE_MODE") == "electron":
             assert owner.client.transport.command[0] == str(Path(os.environ["SERENA_WORKSPACE_NODE"]).resolve())

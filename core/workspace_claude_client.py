@@ -58,6 +58,20 @@ class ClaudeTypeScriptClient:
     async def fork_session(self):
         return await self.transport.control("forkSession")
 
+    async def reload_plugins(self):
+        result = await self.transport.control("reloadPlugins")
+        if not isinstance(result, dict):
+            raise ValueError("Claude returned an invalid plugin reload result")
+        for key in ("commands", "agents", "plugins", "mcpServers"):
+            if not isinstance(result.get(key), list) or any(not isinstance(item, dict) for item in result[key]):
+                raise ValueError("Claude returned an invalid plugin reload result")
+        if any(not isinstance(item.get("name"), str) for item in result["commands"]):
+            raise ValueError("Claude returned an invalid refreshed command catalog")
+        if type(result.get("error_count")) is not int or result["error_count"] < 0:
+            raise ValueError("Claude returned an invalid plugin error count")
+        self.info["commands"] = deepcopy(result["commands"])
+        return deepcopy(result)
+
     async def set_model(self, model):
         return await self.transport.control("setModel", model)
 

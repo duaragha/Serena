@@ -291,6 +291,7 @@ class WorkspaceHost:
             "background_tasks",
             "commands",
             "reload_skills",
+            "reload_plugins",
             "load_earlier",
             "shell_command",
             "fork_session",
@@ -426,6 +427,13 @@ class WorkspaceHost:
                     # before publishing, so a confirmed failure can be retried.
                     retryable = True
                     result = await owner.load_earlier(payload["cursor"])
+                elif action == "reload_plugins":
+                    if provider != "claude" or payload:
+                        raise ValueError("Plugin reload requires a Claude session and no payload")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Wait for Claude's current turn before reloading plugins")
+                    result = await owner.reload_plugins()
                 elif action == "reload_skills":
                     if provider != "claude" or payload:
                         raise ValueError("Skill reload requires a Claude session and no payload")

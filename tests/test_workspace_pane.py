@@ -60,6 +60,27 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+def test_plugin_reload_is_explicit_refreshes_commands_and_reports_native_errors(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      controls.commands=async()=>({data:[{name:'old'}]});
+      controls.reloadPlugins=async()=>{calls.push('plugins');return {data:[{name:'fresh'}],plugins:[{name:'one'}],error_count:2};};
+      pane.commandsButton.hidden=false;
+    }""")
+    page.get_by_role('button', name='Commands and skills', exact=True).click()
+    dialog = page.get_by_role('dialog', name='Commands and skills')
+    dialog.get_by_role('button', name='/old', exact=True).wait_for()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('button', name='Reload plugins from disk').click()
+    dialog.get_by_role('button', name='/fresh', exact=True).wait_for()
+    assert '2 plugin errors' in dialog.get_by_role('status').inner_text()
+    assert page.evaluate('calls') == ['plugins']
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert not errors
+
+
 def test_pending_command_streams_output_without_raw_event_json(pane):
     page, errors = pane
     page.evaluate("""() => emit({method:'item/started',params:{turnId:'t',item:{

@@ -51,6 +51,30 @@ def test_compatibility_controls_and_native_records():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("invalid", [False, True])
+def test_plugin_reload_refreshes_catalog_only_after_valid_native_result(invalid):
+    async def run():
+        client = ClaudeTypeScriptClient(options=SimpleNamespace(resume="exact", cwd="/project", cli_path="claude", env={}), sdk_path="sdk", node_path="node", transport_factory=Transport)
+        await client.connect()
+        client.info["commands"] = [{"name": "old"}]
+        result = {"commands": [{"name": "fresh"}], "agents": [], "plugins": [{"name": "plugin"}], "mcpServers": [], "error_count": 1}
+        if invalid:
+            result["error_count"] = True
+        async def control(method):
+            assert method == "reloadPlugins"
+            return result
+        client.transport.control = control
+        if invalid:
+            with pytest.raises(ValueError):
+                await client.reload_plugins()
+            assert client.info["commands"] == [{"name": "old"}]
+        else:
+            assert await client.reload_plugins() == result
+            assert client.info["commands"] == [{"name": "fresh"}]
+        await client.disconnect()
+    asyncio.run(run())
+
+
 def test_permission_context_and_answer_conversion():
     async def run():
         seen = []

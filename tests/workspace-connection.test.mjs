@@ -11,6 +11,23 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('plugin reload is explicit and retains its receipt after response loss',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    assert(url.includes('/exact/'));
+    calls.push(JSON.parse(options.body));
+    if(calls.length===1)throw Error('response lost');
+    return response({ok:true,result:{data:[],plugins:[],error_count:0}});
+  }});
+  assert.equal(calls.length,0);
+  await assert.rejects(conn.controls().reloadPlugins(),/response lost/);
+  await conn.controls().reloadPlugins();
+  assert.deepEqual(calls[0],calls[1]);
+  assert.equal(calls[0].action,'reload_plugins');
+  assert.deepEqual(calls[0].payload,{});
+  conn.dispose();assert.equal(calls.length,2);
+});
+
 test('history retry retains cursor but permits a new receipt after confirmed read failure',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

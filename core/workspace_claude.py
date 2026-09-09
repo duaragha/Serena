@@ -318,6 +318,19 @@ class ClaudeWorkspace:
             self.events.capabilities["slash_commands"] = []
             return await self.list_commands()
 
+    async def reload_plugins(self):
+        async with self._control:
+            if self.state != "ready":
+                raise RuntimeError("Wait for Claude's current turn before reloading plugins")
+            reload = getattr(self.client, "reload_plugins", None)
+            if reload is None:
+                raise RuntimeError("This Claude runtime cannot reload plugins")
+            result = await reload()
+            self.events.capabilities["slash_commands"] = []
+            await self.publish(self.events.event("workspace/plugins", deepcopy(result)))
+            commands = await self.list_commands()
+            return {**result, **commands}
+
     async def list_commands(self):
         if self.client is None or self.state in {"closed", "unavailable"}:
             raise RuntimeError("Claude is not attached")
