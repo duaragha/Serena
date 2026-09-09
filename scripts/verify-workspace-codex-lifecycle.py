@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.codex_records import read_messages
 from core.workspace_rpc import WorkspaceRpc
 
 
@@ -69,6 +70,7 @@ async def main():
                 return [row["payload"] for row in prefix if row["type"] == "response_item"]
 
             assert inherited_messages(fork) == source_messages
+            assert [text for _, text, _ in read_messages(Path(fork["path"]))] == ["SERENA_LIFECYCLE_FIXTURE"]
             after = await rpc.request("thread/read", {"threadId": sid, "includeTurns": True})
             assert before["thread"]["turns"] == after["thread"]["turns"]
             assert messages(source) == source_messages
@@ -85,6 +87,7 @@ async def main():
             resumed = (await rpc.request("thread/resume", {"threadId": fork["id"]}))["thread"]
             assert resumed["id"] == fork["id"]
             assert inherited_messages(resumed) == source_messages
+            assert [text for _, text, _ in read_messages(Path(resumed["path"]))] == ["SERENA_LIFECYCLE_FIXTURE"]
             print("PASS: fresh native process resumed exact persisted fork/history without inference")
         except BaseException:
             print("Native stderr:", "".join(rpc.stderr), file=sys.stderr)

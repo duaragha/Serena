@@ -31,7 +31,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterator
+from itertools import chain
 from pathlib import Path
+
+from core.codex_history import history_segments
 
 # Roles that belong to the conversation. "developer" is Codex's own scaffolding
 # (skills, permissions, multi-agent mode, aborted-turn notices) and is not a
@@ -139,16 +142,29 @@ def read_messages(path: Path) -> list[tuple[str, str, str]]:
     The events win when the file has any, because a rollout that carries both
     shapes would otherwise report every turn twice.
     """
-    events: list[tuple[str, str, str]] = []
-    items: list[tuple[str, str, str]] = []
-    for record in iter_records(path):
-        found = message_of(record)
-        if found is None:
-            continue
-        shape, role, text = found
-        target = events if shape == "event" else items
-        target.append((role, text, str(record.get("timestamp") or "")))
-    return events or items
+    messages = []
+    records = iter_records(path)
+    first = next(records, None)
+    if first is None:
+        return messages
+    records = chain([first], records)
+    metadata = first.get("payload") if first.get("type") == "session_meta" else None
+    # Ordinary large rollouts retain their streaming read path.
+    segments = (history_segments(Path(path), list(records))
+                if isinstance(metadata, dict) and metadata.get("history_base") is not None
+                else [records])
+    for segment in segments:
+        events: list[tuple[str, str, str]] = []
+        items: list[tuple[str, str, str]] = []
+        for record in segment:
+            found = message_of(record)
+            if found is None:
+                continue
+            shape, role, text = found
+            target = events if shape == "event" else items
+            target.append((role, text, str(record.get("timestamp") or "")))
+        messages.extend(events or items)
+    return messages
 
 
 def first_typed_message(messages: list[tuple[str, str, str]]) -> str:

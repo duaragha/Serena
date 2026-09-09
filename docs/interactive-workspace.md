@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex shared-history reader (2026-09-09): `read_messages` now reconstructs native
+fork prefixes through `codex_history.history_segments`. Ancestors are resolved
+only inside the same sessions/archived_sessions store, with canonical UUIDs,
+exact identity, byte-aligned prefix and monotonic ordinal validation. Missing,
+ambiguous, truncated, escaping or cyclic references raise HistoryUnavailable
+rather than silently presenting the fork's local tail as its full history.
+Nested ancestry is capped at 64. Legacy event/item preference is applied per
+file segment, so modern child messages are not dropped beneath legacy parents.
+Ordinary non-fork files retain streaming reads. Fork reconstruction currently
+materializes bounded prefixes; history memory/retention remains unfinished.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_codex_history.py tests/test_codex_records.py -q
+# exit 0: 23 passed in 0.12s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/codex_history.py core/codex_records.py tests/test_codex_history.py scripts/verify-workspace-codex-lifecycle.py
+# exit 0: All checks passed! (initial import-order failure corrected)
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-lifecycle.py
+# exit 0: real native fork and fresh-process resume; Serena read_messages
+# returns exactly the inherited fixture message before and after resumption.
+```
+
+The native fixture is ungrouped injected input, not a generated completed turn.
+Codex fork control, catalog metadata/title handling, browser presentation of
+unavailable ancestry, compressed ancestors and whole-session lifecycle remain
+open. This is not an installed UI change or a completed parity claim.
+
 Codex lifecycle investigation (2026-09-09): installed native 0.153.4 supports
 `thread/fork`, but its paginated history stores a `history_base` parent thread,
 exclusive ordinal and byte offset in session metadata. A fork's local response
