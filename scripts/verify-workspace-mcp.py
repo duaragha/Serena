@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.billing import strip_metered_auth_env
+from core.workspace_codex import CodexWorkspace
 from core.workspace_elicitation import validate_reply
 from core.workspace_rpc import WorkspaceRpc
 
@@ -39,20 +40,23 @@ def serve():
     server.run()
 
 
-async def main():
+async def main(inventory_only=False):
     binary = shutil.which("codex")
     if not binary:
         raise RuntimeError("Codex is unavailable")
-    auth_path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
-    auth = json.loads(auth_path.read_text())
-    if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
-        raise RuntimeError("Proof requires existing ChatGPT subscription authentication")
+    auth = None
+    if not inventory_only:
+        auth_path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
+        auth = json.loads(auth_path.read_text())
+        if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
+            raise RuntimeError("Proof requires existing ChatGPT subscription authentication")
     with tempfile.TemporaryDirectory(prefix="serena-mcp-proof-") as directory:
         root = Path(directory)
         home = root / "codex"
         home.mkdir(mode=0o700)
-        with open(home / "auth.json", "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
-            json.dump({"auth_mode": "chatgpt", "tokens": auth["tokens"]}, stream)
+        if auth:
+            with open(home / "auth.json", "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
+                json.dump({"auth_mode": "chatgpt", "tokens": auth["tokens"]}, stream)
         (home / "config.toml").write_text(
             "[mcp_servers.form_proof]\ncommand = "
             + json.dumps(sys.executable)
@@ -65,6 +69,7 @@ async def main():
         for name in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
             env.pop(name, None)
         rpc = WorkspaceRpc()
+        process = None
         try:
             await rpc.start([binary, "app-server", "--stdio"], cwd=root, env=env)
             process = rpc.process
@@ -85,6 +90,20 @@ async def main():
                 },
             )
             sid = thread["thread"]["id"]
+            if inventory_only:
+                async def publish(event):
+                    pass
+                owner = CodexWorkspace(session_id=sid, cwd=root, rpc=rpc, publish=publish)
+                owner.state = "ready"
+                async with asyncio.timeout(25):
+                    while True:
+                        inventory = await owner.list_mcp_servers()
+                        if any(server["name"] == "form_proof" and server["status"] == "connected" and server["toolCount"] == 1 for server in inventory["data"]):
+                            break
+                        await asyncio.sleep(0.1)
+                print("PASS: adapter reads exact-thread native MCP inventory and live connection status")
+                print("No inference, tool call, copied authentication, or user session used")
+                return
             await rpc.request(
                 "turn/start",
                 {"threadId": sid, "input": [{"type": "text", "text": "Call form_proof ask once to request the proof settings, then report the returned settings."}]},
@@ -123,8 +142,9 @@ async def main():
             print("One isolated subscription turn; no user session, external MCP service, or permission bypass used")
         finally:
             await rpc.close()
-        assert process.returncode is not None
-        print("PASS: owned Codex process reaped; isolated configuration removed")
+            if process:
+                assert process.returncode is not None
+                print("PASS: owned Codex process reaped; isolated configuration removed on exit")
 
 
 if __name__ == "__main__":
@@ -132,6 +152,8 @@ if __name__ == "__main__":
         serve()
     else:
         parser = argparse.ArgumentParser()
-        parser.add_argument("--allow-inference", action="store_true", required=True)
-        parser.parse_args()
-        asyncio.run(main())
+        mode = parser.add_mutually_exclusive_group(required=True)
+        mode.add_argument("--allow-inference", action="store_true")
+        mode.add_argument("--inventory-only", action="store_true")
+        args = parser.parse_args()
+        asyncio.run(main(inventory_only=args.inventory_only))

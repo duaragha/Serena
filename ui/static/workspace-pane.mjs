@@ -104,7 +104,7 @@ export class WorkspacePane {
     this.commandsButton.hidden = provider !== 'Claude' || !controls.commands;
     footer.insertBefore(this.commandsButton, this.stop);
     this.mcpButton = this.button('MCP connections', 'plug', () => this.openMcpServers());
-    this.mcpButton.hidden = provider !== 'Claude' || !controls.mcpServers;
+    this.mcpButton.hidden = !['Claude','Codex'].includes(provider) || !controls.mcpServers;
     footer.insertBefore(this.mcpButton, this.stop);
     this.queueButton = this.button('Queued sibling messages', 'messages-square', () => this.openBridgeQueue());
     this.queueButton.hidden=true; footer.insertBefore(this.queueButton, this.stop);
@@ -242,6 +242,10 @@ export class WorkspacePane {
         list.replaceChildren();
         for(const server of result.data){
           const row=node('div','aw-background-task aw-mcp-server');row.append(node('strong','',server.name),node('p','',server.status));
+          if(this.provider==='Codex'){
+            row.append(node('p','',`Authentication: ${server.authStatus || 'unknown'}`),node('p','',`${server.toolCount ?? 0} tools`));
+            list.append(row);continue;
+          }
           const label=node('label','','Enabled');const toggle=node('input');toggle.type='checkbox';toggle.checked=server.status!=='disabled';toggle.setAttribute('aria-label',`Enable ${server.name}`);
           toggle.disabled=!this.controls.mcpServerControl;
           toggle.addEventListener('change',()=>{const action=toggle.checked?'enable':'disable';toggle.checked=server.status!=='disabled';load(server.name,action);});label.prepend(toggle);

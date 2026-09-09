@@ -72,6 +72,34 @@ class Rpc:
         self.closed = True
 
 
+def test_mcp_inventory_paginates_exact_thread_without_inventing_connection_status(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if not params.get("cursor"):
+                return {"data": [{"name": "first", "tools": {"tool": {}}, "authStatus": "oAuth", "runtimeStatus": None}], "nextCursor": "next"}
+            return {"data": [{"name": "second", "tools": {}, "authStatus": "unknown", "runtimeStatus": "failed"}], "nextCursor": None}
+        rpc.request = request
+        try:
+            result = await client.list_mcp_servers()
+            assert result["data"][0] == {"name": "first", "status": "unknown", "authStatus": "oAuth", "toolCount": 1}
+            assert result["data"][1]["status"] == "failed"
+            assert len(calls) == 2
+            assert all(method == "mcpServerStatus/list" and params["threadId"] == "exact-session" for method, params in calls)
+            assert calls[1][1]["cursor"] == "next"
+            async def stuck(method, params):
+                return {"data": [], "nextCursor": "same"}
+            rpc.request = stuck
+            with pytest.raises(WorkspaceRpcError, match="pagination"):
+                await client.list_mcp_servers()
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_background_tasks_paginate_and_stop_only_exact_session_process(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

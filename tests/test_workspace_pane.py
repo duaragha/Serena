@@ -60,6 +60,30 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         browser.close()
 
 
+def test_codex_mcp_inventory_shows_unknown_state_without_unsupported_mutations(pane, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+      pane.dispose();
+      controls.mcpServers=async()=>{calls.push(['list']);return {data:[{name:'x'.repeat(180),status:'unknown',authStatus:'oAuth',toolCount:3}]};};
+      controls.mcpServerControl=async()=>{throw Error('must not mutate');};
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+    }""")
+    assert page.evaluate("calls") == []
+    page.get_by_role("button", name="MCP connections", exact=True).click()
+    dialog = page.get_by_role("dialog", name="MCP connections", exact=True)
+    dialog.get_by_text("unknown", exact=True).wait_for()
+    assert dialog.get_by_text("Authentication: oAuth", exact=True).is_visible()
+    assert dialog.get_by_text("3 tools", exact=True).is_visible()
+    assert dialog.get_by_role("checkbox").count() == 0
+    assert dialog.get_by_role("button", name="Reconnect", exact=False).count() == 0
+    assert dialog.evaluate("el => el.scrollWidth <= el.clientWidth")
+    page.screenshot(path=str(tmp_path / "codex-mcp-mobile.png"))
+    dialog.get_by_role("button", name="Close MCP connections").click()
+    assert page.evaluate("calls") == [["list"]]
+    assert not errors
+
+
 def test_mcp_connections_explicit_controls_and_failure_state(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

@@ -339,8 +339,8 @@ class WorkspaceHost:
                     await self._publish_bridge_queue(sid)
                     result = {"cancelled": True}
                 elif action == "mcp_servers":
-                    if provider != "claude" or payload:
-                        raise ValueError("MCP discovery requires a Claude session and no payload")
+                    if provider not in {"codex", "claude"} or payload:
+                        raise ValueError("MCP discovery requires a supported session and no payload")
                     result = await owner.list_mcp_servers()
                 elif action == "mcp_server_control":
                     if provider != "claude" or set(payload) != {"name", "action"}:

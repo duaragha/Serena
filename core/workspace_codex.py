@@ -104,6 +104,41 @@ class CodexWorkspace:
                 await self._close()
                 raise
 
+    async def list_mcp_servers(self) -> dict:
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        data, cursors, names, cursor = [], set(), set(), None
+        while True:
+            params = {"threadId": self.session_id, "limit": 100, "detail": "toolsAndAuthOnly"}
+            if cursor:
+                params["cursor"] = cursor
+            page = await self.rpc.request("mcpServerStatus/list", params)
+            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+                raise WorkspaceRpcError("Codex returned an invalid MCP inventory")
+            for server in page["data"]:
+                if (
+                    not isinstance(server, dict)
+                    or not isinstance(server.get("name"), str)
+                    or not server["name"]
+                    or server["name"] in names
+                    or not isinstance(server.get("tools"), dict)
+                ):
+                    raise WorkspaceRpcError("Codex returned an invalid MCP server")
+                names.add(server["name"])
+                status = server.get("runtimeStatus")
+                if status not in {None, "notStarted", "starting", "connected", "authenticationRequired", "failed", "cancelled", "disabled"}:
+                    raise WorkspaceRpcError("Codex returned an unknown MCP connection state")
+                # Auth state or a nonempty tool catalog does not prove a live connection.
+                data.append({"name": server["name"], "status": status or "unknown",
+                             "authStatus": server.get("authStatus", "unknown"),
+                             "toolCount": len(server["tools"])})
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return {"data": data}
+            if not isinstance(cursor, str) or cursor in cursors or len(cursors) >= 100:
+                raise WorkspaceRpcError("MCP inventory pagination did not advance")
+            cursors.add(cursor)
+
     async def list_background_tasks(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")

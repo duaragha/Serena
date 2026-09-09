@@ -64,6 +64,17 @@ def host(tmp_path):
     value.shutdown()
 
 
+def test_codex_mcp_discovery_uses_attached_owner_without_claude_mutations(host):
+    host.attach("exact")
+    owner = Owner.instances[-1]
+    async def inventory():
+        return {"data": [{"name": "local", "status": "unknown"}]}
+    owner.list_mcp_servers = inventory
+    assert host.command("exact", "list-mcp", "mcp_servers", {})["result"] == {"data": [{"name": "local", "status": "unknown"}]}
+    assert not host.command("exact", "bad-mutation", "mcp_server_control", {"name": "local", "action": "disable"})["ok"]
+    assert not owner.sent
+
+
 def test_mcp_controls_require_attach_and_replay_without_repeating(tmp_path):
     calls = []
     class McpOwner(Owner):

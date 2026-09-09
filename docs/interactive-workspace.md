@@ -2,6 +2,28 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex MCP inventory is now available in the shared connections panel. It uses
+native mcpServerStatus/list with the exact threadId, bounded cursor pagination,
+and toolsAndAuthOnly. Runtime connection state, auth state and tool count remain
+separate: null runtime status displays unknown, even with OAuth or cached tools.
+No server metadata, schemas or configuration credentials are returned to the UI.
+Codex reconnect/toggle controls are not exposed as Claude SDK calls: Codex uses
+different configuration/OAuth operations, which remain to be integrated.
+Source: https://learn.chatgpt.com/docs/app-server (accessed 2026-09-09) and installed
+ListMcpServerStatusParams/Response schemas.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q --basetemp=/tmp/serena-codex-mcp-inventory
+# exit 0: 14 passed in 0.12s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_pane.py -k mcp -q --basetemp=/tmp/serena-codex-mcp-ui
+# exit 0: 7 passed, 39 deselected in 3.34s; mobile screenshot reviewed
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-mcp.py --inventory-only
+# exit 0: actual native thread inventory reports local MCP connected with one
+# tool through the adapter; no inference/auth copy/tool call, process reaped
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py scripts/verify-workspace-mcp.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py
+# exit 0: All checks passed!
+```
+
 Claude background tasks now appear in the shared task dialog, from native
 TaskStarted/Progress/Updated/Notification events on the exact owned session.
 Stopping calls the public SDK stop_task with the observed task ID, never an OS
