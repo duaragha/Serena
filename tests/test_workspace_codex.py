@@ -1,10 +1,58 @@
 import asyncio
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
 from core.workspace_codex import CodexWorkspace
 from core.workspace_rpc import WorkspaceRpcError
+
+
+def test_fork_preserves_owner_and_filters_only_created_thread(tmp_path):
+    async def run():
+        client, rpc, published = await make(tmp_path)
+        await client.open(binary="codex")
+        fork_id = str(uuid4())
+        original = rpc.request
+        async def request(method, params):
+            if method == "thread/fork":
+                assert params == {"threadId": "exact-session"}
+                await rpc.events.put({"method": "thread/started", "params": {"thread": {"id": fork_id}}})
+                await asyncio.sleep(0)
+                return {"thread": {"id": fork_id, "cwd": str(tmp_path)}}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="current Codex turn"):
+                await client.fork_session()
+            client.state = "ready"
+            assert await client.fork_session() == {"session_id": fork_id, "cwd": str(tmp_path), "provider": "codex"}
+            await asyncio.sleep(0)
+            assert client.session_id == "exact-session" and client.state == "ready"
+            assert not any(e.get("method") == "thread/started" for e in published)
+            assert not any(m == "turn/start" for m, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", ["same", "invalid", "project"])
+def test_fork_rejects_invalid_native_identity(tmp_path, case):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        async def request(method, params):
+            return {"thread": {"id": "exact-session" if case == "same" else "invalid" if case == "invalid" else str(uuid4()),
+                               "cwd": str(tmp_path / "wrong") if case == "project" else str(tmp_path)}}
+        rpc.request = request
+        try:
+            with pytest.raises(WorkspaceRpcError, match="invalid identity"):
+                await client.fork_session()
+            assert not client._fork_ids and client._fork_ready.is_set()
+        finally:
+            await client.close()
+    asyncio.run(run())
 
 
 class Rpc:

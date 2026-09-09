@@ -548,7 +548,8 @@ def test_command_picker_reload_is_explicit_and_keeps_draft(pane):
 
 
 @pytest.mark.parametrize("indexed", [True, False])
-def test_fork_dialog_never_creates_or_opens_automatically(pane, tmp_path, indexed):
+@pytest.mark.parametrize("provider", ["Claude", "Codex"])
+def test_fork_dialog_never_creates_or_opens_automatically(pane, tmp_path, indexed, provider):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})
     page.evaluate("""indexed => {
@@ -556,6 +557,12 @@ def test_fork_dialog_never_creates_or_opens_automatically(pane, tmp_path, indexe
       controls.openFork=async sid=>calls.push(['open',sid]);pane.forkButton.hidden=false;
       pane.input.value='draft stays';
     }""", indexed)
+    if provider == "Codex":
+        page.evaluate("""async()=>{
+          const {WorkspacePane}=await import('/workspace-pane.mjs');
+          pane.dispose();pane=new WorkspacePane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+          pane.conversation.status='ready';pane.render();pane.input.value='draft stays';
+        }""")
     page.get_by_role("button", name="Fork conversation", exact=True).click()
     dialog = page.get_by_role("dialog", name="Fork conversation", exact=True)
     assert page.evaluate("calls") == []
@@ -571,7 +578,7 @@ def test_fork_dialog_never_creates_or_opens_automatically(pane, tmp_path, indexe
         assert dialog.get_by_role("button", name="Open fork", exact=True).count() == 0
         assert dialog.get_by_text("Catalog unavailable", exact=True).is_visible()
         dialog.get_by_role("button", name="Close fork", exact=True).click()
-    assert page.get_by_role("textbox", name="Message Claude").input_value() == "draft stays"
+    assert page.get_by_role("textbox", name=f"Message {provider}").input_value() == "draft stays"
     assert not errors
 
 

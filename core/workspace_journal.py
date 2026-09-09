@@ -93,7 +93,7 @@ class WorkspaceJournal:
         if not rows:
             return None
         target = json.loads(rows[0][0])["params"]["fork"]
-        if not isinstance(target, dict) or target.get("provider") != "claude" or any(
+        if not isinstance(target, dict) or target.get("provider") not in {"claude", "codex"} or any(
             not isinstance(target.get(key), str) or not target[key] for key in ("session_id", "cwd")
         ) or target["session_id"] == session_id:
             raise ValueError("Fork checkpoint has an invalid identity")

@@ -2,6 +2,45 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex fork controls (2026-09-09): idle exact-owner `thread/fork` now feeds the
+same explicit create/register/open workflow as Claude. The owner validates the
+new UUID/project, retains its source identity/PID and routes confirmed fork
+lifecycle notifications away from source output. Unrecognized session events
+and cross-session interactive requests still fail closed. Busy turns refuse
+creation; no model turn is submitted. Fork/checkpoint/registration receipts now
+support both providers, and the pane exposes its existing dialog for Codex.
+
+Catalog registration resolves one exact native transcript in its configured
+store, validates the header identity/project and uses the normal index upsert.
+The Codex scanner also resolves inherited messages, keeping titles/counts through
+later scans. Missing ancestry makes scanner metadata unavailable, not a partial
+tail advertised as a complete chat. No global rescan, linked-chat creation or
+automatic new owner launch is added.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py tests/test_workspace_codex.py tests/test_workspace_host.py::test_fork_receipt_keeps_identity_even_if_indexing_fails tests/test_workspace_host.py::test_interrupted_fork_receipt_recovers_only_unique_checkpoint tests/test_workspace_journal.py -q
+# exit 0: 46 passed in 3.34s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_fork_dialog_never_creates_or_opens_automatically tests/test_workspace_catalog.py tests/test_codex_records.py tests/test_codex_history.py -q
+# exit 0: 32 passed in 5.76s (before six added Codex catalog rejection cases)
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_catalog.py core/workspace_host.py core/workspace_journal.py tests/test_workspace_codex.py tests/test_workspace_catalog.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-codex-lifecycle.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-lifecycle.py
+# exit 0: native owner fork preserved source identity/PID/state; fork lifecycle
+# not published as source output; isolated real catalog registered identical
+# fork twice as one row with inherited fixture title/count; children reaped.
+```
+
+Ruff including core/codex_scanner.py exits 1 on F401/UP035/SIM108. Running
+`git show HEAD:core/codex_scanner.py | /home/raghav/Documents/Projects/serena/.venv/bin/ruff check --stdin-filename core/codex_scanner.py -`
+against the pre-change HEAD also exited 1 with exactly those three findings.
+Unrelated baseline lint was left untouched.
+
+Browser coverage is controlled-callback mobile UI, native coverage is the real
+adapter and SQLite registration in isolated storage, not a full native browser
+roundtrip or installed desktop run. Busy forks, compressed ancestors, full
+new/clear lifecycle, restart recovery and remaining provider parity gates are
+still open. This does not activate or release the replacement.
+
 Codex shared-history reader (2026-09-09): `read_messages` now reconstructs native
 fork prefixes through `codex_history.history_segments`. Ancestors are resolved
 only inside the same sessions/archived_sessions store, with canonical UUIDs,

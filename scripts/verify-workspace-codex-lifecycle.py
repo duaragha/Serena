@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.codex_records import read_messages
+from core.workspace_codex import CodexWorkspace
+from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
 
 
@@ -89,6 +92,42 @@ async def main():
             assert inherited_messages(resumed) == source_messages
             assert [text for _, text, _ in read_messages(Path(resumed["path"]))] == ["SERENA_LIFECYCLE_FIXTURE"]
             print("PASS: fresh native process resumed exact persisted fork/history without inference")
+            await rpc.close()
+            published = []
+            async def publish(event):
+                published.append(event)
+            owner = CodexWorkspace(session_id=sid, cwd=project, publish=publish,
+                                   lease_factory=lambda session: SessionLease(session, directory=root / "leases"))
+            try:
+                await owner.open(binary=binary, env=env)
+                pid = owner.rpc.process.pid
+                created = await owner.fork_session()
+                await owner.rpc.request("thread/read", {"threadId": sid})
+                await asyncio.sleep(0.05)
+                assert owner.state == "ready" and owner.session_id == sid
+                assert owner.rpc.process.pid == pid and owner.rpc.process.returncode is None
+                assert created["session_id"] != sid and created["provider"] == "codex"
+                assert all((event.get("params", {}).get("thread") or {}).get("id") != created["session_id"] for event in published)
+                catalog = subprocess.run([sys.executable, "-c", """
+import json, sys
+from core.workspace_catalog import register_fork
+from core.indexer import _get_db
+target = json.loads(sys.argv[1])
+register_fork(target)
+register_fork(target)
+with _get_db() as connection:
+    rows = connection.execute('SELECT session_id, agent, first_message, message_count FROM sessions').fetchall()
+assert len(rows) == 1
+assert tuple(rows[0]) == (target['session_id'], 'codex', 'SERENA_LIFECYCLE_FIXTURE', 1), tuple(rows[0])
+print('PASS: native fork registered idempotently in isolated real catalog with inherited title/count')
+""", json.dumps(created)], cwd=project,
+                    env={**env, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+                    text=True, capture_output=True, timeout=30)
+                assert catalog.returncode == 0, catalog.stderr
+                print(catalog.stdout.strip())
+                print("PASS: real workspace owner forked without changing source identity/PID or publishing fork lifecycle as source output")
+            finally:
+                await owner.close()
         except BaseException:
             print("Native stderr:", "".join(rpc.stderr), file=sys.stderr)
             raise

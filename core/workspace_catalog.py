@@ -10,22 +10,38 @@ def register_fork(target):
     from core.parser import parse_metadata
 
     sid = target["session_id"]
-    if target.get("provider") != "claude" or str(UUID(sid)) != sid:
-        raise ValueError("An exact native Claude fork is required")
-    projects = Path(os.environ.get("CLAUDE_CONFIG_DIR") or CLAUDE_DIR) / "projects"
-    candidates = list(projects.glob(f"*/{sid}.jsonl"))
+    provider = target.get("provider")
+    if provider not in {"claude", "codex"} or str(UUID(sid)) != sid:
+        raise ValueError("An exact native fork is required")
+    if provider == "claude":
+        projects = Path(os.environ.get("CLAUDE_CONFIG_DIR") or CLAUDE_DIR) / "projects"
+        candidates = list(projects.glob(f"*/{sid}.jsonl"))
+    else:
+        projects = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        candidates = [p for directory in (projects / "sessions", projects / "archived_sessions")
+                      for p in directory.rglob(f"rollout-*{sid}.jsonl")]
     if len(candidates) != 1:
         raise ValueError("Native fork transcript is missing or ambiguous")
     path = candidates[0]
     if not path.resolve().is_relative_to(projects.resolve()):
         raise ValueError("Native fork transcript is outside the session store")
-    meta = parse_metadata(path, path.parent.name)
-    if meta.session_id != sid or Path(meta.cwd).resolve() != Path(target["cwd"]).resolve():
+    if provider == "claude":
+        meta = parse_metadata(path, path.parent.name)
+    else:
+        from core.codex_records import iter_records
+        from core.codex_scanner import parse_codex_metadata
+
+        header = next(iter_records(path), {})
+        payload = header.get("payload") or {}
+        if header.get("type") != "session_meta" or payload.get("id", payload.get("session_id")) != sid:
+            raise ValueError("Native fork transcript identity does not match")
+        meta = parse_codex_metadata(path)
+    if meta is None or meta.session_id != sid or Path(meta.cwd).resolve() != Path(target["cwd"]).resolve():
         raise ValueError("Native fork metadata does not match its project and identity")
     with _index_update_lock():
         conn = _get_db()
         try:
-            _upsert_session(conn, meta, agent="claude")
+            _upsert_session(conn, meta, agent=provider)
             conn.commit()
         finally:
             conn.close()

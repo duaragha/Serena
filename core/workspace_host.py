@@ -323,7 +323,7 @@ class WorkspaceHost:
                 {"action": action, "payload": recorded_payload},
             )
             if not claimed:
-                if result is None and action == "fork_session" and not payload and self._sessions[sid][1] == "claude":
+                if result is None and action == "fork_session" and not payload and self._sessions[sid][1] in {"claude", "codex"}:
                     target = await asyncio.to_thread(self.journal.fork_checkpoint, sid, request_id)
                     if target is not None:
                         receipt = {"ok": True, "result": await self._register_created_fork(target)}
@@ -391,7 +391,7 @@ class WorkspaceHost:
                         raise ValueError("An exact Claude MCP server and action are required")
                     result = await owner.control_mcp_server(payload["name"], payload["action"])
                 elif action == "register_fork":
-                    if provider != "claude" or set(payload) != {"fork_request_id"} or not isinstance(payload["fork_request_id"], str) or self.register_fork is None:
+                    if provider not in {"claude", "codex"} or set(payload) != {"fork_request_id"} or not isinstance(payload["fork_request_id"], str) or self.register_fork is None:
                         raise ValueError("An exact fork creation receipt is required")
                     found, prior = await asyncio.to_thread(self.journal.command_receipt, sid,
                                                           payload["fork_request_id"], {"action": "fork_session", "payload": {}})
@@ -403,11 +403,11 @@ class WorkspaceHost:
                     await asyncio.to_thread(self.register_fork, result)
                     result["indexed"] = True
                 elif action == "fork_session":
-                    if provider != "claude" or payload or self.register_fork is None:
-                        raise ValueError("Native fork requires a Claude session, no payload and an available catalog")
+                    if provider not in {"claude", "codex"} or payload or self.register_fork is None:
+                        raise ValueError("Native fork requires a supported session, no payload and an available catalog")
                     if owner.state != "ready":
                         retryable = True
-                        raise ValueError("Wait for Claude's current turn before forking")
+                        raise ValueError("Wait for the current turn before forking")
                     result = await owner.fork_session()
                     await asyncio.to_thread(self.journal.append, sid, {
                         "method": "workspace/sessionForked", "params": {"threadId": sid, "requestId": request_id, "fork": result}

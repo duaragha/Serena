@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from core.billing import strip_metered_auth_env
 from core.workspace_lease import SessionLease
@@ -50,6 +51,29 @@ class CodexWorkspace:
         self._control_lock = asyncio.Lock()
         self._events_task: asyncio.Task | None = None
         self._history_ready = asyncio.Event()
+        self._fork_ready = asyncio.Event()
+        self._fork_ready.set()
+        self._fork_ids: set[str] = set()
+
+    async def fork_session(self):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions:
+                raise WorkspaceRpcError("Finish the current Codex turn before forking")
+            self._fork_ready.clear()
+            try:
+                result = await self.rpc.request("thread/fork", {"threadId": self.session_id})
+                thread = result.get("thread") if isinstance(result, dict) else None
+                sid = thread.get("id") if isinstance(thread, dict) else None
+                try:
+                    valid = isinstance(sid, str) and str(UUID(sid)) == sid
+                except ValueError:
+                    valid = False
+                if not valid or sid == self.session_id or thread.get("cwd") != str(self.cwd):
+                    raise WorkspaceRpcError("Native fork returned an invalid identity or project")
+                self._fork_ids.add(sid)
+                return {"session_id": sid, "provider": "codex", "cwd": str(self.cwd)}
+            finally:
+                self._fork_ready.set()
 
     async def open(self, *, binary: str | None = None, env: dict[str, str] | None = None) -> dict:
         async with self._control_lock:
@@ -505,8 +529,13 @@ class CodexWorkspace:
             while True:
                 event = await self.rpc.events.get()
                 method, params = event.get("method"), event.get("params") or {}
-                thread_id = params.get("threadId")
+                thread_id = params.get("threadId") or (params.get("thread") or {}).get("id")
                 if thread_id is not None and thread_id != self.session_id:
+                    await self._fork_ready.wait()
+                    if thread_id in self._fork_ids and "id" not in event:
+                        # The native fork loads a dormant thread in this server.
+                        # Its lifecycle notifications are not source-chat output.
+                        continue
                     raise WorkspaceRpcError("Received an event for a different coding session")
                 if "id" in event:
                     self.questions[event["id"]] = deepcopy(event)

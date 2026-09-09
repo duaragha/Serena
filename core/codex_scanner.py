@@ -214,6 +214,13 @@ def parse_codex_metadata(file_path: Path) -> SessionMeta | None:
         return None
 
     turns = event_turns or item_turns
+    if session_meta.get("history_base") is not None:
+        from core.codex_history import HistoryUnavailable
+
+        try:
+            turns = [(role, text) for role, text, _ in codex_records.read_messages(file_path)]
+        except HistoryUnavailable:
+            return None
     msg_count = len(turns)
     first_user_msg = codex_records.first_typed_message(
         [(role, text, "") for role, text in turns]

@@ -43,7 +43,7 @@ export class WorkspacePane {
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
-    this.forkButton.hidden=provider!=='Claude' || !controls.forkSession || !controls.openFork;
+    this.forkButton.hidden=!['Claude','Codex'].includes(provider) || !controls.forkSession || !controls.openFork;
     this.forkButton.disabled=true;
     head.append(this.forkButton);
     this.log = node('div', 'aw-transcript');

@@ -208,13 +208,14 @@ def test_command_discovery_is_provider_scoped_and_never_submits(tmp_path):
 
 
 @pytest.mark.parametrize("registration_fails", [False, True])
-def test_fork_receipt_keeps_identity_even_if_indexing_fails(tmp_path, registration_fails):
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_fork_receipt_keeps_identity_even_if_indexing_fails(tmp_path, registration_fails, provider):
     class ForkOwner(Owner):
         forks = 0
 
         async def fork_session(self):
             self.forks += 1
-            return {"session_id": "new-fork", "provider": "claude", "cwd": str(tmp_path)}
+            return {"session_id": "new-fork", "provider": provider, "cwd": str(tmp_path)}
 
     registered = []
 
@@ -224,8 +225,8 @@ def test_fork_receipt_keeps_identity_even_if_indexing_fails(tmp_path, registrati
             raise RuntimeError("catalog unavailable")
 
     value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "fork.db"),
-                          resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
-                          factories={"claude": ForkOwner}, register_fork=register)
+                          resolve=lambda sid: {"session_id": sid, "provider": provider, "cwd": str(tmp_path)},
+                          factories={provider: ForkOwner}, register_fork=register)
     try:
         value.attach("exact")
         assert not value.command("exact", "bad", "fork_session", {"session_id": "other"})["ok"]
@@ -258,18 +259,19 @@ def test_fork_receipt_keeps_identity_even_if_indexing_fails(tmp_path, registrati
 
 
 @pytest.mark.parametrize("checkpoint_count", [0, 1, 2])
-def test_interrupted_fork_receipt_recovers_only_unique_checkpoint(tmp_path, checkpoint_count):
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_interrupted_fork_receipt_recovers_only_unique_checkpoint(tmp_path, checkpoint_count, provider):
     path = tmp_path / "interrupted.db"
     journal = WorkspaceJournal(path)
     journal.claim_command("exact", "fork", {"action": "fork_session", "payload": {}})
-    target = {"session_id": "saved-fork", "provider": "claude", "cwd": str(tmp_path)}
+    target = {"session_id": "saved-fork", "provider": provider, "cwd": str(tmp_path)}
     for _ in range(checkpoint_count):
         journal.append("exact", {"method": "workspace/sessionForked", "params": {"threadId": "exact", "requestId": "fork", "fork": target}})
     registered = []
     # Owner has no fork method: recovery must never call the native creator.
     value = WorkspaceHost(journal=WorkspaceJournal(path),
-                          resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
-                          factories={"claude": Owner}, register_fork=registered.append)
+                          resolve=lambda sid: {"session_id": sid, "provider": provider, "cwd": str(tmp_path)},
+                          factories={provider: Owner}, register_fork=registered.append)
     try:
         value.attach("exact")
         if checkpoint_count == 2:
