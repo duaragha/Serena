@@ -1,0 +1,72 @@
+"""Ordered disk-backed events for custom panes that can disconnect independently.
+
+Provider transcripts remain canonical history. This journal preserves the live
+control/event stream across renderer reconnects without retaining it all in RAM.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+
+
+class WorkspaceJournal:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self._connect()) as conn, conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("""CREATE TABLE IF NOT EXISTS workspace_events (
+                session_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                event TEXT NOT NULL,
+                PRIMARY KEY (session_id, sequence)
+            )""")
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.path, timeout=10)
+
+    def append(self, session_id: str, event: dict) -> dict:
+        if (
+            not session_id
+            or not isinstance(event, dict)
+            or not isinstance(event.get("method"), str)
+        ):
+            raise ValueError("An identified session and protocol event are required")
+        params = event.get("params") or {}
+        if not isinstance(params, dict):
+            raise ValueError("Event params must be an object")
+        sid = params.get("threadId")
+        if event["method"] == "workspace/history":
+            sid = (params.get("thread") or {}).get("id")
+        if sid is not None and sid != session_id:
+            raise ValueError("Cannot publish another session into this journal")
+        encoded = json.dumps(event, ensure_ascii=False, allow_nan=False)
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            last = conn.execute(
+                "SELECT MAX(sequence) FROM workspace_events WHERE session_id=?", (session_id,)
+            ).fetchone()[0]
+            sequence = (last or 0) + 1
+            conn.execute(
+                "INSERT INTO workspace_events VALUES (?, ?, ?)", (session_id, sequence, encoded)
+            )
+        return {"sequence": sequence, "event": json.loads(encoded)}
+
+    def read(self, session_id: str, *, after: int = 0, limit: int = 200) -> dict:
+        if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("Invalid replay cursor or page size")
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """SELECT sequence, event FROM workspace_events
+                WHERE session_id=? AND sequence>? ORDER BY sequence LIMIT ?""",
+                (session_id, after, limit + 1),
+            ).fetchall()
+        page = rows[:limit]
+        return {
+            "events": [{"sequence": seq, "event": json.loads(event)} for seq, event in page],
+            "cursor": page[-1][0] if page else after,
+            "has_more": len(rows) > limit,
+        }

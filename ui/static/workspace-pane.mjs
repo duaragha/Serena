@@ -1,0 +1,252 @@
+import {WorkspaceConversation} from './workspace-events.mjs';
+
+const node = (tag, cls, text) => {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text !== undefined) el.textContent = text;
+  return el;
+};
+const icon = name => { const el = node('i'); el.dataset.lucide = name; return el; };
+
+/** A real session view. Controls are supplied by the session owner, not a CLI scraper. */
+export class WorkspacePane {
+  constructor(root, {sessionId, provider, model = '', controls}) {
+    this.root = root;
+    this.provider = provider;
+    this.controls = controls;
+    this.conversation = new WorkspaceConversation(sessionId);
+    this.rendered = new Map();
+    this.files = [];
+    this.sending = false;
+    this.disposed = false;
+    this.frame = 0;
+    root.classList.add('agent-workspace-pane');
+    root.setAttribute('aria-label', `${provider} conversation`);
+    const head = node('header', 'aw-head');
+    const badge = node('span', 'aw-badge', provider.slice(0, 1).toUpperCase());
+    badge.dataset.provider = provider.toLowerCase();
+    head.append(badge, node('strong', '', provider), node('small', '', model));
+    this.status = node('span', 'aw-state', 'Connecting');
+    this.status.setAttribute('role', 'status');
+    head.append(this.status);
+    this.log = node('div', 'aw-transcript');
+    this.log.tabIndex = 0;
+    this.log.setAttribute('aria-label', `${provider} messages and tool output`);
+    this.questionArea = node('div', 'aw-questions');
+    this.alert = node('div', 'aw-error');
+    this.alert.setAttribute('role', 'alert');
+    this.alert.hidden = true;
+    this.form = node('form', 'aw-composer');
+    this.input = node('textarea');
+    this.input.placeholder = `Message ${provider}...`;
+    this.input.setAttribute('aria-label', `Message ${provider}`);
+    this.input.rows = 2;
+    this.attachments = node('div', 'aw-attachments');
+    const footer = node('div', 'aw-composer-tools');
+    this.fileInput = node('input');
+    this.fileInput.type = 'file'; this.fileInput.multiple = true; this.fileInput.hidden = true;
+    this.fileInput.addEventListener('change', () => {
+      this.files.push(...this.fileInput.files);
+      this.fileInput.value = '';
+      this.renderAttachments();
+    });
+    const attach = this.button('Attach files', 'paperclip', () => this.fileInput.click());
+    this.stop = this.button('Interrupt turn', 'square', async () => {
+      this.stop.disabled = true;
+      try { await this.controls.interrupt(); } catch (e) { this.error(e); }
+      finally { if (!this.disposed) this.stop.disabled = false; }
+    });
+    this.stop.hidden = true;
+    this.send = this.button('Send message', 'arrow-up'); this.send.type = 'submit';
+    footer.append(attach, this.stop, this.send);
+    this.form.append(this.input, this.attachments, footer, this.fileInput);
+    this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
+    this.input.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.form.requestSubmit(); }
+    });
+    const identity = node('footer', 'aw-identity');
+    const copy = this.button(`Copy session ID ${sessionId}`, 'copy', () => {
+      navigator.clipboard.writeText(sessionId).catch(e => this.error(e));
+    });
+    identity.append(node('span', '', sessionId.slice(0, 8)), copy);
+    root.replaceChildren(head, this.log, this.questionArea, this.alert, this.form, identity);
+    this.refreshIcons();
+    this.render();
+  }
+
+  button(label, symbol, action) {
+    const button = node('button'); button.type = 'button';
+    button.title = label; button.setAttribute('aria-label', label);
+    button.append(icon(symbol));
+    if (action) button.addEventListener('click', action);
+    return button;
+  }
+
+  refreshIcons() { window.lucide?.createIcons({root: this.root}); }
+  error(error) { this.alert.hidden = false; this.alert.textContent = error.message || String(error); }
+
+  receive(envelope) {
+    if (this.disposed) return;
+    try {
+      if (!this.conversation.apply(envelope)) return;
+    } catch (error) {
+      this.error(error);
+      this.send.disabled = true;
+      this.controls.replay?.(this.conversation.sequence);
+      return;
+    }
+    if (!this.frame) this.frame = requestAnimationFrame(() => { this.frame = 0; this.render(); });
+  }
+
+  async submit() {
+    const text = this.input.value;
+    if (this.sending || this.send.disabled || (!text.trim() && !this.files.length)) return;
+    const files = [...this.files];
+    this.sending = true; this.send.disabled = true; this.alert.hidden = true;
+    try {
+      // Uploads and text are submitted through one session-owner operation.
+      await this.controls.submit({text, files});
+      if (this.input.value === text) this.input.value = '';
+      this.files = this.files.filter(file => !files.includes(file));
+      this.renderAttachments();
+    } catch (error) { this.error(error); }
+    finally { this.sending = false; if (!this.disposed) this.render(); }
+  }
+
+  renderAttachments() {
+    this.attachments.replaceChildren();
+    for (const file of this.files) {
+      const row = node('span', 'aw-attachment', file.name);
+      row.append(this.button(`Remove ${file.name}`, 'x', () => {
+        this.files = this.files.filter(f => f !== file); this.renderAttachments();
+      }));
+      this.attachments.append(row);
+    }
+    this.refreshIcons();
+  }
+
+  renderItem(item) {
+    const entry = node('article', 'aw-item'); entry.dataset.itemId = item.id;
+    if (item.type === 'userMessage') {
+      entry.append(node('div', 'aw-author', 'Raghav'));
+      const message = node('div', 'aw-user-message');
+      for (const part of item.content || []) {
+        message.append(node('div', '', part.text ?? part.path ?? part.url ?? JSON.stringify(part)));
+      }
+      entry.append(message);
+    } else if (item.type === 'agentMessage' || item.type === 'plan') {
+      entry.append(node('div', 'aw-author', item.type === 'plan' ? 'Plan' : this.provider));
+      entry.append(node('div', 'aw-message', item.text || ''));
+    } else if (item.type === 'fileChange') {
+      for (const change of item.changes || []) {
+        entry.append(node('div', 'aw-file-name', change.path));
+        const diff = node('pre', 'aw-diff');
+        for (const line of (change.diff || '').split('\n')) {
+          diff.append(node('span', line.startsWith('+') ? 'aw-add' : line.startsWith('-') ? 'aw-remove' : '', line + '\n'));
+        }
+        entry.append(diff);
+      }
+    } else {
+      const detail = node('details', 'aw-tool');
+      const summary = node('summary');
+      summary.append(node('span', '', item.command || item.tool || item.query || item.type));
+      if (item.status) summary.append(node('small', '', item.status));
+      detail.append(summary);
+      // Unknown tools remain fully inspectable, including all provider metadata.
+      detail.append(node('pre', '', item.aggregatedOutput ?? JSON.stringify(item, null, 2)));
+      if (item.exitCode !== undefined && item.exitCode !== null) detail.append(node('div', 'aw-exit', `Exit ${item.exitCode}`));
+      entry.append(detail);
+    }
+    return entry;
+  }
+
+  renderQuestions() {
+    const signature = JSON.stringify([...this.conversation.questions]);
+    if (signature === this.questionSignature) return;
+    this.questionSignature = signature;
+    this.questionArea.replaceChildren();
+    for (const [id, question] of this.conversation.questions) {
+      const form = node('form', 'aw-question');
+      const p = question.params || {};
+      if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(question.method)) {
+        form.append(node('p', '', p.reason || p.command || 'Approve proposed file changes?'));
+        for (const [decision, label] of [['decline','Decline'], ['accept','Approve once'], ['acceptForSession','Approve for session']]) {
+          const button = node('button', '', label); button.type = 'button';
+          button.addEventListener('click', () => this.answer(id, {decision}, form));
+          form.append(button);
+        }
+      } else if (question.method === 'item/tool/requestUserInput') {
+        const fields = [];
+        for (const q of p.questions || []) {
+          const label = node('label', '', q.question);
+          const field = node('input'); field.name = q.id; field.required = true;
+          field.type = q.isSecret ? 'password' : 'text';
+          label.append(field); form.append(label); fields.push([q.id,field]);
+          for (const option of q.options || []) {
+            const button = node('button', '', option.label); button.type = 'button';
+            button.title = option.description || option.label;
+            button.addEventListener('click', () => { field.value = option.label; }); form.append(button);
+          }
+        }
+        const send = node('button', '', 'Answer'); send.type = 'submit'; form.append(send);
+        form.addEventListener('submit', e => {
+          e.preventDefault(); this.answer(id, {answers:Object.fromEntries(fields.map(([key,field]) => [key,{answers:[field.value]}]))}, form);
+        });
+      } else {
+        form.append(node('p', '', 'This request needs a control that is not implemented yet.'));
+        form.append(node('pre', '', JSON.stringify(question, null, 2)));
+      }
+      this.questionArea.append(form);
+    }
+  }
+
+  async answer(id, value, form) {
+    const controls = [...form.querySelectorAll('button,input')];
+    controls.forEach(el => { el.disabled = true; });
+    try { await this.controls.answer(id, value); }
+    catch (error) { this.error(error); controls.forEach(el => { el.disabled = false; }); }
+    // Only the provider's resolution event dismisses the question.
+  }
+
+  render() {
+    if (this.disposed) return;
+    const follow = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 60;
+    const keys = new Set();
+    const ordered = [];
+    for (const turn of this.conversation.turns.values()) {
+      for (const item of turn.items.values()) {
+        const key = JSON.stringify([turn.id,item.id]); keys.add(key);
+        const signature = JSON.stringify(item);
+        const prior = this.rendered.get(key);
+        if (prior?.signature === signature) { ordered.push(prior.element); continue; }
+        const element = this.renderItem(item);
+        if (prior) {
+          const wasOpen = prior.element.querySelector('details')?.open;
+          if (wasOpen && element.querySelector('details')) element.querySelector('details').open = true;
+          prior.element.replaceWith(element);
+        } else this.log.append(element);
+        this.rendered.set(key, {signature,element});
+        ordered.push(element);
+      }
+    }
+    for (const [key, prior] of this.rendered) if (!keys.has(key)) { prior.element.remove(); this.rendered.delete(key); }
+    let cursor = this.log.firstChild;
+    for (const element of ordered) {
+      if (element !== cursor) this.log.insertBefore(element, cursor);
+      cursor = element.nextSibling;
+    }
+    this.status.textContent = this.conversation.status;
+    this.stop.hidden = this.conversation.status !== 'running';
+    this.send.disabled = this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
+    if (this.conversation.error) this.error(this.conversation.error);
+    this.renderQuestions(); this.refreshIcons();
+    if (follow) this.log.scrollTop = this.log.scrollHeight;
+  }
+
+  dispose() {
+    this.disposed = true;
+    cancelAnimationFrame(this.frame);
+    this.root.replaceChildren();
+    // No stop/interrupt/close call: the owner outlives this view.
+  }
+}

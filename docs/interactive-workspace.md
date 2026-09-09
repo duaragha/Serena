@@ -87,5 +87,20 @@ Verification to date: 10 Python transport/controller tests and 4 Node event-mode
 tests pass. The Python transport tests exercise real subprocess pipes; controller
 tests use a protocol double. The installed-Codex live proof verifies initialization
 and clean process shutdown only, not actual coding/approval/session migration.
-Next: single-owner admission integrated with existing PTYs and a bounded replay
-journal, then mount the mockup renderer/composer against the real event contract.
+`core/workspace_journal.py` adds SQLite-backed per-session event sequencing and
+paged replay. Concurrent appends are serialized transactionally. Renderer
+disconnection does not consume or delete events. Disk retention/deletion policy
+is not yet integrated; history is deliberately not silently truncated.
+
+`ui/static/workspace-pane.mjs` and `.css` now render the actual custom pane
+component from structured provider events. Browser tests cover safe message text,
+tool expansion, diffs, explicit exit codes, multiline composition, file selection,
+send failure retaining drafts, question resolution and non-cancelling disposal.
+Desktop/mobile screenshots were inspected. These are protocol-fixture browser
+tests, not evidence of live Claude/Codex sessions in the custom interface. The
+component still needs richer Markdown, attachment previews, command/settings
+controls, pending-request schemas, full history paging and runtime integration.
+
+Next: single-owner admission integrated with existing PTYs, connect adapters to
+the journal and pane, implement Claude/Antigravity control and the remaining
+capability matrix, then prove full provider parity and migrate the real app.

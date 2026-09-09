@@ -1,0 +1,47 @@
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from core.workspace_journal import WorkspaceJournal
+
+
+def test_reopen_replay_and_session_isolation(tmp_path):
+    path = tmp_path / "events.db"
+    journal = WorkspaceJournal(path)
+    events = [
+        {"method": "item/agentMessage/delta", "params": {"threadId": "exact", "delta": text}}
+        for text in ["first", "second", "third"]
+    ]
+    for event in events:
+        journal.append("exact", event)
+    journal.append("other", {"method": "event", "params": {"threadId": "other"}})
+    restored = WorkspaceJournal(path)
+    first = restored.read("exact", limit=2)
+    assert [e["sequence"] for e in first["events"]] == [1, 2]
+    assert first["has_more"]
+    last = restored.read("exact", after=first["cursor"])
+    assert last["events"] == [{"sequence": 3, "event": events[-1]}]
+    assert not last["has_more"]
+    assert restored.read("unknown")["events"] == []
+
+
+def test_concurrent_publishers_produce_no_sequence_gaps(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "events.db")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(
+            pool.map(
+                lambda i: journal.append("s", {"method": "delta", "params": {"i": i}}), range(50)
+            )
+        )
+    events = journal.read("s")["events"]
+    assert [e["sequence"] for e in events] == list(range(1, 51))
+    assert {e["event"]["params"]["i"] for e in events} == set(range(50))
+
+
+def test_invalid_event_does_not_consume_sequence(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "events.db")
+    with pytest.raises(ValueError, match="another session"):
+        journal.append("s", {"method": "event", "params": {"threadId": "other"}})
+    with pytest.raises(ValueError):
+        journal.read("s", limit=1000000)
+    assert journal.append("s", {"method": "event"})["sequence"] == 1
