@@ -50,6 +50,86 @@ def test_unknown_launch_outcome_never_authorizes_another_writer(tmp_path):
         SessionLease("exact", directory=tmp_path)
 
 
+def test_transfer_keeps_exact_runtime_and_target_exclusive(tmp_path, monkeypatch):
+    source = SessionLease("source", directory=tmp_path)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=os.name != "nt")
+    target = None
+    try:
+        source.launching()
+        source.bind(child.pid)
+        before = dict(source.record)
+        save = source._save
+        checked = []
+        def verify_both_locks_before_retirement():
+            for sid in ("source", "target"):
+                with pytest.raises(SessionOwnedError):
+                    SessionLease(sid, directory=tmp_path)
+            checked.append(True)
+            save()
+        monkeypatch.setattr(source, "_save", verify_both_locks_before_retirement)
+        target = source.transfer_after_transition("target")
+        assert checked == [True]
+        assert source.closed and child.poll() is None
+        assert target.record["child"] == before["child"]
+        assert target.record.get("process_group") == before.get("process_group")
+        reopened = SessionLease("source", directory=tmp_path)
+        reopened.release()
+        with pytest.raises(SessionOwnedError):
+            SessionLease("target", directory=tmp_path)
+        target.release()
+        with pytest.raises(SessionOwnedError, match="may still be running"):
+            SessionLease("target", directory=tmp_path)
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+        source.release()
+        if target:
+            target.release()
+    recovered = SessionLease("target", directory=tmp_path)
+    recovered.release()
+
+
+@pytest.mark.parametrize("failure", ["occupied", "same", "source-write"])
+def test_transfer_failure_never_releases_source_runtime(tmp_path, monkeypatch, failure):
+    source = SessionLease("source", directory=tmp_path)
+    occupied = SessionLease("target", directory=tmp_path) if failure == "occupied" else None
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        source.launching()
+        source.bind(child.pid)
+        before = dict(source.record)
+        if failure == "source-write":
+            def broken_save():
+                raise OSError("disk unavailable")
+            monkeypatch.setattr(source, "_save", broken_save)
+        with pytest.raises((SessionOwnedError, OSError)):
+            source.transfer_after_transition("source" if failure == "same" else "target")
+        assert not source.closed and source.record == before and child.poll() is None
+        with pytest.raises(SessionOwnedError):
+            SessionLease("source", directory=tmp_path)
+        if failure == "source-write":
+            with pytest.raises(SessionOwnedError, match="may still be running"):
+                SessionLease("target", directory=tmp_path)
+    finally:
+        monkeypatch.undo()
+        child.terminate()
+        child.wait(timeout=5)
+        source.release()
+        if occupied:
+            occupied.release()
+
+
+def test_transfer_refuses_unbound_or_closed_lease(tmp_path):
+    source = SessionLease("source", directory=tmp_path)
+    before = set(tmp_path.iterdir())
+    with pytest.raises(SessionOwnedError, match="bound"):
+        source.transfer_after_transition("target")
+    source.release()
+    with pytest.raises(SessionOwnedError, match="bound"):
+        source.transfer_after_transition("target")
+    assert set(tmp_path.iterdir()) == before
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process group containment")
 def test_exited_leader_does_not_release_surviving_tool_group(tmp_path):
     code = """

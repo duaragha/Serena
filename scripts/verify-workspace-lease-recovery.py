@@ -48,6 +48,31 @@ os._exit(0)
 """
 with tempfile.TemporaryDirectory(prefix="serena-lease-crash-proof-") as temporary:
     directory = Path(temporary)
+    source = SessionLease("before-transition", directory=directory)
+    runtime = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    target = None
+    try:
+        source.launching()
+        source.bind(runtime.pid)
+        identity = source.record["child"]
+        target = source.transfer_after_transition("after-transition")
+        assert target.record["child"] == identity and runtime.poll() is None
+        earlier = SessionLease("before-transition", directory=directory)
+        earlier.release()
+        try:
+            duplicate = SessionLease("after-transition", directory=directory)
+        except SessionOwnedError:
+            pass
+        else:
+            duplicate.release()
+            raise AssertionError("Transferred runtime allowed a duplicate owner")
+        print("PASS: lease identity transferred with the same live process, old ID released and new ID exclusive")
+    finally:
+        runtime.terminate()
+        runtime.wait(timeout=5)
+        source.release()
+        if target:
+            target.release()
     group = None
     try:
         result = subprocess.run([sys.executable, "-c", owner_code, temporary, leader_code],

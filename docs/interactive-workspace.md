@@ -2,6 +2,23 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Identity-transfer lease primitive (2026-09-09): added
+SessionLease.transfer_after_transition for the pending Claude clear workflow.
+It requires a bound lease and unchanged owner/child birth identities, acquires
+and persists the target binding before clearing/releasing the source, and keeps
+the exact live process/group. Conflicting targets and failed source writes do
+not release the source runtime; partially bound targets stay fail-closed.
+Both OS locks are asserted held at the source-retirement boundary. Closed or
+unbound sources cannot create a target lease. No provider calls this primitive
+yet: native transition acknowledgement, frozen input, absence of old-session
+background work, durable pending-ID checkpoint and catalog routing are required
+before enabling /clear. This does not implement the user-facing handoff alone.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_lease.py -q`: initial exit 0, 13 passed in 2.80s; after lock-order assertion exit 0, 13 passed in 0.79s; final exit 0, 14 passed in 0.70s with closed/unbound rejection.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-lease-recovery.py`: exit 0. Real disposable process retained PID across lease transfer; source reusable and target exclusive. Existing owner/leader-crash and orphan-tool refusal checks also passed. This is a lease-level proof, not a native /clear integration proof.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_lease.py tests/test_workspace_lease.py scripts/verify-workspace-lease-recovery.py`: exit 0.
+No user process, installed app, provider session or release changed.
+
 Native Claude clear lifecycle research (2026-09-09): current official docs at
 https://code.claude.com/docs/en/agent-sdk/slash-commands#reset-context-with-clear
 now describe /clear in streaming sessions. Search snippets returned older text

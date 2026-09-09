@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 import psutil
@@ -157,6 +158,42 @@ class SessionLease:
         finally:
             self.file.close()
             self.closed = True
+
+    def transfer_after_transition(self, session_id: str) -> SessionLease:
+        """Move a confirmed native identity transition while caller blocks input.
+
+        Caller must confirm no old-session work remains, checkpoint the returned
+        identity and route the retained runtime only after this succeeds.
+        Failure never authorizes a new writer.
+        """
+        if self.closed or self.record.get("phase") != "bound":
+            raise SessionOwnedError("Only a bound runtime can transfer ownership")
+        child = self.record.get("child")
+        try:
+            verified = (self.record.get("owner") == _identity(os.getpid())
+                        and child and _identity(child["pid"]) == child and _alive(child))
+        except (KeyError, TypeError, psutil.Error) as error:
+            raise SessionOwnedError("Runtime ownership could not be verified") from error
+        if not verified:
+            raise SessionOwnedError("Runtime ownership changed before transfer")
+        target = SessionLease(session_id, directory=self.metadata.parent)
+        previous = deepcopy(self.record)
+        try:
+            target.launching()
+            target.bind(child["pid"])
+            if target.record.get("child") != child:
+                raise SessionOwnedError("Runtime identity changed during transfer")
+            # Publish the new binding before clearing the old binding. A crash
+            # between writes may pin both identities, never release both.
+            self.record = {}
+            self._save()
+        except BaseException:
+            self.record = previous
+            target.release()
+            raise
+        self.file.close()
+        self.closed = True
+        return target
 
     def cancel_before_launch(self) -> None:
         if self.record.get("phase") != "reserved":
