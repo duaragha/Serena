@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex now exposes an explicit Review changes dialog for uncommitted changes,
+base branch, commit, or custom instructions. The host only accepts the typed
+target; the adapter forces review/start delivery=inline, verifies reviewThreadId,
+and rejects busy sessions. Native review entry/result items render as Markdown.
+An isolated live custom review completed in the exact resumed thread. This
+does not claim review correctness on a real project or full slash-command parity.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py -q
+# exit 0: 36 passed in 11.43s
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --review
+# exit 0: native inference/resume and inline review on same thread; processes reaped
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_review_dialog_routes_explicit_target_without_submitting_message -q
+# exit 0: review target routing and native review-result rendering
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed!
+```
+
 Sent-image rendering now supports Claude base64 image blocks as bounded blob
 previews, and Codex images uploaded through this workspace as authenticated,
 session-bound previews. The host adds preview tokens only for validated paths in

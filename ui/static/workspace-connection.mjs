@@ -107,6 +107,7 @@ export class WorkspaceConnection {
         return response.blob();
       },
       models: () => this.command('models', {}),
+      review: target => this.command('review', {target}),
       submit: message => this.sendMessage('submit', message),
       steer: message => this.sendMessage('steer', message),
       interrupt: () => this.command('interrupt', {}),

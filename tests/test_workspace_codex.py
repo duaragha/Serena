@@ -218,6 +218,41 @@ def test_wrong_resume_never_creates_fallback_session(tmp_path):
     asyncio.run(run())
 
 
+def test_review_stays_inline_and_rejects_busy_or_unknown_targets(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        try:
+            await client.open(binary="codex", env={})
+            original = rpc.request
+
+            async def request(method, params):
+                if method == "review/start":
+                    rpc.calls.append((method, params))
+                    return {"reviewThreadId": "exact-session", "turn": {"id": "review-1"}}
+                return await original(method, params)
+
+            rpc.request = request
+            with pytest.raises(ValueError):
+                await client.review({"type": "custom", "instructions": ""})
+            result = await client.review({"type": "baseBranch", "branch": "main"})
+            assert result["reviewThreadId"] == "exact-session"
+            assert rpc.calls[-1] == (
+                "review/start",
+                {
+                    "threadId": "exact-session",
+                    "delivery": "inline",
+                    "target": {"type": "baseBranch", "branch": "main"},
+                },
+            )
+            assert client.active_turn == "review-1"
+            with pytest.raises(WorkspaceRpcError, match="not ready"):
+                await client.review({"type": "uncommittedChanges"})
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
 def test_fast_completion_is_not_overwritten_by_start_reply(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

@@ -201,6 +201,26 @@ def test_failed_send_keeps_draft_after_reload(pane):
     assert not errors
 
 
+def test_review_dialog_routes_explicit_target_without_submitting_message(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      controls.review=async target=>calls.push(['review',target]);
+      right.reviewButton.hidden=false;
+      right.receive({sequence:1,event:{method:'workspace/history',params:{thread:{id:'other',turns:[]}}}});
+    }""")
+    page.get_by_role("button", name="Review changes", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Review changes")
+    dialog.get_by_label("Review target").select_option("baseBranch")
+    dialog.get_by_label("Branch", exact=True).fill("main")
+    dialog.get_by_role("button", name="Start review", exact=True).click()
+    page.wait_for_function("calls.length === 1")
+    assert page.evaluate("calls[0]") == ["review", {"type": "baseBranch", "branch": "main"}]
+    dialog.wait_for(state="hidden")
+    page.evaluate("right.receive({sequence:2,event:{method:'item/completed',params:{threadId:'other',turnId:'review-turn',item:{id:'review-result',type:'exitedReviewMode',review:'**No findings**'}}}})")
+    page.locator("#right .aw-message strong").filter(has_text="No findings").wait_for()
+    assert not errors
+
+
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 def test_history_image_renders_without_base64_text(pane, provider):
     import base64

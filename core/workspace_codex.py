@@ -217,6 +217,44 @@ class CodexWorkspace:
             },
         )
 
+    async def review(self, target: dict) -> dict:
+        fields = {
+            "uncommittedChanges": set(),
+            "baseBranch": {"branch"},
+            "commit": {"sha"},
+            "custom": {"instructions"},
+        }
+        if not isinstance(target, dict) or target.get("type") not in fields:
+            raise ValueError("Unsupported review target")
+        required = fields[target["type"]]
+        if set(target) != {"type"} | required or any(
+            not isinstance(target.get(key), str) or not target[key].strip() for key in required
+        ):
+            raise ValueError("Review target fields are incomplete")
+        async with self._control_lock:
+            if self.state != "ready":
+                raise WorkspaceRpcError("Session is not ready for review")
+            self.state = "submitting"
+            try:
+                result = await self.rpc.request(
+                    "review/start",
+                    {"threadId": self.session_id, "delivery": "inline", "target": deepcopy(target)},
+                )
+                if result.get("reviewThreadId") != self.session_id or not result.get(
+                    "turn", {}
+                ).get("id"):
+                    raise WorkspaceRpcError("Review did not confirm this exact session and turn")
+                turn_id = result["turn"]["id"]
+                if turn_id not in self._completed:
+                    self.active_turn, self.state = turn_id, "running"
+                else:
+                    self.active_turn, self.state = None, "ready"
+                return result
+            except BaseException:
+                if self.state == "submitting":
+                    self.state = "uncertain"
+                raise
+
     async def interrupt(self) -> Any:
         if not self.active_turn:
             raise WorkspaceRpcError("No running turn to interrupt")

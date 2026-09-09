@@ -79,6 +79,9 @@ export class WorkspacePane {
     this.stop.hidden = true;
     this.send = this.button('Send message', 'arrow-up'); this.send.type = 'submit';
     footer.append(attach, this.modelSelect, this.effortSelect, this.tierSelect, this.stop, this.send);
+    this.reviewButton = this.button('Review changes', 'scan-eye', () => this.openReview());
+    this.reviewButton.hidden = provider !== 'Codex' || !controls.review;
+    footer.insertBefore(this.reviewButton, this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
@@ -127,6 +130,39 @@ export class WorkspacePane {
       if (this.input.value) this.draftStorage.setItem(this.draftKey, this.input.value);
       else this.draftStorage.removeItem(this.draftKey);
     } catch (error) { this.error(new Error(`Draft could not be saved: ${error.message}`)); }
+  }
+
+  openReview() {
+    if (this.reviewDialog?.open) return;
+    const dialog = node('dialog', 'aw-review-dialog');
+    dialog.setAttribute('aria-label', 'Review changes');
+    const form = node('form');
+    form.append(node('h2', '', 'Review changes'));
+    const label = node('label', '', 'Review target');
+    const select = node('select'); label.append(select);
+    for (const [value, title] of [['uncommittedChanges','Uncommitted changes'],['baseBranch','Base branch'],['commit','Commit'],['custom','Custom instructions']]) {
+      const option = node('option','',title); option.value=value; select.append(option);
+    }
+    const detail = node('label');
+    const input = node('textarea'); input.rows=3;
+    const update = () => {
+      detail.replaceChildren(node('span','',({baseBranch:'Branch',commit:'Commit SHA',custom:'Instructions'})[select.value] || ''),input);
+      detail.hidden=select.value==='uncommittedChanges'; input.required=!detail.hidden;
+    };
+    select.addEventListener('change',update); update();
+    const cancel = node('button','','Cancel'); cancel.type='button'; cancel.addEventListener('click',()=>dialog.close());
+    const run = node('button','','Start review'); run.type='submit';
+    form.append(label,detail,cancel,run); dialog.append(form); this.root.append(dialog);
+    dialog.addEventListener('close',()=>dialog.remove()); this.reviewDialog=dialog;
+    form.addEventListener('submit',async event=>{
+      event.preventDefault(); run.disabled=true;
+      const target={type:select.value};
+      const key=({baseBranch:'branch',commit:'sha',custom:'instructions'})[select.value];
+      if(key) target[key]=input.value.trim();
+      try { await this.controls.review(target); dialog.close(); }
+      catch(error){ this.error(error); run.disabled=false; }
+    });
+    dialog.showModal(); select.focus();
   }
 
   receive(envelope) {
@@ -251,10 +287,10 @@ export class WorkspacePane {
         } else message.append(node('div', '', part.text ?? part.path ?? part.url ?? JSON.stringify(part)));
       }
       entry.append(message);
-    } else if (item.type === 'agentMessage' || item.type === 'plan') {
-      entry.append(node('div', 'aw-author', item.type === 'plan' ? 'Plan' : this.provider));
+    } else if (['agentMessage','plan','enteredReviewMode','exitedReviewMode'].includes(item.type)) {
+      entry.append(node('div', 'aw-author', item.type === 'plan' ? 'Plan' : item.type.endsWith('ReviewMode') ? 'Review' : this.provider));
       const message = node('div', 'aw-message');
-      message.innerHTML = renderWorkspaceMarkdown(item.text);
+      message.innerHTML = renderWorkspaceMarkdown(item.text ?? item.review);
       for (const block of message.querySelectorAll('pre')) {
         const code = block.querySelector('code');
         if (!code) continue;
@@ -423,6 +459,7 @@ export class WorkspacePane {
     }
     this.status.textContent = this.conversation.status;
     this.stop.hidden = this.conversation.status !== 'running';
+    this.reviewButton.disabled = !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     const steering = this.canSteer();
     this.send.title = steering ? 'Steer running turn' : 'Send message';
     this.send.setAttribute('aria-label', this.send.title);
@@ -433,6 +470,7 @@ export class WorkspacePane {
   }
 
   dispose() {
+    this.reviewDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
     this.historyImageUrls.clear();
     this.disposed = true;

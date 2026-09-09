@@ -123,9 +123,14 @@ class WorkspaceHost:
         self._validate_session(sid)
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
             raise ValueError("A stable request ID is required")
-        if action not in {"submit", "steer", "interrupt", "answer", "models"} or not isinstance(
-            payload, dict
-        ):
+        if action not in {
+            "submit",
+            "steer",
+            "interrupt",
+            "answer",
+            "models",
+            "review",
+        } or not isinstance(payload, dict):
             raise ValueError("Unsupported workspace control")
         return self._dispatch(self._command(sid, request_id, action, deepcopy(payload)), timeout)
 
@@ -148,7 +153,11 @@ class WorkspaceHost:
                 )
             owner, provider = self._sessions[sid]
             try:
-                if action == "models":
+                if action == "review":
+                    if provider != "codex" or set(payload) != {"target"}:
+                        raise ValueError("Review requires a Codex target")
+                    result = await owner.review(payload["target"])
+                elif action == "models":
                     if payload or provider not in {"codex", "claude"}:
                         raise ValueError("Model discovery is unavailable for this request")
                     result = await owner.list_models()
