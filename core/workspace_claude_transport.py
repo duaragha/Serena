@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import sys
 from pathlib import Path
 
 import psutil
@@ -37,6 +38,17 @@ class ClaudeSdkTransport:
         inherited = dict(os.environ if env is None else env)
         clean = strip_metered_auth_env(inherited)
         clean.update({key: "" for key in set(METERED_AUTH_ENV_VARS) | (inherited.keys() - clean.keys())})
+        if sys.platform.startswith("linux"):
+            roots = [Path(value) for value in (clean.get("APPDIR"), getattr(sys, "_MEIPASS", None)) if value]
+            if roots or "LD_LIBRARY_PATH_ORIG" in clean:
+                original = clean.get("LD_LIBRARY_PATH_ORIG", clean.get("LD_LIBRARY_PATH", ""))
+                paths = [value for value in original.split(os.pathsep)
+                         if value and not any(Path(value).is_relative_to(root) for root in roots)]
+                if paths:
+                    clean["LD_LIBRARY_PATH"] = os.pathsep.join(paths)
+                else:
+                    clean.pop("LD_LIBRARY_PATH", None)
+                clean.pop("LD_LIBRARY_PATH_ORIG", None)
         if clean.get("SERENA_WORKSPACE_NODE_MODE") == "electron":
             clean["ELECTRON_RUN_AS_NODE"] = "1"
         else:

@@ -158,3 +158,17 @@ def test_electron_node_mode_is_scoped_to_worker(monkeypatch, tmp_path):
         assert "ELECTRON_RUN_AS_NODE" not in transport.rpc.calls[0][1]
         await transport.close()
     asyncio.run(run())
+
+
+def test_external_worker_does_not_inherit_frozen_library_paths(monkeypatch, tmp_path):
+    async def run():
+        transport, _ = make(monkeypatch, tmp_path)
+        monkeypatch.setattr("core.workspace_claude_transport.sys.platform", "linux")
+        monkeypatch.setattr("core.workspace_claude_transport.sys._MEIPASS", "/frozen", raising=False)
+        await transport.open(env={"APPDIR": "/mount", "LD_LIBRARY_PATH": "/frozen:/mount/lib:/wrong",
+                                  "LD_LIBRARY_PATH_ORIG": "/mount/lib:/custom:/mount-other:"})
+        env = transport.rpc.calls[0][1]
+        assert env["LD_LIBRARY_PATH"] == "/custom:/mount-other"
+        assert "LD_LIBRARY_PATH_ORIG" not in env
+        await transport.close()
+    asyncio.run(run())

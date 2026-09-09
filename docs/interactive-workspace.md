@@ -2,6 +2,41 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Frozen Linux backend build (2026-09-09): the first attempt selected libpython
+from the running AppImage's mount via inherited LD_LIBRARY_PATH. That build was
+explicitly terminated (exit 143), not treated as a successful artifact. A sourced
+build-environment helper restores original non-AppImage library paths before
+native tools start. The SDK transport similarly removes frozen library roots
+from its external worker environment without changing the host process.
+Source: https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html
+(external-program environment handling), accessed 2026-09-09.
+
+```sh
+node --test apps/desktop/tests/build-env.test.cjs apps/desktop/tests/shell.test.js
+# exit 0: 11 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_transport.py -q
+# exit 0: 8 passed
+# From apps/desktop:
+SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar
+# final exit 0: libpython selected from /lib/x86_64-linux-gnu, complete onedir
+# build and existing peer capability smoke passed; no Fleet workflow started.
+npm test
+# exit 0: 72 passed
+# From repository root:
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/fleet_peer_smoke.py --binary /home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: frozen startup, tool contract and invalid-capability refusal.
+# An initial manual invocation with a relative --binary path exited 1 because
+# the smoke helper changes cwd to a temporary directory; absolute path fixed it.
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron
+# exit 0: source owner/worker native regression with Electron Node mode.
+```
+
+The build contains all three worker .mjs files and the Python client/runtime/
+transport modules in its archive index. This proves artifact construction and
+the existing startup smoke, NOT a full frozen workspace session roundtrip or
+installed Electron UI behavior. The build emitted optional dependency warnings;
+Windows execution, full frozen workspace proof and installer QA remain open.
+
 Desktop runtime packaging wiring (2026-09-09): both Linux and Windows recipes
 now provision the locked SDK and include it outside app.asar, plus all three
 native worker modules in their PyInstaller data. Desktop backend environment
