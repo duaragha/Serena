@@ -94,3 +94,31 @@ def test_registry_read_failure_does_not_assume_unowned(session, monkeypatch):
     monkeypatch.setattr(metadata, "get_meta", broken)
     with pytest.raises(OSError):
         admission.resolve_workspace_session("exact")
+
+
+@pytest.mark.parametrize("switch", ["-r", "--resume", "--resume=exact"])
+def test_claude_existing_process_and_unknown_owner_rejected(session, monkeypatch, switch):
+    session["agent"] = "claude"
+    assert admission.resolve_workspace_session("exact")["provider"] == "claude"
+    process = SimpleNamespace(
+        pid=12345,
+        info={"name": "node"},
+        cmdline=lambda: ["node", "/bin/claude", switch, "exact"],
+        cwd=lambda: session["cwd"],
+        open_files=lambda: [],
+    )
+    monkeypatch.setattr(admission.psutil, "process_iter", lambda attrs: [process])
+    with pytest.raises(RuntimeError, match="already has"):
+        admission.resolve_workspace_session("exact")
+    process.cmdline = lambda: ["node", "/bin/claude", "--resume", "different"]
+    assert admission.resolve_workspace_session("exact")["provider"] == "claude"
+    process.cmdline = lambda: ["node", "/bin/claude", "--input-format", "stream-json"]
+    with pytest.raises(RuntimeError, match="unregistered"):
+        admission.resolve_workspace_session("exact")
+
+    def denied():
+        raise admission.psutil.AccessDenied(12345)
+
+    process.open_files = denied
+    with pytest.raises(RuntimeError, match="Cannot verify"):
+        admission.resolve_workspace_session("exact")

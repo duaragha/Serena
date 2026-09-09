@@ -19,12 +19,26 @@ from core.workspace_journal import WorkspaceJournal
 from core.workspace_uploads import WorkspaceUploads
 
 
+def _claude_owner(**kwargs):
+    # Keep the optional SDK dependency out of ordinary Codex-only startup.
+    from core.workspace_claude import ClaudeWorkspace
+
+    return ClaudeWorkspace(**kwargs)
+
+
 class WorkspaceHost:
     def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None):
         self.journal = journal
         self.uploads = WorkspaceUploads(journal.path.parent / "workspace-uploads")
         self.resolve = resolve
-        self.factories = factories if factories is not None else {"codex": CodexWorkspace}
+        self.factories = (
+            factories
+            if factories is not None
+            else {
+                "codex": CodexWorkspace,
+                "claude": _claude_owner,
+            }
+        )
         self._guard = threading.Lock()
         self._loop = None
         self._thread = None

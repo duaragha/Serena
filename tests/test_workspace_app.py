@@ -9,7 +9,8 @@ from werkzeug.serving import make_server
 from ui.workspace_app import install_workspace
 
 
-def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path):
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, provider):
     playwright = pytest.importorskip("playwright.sync_api")
     owners = []
 
@@ -54,9 +55,9 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path):
     host = install_workspace(
         app,
         tmp_path / "events.db",
-        resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
-        factories={"codex": Owner},
-        describe=lambda sid: {"session_id": sid, "agent": "codex"},
+        resolve=lambda sid: {"session_id": sid, "provider": provider, "cwd": str(tmp_path)},
+        factories={provider: Owner},
+        describe=lambda sid: {"session_id": sid, "agent": provider},
     )
     from ui.web import HTML
 
@@ -108,11 +109,13 @@ function setTermStatus(status){window.lastStatus=status;}
             errors = []
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact")
-            page.get_by_role("textbox", name="Message Codex").wait_for()
+            page.get_by_role("textbox", name=f"Message {provider.capitalize()}").wait_for()
             assert not owners
             page.get_by_role("button", name="Resume session").click()
             page.get_by_role("button", name="Resume session").wait_for(state="hidden")
-            page.get_by_role("textbox", name="Message Codex").fill("real mounted page control")
+            page.get_by_role("textbox", name=f"Message {provider.capitalize()}").fill(
+                "real mounted page control"
+            )
             page.get_by_role("button", name="Send message", exact=True).click()
             page.get_by_text("controlled provider output", exact=True).wait_for()
             assert owners[0].sent == [[{"type": "text", "text": "real mounted page control"}]]

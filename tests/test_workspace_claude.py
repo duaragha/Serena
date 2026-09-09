@@ -106,6 +106,21 @@ def test_exact_resume_configuration_and_billing_overlay(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("native_id", [None, "different"])
+def test_missing_or_mismatched_native_session_never_launches(tmp_path, native_id):
+    async def run():
+        owner, events = make(tmp_path)
+        owner.session_info = lambda *args, **kwargs: (
+            None if native_id is None else SimpleNamespace(session_id=native_id)
+        )
+        with pytest.raises(ValueError, match="Exact native"):
+            await owner.open()
+        assert owner.client is None and owner._owner_task is None
+        assert events == []
+
+    asyncio.run(run())
+
+
 def test_ambiguous_send_cannot_repeat_and_wrong_identity_closes(tmp_path):
     async def run():
         owner, events = make(tmp_path)
