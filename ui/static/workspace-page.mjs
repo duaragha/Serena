@@ -11,8 +11,14 @@ const connection = new WorkspaceConnection({
   },
   error: error => pane.error(error),
 });
+const controls = connection.controls();
+controls.openFork = sid => {
+  if (typeof sid !== 'string' || !/^[a-f0-9-]{36}$/.test(sid) || sid === boot.sessionId) throw Error('Invalid fork identity');
+  if (parent !== window) parent.postMessage({type:'serena-workspace-open-fork',sid:boot.sessionId,target:sid},location.origin);
+  else location.assign('/workspace/' + encodeURIComponent(sid));
+};
 const pane = new WorkspacePane(document.querySelector('#workspace-pane'), {
-  sessionId: boot.sessionId, provider: boot.provider, controls: connection.controls(),
+  sessionId: boot.sessionId, provider: boot.provider, controls,
 });
 function reportState() {
   if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:pane.conversation.status},location.origin);

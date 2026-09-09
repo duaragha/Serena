@@ -2,6 +2,37 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native fork UI (2026-09-09): explicit create/open actions now use the native
+backend. Neither opening the dialog nor opening a created fork view starts its
+owner. The embedded pane sends an origin/source/session-checked navigation
+request to the main app; standalone panes navigate to the exact fork route.
+Catalog failures retain the ID and hide Open. Creation remains single-flight
+even when the modal is closed mid-request. Lost responses reuse their request
+across reload; an explicitly refused busy preflight allows a fresh later intent.
+Drafts are unchanged, and creating another fork requires a separate action.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_fork_dialog_never_creates_or_opens_automatically tests/test_workspace_pane.py::test_closing_pending_fork_cannot_start_second_creation tests/test_workspace_host.py::test_fork_receipt_keeps_identity_even_if_indexing_fails tests/test_workspace_app.py -q
+# exit 0: 7 passed in 6.91s
+node --test tests/workspace-connection.test.mjs
+# exit 0: 14 passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py tests/test_workspace_pane.py tests/test_workspace_app.py scripts/verify-workspace-frozen.py
+# exit 0: All checks passed!
+SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py
+# exit 0: actual source HTTP app and native Claude; desktop/mobile browser
+# created forks, registered them and opened exact views with no fork owner
+# launched. Original child process set unchanged. Existing skill reload,
+# input/output/history, exact fork resume and cleanup checks also passed.
+```
+
+`verify-workspace-frozen.py` now also accepts the source sidecar .py entrypoint;
+its source/frozen labels distinguish the artifacts. Screenshots are under
+`apps/desktop/build/workspace-proof/source-fork-{desktop,mobile}.png`. Mobile
+visual inspection found readable identity/actions with no overlap. The embedded
+main-app routing is browser-tested with controlled callbacks; the native browser
+proof uses the standalone page. Busy-session forks, catalog retry/recovery,
+Codex/new-session lifecycle and packaged/installed UI verification remain open.
+
 Native fork backend (2026-09-09): explicit `fork_session` controls now use the
 owned Claude session/project only, require idle state, and return a dormant
 fork rather than starting a second owner. The host records the fork identity

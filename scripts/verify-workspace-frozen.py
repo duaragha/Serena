@@ -1,4 +1,4 @@
-"""Exercise the actual frozen HTTP workspace using an isolated preseeded session."""
+"""Exercise the source or frozen HTTP workspace using an isolated seeded session."""
 import json
 import os
 import signal
@@ -40,6 +40,8 @@ def main():
     from playwright.sync_api import expect, sync_playwright
 
     binary, sdk, electron, sid, directory = sys.argv[1:]
+    source = Path(binary).suffix == ".py"
+    label_prefix = "source" if source else "frozen"
     root = Path(directory).resolve()
     assert root.name.startswith("serena-claude-driver-") and Path(os.environ["HOME"]).resolve() == root
     config = root / "config"
@@ -76,7 +78,8 @@ def main():
 
     log = root / "frozen-server.log"
     with log.open("w") as output:
-        process = subprocess.Popen([str(Path(binary).resolve()), "--host", "127.0.0.1", "--port", str(port)],
+        command = ([sys.executable] if source else []) + [str(Path(binary).resolve()), "--host", "127.0.0.1", "--port", str(port)]
+        process = subprocess.Popen(command,
                                    env=env, cwd=root, stdout=output, stderr=output, start_new_session=True)
         children = []
         try:
@@ -121,7 +124,7 @@ def main():
                 time.sleep(0.05)
             request(f"/workspace/{sid}")
             assert all(child.is_running() for child in children)
-            print("PASS: frozen HTTP app served real workspace/assets, explicit exact-session attach, native local-command output/completion, page reload retained owner")
+            print(f"PASS: {label_prefix} HTTP app served real workspace/assets, explicit exact-session attach, native local-command output/completion, page reload retained owner")
             screenshots = Path(__file__).resolve().parents[1] / "apps/desktop/build/workspace-proof"
             screenshots.mkdir(parents=True, exist_ok=True)
             with sync_playwright() as playwright:
@@ -145,7 +148,7 @@ def main():
                         reload.click()
                         expect(dialog.locator(".aw-command").filter(has_text="/browser-proof")).to_have_count(1)
                         assert dialog.evaluate("el => el.scrollWidth <= el.clientWidth"), "Command picker overflow"
-                        page.screenshot(path=str(screenshots / f"frozen-skills-{label}.png"))
+                        page.screenshot(path=str(screenshots / f"{label_prefix}-skills-{label}.png"))
                         skill.unlink()
                         reload.click()
                         expect(dialog.locator(".aw-command").filter(has_text="/browser-proof")).to_have_count(0)
@@ -174,10 +177,25 @@ def main():
                         assert len(matching) == 1, "Frozen native command result duplicated"
                         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), label
                         assert not errors, errors
-                        page.screenshot(path=str(screenshots / f"frozen-{label}.png"))
+                        page.screenshot(path=str(screenshots / f"{label_prefix}-{label}.png"))
+                        if source:
+                            page.get_by_role("button", name="Fork conversation", exact=True).click()
+                            fork_dialog = page.get_by_role("dialog", name="Fork conversation", exact=True)
+                            fork_dialog.get_by_role("button", name="Create fork", exact=True).click()
+                            expect(fork_dialog.get_by_role("status")).to_have_text("Fork created", timeout=15000)
+                            fork_sid = fork_dialog.locator("code").inner_text()
+                            assert fork_sid != sid
+                            assert json.loads(request(f"/api/workspace/{fork_sid}/events"))["events"] == []
+                            page.screenshot(path=str(screenshots / f"source-fork-{label}.png"))
+                            fork_dialog.get_by_role("button", name="Open fork", exact=True).click()
+                            page.wait_for_url(f"{base}/workspace/{fork_sid}")
+                            expect(page.get_by_role("button", name="Resume session", exact=True)).to_be_visible()
+                            assert json.loads(request(f"/api/workspace/{fork_sid}/events"))["events"] == []
+                            assert set(child.pid for child in psutil.Process(process.pid).children(recursive=True)) == set(child.pid for child in children)
+                            print(f"PASS: {label_prefix} {label} browser created native fork and opened exact view without launching its owner")
                         page.close()
                         assert all(child.is_running() for child in children), "Closing a view killed its session"
-                        print(f"PASS: frozen {label} browser reloaded added/removed native skill and sent local command; completed, no page/console/HTTP errors or horizontal overflow; closing view retained owner")
+                        print(f"PASS: {label_prefix} {label} browser reloaded added/removed native skill and sent local command; completed, no page/console/HTTP errors or horizontal overflow; closing view retained owner")
                 finally:
                     browser.close()
         except HTTPError as error:

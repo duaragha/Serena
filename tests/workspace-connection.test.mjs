@@ -11,6 +11,26 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('fork retry after lost response or reload keeps exact receipt; busy refusal permits later intent',async()=>{
+  const saved=storage(),calls=[];
+  let mode='lost';
+  const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    if(mode==='lost')throw Error('response lost');
+    if(mode==='busy')return response({ok:false,retryable:true,error:'busy'});
+    return response({ok:true,result:{session_id:'fork',indexed:true}});
+  }};
+  let conn=new WorkspaceConnection(options);
+  await assert.rejects(conn.controls().forkSession(),/response lost/);conn.dispose();
+  conn=new WorkspaceConnection(options);mode='busy';
+  await assert.rejects(conn.controls().forkSession(),/busy/);
+  assert.deepEqual(calls[0],calls[1]);
+  mode='ready';assert.equal((await conn.controls().forkSession()).session_id,'fork');
+  assert.notEqual(calls[1].request_id,calls[2].request_id);
+  assert(calls.every(call=>call.action==='fork_session' && Object.keys(call.payload).length===0));
+  conn.dispose();assert.equal(calls.length,3);
+});
+
 test('interrupt carries displayed turn identity to the exact session',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{calls.push([url,JSON.parse(options.body)]);return response({ok:true,result:{}});}});

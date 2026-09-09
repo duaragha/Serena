@@ -547,6 +547,54 @@ def test_command_picker_reload_is_explicit_and_keeps_draft(pane):
     assert not errors
 
 
+@pytest.mark.parametrize("indexed", [True, False])
+def test_fork_dialog_never_creates_or_opens_automatically(pane, tmp_path, indexed):
+    page, errors = pane
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""indexed => {
+      controls.forkSession=async()=>{calls.push('fork');return {session_id:'11111111-1111-4111-8111-111111111111',indexed,error:'Catalog unavailable'};};
+      controls.openFork=async sid=>calls.push(['open',sid]);pane.forkButton.hidden=false;
+      pane.input.value='draft stays';
+    }""", indexed)
+    page.get_by_role("button", name="Fork conversation", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Fork conversation", exact=True)
+    assert page.evaluate("calls") == []
+    dialog.get_by_role("button", name="Create fork", exact=True).click()
+    dialog.get_by_text("11111111-1111-4111-8111-111111111111", exact=True).wait_for()
+    assert page.evaluate("calls") == ["fork"]
+    assert dialog.evaluate("el=>el.scrollWidth<=el.clientWidth")
+    page.screenshot(path=str(tmp_path / f"fork-mobile-{indexed}.png"))
+    if indexed:
+        dialog.get_by_role("button", name="Open fork", exact=True).click()
+        assert page.evaluate("calls") == ["fork", ["open", "11111111-1111-4111-8111-111111111111"]]
+    else:
+        assert dialog.get_by_role("button", name="Open fork", exact=True).count() == 0
+        assert dialog.get_by_text("Catalog unavailable", exact=True).is_visible()
+        dialog.get_by_role("button", name="Close fork", exact=True).click()
+    assert page.get_by_role("textbox", name="Message Claude").input_value() == "draft stays"
+    assert not errors
+
+
+def test_closing_pending_fork_cannot_start_second_creation(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      controls.forkSession=()=>{calls.push('fork');return new Promise(resolve=>{window.finishFork=()=>resolve({session_id:'11111111-1111-4111-8111-111111111111',indexed:true});});};
+      controls.openFork=()=>{};pane.forkButton.hidden=false;
+    }""")
+    page.get_by_role("button", name="Fork conversation", exact=True).click()
+    page.get_by_role("button", name="Create fork", exact=True).click()
+    page.get_by_role("button", name="Close fork", exact=True).click()
+    assert page.get_by_role("button", name="Fork conversation", exact=True).is_disabled()
+    page.evaluate("pane.openFork()")
+    assert page.get_by_role("dialog", name="Fork conversation", exact=True).count() == 0
+    page.evaluate("finishFork()")
+    page.wait_for_function("!pane.forkButton.disabled")
+    page.get_by_role("button", name="Fork conversation", exact=True).click()
+    page.get_by_role("button", name="Open fork", exact=True).wait_for()
+    assert page.evaluate("calls") == ["fork"]
+    assert not errors
+
+
 def test_permission_prompt_defaults_to_no_grants_and_exact_selected_scope(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

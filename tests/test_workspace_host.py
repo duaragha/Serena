@@ -229,6 +229,10 @@ def test_fork_receipt_keeps_identity_even_if_indexing_fails(tmp_path, registrati
     try:
         value.attach("exact")
         assert not value.command("exact", "bad", "fork_session", {"session_id": "other"})["ok"]
+        ForkOwner.instances[-1].state = "running"
+        refused = value.command("exact", "busy", "fork_session", {})
+        assert not refused["ok"] and refused["retryable"] and ForkOwner.instances[-1].forks == 0
+        ForkOwner.instances[-1].state = "ready"
         receipt = value.command("exact", "fork", "fork_session", {})
         assert receipt["ok"] and receipt["result"]["session_id"] == "new-fork"
         assert receipt["result"]["indexed"] is not registration_fails

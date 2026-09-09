@@ -7051,8 +7051,19 @@ function _startStructuredPane(sid, opts) {
   mount.appendChild(frame); container.appendChild(mount);
   const runtime = {sid, mount, structured:true, state:'Ready to resume.', busy:false,
     focus:() => frame.contentWindow?.postMessage({type:'serena-workspace-focus'}, location.origin)};
-  const receive = event => {
-    if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid || event.data?.type !== 'serena-workspace-state') return;
+  const receive = async event => {
+    if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
+    if(event.data?.type === 'serena-workspace-open-fork'){
+      const target=event.data.target;
+      if(typeof target !== 'string' || !/^[a-f0-9-]{36}$/.test(target) || target===sid)return;
+      try{
+        await loadSessions(currentProject);
+        if(!_findClientSession(target))document.getElementById('convTitle').textContent='Fork ' + target.slice(0,8);
+        await openConv(target);
+      }catch(error){showToast('Could not open fork: '+error.message,{variant:'error'});}
+      return;
+    }
+    if(event.data?.type !== 'serena-workspace-state')return;
     const state = event.data.state;
     if (!['ready','running','completed','failed','interrupted','unavailable'].includes(state)) return;
     runtime.state = state; runtime.busy = state === 'running';

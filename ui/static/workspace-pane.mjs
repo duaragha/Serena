@@ -42,6 +42,10 @@ export class WorkspacePane {
     head.append(this.status);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
+    this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
+    this.forkButton.hidden=provider!=='Claude' || !controls.forkSession || !controls.openFork;
+    this.forkButton.disabled=true;
+    head.append(this.forkButton);
     this.log = node('div', 'aw-transcript');
     this.log.tabIndex = 0;
     this.log.setAttribute('aria-label', `${provider} messages and tool output`);
@@ -222,6 +226,49 @@ export class WorkspacePane {
       finally{save.disabled=false;text.disabled=false;}
     });
     dialog.addEventListener('close',()=>dialog.remove());this.queueEditDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();text.focus();
+  }
+
+  openFork() {
+    if(this.forkDialog?.open || this.forkCreating)return;
+    const dialog=node('dialog','aw-review-dialog');
+    dialog.setAttribute('aria-label','Fork conversation');
+    const status=node('p');status.setAttribute('role','status');
+    const identity=node('code');identity.style.overflowWrap='anywhere';
+    const close=this.button('Close fork','x',()=>dialog.close());
+    const open=this.button('Open fork','arrow-up-right',async()=>{
+      try{await this.controls.openFork(this.createdFork.session_id);dialog.close();}
+      catch(error){status.textContent=error.message;}
+    });
+    open.hidden=true;
+    const create=this.button('Create fork','git-fork',async()=>{
+      this.forkCreating=true;this.forkButton.disabled=true;
+      create.disabled=true;status.textContent='Creating...';
+      try{
+        const result=await this.controls.forkSession();
+        if(typeof result?.session_id!=='string' || !/^[a-f0-9-]{36}$/.test(result.session_id))throw Error('Fork identity is unavailable');
+        this.createdFork=result;
+        if(!dialog.open || this.disposed)return;
+        render();
+      }catch(error){if(dialog.open){status.textContent=error.message;create.disabled=false;}}
+      finally{this.forkCreating=false;if(!this.disposed)this.render();}
+    });
+    const another=this.button('Create another fork','plus',()=>{
+      this.createdFork=null;identity.textContent='';status.textContent='';
+      create.hidden=false;create.disabled=false;open.hidden=true;another.hidden=true;
+    });
+    another.hidden=true;
+    const render=()=>{
+      const result=this.createdFork;
+      if(!result)return;
+      identity.textContent=result.session_id;
+      status.textContent=result.indexed?'Fork created':(result.error || 'Fork created; catalog registration failed');
+      open.hidden=!result.indexed;create.hidden=true;
+      another.hidden=!result.indexed;
+    };
+    dialog.append(node('h3','','Fork conversation'),close,identity,status,create,open,another);
+    dialog.addEventListener('close',()=>dialog.remove());
+    this.forkDialog=dialog;this.root.append(dialog);render();dialog.showModal();
+    window.lucide?.createIcons();
   }
 
   async openCommands() {
@@ -961,6 +1008,7 @@ export class WorkspacePane {
     this.send.title = steering ? 'Steer running turn' : 'Send message';
     this.send.setAttribute('aria-label', this.send.title);
     this.send.disabled = this.sending || (!steering && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
+    this.forkButton.disabled=this.forkCreating || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     if (this.conversation.error) this.error(this.conversation.error);
     this.renderQuestions(); this.refreshIcons();
     if (follow) this.log.scrollTop = this.log.scrollHeight;

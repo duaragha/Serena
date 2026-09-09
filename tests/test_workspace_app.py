@@ -76,6 +76,11 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
             """<!doctype html><html><body style="margin:0;background:#000">
 <main id="termMounts" style="height:100vh"></main><script>
 const termSessions=new Map();let activeTermSid=null;
+const currentProject=null;window.openedForks=[];
+async function loadSessions(){}
+function _findClientSession(sid){return {session_id:sid};}
+async function openConv(sid){window.openedForks.push(sid);}
+function showToast(message){throw Error(message);}
 function _activateTermPane(sid){activeTermSid=sid;}
 function _startLinkedTerminals(sid){}
 function _markActive(sid){}
@@ -193,6 +198,13 @@ function setTermStatus(status){window.lastStatus=status;}
             assert page.locator("iframe").count() == 1
             assert nested.locator(".xterm").count() == 0
             assert page.evaluate("termSessions.get('exact').state") == "ready"
+            page.evaluate("""() => window.postMessage({type:'serena-workspace-open-fork',sid:'exact',target:'11111111-1111-4111-8111-111111111111'},location.origin)""")
+            page.wait_for_timeout(50)
+            assert page.evaluate("openedForks") == []
+            page.frames[1].evaluate("""() => parent.postMessage({type:'serena-workspace-open-fork',sid:'exact',target:'11111111-1111-4111-8111-111111111111'},location.origin)""")
+            page.wait_for_function("openedForks.length === 1")
+            assert page.evaluate("openedForks") == ["11111111-1111-4111-8111-111111111111"]
+            assert len(owners) == 1 and not owners[0].closed
             page.evaluate(
                 "termSessions.get('exact').cancelOutput(); termSessions.get('exact').mount.remove()"
             )

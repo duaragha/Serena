@@ -332,6 +332,7 @@ class WorkspaceHost:
                     }
                 )
             owner, provider = self._sessions[sid]
+            retryable = False
             try:
                 if action == "edit_queued_bridge":
                     if set(payload) != {"request_id", "prompt", "expected_prompt"} or any(not isinstance(payload[field], str) for field in payload) or not payload["prompt"].strip():
@@ -385,6 +386,9 @@ class WorkspaceHost:
                 elif action == "fork_session":
                     if provider != "claude" or payload or self.register_fork is None:
                         raise ValueError("Native fork requires a Claude session, no payload and an available catalog")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Wait for Claude's current turn before forking")
                     result = await owner.fork_session()
                     await asyncio.to_thread(self.journal.append, sid, {
                         "method": "workspace/sessionForked", "params": {"threadId": sid, "fork": result}
@@ -467,6 +471,8 @@ class WorkspaceHost:
                 receipt = {"ok": True, "result": result}
             except Exception as error:
                 receipt = {"ok": False, "error": str(error)}
+                if retryable:
+                    receipt["retryable"] = True
             await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
             return receipt
 

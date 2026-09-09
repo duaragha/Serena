@@ -75,7 +75,13 @@ export class WorkspaceConnection {
     // the same receipt, not silently issue another coding turn.
     this.storage.setItem(this.key, JSON.stringify(this.pending));
     const result = await this.request('/commands', {request_id, action, payload});
-    if (!result.ok) throw Error(result.error || 'Control delivery is unconfirmed');
+    if (!result.ok) {
+      if(result.retryable === true){
+        delete this.pending[signature];
+        this.storage.setItem(this.key, JSON.stringify(this.pending));
+      }
+      throw Error(result.error || 'Control delivery is unconfirmed');
+    }
     delete this.pending[signature];
     this.storage.setItem(this.key, JSON.stringify(this.pending));
     return result.result;
@@ -117,6 +123,7 @@ export class WorkspaceConnection {
       models: () => this.command('models', {}),
       commands: () => this.command('commands', {}),
       reloadSkills: () => this.command('reload_skills', {}),
+      forkSession: () => this.command('fork_session', {}),
       contextUsage: () => this.command('context_usage', {}),
       permissions: () => this.command('permissions', {}),
       setPermissions: (mode, confirmed) => this.command('set_permissions', {mode, confirmed}),
