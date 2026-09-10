@@ -20,8 +20,9 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
     monkeypatch.setenv("SERENA_CONTROL_PLANE_DB_PATH", str(tmp_path / "control.sqlite3"))
     monkeypatch.setenv("SERENA_NOTIFICATION_DB_PATH", str(tmp_path / "notices.sqlite3"))
     store, rid, leg, *_ = _failed(tmp_path, monkeypatch, phase_index=1)
-    # Stop the disposable run only AFTER Code recovers: its newly runnable
-    # independent Review is outside this helper-only probe's scope.
+    # Stop only AFTER Code recovers. Review may become runnable before the
+    # observer polls; the provider boundary below cancels that legitimate
+    # next phase without launching a model or racing the scheduler.
     before = store.get_run(rid)
     root = Path(before["cwd"])
     marker = tmp_path / "gate-entered"
@@ -45,13 +46,27 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
     capacity = lambda: {"codex": {"usable": True}, "claude": {"usable": True}}
     monkeypatch.setattr(supervisor, "_read_start_capacity", capacity)
     monkeypatch.setattr(supervisor, "read_fleet_capacity", capacity)
+    stopper = threading.Event()
+    review_boundary = threading.Event()
     unexpected = []
-    def no_model(*args, **kwargs):
+    def no_model(request, **kwargs):
+        if request.phase == "verify" and request.run_id == rid:
+            recovered = store.get_run(rid)["phases"][1]["legs"][0]
+            assert recovered["state"] == "completed"
+            assert recovered["attempt_count"] == 3
+            assert recovered["current_attempt"]["actual_model"] is None
+            stopper.set()
+            store.request_cancel(rid)
+            review_boundary.set()
+            return workers.WorkerResult(
+                ok=False, output_text="", session_id=None, actual_model=None,
+                actual_effort=None, exit_code=0, cancelled=True,
+                error="private helper probe ended at recovered Code boundary",
+            )
         unexpected.append("native model dispatch")
         raise RuntimeError("native model dispatch forbidden in private timer test")
     for module in (supervisor, workers, peer_runtime, lesson_review):
         monkeypatch.setattr(module, "run_worker", no_model)
-    stopper = threading.Event()
     service = threading.Thread(target=supervisor.serve_forever,
                                kwargs={"stop_event": stopper}, daemon=True)
     helper = gate_process = None
@@ -88,13 +103,12 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
                                   (leg["leg_id"],)).fetchone()
             if wait:
                 not_before = float(wait["not_before"])
-            if final["phases"][1]["legs"][0]["state"] == "completed":
-                stopper.set()
-                store.request_cancel(rid)
+            if review_boundary.is_set():
                 break
             assert not unexpected
             time.sleep(.1)
         assert final["phases"][1]["legs"][0]["state"] == "completed", final
+        assert review_boundary.is_set(), "recovered Code did not make Review runnable"
         assert not_before is not None and time.time() >= not_before
         assert final["phases"][1]["legs"][0]["attempt_count"] == 3
         assert final["phases"][1]["legs"][0]["current_attempt"]["actual_model"] is None
