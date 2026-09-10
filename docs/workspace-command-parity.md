@@ -135,9 +135,40 @@ piped separately to Ruff `check --stdin-filename <path> --output-format concise 
 | `model`, `reasoning` | Focus native-catalog-backed selectors | Selection applies to next turn; not a claim of persistent TUI configuration |
 | `status` | Existing event snapshot plus explicit native account-limit refresh | Native unsigned refusal, signed-in successful retrieval and controlled positive rendering verified; explicit snapshot, not a continuous feed |
 | `plan` | Explicit native mode picker and `thread/settings/update` | Native Plan/Default confirmed with unchanged model/effort; workspace-confirmed mode restored across two real process replacements, no inference |
+| `copy` | Copy button, slash action and Ctrl+O | Completed response/plan only; drafts retained, native browser clipboard verified. Rollback-specific suppression still needs coverage. |
 
-Other documented CLI commands are not yet accounted for by this matrix. The
-current command menu is not the complete Codex CLI catalog. Do not release or
-declare full parity from these rows alone. Installation, account authentication,
+### Codex Documentation Inventory (2026-09-10)
+
+Source: [official developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
+accessed 2026-09-10. Documentation inventory is not proof of installed-version
+support. These documented names are not yet fully covered by the rows above:
+
+`ide`, `keymap`, `vim`, `setup-default-sandbox`, `sandbox-add-read-dir`, `agent`,
+`subagents`, `apps`, `plugins`, `hooks`, `clear`, `rename`, `archive`, `delete`,
+`diff`, `exit`, `experimental`, `approve`, `memories`, `import`, `feedback`, `init`,
+`logout`, `mention`, `fast`, `goal`, `personality`, `ps`, `stop`, `app`, `side`,
+`btw`, `raw`, `new`, `quit`, `usage`, `debug-config`, `statusline`, `title`, `theme`,
+`pets`, `pet`.
+
+Several have existing non-slash controls; each still needs an explicit mapping
+and provider-specific verification. Do not equate absent aliases with absent
+backend capabilities, or existing buttons with complete CLI argument parity.
+Destructive/configuration/account commands require their own explicit authority
+and confirmation flows; auditing them does not authorize executing them here.
+No full-parity release claim follows from this inventory. Installation, account authentication,
 permissions, background tasks and other non-command controls also retain their
 provider-specific delivery gates in the main contract.
+
+Copy verification:
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_copy_completed_output_ignores_running_turn_and_preserves_draft tests/test_workspace_pane.py::test_codex_local_commands_use_controls_not_model_prompts tests/test_workspace_pane.py::test_codex_picker_lists_local_actions_and_preserves_draft -q --tb=short
+# exit 0: 10 passed in 5.85s; includes empty history and clipboard denial.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-copy.py
+# exit 0: real Chromium clipboard round-trip, partial response excluded, draft
+# retained, no provider process and disposable browser closed.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-copy.py tests/test_workspace_pane.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+```

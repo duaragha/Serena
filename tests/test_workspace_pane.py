@@ -10,6 +10,34 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize("action", ["button", "slash", "shortcut"])
+def test_copy_completed_output_ignores_running_turn_and_preserves_draft(pane, action):
+    page, errors = pane
+    page.evaluate("""()=>{
+      pane.provider='Codex';pane.copyOutputButton.hidden=false;
+      Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copied=text;}}});
+      emit({method:'turn/started',params:{turn:{id:'running',status:'inProgress'}}});
+      emit({method:'item/agentMessage/delta',params:{turnId:'running',itemId:'partial',delta:'DO NOT COPY PARTIAL'}});
+      pane.input.value='Keep this draft';
+    }""")
+    if action == 'button':
+        page.get_by_role('button', name='Copy latest completed output', exact=True).first.click()
+    elif action == 'slash':
+        page.evaluate("pane.input.value='/copy';pane.submit()")
+    else:
+        page.locator('#left textarea').press('Control+o')
+    page.wait_for_function("window.copied!==undefined")
+    assert page.evaluate('window.copied') == 'The change is ready for review. <img src=x onerror=alert(1)>'
+    assert page.evaluate('pane.input.value') == ('/copy' if action == 'slash' else 'Keep this draft')
+    assert page.evaluate('window.calls') == []
+    page.evaluate("""()=>{navigator.clipboard.writeText=async()=>{throw Error('Clipboard denied');};pane.copyLatestOutput();}""")
+    page.get_by_text('Clipboard denied', exact=True).wait_for()
+    page.evaluate("""()=>{window.copied=null;pane.conversation.turns.clear();pane.copyLatestOutput();}""")
+    assert page.evaluate('window.copied') is None
+    assert 'No completed output' in page.locator('#left [role=alert]').inner_text()
+    assert not errors
+
+
 @pytest.fixture(scope="module")
 def pane_browser():
     with playwright.sync_playwright() as p:

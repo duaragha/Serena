@@ -57,6 +57,8 @@ export class WorkspacePane {
     head.append(this.accountButton);
     this.sessionStatusButton=this.button('Session status','info',()=>this.openSessionStatus());
     this.sessionStatusButton.hidden=provider!=='Codex';head.append(this.sessionStatusButton);
+    this.copyOutputButton=this.button('Copy latest completed output','copy',()=>this.copyLatestOutput());
+    this.copyOutputButton.hidden=provider!=='Codex';head.append(this.copyOutputButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
@@ -165,6 +167,9 @@ export class WorkspacePane {
       search:query=>this.controls.searchFiles(query),persist:()=>this.persistDraft()});
     this.form.addEventListener('submit', e => { e.preventDefault(); this.submit(); });
     this.input.addEventListener('keydown', e => {
+      if(this.provider==='Codex' && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && e.key.toLowerCase()==='o' && !e.isComposing){
+        e.preventDefault();this.copyLatestOutput();return;
+      }
       if(e.key==='Escape' && !e.isComposing && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && this.conversation.status==='running'){
         e.preventDefault();e.stopPropagation();this.interrupt();return;
       }
@@ -1115,7 +1120,21 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,
-      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton};
+      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton};
+  }
+
+  async copyLatestOutput() {
+    if(this.disposed)return;
+    for(const turn of [...this.conversation.turns.values()].reverse()){
+      if(turn.status!=='completed')continue;
+      const item=[...turn.items.values()].reverse().find(item=>
+        ['agentMessage','plan'].includes(item.type) && !item.parentToolUseId && typeof item.text==='string' && item.text.length);
+      if(!item)continue;
+      try{await navigator.clipboard.writeText(item.text);}
+      catch(error){this.error(error);}
+      return;
+    }
+    this.error(Error('No completed output is available to copy'));
   }
 
   activateCommandControl(control) {
@@ -1129,6 +1148,10 @@ export class WorkspacePane {
 
   async submit() {
     const text = this.input.value;
+    if(this.provider==='Codex' && /^\/copy(?:\s|$)/.test(text.trim())){
+      if(text.trim()!=='/copy' || this.files.length || this.selectedSkills.length){this.error(Error('Copy does not accept arguments or attachments'));return;}
+      await this.copyLatestOutput();return;
+    }
     if (this.sending || this.send.disabled || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
