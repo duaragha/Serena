@@ -571,12 +571,20 @@ class WorkspaceHost:
                 queued = await asyncio.to_thread(self.journal.recoverable_bridge_queue, sid, target["provider"])
                 mode = (await asyncio.to_thread(self.journal.saved_codex_mode, sid)
                         if target["provider"] == "codex" else None)
+                personality = (await asyncio.to_thread(self.journal.saved_codex_personality, sid)
+                               if target["provider"] == "codex" else None)
                 await owner.open()
                 if mode is not None:
                     try:
                         await owner.set_session_mode(mode)
                     except Exception:
                         # Do not expose a resumed writer under the wrong mode.
+                        await owner.close()
+                        raise
+                if personality is not None:
+                    try:
+                        await owner.set_personality(personality)
+                    except Exception:
                         await owner.close()
                         raise
                 await self._restore_bridge_queue(sid, owner, queued)
@@ -788,6 +796,8 @@ class WorkspaceHost:
             "models",
             "session_modes",
             "set_session_mode",
+            "personality",
+            "set_personality",
             "review",
             "compact",
             "background_tasks",
@@ -839,7 +849,7 @@ class WorkspaceHost:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "models", "permissions", "context_usage", "background_tasks",
-                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes",
+                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes", "personality",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1097,6 +1107,14 @@ class WorkspaceHost:
                     if provider != "codex" or set(payload) != {"target"}:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])
+                elif action == "personality":
+                    if provider != "codex" or payload:
+                        raise ValueError("Personality requires an attached Codex session")
+                    result = await owner.personality()
+                elif action == "set_personality":
+                    if provider != "codex" or set(payload) != {"value"}:
+                        raise ValueError("An exact Codex personality selection is required")
+                    result = await owner.set_personality(payload["value"])
                 elif action == "session_modes":
                     if provider not in {"codex", "gemini"} or payload:
                         raise ValueError("Native session modes are unavailable")

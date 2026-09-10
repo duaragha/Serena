@@ -446,6 +446,19 @@ test('rewind sends an explicit exact-session history command only on invocation'
   conn.dispose();assert.equal(calls.length,1);
 });
 
+test('personality controls are exact-session commands with no automatic mutation',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push([url,JSON.parse(options.body)]);return response({ok:true,result:{currentValue:'friendly',options:['friendly']}});
+  }});
+  assert.equal(calls.length,0);
+  await conn.controls().personality();
+  await conn.controls().setPersonality('friendly');
+  assert.ok(calls.every(([url])=>url==='/api/workspace/exact/commands'));
+  assert.deepEqual(calls.map(([,body])=>[body.action,body.payload]),[['personality',{}],['set_personality',{value:'friendly'}]]);
+  conn.dispose();assert.equal(calls.length,2);
+});
+
 test('native rename uses the exact session command rather than prompt input',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

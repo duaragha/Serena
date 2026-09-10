@@ -15,6 +15,41 @@ def tmp_path(tmp_path):
     return tmp_path.resolve()
 
 
+@pytest.mark.parametrize('case', ['ok', 'unsupported', 'busy', 'invalid', 'changed', 'malformed'])
+def test_personality_uses_native_capability_and_exact_session(tmp_path, case):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.settings['model'] = 'current'
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'model/list':
+                if case == 'changed':
+                    owner.settings['model'] = 'changed'
+                return {'data': [{'model': 'current', 'supportsPersonality': case != 'unsupported'}]}
+            assert method == 'thread/settings/update'
+            return None if case == 'malformed' else {}
+        rpc.request = request
+        if case == 'busy':
+            owner.state = 'running'
+        try:
+            if case == 'ok':
+                result = await owner.set_personality('friendly')
+                assert result['currentValue'] == 'friendly'
+                assert calls[-1] == ('thread/settings/update', {'threadId': owner.session_id, 'personality': 'friendly'})
+                assert owner.settings['model'] == 'current'
+                assert events[-1]['params']['personality'] == 'friendly'
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.set_personality('invalid' if case == 'invalid' else 'friendly')
+                assert 'personality' not in owner.settings
+                assert any(method == 'thread/settings/update' for method, _ in calls) is (case == 'malformed')
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('state', ['ready', 'running'])
 def test_native_rename_targets_and_verifies_exact_thread_without_new_turn(tmp_path, state):
     async def run():

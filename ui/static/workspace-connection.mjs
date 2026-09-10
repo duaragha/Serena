@@ -228,6 +228,8 @@ export class WorkspaceConnection {
       shellCommand: (command,confirmed) => this.command('shell_command', {command,confirmed}),
       forkSession: () => this.command('fork_session', {}),
       clearSession: () => this.command('clear_session', {confirmed:true}),
+      personality: () => this.command('personality', {}),
+      setPersonality: value => this.command('set_personality', {value}),
       disconnectSession: () => this.command('disconnect_session', {confirmed:true}),
       lastClear: () => this.readSaved(this.clearKey,null,value=>value===null || (typeof value==='object' && !Array.isArray(value))),
       forgetClear: () => {this.requireReceipts();this.storage.setItem(this.clearKey,'null');},

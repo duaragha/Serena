@@ -113,6 +113,49 @@ def test_codex_new_chat_keeps_running_owner_and_draft(pane, available):
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+@pytest.mark.parametrize('supported', [False, True])
+def test_personality_is_explicit_native_selection_and_keeps_failed_draft(pane, width, supported):
+    page, errors = pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.evaluate("""supported=>{
+      controls.personality=async()=>({currentValue:null,options:supported?['none','friendly','pragmatic']:[]});
+      controls.setPersonality=async value=>{calls.push(value);throw Error('Native update failed');};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/personality';pane.render();
+    }""", supported)
+    assert page.evaluate('calls') == []
+    page.locator('#left textarea').press('Enter')
+    dialog=page.get_by_role('dialog',name='Codex personality',exact=True)
+    select=dialog.get_by_role('combobox',name='Personality',exact=True)
+    if not supported:
+        dialog.get_by_text('This model does not support personality',exact=True).wait_for()
+        assert select.is_disabled()
+        assert dialog.get_by_role('button',name='Apply',exact=True).is_disabled()
+        assert page.evaluate('calls') == []
+        assert page.evaluate('pane.input.value') == '/personality'
+        assert not errors
+        return
+    select.select_option('friendly')
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('button',name='Apply',exact=True).click()
+    dialog.get_by_text('Native update failed',exact=True).wait_for()
+    assert page.evaluate('calls') == ['friendly']
+    assert page.evaluate('pane.input.value') == '/personality'
+    assert select.is_enabled()
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot=STATIC.parents[1]/'apps/desktop/build/workspace-proof'/f'personality-{width}.png'
+    shot.parent.mkdir(parents=True,exist_ok=True)
+    page.screenshot(path=str(shot))
+    page.evaluate("()=>{controls.setPersonality=async value=>({currentValue:value,options:['none','friendly','pragmatic']});}")
+    dialog.get_by_role('button',name='Apply',exact=True).click()
+    dialog.get_by_text('Last confirmed: friendly',exact=True).wait_for()
+    dialog.get_by_role('button',name='Close personality',exact=True).click()
+    assert page.evaluate('pane.input.value') == '/personality'
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

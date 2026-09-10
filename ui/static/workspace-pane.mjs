@@ -85,6 +85,8 @@ export class WorkspacePane {
       this.controls.newConversation(title);
     });
     this.newConversationButton.hidden=!controls.newConversation;head.append(this.newConversationButton);
+    this.personalityButton=this.button('Codex personality','smile',()=>this.openPersonality());
+    this.personalityButton.hidden=provider!=='Codex' || !controls.personality || !controls.setPersonality;head.append(this.personalityButton);
     this.disconnectButton=this.button('Disconnect session','unplug',()=>this.openDisconnect());
     this.disconnectButton.hidden=!controls.disconnectSession;
     this.disconnectButton.disabled=true;head.append(this.disconnectButton);
@@ -841,6 +843,38 @@ export class WorkspacePane {
     }catch(error){if(dialog.open)status.textContent=error.message;}
   }
 
+  async openPersonality() {
+    if(this.personalityDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Codex personality');
+    const status=node('p','','Loading...');status.setAttribute('role','status');
+    const select=node('select');select.setAttribute('aria-label','Personality');select.disabled=true;
+    const apply=node('button','','Apply');apply.type='button';apply.disabled=true;
+    const close=this.button('Close personality','x',()=>dialog.close());
+    let busy=false;
+    select.addEventListener('change',()=>{apply.disabled=busy || !select.value;});
+    const render=result=>{
+      select.replaceChildren();
+      const unknown=node('option','','Select personality');unknown.value='';unknown.disabled=true;select.append(unknown);
+      for(const value of result.options){const option=node('option','',value);option.value=value;select.append(option);}
+      select.value=result.currentValue || '';select.disabled=!result.options.length;
+      apply.disabled=!select.value;
+      status.textContent=result.options.length?`Last confirmed: ${result.currentValue || 'Unavailable'}`:'This model does not support personality';
+    };
+    apply.addEventListener('click',async()=>{
+      if(busy || !select.value)return;
+      busy=true;apply.disabled=true;select.disabled=true;close.disabled=true;
+      try{const result=await this.controls.setPersonality(select.value);if(dialog.open)render(result);}
+      catch(error){status.textContent=error.message;select.disabled=false;apply.disabled=false;}
+      finally{busy=false;close.disabled=false;}
+    });
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    dialog.append(node('h3','','Codex personality'),close,status,select,apply);
+    this.personalityDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
+    try{const result=await this.controls.personality();if(dialog.open && !this.disposed)render(result);}
+    catch(error){status.textContent=error.message;}
+  }
+
   async openSessionMode() {
     if(this.sessionModeDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Session mode');
@@ -1335,7 +1369,7 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
-      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
+      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }
 
   async copyLatestOutput() {
@@ -1976,6 +2010,7 @@ export class WorkspacePane {
   }
 
   dispose() {
+    this.personalityDialog?.close();
     this.rewindDialog?.close();
     this.disposeActions?.();
     this.sessionStatusDialog?.close();

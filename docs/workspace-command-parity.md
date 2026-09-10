@@ -3,6 +3,54 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Codex Personality (2026-09-10)
+
+`/personality` and Session actions open an explicit native selector. The owner
+checks `model/list.supportsPersonality` against the current model, rejects busy
+or changed sessions, and sends only `threadId` and `personality` through
+`thread/settings/update`. Confirmed state is journaled per session and restored
+before admitting work after owner replacement. Invalid saved values or rejected
+restoration close/refuse the owner rather than silently changing its behavior.
+Reserved jobs cannot change personality. No user configuration file is edited.
+
+Official sources, accessed 2026-09-10:
+- [Configuration](https://learn.chatgpt.com/docs/config-file/config-basic):
+  none/friendly/pragmatic and thread-level overrides.
+- [App-server model capabilities](https://learn.chatgpt.com/docs/app-server):
+  discover supportsPersonality before presenting selections.
+
+Observed installed 0.153.4 catalog: Astra, Sol, Terra and Luna advertise false;
+GPT-5.5 advertises true. The UI reports unsupported state and does not offer fake
+choices for those models. The supported native proof selected GPT-5.5 only in a
+disposable private profile, with no inference or user-model change.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py -k 'personality or mode' -q --tb=short
+# exit 0: 31 passed, 225 deselected in 2.80s.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_journal.py -q --tb=short
+# exit 1: 262 passed; one browser test lacked the installed executable path.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_browser_composer_reaches_host_and_reloads_same_owner -q --tb=short
+# exit 0: 1 passed in 4.69s.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_personality_is_explicit_native_selection_and_keeps_failed_draft -q --tb=short
+# exit 0: 4 passed in 6.98s; supported/unsupported, 390px and 1600px.
+node --test tests/workspace-connection.test.mjs
+# exit 0: 50 passed, 0 failed; 296.312918ms.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-personality.py
+# final exit 0: native settings notification, exact same session after process
+# replacement, unchanged model/history, three owned processes reaped, no inference.
+# Earlier attempts exited 1: empty native chat had no rollout; diagnostic code
+# indexed a list as a dict; default model correctly rejected unsupported personality.
+# The final fixture persists one print-only turn and selects an advertised
+# supporting model in its disposable config. Each attempt cleaned its profile.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py core/workspace_journal.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-personality.py
+# final exit 0: All checks passed (initial import ordering finding corrected).
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+```
+
+Inspected mobile screenshot `apps/desktop/build/workspace-proof/personality-390.png`.
+Not packaged, released, or default enabled; broader command parity is incomplete.
+
 ## New Conversation From A Native Pane (2026-09-10)
 
 Embedded Claude/Codex panes expose New conversation. Codex `/new` and

@@ -834,6 +834,37 @@ def test_explicit_resume_restores_saved_mode_before_admission(tmp_path, mode, fa
         host.shutdown()
 
 
+@pytest.mark.parametrize('value', [None, 'friendly', 'invalid'])
+@pytest.mark.parametrize('failure', [False, True])
+def test_personality_restores_only_saved_exact_session_and_closes_on_failure(tmp_path, value, failure):
+    calls = []
+    class PersonalityOwner(Owner):
+        async def set_personality(self, selected):
+            calls.append(selected)
+            if failure:
+                raise ValueError('Unsupported personality')
+            return {'currentValue': selected}
+    journal = WorkspaceJournal(tmp_path / 'personality.db')
+    journal.append('other', {'method':'workspace/settings','params':{'personality':'pragmatic'}})
+    if value is not None:
+        journal.append('exact', {'method':'workspace/settings','params':{'personality':value}})
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: {'session_id':sid,'provider':'codex','cwd':str(tmp_path)},
+                         factories={'codex':PersonalityOwner})
+    try:
+        host.events('exact')
+        assert not calls
+        result = host.attach('exact')
+        assert result['ok'] is (value is None or (value == 'friendly' and not failure))
+        assert calls == (['friendly'] if value == 'friendly' else [])
+        if failure and value == 'friendly':
+            assert host._sessions['exact'][0].closed
+        if result['ok']:
+            host._work_reservations['exact'] = {'item_id':'job'}
+            assert not host.command('exact','blocked','set_personality',{'value':'none'})['ok']
+    finally:
+        host.shutdown()
+
+
 def test_codex_mode_controls_are_explicit_receipted_and_job_guarded(tmp_path):
     calls = []
     class ModeOwner(Owner):

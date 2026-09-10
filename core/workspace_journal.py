@@ -74,6 +74,19 @@ class WorkspaceJournal:
             raise ValueError("Saved Codex mode is invalid")
         return mode
 
+    def saved_codex_personality(self, session_id: str) -> str | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute("""SELECT event FROM workspace_events
+                WHERE session_id=? AND json_extract(event, '$.method')='workspace/settings'
+                AND json_type(event, '$.params.personality') IS NOT NULL
+                ORDER BY sequence DESC LIMIT 1""", (session_id,)).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row[0])["params"]["personality"]
+        if not isinstance(value, str) or value not in {"none", "friendly", "pragmatic"}:
+            raise ValueError("Saved Codex personality is invalid")
+        return value
+
     def pending_target(self, session_id: str) -> dict | None:
         target = self.clear_target(session_id, uncataloged_only=True)
         if target:

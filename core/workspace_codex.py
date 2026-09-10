@@ -505,6 +505,30 @@ class CodexWorkspace:
             choices.append({"value": mode, "name": item["name"]})
         return {"currentValue": self.settings.get("collaborationMode"), "options": choices}
 
+    async def personality(self):
+        models = (await self.list_models())["data"]
+        model = next((item for item in models if item.get("model") == self.settings.get("model")), None)
+        supported = bool(model and model.get("supportsPersonality") is True)
+        return {"currentValue": self.settings.get("personality"),
+                "options": ["none", "friendly", "pragmatic"] if supported else []}
+
+    async def set_personality(self, value):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions:
+                raise WorkspaceRpcError("Finish the current turn before changing personality")
+            model = self.settings.get("model")
+            catalog = await self.personality()
+            if not isinstance(value, str) or value not in catalog["options"]:
+                raise ValueError("Personality is unavailable for this model")
+            if self.state != "ready" or self.questions or model != self.settings.get("model"):
+                raise WorkspaceRpcError("Session changed during personality lookup")
+            result = await self.rpc.request("thread/settings/update", {"threadId": self.session_id, "personality": value})
+            if not isinstance(result, dict):
+                raise WorkspaceRpcError("Personality change was not confirmed")
+            self.settings["personality"] = value
+            await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
+            return {**catalog, "currentValue": value}
+
     async def set_session_mode(self, mode):
         async with self._control_lock:
             if self.state != "ready" or self.questions:
@@ -1144,6 +1168,8 @@ class CodexWorkspace:
                                            ("sandboxPolicy", "sandboxPolicy")):
                         if source in settings:
                             self.settings[target] = deepcopy(settings[source])
+                    if settings.get("personality") in {"none", "friendly", "pragmatic"}:
+                        self.settings["personality"] = settings["personality"]
                     await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
                 elif method == "mcpServer/oauthLogin/completed":
                     login = self._mcp_logins.get(params.get("name"))
