@@ -146,6 +146,9 @@ class WorkspaceUploads:
     def claude_inputs(self, sid: str, inputs: list[dict]) -> list[dict]:
         return self._inputs(sid, inputs, provider="claude")
 
+    def acp_inputs(self, sid: str, inputs: list[dict]) -> list[dict]:
+        return self._inputs(sid, inputs, provider="acp")
+
     def _inputs(self, sid: str, inputs: list[dict], *, provider: str) -> list[dict]:
         if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_ATTACHMENTS + 1:
             raise ValueError("Invalid message or attachment count")
@@ -162,10 +165,14 @@ class WorkspaceUploads:
             elif item.get("type") == "upload" and set(item) == {"type", "token"}:
                 path, record = self.resolve(sid, item["token"])
                 if record["media_type"].startswith("image/"):
-                    if provider == "claude":
+                    if provider in {"claude", "acp"}:
                         raw = path.read_bytes()
                         if hashlib.sha256(raw).hexdigest() != record["sha256"]:
                             raise ValueError("Attachment changed after upload")
+                        if provider == "acp":
+                            result.append({"type": "image", "mimeType": record["media_type"],
+                                           "data": base64.b64encode(raw).decode("ascii")})
+                            continue
                         result.append(
                             {
                                 "type": "image",
@@ -178,6 +185,10 @@ class WorkspaceUploads:
                         )
                     else:
                         result.append({"type": "localImage", "path": str(path)})
+                elif provider == "acp":
+                    result.append({"type": "resource_link", "uri": path.resolve().as_uri(),
+                                   "name": record["name"], "mimeType": record["media_type"],
+                                   "size": record["size"]})
                 else:
                     result.append(
                         {

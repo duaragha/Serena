@@ -52,6 +52,30 @@ class Owner:
         self.closed = True
 
 
+def test_gemini_explicit_owner_uses_acp_mapping_and_deduplicates_delivery(tmp_path):
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "gemini.db"),
+                         resolve=lambda sid: {"session_id": sid, "provider": "gemini", "cwd": str(tmp_path)},
+                         factories={"gemini": Owner})
+    try:
+        assert not host._sessions
+        host.events("exact")
+        assert not host._sessions
+        assert host.attach("exact")["provider"] == "gemini"
+        owner = host._sessions["exact"][0]
+        document = host.uploads.save("exact", "notes.txt", io.BytesIO(b"notes"))
+        payload = {"inputs": [{"type": "upload", "token": document["token"]}]}
+        receipt = host.command("exact", "one", "submit", payload)
+        assert receipt["ok"]
+        assert host.command("exact", "one", "submit", payload) == receipt
+        assert len(owner.sent) == 1
+        assert owner.sent[0][0]["type"] == "resource_link"
+        assert owner.sent[0][0]["name"] == "notes.txt"
+        assert host.attach("exact")["provider"] == "gemini"
+        assert host._sessions["exact"][0] is owner
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize("blocked", [None, "running", "background", "queued", "confirmation", "cleanup"])
 def test_explicit_disconnect_preserves_history_and_never_stops_other_owner(tmp_path, blocked):
     class DisconnectOwner(Owner):

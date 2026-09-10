@@ -196,3 +196,20 @@ Gemini remains unavailable in the development rich pane until these checks pass:
 The previous CLI limitation is no longer a reason to declare the overall Gemini
 integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
+# Session-bound input mapping, 2026-09-09
+
+The shared host now maps Gemini submissions through session-bound upload tokens:
+images become ACP base64 image blocks; documents become file resource links.
+Arbitrary renderer paths and another session's tokens remain rejected. Exact
+request receipts prevent a repeated submit from delivering twice. The default
+Gemini factory and saved CLI session admission remain disabled: this is input
+integration, not evidence of authenticated native prompt execution.
+
+Official schema checked 2026-09-09:
+https://agentclientprotocol.com/protocol/v1/content
+
+Verification: scoped uploads and host-routing tests: 10 passed, exit 0; Ruff:
+exit 0. An isolated runtime command exercised actual upload storage, byte-exact
+ACP image mapping and cross-session rejection, exit 0, without launching a
+provider. The first scoped test run had one test-cleanup failure (calling
+`close` instead of the host's `shutdown`); corrected before the passing run.

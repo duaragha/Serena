@@ -608,6 +608,7 @@ class WorkspaceHost:
                     mapper = {
                         "codex": self.uploads.codex_inputs,
                         "claude": self.uploads.claude_inputs,
+                        "gemini": self.uploads.acp_inputs,
                     }.get(provider)
                     if mapper is None:
                         raise ValueError("Provider input mapping is not implemented")

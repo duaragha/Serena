@@ -97,6 +97,30 @@ def test_claude_rejects_changed_image(tmp_path):
         uploads.claude_inputs("exact", [{"type": "upload", "token": record["token"]}])
 
 
+def test_acp_inputs_preserve_images_and_session_bound_file_references(tmp_path):
+    uploads = WorkspaceUploads(tmp_path)
+    raw = png()
+    image = uploads.save("exact", "photo.png", io.BytesIO(raw))
+    document = uploads.save("exact", "notes.txt", io.BytesIO(b"notes"))
+    inputs = [{"type": "text", "text": "inspect"},
+              {"type": "upload", "token": image["token"]},
+              {"type": "upload", "token": document["token"]}]
+    mapped = uploads.acp_inputs("exact", inputs)
+    path, record = uploads.resolve("exact", document["token"])
+    assert mapped == [inputs[0], {"type": "image", "mimeType": "image/png",
+                                "data": base64.b64encode(raw).decode("ascii")},
+                      {"type": "resource_link", "uri": path.resolve().as_uri(),
+                       "name": "notes.txt", "mimeType": record["media_type"], "size": 5}]
+    with pytest.raises(ValueError, match="unavailable"):
+        uploads.acp_inputs("other", inputs)
+    with pytest.raises(ValueError, match="arbitrary"):
+        uploads.acp_inputs("exact", [mapped[2]])
+    image_path, _ = uploads.resolve("exact", image["token"])
+    image_path.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="changed"):
+        uploads.acp_inputs("exact", inputs)
+
+
 def test_only_owned_image_paths_get_preview_tokens(tmp_path):
     uploads = WorkspaceUploads(tmp_path)
     record = uploads.save("exact", "photo.png", io.BytesIO(png()))
