@@ -136,6 +136,67 @@ Viewed `apps/desktop/build/workspace-proof/rename-390.png` and `rename-1600.png`
 black input, compact dialog, visible error and no horizontal overflow. Windows
 packaged verification and release remain outstanding for the overall goal.
 
+## Claude Explicit Custom-Title Replacement (2026-09-10)
+
+This closes the custom-title replacement gap mentioned in the historical Claude
+rename receipts below. A successful live `/rename <name>` completion now carries
+both expected and confirmed native names into registration. The catalog requires
+the exact session/project and matching persisted native title before replacing
+that session's Serena custom title. Passive indexing has no replacement flag and
+retains its existing precedence. Missing or stale native confirmation is refused;
+unrelated and linked sibling metadata stays unchanged. Codex rename behavior is
+unchanged.
+
+The catalog confirmation flag is preserved through the host's result whitelist.
+The frame then requests a fresh parent catalog read, rather than patching its
+event's title over the cached custom name. Replayed confirmations fetch the
+current saved name again; they do not replay the old requested title. The
+existing origin/source/session checks remain, and the conversation and draft
+are not replaced. This does not establish a new cross-machine metadata conflict
+resolution protocol or a new native rename API; it completes synchronization of
+the already-supported explicit Claude command.
+
+Executed separately from the isolated worktree:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py tests/test_workspace_host.py::test_confirmed_claude_rename_indexes_exact_owner_without_attach tests/test_workspace_claude.py -q --tb=short
+```
+
+Exit 0: 86 passed in 2.99s. Exact-session replacement, passive precedence,
+unconfirmed/stale rejection, sibling preservation, live completion and failures.
+
+```sh
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch tests/test_workspace_host.py::test_confirmed_claude_rename_indexes_exact_owner_without_attach tests/test_workspace_catalog.py -q --tb=short --show-capture=no
+```
+
+Exit 0: 30 passed in 34.48s after preserving the host confirmation flag.
+Both mounted provider pages passed. The Claude test exercises confirmed and
+stale replayed catalog events, fresh title reads and preserved drafts. An earlier
+two-provider browser run exited 1 (1 passed, 1 failed in 15.32s) because the new
+test passed Playwright's keyword-only `arg` positionally; corrected before rerun.
+
+```sh
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-commands.py
+```
+
+Final exit 0. Actual native Claude local rename persisted for the exact session;
+the real parser/catalog initially preserved an existing Serena title under
+passive indexing, then replaced it on the confirmed completion. The journal
+contained the indexed title and confirmation flag. Nine local commands also
+passed, with one native output/turn identity each. All disposable state and the
+owned child were cleaned up, with no inference or user credentials. Initial live
+exit 1 exposed the host dropping `native_rename`; that production defect was
+fixed and regression-tested before the final run.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_catalog.py core/workspace_host.py tests/test_workspace_catalog.py tests/test_workspace_host.py tests/test_workspace_app.py scripts/verify-workspace-claude-commands.py
+node --check ui/static/workspace-page.mjs
+```
+
+Both commands exited 0; Ruff reported all checks passed, Node no output.
+The earlier packaged proofs cover source `748573e`, not this subsequent rename
+change. Full parity and release/default enablement remain incomplete.
+
 ## Claude Native Catalog
 
 Every name in the observed 45-entry catalog is included below. Forwarding means

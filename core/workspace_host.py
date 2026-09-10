@@ -1169,7 +1169,7 @@ class WorkspaceHost:
             title = event.get("params", {}).get("title")
             if entry and entry[1] == "claude" and isinstance(title, str) and title:
                 registration = {"session_id": sid, "provider": "claude", "cwd": str(entry[0].cwd),
-                                "expected_native_title": title}
+                                "expected_native_title": title, "confirmed_native_name": title}
                 for attempt in range(5):
                     result = await self._register_created_fork(registration)
                     if not result.get("retryable"):
@@ -1205,7 +1205,9 @@ class WorkspaceHost:
                 raise RuntimeError("Fork catalog is unavailable")
             registered = await asyncio.to_thread(self.register_fork, target)
             title = registered.get("display_title") if isinstance(registered, dict) else None
-            return {**target, "indexed": True, **({"display_title": title} if isinstance(title, str) else {})}
+            renamed = isinstance(registered, dict) and registered.get('native_rename') is True
+            return {**target, "indexed": True, **({"display_title": title} if isinstance(title, str) else {}),
+                    **({'native_rename': True} if renamed else {})}
         except Exception as error:
             from core.workspace_catalog import NativeTranscriptPending
 

@@ -10,7 +10,9 @@ const connection = new WorkspaceConnection({
     if(accepted && catalog?.method==='workspace/catalog' && catalog.params?.indexed===true
       && catalog.params.session_id===boot.sessionId && typeof catalog.params.display_title==='string'
       && parent!==window){
-      parent.postMessage({type:'serena-workspace-catalog',sid:boot.sessionId,title:catalog.params.display_title},location.origin);
+      parent.postMessage(catalog.params.native_rename===true
+        ? {type:'serena-workspace-title-changed',sid:boot.sessionId}
+        : {type:'serena-workspace-catalog',sid:boot.sessionId,title:catalog.params.display_title},location.origin);
     }
     if (accepted) reportState();
     return accepted;

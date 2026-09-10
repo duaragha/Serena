@@ -163,6 +163,47 @@ def test_codex_registration_marks_owned_before_upsert(tmp_path, monkeypatch):
     assert calls == [("owned", sid), ("index", sid, "codex"), "commit", "close"]
 
 
+@pytest.mark.parametrize('confirmation', ['live', 'passive', 'missing', 'stale'])
+def test_claude_explicit_rename_replaces_only_after_native_confirmation(tmp_path, monkeypatch, confirmation):
+    from core import indexer, metadata
+    from core.workspace_catalog import list_saved_sessions
+
+    monkeypatch.setattr(indexer, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(indexer, 'DB_PATH', tmp_path / 'index.db')
+    monkeypatch.setattr(indexer, '_schema_ready', False)
+    monkeypatch.setattr(metadata, 'METADATA_DIR', tmp_path / 'metadata')
+    monkeypatch.setattr(metadata, 'METADATA_PATH', tmp_path / 'legacy.json')
+    home = tmp_path / 'claude'
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home))
+    sid, sibling = str(uuid4()), str(uuid4())
+    path = home / 'projects' / 'project' / f'{sid}.jsonl'
+    path.parent.mkdir(parents=True)
+    path.write_text('\n'.join(map(json.dumps, [
+        {'type': 'user', 'cwd': str(tmp_path), 'timestamp': '2026-09-10T12:00:00Z',
+         'message': {'role': 'user', 'content': 'Original request'}},
+        {'type': 'custom-title', 'sessionId': sid, 'customTitle': 'Native replacement'},
+    ])) + '\n')
+    metadata.set_custom_title(sid, 'Previous explicit title')
+    metadata.set_custom_title(sibling, 'Sibling title')
+    target = {'session_id': sid, 'provider': 'claude', 'cwd': str(tmp_path)}
+    register_fork(target)
+    if confirmation != 'passive':
+        target['confirmed_native_name'] = 'Native replacement'
+    if confirmation in {'live', 'stale'}:
+        target['expected_native_title'] = 'Native replacement' if confirmation == 'live' else 'Older title'
+    if confirmation in {'missing', 'stale'}:
+        with pytest.raises(ValueError):
+            register_fork(target)
+    else:
+        result = register_fork(target)
+        if confirmation == 'live':
+            assert result == {'display_title': 'Native replacement', 'native_rename': True}
+    expected = 'Native replacement' if confirmation == 'live' else 'Previous explicit title'
+    assert metadata.get_meta(sid)['custom_title'] == expected
+    assert list_saved_sessions('claude')['data'][0]['title'] == expected
+    assert metadata.get_meta(sibling)['custom_title'] == 'Sibling title'
+
+
 def test_confirmed_native_codex_rename_updates_only_exact_metadata_and_index(tmp_path, monkeypatch):
     from core import indexer, metadata
     from core.workspace_catalog import list_saved_sessions

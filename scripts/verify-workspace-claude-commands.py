@@ -102,6 +102,9 @@ async def prove(root):
         transcript = next((root / "config").rglob(f"{sid}.jsonl"))
         meta = parse_metadata(transcript, transcript.parent.name)
         assert meta.native_title == "command-proof"
+        metadata.set_custom_title(sid, 'Previous Serena title')
+        register_fork({'session_id': sid, 'provider': 'claude', 'cwd': str(root)})
+        assert list_saved_sessions('claude')['data'][0]['title'] == 'Previous Serena title'
         observer = WorkspaceHost(journal=WorkspaceJournal(root / "observer.db"), resolve=None,
                                  register_fork=register_fork)
         observer._sessions[sid] = (SimpleNamespace(cwd=root), "claude")
@@ -110,6 +113,8 @@ async def prove(root):
         catalog_event = observer.events(sid)["events"][-1]["event"]
         assert catalog_event["method"] == "workspace/catalog"
         assert catalog_event["params"]["display_title"] == "command-proof"
+        assert catalog_event['params']['native_rename'] is True
+        assert metadata.get_meta(sid)['custom_title'] == 'command-proof'
         rows = list_saved_sessions("claude")["data"]
         assert len(rows) == 1 and rows[0]["session_id"] == sid and rows[0]["title"] == "command-proof"
         result = await command("/doctor")

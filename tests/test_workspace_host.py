@@ -1960,11 +1960,15 @@ def test_confirmed_claude_rename_indexes_exact_owner_without_attach(tmp_path, pe
         calls.append(target)
         if pending:
             raise NativeTranscriptPending("not flushed")
+        return {'display_title': 'New name', 'native_rename': True}
 
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "rename.db"),
                          resolve=lambda sid: pytest.fail("must not attach"),
                          register_fork=register)
     host._sessions["exact"] = (SimpleNamespace(cwd=tmp_path), "claude")
     asyncio.run(host._publish("exact", {"method": "workspace/renameCompleted", "params": {"title": "New name"}}))
-    assert calls == [{"session_id": "exact", "provider": "claude", "cwd": str(tmp_path), "expected_native_title": "New name"}] * (5 if pending else 1)
+    assert calls == [{"session_id": "exact", "provider": "claude", "cwd": str(tmp_path), "expected_native_title": "New name", "confirmed_native_name": "New name"}] * (5 if pending else 1)
+    result = host.events('exact')['events'][-1]['event']['params']
+    assert result['indexed'] is not pending
+    assert result.get('native_rename', False) is not pending
     assert host._loop is None

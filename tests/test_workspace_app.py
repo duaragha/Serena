@@ -670,6 +670,22 @@ function setTermStatus(status){window.lastStatus=status;}
             page.frames[1].evaluate("""()=>parent.postMessage({type:'serena-workspace-catalog',sid:'exact',title:'Older native name'},location.origin)""")
             page.wait_for_function("document.getElementById('convTitle').textContent==='My newer name'")
             assert page.evaluate("_findClientSession('exact').display_title") == 'My newer name'
+            if provider == 'claude':
+                page.evaluate("""()=>{
+                  window.originalLoadSessions=loadSessions;window.titleRefreshes=0;
+                  loadSessions=async(project,options)=>{
+                    if(options.refresh!==true)throw Error('Expected fresh title read');
+                    window.titleRefreshes++;setSessionSource([{session_id:'exact',agent:'claude',custom_title:'Newest saved Claude title',display_title:'Newest saved Claude title'}]);
+                  };
+                }""")
+                for stale in ('Confirmed native title', 'Older replayed title'):
+                    before = page.evaluate('titleRefreshes')
+                    host.journal.append('exact', {'method': 'workspace/catalog', 'params': {
+                        'session_id': 'exact', 'indexed': True, 'native_rename': True, 'display_title': stale}})
+                    page.wait_for_function('before=>titleRefreshes>before', arg=before)
+                    assert page.locator('#convTitle').inner_text() == 'Newest saved Claude title'
+                    assert nested.get_by_role('textbox', name='Message Claude').input_value() == 'Keep the unsent draft'
+                page.evaluate('loadSessions=originalLoadSessions')
             if provider == 'codex':
                 host.register_fork = lambda target: {'display_title': target['confirmed_native_name']}
                 page.evaluate("""()=>{
