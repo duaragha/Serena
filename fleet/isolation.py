@@ -939,7 +939,7 @@ def refresh_workspace_for_retry(
         return workspace, {"action": "refreshed", "changed_paths": []}
 
     changed = workspace_changed_paths(existing)
-    if not changed:
+    if not changed and existing.state == "delivered":
         return existing, {"action": "reused", "changed_paths": []}
     protected = [path for path in changed if is_protected_path(path)]
     if protected:
@@ -962,9 +962,23 @@ def refresh_workspace_for_retry(
         previous_tree.returncode == 0
         and current_tree.returncode == 0
         and previous_tree.stdout.strip() == current_tree.stdout.strip()
+        and _git(root, "merge-base", "--is-ancestor", check.head, existing.base_head,
+                 check=False).returncode == 0
         and existing.state == "active"
     ):
         return existing, {"action": "reused", "changed_paths": changed}
+
+    if not changed:
+        # A failed worker can be perfectly clean and still have the wrong
+        # baseline. Clean is not evidence that its checkout is current.
+        store.mark_workspace(
+            run_id=run_id, worker_key=worker_key, state="blocked",
+            reason="clean retry workspace needs the current integration baseline",
+        )
+        workspace = ensure_workspace(
+            store, run_id=run_id, worker_key=worker_key, cwd=root, assessment=check,
+        )
+        return workspace, {"action": "refreshed", "changed_paths": []}
 
     patch = _workspace_patch(existing, changed)
     if patch is None:

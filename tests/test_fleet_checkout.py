@@ -135,3 +135,47 @@ def test_learning_identity_requires_matching_checkout_receipt(tmp_path):
     assert project_identity(run) == str(root.resolve())
     foreign = tmp_path / "other-project"
     assert project_identity({**run, "cwd": str(foreign)}) == str(foreign.resolve())
+
+
+def test_clean_failed_worker_refreshes_to_required_baseline(tmp_path):
+    from fleet.isolation import FleetIsolationStore, ensure_workspace, refresh_workspace_for_retry
+
+    root, baseline, store, run = setup_run(tmp_path)
+    isolation = FleetIsolationStore(tmp_path / "isolation.sqlite3", workspace_root=tmp_path / "workers")
+    old = ensure_workspace(isolation, run_id=run["run_id"], worker_key="agent:c", cwd=root)
+    assert not (Path(old.path) / "required.txt").exists()
+    ensure_run_checkout(store, run["run_id"])
+    current, receipt = refresh_workspace_for_retry(
+        isolation, run_id=run["run_id"], worker_key="agent:c", cwd=store.get_run(run["run_id"])["cwd"],
+    )
+    assert receipt["action"] == "refreshed"
+    assert current.path == old.path
+    assert (Path(current.path) / "required.txt").is_file()
+    _git(Path(current.path), "merge-base", "--is-ancestor", baseline, "HEAD")
+
+
+def test_legacy_baseline_adoption_preserves_completed_research(tmp_path):
+    root, baseline, store, run = setup_run(tmp_path)
+    research = store.begin_attempt(run["phases"][0]["legs"][0]["leg_id"])
+    store.finish_attempt(research["attempt_id"], state="completed", output_text="research retained")
+    with store._connect() as db:
+        db.execute("DELETE FROM fleet_run_checkouts WHERE run_id = ?", (run["run_id"],))
+    ensure_run_checkout(store, run["run_id"])
+    repaired = store.get_run(run["run_id"])
+    assert repaired["checkout"]["baseline"] == baseline
+    assert repaired["phases"][0]["legs"][0]["current_attempt"]["attempt_id"] == research["attempt_id"]
+    assert repaired["phases"][0]["legs"][0]["state"] == "completed"
+    assert (root / "README.md").read_text() == "user dirty file\n"
+
+
+@pytest.mark.parametrize("state", ["running", "completed"])
+def test_legacy_baseline_adoption_refuses_live_or_accepted_write_work(tmp_path, state):
+    _, _, store, run = setup_run(tmp_path)
+    code = store.begin_attempt(run["phases"][1]["legs"][0]["leg_id"])
+    if state == "completed":
+        store.finish_attempt(code["attempt_id"], state=state, output_text="accepted work")
+    with store._connect() as db:
+        db.execute("DELETE FROM fleet_run_checkouts WHERE run_id = ?", (run["run_id"],))
+    with pytest.raises(RuntimeError, match="running or accepted"):
+        ensure_run_checkout(store, run["run_id"])
+    assert store.get_run(run["run_id"])["checkout"] is None

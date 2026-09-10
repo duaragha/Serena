@@ -35,9 +35,18 @@ to discard committed or uncommitted delivered work in that root. Status retains
 Real-Git tests cover all four scheduled phases, dirty source/index preservation,
 retry preservation and deletion protection. Three-worker scheduler coverage now
 includes real Code/Fix file edits integrated only into the run checkout.
-Remaining: explicit branch-name delivery, migration/repair of existing runs,
+Remaining: explicit branch-name delivery, production repair of the affected run,
 user-facing checkout delivery and live acceptance.
 This remains an implementation checkpoint, not a completed reliability claim.
+
+Older runs without a checkout receipt now adopt their explicit baseline before
+dispatch, provided no worker is running and no write result or integration has
+been accepted. Completed Research receipts are preserved. The migration refuses
+to relocate accepted work. Clean failed worker workspaces now refresh when their
+base tree or ancestry changed; "clean" alone no longer licenses reuse of a stale
+checkout. Edited workspaces retain the existing preserved-patch/reapply path.
+116 baseline/isolation/supervisor tests pass, including legacy adoption and its
+live-worker/accepted-write refusal cases. The production run has not been retried.
 
 ### State/UI hardening checkpoint
 

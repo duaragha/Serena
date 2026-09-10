@@ -42,7 +42,36 @@ def ensure_run_checkout(store, run_id: str) -> None:
             "SELECT * FROM fleet_run_checkouts WHERE run_id = ?", (run_id,),
         ).fetchone()
     if row is None:
-        return
+        # Older MCP/CLI processes may persist a run without the new checkout
+        # receipt. Repair before dispatch, never after accepting write results.
+        run = store.get_run(run_id)
+        if run is None:
+            raise KeyError(f"unknown Fleet run {run_id}")
+        baseline = requested_baseline(run["task"], Path(run["cwd"]))
+        if baseline is None:
+            return
+        from fleet.isolation import FleetIsolationStore
+
+        integrations = FleetIsolationStore(store.path.parent / "fleet-isolation.sqlite3").integrations(run_id)
+        if any(item.get("ok") for item in integrations):
+            raise RuntimeError("baseline repair requires reconciling accepted integrations; existing work preserved")
+        with store._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            unsafe = connection.execute(
+                "SELECT 1 FROM fleet_legs WHERE run_id = ? AND "
+                "(state = 'running' OR (access_mode = 'write' AND state = 'completed')) LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if unsafe:
+                raise RuntimeError("baseline repair cannot replace running or accepted write work")
+            connection.execute(
+                "INSERT OR IGNORE INTO fleet_run_checkouts(run_id, source_cwd, baseline, path, state) "
+                "VALUES (?, ?, ?, ?, 'pending')",
+                (run_id, run["cwd"], baseline, str(store.path.parent / "fleet-checkouts" / run_id)),
+            )
+            row = connection.execute(
+                "SELECT * FROM fleet_run_checkouts WHERE run_id = ?", (run_id,),
+            ).fetchone()
     source = Path(row["source_cwd"])
     target = Path(row["path"])
     baseline = row["baseline"]
