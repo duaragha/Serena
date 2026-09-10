@@ -2,6 +2,21 @@
 
 Status: incomplete. Passing the existing resilience lab is not acceptance of this repair.
 
+### Disk recovery implementation checkpoint
+
+Disk-exhaustion attempt receipts now atomically park the leg in
+`waiting_for_resources`. The resident service probes checkout and database free
+space every 30 seconds and requeues the same logical leg after both have at least
+2 GiB available. Completed attempts and running run owners are preserved;
+cancellation prevents wakeup. Failed probes remain parked, and the resource wait
+is exposed in the status projection. This does not yet solve a database that is
+too full to commit the initial receipt, resource reservations, disk-inode
+exhaustion, UI controls, baseline selection, or the other recovery classes.
+
+Verified locally: 8 disk tests (including the real scheduler with a scripted
+provider) and 77 combined resource/DAG/supervision/supervisor tests. Not deployed;
+no real-model acceptance or production run repair has been performed.
+
 ## Production evidence, 2026-09-10
 
 Run `bc257933-5fa8-4c77-ba2d-da4c2e11e80e` requested mandatory commit

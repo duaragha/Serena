@@ -49,7 +49,7 @@ from fleet.dag import (
 
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "fleet.sqlite3"
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled", "planned"})
-WAITING_RUN_STATES = frozenset({"waiting_for_capacity"})
+WAITING_RUN_STATES = frozenset({"waiting_for_capacity", "waiting_for_resources"})
 TERMINAL_ATTEMPT_STATES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 MAX_OUTPUT_CHARS = 256_000
 MAX_EVENT_CHARS = 64_000
@@ -850,6 +850,29 @@ class FleetStore:
                 ),
             )
             leg_state = "completed" if state == "completed" else state
+            from fleet.resources import is_disk_exhaustion
+
+            resource_wait = (
+                state == "failed" and not run["cancel_requested"]
+                and run["state"] not in TERMINAL_RUN_STATES
+                and is_disk_exhaustion(clean_error or "")
+            )
+            if resource_wait:
+                leg_state = "waiting_for_resources"
+                connection.execute(
+                    "INSERT OR REPLACE INTO fleet_resource_waits "
+                    "(leg_id, run_id, attempt_id, resource, reason, required_bytes, not_before) "
+                    "VALUES (?, ?, ?, 'disk', ?, ?, ?)",
+                    (attempt["leg_id"], attempt["run_id"], attempt_id, clean_error,
+                     2 * 1024**3, now + 30),
+                )
+                self._insert_event(
+                    connection, run_id=str(attempt["run_id"]),
+                    leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                    event_type="leg.waiting_for_resources",
+                    payload={"resource": "disk", "reason": clean_error,
+                             "not_before": now + 30, "required_bytes": 2 * 1024**3},
+                )
             connection.execute(
                 "UPDATE fleet_legs SET state = ?, updated_at = ? WHERE leg_id = ?",
                 (leg_state, now, str(attempt["leg_id"])),
@@ -858,7 +881,7 @@ class FleetStore:
                 connection,
                 leg_id=str(attempt["leg_id"]),
                 attempt_id=attempt_id,
-                state=state,
+                state=leg_state,
                 error=clean_error,
                 now=now,
             )
@@ -946,7 +969,7 @@ class FleetStore:
             state = str(row["state"])
             if state in TERMINAL_RUN_STATES:
                 return self._snapshot(connection, run_id)
-            if state in {"queued", "waiting_for_capacity"}:
+            if state in {"queued", "waiting_for_capacity", "waiting_for_resources"}:
                 connection.execute(
                     "UPDATE fleet_runs SET state = 'cancelled', cancel_requested = 1, "
                     "error = 'cancelled by user', completed_at = ?, updated_at = ? WHERE run_id = ?",
@@ -955,7 +978,7 @@ class FleetStore:
                 connection.execute(
                     "UPDATE fleet_legs SET state = 'cancelled', updated_at = ? "
                     "WHERE run_id = ? AND state IN "
-                    "('queued', 'waiting_for_capacity', 'waiting_for_dependencies')",
+                    "('queued', 'waiting_for_capacity', 'waiting_for_resources', 'waiting_for_dependencies')",
                     (now, run_id),
                 )
                 cancel_unfinished_work_units(
@@ -989,7 +1012,7 @@ class FleetStore:
                 payload={
                     "state": (
                         "cancelled"
-                        if state in {"queued", "waiting_for_capacity"}
+                        if state in {"queued", "waiting_for_capacity", "waiting_for_resources"}
                         else "stopping"
                     )
                 },
@@ -1969,6 +1992,25 @@ class FleetStore:
                 "AND state != 'completed' ORDER BY ordinal",
                 (run_id, phase),
             ).fetchall()
+            resource_wait = connection.execute(
+                "SELECT w.reason FROM fleet_resource_waits w "
+                "JOIN fleet_legs l ON l.leg_id = w.leg_id "
+                "WHERE w.run_id = ? AND l.state = 'waiting_for_resources' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if resource_wait is not None:
+                connection.execute(
+                    "UPDATE fleet_runs SET state = 'waiting_for_resources', error = ?, "
+                    "owner_pid = NULL, owner_token = NULL, completed_at = NULL, updated_at = ? "
+                    "WHERE run_id = ?", (resource_wait["reason"], now, run_id),
+                )
+                self._insert_event(
+                    connection, run_id=run_id, event_type="run.waiting_for_resources",
+                    payload={"state": "waiting_for_resources", "reason": resource_wait["reason"]},
+                )
+                snapshot = self._snapshot(connection, run_id)
+                snapshot["resource_waiting"] = True
+                return snapshot
             capacity_rows = connection.execute(
                 "SELECT w.leg_id, w.reason, w.not_before, w.resets_at, "
                 "w.eligible_providers_json FROM fleet_capacity_waits w "
@@ -2860,6 +2902,12 @@ class FleetStore:
             "phases": phases,
             "work_units": work_units,
             "capacity_waits": list(capacity_waiting.values()),
+            "resource_waits": [dict(row) for row in connection.execute(
+                "SELECT w.* FROM fleet_resource_waits w "
+                "JOIN fleet_legs l ON l.leg_id = w.leg_id "
+                "WHERE w.run_id = ? AND l.state = 'waiting_for_resources'",
+                (run_id,),
+            )],
             "result_text": run["result_text"],
             "result_truncated": bool(run["result_truncated"]),
             "error": run["error"],
@@ -3146,6 +3194,16 @@ class FleetStore:
                 CREATE INDEX IF NOT EXISTS fleet_capacity_waits_run_idx
                     ON fleet_capacity_waits(run_id, not_before);
 
+                CREATE TABLE IF NOT EXISTS fleet_resource_waits (
+                    leg_id TEXT PRIMARY KEY REFERENCES fleet_legs(leg_id) ON DELETE CASCADE,
+                    run_id TEXT NOT NULL REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
+                    attempt_id TEXT NOT NULL REFERENCES fleet_attempts(attempt_id) ON DELETE CASCADE,
+                    resource TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    required_bytes INTEGER NOT NULL,
+                    not_before REAL NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS fleet_context_receipts (
                     attempt_id TEXT PRIMARY KEY
                         REFERENCES fleet_attempts(attempt_id) ON DELETE CASCADE,
@@ -3305,6 +3363,8 @@ def _phase_state(states: list[str]) -> str:
         return "completed"
     if any(state == "running" for state in states):
         return "running"
+    if any(state == "waiting_for_resources" for state in states):
+        return "waiting_for_resources"
     if any(state == "waiting_for_capacity" for state in states):
         return "waiting_for_capacity"
     if any(state == "failed" for state in states):

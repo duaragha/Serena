@@ -454,6 +454,8 @@ def prepare_phase(
                 now=at,
             )
             continue
+        if stored_leg_state == "waiting_for_resources":
+            continue
         dependency_block_only = all(
             str(record["state"])
             in {"blocked_dependency_failed", "waiting_for_dependencies"}

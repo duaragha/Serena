@@ -1255,7 +1255,7 @@ def _run_work_unit_scheduler(
             )
             if resolution.pop("retry_activated", False):
                 continue
-            if resolution.pop("capacity_waiting", False):
+            if resolution.pop("capacity_waiting", False) or resolution.pop("resource_waiting", False):
                 return resolution
             return _terminal_outcome(store, resolution)
 
@@ -1685,6 +1685,10 @@ def serve_forever(
                 store.flush_control_outbox()
             next_control_flush = monotonic_now + CONTROL_PLANE_FLUSH_SECONDS
         if monotonic_now >= next_capacity_probe:
+            from fleet.resources import resume_ready_resource_waits
+
+            with suppress(Exception):
+                resume_ready_resource_waits(store)
             with suppress(Exception):
                 resume_ready_capacity_waits(store)
             next_capacity_probe = monotonic_now + CAPACITY_POLL_SECONDS
