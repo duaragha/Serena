@@ -15,7 +15,7 @@ from core.computer_conversation import ConversationCursor
 from core.computer_knowledge import build_task_pack
 from core.computer_platform import ComputerError
 from core.computer_tools import visual_tools
-from core.computer_watch import WATCH_SETTLE_SECONDS, WatchFrames
+from core.computer_watch import WatchFrames
 
 INSTRUCTIONS = """You are Serena, Raghav's computer-use assistant. Speak in short lowercase sentences.
 Use only the supplied computer tools. Stay within the user's task and selected window/display.
@@ -134,13 +134,14 @@ class ComputerAgent:
                     continue
                 # Coalesce a page's paint/load burst, keeping only its newest image.
                 settle_started = time.monotonic()
-                while time.monotonic() - frames.changed_at < WATCH_SETTLE_SECONDS:
+                while time.monotonic() - frames.changed_at < frames.settle_seconds:
                     if time.monotonic() - settle_started >= 1:
                         break
                     if frames.error:
                         raise frames.error
                     await asyncio.sleep(0.05)
                 frame, revision = frames.latest, frames.revision
+                frames.begin_inspection(frame)
                 metadata = {k: v for k, v in frame.items() if k != "data"}
                 prompt = (
                     f"User task: {s.request}\nMode: watch. Scope: {s.target}. "
@@ -168,7 +169,7 @@ class ComputerAgent:
 
                 def delta(text, expected_revision=revision, turn_started=started):
                     nonlocal draft, first_token_ms
-                    if not s.cancelled.is_set() and frames.revision == expected_revision:
+                    if not s.cancelled.is_set() and not frames.superseded:
                         if first_token_ms is None:
                             first_token_ms = round((time.monotonic() - turn_started) * 1000)
                         draft += text
@@ -189,7 +190,7 @@ class ComputerAgent:
                         self.conversation.commit()
                     if frames.error:
                         raise frames.error
-                    if frames.revision != revision:
+                    if frames.superseded:
                         if self.speech:
                             self.speech.cancel()
                         # Let connection startup finish before interrupting: until
@@ -200,12 +201,11 @@ class ComputerAgent:
                                 await asyncio.wait_for(asyncio.shield(turn), timeout=2)
                             if not turn.done():
                                 turn.cancel()
-                                await client.close()
-                                self.conversation.reset()
-                                self._task_pack_pending = bool(self.task_pack)
+                                await asyncio.gather(turn, return_exceptions=True)
+                                await self._reset_model_thread(client)
                             await asyncio.gather(turn, return_exceptions=True)
                             break
-                if frames.revision != revision:
+                if frames.superseded:
                     # A reply for an obsolete page must never replace current guidance.
                     await asyncio.gather(turn, return_exceptions=True)
                     c.event("superseded", session_id=s.id, revision=revision)
