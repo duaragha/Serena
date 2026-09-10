@@ -11,6 +11,42 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('hidden views poll slowly and visibility refreshes without attaching or sending',async t=>{
+  const calls=[],delays=[];
+  t.mock.method(globalThis,'setTimeout',(_callback,delay)=>{delays.push(delay);return 0;});
+  const connection=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>true,error:()=>{},
+    fetcher:async(url,options)=>{calls.push([url,options.method]);return response({events:[],has_more:false});}});
+  connection.setVisible(false);connection.setVisible(true);
+  assert.equal(calls.length,0,'visibility before explicit observation cannot launch or poll');
+  await connection.poll();
+  assert.equal(delays.at(-1),250);
+  connection.setVisible(false);
+  await connection.poll();
+  assert.equal(delays.at(-1),2000);
+  const before=calls.length;
+  connection.setVisible(true);
+  await new Promise(setImmediate);
+  assert.equal(calls.length,before+1);
+  assert.equal(delays.at(-1),250);
+  assert.ok(calls.every(([url,method])=>url==='/api/workspace/exact/events?after=0' && method==='GET'));
+  connection.dispose();connection.setVisible(false);connection.setVisible(true);
+  assert.equal(calls.length,before+1);
+});
+
+test('visibility change during an event read never duplicates the in-flight poll',async t=>{
+  const delays=[];let release,calls=0;
+  t.mock.method(globalThis,'setTimeout',(_callback,delay)=>{delays.push(delay);return 0;});
+  const connection=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>true,error:()=>{},
+    fetcher:async()=>{calls++;await new Promise(done=>{release=done;});return response({events:[],has_more:false});}});
+  connection.setVisible(false);
+  const pending=connection.poll();
+  connection.setVisible(true);
+  assert.equal(calls,1);
+  release();await pending;
+  assert.equal(delays.at(-1),250);
+  connection.dispose();
+});
+
 for(const raw of ['{','null','[]','42','{"{bad":"receipt"}','{"{}":null}'])test(`invalid stored receipts preserve data and block delivery: ${raw}`,async()=>{
   const saved=storage(),calls=[],errors=[];
   saved.setItem('serena-workspace-pending:exact',raw);

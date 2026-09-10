@@ -25,6 +25,8 @@ export class WorkspaceConnection {
     this.cursor = 0;
     this.stopped = false;
     this.polling = false;
+    this.observing = false;
+    this.visible = true;
     this.timer = null;
     this.base = `/api/workspace/${encodeURIComponent(sessionId)}`;
   }
@@ -71,6 +73,7 @@ export class WorkspaceConnection {
 
   async poll({required = false} = {}) {
     if (this.polling || this.stopped) return;
+    this.observing = true;
     clearTimeout(this.timer);
     this.polling = true;
     let failed = false;
@@ -91,7 +94,16 @@ export class WorkspaceConnection {
       if (!this.stopped) this.error(error);
     } finally {
       this.polling = false;
-      if (!this.stopped && !(required && failed)) this.timer = setTimeout(() => this.poll(), 250);
+      if (!this.stopped && !(required && failed)) this.timer = setTimeout(() => this.poll(), this.visible ? 250 : 2000);
+    }
+  }
+
+  setVisible(visible) {
+    if(typeof visible!=='boolean' || this.visible===visible)return;
+    this.visible=visible;
+    if(visible && this.observing && !this.stopped && !this.polling){
+      clearTimeout(this.timer);
+      this.poll();
     }
   }
 

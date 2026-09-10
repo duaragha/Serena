@@ -31,6 +31,14 @@ controls.openFork = sid => {
 const pane = new WorkspacePane(document.querySelector('#workspace-pane'), {
   sessionId: boot.sessionId, provider: boot.provider, controls,
 });
+let intersects=true;
+const updateVisibility=()=>connection.setVisible(intersects && document.visibilityState==='visible');
+const visibilityObserver=new IntersectionObserver(entries=>{
+  intersects=entries.some(entry=>entry.isIntersecting);
+  updateVisibility();
+});
+visibilityObserver.observe(pane.root);
+document.addEventListener('visibilitychange',updateVisibility);
 function reportState() {
   if (pane.conversation.status === 'unavailable') showRetry();
   if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:pane.conversation.status},location.origin);
@@ -89,4 +97,7 @@ button.addEventListener('click', async () => {
   }
 });
 button.disabled = false;
-window.addEventListener('pagehide', () => { connection.dispose(); pane.dispose(); });
+window.addEventListener('pagehide', () => {
+  visibilityObserver.disconnect();document.removeEventListener('visibilitychange',updateVisibility);
+  connection.dispose();pane.dispose();
+});

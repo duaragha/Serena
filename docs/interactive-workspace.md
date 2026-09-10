@@ -2,6 +2,34 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Hidden Pane Polling (2026-09-10)
+
+The actual iframe now reports visibility through IntersectionObserver plus
+document visibility. Hidden views poll every 2000ms instead of 250ms; becoming
+visible immediately refreshes the already-observed event stream. Construction or
+visibility changes before explicit connection cannot start polling or a provider.
+An in-flight poll is not duplicated, and disposal still never stops the owner.
+This is renderer traffic reduction, not suspension of the agent process or a
+claim that native idle-process sleep policy is implemented.
+
+```sh
+node --test tests/workspace-connection.test.mjs
+# exit 0: 40 passed, including visibility/no-launch/in-flight/disposal checks
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q
+# exit 0: both provider iframe flows, parent-hidden visibility, unchanged owner
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py
+# exit 0: 51 real native print-only turns, exact history/resume/commands,
+# desktop visible refresh 85ms and mobile 35ms after hidden throttling,
+# owners and draft unchanged; explicit disconnect/resume; no auth/inference
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-history.py tests/test_workspace_app.py
+# exit 0: All checks passed
+node --check ui/static/workspace-page.mjs
+# exit 0
+```
+
+Those latency numbers are observations from this local proof, not guarantees.
+Installed-app behavior remains unchanged until rollout.
+
 ## Prompt Presentation (2026-09-10)
 
 Claude `/color` now maps to native UI swatches; the palette control is also

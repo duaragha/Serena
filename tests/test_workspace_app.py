@@ -512,6 +512,16 @@ function setTermStatus(status){window.lastStatus=status;}
             assert nested.get_by_role("textbox", name=f"Message {provider.capitalize()}").input_value() == "Keep the unsent draft"
             assert not owners[0].closed
             host.bridge = original_bridge
+            reads = []
+            page.on("request", lambda request: reads.append(request.url) if "/api/workspace/exact/events?" in request.url else None)
+            page.evaluate("termSessions.get('exact').mount.style.display='none'")
+            page.wait_for_timeout(400)
+            before = len(reads)
+            page.wait_for_timeout(1200)
+            assert len(reads) - before <= 1
+            with page.expect_response(lambda response: "/api/workspace/exact/events?" in response.url, timeout=1000):
+                page.evaluate("termSessions.get('exact').mount.style.display=''")
+            assert len(owners) == 1 and not owners[0].closed and len(owners[0].sent) == 2
             page.evaluate("""() => window.postMessage({type:'serena-workspace-open-fork',sid:'exact',target:'11111111-1111-4111-8111-111111111111'},location.origin)""")
             page.wait_for_timeout(50)
             assert page.evaluate("openedForks") == []

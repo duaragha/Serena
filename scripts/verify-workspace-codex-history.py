@@ -111,6 +111,20 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                     skill_dialog.get_by_role("button", name="Close commands").click()
                     assert composer.input_value() == draft
                     print(f"PASS: {prefix} {label} native skill disabled and re-enabled through persistent configuration; draft unchanged")
+                    reads = []
+                    page.on("request", lambda request, reads=reads: reads.append(time.monotonic()) if f"/api/workspace/{sid}/events?" in request.url else None)
+                    existing_owners = owners()
+                    page.locator("#workspace-pane").evaluate("el=>el.style.display='none'")
+                    page.wait_for_timeout(400)
+                    before = len(reads)
+                    page.wait_for_timeout(1200)
+                    assert len(reads) - before <= 1, "Hidden view still uses foreground polling frequency"
+                    returned = time.monotonic()
+                    with page.expect_response(lambda response: f"/api/workspace/{sid}/events?" in response.url, timeout=1000):
+                        page.locator("#workspace-pane").evaluate("el=>el.style.display=''")
+                    latency_ms = round((time.monotonic() - returned) * 1000)
+                    assert owners() == existing_owners and composer.input_value() == draft
+                    print(f"PASS: {prefix} {label} hidden polling reduced; visible refresh in {latency_ms}ms; exact native owners/draft unchanged")
                     page.get_by_role("button", name="Run shell command", exact=True).wait_for(state="visible")
                     page.get_by_role("button", name="Run shell command", exact=True).click()
                     dialog = page.get_by_role("dialog", name="Run shell command")
