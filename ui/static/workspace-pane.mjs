@@ -940,10 +940,11 @@ export class WorkspacePane {
         }
         selected=id;historyCursor=result.historyCursor;historyCursors.add(historyCursor);
         for(const [key,row] of rows)row.setAttribute('aria-pressed',String(key===selected));
+        this.releaseHistoryImages(output);
         output.replaceChildren(node('h4','',result.thread.agentNickname || result.thread.name || 'Agent'),node('code','aw-agent-id',id));
         for(const turn of turns.values()){
           output.append(node('p','aw-author',`Turn ${turn.id} / ${turn.status || 'Unknown'}`));
-          for(const item of turn.items)output.append(this.renderItem(item,{historyImages:false,userLabel:'Agent input'}));
+          for(const item of turn.items)output.append(this.renderItem(item,{userLabel:'Agent input'}));
         }
         if(!turns.size)output.append(node('p','','No persisted turns'));
         status.textContent=(changes.get(id)||0)!==revision?'Agent changed; refresh snapshot':`Snapshot / ${result.thread.status?.type || 'Status unavailable'}`;
@@ -971,7 +972,7 @@ export class WorkspacePane {
       }catch(error){if(dialog.open)status.textContent=error.message;}
       finally{busy=false;enable();}
     };
-    dialog.addEventListener('close',()=>{this.notifyAgentChange=null;dialog.remove();this.input.focus();});
+    dialog.addEventListener('close',()=>{this.notifyAgentChange=null;this.releaseHistoryImages(output);dialog.remove();this.input.focus();});
     dialog.append(node('h3','','Delegated agents'),close,refresh,status,list,more,reload,earlier,stopLabel,stop,output,composer);
     this.agentsDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();await loadList(true);
   }

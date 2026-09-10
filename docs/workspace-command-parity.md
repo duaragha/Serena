@@ -5,6 +5,32 @@ that a command's full behavior works. Gemini is deferred.
 
 ## Native Agent Inspection (2026-09-10)
 
+### Child History Images and Live-Proof Failure
+
+Agent snapshots now decorate images using the existing parent session upload
+store, after native ancestry inspection. Only validated parent-owned paths get
+preview tokens; foreign-session paths remain inaccessible. The inspector uses
+the existing bounded image loader and zoom dialog, never fetches arbitrary
+image URLs, and releases object URLs on refresh and close. This adds previews,
+not child file sending or idle-child continuation.
+
+Verification:
+
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_agent_history_previews_only_parent_owned_uploads tests/test_workspace_host.py::test_agent_reads_use_existing_parent_even_when_job_reserved tests/test_workspace_pane.py::test_agent_image_preview_zoom_refresh_and_close_release_urls tests/test_workspace_pane.py::test_agent_switcher_inspects_without_launching_and_keeps_parent_draft tests/test_workspace_live_agent_proof.py -q --tb=short`: exit 0, 10 passed in 10.16s. Browser checks at 390/1600 pixels verify decoded green pixels, zoom, refresh/close cleanup, preserved drafts and rejected remote URLs. Both screenshots inspected.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-live-agent.py tests/test_workspace_live_agent_proof.py`: exit 0, all checks passed.
+- `node --check ui/static/workspace-pane.mjs`: exit 0, no output.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-agents.py`: exit 0; actual native foreign-thread inspection/stop/steer rejection, same process/session, real shell interruption completion and cleanup. Zero inference/children; not positive child proof.
+
+The opt-in `scripts/verify-workspace-live-agent.py --allow-inference` was attempted
+with the dedicated test CODEX_HOME. It exited 1 after timing out: the native
+parent failed authentication because its refresh token was already used, before
+any child spawned. Local `codex login status` had exited 0 but did not validate
+the token remotely. The verifier now detects exact-parent completion immediately
+instead of polling for a child after failure; four regression cases cover this.
+Do not repeat inference until a fresh dedicated login is available. Positive
+model-spawned child steering/interruption remains unproven. No installed app,
+user session, default enablement or release was changed.
+
 ### Messages to Active Children
 
 The selected agent now has a text composer for its existing active turn. Native

@@ -1131,6 +1131,12 @@ class WorkspaceHost:
                     if provider != "codex" or set(payload) != allowed:
                         raise ValueError("Exact native agent inspection is required")
                     result = await (owner.list_agents(**payload) if action == "agents" else owner.inspect_agent(**payload))
+                    if action == "inspect_agent":
+                        decorated = await asyncio.to_thread(
+                            self.uploads.decorate_event, sid,
+                            {"method": "workspace/history", "params": result},
+                        )
+                        result = decorated["params"]
                 elif action == "goal":
                     if provider != "codex" or payload:
                         raise ValueError("Goal inspection requires an attached Codex session")

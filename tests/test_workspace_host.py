@@ -865,6 +865,40 @@ def test_personality_restores_only_saved_exact_session_and_closes_on_failure(tmp
         host.shutdown()
 
 
+def test_agent_history_previews_only_parent_owned_uploads(tmp_path):
+    from PIL import Image
+
+    history = []
+    class AgentOwner(Owner):
+        async def inspect_agent(self, thread_id, cursor):
+            return {'thread': {'id': thread_id, 'turns': history}, 'historyCursor': None}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'media.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': AgentOwner})
+    try:
+        raw = io.BytesIO()
+        Image.new('RGB', (8, 8), 'green').save(raw, format='PNG')
+        parts = []
+        tokens = []
+        for sid in ['exact', 'foreign']:
+            record = host.uploads.save(sid, 'photo.png', io.BytesIO(raw.getvalue()), 'image/png')
+            tokens.append(record['token'])
+            parts.extend(host.uploads.codex_inputs(sid, [{'type': 'upload', 'token': record['token']}]))
+        history.append({'id': 'turn', 'items': [{'type': 'userMessage', 'content': parts}]})
+        host.attach('exact')
+        reply = host.command('exact', 'media', 'inspect_agent', {'thread_id': 'child', 'cursor': None})
+        assert reply['ok']
+        assert reply['result']['thread']['id'] == 'child'
+        decorated = reply['result']['thread']['turns'][0]['items'][0]['content']
+        assert decorated[0]['previewToken'] == tokens[0]
+        assert 'previewToken' not in decorated[1]
+        assert all('previewToken' not in part for part in parts)
+        assert list(host._sessions) == ['exact']
+        assert not host._sessions['exact'][0].sent
+    finally:
+        host.shutdown()
+
+
 def test_agent_reads_use_existing_parent_even_when_job_reserved(tmp_path):
     calls = []
     class AgentOwner(Owner):

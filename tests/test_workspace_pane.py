@@ -224,7 +224,7 @@ def test_agent_switcher_inspects_without_launching_and_keeps_parent_draft(pane, 
     row.click()
     dialog.get_by_text('Actual child answer', exact=True).wait_for()
     assert dialog.get_by_text('Agent input', exact=True).count() == 1
-    assert dialog.get_by_text('Agent image preview unavailable', exact=True).count() == 1
+    dialog.get_by_text('Attached image unavailable', exact=True).wait_for()
     assert dialog.locator('img').count() == 0
     assert page.evaluate('calls') == [['list', None], ['inspect', 'child-exact', None]]
     dialog.get_by_role('button', name='Earlier agent turns', exact=True).click()
@@ -252,6 +252,51 @@ def test_agent_switcher_inspects_without_launching_and_keeps_parent_draft(pane, 
     page.get_by_role('button', name='Decline', exact=True).click()
     page.wait_for_function('calls.length===4')
     assert page.evaluate('calls.at(-1)') == ['answer',77,{'decision':'decline'}]
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_agent_image_preview_zoom_refresh_and_close_release_urls(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      window.revoked=[];const revoke=URL.revokeObjectURL.bind(URL);
+      URL.revokeObjectURL=url=>{revoked.push(url);revoke(url);};
+      controls.image=async token=>{
+        calls.push(['image',token]);
+        const canvas=document.createElement('canvas');canvas.width=8;canvas.height=8;
+        const ctx=canvas.getContext('2d');ctx.fillStyle='#00ff00';ctx.fillRect(0,0,8,8);
+        return await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+      };
+      controls.agents=async()=>({data:[{id:'child',name:'Research',status:{type:'idle'}}],nextCursor:null});
+      controls.inspectAgent=async id=>({thread:{id,turns:[{id:'turn',status:'completed',items:[
+        {type:'userMessage',id:'image',content:[{type:'localImage',previewToken:'managed',name:'photo.png'}]}
+      ]}]},historyCursor:null});
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      pane.input.value='parent draft';pane.openAgents();
+    }""")
+    dialog = page.get_by_role('dialog', name='Delegated agents', exact=True)
+    dialog.get_by_role('button', name='Research child idle', exact=True).click()
+    page.wait_for_function("document.querySelector('.aw-agent-history img')?.naturalWidth===8")
+    assert page.evaluate("""()=>{const c=document.createElement('canvas');c.width=c.height=8;
+      const x=c.getContext('2d');x.drawImage(document.querySelector('.aw-agent-history img'),0,0);
+      return Array.from(x.getImageData(0,0,1,1).data);}""") == [0, 255, 0, 255]
+    dialog.get_by_role('button', name='Open image: photo.png', exact=True).click()
+    viewer = page.get_by_role('dialog', name='Image viewer', exact=True)
+    viewer.get_by_role('button', name='Actual size', exact=True).click()
+    viewer.get_by_role('button', name='Close image', exact=True).click()
+    dialog.get_by_role('button', name='Refresh selected agent', exact=True).click()
+    page.wait_for_function("revoked.length===1 && document.querySelector('.aw-agent-history img')?.naturalWidth===8")
+    assert page.evaluate('pane.historyImageUrls.size') == 1
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'agent-image-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button', name='Close agents', exact=True).click()
+    page.wait_for_function('revoked.length===2 && pane.historyImageUrls.size===0')
+    assert page.evaluate('pane.input.value') == 'parent draft'
+    assert page.evaluate('calls') == [['image', 'managed'], ['image', 'managed']]
     assert not errors
 
 
