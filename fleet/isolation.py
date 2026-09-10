@@ -1747,6 +1747,7 @@ def integrate_workspace(
     declared_tests: list[list[str]] | None = None,
     declared_paths: list[str] | tuple[str, ...] | None = None,
     apply_changes: bool = True,
+    expected_patch_sha256: str | None = None,
 ) -> IntegrationResult:
     """Run the entire integration transaction under the repository mutex."""
 
@@ -1761,6 +1762,7 @@ def integrate_workspace(
                 declared_tests=declared_tests,
                 declared_paths=declared_paths,
                 apply_changes=apply_changes,
+                expected_patch_sha256=expected_patch_sha256,
             )
     except RepositoryResolutionError as error:
         return IntegrationResult(
@@ -1778,6 +1780,7 @@ def _integrate_workspace_locked(
     declared_tests: list[list[str]] | None = None,
     declared_paths: list[str] | tuple[str, ...] | None = None,
     apply_changes: bool = True,
+    expected_patch_sha256: str | None = None,
 ) -> IntegrationResult:
     """Merge one worker's isolated work back, or refuse and say exactly why.
 
@@ -1801,6 +1804,9 @@ def _integrate_workspace_locked(
 
     current_branch = _workspace_branch(workspace)
     if current_branch and current_branch != workspace.branch:
+        if expected_patch_sha256 is not None:
+            return IntegrationResult(False, run_id, worker_key,
+                                     "saved integration replay refuses a switched branch")
         try:
             delivery = published_branch_delivery(workspace, declared_paths)
         except IsolationError as error:
@@ -1840,6 +1846,9 @@ def _integrate_workspace_locked(
 
     changed = workspace_changed_paths(workspace)
     if not changed:
+        if expected_patch_sha256 is not None:
+            return IntegrationResult(False, run_id, worker_key,
+                                     "saved integration replay patch is no longer present")
         result = IntegrationResult(
             ok=True,
             run_id=run_id,
@@ -1887,6 +1896,12 @@ def _integrate_workspace_locked(
         return result
 
     patch = _workspace_patch(workspace, changed)
+    if expected_patch_sha256 is not None and (
+        patch is None or hashlib.sha256(patch.encode("utf-8", errors="surrogateescape")).hexdigest()
+        != expected_patch_sha256
+    ):
+        return IntegrationResult(False, run_id, worker_key,
+                                 "saved integration replay patch fingerprint changed")
     if patch is None:
         result = IntegrationResult(
             ok=False,
