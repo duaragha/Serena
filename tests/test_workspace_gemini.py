@@ -197,6 +197,75 @@ def make(tmp_path, rpc):
         lease_factory=lambda sid: SessionLease(sid, directory=tmp_path / "leases"))
 
 
+@pytest.mark.parametrize("failure", ["raises", "returns", "cancelled"])
+def test_failed_cleanup_keeps_lease_and_disallows_replacement(tmp_path, failure):
+    prepare(tmp_path)
+
+    async def run():
+        rpc = ProbeRpc()
+        owner = make(tmp_path, rpc)
+        assert owner.can_retry_attachment()
+        await owner.open()
+        process = rpc.process
+        close = rpc.close
+
+        async def broken_close():
+            if failure == "raises":
+                raise OSError("shutdown failed")
+            if failure == "cancelled":
+                raise asyncio.CancelledError()
+
+        rpc.close = broken_close
+        try:
+            with pytest.raises((OSError, RuntimeError, asyncio.CancelledError)):
+                await owner.close()
+            assert process.returncode is None
+            assert not owner.can_retry_attachment()
+            assert owner._lease is not None and not owner._lease.closed
+            with pytest.raises(SessionOwnedError):
+                SessionLease(SID, directory=tmp_path / "leases")
+        finally:
+            rpc.close = close
+            await owner.close()
+        assert process.returncode == 0
+        assert owner.can_retry_attachment()
+        lease = SessionLease(SID, directory=tmp_path / "leases")
+        lease.release()
+
+    asyncio.run(run())
+
+
+def test_host_retries_only_after_failed_native_load_is_cleaned_up(tmp_path):
+    prepare(tmp_path)
+    owners = []
+
+    def factory(**kwargs):
+        rpc = ProbeRpc()
+        owner = GeminiWorkspace(**kwargs, gemini_home=tmp_path, binary=sys.executable, rpc=rpc,
+            lease_factory=lambda sid: SessionLease(sid, directory=tmp_path / "leases"))
+        if not owners:
+            async def failed_load(*args, **kwargs):
+                raise RuntimeError("native load rejected")
+            owner.session.load = failed_load
+        owners.append(owner)
+        return owner
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "retry.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "gemini", "cwd": str(tmp_path)},
+        factories={"gemini": factory})
+    try:
+        assert not host.attach(SID)["ok"]
+        assert owners[0].can_retry_attachment() and owners[0].rpc.process is None
+        host.events(SID)
+        assert len(owners) == 1
+        assert host.attach(SID)["state"] == "ready"
+        assert len(owners) == 2
+        assert host.attach(SID)["state"] == "ready" and len(owners) == 2
+    finally:
+        host.shutdown()
+    assert owners[1].can_retry_attachment()
+
+
 def test_owner_retains_single_process_and_releases_only_after_shutdown(tmp_path):
     prepare(tmp_path)
     async def run():

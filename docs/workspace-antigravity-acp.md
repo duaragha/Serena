@@ -6,6 +6,36 @@ assumption that Antigravity has no suitable interactive interface. The installed
 
 ## Primary Evidence
 
+### Attachment Recovery After Cleanup
+
+Gemini now implements the host's `can_retry_attachment` contract. A failed
+load may be retried by an explicit attach only after cleanup has finished:
+the RPC process reference is cleared, its local prompt task has ended and the
+lease is released. Cleanup exceptions, cancellation, or a transport returning
+without clearing its process retain the lease and refuse replacement. A later
+explicit cleanup can recover. Reads/polling never trigger a retry.
+
+2026-09-09 verification:
+
+```sh
+env PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_gemini.py -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_gemini.py tests/test_workspace_gemini.py
+```
+
+27 passed in 0.84s (exit 0); lint clean (exit 0). Real-pipe cases cover
+exception, silent incomplete cleanup and cancellation, exclusive lease retention,
+subsequent confirmed shutdown and host retry after failed load.
+
+A separately recorded `SERENA_EVIDENCE_KIND=live` Python command initialized
+the actual Google 1.1.1 server under a temporary HOME with a temporary lease.
+It interrupted the cleanup callback, verified the original native PID remained
+alive and a second lease was refused, then restored production cleanup. The
+native process exited 0, retry became available, and the released lease could
+be acquired. Command exit 0. No session/load, authentication or prompt was sent;
+no user credentials or existing runtime were used. This is native cleanup proof,
+not successful authenticated chat proof. CLI indexing/default admission remain
+unchanged because their separate session store is still not interchangeable.
+
 ### Native Session Mode Control
 
 The Gemini pane now has a Session mode selector backed by the advertised

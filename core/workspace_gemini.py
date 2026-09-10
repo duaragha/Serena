@@ -32,6 +32,7 @@ class GeminiWorkspace:
         self._lifecycle = asyncio.Lock()
         self._attempted = False
         self._turn_task = None
+        self._cleanup_complete = True
 
     @property
     def active_turn(self):
@@ -135,6 +136,7 @@ class GeminiWorkspace:
             transcript = self._validate_native_target()
             reject_unregistered_provider(self.session_id, self.cwd, transcript, "agy")
             self._attempted = True
+            self._cleanup_complete = False
             try:
                 self._lease = self._lease_factory(self.session_id)
                 self._lease.launching()
@@ -155,18 +157,27 @@ class GeminiWorkspace:
                 raise
 
     async def _close(self):
-        await self.session.stop_event_reader()
+        self._cleanup_complete = False
         try:
+            await self.session.stop_event_reader()
             await self.rpc.close()
+            if self.rpc.process is not None:
+                raise RuntimeError("Gemini runtime cleanup is unconfirmed")
             if self._turn_task is not None:
                 if not self._turn_task.done():
                     self._turn_task.cancel()
                 await asyncio.gather(self._turn_task, return_exceptions=True)
-        finally:
-            self.session.state = "unavailable"
             if self._lease is not None:
                 self._lease.release()
                 self._lease = None
+            self._cleanup_complete = True
+        finally:
+            self.session.state = "unavailable"
+
+    def can_retry_attachment(self):
+        return (self.state in {"closed", "unavailable"} and self._cleanup_complete
+                and self.rpc.process is None and self._lease is None
+                and (self._turn_task is None or self._turn_task.done()))
 
     async def close(self):
         """Explicit native shutdown; never a browser/window-disposal callback."""
