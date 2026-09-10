@@ -1,7 +1,12 @@
 """Register one native fork without rescanning or pruning unrelated chats."""
+import json
 import os
 from pathlib import Path
 from uuid import UUID
+
+
+class NativeTranscriptPending(ValueError):
+    """The native result arrived before its matching transcript record."""
 
 
 def register_fork(target):
@@ -20,11 +25,25 @@ def register_fork(target):
         projects = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
         candidates = [p for directory in (projects / "sessions", projects / "archived_sessions")
                       for p in directory.rglob(f"rollout-*{sid}.jsonl")]
+    if not candidates and provider == "claude" and target.get("prompt_id"):
+        raise NativeTranscriptPending("Completed prompt transcript is not persisted yet")
     if len(candidates) != 1:
         raise ValueError("Native fork transcript is missing or ambiguous")
     path = candidates[0]
     if not path.resolve().is_relative_to(projects.resolve()):
         raise ValueError("Native fork transcript is outside the session store")
+    if provider == "claude" and target.get("prompt_id"):
+        found = False
+        with path.open(encoding="utf-8") as transcript:
+            for line in transcript:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("type") == "user" and target["prompt_id"] in (record.get("uuid"), record.get("promptId")):
+                    found = True
+        if not found:
+            raise NativeTranscriptPending("Completed prompt is not persisted yet")
     if provider == "claude":
         meta = parse_metadata(path, path.parent.name)
     else:

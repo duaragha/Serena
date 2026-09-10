@@ -102,8 +102,7 @@ class WorkspaceHost:
                 raise ValueError("This provider has no verified structured adapter yet")
 
             async def publish(event):
-                decorated = await asyncio.to_thread(self.uploads.decorate_event, sid, event)
-                await asyncio.to_thread(self.journal.append, sid, decorated)
+                await self._publish(sid, event)
 
             owner = factory(session_id=sid, cwd=Path(target["cwd"]), publish=publish)
             # Reserve before the first awaited provider operation. Repeated
@@ -564,6 +563,30 @@ class WorkspaceHost:
             await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
             return receipt
 
+    async def _publish(self, sid, event):
+        decorated = await asyncio.to_thread(self.uploads.decorate_event, sid, event)
+        await asyncio.to_thread(self.journal.append, sid, decorated)
+        if event.get("method") != "turn/completed" or self.register_fork is None:
+            return
+        target = await asyncio.to_thread(self.journal.clear_target, sid, uncataloged_only=True)
+        if not target or not target["committed"]:
+            return
+        # Clear creates an identity before a transcript. Only later native
+        # completion may materialize it; indexing failure must not lose output.
+        registration = {key: target[key] for key in ("session_id", "provider", "cwd")}
+        prompt_id = event.get("params", {}).get("turn", {}).get("providerOriginal", {}).get("user_message_uuid")
+        if prompt_id:
+            registration["prompt_id"] = prompt_id
+        for attempt in range(5):
+            result = await self._register_created_fork(registration)
+            if not result.get("retryable"):
+                break
+            if attempt < 4:
+                await asyncio.sleep(0.05 * (2 ** attempt))
+        if result["indexed"]:
+            await asyncio.to_thread(self.journal.mark_clear_cataloged, sid)
+        await asyncio.to_thread(self.journal.append, sid, {"method": "workspace/catalog", "params": result})
+
     async def _register_created_fork(self, target):
         try:
             if self.register_fork is None:
@@ -571,8 +594,11 @@ class WorkspaceHost:
             await asyncio.to_thread(self.register_fork, target)
             return {**target, "indexed": True}
         except Exception as error:
+            from core.workspace_catalog import NativeTranscriptPending
+
             # Creation already happened, including after an interrupted receipt.
-            return {**target, "indexed": False, "error": str(error)}
+            return {**target, "indexed": False, "error": str(error),
+                    **({"retryable": True} if isinstance(error, NativeTranscriptPending) else {})}
 
     async def _clear_session(self, sid, request_id, owner):
         transitioned = False
@@ -588,8 +614,7 @@ class WorkspaceHost:
                     raise ValueError("Clear target already has a workspace owner")
 
                 async def publish(event):
-                    decorated = await asyncio.to_thread(self.uploads.decorate_event, new_sid, event)
-                    await asyncio.to_thread(self.journal.append, new_sid, decorated)
+                    await self._publish(new_sid, event)
 
                 # Reserve before acknowledgement; never retain an old-ID alias
                 # that could send source-chat input into the new conversation.

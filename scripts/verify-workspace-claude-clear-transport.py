@@ -135,6 +135,7 @@ async def main():
         browser_host = install_workspace(app, Path(root) / f"browser-{width}.db", resolve=resolve,
                                          factories={"claude": create_owner},
                                          describe=lambda sid: {"session_id": sid, "agent": "claude"} if sid == source else None)
+        browser_host.register_fork = register_fork
         assert indexer.DB_PATH.resolve().is_relative_to(Path(root).resolve())
         assert metadata.METADATA_DIR.resolve().is_relative_to(Path(root).resolve())
         web_source = repo / "ui/web.py"
@@ -211,14 +212,16 @@ async def main():
                     assert all(turn["providerOriginal"]["total_cost_usd"] == 0 for turn in complete)
                     assert all(turn["providerOriginal"]["num_turns"] == 0 for turn in complete)
                     page.wait_for_function("() => document.querySelector('.aw-state').textContent === 'completed'")
-                    register_fork({"session_id": target, "provider": "claude", "cwd": root})
+                    deadline = time.monotonic() + 10
+                    while browser_host.journal.uncataloged_clears() and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
                     indexed = indexer.get_session(target)
                     assert indexed and not indexed.get("is_teammate"), indexed
                     indexed_rows = page.evaluate("async () => (await fetch('/api/sessions')).json()")
                     matching = [row for row in indexed_rows if row["session_id"] == target]
                     assert len(matching) == 1 and matching[0]["display_title"] == title
                     assert not matching[0].get("native_persistence_pending")
-                    assert matching[0]["starred"] and not matching[0]["is_done"], "New native activity must reopen a done chat"
+                    assert matching[0]["starred"] and not matching[0]["is_done"], {"row": matching[0], "native": Path(indexed["file_path"]).read_text()}
                     assert not browser_host.journal.uncataloged_clears()
                     assert not errors, errors
                     assert not failures, failures

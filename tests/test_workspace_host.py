@@ -160,6 +160,69 @@ def test_pending_clear_catalog_filters_deduplicates_and_retires_after_indexing(t
         host.shutdown()
 
 
+def test_completed_clear_indexes_only_persisted_committed_target_and_retries_failure(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "catalog.db")
+    target = {"session_id": "11111111-2222-4333-8444-555555555555", "provider": "claude", "cwd": str(tmp_path)}
+    attempts = []
+
+    def register(value):
+        attempts.append(value)
+        if len(attempts) == 1:
+            raise ValueError("Transcript not flushed yet")
+
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: pytest.fail("must not launch"), register_fork=register)
+    sid = target["session_id"]
+    complete = {"method": "turn/completed", "params": {"threadId": sid, "turn": {"id": "t"}}}
+
+    async def exercise():
+        await host._publish(sid, complete)
+        assert not attempts
+        journal.claim_command("source", "clear", {"action": "clear_session", "payload": {"confirmed": True}})
+        journal.prepare_clear("source", "clear", target)
+        await host._publish(sid, complete)
+        assert not attempts  # The native clear receipt itself is not a new turn.
+        journal.complete_clear("source", "clear")
+        await host._publish(sid, {"method": "workspace/history", "params": {}})
+        assert not attempts
+        await host._publish(sid, complete)
+        assert journal.uncataloged_clears()
+        failure = journal.read(sid)["events"][-1]["event"]
+        assert failure["method"] == "workspace/catalog" and not failure["params"]["indexed"]
+        await host._publish(sid, complete)
+        assert not journal.uncataloged_clears()
+        await host._publish(sid, complete)
+        assert attempts == [target, target]
+        assert sum(item["event"]["method"] == "turn/completed" for item in journal.read(sid)["events"]) == 5
+
+    asyncio.run(exercise())
+    assert host._loop is None and not host._sessions
+
+
+def test_native_catalog_flush_retry_is_bounded_and_keeps_pending_identity(tmp_path):
+    from core.workspace_catalog import NativeTranscriptPending
+
+    journal = WorkspaceJournal(tmp_path / "retry.db")
+    sid = "11111111-2222-4333-8444-555555555555"
+    target = {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)}
+    journal.claim_command("source", "clear", {"action": "clear_session", "payload": {"confirmed": True}})
+    journal.prepare_clear("source", "clear", target)
+    journal.complete_clear("source", "clear")
+    calls = []
+
+    def register(value):
+        calls.append(value)
+        raise NativeTranscriptPending("Waiting for native flush")
+
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: pytest.fail("no launch"), register_fork=register)
+    event = {"method": "turn/completed", "params": {"turn": {"providerOriginal": {"user_message_uuid": "exact-prompt"}}}}
+    asyncio.run(host._publish(sid, event))
+    assert calls == [{**target, "prompt_id": "exact-prompt"}] * 5
+    assert journal.uncataloged_clears()
+    assert journal.read(sid)["events"][0]["event"] == event
+    assert journal.read(sid)["events"][-1]["event"]["params"]["retryable"]
+    assert not host._sessions and host._loop is None
+
+
 def test_clear_preflight_failure_does_not_disable_unchanged_owner(tmp_path):
     class BusyOwner(Owner):
         async def begin_clear(self):

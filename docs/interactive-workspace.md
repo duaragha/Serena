@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Automatic clear catalog materialization (2026-09-09): native turn completion now
+registers a committed clear target through the real catalog callback, for both
+retained and reattached owners. The browser proof no longer manually registers
+the transcript. Two initial live runs exited 1 and exposed native result-before-
+flush ordering: indexing had captured only the earlier /clear records. Registration
+now requires the completed prompt UUID/promptId in a native user record before
+writing the index. Only missing native persistence gets five bounded attempts
+(50/100/200/400ms waits); ambiguous paths and other errors are not blindly retried.
+Output is journaled first. Failed registration keeps the pending identity for a
+later completion/scan; successful registration durably retires its placeholder.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py tests/test_workspace_host.py -q --tb=short`: exit 0, 62 passed; exact prompt matching, old/partial records, non-user records, bounded retry, preserved output, committed-only registration and no launch.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_catalog.py tests/test_workspace_host.py tests/test_workspace_catalog.py scripts/verify-workspace-claude-clear-transport.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: final exit 0. Actual native completion caused indexing without a manual proof-side call at 1440px and 390px. Title/star persisted, new activity reopened done state, same PID and original history were preserved, no inference, children reaped.
+Deletion inspection: current indexer deletion moves transcripts into a recovery
+directory but does not coordinate with workspace ownership. Pending deletion and
+safe owner/deletion coordination remain required, not implemented by this change.
+
 Pending-chat organization (2026-09-09): star, done and bulk-done now use the
 existing synced metadata for committed, uncataloged clear targets. Rename shares
 the same eligibility helper. Ordinary indexed operations retain their indexer

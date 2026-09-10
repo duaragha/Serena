@@ -8,6 +8,33 @@ import pytest
 from core.workspace_catalog import register_fork
 
 
+@pytest.mark.parametrize("field", ["uuid", "promptId"])
+def test_claude_registration_waits_for_exact_completed_prompt(tmp_path, monkeypatch, field):
+    from core.workspace_catalog import NativeTranscriptPending
+
+    sid, prompt = str(uuid4()), str(uuid4())
+    config = tmp_path / "config"
+    path = config / "projects" / "project" / f"{sid}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"type": "user", field: "old-prompt"}) + "\n{partial\n")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    monkeypatch.setattr("core.parser.parse_metadata", lambda *args: SimpleNamespace(session_id=sid, cwd=str(tmp_path)))
+    calls = []
+    monkeypatch.setattr("core.indexer._index_update_lock", nullcontext)
+    monkeypatch.setattr("core.indexer._get_db", lambda: SimpleNamespace(commit=lambda: None, close=lambda: None))
+    monkeypatch.setattr("core.indexer._upsert_session", lambda *args, **kwargs: calls.append("indexed"))
+    target = {"session_id": sid, "provider": "claude", "cwd": str(tmp_path), "prompt_id": prompt}
+    with pytest.raises(NativeTranscriptPending):
+        register_fork(target)
+    assert not calls
+    path.write_text(json.dumps({"type": "assistant", field: prompt}) + "\n")
+    with pytest.raises(NativeTranscriptPending):
+        register_fork(target)
+    path.write_text(json.dumps({"type": "user", field: prompt}) + "\n")
+    register_fork(target)
+    assert calls == ["indexed"]
+
+
 def test_codex_registration_marks_owned_before_upsert(tmp_path, monkeypatch):
     sid = str(uuid4())
     home = tmp_path / "codex"
