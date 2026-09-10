@@ -62,8 +62,29 @@ turns clear it without updating the title. The host indexes that same owner and
 project without attachment or a new session, verifies the expected title against
 native persistence, and bounds flush retries to five attempts. Indexing errors
 are journaled separately without interrupting the owner. The open parent sidebar
-still needs to consume the catalog notification; existing custom-title precedence
-is unchanged.
+now consumes successful indexed catalog notifications from its exact same-origin
+iframe, patches only the named chat and current heading, and renders titles as
+text. It does not reload/navigate the conversation or touch its draft. Newer
+cached custom names retain precedence over replayed native names. Intentionally
+replacing an existing Serena custom name from a native rename remains open.
+
+Open-sidebar refresh receipts (2026-09-10):
+
+```sh
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short --show-capture=no
+# final exit 0: 2 passed in 26.98s, both provider panes, actual polled catalog event,
+# same owner/draft, escaped heading, wrong-source rejection, newer custom name.
+# Earlier exits 1: event envelope was not unwrapped, then fixture lacked convTitle.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py tests/test_workspace_host.py::test_confirmed_claude_rename_indexes_exact_owner_without_attach -q --tb=short
+# exit 0: 23 passed in 5.20s.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-commands.py
+# exit 0: native rename indexed; catalog notification contains the actual display
+# title; owned transport and disposable profile removed, no inference.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_catalog.py core/workspace_host.py tests/test_workspace_app.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-page.mjs
+# exit 0.
+```
 
 ```sh
 env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_catalog.py -q --tb=short

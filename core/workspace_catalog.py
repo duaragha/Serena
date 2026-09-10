@@ -93,5 +93,8 @@ def register_fork(target):
         try:
             _upsert_session(conn, meta, agent=provider)
             conn.commit()
+            if "expected_native_title" in target:
+                row = conn.execute("SELECT COALESCE(NULLIF(custom_title,''), title) FROM sessions WHERE session_id = ?", (sid,)).fetchone()
+                return {"display_title": row[0]}
         finally:
             conn.close()

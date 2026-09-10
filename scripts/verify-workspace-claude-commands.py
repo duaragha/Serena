@@ -107,6 +107,9 @@ async def prove(root):
         observer._sessions[sid] = (SimpleNamespace(cwd=root), "claude")
         await observer._publish(sid, {"method": "workspace/renameCompleted", "params": {"title": "command-proof"}})
         assert observer._loop is None
+        catalog_event = observer.events(sid)["events"][-1]["event"]
+        assert catalog_event["method"] == "workspace/catalog"
+        assert catalog_event["params"]["display_title"] == "command-proof"
         rows = list_saved_sessions("claude")["data"]
         assert len(rows) == 1 and rows[0]["session_id"] == sid and rows[0]["title"] == "command-proof"
         result = await command("/doctor")

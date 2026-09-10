@@ -620,6 +620,27 @@ function setTermStatus(status){window.lastStatus=status;}
             original_bridge = host.bridge
             host.bridge = lambda sid, agent, prompt, request_id, **kwargs: handoffs.append((sid, agent, prompt, request_id)) or {"ok": True, "queued": True, "pending": True}
             nested.get_by_role("textbox", name=f"Message {provider.capitalize()}").fill("Keep the unsent draft")
+            page.evaluate("""()=>{
+              currentSessionId='exact';
+              if(!document.getElementById('convTitle')){
+                const title=document.createElement('h2');title.id='convTitle';document.body.append(title);
+              }
+              setSessionSource([{session_id:'exact',display_title:'Before rename',agent:'claude'}]);
+            }""")
+            page.evaluate("window.postMessage({type:'serena-workspace-catalog',sid:'exact',title:'Spoofed'},location.origin)")
+            page.wait_for_timeout(50)
+            assert page.evaluate("_findClientSession('exact').display_title") == "Before rename"
+            host.journal.append('exact', {'method': 'workspace/catalog', 'params': {
+                'session_id': 'exact', 'indexed': True, 'display_title': '<b>Native rename</b>'}})
+            page.wait_for_function("_findClientSession('exact').display_title==='<b>Native rename</b>'")
+            assert page.locator('#convTitle').inner_text() == '<b>Native rename</b>'
+            assert page.locator('#convTitle b').count() == 0
+            page.evaluate("_patchClientSession('exact',{custom_title:'My newer name',display_title:'My newer name'})")
+            page.frames[1].evaluate("""()=>parent.postMessage({type:'serena-workspace-catalog',sid:'exact',title:'Older native name'},location.origin)""")
+            page.wait_for_function("document.getElementById('convTitle').textContent==='My newer name'")
+            assert page.evaluate("_findClientSession('exact').display_title") == 'My newer name'
+            assert nested.get_by_role('textbox', name=f'Message {provider.capitalize()}').input_value() == 'Keep the unsent draft'
+            assert len(owners) == 1 and not owners[0].closed
             result = page.evaluate("termSessions.get('exact').handoff('Exact linked briefing')")
             assert result == {"ok": True, "queued": True, "pending": True}
             assert handoffs[0][:3] == ("exact", provider, "Exact linked briefing")

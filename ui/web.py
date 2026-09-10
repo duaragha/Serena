@@ -7141,6 +7141,15 @@ function _startStructuredPane(sid, opts) {
   });
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
+    if(event.data.type==='serena-workspace-catalog'){
+      const title=event.data.title;
+      if(typeof title!=='string' || !title.trim() || title.length>1000)return;
+      const displayTitle=_findClientSession(sid)?.custom_title || title;
+      _patchClientSession(sid,{display_title:displayTitle});
+      renderSessionList();
+      if(currentSessionId===sid)document.getElementById('convTitle').textContent=displayTitle;
+      return;
+    }
     if(event.data.type==='serena-workspace-context-request'){
       const split=currentTab==='chats' && convMode==='live' && _gtkSplitActive && _gtkSplitSids?.includes(sid)
         ? _gtkSplitSids.filter(id=>termSessions.has(id)) : [];

@@ -6,6 +6,12 @@ const connection = new WorkspaceConnection({
   ...boot,
   receive: event => {
     const accepted = pane.receive(event);
+    const catalog=event?.event;
+    if(accepted && catalog?.method==='workspace/catalog' && catalog.params?.indexed===true
+      && catalog.params.session_id===boot.sessionId && typeof catalog.params.display_title==='string'
+      && parent!==window){
+      parent.postMessage({type:'serena-workspace-catalog',sid:boot.sessionId,title:catalog.params.display_title},location.origin);
+    }
     if (accepted) reportState();
     return accepted;
   },

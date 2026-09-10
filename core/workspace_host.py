@@ -1172,8 +1172,9 @@ class WorkspaceHost:
         try:
             if self.register_fork is None:
                 raise RuntimeError("Fork catalog is unavailable")
-            await asyncio.to_thread(self.register_fork, target)
-            return {**target, "indexed": True}
+            registered = await asyncio.to_thread(self.register_fork, target)
+            title = registered.get("display_title") if isinstance(registered, dict) else None
+            return {**target, "indexed": True, **({"display_title": title} if isinstance(title, str) else {})}
         except Exception as error:
             from core.workspace_catalog import NativeTranscriptPending
 
