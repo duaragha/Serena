@@ -192,9 +192,13 @@ class ComputerAgent:
                     revision=revision,
                 )
                 consumed = revision
+                if text == "UNCHANGED" and previous:
+                    # The latest inspection confirmed the earlier guidance;
+                    # don't leave the popup blank after clearing a changed frame.
+                    s.observation = previous
                 if text != "UNCHANGED":
                     s.observation = text
-                    previous = text[:1000]
+                    previous = text
                     c.event(
                         "observation",
                         session_id=s.id,

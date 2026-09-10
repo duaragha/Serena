@@ -104,7 +104,7 @@ class ComputerIndicator:
             waiting = {
                 "starting": "starting gpt-6 astra · medium · fast",
                 "thinking": f"astra is reading your screen… {elapsed}s",
-                "screen_changed": "page changed · checking the new screen…",
+                "screen_changed": "screen activity · checking the current view…",
             }.get(
                 session.get("observation_state"),
                 "screen checked · no new guidance; watching for changes",

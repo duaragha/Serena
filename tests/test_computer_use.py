@@ -489,6 +489,26 @@ def test_modal_dialog_is_in_scope_only_when_owned(controller):
         c.observe(sid)
 
 
+def test_display_watch_uses_its_visible_app_when_chat_focus_is_on_other_monitor(controller):
+    from core.computer_watch import changed, sample
+
+    controller.desktop.windows = [
+        {
+            "id": "aws",
+            "app": "browser",
+            "title": "AWS Console",
+            "rect": {"x": 0, "y": 0, "width": 2000, "height": 1100},
+        }
+    ]
+    sid, first = begin(controller, mode="watch", target="display:right")
+    assert first["context"]["id"] == "aws"
+    controller.desktop.focus = "another-chat-on-left"
+    second = controller.observe(sid)
+    assert controller.status()["session"]["focused_window"]["title"] == "AWS Console"
+    with sample(first) as old, sample(second) as new:
+        assert not changed(first, second, old, new)
+
+
 @pytest.mark.parametrize("entry", ["legacy_begin", "mcp_default"])
 def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path, entry):
     from test_computer_conversation import write_chat
@@ -644,7 +664,11 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
                     on_delta("obsolete green-page advice")
                     return {"text": "obsolete green-page advice"}
                 await asyncio.sleep(0.1)
-                return {"text": "red-page advice" if turn == 1 else "blue-page advice"}
+                return {
+                    "text": "UNCHANGED"
+                    if turn == 4
+                    else ("red-page advice" if turn == 1 else "blue-page advice")
+                }
             finally:
                 self.active_turn_id = None
 
@@ -695,6 +719,13 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
         until(lambda: controller.session.observation == "blue-page advice")
         assert not any("obsolete" in e.get("text", "") for e in controller.events)
         assert any(e["type"] == "superseded" for e in controller.events)
+        page[0] = "gold"
+        until(
+            lambda: any(
+                e["type"] == "inspection_completed" and e["unchanged"] for e in controller.events
+            )
+        )
+        assert controller.session.observation == "blue-page advice"
     finally:
         release_preview.set()
         controller.stop()

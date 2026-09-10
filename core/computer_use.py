@@ -320,7 +320,29 @@ class ComputerController:
                 self.stop("desktop locked")
                 raise ComputerError("desktop locked")
             rect, _, geometry = self.geometry(s.target)
-            context = self.desktop.context()
+            foreground = self.desktop.context()
+            context = foreground
+            if s.mode == "watch" and s.target.startswith("display:"):
+                # The user may type in a chat on another monitor. Describe the
+                # selected display's visible app, not that unrelated foreground.
+                window = foreground.get("rect")
+                overlaps = window and (
+                    rect.x < window["x"] + window["width"]
+                    and window["x"] < rect.x + rect.width
+                    and rect.y < window["y"] + window["height"]
+                    and window["y"] < rect.y + rect.height
+                )
+                if not overlaps:
+                    context = next(
+                        (
+                            item
+                            for item in reversed(self.desktop.visible_windows())
+                            if Rect(**item["rect"]).contains(
+                                rect.x + rect.width // 2, rect.y + rect.height // 2
+                            )
+                        ),
+                        {"id": "", "app": "", "title": ""},
+                    )
             self._assert_public(context)
             self._assert_public_region(rect)
             if s.target.startswith("window:"):
@@ -336,7 +358,7 @@ class ComputerController:
                 capture_ms = round((time.perf_counter() - started) * 1000, 2)
                 # Recheck before pixels can leave the helper after focus/geometry changes.
                 if (
-                    self.desktop.context().get("id") != context.get("id")
+                    self.desktop.context().get("id") != foreground.get("id")
                     or self.geometry(s.target)[2] != geometry
                 ):
                     raise ComputerTransientError(
