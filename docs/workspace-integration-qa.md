@@ -37,9 +37,40 @@ sha256sum apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
 Both actual Electron linked-pane screenshots were inspected. They show the real
 shell and native owners with retained drafts; empty conversation panes are not
 evidence of full mockup parity with model output. No installed app was changed,
-no release published, and no default enabled. Windows remains at the `e07b5ce`
-checkpoint below. Fresh dedicated authentication, positive model/child workflows,
+no release published, and no default enabled. Windows was subsequently brought
+to the same runtime revision below. Fresh dedicated authentication, positive model/child workflows,
 remaining command parity, final visual parity, and final delivery remain open.
+
+### Current Windows Package: 3725a32
+
+2026-09-10, documentation HEAD `1b354fe`. Read-only SHA-256 comparison covered
+102 workspace runtime, UI, proof, desktop entrypoint and specification files;
+all matched the laptop (inspection exit 0, remote exit 0). No source was edited
+on the PC. Only derived build/proof output was created there.
+
+```sh
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B -m PyInstaller --noconfirm --distpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\dist --workpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\work C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\windows\sidecar-win.spec"
+# exit 0: build complete in approximately 87s. Existing optional pycparser
+# table and OpenConsole UI automation DLL warnings; no build error.
+
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc powershell -NoProfile -Command - <<'PS'
+$r='C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'; $env:SERENA_PROOF_PYTHONPATH="$r\apps\desktop\build\proof-tools\windows-python"; $env:SERENA_PROOF_BROWSER_EXECUTABLE='C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'; $env:SERENA_PROOF_ELECTRON="$r\apps\desktop\build\proof-tools\windows-electron\node_modules\electron\dist\electron.exe"; $env:SERENA_PROOF_PLAYWRIGHT="$r\apps\desktop\build\proof-tools\windows-python\playwright\driver\package"; & 'C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe' -B "$r\scripts\verify-workspace-codex-windows.py" --frozen "$r\apps\desktop\build\windows-proof-5cadd13\dist\serena-web-sidecar\serena-web-sidecar.exe"; exit $LASTEXITCODE
+PS
+# exit 0: gated startup, exact native resume, 50+1 history, real command exit 0,
+# owner retention and cleanup. Desktop/mobile visible refresh 35ms/23ms.
+# Actual Electron clipboard, native Claude/Codex creation, login start/cancel,
+# linked focus/drafts, and owner preservation after view/shell close passed.
+# No credentials or model inference used.
+
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc powershell -NoProfile -Command "(Get-FileHash 'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\dist\serena-web-sidecar\serena-web-sidecar.exe' -Algorithm SHA256).Hash"
+# exit 0: 8e587a9f40a4474fbde25008bc5ffc53f266b38c058a5b4a902f11d195c91f58
+```
+
+The actual Electron screenshot was copied from the PC and inspected at
+`apps/desktop/build/workspace-proof/windows-electron-linked-3725a32.png`.
+The 1024px window shows wrapped composer controls and separate linked panes
+without overlap. These are development-package integration results, not proof
+of authenticated model workflows, full command parity, or release/install.
 
 ## Earlier Source Checkpoint: e07b5ce
 
@@ -87,7 +118,7 @@ This refreshes Linux packaging evidence only. Windows packaging, authenticated
 positive subagent workflows, remaining command parity, final visual parity and
 release/default enablement are not established by these checks.
 
-### Current Windows Package
+### Earlier Windows Package
 
 Executed 2026-09-10 against `e07b5ce` runtime source (documentation HEAD
 `f5b27cb`). Read-only SHA-256 comparison of 94 workspace, UI, proof and desktop
