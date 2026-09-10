@@ -4,6 +4,36 @@
 Full Claude/Codex delivery remains incomplete and unreleased; this is an
 integration checkpoint, not a claim that every CLI capability is finished.
 
+## Current Source Regression Check
+
+Source `5eae176` with the test-only timing corrections below, 2026-09-10.
+The initial full pane run exited 1: 227 passed, 2 failed in 147.01s. Both
+failures read asynchronous DOM state synchronously: the copy button updates on
+the next animation frame, and focus restoration runs on the dialog close event.
+Assertions now wait for the same enabled/focus states using Playwright's
+retrying expectations. No runtime behavior or acceptance condition was removed.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_copy_after_revert_waits_for_new_completed_output tests/test_workspace_pane.py::test_codex_status_is_read_only_updates_and_does_not_invent_values -q --tb=short
+# exit 0: 3 passed in 2.87s.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q --tb=short
+# exit 0: 229 passed in 171.27s (full pane regression rerun).
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: 51 native print-only turns, 50+1 history pagination, exact resume,
+# one-time native shell output, reservation exclusion, native skills/mentions,
+# desktop/mobile reload and drafts; visible refresh 21ms at both sizes.
+# Real Electron clipboard, login controls, native Claude/Codex creation,
+# linked identity/focus and view-close ownership preservation all passed.
+# No inference/credentials used; disposable native owners and project cleaned up.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+# exit 0: All checks passed.
+```
+
+Inspected the real Electron linked-view screenshot at
+`apps/desktop/build/workspace-proof/electron-native-linked-created.png`.
+This is source-backend proof, not a rebuilt package or authenticated full-tool
+workflow. The existing Windows package receipt predates these changes.
+
 ## Findings and Repairs
 
 - Plain Codex steering acquired an empty `options` object while adding connector

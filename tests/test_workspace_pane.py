@@ -254,13 +254,14 @@ def test_copy_after_revert_waits_for_new_completed_output(pane):
     }""")
     page.locator('#left textarea').press('Control+o')
     assert page.evaluate('copied') is None
-    assert page.evaluate('pane.copyOutputButton.disabled')
+    copy_button = page.locator('#left').get_by_role('button', name='Copy latest completed output', exact=True, include_hidden=True)
+    playwright.expect(copy_button).to_be_disabled()
     assert 'Copy is unavailable after a history revert' in page.locator('#left [role=alert]').inner_text()
     page.evaluate("""()=>emit({method:'turn/completed',params:{turn:{id:'fresh',status:'completed',items:[
       {id:'new',type:'agentMessage',text:'New completed answer'}]}}})""")
     page.locator('#left textarea').press('Control+o')
     page.wait_for_function("copied==='New completed answer'")
-    assert not page.evaluate('pane.copyOutputButton.disabled')
+    playwright.expect(copy_button).to_be_enabled()
     assert page.evaluate('pane.input.value') == 'Keep draft'
     assert page.evaluate('calls') == []
     assert not errors
@@ -1639,7 +1640,7 @@ def test_codex_status_is_read_only_updates_and_does_not_invent_values(pane, widt
     assert page.evaluate('calls') == []
     page.keyboard.press('Escape')
     assert page.evaluate('pane.input.value') == '/status'
-    assert page.evaluate('document.activeElement===pane.input')
+    playwright.expect(page.locator('#left textarea')).to_be_focused()
     page.evaluate('pane.openSessionStatus();pane.dispose()')
     assert page.get_by_role('dialog', name='Session status', exact=True).count() == 0
     assert not errors
