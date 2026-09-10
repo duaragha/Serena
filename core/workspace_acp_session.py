@@ -24,6 +24,7 @@ class AcpSession:
         self._lock = asyncio.Lock()
         self._answer_lock = asyncio.Lock()
         self._reader = None
+        self.last_turn_id = None
 
     def start_event_reader(self):
         if self._reader is not None:
@@ -125,6 +126,7 @@ class AcpSession:
                     raise ValueError("ACP server did not advertise this prompt capability")
             self.state = "running"
             start = self.events.begin(str(uuid4()))
+            self.last_turn_id = self.events.turn
         try:
             await self.publish(start)
             result = await self.rpc.request("session/prompt", {"sessionId": self.session_id,

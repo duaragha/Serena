@@ -96,6 +96,20 @@ instead of implying Google has no interactive interface. Admission is unchanged.
 
 ## Next Integration Work
 
+Owner command interface added 2026-09-09: Gemini owner exposes `submit`,
+`interrupt`, `answer`, `active_turn` and `questions` for the existing host
+contract. Submission schedules the owned prompt without holding up interruption
+and retains its turn ID even if completion precedes acknowledgement. Permission
+answers accept only native selected/cancelled envelopes. Explicit shutdown waits
+for the owned prompt task after transport teardown. Unsupported per-turn settings
+are refused. Host upload mapping and provider admission remain disabled.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_gemini.py tests/test_workspace_acp_session.py -q --tb=short`: exit 0, 12 passed, including nonblocking submission, duplicate refusal, interrupt and strict permission-envelope checks.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_gemini.py tests/test_workspace_gemini.py`: exit 0.
+
+This is controlled interface coverage, not authenticated native turn execution.
+
 Native owner foundation added 2026-09-09 in `core/workspace_gemini.py`. Explicit
 open requires a canonical ID, an existing ACP database and project-matching
 sidecar, existing personal OAuth settings/token file, and an explicit server

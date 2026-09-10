@@ -28,6 +28,53 @@ class GeminiWorkspace:
         self._lease_factory, self._lease = lease_factory, None
         self._lifecycle = asyncio.Lock()
         self._attempted = False
+        self._turn_task = None
+
+    @property
+    def active_turn(self):
+        return self.session.events.turn if self.session.state in {"running", "cancelling"} else None
+
+    @property
+    def questions(self):
+        return self.session.events.questions
+
+    async def submit(self, inputs, *, options=None):
+        async with self._lifecycle:
+            if options:
+                raise ValueError("Gemini per-turn settings are not implemented")
+            if self.state != "ready" or (self._turn_task and not self._turn_task.done()):
+                raise ValueError("Gemini is not ready for input")
+            previous_turn = self.session.last_turn_id
+            self._turn_task = asyncio.create_task(self._run_prompt(inputs))
+            await asyncio.sleep(0)
+            if self.session.last_turn_id == previous_turn:
+                await self._turn_task
+                raise ValueError("Gemini prompt was not admitted")
+            return {"turn": {"id": self.session.last_turn_id}}
+
+    async def _run_prompt(self, inputs):
+        try:
+            return await self.session.prompt(inputs)
+        except Exception as error:
+            self.session.state = "unavailable"
+            await self.publish(self.session.events.event("workspace/transportClosed", {"reason": str(error)}))
+
+    async def interrupt(self):
+        await self.session.cancel()
+        return {}
+
+    async def answer(self, request_id, answer):
+        if not isinstance(answer, dict) or set(answer) != {"outcome"}:
+            raise ValueError("Invalid ACP permission answer")
+        outcome = answer["outcome"]
+        if outcome == {"outcome": "cancelled"}:
+            option = None
+        elif isinstance(outcome, dict) and set(outcome) == {"outcome", "optionId"} and outcome["outcome"] == "selected" and isinstance(outcome["optionId"], str):
+            option = outcome["optionId"]
+        else:
+            raise ValueError("Invalid ACP permission outcome")
+        await self.session.answer(request_id, option)
+        return {}
 
     @property
     def state(self):
@@ -80,6 +127,8 @@ class GeminiWorkspace:
         await self.session.stop_event_reader()
         try:
             await self.rpc.close()
+            if self._turn_task is not None:
+                await asyncio.gather(self._turn_task, return_exceptions=True)
         finally:
             self.session.state = "unavailable"
             if self._lease is not None:

@@ -2,6 +2,11 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Gemini owner command interface (2026-09-09): nonblocking submit with retained
+turn identity, interrupt and strict permission answers now match the host-facing
+method shape. Twelve focused tests passed; authenticated execution and host
+admission remain disabled/unverified. See [ACP notes](workspace-antigravity-acp.md).
+
 Gemini native-owner foundation (2026-09-09): shared lease and bound native PID,
 exact ACP store/project validation, personal OAuth configuration gate, no
 create/authenticate fallback, explicit cleanup. Eleven focused tests and native

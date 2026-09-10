@@ -99,3 +99,31 @@ def test_invalid_native_target_cannot_launch_or_migrate(tmp_path, problem):
             await owner.open()
         assert not rpc.launched and not (tmp_path / "leases").exists()
     asyncio.run(run())
+
+
+def test_owner_submit_returns_exact_turn_without_blocking_interrupt(tmp_path):
+    async def run():
+        owner = make(tmp_path, ProbeRpc())
+        owner.session.state = "ready"
+        finished = asyncio.Event()
+        async def prompt(inputs):
+            owner.session.state = "running"
+            owner.session.events.begin("native-turn")
+            owner.session.last_turn_id = "native-turn"
+            await finished.wait()
+            owner.session.events.complete("cancelled")
+            owner.session.state = "ready"
+        async def cancel():
+            finished.set()
+        owner.session.prompt = prompt
+        owner.session.cancel = cancel
+        result = await owner.submit([{"type": "text", "text": "one"}])
+        assert result == {"turn": {"id": "native-turn"}}
+        with pytest.raises(ValueError, match="not ready"):
+            await owner.submit([{"type": "text", "text": "two"}])
+        await owner.interrupt()
+        await owner._turn_task
+        assert owner.state == "ready" and owner.active_turn is None
+        with pytest.raises(ValueError, match="Invalid ACP"):
+            await owner.answer("request", {"outcome": {"outcome": "selected", "optionId": None}})
+    asyncio.run(run())
