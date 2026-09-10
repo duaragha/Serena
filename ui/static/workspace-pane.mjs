@@ -80,6 +80,11 @@ export class WorkspacePane {
     this.clearButton=this.button('Clear context','eraser',()=>this.openClear());
     this.clearButton.hidden=provider!=='Claude' || !controls.clearSession || !controls.openCleared;
     this.clearButton.disabled=true;head.append(this.clearButton);
+    this.newConversationButton=this.button('New conversation','square-pen',()=>{
+      const title=/^\/new(?:\s+(.*))?$/.exec(this.input.value.trim())?.[1] || '';
+      this.controls.newConversation(title);
+    });
+    this.newConversationButton.hidden=!controls.newConversation;head.append(this.newConversationButton);
     this.disconnectButton=this.button('Disconnect session','unplug',()=>this.openDisconnect());
     this.disconnectButton.hidden=!controls.disconnectSession;
     this.disconnectButton.disabled=true;head.append(this.disconnectButton);
@@ -1330,7 +1335,7 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
-      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton,rename:this.renameButton};
+      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }
 
   async copyLatestOutput() {
@@ -1364,7 +1369,7 @@ export class WorkspacePane {
       await this.copyLatestOutput();return;
     }
     if(this.provider==='Codex' && /^\/[A-Za-z]/.test(text.trim()) && this.selectedApps.length){this.error(Error('Remove selected apps before running a session command'));return;}
-    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
+    const readOnlyCommand=this.provider==='Codex' && /^\/(new|ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
@@ -1383,6 +1388,10 @@ export class WorkspacePane {
     const codexControl=codexCommand && this.codexCommandControls()[codexCommand[1]];
     if(codexCommand && !codexControl){this.error(Error(`/${codexCommand[1]} is not implemented in this pane; nothing was sent`));return;}
     if(codexControl){
+      if(codexCommand[1]==='new' && !this.files.length && !this.selectedSkills.length){
+        if(codexControl.hidden){this.error(Error('New conversation is unavailable outside the app'));return;}
+        this.activateCommandControl(codexControl);return;
+      }
       if(codexCommand[1]==='rename' && !this.files.length && !this.selectedSkills.length){this.activateCommandControl(codexControl);return;}
       if(codexCommand[1]==='mention' && /^\/mention\s+\S/.test(text.trim()) && !this.files.length && !this.selectedSkills.length){
         if(text.trim().slice('/mention'.length).trim().length>200){this.error(Error('File search is limited to 200 characters'));return;}

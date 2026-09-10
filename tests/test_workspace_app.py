@@ -369,6 +369,7 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
     start = HTML.index("function _adoptStructuredIdentity(")
     end = HTML.index("async function startLiveTerminal(", start)
     mount_source = HTML[start:end]
+    new_chat_source = HTML[HTML.index('async function newChatInline('):HTML.index('let _lastNewChatAgent')]
     active_source = HTML[HTML.index("function _markActive("):HTML.index("function _rememberActive(")]
 
     @app.get("/parent")
@@ -390,6 +391,8 @@ function _fdLinkPair(sids){window.linked.push(sids);}
 function setSessionSource(rows){sessionSource=rows;}
 function _patchClientSession(sid,patch){Object.assign(sessionSource.find(row=>row.session_id===sid)||{},patch);}
 const currentProject=null;window.openedForks=[];
+let _lastNewChatAgent='claude',_lastNewChatAgents=['claude','codex'];window.newChatPrompts=[];
+async function showPrompt(options){window.newChatPrompts.push(options);return null;}
 async function loadSessions(){}
 function _findClientSession(sid){return sessionSource.find(row=>row.session_id===sid)||{session_id:sid};}
 async function openConv(sid){window.openedForks.push(sid);}
@@ -404,7 +407,7 @@ function _ensureActiveRefresh(){}
 function _unmarkActive(sid){window.retiredPseudo=sid;}
 function setTermStatus(status){window.lastStatus=status;}
 """
-            + active_source + mount_source
+            + active_source + mount_source + new_chat_source
             + """</script></body></html>"""
         )
 
@@ -593,6 +596,24 @@ function setTermStatus(status){window.lastStatus=status;}
             page.evaluate("_startStructuredPane('exact', {})")
             assert page.locator("iframe").count() == 1
             assert nested.locator(".xterm").count() == 0
+            page.evaluate("data=>sessionSource.push(data)", {'session_id':'exact','cwd':str(tmp_path),'agent':provider})
+            page.evaluate("window.postMessage({type:'serena-workspace-new-conversation',sid:'exact',title:'Spoof'},location.origin)")
+            assert page.evaluate('newChatPrompts') == []
+            nested.locator('textarea').fill('Keep original draft')
+            nested.get_by_role('button',name='Session actions',exact=True).click()
+            nested.get_by_role('button',name='New conversation',exact=True).click()
+            page.wait_for_function('newChatPrompts.length===1')
+            prompt=page.evaluate('newChatPrompts[0]')
+            assert prompt['defaultAgent'] == provider and prompt['defaultAgents'] == [provider]
+            assert nested.locator('textarea').input_value() == 'Keep original draft'
+            assert len(owners) == 1 and not owners[0].closed
+            if provider == 'codex':
+                nested.locator('textarea').fill('/new Named conversation')
+                nested.get_by_role('button',name='Send message',exact=True).click()
+                page.wait_for_function('newChatPrompts.length===2')
+                assert page.evaluate('newChatPrompts[1].defaultValue') == 'Named conversation'
+                assert nested.locator('textarea').input_value() == '/new Named conversation'
+            nested.locator('textarea').fill('')
             assert page.evaluate("termSessions.get('exact').state") == "ready"
             page.evaluate("activeTermSid='other';_attentionSids.add('exact')")
             nested.get_by_role('textbox', name=f'Message {provider.capitalize()}').click()

@@ -90,6 +90,28 @@ def test_native_rename_requires_confirmation_and_preserves_failed_draft(pane, wi
     assert not errors
 
 
+@pytest.mark.parametrize('available', [False, True])
+def test_codex_new_chat_keeps_running_owner_and_draft(pane, available):
+    page, errors = pane
+    page.evaluate("""available=>{
+      if(available)controls.newConversation=title=>calls.push(['new',title]);
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'turn/started',params:{turn:{id:'running',status:'inProgress'}}});
+      pane.input.value='/new Next work';pane.render();
+    }""", available)
+    page.locator('#left textarea').press('Enter')
+    if available:
+        page.wait_for_function('calls.length===1')
+        assert page.evaluate('calls') == [['new','Next work']]
+    else:
+        page.get_by_text('New conversation is unavailable outside the app', exact=True).wait_for()
+        assert page.evaluate('calls') == []
+    assert page.evaluate('pane.input.value') == '/new Next work'
+    assert page.evaluate('pane.conversation.status') == 'running'
+    assert not errors
+
+
 @pytest.mark.parametrize('width', [390, 1600])
 def test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads(pane, width):
     page, errors = pane

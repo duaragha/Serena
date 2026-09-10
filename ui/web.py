@@ -7141,6 +7141,16 @@ function _startStructuredPane(sid, opts) {
   });
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
+    if(event.data.type==='serena-workspace-new-conversation'){
+      if(document.getElementById('modalBackdrop')?.classList.contains('visible'))return;
+      const title=event.data.title;
+      const session=_findClientSession(sid);
+      const cwd=opts.cwd || session?.cwd;
+      const provider=opts.agent || session?.agent;
+      if(typeof title!=='string' || title.length>1000 || title.includes('\0') || !cwd || !['codex','claude'].includes(provider))return;
+      await newChatInline(cwd,{agent:provider,title});
+      return;
+    }
     if(event.data.type==='serena-workspace-title-changed'){
       await loadSessions(currentProject, {refresh:true});
       const current=_findClientSession(sid);
@@ -8519,7 +8529,7 @@ async function newChat() {
   } catch(e) {}
 }
 
-async function newChatInline(cwdOverride) {
+async function newChatInline(cwdOverride, defaults = {}) {
   // In-app new chat — spawns a fresh claude in the in-app terminal:
   //   - Linux GTK shell: uses native VTE widget
   //   - Windows/macOS pywebview: uses xterm.js + PTY via WebSocket
@@ -8531,10 +8541,11 @@ async function newChatInline(cwdOverride) {
     title: 'New chat' + (cwdOverride ? ` (${cwdOverride.split('/').filter(Boolean).pop() || cwdOverride})` : ''),
     body: '',
     placeholder: 'Name this chat (e.g. Debug deploy)',
+    defaultValue: defaults.title || '',
     confirm: 'Create',
     agentPicker: true,
-    defaultAgent: _lastNewChatAgent || 'claude',
-    defaultAgents: _lastNewChatAgents,
+    defaultAgent: defaults.agent || _lastNewChatAgent || 'claude',
+    defaultAgents: defaults.agent ? [defaults.agent] : _lastNewChatAgents,
   });
   if (res === null) return;
   const typedTitle = (res.value || '').trim();

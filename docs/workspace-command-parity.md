@@ -3,6 +3,43 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## New Conversation From A Native Pane (2026-09-10)
+
+Embedded Claude/Codex panes expose New conversation. Codex `/new` and
+`/new <title>` use the same app-level creation dialog and durable creation flow.
+The parent validates iframe origin, window and source session, then takes the
+project/provider from that exact pane rather than the globally selected project
+or remembered linked-agent selection. Existing dialogs are not replaced.
+Opening or cancelling creates nothing and preserves the current draft/owner,
+including while the current turn is running. Creation still requires explicit
+confirmation. The standalone page reports `/new` unavailable because it lacks
+the app's chat-management surface; this does not claim standalone parity.
+
+The official `/new` behavior was reviewed at
+https://learn.chatgpt.com/docs/developer-commands?surface=cli (2026-09-10).
+No native clear, fork, or current-session termination is substituted for it.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_new_chat_keeps_running_owner_and_draft tests/test_workspace_pane.py::test_codex_local_commands_use_controls_not_model_prompts -q --tb=short
+# exit 0: 12 passed in 7.51s.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -k app_route_bootstrap -q --tb=short
+# exit 0: 2 passed, 13 deselected in 19.39s; both providers and spoof rejection.
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: real Electron /new created/opened the exact native Codex session with
+# its selected title, then native input/output passed. Linked-pane cancellation
+# preserved drafts and owner counts. No inference or user credentials used;
+# disposable owners/profile cleaned up. The old printed New Chat button label
+# was subsequently corrected to /new to match the exercised path.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_app.py tests/test_workspace_pane.py
+# exit 0: All checks passed.
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+node --check scripts/verify-workspace-electron.cjs
+# exit 0.
+```
+
+No package rebuild, installation, release or default enablement.
+
 ## Confirmed Bulk Background Stop (2026-09-10)
 
 Claude and Codex task dialogs offer an explicitly confirmed stop of the listed

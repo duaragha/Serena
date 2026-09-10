@@ -21,6 +21,9 @@ const connection = new WorkspaceConnection({
   runtime: runtime => pane.setSleeping(runtime?.sleeping === true),
 });
 const controls = connection.controls();
+if(parent!==window)controls.newConversation=title=>{
+  parent.postMessage({type:'serena-workspace-new-conversation',sid:boot.sessionId,title},location.origin);
+};
 const renameSession=controls.renameSession;
 controls.renameSession=async name=>{
   const result=await renameSession(name);
