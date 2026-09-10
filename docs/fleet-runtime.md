@@ -203,10 +203,11 @@ Cancellation remains cancelled; exhausted budgets park for input. Newer unrelate
 attempts cannot be mistaken for a replay. Real SIGKILL tests cover death after
 application, after the successful integration receipt but before attempt completion,
 and during rollback; exact-file journal recovery retains normal verification gates.
-Verification helpers also clean up their POSIX process group after direct-process
-exit, even when a gate uses private pipes and does not keep the helper's output
+All workers also clean up their POSIX process group after direct-process
+exit, even when a descendant uses private pipes and does not keep the worker's output
 open. A captured process birth identity protects against signalling a reused
-leader PID. Tests cover normal exit and SIGKILL with a SIGTERM-ignoring gate.
+leader PID. Tests cover native workers and helpers on normal exit and SIGKILL
+with a SIGTERM-ignoring descendant.
 Descendants that escape the owned POSIX process group remain a coverage gap.
 The separate Windows helper ownership contract is described below.
 

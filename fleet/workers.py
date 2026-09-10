@@ -638,7 +638,9 @@ def _stream_process(
         )
     readers: list[threading.Thread] = []
     from core.work_jobs import process_start_token
-    start_token = process_start_token(process.pid) if cleanup_exited_group and os.name != "nt" else None
+    # Every POSIX worker owns its session, not only integration helpers.
+    # Private-pipe descendants cannot be detected through output EOF.
+    start_token = process_start_token(process.pid) if os.name != "nt" else None
     try:
         # Claude waits only briefly for piped input. Start draining output and
         # deliver the prompt before any callback that may refresh Serena's
@@ -792,7 +794,7 @@ def _stream_process(
             _terminate_process_group(process)
         if windows_owned:
             process.close_job()
-        if cleanup_exited_group:
+        if not windows_owned:
             _cleanup_exited_group(process, start_token)
         with suppress(subprocess.TimeoutExpired):
             process.wait(timeout=5)
@@ -807,7 +809,7 @@ def _stream_process(
 
 
 def _cleanup_exited_group(process, start_token):
-    """A helper's private-pipe gates must not survive and race its next replay."""
+    """A worker's private-pipe descendants must not survive its owned turn."""
     if os.name == "nt" or not start_token:
         return
     from core.work_jobs import process_start_token
