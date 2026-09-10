@@ -49,10 +49,12 @@ def _repo(tmp_path: Path) -> Path:
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test")
+    _git(root, "config", "core.autocrlf", "false")
     (root / "core").mkdir()
-    (root / "core" / "alpha.py").write_text("alpha = 1\n")
-    (root / "core" / "beta.py").write_text("beta = 1\n")
-    (root / "README.md").write_text("readme\n")
+    # Stable fixture bytes, independent of the host's text newline conversion.
+    (root / "core" / "alpha.py").write_bytes(b"alpha = 1\n")
+    (root / "core" / "beta.py").write_bytes(b"beta = 1\n")
+    (root / "README.md").write_bytes(b"readme\n")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "base")
     return root

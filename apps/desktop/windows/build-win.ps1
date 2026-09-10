@@ -52,6 +52,10 @@ Write-Host "[windows] running the mocked ConPTY contract tests"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_windows_pty_backend.py") -q
 Assert-LastExitCode "Windows PTY tests"
 
+Write-Host "[windows] testing native Fleet locks and patch transport"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_file_lock.py") (Join-Path $RepoRoot "tests\test_fleet_patch_transport.py") -q
+Assert-LastExitCode "Native Fleet lock and patch tests"
+
 if (Test-Path -LiteralPath $SidecarDist) {
     Remove-Item -LiteralPath $SidecarDist -Recurse -Force
 }
@@ -78,6 +82,20 @@ if (-not (Test-Path -LiteralPath $SidecarExe -PathType Leaf)) {
 Write-Host "[windows] smoke-testing the frozen Fleet peer MCP"
 & $Python (Join-Path $RepoRoot "scripts\fleet_peer_smoke.py") --binary $SidecarExe
 Assert-LastExitCode "Frozen Fleet peer MCP smoke test"
+
+Write-Host "[windows] smoke-testing the frozen Fleet integration replay"
+$PreviousReplayBinary = $env:SERENA_FLEET_TEST_REPLAY_BINARY
+try {
+    $env:SERENA_FLEET_TEST_REPLAY_BINARY = $SidecarExe
+    & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_packaged_replay.py") -q
+    Assert-LastExitCode "Frozen Fleet integration replay smoke test"
+} finally {
+    if ($null -eq $PreviousReplayBinary) {
+        Remove-Item Env:SERENA_FLEET_TEST_REPLAY_BINARY -ErrorAction SilentlyContinue
+    } else {
+        $env:SERENA_FLEET_TEST_REPLAY_BINARY = $PreviousReplayBinary
+    }
+}
 
 Write-Host "[windows] smoke-testing the frozen PTY backend"
 $PtySmoke = Start-Process -FilePath $SidecarExe `
