@@ -341,7 +341,7 @@ class ComputerIndicator:
         if self.collapsed:
             self.detail_frame.pack_forget()
         else:
-            self.detail_frame.pack(fill="both", expand=True, padx=14, pady=(0, 9))
+            self.detail_frame.pack(fill="both", expand=True, padx=14, pady=(0, 9), before=self.footer)
         self.shown = None
         if self._session:
             self.show(self._session)
@@ -352,7 +352,8 @@ class ComputerIndicator:
         result = text_widget.count("1.0", "end-1c", "displaylines")
         if isinstance(result, tuple):
             result = result[0] if result else 0
-        return max(1, int(result or 0))
+        # Tk counts display-line boundaries, excluding the final occupied line.
+        return max(1, int(result or 0) + 1)
 
     @staticmethod
     def _elapsed(session):
@@ -445,7 +446,9 @@ class ComputerIndicator:
             height = max(self.collapsed_height, self.card.winfo_reqheight())
         else:
             if not self.detail_frame.winfo_manager():
-                self.detail_frame.pack(fill="both", expand=True, padx=14, pady=(0, 9))
+                self.detail_frame.pack(
+                    fill="both", expand=True, padx=14, pady=(0, 9), before=self.footer
+                )
             self.scrollbar.pack_forget()
             self.root.update_idletasks()
             line_height = font.Font(font=self.text.cget("font")).metrics("linespace")
@@ -453,7 +456,7 @@ class ComputerIndicator:
                 self.header_frame.winfo_reqheight()
                 + self.context_label.winfo_reqheight()
                 + self.footer.winfo_reqheight()
-                + 42
+                + 66
             )
             max_lines = max(1, (self.max_height - chrome) // max(1, line_height))
             lines = self._line_count(self.text)
