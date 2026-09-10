@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import time
 import tkinter as tk
 from contextlib import suppress
 from tkinter import font
 
 from core.computer_client import ComputerClient
+
+
+def focus_label(session):
+    context = session.get("focused_window") or {}
+    title = " ".join(context.get("title", "").split())
+    # WM_CLASS commonly contains the same app name twice, with different casing.
+    app = " ".join(
+        dict((part.casefold(), part) for part in context.get("app", "").split()).values()
+    )
+    if title or app:
+        return " · ".join(value for value in (app, title) if value)
+    return f"{session['target']} · waiting for window details"
 
 
 class ComputerIndicator:
@@ -86,15 +99,23 @@ class ComputerIndicator:
             else "sharing"
         )
         if automated:
+            started = session.get("inspection_started_at")
+            elapsed = max(0, int(time.time() - started)) if started else 0
             waiting = {
                 "starting": "starting gpt-6 astra · medium · fast",
-                "thinking": "astra is reading your screen…",
-                "screen_changed": "page changed · checking the new screen…",
-            }.get(session.get("observation_state"), "watching for relevant screen changes")
+                "thinking": f"astra is reading your screen… {elapsed}s",
+                "screen_changed": "screen activity · checking the current view…",
+            }.get(
+                session.get("observation_state"),
+                "screen checked · no new guidance; watching for changes",
+            )
         else:
             waiting = "screen shared with your chat; automatic coaching is off"
         observation = session.get("observation") or waiting
-        shown = (session["id"], mode, session["target"], observation)
+        if session.get("observation_preview"):
+            observation = "draft · " + session["observation_preview"]
+        focus = focus_label(session)
+        shown = (session["id"], mode, focus, observation)
         if shown == self.shown:
             return  # Keep the user's scroll position when the advice has not changed.
         if not self.root.winfo_viewable():
@@ -102,7 +123,7 @@ class ComputerIndicator:
             self.heartbeat()
             self.root.deiconify()
             self.root.update_idletasks()
-        self.header.configure(text=f"serena is {mode} · {session['target']}")
+        self.header.configure(text=f"serena is {mode}\n{focus}")
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         self.text.insert("1.0", observation)

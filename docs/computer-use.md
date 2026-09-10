@@ -19,6 +19,12 @@ a terminal, use `window:ID` or `display:NAME` for the intended application.
 X11 window IDs. A window's owned modal dialogs remain in scope. Unrelated
 windows do not. Monitor coordinates and scaling are read again before input.
 
+For coaching in one app on a multi-monitor desktop, select its display. A
+desktop-wide watch also reacts to chat output on the other screen. Display watch
+continues identifying the app visible at that display's center when keyboard
+focus moves to another monitor, so typing in the chat does not invalidate the
+watched app's image. It still captures the entire selected display.
+
 Both `watch` and `run` stream text updates in the terminal. `--detach` leaves
 the task running with a visible desktop indicator; `chats computer events`
 reattaches to its updates. `--speak` sends completed observations through
@@ -26,9 +32,25 @@ Serena's existing local voice output. `chats computer steer "new instruction"`
 steers the active Astra turn without starting a second controller.
 
 The desktop indicator shows the complete latest observation, wraps text and
+identifies the focused application and window title from the latest captured
+frame. In browsers this normally includes the selected tab's title. It refreshes
+while the model is thinking, without waiting for another coaching reply. This
+label describes focus within the selected capture scope; desktop mode still
+captures the desktop. Missing or expired frame details show a waiting label.
+The indicator
 grows to fit. Long updates scroll within the popup while the stop button stays
 visible. The screenshot mask follows the popup's size so advice is not fed back
 into the next visual observation.
+
+Watch replies stream into the popup as a labelled draft before completion. A
+changed page clears the draft, and only completed advice enters conversation
+history. The initial check asks for a useful step or visible blocker even when
+the parent chat already contains related advice. Later `UNCHANGED` replies show
+that the screen was checked rather than leaving a reading message. Active checks
+display elapsed seconds; `inspection_completed` events expose model and first
+token timings, including checks that produce no new advice.
+When a fresh check returns `UNCHANGED`, the last complete guidance is restored:
+the model has confirmed it remains applicable, rather than leaving a blank popup.
 
 Sessions default to five minutes and allow at most thirty minutes using
 `--seconds`. The resident brain can start five-minute sessions from a matching
@@ -218,6 +240,12 @@ animation can repeatedly interrupt reasoning. Fresh medium-effort guidance
 still takes model inference time. This is not continuous video or 120 Hz
 perception. `screen_changed`, `superseded` and timestamped `observation` events
 separate local detection from model latency.
+
+To reduce restarts from animated badges and small desktop updates, pixel-only
+changes must cover 0.5% of the sampled image (previously 0.15%). Window identity
+and tab/title transitions still trigger a fresh check regardless of pixel area.
+This does not remove inference latency or make continuously changing pages
+instantaneous.
 
 The updated loop was verified with real X11 fixture screenshots and Astra at
 medium on an isolated 1600×1000 display: three page changes were detected in
