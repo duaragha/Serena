@@ -3,6 +3,39 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Confirmed Bulk Background Stop (2026-09-10)
+
+Claude and Codex task dialogs offer an explicitly confirmed stop of the listed
+tasks. The reviewed snapshot is traversed by exact process ID through existing
+receipted controls; newly appearing tasks are not silently added. A failure
+halts the sequence and leaves remaining rows visible. Pending Claude requests
+remain visible and cannot be reissued before refresh. Malformed responses never
+count as confirmed stops. Refresh clears the old selection; closing the dialog
+does not initiate termination. Drafts remain intact.
+
+Codex `/stop` and `/clean` open this dialog, including during an active turn;
+they do not submit prompts or stop anything before confirmation. This maps the
+[official stop command](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+(accessed 2026-09-10) to native-pane controls. The installed protocol requires
+both `threadId` and `processId` for each termination.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -k 'background or bulk_stop or codex_local_commands' -q --tb=short
+# exit 0: 17 passed, 212 deselected in 11.59s.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-copy.py
+# exit 0: real browser clipboard, inline mention, explicit bulk-stop routing,
+# draft preservation and cleanup. Task transport is controlled, not native;
+# no provider process or real user task launched/stopped.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py scripts/verify-workspace-copy.py
+# exit 0: All checks passed.
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+git diff --check
+# exit 0.
+```
+
+Mobile rendering inspected at 390px. No packaged rebuild or release in this slice.
+
 ## Explicit Codex Rewind Control (2026-09-10)
 
 Follow-up safety audit: native background terminals must also be empty before

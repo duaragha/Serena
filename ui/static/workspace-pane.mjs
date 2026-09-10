@@ -1180,35 +1180,68 @@ export class WorkspacePane {
     const status = node('p'); status.setAttribute('role', 'status');
     const refresh = this.button('Refresh background tasks', 'refresh-cw', () => load());
     const close = this.button('Close background tasks', 'x', () => dialog.close());
+    const terminate=async id=>{
+      const result=await this.controls.terminateBackgroundTask(id);
+      if(!result || (result.pending!==true && typeof result.terminated!=='boolean'))throw Error('Task termination was not confirmed');
+      return result;
+    };
+    const confirmed=node('input');confirmed.type='checkbox';
+    const confirmation=node('label');confirmation.append(confirmed,document.createTextNode(' Stop all listed background tasks'));
+    const stopAll=this.button('Stop all listed tasks','square',async()=>{
+      if(busy || !confirmed.checked || !tasks.size)return;
+      busy=true;refresh.disabled=true;close.disabled=true;confirmed.disabled=true;stopAll.disabled=true;
+      for(const entry of tasks.values())entry.stop.disabled=true;
+      let stopped=0,pending=0;
+      try{
+        for(const [id,entry] of [...tasks]){
+          if(entry.pending){pending++;continue;}
+          const result=await terminate(id);
+          if(result.pending){pending++;entry.pending=true;}else{entry.row.remove();tasks.delete(id);stopped++;}
+        }
+        status.textContent=`${stopped} stopped; ${pending} stop requests pending`;
+      }catch(error){status.textContent=`${stopped} stopped; ${pending} pending. ${error.message}`;}
+      finally{
+        busy=false;refresh.disabled=false;close.disabled=false;confirmed.disabled=false;confirmed.checked=false;
+        for(const entry of tasks.values())entry.stop.disabled=Boolean(entry.pending);
+      }
+    });
+    stopAll.disabled=true;confirmation.hidden=stopAll.hidden=!this.controls.terminateBackgroundTask;
+    confirmed.addEventListener('change',()=>{stopAll.disabled=busy || !confirmed.checked || !tasks.size;});
+    const tasks=new Map();
     let busy = false;
     const load = async () => {
       if (busy || !dialog.open) return;
-      busy = true; refresh.disabled = true; status.textContent = 'Loading...';
+      busy = true; refresh.disabled = true; stopAll.disabled=true;confirmed.checked=false;tasks.clear();list.replaceChildren();status.textContent = 'Loading...';
       try {
         const result = await this.controls.backgroundTasks();
         if (!dialog.open || this.disposed) return;
-        list.replaceChildren();
+        list.replaceChildren();tasks.clear();
         for (const task of result.data) {
           const row = node('div', 'aw-background-task');
           const command = node('pre', '', task.command);
           const location = node('small', '', task.cwd);
           const stop = this.button(`Stop task ${task.processId}`, 'square', async () => {
-            stop.disabled = true;
+            if(busy)return;
+            busy=true;stop.disabled = true;stopAll.disabled=true;refresh.disabled=true;
             try {
-              const result = await this.controls.terminateBackgroundTask(task.processId);
+              const result = await terminate(task.processId);
               status.textContent = result.pending ? 'Stop requested' : result.terminated ? 'Task stopped' : 'Task was already stopped';
-              if(!result.pending)row.remove();
+              if(result.pending)tasks.get(task.processId).pending=true;
+              if(!result.pending){row.remove();tasks.delete(task.processId);}
             } catch(error) { status.textContent = error.message; stop.disabled = false; }
+            finally{busy=false;refresh.disabled=false;confirmed.checked=false;}
           });
           stop.disabled = !this.controls.terminateBackgroundTask;
           row.append(command, location, stop); list.append(row);
+          tasks.set(task.processId,{row,stop});
         }
         status.textContent = result.data.length ? `${result.data.length} running` : 'No running background tasks';
         window.lucide?.createIcons();
       } catch(error) { if (dialog.open) status.textContent = error.message; }
       finally { busy = false; refresh.disabled = false; }
     };
-    dialog.append(heading, refresh, close, status, list);
+    dialog.append(heading, refresh, close, status, list,confirmation,stopAll);
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
     dialog.addEventListener('close', () => dialog.remove());
     this.tasksDialog = dialog; this.root.append(dialog); dialog.showModal(); close.focus(); load();
   }
@@ -1296,7 +1329,7 @@ export class WorkspacePane {
 
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
-      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
+      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
       model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton,rename:this.renameButton};
   }
 
@@ -1331,7 +1364,7 @@ export class WorkspacePane {
       await this.copyLatestOutput();return;
     }
     if(this.provider==='Codex' && /^\/[A-Za-z]/.test(text.trim()) && this.selectedApps.length){this.error(Error('Remove selected apps before running a session command'));return;}
-    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
+    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){

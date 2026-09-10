@@ -1396,6 +1396,49 @@ def test_claude_task_stop_does_not_claim_completion_on_acknowledgement(pane):
     assert not errors
 
 
+@pytest.mark.parametrize('provider', ['Codex', 'Claude'])
+@pytest.mark.parametrize('failure', [False, True, 'malformed'])
+def test_bulk_stop_requires_confirmation_and_retains_partial_failures(pane, tmp_path, provider, failure):
+    page, errors = pane
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.evaluate("""({provider,failure}) => {
+      pane.dispose();window.failStop=failure;
+      controls.backgroundTasks=async()=>({data:['one','two','three'].map(processId=>({processId,command:'sleep 60',cwd:'/project'}))});
+      controls.terminateBackgroundTask=async id=>{
+        calls.push(['stop',id]);if(id==='two' && failStop==='malformed')return {};
+        if(id==='two' && failStop)throw Error('Native stop unavailable');
+        return id==='two'?{pending:true}:{terminated:true};
+      };
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider,controls});
+      pane.input.value='Keep draft';
+    }""", {'provider': provider, 'failure': failure})
+    page.get_by_role('button', name='Background tasks', exact=True).click()
+    dialog = page.get_by_role('dialog', name='Background tasks', exact=True)
+    dialog.get_by_text('3 running', exact=True).wait_for()
+    assert page.evaluate('calls') == []
+    bulk = dialog.get_by_role('button', name='Stop all listed tasks', exact=True)
+    assert bulk.is_disabled()
+    dialog.get_by_role('checkbox').check()
+    bulk.click()
+    if failure:
+        message = 'Task termination was not confirmed' if failure == 'malformed' else 'Native stop unavailable'
+        dialog.get_by_text(f'1 stopped; 0 pending. {message}', exact=True).wait_for()
+        assert page.evaluate('calls') == [['stop', 'one'], ['stop', 'two']]
+        assert dialog.get_by_role('button', name='Stop task three', exact=True).is_visible()
+    else:
+        dialog.get_by_text('2 stopped; 1 stop requests pending', exact=True).wait_for()
+        assert page.evaluate('calls') == [['stop', 'one'], ['stop', 'two'], ['stop', 'three']]
+        assert dialog.get_by_role('button', name='Stop task two', exact=True).is_disabled()
+    assert bulk.is_disabled()
+    assert page.evaluate('pane.input.value') == 'Keep draft'
+    assert dialog.evaluate('(d)=>d.scrollWidth<=d.clientWidth')
+    page.screenshot(path=str(tmp_path / 'bulk-stop-mobile.png'))
+    before = page.evaluate('calls')
+    dialog.get_by_role('button', name='Close background tasks').click()
+    assert page.evaluate('calls') == before
+    assert not errors
+
+
 def test_background_tasks_explicit_refresh_stop_and_mobile_layout(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})
@@ -1495,7 +1538,7 @@ def test_session_slash_commands_open_confirmed_action_without_sending(pane, widt
     assert not errors
 
 
-@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills", "ps", "mention"])
+@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills", "ps", "stop", "clean", "mention"])
 def test_codex_local_commands_use_controls_not_model_prompts(pane, command):
     page, errors = pane
     page.evaluate("""command => {

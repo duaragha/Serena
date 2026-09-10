@@ -49,12 +49,29 @@ pane.receive({sequence:1,event:{method:'workspace/history',params:{thread:{id:'p
             page.get_by_role("button", name="src/proof.py", exact=True).click()
             assert page.evaluate("pane.input.value") == "@src/proof.py "
             assert page.evaluate("searches") == ["src"]
+            page.evaluate("""()=>{
+              window.stops=[];
+              pane.controls.backgroundTasks=async()=>({data:['one','two'].map(processId=>({processId,command:'proof',cwd:'/proof'}))});
+              pane.controls.terminateBackgroundTask=async id=>{stops.push(id);return {terminated:true};};
+              pane.tasksButton.hidden=false;pane.input.value='/stop';pane.submit();
+            }""")
+            tasks=page.get_by_role('dialog',name='Background tasks',exact=True)
+            tasks.get_by_text('2 running',exact=True).wait_for()
+            assert page.evaluate('stops') == []
+            assert tasks.get_by_role('button',name='Stop all listed tasks',exact=True).is_disabled()
+            tasks.get_by_role('checkbox').check()
+            tasks.get_by_role('button',name='Stop all listed tasks',exact=True).click()
+            tasks.get_by_text('2 stopped; 0 stop requests pending',exact=True).wait_for()
+            assert page.evaluate('stops') == ['one','two']
+            assert page.evaluate('pane.input.value') == '/stop'
+            tasks.get_by_role('button',name='Close background tasks',exact=True).click()
             assert not errors, errors
             context.close()
         finally:
             browser.close()
     print(json.dumps({"ok": True, "actualBrowserClipboard": True, "partialOutputExcluded": True,
                       "draftPreserved": True, "inlineMentionInserted": True,
+                      "confirmedBulkStopRouting": True, "taskTransport": "controlled adapter",
                       "providerLaunched": False, "browserClosed": True}))
 
 
