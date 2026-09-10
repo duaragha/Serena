@@ -672,6 +672,7 @@ def _stream_process(
             ),
         )
         exit_seen_at: float | None = None
+        exit_backlog: int | None = None
         open_pipes = len(readers)
         stderr_parts: list[str] = []
         captured_bytes = 0
@@ -689,11 +690,17 @@ def _stream_process(
                     _terminate_process_group(process)
                 if process.poll() is not None:
                     exit_seen_at = exit_seen_at or time.monotonic()
-                    if time.monotonic() - exit_seen_at >= exit_drain_seconds:
+                    if exit_backlog is None and time.monotonic() - exit_seen_at >= exit_drain_seconds:
                         # A crashed worker can leave a browser or other grandchild
                         # holding stdout/stderr open. Do not let inherited pipe FDs
                         # pin the whole Fleet run after the owned process is gone.
                         _terminate_process_group(process)
+                        # The grace period bounds inherited-pipe waiting, not
+                        # metadata callback latency. Preserve the finite set of
+                        # events already read, including model/final receipts.
+                        # A still-writing descendant cannot extend this budget.
+                        exit_backlog = output_queue.qsize()
+                    if exit_backlog == 0:
                         break
                 try:
                     source, line = output_queue.get(timeout=0.25)
@@ -703,6 +710,8 @@ def _stream_process(
                     ):
                         break
                     continue
+                if exit_backlog is not None:
+                    exit_backlog -= 1
                 if line is None:
                     open_pipes -= 1
                     continue
@@ -789,6 +798,11 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> None:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
         if process.poll() is not None:
+            # The leader may be gone while a descendant ignores SIGTERM and
+            # retains an output pipe. Escalate only this owned process group;
+            # otherwise closing the reader can wait indefinitely for EOF.
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
             return
         try:
             process.wait(timeout=3)

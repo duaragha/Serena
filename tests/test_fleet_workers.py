@@ -375,23 +375,32 @@ time.sleep(30)
     assert time.monotonic() - started < 5
 
 
+@pytest.mark.parametrize("ignore_term", [False, True])
 def test_worker_exit_is_not_pinned_by_a_descendant_inheriting_output_pipes(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, ignore_term
 ):
+    child_code = (
+        "import signal,time; from pathlib import Path; "
+        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN); " if ignore_term else "")
+        + "Path('child-ready').write_text('ready'); time.sleep(6)"
+    )
     codex_bin = _executable(
         tmp_path / "leaky-pipe-codex",
         """#!/usr/bin/env python3
-import json, subprocess, sys
+import json, subprocess, sys, time
+from pathlib import Path
 sys.stdin.read()
 subprocess.Popen(
-    [sys.executable, "-c", "import time; time.sleep(30)"],
+    [sys.executable, "-c", CHILD_CODE],
     stdout=sys.stdout,
     stderr=sys.stderr,
 )
+while not Path('child-ready').exists():
+    time.sleep(0.01)
 print(json.dumps({"type":"thread.started","thread_id":"33333333-3333-3333-3333-333333333333"}), flush=True)
 print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"done"}}), flush=True)
-""",
+""".replace("CHILD_CODE", repr(child_code)),
     )
     monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", str(codex_bin))
     monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
@@ -407,6 +416,30 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
     assert result.ok is True
     assert result.output_text == "done"
     assert time.monotonic() - started < 3
+
+
+def test_slow_event_callback_cannot_discard_queued_final_answer(tmp_path, monkeypatch):
+    codex_bin = _executable(
+        tmp_path / "quick-codex",
+        """#!/usr/bin/env python3
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type":"thread.started","thread_id":"queued-final-fixture"}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"final answer preserved"}}), flush=True)
+""",
+    )
+    monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", str(codex_bin))
+    monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SERENA_FLEET_EXIT_DRAIN_SECONDS", "0.1")
+    def slow(event, payload):
+        if event == "process.started":
+            time.sleep(0.2)  # Child has exited before the exit timer starts.
+        if event == "worker.event":
+            time.sleep(0.2)  # Metadata delivery outlasts the drain grace period.
+    result = run_worker(_request(tmp_path, "codex"), cancel_requested=lambda: False, on_event=slow)
+    assert result.ok, result.error
+    assert result.output_text == "final answer preserved"
 
 
 def test_codex_rollout_identity_reads_actual_effort_field(tmp_path, monkeypatch):
