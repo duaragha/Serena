@@ -874,6 +874,9 @@ def test_agent_reads_use_existing_parent_even_when_job_reserved(tmp_path):
         async def inspect_agent(self, thread_id, cursor):
             calls.append(('inspect', self.sid, thread_id, cursor))
             return {'thread': {'id': thread_id, 'turns': []}}
+        async def interrupt_agent(self, **payload):
+            calls.append(('stop', self.sid, payload))
+            return {'requested': True}
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'agents.db'),
                          resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
                          factories={'codex': AgentOwner})
@@ -885,6 +888,10 @@ def test_agent_reads_use_existing_parent_even_when_job_reserved(tmp_path):
         assert host.command('exact', 'read', 'inspect_agent', {'thread_id': 'child', 'cursor': None})['ok']
         assert not host.command('exact', 'bad', 'inspect_agent', {'thread_id': 'child', 'cursor': None, 'cwd': '/other'})['ok']
         assert calls == [('list', 'exact', None), ('inspect', 'exact', 'child', None)]
+        payload = {'thread_id': 'child', 'expected_turn_id': 'child-turn', 'confirmed': True}
+        assert host.command('exact', 'stop', 'interrupt_agent', payload)['ok']
+        assert host.command('exact', 'stop', 'interrupt_agent', payload)['ok']
+        assert calls[2:] == [('stop', 'exact', payload)]
         assert list(host._sessions) == ['exact']
         assert not host._sessions['exact'][0].sent
         owner = host._sessions['exact'][0]

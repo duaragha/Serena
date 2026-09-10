@@ -256,6 +256,57 @@ def test_agent_switcher_inspects_without_launching_and_keeps_parent_draft(pane, 
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_agent_stop_requires_exact_confirmation_and_waits_for_native_completion(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.agents=async()=>({data:[{id:'child',agentNickname:'Research',status:{type:'active'}}],nextCursor:null});
+      window.childTurn='child-turn';
+      controls.inspectAgent=async id=>({thread:{id,status:{type:'active'},turns:[{id:childTurn,status:'inProgress',items:[]}]},historyCursor:null});
+      controls.interruptAgent=async(id,turn)=>{calls.push(['stop',id,turn]);throw Error('Stop not confirmed');};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'turn/started',params:{turn:{id:'parent-running',status:'inProgress'}}});pane.input.value='/agent';pane.render();
+    }""")
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role('dialog', name='Delegated agents', exact=True)
+    dialog.get_by_role('button', name='Research child active', exact=True).click()
+    stop = dialog.get_by_role('button', name='Stop agent turn', exact=True)
+    stop.wait_for()
+    assert stop.is_disabled()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('checkbox').check()
+    stop.click()
+    dialog.get_by_text('Stop not confirmed', exact=True).wait_for()
+    assert stop.is_disabled()
+    assert page.evaluate('calls') == [['stop', 'child', 'child-turn']]
+    page.evaluate("()=>{controls.interruptAgent=async(threadId,turnId)=>{calls.push(['stop',threadId,turnId]);return {requested:true,threadId,turnId};};}")
+    dialog.get_by_role('checkbox').check()
+    stop.click()
+    dialog.get_by_text('Stop requested; refresh agent status', exact=True).wait_for()
+    dialog.get_by_text('Turn child-turn / inProgress', exact=True).wait_for()
+    assert page.evaluate('pane.conversation.status') == 'running'
+    dialog.get_by_role('button', name='Refresh selected agent', exact=True).click()
+    dialog.get_by_text('Snapshot / active', exact=True).wait_for()
+    dialog.get_by_role('checkbox').check()
+    assert stop.is_disabled()
+    page.evaluate("()=>{window.childTurn='new-child-turn';}")
+    dialog.get_by_role('button', name='Refresh selected agent', exact=True).click()
+    dialog.get_by_text('Turn new-child-turn / inProgress', exact=True).wait_for()
+    assert stop.is_disabled()
+    assert not dialog.get_by_role('checkbox').is_checked()
+    assert len(page.evaluate('calls')) == 2
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'agent-stop-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button', name='Close agents', exact=True).click()
+    assert page.evaluate('pane.input.value') == '/agent'
+    assert len(page.evaluate('calls')) == 2
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

@@ -807,6 +807,7 @@ class WorkspaceHost:
             "clear_goal",
             "agents",
             "inspect_agent",
+            "interrupt_agent",
             "review",
             "compact",
             "background_tasks",
@@ -857,7 +858,7 @@ class WorkspaceHost:
             if sid not in self._sessions:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
-                "answer", "interrupt", "models", "permissions", "context_usage", "background_tasks",
+                "answer", "interrupt", "interrupt_agent", "models", "permissions", "context_usage", "background_tasks",
                 "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes", "personality", "goal", "agents", "inspect_agent",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
@@ -1116,6 +1117,10 @@ class WorkspaceHost:
                     if provider != "codex" or set(payload) != {"target"}:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])
+                elif action == "interrupt_agent":
+                    if provider != "codex" or set(payload) != {"thread_id", "expected_turn_id", "confirmed"}:
+                        raise ValueError("An exact confirmed agent interruption is required")
+                    result = await owner.interrupt_agent(**payload)
                 elif action in {"agents", "inspect_agent"}:
                     allowed = {"cursor"} | ({"thread_id"} if action == "inspect_agent" else set())
                     if provider != "codex" or set(payload) != allowed:

@@ -192,6 +192,42 @@ def test_child_events_are_isolated_and_approvals_stay_explicit(tmp_path, foreign
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('case', ['ok', 'unconfirmed', 'stale', 'ambiguous', 'foreign', 'malformed', 'unavailable'])
+def test_agent_stop_is_confirmed_exact_and_does_not_complete_parent(tmp_path, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.state = 'unavailable' if case == 'unavailable' else 'running'
+        owner.active_turn = 'parent-turn'
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/read':
+                return {'thread': {'id': params['threadId'], 'parentThreadId': None if case == 'foreign' else owner.session_id, 'status': {'type': 'active'}}}
+            if method == 'thread/turns/list':
+                turns = [{'id': 'changed' if case == 'stale' else 'child-turn', 'status': 'inProgress', 'items': []}]
+                if case == 'ambiguous':
+                    turns.append({'id': 'second', 'status': 'inProgress', 'items': []})
+                return {'data': turns, 'nextCursor': None}
+            assert method == 'turn/interrupt'
+            assert params == {'threadId': 'child', 'turnId': 'child-turn'}
+            return None if case == 'malformed' else {}
+        rpc.request = request
+        try:
+            if case == 'ok':
+                assert await owner.interrupt_agent('child', 'child-turn', True) == {'requested': True, 'threadId': 'child', 'turnId': 'child-turn'}
+                assert owner.active_agent_threads == {'child'}
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.interrupt_agent('child', 'child-turn', case != 'unconfirmed')
+            assert any(method == 'turn/interrupt' for method, _ in calls) is (case in {'ok', 'malformed'})
+            assert owner.active_turn == 'parent-turn'
+            assert owner.state == ('unavailable' if case == 'unavailable' else 'running')
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('state', ['ready', 'running'])
 def test_native_rename_targets_and_verifies_exact_thread_without_new_turn(tmp_path, state):
     async def run():

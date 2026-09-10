@@ -858,14 +858,36 @@ export class WorkspacePane {
     const reload=this.button('Refresh selected agent','refresh-cw',()=>inspect(selected,false));reload.hidden=true;
     const earlier=this.button('Earlier agent turns','arrow-up',()=>inspect(selected,true));earlier.hidden=true;
     const close=this.button('Close agents','x',()=>dialog.close());
-    let busy=false,selected=null,listCursor=null,historyCursor=null;
+    const stopConfirm=node('input');stopConfirm.type='checkbox';
+    const stopLabel=node('label','aw-agent-stop');stopLabel.append(stopConfirm,document.createTextNode(' Stop this agent\'s current turn'));stopLabel.hidden=true;
+    const stop=this.button('Stop agent turn','square',()=>stopAgent());stop.hidden=true;
+    let busy=false,selected=null,listCursor=null,historyCursor=null,activeTurn=null;
+    const stops=new Set();
     const listCursors=new Set(),historyCursors=new Set(),rows=new Map(),turns=new Map();
     const changes=new Map();
     this.notifyAgentChange=params=>{
       changes.set(params.agentThreadId,(changes.get(params.agentThreadId)||0)+1);
       if(selected===params.agentThreadId)status.textContent='Agent changed; refresh snapshot';
     };
-    const enable=()=>{refresh.disabled=more.disabled=reload.disabled=earlier.disabled=busy;for(const row of rows.values())row.disabled=busy;};
+    const enable=()=>{
+      refresh.disabled=more.disabled=reload.disabled=earlier.disabled=busy;
+      for(const row of rows.values())row.disabled=busy;
+      stop.hidden=stopLabel.hidden=!this.controls.interruptAgent || !activeTurn;
+      stop.disabled=busy || !stopConfirm.checked || stops.has(JSON.stringify([selected,activeTurn]));
+      stopConfirm.disabled=busy;
+    };
+    stopConfirm.addEventListener('change',enable);
+    const stopAgent=async()=>{
+      if(busy || stop.disabled || !activeTurn)return;
+      const target=selected,turn=activeTurn;busy=true;enable();
+      try{
+        const result=await this.controls.interruptAgent(target,turn);
+        if(result?.requested!==true || result.threadId!==target || result.turnId!==turn)throw Error('Agent interruption was not confirmed');
+        stops.add(JSON.stringify([target,turn]));
+        if(dialog.open)status.textContent='Stop requested; refresh agent status';
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;stopConfirm.checked=false;enable();}
+    };
     const inspect=async(id,older)=>{
       if(busy || !id)return;busy=true;enable();status.textContent='Reading agent snapshot...';
       const revision=changes.get(id)||0;
@@ -874,7 +896,11 @@ export class WorkspacePane {
         if(!dialog.open)return;
         if(result.thread?.id!==id || !Array.isArray(result.thread.turns))throw Error('Agent identity or history is invalid');
         if(older && result.historyCursor && historyCursors.has(result.historyCursor))throw Error('Agent history pagination did not advance');
-        if(!older){turns.clear();historyCursors.clear();}
+        if(!older){
+          turns.clear();historyCursors.clear();stopConfirm.checked=false;
+          const running=result.thread.turns.filter(turn=>turn.status==='inProgress');
+          activeTurn=running.length===1?running[0].id:null;
+        }
         const merged=new Map(result.thread.turns.map(turn=>[turn.id,turn]));
         for(const [key,value] of turns)if(!merged.has(key))merged.set(key,value);
         turns.clear();for(const [key,value] of merged)turns.set(key,value);
@@ -912,7 +938,7 @@ export class WorkspacePane {
       finally{busy=false;enable();}
     };
     dialog.addEventListener('close',()=>{this.notifyAgentChange=null;dialog.remove();this.input.focus();});
-    dialog.append(node('h3','','Delegated agents'),close,refresh,status,list,more,reload,earlier,output);
+    dialog.append(node('h3','','Delegated agents'),close,refresh,status,list,more,reload,earlier,stopLabel,stop,output);
     this.agentsDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();await loadList(true);
   }
 

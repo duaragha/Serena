@@ -5,6 +5,34 @@ that a command's full behavior works. Gemini is deferred.
 
 ## Native Agent Inspection (2026-09-10)
 
+### Confirmed Child-Turn Interruption
+
+The inspector now provides Stop agent turn only for a snapshot containing one
+active turn. A fresh checkbox confirmation is required. The existing parent
+owner rechecks native ancestry and the exact active turn, then calls
+`turn/interrupt` with that child thread and turn ID. The acknowledgment is shown
+as requested, never as completed; the same acknowledged target stays disabled
+in that dialog until a different active turn is inspected. Native lifecycle
+events retain authority over busy state. Closing the dialog sends nothing.
+Host receipts prevent a repeated command ID from issuing another interruption.
+Like the parent interruption action, an explicit child stop is permitted during
+a reserved job; read-only inspection never stops that job automatically.
+
+Contract rechecked at https://learn.chatgpt.com/docs/app-server on 2026-09-10:
+interruption takes `threadId` and `turnId`, acknowledges with an object, and
+completes via a native `interrupted` turn. The `.md` URL failed to load; the HTML
+documentation and installed JSON schema were read instead.
+
+Verification (all final exit codes 0):
+
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_agent_stop_is_confirmed_exact_and_does_not_complete_parent tests/test_workspace_host.py::test_agent_reads_use_existing_parent_even_when_job_reserved -q --tb=short`: 8 passed in 2.16s.
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_agent_stop_requires_exact_confirmation_and_waits_for_native_completion tests/test_workspace_pane.py::test_agent_switcher_inspects_without_launching_and_keeps_parent_draft -q --tb=short`: 4 passed in 15.92s. Mobile screenshot inspected.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-agents.py`: exact native fork rejected for inspection and stop; paged history exposed a real active print-only shell turn; real native interrupt produced exactly one matching `turn/completed` with status `interrupted`. Same process and session, zero inference/agents spawned; process reaped and disposable profile removed. The actual interrupted turn belongs to the proof parent, not a model-spawned child; child ancestry plus stop routing remains covered by protocol tests, not an inferred end-to-end proof.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-agents.py`: all checks passed.
+- `node --check ui/static/workspace-pane.mjs`: no errors.
+
+Direct child messaging and child media previews remain unfinished. No release.
+
 `/agent`, `/subagents` and Session actions now open an explicit descendant
 switcher. Lists and paged full turns use the parent's existing native connection;
 inspection never resumes, starts or forks a child. Native ancestry is checked

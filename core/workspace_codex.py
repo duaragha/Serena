@@ -431,6 +431,23 @@ class CodexWorkspace:
         selected["turns"] = list(reversed(deepcopy(page["data"])))
         return {"thread": selected, "historyCursor": following}
 
+    async def interrupt_agent(self, thread_id, expected_turn_id, confirmed):
+        if confirmed is not True or not isinstance(expected_turn_id, str) or not 1 <= len(expected_turn_id) <= 256:
+            raise ValueError("An exact agent turn and explicit stop confirmation are required")
+        async with self._control_lock:
+            if self.state not in {"ready", "running"}:
+                raise WorkspaceRpcError("Parent connection is not available for agent controls")
+            snapshot = await self.inspect_agent(thread_id)
+            running = [turn["id"] for turn in snapshot["thread"]["turns"] if turn.get("status") == "inProgress"]
+            if running != [expected_turn_id] or self.state not in {"ready", "running"}:
+                raise WorkspaceRpcError("Agent turn changed; refresh before stopping it")
+            result = await self.rpc.request("turn/interrupt", {"threadId": thread_id, "turnId": expected_turn_id})
+            if not isinstance(result, dict):
+                raise WorkspaceRpcError("Agent interruption was not confirmed")
+            # The acknowledgment is not completion; only native lifecycle events
+            # may release the child's busy state or mark its turn interrupted.
+            return {"requested": True, "threadId": thread_id, "turnId": expected_turn_id}
+
     async def rename(self, name):
         if not isinstance(name, str) or not name.strip() or len(name) > 1000 or any(ord(c) < 32 or ord(c) == 127 for c in name):
             raise ValueError("A title of 1 to 1000 characters without control characters is required")

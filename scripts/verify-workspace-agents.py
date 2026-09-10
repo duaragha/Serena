@@ -23,8 +23,10 @@ async def main():
         env = {"PATH": os.environ["PATH"], "HOME": directory, "CODEX_HOME": str(home),
                "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}
 
+        events = []
+
         async def publish(event):
-            pass
+            events.append(event)
 
         async def checkpoint(target):
             pass
@@ -58,12 +60,37 @@ async def main():
                 assert "does not belong" in str(error)
             else:
                 raise AssertionError("Unrelated native thread was accepted")
-            assert calls == ["thread/list", "thread/read"]
+            try:
+                await owner.interrupt_agent(other, "not-a-child-turn", True)
+            except WorkspaceRpcError as error:
+                assert "does not belong" in str(error)
+            else:
+                raise AssertionError("Unrelated native thread stop was accepted")
+            assert calls == ["thread/list", "thread/read", "thread/read"]
             assert owner.rpc.process is process and process.returncode is None
             assert owner.session_id == sid and owner.state == "ready"
-            print(json.dumps({"nativeAgentList": "empty", "foreignThreadRejected": True,
+            print(json.dumps({"nativeAgentList": "empty", "foreignThreadRejected": True, "foreignStopRejected": True,
                               "sameProcess": True, "sameSession": True, "calls": calls,
                               "inference": False, "spawnedAgents": 0}))
+            owner.rpc.request = request
+            shell = asyncio.create_task(owner.shell_command("sleep 2", True))
+            try:
+                async with asyncio.timeout(5):
+                    while owner.active_turn is None:
+                        await asyncio.sleep(.01)
+                turn = owner.active_turn
+                page = await owner._history_page()
+                assert [item["id"] for item in page["turns"] if item.get("status") == "inProgress"] == [turn]
+                assert isinstance(await owner.interrupt(), dict)
+                async with asyncio.timeout(5):
+                    while owner.active_turn is not None:
+                        await asyncio.sleep(.01)
+                completed = [event["params"]["turn"] for event in events if event.get("method") == "turn/completed"
+                             and event["params"]["turn"]["id"] == turn]
+                assert len(completed) == 1 and completed[0]["status"] == "interrupted"
+                print("PASS: native paged history exposes exact active shell turn; native completion status=interrupted")
+            finally:
+                await shell
         finally:
             await owner.close()
         assert process.returncode is not None
