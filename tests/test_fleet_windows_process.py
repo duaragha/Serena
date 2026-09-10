@@ -137,7 +137,8 @@ def test_repeated_creation_does_not_retain_process_or_pipe_handles(tmp_path):
         finally:
             process.close()
         assert process._handle is None and process._job._handle is None
-        assert all(pipe.closed for pipe in (process.stdin, process.stdout, process.stderr))
+        assert process.stdin is process.stdout is process.stderr is None
+        process.close()  # deterministic cleanup is also idempotent
         return process
     # Native diagnostics showed first CreatePipe/CreateProcess initialization
     # adds 1/2 handles, then 40 launches stay flat. Measure steady state, not
@@ -156,6 +157,32 @@ def test_repeated_creation_does_not_retain_process_or_pipe_handles(tmp_path):
     finally:
         if gc_enabled:
             gc.enable()
+
+
+def test_stdio_uses_utf8_with_parent_utf8_mode_disabled(tmp_path):
+    # The packaging job enables PYTHONUTF8, so force a separate non-UTF8
+    # interpreter to exercise the normal Windows desktop locale as well.
+    payload = "\u4f60\u597d \U0001f9ea\n"
+    child_source = (
+        "import sys; data=sys.stdin.buffer.read(); "
+        "sys.stdout.buffer.write(data); sys.stdout.buffer.flush(); "
+        "sys.stderr.buffer.write(b'bad-byte: \\xff\\n')"
+    )
+    source = (
+        "import os,sys; from fleet.windows_process import WindowsProcess; "
+        "assert sys.flags.utf8_mode == 0; "
+        f"p=WindowsProcess([sys.executable,'-c',{child_source!r}],cwd=os.getcwd(),env=dict(os.environ))\n"
+        "try:\n"
+        f" p.stdin.write({ascii(payload)}); p.stdin.close()\n"
+        f" assert p.stdout.read() == {ascii(payload)}\n"
+        " assert p.stderr.read() == 'bad-byte: \\ufffd\\n'\n"
+        " assert p.wait(10) == 0\n"
+        "finally: p.close()\n"
+    )
+    result = subprocess.run([sys.executable, "-X", "utf8=0", "-c", source],
+                            cwd=Path(__file__).resolve().parents[1],
+                            capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
 
 
 def test_creation_failure_releases_every_allocated_handle(tmp_path):

@@ -135,7 +135,10 @@ class WindowsProcess:
                 fd = msvcrt.open_osfhandle(handle, flags | os.O_BINARY)
                 handles.remove(handle)
                 try:
-                    stream = os.fdopen(fd, mode, buffering=1)
+                    # Provider stdio is UTF-8 regardless of the desktop locale.
+                    # Invalid diagnostic bytes must not silently kill a reader.
+                    stream = os.fdopen(fd, mode, buffering=1, encoding="utf-8",
+                                       errors="strict" if name == "stdin" else "replace")
                 except BaseException:
                     os.close(fd)
                     raise
@@ -195,6 +198,10 @@ class WindowsProcess:
                 if pipe is not None:
                     with suppress(OSError):
                         pipe.close()
+            # Closed buffered streams still retain native synchronization
+            # resources on older CPython builds. Release our references even
+            # when a caller retains the completed process/attempt object.
+            self.stdin = self.stdout = self.stderr = None
             if self._handle is not None:
                 self._api.CloseHandle(self._handle)
                 self._handle = None
