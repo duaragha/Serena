@@ -863,7 +863,12 @@ export class WorkspacePane {
     const stop=this.button('Stop agent turn','square',()=>stopAgent());stop.hidden=true;
     const message=node('textarea');message.setAttribute('aria-label','Message active agent');message.placeholder='Message active agent...';message.rows=3;
     const send=this.button('Send to active agent','arrow-up',()=>sendAgent());
-    const composer=node('div','aw-agent-composer');composer.append(message,send);composer.hidden=true;
+    this.agentFiles ??= new Map();
+    const fileInput=node('input');fileInput.type='file';fileInput.multiple=true;fileInput.hidden=true;
+    const attach=this.button('Attach agent files','paperclip',()=>fileInput.click());
+    const attachments=node('div','aw-attachments');
+    const pending=node('div','aw-agent-pending');pending.setAttribute('aria-label','Unconfirmed agent messages');
+    const composer=node('div','aw-agent-composer');composer.append(message,attachments,fileInput,attach,send,pending);composer.hidden=true;
     let busy=false,selected=null,listCursor=null,historyCursor=null,activeTurn=null;
     let draftError=false;
     const draftKey=id=>`${this.draftKey}:agent:${id}`;
@@ -882,8 +887,48 @@ export class WorkspacePane {
       stopConfirm.disabled=busy;
       composer.hidden=!this.controls.steerAgent || !selected;
       message.disabled=busy || !activeTurn;
-      send.disabled=busy || draftError || !activeTurn || !message.value.trim();
+      attach.disabled=busy || !activeTurn;
+      const files=this.agentFiles.get(selected)||[];
+      send.disabled=busy || draftError || !activeTurn || (!message.value.trim() && !files.length);
+      attachments.replaceChildren();
+      for(const file of files){
+        const remove=this.button(`Remove agent attachment: ${file.name}`,'x',()=>{
+          this.agentFiles.set(selected,files.filter(value=>value!==file));enable();
+        });remove.disabled=busy;
+        const row=node('div','aw-attachment');row.append(node('span','',file.name),remove);attachments.append(row);
+      }
+      pending.replaceChildren();
+      for(const receipt of this.controls.pendingAgentMessages?.()||[]){
+        if(receipt.payload.thread_id!==selected)continue;
+        send.disabled=true;
+        const retry=this.button('Retry unconfirmed agent message','refresh-cw',async()=>{
+          if(busy)return;busy=true;enable();
+          try{
+            const result=await this.controls.retryAgentMessage(receipt.requestId);
+            if(result?.accepted!==true || result.threadId!==receipt.payload.thread_id || result.turnId!==receipt.payload.expected_turn_id)throw Error('Agent message delivery was not confirmed');
+            status.textContent='Previous agent message accepted; current draft retained';
+          }catch(error){status.textContent=error.message;}
+          finally{busy=false;enable();}
+        });retry.disabled=busy;
+        pending.append(node('p','',`Unconfirmed message / turn ${receipt.payload.expected_turn_id}`),retry);
+      }
+      this.refreshIcons();
     };
+    const addFiles=files=>{
+      if(busy || !selected || !activeTurn)return;
+      const merged=[...(this.agentFiles.get(selected)||[]),...files];
+      if(merged.length>16 || merged.some(file=>!file.size || file.size>25*1024*1024)){
+        status.textContent='Attach up to 16 non-empty files, at most 25 MB each';return;
+      }
+      this.agentFiles.set(selected,merged);enable();
+    };
+    fileInput.addEventListener('change',()=>{addFiles([...fileInput.files]);fileInput.value='';});
+    composer.addEventListener('dragover',event=>event.preventDefault());
+    composer.addEventListener('drop',event=>{event.preventDefault();event.stopPropagation();addFiles([...(event.dataTransfer?.files||[])]);});
+    message.addEventListener('paste',event=>{
+      const files=[...(event.clipboardData?.files||[])];
+      if(files.length){event.preventDefault();event.stopPropagation();addFiles(files);}
+    });
     message.addEventListener('input',()=>{
       try{this.draftStorage.setItem(draftKey(selected),message.value);draftError=false;}
       catch{draftError=true;status.textContent='Agent draft could not be saved';}
@@ -891,11 +936,12 @@ export class WorkspacePane {
     });
     const sendAgent=async()=>{
       if(send.disabled)return;
-      const target=selected,turn=activeTurn,text=message.value;busy=true;enable();
+      const target=selected,turn=activeTurn,text=message.value,files=[...(this.agentFiles.get(selected)||[])];busy=true;enable();
       try{
-        const result=await this.controls.steerAgent(target,turn,text);
+        const result=files.length?await this.controls.steerAgent(target,turn,text,files):await this.controls.steerAgent(target,turn,text);
         if(result?.accepted!==true || result.threadId!==target || result.turnId!==turn)throw Error('Agent message delivery was not confirmed');
         message.value='';
+        this.agentFiles.delete(target);
         try{
           this.draftStorage.removeItem(draftKey(target));
           if(dialog.open)status.textContent='Message accepted by active agent';

@@ -1119,9 +1119,15 @@ class WorkspaceHost:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])
                 elif action == "steer_agent":
-                    if provider != "codex" or set(payload) != {"thread_id", "expected_turn_id", "text"}:
+                    if provider != "codex" or set(payload) not in (
+                        {"thread_id", "expected_turn_id", "text"},
+                        {"thread_id", "expected_turn_id", "inputs"},
+                    ):
                         raise ValueError("An exact active agent message is required")
-                    result = await owner.steer_agent(**payload)
+                    routed = dict(payload)
+                    if "inputs" in routed:
+                        routed["inputs"] = await asyncio.to_thread(self.uploads.codex_inputs, sid, routed["inputs"])
+                    result = await owner.steer_agent(**routed)
                 elif action == "interrupt_agent":
                     if provider != "codex" or set(payload) != {"thread_id", "expected_turn_id", "confirmed"}:
                         raise ValueError("An exact confirmed agent interruption is required")

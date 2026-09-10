@@ -11,6 +11,32 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('agent files use parent uploads and survive lost response without reupload or duplicate receipt',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'parent',token:'token',storage:saved,receive:()=>{},error:()=>{},
+    fetcher:async(url,request)=>{
+      if(url.endsWith('/uploads')){calls.push(['upload',url]);return response({ok:true,upload:{token:'managed'}});}
+      const body=JSON.parse(request.body);calls.push(['command',url,body]);
+      if(calls.length===2)throw Error('lost response');
+      return response({ok:true,result:{accepted:true,threadId:'child',turnId:'turn'}});
+    }};
+  let conn=new WorkspaceConnection(options);
+  await assert.rejects(conn.controls().steerAgent('child','turn','Check photo',[new File(['photo'],'photo.png')]),/lost response/);
+  conn.dispose();conn=new WorkspaceConnection(options);
+  try{
+    const pending=conn.controls().pendingAgentMessages();
+    assert.equal(pending.length,1);
+    assert.deepEqual(pending[0].payload,{thread_id:'child',expected_turn_id:'turn',inputs:[{type:'text',text:'Check photo'},{type:'upload',token:'managed'}]});
+    await assert.rejects(conn.controls().steerAgent('child','other','Different'),/unconfirmed/);
+    assert.equal(calls.length,2);
+    await conn.controls().retryAgentMessage(pending[0].requestId);
+    assert.deepEqual(calls[1],calls[2]);
+    assert.equal(calls[0][1],'/api/workspace/parent/uploads');
+    assert.equal(calls[1][1],'/api/workspace/parent/commands');
+    assert.deepEqual(conn.controls().pendingAgentMessages(),[]);
+  }finally{conn.dispose();}
+});
+
 for(const kind of ['interrupt','steer']){
   test(`agent ${kind} retains exact parent route and receipt after lost response`,async()=>{
     const saved=storage(),calls=[];

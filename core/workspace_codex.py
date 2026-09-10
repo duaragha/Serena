@@ -431,11 +431,20 @@ class CodexWorkspace:
         selected["turns"] = list(reversed(deepcopy(page["data"])))
         return {"thread": selected, "historyCursor": following}
 
-    async def steer_agent(self, thread_id, expected_turn_id, text):
+    async def steer_agent(self, thread_id, expected_turn_id, text=None, *, inputs=None):
+        if inputs is not None:
+            if text is not None or not isinstance(inputs, list) or not 1 <= len(inputs) <= 17:
+                raise ValueError("An agent message or validated attachments are required")
+            inputs = deepcopy(inputs)
+            text = "".join(part.get("text", "") for part in inputs if part.get("type") == "text")
+            has_attachment = any(part.get("type") == "localImage" for part in inputs)
+        else:
+            has_attachment = False
+            inputs = [{"type": "text", "text": text}]
         if (not isinstance(expected_turn_id, str) or not 1 <= len(expected_turn_id) <= 256
-                or not isinstance(text, str) or not text.strip() or "\0" in text or len(text.encode()) > 65536):
+                or not isinstance(text, str) or (not text.strip() and not has_attachment)
+                or "\0" in text or len(text.encode()) > 65536):
             raise ValueError("An exact active agent turn and message of at most 64 KiB are required")
-        inputs = [{"type": "text", "text": text}]
         self._reject_unrouted_command(inputs)
         async with self._control_lock:
             if self.state not in {"ready", "running"}:

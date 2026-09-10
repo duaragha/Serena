@@ -5,6 +5,38 @@ that a command's full behavior works. Gemini is deferred.
 
 ## Native Agent Inspection (2026-09-10)
 
+### Active Child Attachments
+
+The active-child composer accepts picker, dropped and pasted files through the
+same bounded parent upload store as parent messages. The host accepts either the
+legacy text payload or upload-token inputs, validates tokens in the parent scope,
+and passes normalized inputs to the existing exact-child `turn/steer` operation.
+It does not start/resume a child or change the parent's active turn. Foreign
+tokens and arbitrary file paths are rejected. File-only image messages work.
+
+Selected files survive dialog close/reopen and child switching in the same pane;
+they are memory-only until sent, not persisted across application reload. Text
+drafts retain their existing storage. Failed sends retain text/files. Uploaded
+tokens and command receipts survive connection replacement; an explicit retry
+uses the original payload, target turn and request ID without reuploading. A
+different message to that child is blocked while its prior receipt is unresolved.
+Receipt recovery retains the current draft rather than guessing it is identical
+to the old accepted message. Closing the inspector does not send or stop work.
+
+Verification (2026-09-10):
+
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_agent_message_steers_exact_turn_without_start_or_resume tests/test_workspace_host.py::test_agent_attachments_validate_parent_scope_and_deduplicate tests/test_workspace_host.py::test_agent_reads_use_existing_parent_even_when_job_reserved tests/test_workspace_pane.py::test_agent_files_reopen_retry_and_do_not_reach_parent tests/test_workspace_pane.py::test_active_agent_message_keeps_failed_draft_and_never_starts_idle_turn -q --tb=short`: initial exit 1 (12 passed, 1 dialog-close locator race); after awaiting dialog removal, exit 0, 13 passed in 12.88s.
+- `node --test tests/workspace-connection.test.mjs`: exit 0, 53 passed, 300.246ms; includes existing parent uploads plus exact child receipt recovery with no reupload.
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_agent_drop_paste_and_pending_receipt_recovery tests/test_workspace_pane.py::test_agent_files_reopen_retry_and_do_not_reach_parent -q --tb=short`: exit 0, 4 passed in 7.26s. 390/1600 widths, file picker/drop/paste, retained files, original receipt retry, long filenames, visible dynamic icons. Screenshot inspection caught missing icon hydration; fixed and retested.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py`: exit 0, all checks passed.
+- `node --check ui/static/workspace-pane.mjs`: exit 0, no output.
+- `git diff --check`: exit 0, no output.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-agents.py`: exit 0, native same-owner rejection and shell interruption proof plus cleanup. No inference, no model-spawned child; does not prove model consumption of an attachment.
+
+Still incomplete: actual model-spawned child end-to-end proof requires a fresh
+dedicated login, idle-child continuation, full command parity, packaged QA and
+release/default enablement. No installed app changed.
+
 ### Child History Images and Live-Proof Failure
 
 Agent snapshots now decorate images using the existing parent session upload

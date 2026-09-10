@@ -899,6 +899,34 @@ def test_agent_history_previews_only_parent_owned_uploads(tmp_path):
         host.shutdown()
 
 
+def test_agent_attachments_validate_parent_scope_and_deduplicate(tmp_path):
+    calls = []
+    class AgentOwner(Owner):
+        async def steer_agent(self, **payload):
+            calls.append(payload)
+            return {'accepted': True}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'agent-files.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': AgentOwner})
+    try:
+        token = host.uploads.save('exact', 'notes.txt', io.BytesIO(b'notes'))['token']
+        foreign = host.uploads.save('foreign', 'notes.txt', io.BytesIO(b'secret'))['token']
+        host.attach('exact')
+        payload = {'thread_id': 'child', 'expected_turn_id': 'turn', 'inputs': [{'type': 'upload', 'token': token}]}
+        assert host.command('exact', 'send', 'steer_agent', payload)['ok']
+        assert host.command('exact', 'send', 'steer_agent', payload)['ok']
+        assert len(calls) == 1
+        assert calls[0]['thread_id'] == 'child' and calls[0]['expected_turn_id'] == 'turn'
+        assert calls[0]['inputs'] == host.uploads.codex_inputs('exact', payload['inputs'])
+        for index, bad in enumerate([
+            [{'type': 'upload', 'token': foreign}], [{'type': 'localImage', 'path': '/etc/passwd'}], [],
+        ]):
+            assert not host.command('exact', f'bad-{index}', 'steer_agent', {**payload, 'inputs': bad})['ok']
+        assert len(calls) == 1 and list(host._sessions) == ['exact']
+    finally:
+        host.shutdown()
+
+
 def test_agent_reads_use_existing_parent_even_when_job_reserved(tmp_path):
     calls = []
     class AgentOwner(Owner):

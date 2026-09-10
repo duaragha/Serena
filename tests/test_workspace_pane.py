@@ -301,6 +301,83 @@ def test_agent_image_preview_zoom_refresh_and_close_release_urls(pane, width):
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_agent_files_reopen_retry_and_do_not_reach_parent(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.agents=async()=>({data:[{id:'child',name:'Research',status:{type:'active'}}],nextCursor:null});
+      controls.inspectAgent=async id=>({thread:{id,turns:[{id:'turn',status:'inProgress',items:[]}]},historyCursor:null});
+      controls.steerAgent=async(id,turn,text,files)=>{calls.push([id,turn,text,files.map(f=>f.name)]);throw Error('Send failed');};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      pane.input.value='parent draft';pane.openAgents();
+    }""")
+    dialog = page.get_by_role('dialog', name='Delegated agents', exact=True)
+    dialog.get_by_role('button', name='Research child active', exact=True).click()
+    dialog.locator('input[type=file]').set_input_files({'name': 'notes.txt', 'mimeType': 'text/plain', 'buffer': b'notes'})
+    dialog.get_by_role('textbox', name='Message active agent').fill('Read this')
+    dialog.get_by_role('button', name='Send to active agent', exact=True).click()
+    dialog.get_by_text('Send failed', exact=True).wait_for()
+    dialog.get_by_role('button', name='Close agents', exact=True).click()
+    page.evaluate('()=>pane.openAgents()')
+    dialog.get_by_role('button', name='Research child active', exact=True).click()
+    dialog.get_by_role('button', name='Remove agent attachment: notes.txt', exact=True).wait_for()
+    assert dialog.get_by_role('textbox', name='Message active agent').input_value() == 'Read this'
+    assert page.evaluate('pane.files.length') == 0
+    page.evaluate("()=>{controls.steerAgent=async(id,turn,text,files)=>{calls.push([id,turn,text,files.map(f=>f.name)]);return {accepted:true,threadId:id,turnId:turn};};}")
+    dialog.get_by_role('button', name='Send to active agent', exact=True).click()
+    dialog.get_by_text('Message accepted by active agent', exact=True).wait_for()
+    assert dialog.get_by_role('button', name='Remove agent attachment: notes.txt', exact=True).count() == 0
+    assert page.evaluate('calls') == [['child', 'turn', 'Read this', ['notes.txt']]] * 2
+    assert page.evaluate('pane.input.value') == 'parent draft'
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_agent_drop_paste_and_pending_receipt_recovery(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.agents=async()=>({data:[{id:'child',name:'Research',status:{type:'active'}}],nextCursor:null});
+      controls.inspectAgent=async id=>({thread:{id,turns:[{id:'turn',status:'inProgress',items:[]}]},historyCursor:null});
+      controls.steerAgent=async()=>{throw Error('Not expected');};
+      window.pendingAgent=[{requestId:'original',payload:{thread_id:'child',expected_turn_id:'old-turn',inputs:[{type:'upload',token:'managed'}]}}];
+      controls.pendingAgentMessages=()=>pendingAgent;
+      controls.retryAgentMessage=async id=>{calls.push(['retry',id]);pendingAgent=[];return {accepted:true,threadId:'child',turnId:'old-turn'};};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      pane.input.value='parent draft';pane.openAgents();
+    }""")
+    dialog = page.get_by_role('dialog', name='Delegated agents', exact=True)
+    dialog.get_by_role('button', name='Research child active', exact=True).click()
+    message = dialog.get_by_role('textbox', name='Message active agent')
+    message.fill('new unsent draft')
+    page.evaluate("""()=>{
+      const data=new DataTransfer();data.items.add(new File(['photo'],'very-long-'.repeat(15)+'.png',{type:'image/png'}));
+      document.querySelector('.aw-agent-composer').dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:data}));
+      const pasted=new DataTransfer();pasted.items.add(new File(['paste'],'clipboard.png',{type:'image/png'}));
+      document.querySelector('.aw-agent-composer textarea').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,clipboardData:pasted}));
+    }""")
+    assert dialog.get_by_role('button', name='Send to active agent', exact=True).is_disabled()
+    assert page.evaluate('pane.files.length') == 0
+    assert page.evaluate('pane.agentFiles.get("child").length') == 2
+    assert dialog.get_by_role('button', name='Retry unconfirmed agent message', exact=True).locator('svg').count() == 1
+    assert dialog.get_by_role('button', name='Remove agent attachment: clipboard.png', exact=True).locator('svg').count() == 1
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'agent-files-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button', name='Retry unconfirmed agent message', exact=True).click()
+    dialog.get_by_text('Previous agent message accepted; current draft retained', exact=True).wait_for()
+    assert message.input_value() == 'new unsent draft'
+    assert page.evaluate('pane.agentFiles.get("child").length') == 2
+    assert page.evaluate('calls') == [['retry', 'original']]
+    assert dialog.get_by_role('button', name='Send to active agent', exact=True).is_enabled()
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_agent_stop_requires_exact_confirmation_and_waits_for_native_completion(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})
@@ -375,7 +452,8 @@ def test_active_agent_message_keeps_failed_draft_and_never_starts_idle_turn(pane
     assert message.input_value() == 'Focus on tests\nKeep the scope'
     assert page.evaluate('pane.input.value') == '/agent'
     dialog.get_by_role('button', name='Close agents', exact=True).click()
-    page.locator('#left textarea').press('Enter')
+    playwright.expect(dialog).to_have_count(0)
+    page.locator('#left').get_by_role('textbox', name='Message Codex', exact=True).press('Enter')
     dialog.get_by_role('button', name='Research child active', exact=True).click()
     playwright.expect(message).to_have_value('Focus on tests\nKeep the scope')
     assert len(page.evaluate('calls')) == 1

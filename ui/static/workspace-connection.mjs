@@ -158,11 +158,10 @@ export class WorkspaceConnection {
     this.pending=remaining;
   }
 
-  async sendMessage(action, {text, files = [], options = {}, expectedTurnId}) {
+  async messageInputs(text, files = [], includeText = false) {
         this.requireReceipts();
-        if (['steer','queue_input'].includes(action) && !expectedTurnId) throw Error('Running turn identity is unavailable');
         if (files.length > 16) throw Error('Attach up to 16 files per message');
-        const inputs = text || options.skills?.length || options.apps?.length ? [{type: 'text', text: text || ''}] : [];
+        const inputs = text || includeText ? [{type: 'text', text: text || ''}] : [];
         for (const file of files) {
           if (!file.size || file.size > 25 * 1024 * 1024) throw Error('Attach non-empty files no larger than 25 MB');
           const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
@@ -176,6 +175,38 @@ export class WorkspaceConnection {
           }
           inputs.push({type: 'upload', token: this.uploads[key]});
         }
+        return inputs;
+  }
+
+  async sendAgentMessage(thread_id, expected_turn_id, text, files = []) {
+    this.requireReceipts();
+    if (!thread_id || !expected_turn_id) throw Error('Active agent identity is unavailable');
+    const payload = files.length
+      ? {thread_id, expected_turn_id, inputs: await this.messageInputs(text, files)}
+      : {thread_id, expected_turn_id, text};
+    if (this.pendingAgentMessages().some(value=>value.payload.thread_id===thread_id
+        && JSON.stringify(value.payload)!==JSON.stringify(payload))) {
+      throw Error('Resolve the unconfirmed agent message before sending different input');
+    }
+    return this.command('steer_agent', payload);
+  }
+
+  pendingAgentMessages() {
+    return Object.entries(this.pending).filter(([key])=>key.startsWith('{')).map(([key,requestId])=>({
+      ...JSON.parse(key),requestId,
+    })).filter(value=>value.action==='steer_agent');
+  }
+
+  async retryAgentMessage(requestId) {
+    const matches=this.pendingAgentMessages().filter(value=>value.requestId===requestId);
+    if(matches.length!==1)throw Error('Agent receipt is no longer pending');
+    return this.command('steer_agent',matches[0].payload);
+  }
+
+  async sendMessage(action, {text, files = [], options = {}, expectedTurnId}) {
+        this.requireReceipts();
+        if (['steer','queue_input'].includes(action) && !expectedTurnId) throw Error('Running turn identity is unavailable');
+        const inputs = await this.messageInputs(text, files, options.skills?.length || options.apps?.length);
         if(['queue_input','submit'].includes(action)){
           const queued=this.pendingQueuedInputs();
           if(queued.length){
@@ -234,7 +265,9 @@ export class WorkspaceConnection {
       agents: (cursor=null) => this.command('agents', {cursor}),
       inspectAgent: (thread_id,cursor=null) => this.command('inspect_agent', {thread_id,cursor}),
       interruptAgent: (thread_id,expected_turn_id) => this.command('interrupt_agent', {thread_id,expected_turn_id,confirmed:true}),
-      steerAgent: (thread_id,expected_turn_id,text) => this.command('steer_agent', {thread_id,expected_turn_id,text}),
+      steerAgent: (thread_id,expected_turn_id,text,files) => this.sendAgentMessage(thread_id,expected_turn_id,text,files),
+      pendingAgentMessages: () => this.pendingAgentMessages(),
+      retryAgentMessage: id => this.retryAgentMessage(id),
       updateGoal: (changes,expected) => this.command('update_goal', {changes,expected,confirmed:true}),
       clearGoal: expected => this.command('clear_goal', {expected,confirmed:true}),
       disconnectSession: () => this.command('disconnect_session', {confirmed:true}),
