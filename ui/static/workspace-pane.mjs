@@ -129,6 +129,7 @@ export class WorkspacePane {
     this.mcpButton.hidden = !['Claude','Codex'].includes(provider) || !controls.mcpServers;
     footer.insertBefore(this.mcpButton, this.stop);
     const permissions=this.button('Permission mode','shield',()=>this.openPermissions());
+    this.permissionsButton=permissions;
     permissions.hidden=!['Codex','Claude'].includes(provider) || !controls.permissions;footer.insertBefore(permissions,this.stop);
     this.sessionModeButton=this.button('Session mode','sliders-horizontal',()=>this.openSessionMode());
     this.sessionModeButton.hidden=provider!=='Gemini' || !controls.sessionModes || !controls.setSessionMode;
@@ -444,11 +445,13 @@ export class WorkspacePane {
     const render = () => {
       list.replaceChildren();
       const query=search.value.toLowerCase();
-      const matching=commands.filter(c => [c.name,c.description,...(c.aliases||[])].join(' ').toLowerCase().includes(query));
+      const localCommands=this.provider==='Codex'?Object.entries(this.codexCommandControls()).map(([name,control])=>({name,kind:'command',description:control.getAttribute('aria-label'),paneControl:control})):[];
+      const matching=[...localCommands,...commands].filter(c => [c.name,c.description,...(c.aliases||[])].join(' ').toLowerCase().includes(query));
       for (const command of matching) {
         const button=node('button','aw-command'); button.type='button';
         button.append(node('strong','',`${command.kind==='skill'?'$':'/'}${command.name}`),node('small','',command.kind==='skill'?command.path:command.argumentHint || ''),node('span','',command.description || ''));
         button.disabled=busy;
+        if(command.paneControl)button.disabled=busy || command.paneControl.hidden || command.paneControl.disabled;
         const localAction=this.provider==='Claude' && ['clear','fork'].includes(command.workspaceAction) ? command.workspaceAction : null;
         if(localAction){
           const control=localAction==='clear'?this.clearButton:this.forkButton;
@@ -456,6 +459,7 @@ export class WorkspacePane {
         }
         if(command.unavailableReason){button.disabled=true;button.title=command.unavailableReason;button.append(node('small','',command.unavailableReason));}
         button.addEventListener('click',()=>{
+          if(command.paneControl){dialog.close();command.paneControl.click();return;}
           if(localAction){dialog.close();if(localAction==='clear')this.openClear();else this.openFork();return;}
           if(command.kind==='skill'){
             if(!this.selectedSkills.some(s=>s.path===command.path))this.selectedSkills.push({name:command.name,path:command.path});
@@ -878,9 +882,23 @@ export class WorkspacePane {
     finally{this.interrupting=false;if(!this.disposed)this.render();}
   }
 
+  codexCommandControls() {
+    return {fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
+      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton};
+  }
+
   async submit() {
     const text = this.input.value;
     if (this.sending || this.send.disabled || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
+    const codexCommand=this.provider==='Codex' && /^\/([a-z]+)(?:\s|$)/.exec(text.trim());
+    const codexControl=codexCommand && this.codexCommandControls()[codexCommand[1]];
+    if(codexControl){
+      if(text.trim()!==`/${codexCommand[1]}` || this.files.length || this.selectedSkills.length){
+        this.error(Error('Session commands do not accept arguments, attachments or skills'));return;
+      }
+      if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
+      if(codexCommand[1]!=='compact'){codexControl.click();return;}
+    }
     const localCommand=this.provider==='Claude' && /^\/(clear|reset|new|fork)(?:\s|$)/.exec(text.trim());
     if(localCommand){
       const control=localCommand[1]==='fork'?this.forkButton:this.clearButton;

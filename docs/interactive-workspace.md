@@ -2,6 +2,34 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Codex Pane Command Routing
+
+2026-09-10: `/fork`, `/review`, `/mcp`, `/permissions` and `/skills` now invoke
+the existing pane controls instead of becoming model prompts. The command picker
+also exposes these actions and `/compact`, disabling unavailable controls.
+Fork retains its confirmation dialog; drafts are preserved when opening dialogs.
+Arguments, attachments and selected skills are refused for these control commands.
+The existing `/compact` submission path retains provider completion handling and
+clears its draft only after acknowledgment. This does not claim all CLI commands
+are implemented, and Gemini/Claude command catalogs are unchanged.
+
+Verification commands executed separately:
+
+```sh
+env PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q --tb=short
+env PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -k 'compact_command or codex_local_commands or codex_picker or session_slash_commands or codex_unavailable_or_argument' -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+node --check ui/static/workspace-pane.mjs
+```
+
+The initial full browser module exited **1**: **158 passed, 1 failed**, exposing
+the compact-route overlap and a Claude-constructed fixture's hidden Codex button.
+After preserving the original compact submission path and correcting that fixture,
+the focused rerun exited **0**: **24 passed, 135 deselected**. Ruff and JavaScript
+syntax check each exited **0**. Browser checks exercise actual controls and fork
+confirmation at mobile/desktop widths with controlled provider callbacks, not
+authenticated inference or installed-app rollout.
+
 ## Combined Regression Pass
 
 At source revision `1aa5cb1`, the complete workspace test family was run together

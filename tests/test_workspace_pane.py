@@ -992,18 +992,19 @@ def test_command_picker_reload_is_explicit_and_keeps_draft(pane):
 
 
 @pytest.mark.parametrize("width", [390, 1600])
-@pytest.mark.parametrize("command", ["clear", "reset", "new", "fork"])
-def test_session_slash_commands_open_confirmed_action_without_sending(pane, width, command):
+@pytest.mark.parametrize("provider,command", [("Claude", command) for command in ("clear", "reset", "new", "fork")] + [("Codex", "fork")])
+def test_session_slash_commands_open_confirmed_action_without_sending(pane, width, command, provider):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})
-    page.evaluate("""command => {
+    page.evaluate("""({command,provider}) => {
+      pane.provider=provider;
       controls.clearSession=async()=>{calls.push('clear');return {session_id:'11111111-1111-4111-8111-111111111111'};};
       controls.openCleared=async()=>{};
       controls.forkSession=async()=>{calls.push('fork');return {session_id:'11111111-1111-4111-8111-111111111111',indexed:true};};
       controls.openFork=async()=>{};
       pane.clearButton.hidden=false;pane.forkButton.hidden=false;
       pane.input.value='/'+command;pane.render();
-    }""", command)
+    }""", {"command": command, "provider": provider})
     page.get_by_role("button", name="Send message", exact=True).first.click()
     dialog = page.get_by_role("dialog", name="Fork conversation" if command == "fork" else "Clear context", exact=True)
     dialog.wait_for()
@@ -1012,6 +1013,37 @@ def test_session_slash_commands_open_confirmed_action_without_sending(pane, widt
     dialog.get_by_role("button", name="Create fork" if command == "fork" else "Confirm clear context", exact=True).click()
     page.wait_for_function("calls.length === 1")
     assert page.evaluate("calls") == ["fork" if command == "fork" else "clear"]
+    assert not errors
+
+
+@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills"])
+def test_codex_local_commands_use_controls_not_model_prompts(pane, command):
+    page, errors = pane
+    page.evaluate("""command => {
+      pane.provider='Codex';
+      for(const method of ['openFork','openReview','openMcpServers','openPermissions','openCommands'])
+        pane[method]=()=>calls.push('control');
+      controls.compact=async()=>calls.push('control');
+      for(const control of Object.values(pane.codexCommandControls()))control.hidden=false;
+      pane.input.value='/'+command;pane.render();
+    }""", command)
+    page.get_by_role("button", name="Send message", exact=True).first.click()
+    page.wait_for_function("calls.length === 1")
+    assert page.evaluate("calls") == ["control"]
+    assert page.evaluate("pane.input.value") == ("" if command == "compact" else "/" + command)
+    assert not errors
+
+
+@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills"])
+def test_codex_unavailable_or_argument_commands_do_not_submit(pane, command):
+    page, errors = pane
+    page.evaluate("""command=>{pane.provider='Codex';pane.input.value='/'+command+' extra';pane.render();}""", command)
+    page.get_by_role("button", name="Send message", exact=True).first.click()
+    page.get_by_text("Session commands do not accept arguments, attachments or skills", exact=True).wait_for()
+    page.evaluate("""command=>{pane.input.value='/'+command;pane.codexCommandControls()[command].hidden=true;}""", command)
+    page.get_by_role("button", name="Send message", exact=True).first.click()
+    page.get_by_text("Session action is not available right now", exact=True).wait_for()
+    assert page.evaluate("calls") == []
     assert not errors
 
 
@@ -1028,6 +1060,24 @@ def test_session_command_picker_uses_local_action_and_keeps_draft(pane):
     page.get_by_role("dialog", name="Clear context", exact=True).wait_for()
     assert page.evaluate("calls") == []
     assert page.evaluate("pane.input.value") == "keep draft"
+    assert not errors
+
+
+def test_codex_picker_lists_local_actions_and_preserves_draft(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      pane.provider='Codex';controls.commands=async()=>({data:[]});
+      controls.forkSession=async()=>calls.push('fork');controls.openFork=async()=>{};
+      pane.commandsButton.hidden=false;pane.forkButton.hidden=false;
+      pane.input.value='keep my draft';pane.render();
+    }""")
+    page.get_by_role("button", name="Commands and skills", exact=True).first.click()
+    dialog = page.get_by_role("dialog", name="Commands and skills")
+    assert dialog.get_by_role("button", name="/compact", exact=False).is_disabled()
+    dialog.get_by_role("button", name="/fork", exact=False).click()
+    page.get_by_role("dialog", name="Fork conversation", exact=True).wait_for()
+    assert page.evaluate("calls") == []
+    assert page.evaluate("pane.input.value") == "keep my draft"
     assert not errors
 
 
@@ -1528,7 +1578,7 @@ def test_review_dialog_routes_explicit_target_without_submitting_message(pane):
 def test_compact_command_is_native_and_waits_for_provider_completion(pane):
     page, errors = pane
     page.evaluate("""() => {
-      pane.provider='Codex';controls.compact=async()=>{
+      pane.provider='Codex';pane.compactButton.hidden=false;controls.compact=async()=>{
         calls.push(['compact']);emit({method:'workspace/activity',params:{threadId:'exact',status:'compacting'}});
       };
     }""")
