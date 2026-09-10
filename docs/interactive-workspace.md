@@ -2,6 +2,41 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Read-only Codex Status (2026-09-10)
+
+`/status`, its command-picker entry and the header info button now open a
+read-only session summary. It shows the exact session identity, state, project,
+last reported model/effort/tier, permission profile, approval/sandbox metadata
+and token counts from the existing conversation event state. Missing values
+say `Unavailable`; zero tokens remain zero. It never substitutes the pending
+model selector for the last provider-reported model. Settings, token and sleep
+updates refresh an open panel. Closing preserves the draft and returns focus;
+disposing the pane removes the panel.
+
+This consumes existing events only: opening status neither requests provider
+work nor wakes an idle owner. It is not a fresh provider configuration query.
+Account rate-limit display is not implemented in this panel yet, so this is
+not a claim of complete TUI `/status` parity.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_status_is_read_only_updates_and_does_not_invent_values tests/test_workspace_pane.py::test_codex_unavailable_or_argument_commands_do_not_submit -q --tb=short
+# exit 0: 11 passed in 10.36s.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0: no syntax errors.
+```
+
+A recorded `SERENA_EVIDENCE_KIND=live` Python/Playwright proof served the actual
+modules/CSS/icons in Edge at 390px and 1440px, delivered controlled status/token
+events, exercised `/status` and Escape, and saved screenshots under
+`apps/desktop/build/workspace-proof/codex-status-{390,1440}.png`. Both screenshots
+were visually inspected. Final exit 0: no horizontal overflow, no page errors,
+zero provider submissions, draft/focus preserved, no provider launched, browser
+and server cleaned up. The initial proof exited 1 because it asserted focus
+before the asynchronous dialog close event; waiting for that event passed
+without a runtime change. This verifies the renderer, not provider inference.
+
 ## Codex Selection Command Routing (2026-09-10)
 
 The composer and command picker now route `/model` and `/reasoning` to the
@@ -14,8 +49,8 @@ Evidence: [official command reference](https://learn.chatgpt.com/docs/developer-
 accessed 2026-09-10, identifies model and reasoning selection commands. Product
 decision: reuse the pane's existing selectors and next-turn option handling,
 not a second command execution path or a claim of persisted TUI configuration.
-This is not full command parity: `/status` and the remaining command inventory
-still need auditing, and Claude's installation diagnostics is not its agentic
+This is not full command parity: the remaining command inventory still needs
+auditing, and Claude's installation diagnostics is not its agentic
 doctor workflow.
 
 ```sh

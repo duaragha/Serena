@@ -1193,7 +1193,7 @@ def test_codex_local_commands_use_controls_not_model_prompts(pane, command):
     assert not errors
 
 
-@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills", "model", "reasoning"])
+@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills", "model", "reasoning", "status"])
 def test_codex_unavailable_or_argument_commands_do_not_submit(pane, command):
     page, errors = pane
     page.evaluate("""command=>{pane.provider='Codex';pane.input.value='/'+command+' extra';pane.render();}""", command)
@@ -1228,6 +1228,35 @@ def test_codex_selection_commands_focus_native_control_without_sending(pane, wid
     assert page.evaluate("command=>document.activeElement===pane.codexCommandControls()[command]", command)
     assert page.evaluate('calls') == []
     assert page.evaluate('pane.input.value') == '/' + command
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
+def test_codex_status_is_read_only_updates_and_does_not_invent_values(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""()=>{
+      pane.provider='Codex';pane.sessionStatusButton.hidden=false;pane.input.value='/status';
+      emit({method:'workspace/settings',params:{model:'actual-model',reasoningEffort:'high',approvalPolicy:'on-request',sandbox:{type:'workspaceWrite',writableRoots:['/very-long-project/'.repeat(12)]}}});
+      pane.render();
+    }""")
+    page.locator('#left').get_by_role('button', name='Send message', exact=True).click()
+    dialog = page.get_by_role('dialog', name='Session status', exact=True)
+    dialog.wait_for()
+    assert 'actual-model' in dialog.inner_text()
+    assert 'Unavailable' in dialog.inner_text()
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.evaluate("""()=>emit({method:'thread/tokenUsage/updated',params:{threadId:'exact',tokenUsage:{last:{totalTokens:0},total:{totalTokens:1234},modelContextWindow:null}}})""")
+    page.wait_for_function("pane.sessionStatusDialog.textContent.includes('1,234')")
+    assert dialog.locator('dt', has_text='Last request tokens').evaluate('el=>el.nextElementSibling.textContent') == '0'
+    page.evaluate('pane.setSleeping(true)')
+    assert 'sleeping' in dialog.inner_text()
+    assert page.evaluate('calls') == []
+    page.keyboard.press('Escape')
+    assert page.evaluate('pane.input.value') == '/status'
+    assert page.evaluate('document.activeElement===pane.input')
+    page.evaluate('pane.openSessionStatus();pane.dispose()')
+    assert page.get_by_role('dialog', name='Session status', exact=True).count() == 0
     assert not errors
 
 

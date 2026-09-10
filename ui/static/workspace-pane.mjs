@@ -55,6 +55,8 @@ export class WorkspacePane {
     this.accountButton=this.button('Codex account','user-round',()=>this.openAccount());
     this.accountButton.hidden=provider!=='Codex' || !controls.accountStatus;
     head.append(this.accountButton);
+    this.sessionStatusButton=this.button('Session status','info',()=>this.openSessionStatus());
+    this.sessionStatusButton.hidden=provider!=='Codex';head.append(this.sessionStatusButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
@@ -683,6 +685,34 @@ export class WorkspacePane {
     }
   }
 
+  openSessionStatus() {
+    if(this.sessionStatusDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-session-status-dialog');
+    dialog.setAttribute('aria-label','Session status');
+    const list=node('dl');
+    const close=this.button('Close session status','x',()=>dialog.close());
+    this.refreshSessionStatus=()=>{
+      const m=this.conversation.metadata;
+      const token=value=>Number.isSafeInteger(value) && value>=0 ? value.toLocaleString() : null;
+      const rows=[['Session',this.conversation.sessionId],['State',this.sleeping?'sleeping':this.conversation.status],
+        ['Project',m.thread?.cwd],['Model',m.model],['Reasoning effort',m.reasoningEffort],
+        ['Speed tier',m.serviceTier],['Permission profile',m.permissionProfile],
+        ['Approval policy',m.approvalPolicy],['Sandbox',m.sandbox || m.sandboxPolicy],
+        ['Last request tokens',token(m.tokenUsage?.last?.totalTokens)],
+        ['Total tokens',token(m.tokenUsage?.total?.totalTokens)],
+        ['Context window',token(m.tokenUsage?.modelContextWindow)]];
+      list.replaceChildren();
+      for(const [label,value] of rows){
+        const display=value==null || value==='' ? 'Unavailable' : typeof value==='object' ? JSON.stringify(value,null,2) : String(value);
+        list.append(node('dt','',label),node('dd','',display));
+      }
+    };
+    dialog.append(node('h3','','Session status'),close,list);
+    dialog.addEventListener('close',()=>{this.refreshSessionStatus=null;this.sessionStatusDialog=null;dialog.remove();this.input.focus();});
+    this.sessionStatusDialog=dialog;this.root.append(dialog);this.refreshSessionStatus();
+    this.refreshIcons();dialog.showModal();close.focus();
+  }
+
   async openEvents() {
     if(this.eventsDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog aw-events-dialog');dialog.setAttribute('aria-label','Session events');
@@ -1014,6 +1044,7 @@ export class WorkspacePane {
   renderStatus() {
     this.status.textContent = this.sleeping ? 'sleeping' : this.conversation.status;
     if (this.conversation.metadata.bridgeQueueCount > 0) this.status.textContent += ` / ${this.conversation.metadata.bridgeQueueCount} queued`;
+    this.refreshSessionStatus?.();
   }
 
   receive(envelope) {
@@ -1055,7 +1086,7 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,
-      model:this.modelSelect,reasoning:this.effortSelect};
+      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton};
   }
 
   activateCommandControl(control) {
@@ -1653,6 +1684,7 @@ export class WorkspacePane {
   }
 
   dispose() {
+    this.sessionStatusDialog?.close();
     this.imageDialog?.close();
     this.disposeMentions?.();
     this.reviewDialog?.close();
