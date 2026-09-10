@@ -2401,7 +2401,6 @@ def _skip_finalize_leg(
         state="completed",
         output_text=output_text,
         session_id=attempt.get("resume_session_id"),
-        actual_model=str(leg.get("model") or ""),
         exit_code=0,
     )
     return WorkerResult(True, output_text, attempt.get("resume_session_id"), None, None, 0)

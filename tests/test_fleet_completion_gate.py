@@ -1211,6 +1211,10 @@ def test_a_clean_review_skips_a_fixer_but_still_produces_a_final_response(
 
     skipped = _events(run["run_id"], "worker.finalize.skipped")
     assert len(skipped) == 1
+    skipped_leg = next(leg for leg in _legs(finished) if leg["leg_id"] == skipped[0]["leg_id"])
+    assert skipped_leg["current_attempt"]["actual_model"] is None
+    assert skipped_leg["current_attempt"]["actual_effort"] is None
+    assert skipped_leg["current_attempt"]["event_log_path"] is None
 
 
 def test_a_review_finding_keeps_its_owners_fix_leg_running(gate_env, monkeypatch):
