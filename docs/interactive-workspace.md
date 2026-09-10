@@ -2,6 +2,38 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Windows Gated Transport Integration
+
+WorkspaceRpc now launches a minimal Windows bootstrap, assigns it to its owned
+job, and only then supplies the provider command. Source launches use the base
+Python executable with isolated/no-site startup (not a venv redirector). The
+bootstrap consumes exactly one gate line and passes subsequent stdin/stdout to
+the child without buffering provider input. The Windows sidecar exposes an early
+`--workspace-child` dispatch that restores inherited pipes without starting Flask.
+
+Explicit shutdown terminates the job, waits for zero active processes, and only
+then drops ownership. Inherited output pipes cannot indefinitely preserve the
+old shutdown wait. Assignment failure kills the bootstrap without running any
+provider code. Renderer disconnect behavior is unchanged. This supersedes the
+earlier Windows transport/primitive integration gaps below, but frozen Windows
+binary execution and provider-level integration remain unverified.
+
+Final verification commands (all exit 0):
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_rpc.py tests/test_workspace_lease.py tests/test_workspace_windows_job.py tests/test_workspace_windows_bootstrap.py -q --tb=short
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys; os.chdir(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); sys.path.insert(0,os.getcwd()); sys.dont_write_bytecode=True; import pytest; sys.exit(pytest.main(['tests/test_workspace_rpc.py','tests/test_workspace_lease.py','tests/test_workspace_windows_job.py','tests/test_workspace_windows_bootstrap.py','-q','-p','no:cacheprovider','--tb=short']))\""
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-windows.py"
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_rpc.py core/workspace_windows_bootstrap.py tests/test_workspace_rpc.py tests/test_workspace_windows_bootstrap.py scripts/verify-workspace-windows.py
+```
+
+Linux: 22 passed, 9 platform skips in 2.98s. Windows: 26 passed, 5 platform skips
+in 4.52s. Final transport SHA256 matched both machines before testing. The live
+proof returned win32, bidirectional true, owned_processes 3, closed true,
+provider_started false. Its first invocation exited 2 before the script synced;
+after confirming the file hash, the same proof exited 0. No provider, installed
+app, release, user session, or background job was started or modified.
+
 ## Windows Job Ownership Primitive
 
 `core/workspace_windows_job.py` wraps unnamed, non-inheritable Windows jobs with

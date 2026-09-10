@@ -39,7 +39,28 @@ for line in sys.stdin:
 """
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX owned process groups")
+@pytest.mark.skipif(os.name != "nt", reason="Windows assignment gate")
+def test_failed_job_assignment_never_executes_provider(tmp_path, monkeypatch):
+    from core.workspace_windows_job import WindowsJob
+
+    marker = tmp_path / "must-not-exist"
+    def reject(self, pid):
+        raise OSError("assignment refused")
+    monkeypatch.setattr(WindowsJob, "assign", reject)
+    async def run():
+        rpc = WorkspaceRpc()
+        with pytest.raises(OSError, match="assignment refused"):
+            await rpc.start(
+                [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)],
+                cwd=tmp_path, env=dict(os.environ),
+            )
+        assert rpc.process is None
+        assert rpc._windows_job is None
+        assert not marker.exists()
+        await rpc.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("inherit_output", [False, True])
 def test_owner_close_removes_child_even_after_leader_exits(tmp_path, inherit_output):
     peer = r"""
@@ -58,8 +79,11 @@ for line in sys.stdin:
             await rpc.start([sys.executable, '-u', '-c', peer, str(inherit_output)], cwd=tmp_path, env=dict(os.environ))
             pid = (await rpc.request('child', {}))['pid']
             child = psutil.Process(pid)
-            assert os.getpgid(pid) == rpc.process.pid
-            assert os.getpgid(pid) != os.getpgrp()
+            if os.name != "nt":
+                assert os.getpgid(pid) == rpc.process.pid
+                assert os.getpgid(pid) != os.getpgrp()
+            else:
+                assert rpc._windows_job.active_processes() >= 2
             await asyncio.wait_for(rpc.close(), 8)
             for _ in range(100):
                 if not child.is_running() or child.status() == psutil.STATUS_ZOMBIE:

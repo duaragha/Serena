@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import signal
+import sys
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ class WorkspaceRpc:
         self._lifecycle_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
         self._failure: str | None = None
+        self._windows_job = None
 
     async def start(self, command: list[str], *, cwd: Path, env: dict[str, str]) -> None:
         async with self._lifecycle_lock:
@@ -44,16 +46,41 @@ class WorkspaceRpc:
             self._failure = None
             self.events = asyncio.Queue()
             self.stderr.clear()
-            self.process = await asyncio.create_subprocess_exec(
-                *command,
-                cwd=str(cwd),
-                env=env,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=os.name != "nt",
-                limit=16 * 1024 * 1024,
-            )
+            launch = command
+            if os.name == "nt":
+                from core.workspace_windows_job import WindowsJob
+
+                self._windows_job = WindowsJob()
+                if getattr(sys, "frozen", False):
+                    launch = [sys.executable, "--workspace-child"]
+                else:
+                    launch = [getattr(sys, "_base_executable", sys.executable), "-I", "-S",
+                              str(Path(__file__).with_name("workspace_windows_bootstrap.py"))]
+            try:
+                self.process = await asyncio.create_subprocess_exec(
+                    *launch,
+                    cwd=str(cwd),
+                    env=env,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=os.name != "nt",
+                    limit=16 * 1024 * 1024,
+                )
+                if self._windows_job is not None:
+                    self._windows_job.assign(self.process.pid)
+                    self.process.stdin.write((json.dumps(command) + "\n").encode())
+                    await self.process.stdin.drain()
+            except BaseException:
+                if self._windows_job is not None:
+                    self._windows_job.close()
+                    self._windows_job = None
+                if self.process is not None:
+                    with contextlib.suppress(ProcessLookupError):
+                        self.process.kill()
+                    await self.process.wait()
+                    self.process = None
+                raise
             self._tasks = [asyncio.create_task(self._read()), asyncio.create_task(self._stderr())]
 
     async def request(self, method: str, params: dict, *, timeout: float = 30) -> Any:
@@ -158,6 +185,8 @@ class WorkspaceRpc:
                 with contextlib.suppress(ProcessLookupError):
                     if os.name != "nt":
                         os.killpg(process.pid, signal.SIGTERM)
+                    elif self._windows_job is not None:
+                        self._windows_job.terminate()
                     else:
                         process.terminate()
                 try:
@@ -166,6 +195,8 @@ class WorkspaceRpc:
                     with contextlib.suppress(ProcessLookupError):
                         if os.name != "nt":
                             os.killpg(process.pid, signal.SIGKILL)
+                        elif self._windows_job is not None:
+                            self._windows_job.terminate()
                         else:
                             process.kill()
                     await process.wait()
@@ -174,6 +205,15 @@ class WorkspaceRpc:
             if os.name != "nt":
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
+            if self._windows_job is not None:
+                self._windows_job.terminate()
+                deadline = asyncio.get_running_loop().time() + 5
+                while self._windows_job.active_processes():
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise WorkspaceRpcError("Windows worker descendants have not exited")
+                    await asyncio.sleep(.01)
+                self._windows_job.close()
+                self._windows_job = None
             for task in self._tasks:
                 task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)
