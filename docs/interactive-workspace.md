@@ -2,6 +2,13 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+ACP session controller (2026-09-09): exact-ID load/replay, single active prompt,
+advertised input capabilities and explicit permission/cancellation controls now
+exist over an already owned ACP transport. Native missing-session refusal passed
+through this controller; 15 focused protocol/controller tests passed. Process
+ownership, authentication and host admission are not yet connected. See
+[verification and limitations](workspace-antigravity-acp.md#next-integration-work).
+
 ACP events and permission surface (2026-09-09): added session-bound streamed text
 and incremental tool translation, retained opaque content, and explicit native
 permission choices in the rich pane. Eight focused adapter/browser tests passed

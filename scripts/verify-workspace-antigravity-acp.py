@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.workspace_acp import WorkspaceAcpRpc
+from core.workspace_acp_session import AcpSession
 from core.workspace_rpc import WorkspaceRpcError
 
 
@@ -40,12 +41,17 @@ async def main():
             print("PASS: actual Google ACP initialization; no authenticate, session/new, session/load or prompt sent", flush=True)
             sessions = await rpc.request("session/list", {}, timeout=10)
             assert sessions.get("sessions") == [], sessions
+            published = []
+            async def publish(event):
+                published.append(event)
+            session = AcpSession(session_id=sid, cwd=home, rpc=rpc, publish=publish)
             try:
-                await rpc.request("session/load", {"sessionId": sid, "cwd": str(home), "mcpServers": []}, timeout=10)
+                await session.load(result, mcp_servers=[])
             except WorkspaceRpcError as error:
                 assert "-32002" in str(error) and "Session not found" in str(error), str(error)
             else:
                 raise AssertionError("ACP unexpectedly loaded a CLI-only fixture")
+            assert session.state == "unavailable" and not published
             assert cli_db.read_bytes() == original
             assert not (home / ".gemini" / "antigravity-acp" / "conversations" / f"{sid}.db").exists()
             print("PASS: CLI-only SQLite fixture absent from ACP list and rejected on exact load; original unchanged and no replacement created", flush=True)

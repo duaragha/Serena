@@ -96,6 +96,21 @@ instead of implying Google has no interactive interface. Admission is unchanged.
 
 ## Next Integration Work
 
+Session controller foundation added 2026-09-09 in `core/workspace_acp_session.py`.
+It operates over an already owned transport, loads only the supplied persisted
+ID, retains replayed history, serializes prompts, validates advertised content
+capabilities and routes permission answers. Cancel also declines permission
+requests arriving after cancellation begins. Load failure cannot become create
+or automatic retry. Cross-session event failures disable further input.
+It never launches/authenticates or acquires a lease itself: native process owner
+and host admission wiring remain required before exposing it in the app.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_session.py tests/test_workspace_acp_events.py tests/test_workspace_acp.py -q --tb=short`: exit 0, 15 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_session.py -q --tb=short`: exit 0, 4 passed after final load-routing guard.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_acp_session.py tests/test_workspace_acp_session.py scripts/verify-workspace-antigravity-acp.py`: exit 0.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-antigravity-acp.py apps/desktop/build/proof-tools/antigravity-acp/agy_acp_server.par`: exit 0; now uses the production session controller for native missing-session refusal. No replacement or mutation; process exit 0. Successful load/prompt/cancellation tests still use controlled records, not authenticated native inference.
+
 Event translation foundation added 2026-09-09 in `core/workspace_acp_events.py`:
 exact-session validation, explicit turn boundaries, optional native message IDs,
 contiguous ID-less text chunks, incremental tool updates and retained unknown
