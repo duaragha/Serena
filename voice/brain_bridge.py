@@ -24,8 +24,6 @@ import uuid
 from contextlib import suppress
 from pathlib import Path
 
-import websockets
-
 from core.image_input import MAX_IMAGE_WIRE_BYTES, clean_image_input
 
 STATE_FILE = Path.home() / ".config" / "serena" / "voice_state"
@@ -447,6 +445,7 @@ async def apply_code_control(message: dict) -> dict:
 
 
 async def handler(ws):
+    import websockets
     clients.add(ws)
     try:
         await ws.send(json.dumps({"type": "state_change", "state": state}))
@@ -850,6 +849,7 @@ async def warm_voice() -> None:
 
 
 async def main():
+    import websockets
     event_socket = open_event_socket()
     try:
         async with websockets.serve(handler, HOST, PORT, max_size=MAX_IMAGE_WIRE_BYTES):

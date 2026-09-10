@@ -191,3 +191,19 @@ def test_voice_bridge_fallback_respects_approval_and_cancel(tmp_path, monkeypatc
     count = len(authority.history())
     brain_bridge._fallback_fleet_notice(notice)
     assert len(authority.history()) == count
+
+
+def test_notice_contract_does_not_require_optional_websocket_server():
+    import subprocess
+    import sys
+    from pathlib import Path
+    source = (
+        "import sys,json; sys.modules['websockets']=None; "
+        "from voice.brain_bridge import parse_local_event; "
+        "notice={'type':'fleet_notice','run_id':'private-probe','state':'waiting_for_input',"
+        "'token':'attention:probe','text':'Private protocol test.'}; "
+        "assert parse_local_event(json.dumps(notice).encode()) is not None"
+    )
+    result = subprocess.run([sys.executable, '-c', source], capture_output=True, text=True,
+                            cwd=Path(__file__).resolve().parents[1], timeout=15)
+    assert result.returncode == 0, result.stderr
