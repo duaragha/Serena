@@ -69,6 +69,13 @@ def _disk_path_readiness(path: Path, required_bytes: int) -> dict:
 def _disk_probe_paths(store, row) -> list[Path]:
     """Include recorded integration/worker filesystems, without initializing stores."""
     paths = [Path(row["cwd"]), store.path.parent, store.path.resolve().parent]
+    if row["access_mode"] == "write":
+        from fleet.isolation import DEFAULT_WORKSPACE_ROOT
+
+        path = Path(os.environ.get("SERENA_FLEET_WORKSPACE_ROOT", "").strip() or DEFAULT_WORKSPACE_ROOT).expanduser()
+        while not path.exists() and path != path.parent:
+            path = path.parent
+        paths.append(path)
     if row["event_log_path"]:
         path = Path(row["event_log_path"]).parent
         while not path.exists() and path != path.parent:
@@ -91,7 +98,10 @@ def _disk_probe_paths(store, row) -> list[Path]:
         if leg is None:
             raise ValueError("resource wait has no worker identity")
         with sqlite3.connect(isolation_db.resolve().as_uri() + "?mode=ro", uri=True) as db:
-            workspace = db.execute("SELECT path FROM fleet_workspaces WHERE run_id=? AND worker_key=?", (row["run_id"], leg["worker_key"])).fetchone()
+            # ENOSPC can interrupt initial schema creation. No registry yet is
+            # not corruption: after headroom returns, normal startup creates it.
+            has_registry = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fleet_workspaces'").fetchone()
+            workspace = db.execute("SELECT path FROM fleet_workspaces WHERE run_id=? AND worker_key=?", (row["run_id"], leg["worker_key"])).fetchone() if has_registry else None
         if workspace:
             paths.append(Path(workspace[0]))
     return list(dict.fromkeys(paths))
@@ -103,8 +113,9 @@ def resume_ready_resource_waits(store, *, now: float | None = None) -> list[str]
     resumed = []
     with store._connect() as connection:
         rows = connection.execute(
-            "SELECT w.*, r.cwd, a.error AS failure_reason, a.event_log_path FROM fleet_resource_waits w "
+            "SELECT w.*, r.cwd, l.access_mode, a.error AS failure_reason, a.event_log_path FROM fleet_resource_waits w "
             "JOIN fleet_runs r ON r.run_id = w.run_id "
+            "JOIN fleet_legs l ON l.leg_id = w.leg_id "
             "JOIN fleet_attempts a ON a.attempt_id = w.attempt_id "
             "WHERE w.not_before <= ? AND r.cancel_requested = 0 "
             "AND r.state IN ('running', 'queued', 'waiting_for_resources', 'waiting_for_capacity')",

@@ -253,6 +253,17 @@ def test_missing_recorded_path_cannot_pass_using_parent_space(tmp_path):
     assert "probe failed" in result["reason"]
 
 
+def test_interrupted_isolation_schema_can_retry_after_storage_recovers(tmp_path, monkeypatch):
+    store, _, _, leg, _ = parked(tmp_path)
+    path = tmp_path / "fleet-isolation.sqlite3"
+    sqlite3.connect(path).close()
+    original_bytes = path.read_bytes()
+    monkeypatch.setattr("fleet.resources.shutil.disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
+    monkeypatch.setattr("fleet.resources.os.statvfs", lambda _: SimpleNamespace(f_files=100, f_favail=50, f_flag=0), raising=False)
+    assert resume_ready_resource_waits(store, now=time.time() + 60) == [leg["leg_id"]]
+    assert path.read_bytes() == original_bytes
+
+
 def test_one_full_worker_filesystem_does_not_hold_a_healthy_run(tmp_path, monkeypatch):
     store = FleetStore(tmp_path / "fleet.sqlite3")
     blocked_path = tmp_path / "blocked-worker"
