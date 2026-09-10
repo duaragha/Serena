@@ -16,7 +16,7 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
 
 
-async def main(browser_login=False, pause=False, modes=False, limits=False):
+async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False):
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
     with tempfile.TemporaryDirectory(prefix="serena-account-proof-") as directory:
@@ -25,6 +25,15 @@ async def main(browser_login=False, pause=False, modes=False, limits=False):
         project = root / "project"
         (home / ".codex").mkdir(parents=True)
         project.mkdir()
+        if signed_limits:
+            source = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
+            auth = json.loads(source.read_text())
+            if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
+                raise RuntimeError("Existing ChatGPT subscription authentication is required")
+            with open(home / ".codex" / "auth.json", "x",
+                      opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
+                json.dump({"auth_mode": "chatgpt", "tokens": auth["tokens"],
+                           "last_refresh": auth.get("last_refresh")}, output)
         env = strip_metered_auth_env(dict(os.environ))
         env.update(HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home / ".codex"),
                    XDG_CONFIG_HOME=str(home / ".config"), XDG_STATE_HOME=str(home / ".state"))
@@ -42,7 +51,13 @@ async def main(browser_login=False, pause=False, modes=False, limits=False):
             process = owner.rpc.process
             sid = owner.session_id
             result = await owner.account_status()
-            assert result == {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False, "login": None}, result
+            if signed_limits:
+                assert result.get("account") is not None, "Copied subscription login was not recognized"
+                snapshot = await owner.account_rate_limits()
+                assert snapshot["limits"] and snapshot["observedAt"]
+                assert any(event.get("method") == "workspace/accountLimits" for event in events)
+            else:
+                assert result == {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False, "login": None}, result
             if limits:
                 from core.workspace_rpc import WorkspaceRpcError
 
@@ -120,12 +135,13 @@ async def main(browser_login=False, pause=False, modes=False, limits=False):
         assert process is not None and process.returncode is not None
     assert not root.exists()
     print(json.dumps({"ok": True, "nativeAccountRead": True, "sameOwner": True,
-                      "signedIn": False, "loginStarted": browser_login, "loginCancelled": browser_login,
+                      "signedIn": signed_limits, "loginStarted": browser_login, "loginCancelled": browser_login,
                       "browserOpened": False, "inference": False,
                       "nativePauseWake": pause, "wakeAccountRoundTripMs": wake_ms,
                       "readOnlyRuntimeSnapshot": pause,
                       "nativePlanAndDefaultConfirmed": modes,
                       "nativeUnsignedLimitsRefused": limits,
+                      "nativeSignedLimitsRead": signed_limits,
                       "closedViewRetiredWithoutWaking": pause,
                       "childReaped": True, "temporaryProfileRemoved": True}))
 
@@ -136,5 +152,8 @@ if __name__ == "__main__":
     parser.add_argument("--pause", action="store_true", help="Prove POSIX native pause and wake without inference")
     parser.add_argument("--modes", action="store_true", help="Switch native plan/default on the disposable owner without inference")
     parser.add_argument("--limits", action="store_true", help="Verify native unsigned account-limit refusal without inference")
+    parser.add_argument("--signed-limits", action="store_true", help="Read real limits with an isolated subscription login copy; no inference")
     args = parser.parse_args()
-    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits))
+    if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits):
+        parser.error("--signed-limits must run alone")
+    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits))

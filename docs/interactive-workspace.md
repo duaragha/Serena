@@ -14,8 +14,21 @@ Window labels use native durations rather than assuming every primary is 5h.
 
 The last checked snapshot is retained on a failed refresh with a visible error.
 The error scrolls into view in the bounded mobile dialog. This is an explicit
-snapshot, not a continuous live limit feed. Signed-in positive retrieval remains
-to be exercised; the native proof covers honest unsigned refusal only.
+snapshot, not a continuous live limit feed. Native proofs now cover both honest
+unsigned refusal and successful signed-in retrieval, using a disposable copy of
+the existing subscription login. No prompt, browser or login flow was started;
+the same native owner remained ready and the child and temporary profile were
+removed. Account values and credentials are not printed in proof output.
+
+```sh
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --signed-limits
+# exit 0: nativeSignedLimitsRead=true, sameOwner=true, inference=false,
+# childReaped=true, temporaryProfileRemoved=true.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_account_limits_are_native_sanitized_and_do_not_submit -q --tb=short
+# exit 0: 4 passed in 0.66s.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-account.py
+# exit 0: All checks passed!
+```
 
 Source: [official App Server account API](https://learn.chatgpt.com/docs/app-server),
 accessed 2026-09-10, and installed `GetAccountRateLimitsResponse` schema.
