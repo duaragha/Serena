@@ -2,6 +2,27 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Integrated Verification, 2026-09-09
+
+Verified source through `a17ba35`, then rebuilt the frozen Linux backend. No
+installed-app replacement, default activation, release or user-host restart.
+
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp.py tests/test_workspace_acp_events.py tests/test_workspace_acp_session.py tests/test_workspace_gemini.py tests/test_workspace_host.py tests/test_workspace_uploads.py tests/test_workspace_pane.py -q --tb=short`: exit 0, **201 passed in 74.40s**. Combined protocol, owner, durable host, upload and browser regression coverage.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-antigravity-acp.py apps/desktop/build/proof-tools/antigravity-acp/agy_acp_server.par`: exit 0. Actual Google initialization, exact missing-session rejection, unchanged CLI-only fixture, no replacement; native proof process reaped. No authentication or inference.
+- In `apps/desktop`, `env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar`: exit 0. Frozen backend built; capability-refusal smoke passed. Optional-library warnings remain.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: exit 0. Real Electron shell/frozen backend: native 51-turn history and pagination, desktop/mobile input, file mentions, skills, disconnect/resume, fork/index, clipboard copy/multiline paste, Codex and Claude New Chat/title retention, damaged creation-record refusal. Closing the shell preserved owners; proof cleanup reaped them afterward. No credentials or inference used.
+
+Inspected regenerated `apps/desktop/build/workspace-proof/electron-native-workspace.png`
+and `electron-native-claude-created.png`. These show the actual isolated Electron
+app with native local-command output, not fabricated model responses.
+
+This refreshes packaged-backend evidence for Claude/Codex; it does **not** prove
+authenticated Gemini, full CLI feature parity, Windows execution, installed
+AppImage behavior or rollout. Gemini remains unavailable by default pending
+exact saved-session compatibility and authenticated execution verification.
+
+## Earlier Implementation Evidence
+
 Gemini owner command interface (2026-09-09): nonblocking submit with retained
 turn identity, interrupt and strict permission answers now match the host-facing
 method shape. Twelve focused tests passed; authenticated execution and host
