@@ -22,7 +22,21 @@ psutil's read-only PID query; `os.kill(pid, 0)` sends `CTRL_C_EVENT` there and
 is not a safe existence query. POSIX retains signal-zero semantics. Existing
 birth-token fencing and each caller's permission-denial policy remain intact.
 `tests/test_process_probe.py` checks both no-signal routing and a real private
-child's continued survival, then confirms its absence after owned cleanup.
+child’s continued survival, then confirms its absence after owned cleanup.
+
+## Resident helper crash regression
+
+`tests/test_fleet_resident_timer.py` boots the real resident service loop against
+private databases and a disposable Git fixture. It kills only a helper verified
+by its lease, birth token and process ancestry after its patch was applied, then
+observes the normal 30-second timer and persisted cooldown recover that patch.
+No parent retry/resume call or clock adjustment is permitted. The test asserts
+exactly one process retry after its deadline, retained sibling attempts, passing
+integration/evidence gates, and no native model calls. It cancels the disposable
+run only after Code recovers, before unrelated Review; this is helper-recovery
+proof, not a claim of whole-run or business-task completion. Catalog, session
+projection and notification adapters are disabled; scheduling and recovery are
+real. Source acceptance and native Windows packaging both run this regression.
 
 ## Opt-in Gemini research pilot
 
