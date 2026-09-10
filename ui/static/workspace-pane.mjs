@@ -11,6 +11,7 @@ const node = (tag, cls, text) => {
   return el;
 };
 const icon = name => { const el = node('i'); el.dataset.lucide = name; return el; };
+let usageScopeSequence = 0;
 const promptColors={default:'#50354a',red:'#ff7979',blue:'#82b3ff',green:'#77d99b',yellow:'#ead976',purple:'#c09bff',orange:'#f4ae75',pink:'#ff80bf',cyan:'#70dbe1'};
 
 /** A real session view. Controls are supplied by the session owner, not a CLI scraper. */
@@ -568,13 +569,51 @@ export class WorkspacePane {
     const status=node('p');status.setAttribute('role','status');
     const list=node('dl');
     const daily=node('div');
+    const scope=node('fieldset','aw-usage-scope');scope.append(node('legend','','Usage scope'));
+    let selectedScope='account';
+    const groupName=`usage-scope-${++usageScopeSequence}`;
+    for(const [value,text] of [['account','Account'],['session','This session']]){
+      const input=node('input');input.type='radio';input.name=groupName;input.value=value;input.checked=value==='account';
+      const label=node('label');label.append(input,document.createTextNode(text));scope.append(label);
+      input.addEventListener('change',()=>{if(input.checked){selectedScope=value;refresh.click();}});
+    }
     let busy=false;
     const refresh=this.button('Refresh token usage','refresh-cw',async()=>{
-      if(busy)return;busy=true;refresh.disabled=true;status.textContent='Checking account token usage...';list.replaceChildren();daily.replaceChildren();
+      if(busy)return;busy=true;refresh.disabled=true;scope.disabled=true;status.textContent='Checking token usage...';list.replaceChildren();daily.replaceChildren();
       try{
-        const result=await this.controls.accountTokenUsage();
+        const result=await this.controls.accountTokenUsage(selectedScope);
         if(!dialog.open || this.disposed)return;
         const format=value=>value==null?'Unavailable':BigInt(value).toLocaleString();
+        if(selectedScope==='session'){
+          const usage=result.threadUsage;
+          if(usage==null){status.textContent='Session usage estimate unavailable';return;}
+          if(usage.threadId!==this.conversation.sessionId)throw Error('Usage belongs to a different session');
+          const micros=value=>{
+            if(value==null)return 'Unavailable';
+            const number=BigInt(value),fraction=(number%1000000n).toString().padStart(6,'0').replace(/0+$/,'');
+            return (number/1000000n).toLocaleString()+(fraction?'.'+fraction:'');
+          };
+          list.append(node('dt','','Estimated credits'),node('dd','',micros(usage.estimatedUsageCreditsMicros)),
+            node('dt','','Estimated USD'),node('dd','',micros(usage.estimatedUsageUsdMicros)));
+          let shown=0;
+          const more=this.button('Load more usage groups','chevrons-down',()=>load());
+          const load=()=>{
+            for(const group of usage.groups.slice(shown,shown+20)){
+              const heading=node('h4','',group.model || 'Model unavailable');
+              const breakdown=node('dl');
+              for(const [label,value] of [['Effort',group.reasoningEffort??'Unavailable'],['Speed',group.speed??'Unavailable'],
+                ['Estimated credits',micros(group.estimatedUsageCreditsMicros)],['Input tokens',format(group.inputTokens)],
+                ['Cached input',format(group.cachedInputTokens)],['New input',format(group.netNewInputTokens)],
+                ['Output tokens',format(group.outputTokens)],['Total tokens',format(group.totalTokens)]])breakdown.append(node('dt','',label),node('dd','',value));
+              daily.insertBefore(heading,more);daily.insertBefore(breakdown,more);
+            }
+            shown+=20;more.hidden=shown>=usage.groups.length;
+          };
+          daily.append(more);load();this.refreshIcons();
+          if(!usage.groups.length)daily.prepend(node('p','','No model breakdown returned'));
+          status.textContent=`Session estimate: ${new Date(result.observedAt).toLocaleString()}`;
+          return;
+        }
         for(const [key,label,suffix] of [['lifetimeTokens','Lifetime tokens',''],['peakDailyTokens','Peak daily tokens',''],
           ['longestRunningTurnSec','Longest turn',' seconds'],['currentStreakDays','Current streak',' days'],['longestStreakDays','Longest streak',' days']]){
           const value=result.summary[key];list.append(node('dt','',label),node('dd','',format(value)+(value==null?'':suffix)));
@@ -599,10 +638,10 @@ export class WorkspacePane {
         }
         status.textContent=`Account-wide snapshot: ${new Date(result.observedAt).toLocaleString()}`;
       }catch(error){if(dialog.open && !this.disposed){list.replaceChildren();daily.replaceChildren();status.textContent=`Token usage unavailable: ${error.message}`;}}
-      finally{busy=false;refresh.disabled=false;}
+      finally{busy=false;refresh.disabled=false;scope.disabled=false;}
     });
     const close=this.button('Close token usage','x',()=>dialog.close());
-    dialog.append(node('h3','','Account token usage'),close,refresh,status,list,daily);
+    dialog.append(node('h3','','Account token usage'),close,scope,refresh,status,list,daily);
     dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
     this.accountUsageDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();refresh.click();
   }

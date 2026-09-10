@@ -166,6 +166,46 @@ class CodexWorkspace:
             return {"summary": summary, "dailyUsageBuckets": daily,
                     "observedAt": datetime.now(timezone.utc).isoformat()}
 
+    async def thread_token_usage(self):
+        async with self._control_lock:
+            if self.state in {"closed", "opening", "unavailable"}:
+                raise WorkspaceRpcError("Attach Codex before checking session usage")
+            result = await self.rpc.request("account/usage/read", {"threadId": self.session_id})
+            if not isinstance(result, dict):
+                raise WorkspaceRpcError("Codex returned invalid session usage")
+            usage = result.get("threadUsage")
+            observed = datetime.now(timezone.utc).isoformat()
+            if usage is None:
+                return {"threadUsage": None, "observedAt": observed}
+            if not isinstance(usage, dict) or usage.get("threadId") != self.session_id:
+                raise WorkspaceRpcError("Codex returned usage for a different session")
+
+            def count(value, required=False):
+                if value is None and not required:
+                    return None
+                if type(value) is not int or not 0 <= value <= 2**63 - 1:
+                    raise WorkspaceRpcError("Codex returned an invalid session usage counter")
+                return str(value)
+
+            groups = usage.get("groups")
+            if not isinstance(groups, list) or len(groups) > 1000:
+                raise WorkspaceRpcError("Codex returned invalid session usage groups")
+            safe = {"threadId": self.session_id,
+                    "estimatedUsageCreditsMicros": count(usage.get("estimatedUsageCreditsMicros"), True),
+                    "estimatedUsageUsdMicros": count(usage.get("estimatedUsageUsdMicros")), "groups": []}
+            for group in groups:
+                if not isinstance(group, dict):
+                    raise WorkspaceRpcError("Codex returned an invalid session usage group")
+                row = {key: count(group.get(key), key == "estimatedUsageCreditsMicros") for key in (
+                    "estimatedUsageCreditsMicros", "cachedInputTokens", "inputTokens", "netNewInputTokens", "outputTokens", "totalTokens")}
+                for key in ("model", "reasoningEffort", "speed"):
+                    value = group.get(key)
+                    if value is not None and (not isinstance(value, str) or len(value) > 256):
+                        raise WorkspaceRpcError("Codex returned invalid usage group metadata")
+                    row[key] = value
+                safe["groups"].append(row)
+            return {"threadUsage": safe, "observedAt": observed}
+
     def _finish_account_login(self, params):
         if (self._account_login is None or self._account_login["status"] not in {"pending", "uncertain"}
                 or not isinstance(params.get("loginId"), str)

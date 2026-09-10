@@ -576,6 +576,42 @@ def test_account_status_uses_exact_owner_without_refresh_or_inference(tmp_path, 
 
 
 @pytest.mark.parametrize('kind', ['legacy', 'multiple', 'malformed', 'unavailable'])
+def test_session_usage_is_exact_estimated_and_preserves_int64(tmp_path, kind):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if kind == 'unavailable':
+                return {'threadUsage': None}
+            return {'threadUsage': {'threadId': 'foreign' if kind == 'malformed' else owner.session_id,
+                    'estimatedUsageCreditsMicros': 2**63-1, 'estimatedUsageUsdMicros': None,
+                    'groups': [{'estimatedUsageCreditsMicros': 1, 'inputTokens': 0, 'model': 'native', 'accessToken': 'secret'}]}}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'same'
+            if kind == 'malformed':
+                with pytest.raises(WorkspaceRpcError, match='different session'):
+                    await owner.thread_token_usage()
+            else:
+                result = await owner.thread_token_usage()
+                if kind == 'unavailable':
+                    assert result['threadUsage'] is None
+                else:
+                    usage = result['threadUsage']
+                    assert usage['estimatedUsageCreditsMicros'] == str(2**63-1)
+                    assert usage['estimatedUsageUsdMicros'] is None
+                    assert usage['groups'][0]['inputTokens'] == '0' and usage['groups'][0]['totalTokens'] is None
+                    assert 'secret' not in str(result)
+            assert calls == [('account/usage/read', {'threadId': owner.session_id})]
+            assert owner.state == 'running' and owner.active_turn == 'same'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('kind', ['legacy', 'multiple', 'malformed', 'unavailable'])
 def test_account_token_usage_is_bounded_exact_and_preserves_missing_data(tmp_path, kind):
     async def run():
         owner, rpc, _ = await make(tmp_path)

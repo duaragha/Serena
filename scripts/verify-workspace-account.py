@@ -80,12 +80,13 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
             if usage:
                 from core.workspace_rpc import WorkspaceRpcError
 
-                try:
-                    await owner.account_token_usage()
-                except WorkspaceRpcError as error:
-                    assert any(word in str(error).lower() for word in ("auth", "access token", "logged in")), str(error)
-                else:
-                    raise AssertionError("Unsigned profile unexpectedly returned token activity")
+                for reader in (owner.account_token_usage, owner.thread_token_usage):
+                    try:
+                        await reader()
+                    except WorkspaceRpcError as error:
+                        assert any(word in str(error).lower() for word in ("auth", "access token", "logged in")), str(error)
+                    else:
+                        raise AssertionError("Unsigned profile unexpectedly returned token activity")
             if hooks:
                 catalog = await owner.list_hooks()
                 assert catalog == {"data": [], "errors": [], "warnings": []}, catalog
@@ -172,6 +173,7 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
                       "nativeUnsignedLimitsRefused": limits,
                       "nativeSignedLimitsRead": signed_limits,
                       "nativeUnsignedTokenUsageRefused": usage,
+                      "nativeUnsignedSessionUsageRefused": usage,
                       "nativeEmptyHookCatalogRead": hooks,
                       "nativeAppCatalogRead": signed_apps,
                       "appsEnabledOnlyInDisposableProfile": signed_apps,

@@ -62,6 +62,43 @@ def test_session_actions_keep_headers_aligned_and_support_keyboard(pane, width):
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_session_usage_estimates_keep_scope_precision_and_missing_values(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.accountTokenUsage=async scope=>{calls.push(scope);return scope==='session' ? {threadUsage:{threadId:'exact',
+        estimatedUsageCreditsMicros:'1234567',estimatedUsageUsdMicros:null,groups:[{model:'Native model',reasoningEffort:'high',speed:null,
+        estimatedUsageCreditsMicros:'1',inputTokens:'0',totalTokens:'9223372036854775807'}]},observedAt:'2026-09-10T12:00:00Z'} :
+        {summary:{},dailyUsageBuckets:null,observedAt:'2026-09-10T12:00:00Z'};};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/usage';pane.render();
+    }""")
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role('dialog', name='Account token usage', exact=True)
+    dialog.get_by_role('radio', name='This session', exact=True).check()
+    dialog.get_by_role('heading', name='Native model').wait_for()
+    assert '1.234567' in dialog.inner_text() and '0.000001' in dialog.inner_text()
+    assert '9,223,372,036,854,775,807' in dialog.inner_text()
+    assert 'Estimated USD' in dialog.inner_text() and 'Unavailable' in dialog.inner_text()
+    assert page.evaluate('calls') == ['account', 'session']
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'session-usage-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    page.evaluate("()=>{controls.accountTokenUsage=async()=>({threadUsage:{threadId:'foreign'}});}")
+    dialog.get_by_role('button', name='Refresh token usage').click()
+    dialog.get_by_text('Token usage unavailable: Usage belongs to a different session', exact=True).wait_for()
+    assert dialog.get_by_role('heading', name='Native model').count() == 0
+    page.evaluate("()=>{controls.accountTokenUsage=async()=>({threadUsage:null});}")
+    dialog.get_by_role('button', name='Refresh token usage').click()
+    dialog.get_by_text('Session usage estimate unavailable', exact=True).wait_for()
+    page.keyboard.press('Escape')
+    page.wait_for_function('!pane.accountUsageDialog.open')
+    assert page.evaluate('pane.input.value') == '/usage'
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_native_token_usage_has_explicit_refresh_and_preserves_draft(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

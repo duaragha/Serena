@@ -3,6 +3,44 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Native Session Usage Estimates (2026-09-10)
+
+The usage dialog now separates Account from This session. The latter calls
+`account/usage/read` with the attached owner's exact `threadId`; callers cannot
+choose another thread. Returned foreign IDs are rejected. Native credit/USD
+estimates and per-model token breakdowns retain missing values and exact int64
+precision. No local pricing calculation, inference turn, or automatic polling
+is introduced. Model groups paginate locally in batches of 20.
+
+The radio group uses a local sequence, not secure-context-only randomUUID.
+The initial browser run exposed this HTTP compatibility defect (14 passed,
+4 failed, exit 1); after repair the four browser cases passed in 5.83s, exit 0.
+Desktop 1600px and mobile 390px screenshots were inspected without overflow.
+
+Final verification, from the isolated workspace checkout:
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_session_usage_is_exact_estimated_and_preserves_int64 tests/test_workspace_codex.py::test_account_token_usage_is_bounded_exact_and_preserves_missing_data tests/test_workspace_host.py::test_session_usage_scope_is_readonly_and_cannot_choose_another_session tests/test_workspace_host.py::test_account_status_requires_explicit_owner_and_rejects_mutations tests/test_workspace_pane.py::test_session_usage_estimates_keep_scope_precision_and_missing_values tests/test_workspace_pane.py::test_native_token_usage_has_explicit_refresh_and_preserves_draft -q --tb=short
+```
+
+Exit 0: 18 passed in 6.25s. Coverage includes exact routing, reservation-safe
+reads, receipt deduplication, precision, missing data, foreign IDs, error clearing,
+explicit refresh and preserved drafts.
+
+```sh
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --usage
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py scripts/verify-workspace-account.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py
+node --check ui/static/workspace-pane.mjs
+node --check ui/static/workspace-page.mjs
+```
+
+Each command ran separately, exit 0. Native account and session usage both
+refused the unsigned disposable profile; same owner, no browser or inference,
+child reaped and temporary profile removed. Ruff: all checks passed; Node: no
+syntax errors. Positive signed-in service data remains unverified pending a
+fresh dedicated test login. This slice is not installed or released and does
+not establish full Claude/Codex parity.
+
 ## Native Account Token Activity (2026-09-10)
 
 Codex `/usage` and the Account token usage action now open an account-wide native

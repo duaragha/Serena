@@ -720,6 +720,28 @@ def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
         host.shutdown()
 
 
+def test_session_usage_scope_is_readonly_and_cannot_choose_another_session(tmp_path):
+    calls = []
+    class UsageOwner(Owner):
+        async def thread_token_usage(self):
+            calls.append(self.sid)
+            return {'threadUsage': None}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'usage.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': UsageOwner})
+    try:
+        host.attach('exact')
+        host._work_reservations['exact'] = 'job'
+        result = host.command('exact', 'read', 'account_token_usage', {'scope': 'session'})
+        assert result['ok'] and calls == ['exact']
+        assert host.command('exact', 'read', 'account_token_usage', {'scope': 'session'}) == result
+        for index, payload in enumerate([{'scope': 'foreign'}, {'scope': 'session', 'threadId': 'other'}]):
+            assert not host.command('exact', f'bad-{index}', 'account_token_usage', payload)['ok']
+        assert calls == ['exact'] and not host._sessions['exact'][0].sent
+    finally:
+        host.shutdown()
+
+
 def test_sessions_http_lists_native_owner_without_a_mounted_pane(tmp_path, monkeypatch):
     from ui import web
 

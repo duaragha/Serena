@@ -1086,10 +1086,10 @@ class WorkspaceHost:
                     result = (await owner.login_account() if action == "account_login"
                               else await owner.cancel_account_login(payload["loginId"]))
                 elif action == "account_token_usage":
-                    if provider != "codex" or payload:
-                        raise ValueError("Account usage requires a Codex session and no payload")
+                    if provider != "codex" or payload not in ({}, {"scope": "session"}):
+                        raise ValueError("Usage requires Codex and an exact account or session scope")
                     retryable = True
-                    result = await owner.account_token_usage()
+                    result = await owner.thread_token_usage() if payload else await owner.account_token_usage()
                 elif action == "account_rate_limits":
                     if provider != "codex" or payload:
                         raise ValueError("Account limits require a Codex session and no payload")
