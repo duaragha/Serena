@@ -41,6 +41,10 @@ DEFAULT_RECEIPT_PATH = (
 )
 DEFAULT_FLEET_DB_PATH = Path.home() / ".local" / "state" / "serena" / "fleet.sqlite3"
 DEFAULT_TESTS = (
+    "voice/call/tests/test_brain_bridge.py",
+    "tests/test_notification_delivery_ownership.py",
+    "tests/test_fleet_attention.py",
+    "tests/test_fleet_notice_dedup.py",
     "tests/test_fleet_activation.py",
     "tests/test_fleet_connection_lifetime.py",
     "tests/test_process_probe.py",

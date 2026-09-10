@@ -1327,6 +1327,8 @@ def _terminal_spoken_text(run: dict[str, Any]) -> str:
     short = str(run.get("run_id") or "")[:8]
     state = str(run.get("state") or "unknown")
     project = Path(str(run.get("cwd") or "")).name or "your project"
+    if state == "waiting_for_input":
+        return f"Fleet {short} in {project}: {_notice_summary(run.get('error'), limit=400)}"
     if state == "completed":
         return (
             f"Fleet {short} finished the {project} run successfully. "
@@ -1713,6 +1715,9 @@ def serve_forever(
                 resume_ready_input_runs(store)
             with suppress(Exception):
                 resume_saved_integrations(store)
+            from fleet.attention import notify_blocked_runs
+            with suppress(Exception):
+                notify_blocked_runs(store, _terminal_notification_authority)
             next_capacity_probe = monotonic_now + CAPACITY_POLL_SECONDS
         launched = False
         while not stopper.is_set():
