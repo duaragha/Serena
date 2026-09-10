@@ -2,6 +2,20 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Pending read-view handling (2026-09-09): committed native clear identities now
+return an explicit unindexed state instead of a false missing-session error.
+The read view refreshes until the actual transcript is indexed; it never invents
+messages. Failed HTTP requests do not replace titles or cache successful loads,
+and late failures from a previously selected chat cannot overwrite the current
+view. Uncommitted, retired and unknown identities remain unavailable.
+Verification:
+- `node --test tests/workspace-read-view.test.mjs`: exit 0, 3 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pending_catalog_api.py -q --tb=short`: exit 0, 3 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pending_catalog_api.py scripts/verify-workspace-claude-clear-transport.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0. Both 1440px and 390px browser flows checked the pending read response and subsequent real indexed messages/title, alongside same-process input, clear receipt recovery, ownership, deletion and cleanup. Zero inference; isolated home; no user session touched.
+This is source-level verification. The frozen sidecar remains stale for these
+changes; installed-app delivery and complete provider parity are still open.
+
 Pending clear deletion (2026-09-09): single/bulk delete now route committed
 uncataloged identities through an exact-session lease. A native transcript that
 has appeared is registered and archived under the existing recoverable deletion

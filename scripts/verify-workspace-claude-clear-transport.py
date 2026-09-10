@@ -128,6 +128,7 @@ async def main():
         from werkzeug.serving import make_server
 
         from core import indexer, metadata
+        from core.parser import parse_full
         from core.workspace_catalog import register_fork
         from ui.workspace_app import install_workspace
 
@@ -143,8 +144,8 @@ async def main():
         definitions = [item for item in ast.parse(web_source.read_text()).body
                        if isinstance(item, ast.FunctionDef) and item.name in {"api_rename", "api_sessions", "_decorate_sessions",
                                                                             "_pending_workspace_meta", "_toggle_workspace_done",
-                                                                            "api_star", "api_done", "api_bulk_done"}]
-        namespace = {"app": app, "jsonify": jsonify, "request": request,
+                                                                            "api_star", "api_done", "api_bulk_done", "api_conversation"}]
+        namespace = {"app": app, "jsonify": jsonify, "request": request, "Path": Path, "parse_full": parse_full,
                      "get_session": indexer.get_session, "list_sessions": indexer.list_sessions,
                      "set_title": indexer.set_title, "toggle_star": indexer.toggle_star,
                      "_include_permanent_serena_session": lambda rows: rows,
@@ -186,6 +187,8 @@ async def main():
                     pending_rows = page.evaluate("async () => (await fetch('/api/sessions')).json()")
                     pending_row = next(row for row in pending_rows if row["session_id"] == target)
                     assert pending_row["display_title"] == title and pending_row["native_persistence_pending"]
+                    read = page.evaluate("async sid => (await fetch('/api/conversation/'+sid)).json()", target)
+                    assert read["native_persistence_pending"] and read["messages"] == [] and read["title"] == title
                     assert page.evaluate("async sid => (await fetch('/api/star/'+sid,{method:'POST'})).json()", target) == {"starred": True}
                     assert page.evaluate("async sid => (await fetch('/api/done/'+sid,{method:'POST'})).json()", target) == {"ok": True, "done": True}
                     marked = metadata.get_meta(target)
@@ -222,6 +225,9 @@ async def main():
                     matching = [row for row in indexed_rows if row["session_id"] == target]
                     assert len(matching) == 1 and matching[0]["display_title"] == title
                     assert not matching[0].get("native_persistence_pending")
+                    read = page.evaluate("async sid => (await fetch('/api/conversation/'+sid)).json()", target)
+                    assert not read.get("native_persistence_pending") and read["session_id"] == target
+                    assert read["messages"] and read["title"] == title
                     assert matching[0]["starred"] and not matching[0]["is_done"], {"row": matching[0], "native": Path(indexed["file_path"]).read_text()}
                     assert not browser_host.journal.uncataloged_clears()
                     assert not errors, errors

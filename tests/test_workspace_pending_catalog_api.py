@@ -61,7 +61,7 @@ def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_p
     tree = ast.parse(source.read_text())
     selected = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                 and node.name in {"api_rename", "api_sessions", "_decorate_sessions", "_pending_workspace_meta",
-                                  "_toggle_workspace_done", "api_star", "api_done", "api_bulk_done"}]
+                                  "_toggle_workspace_done", "api_star", "api_done", "api_bulk_done", "api_conversation"}]
     namespace = {"app": app, "jsonify": jsonify, "request": request, "set_title": normal_title,
                  "get_session": lambda sid: None, "list_sessions": lambda **kwargs: [], "toggle_star": missing,
                  "_include_permanent_serena_session": lambda rows: rows,
@@ -77,6 +77,7 @@ def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_p
         host.journal.prepare_clear("source", "clear", target)
         client = app.test_client()
         assert client.post(f"/api/rename/{sid}", json={"title": "too early"}).status_code == 404
+        assert client.get(f"/api/conversation/{sid}").status_code == 404
         for action in ("star", "done"):
             assert client.post(f"/api/{action}/{sid}").status_code == 404
         assert not (metadata.METADATA_DIR / f"{sid}.json").exists()
@@ -86,6 +87,10 @@ def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_p
         assert response.status_code == 200 and response.json["title"] == "My conversation"
         stored = metadata.get_meta(sid)
         assert stored["custom_title"] == "My conversation" and stored["starred"] is True
+        read = client.get(f"/api/conversation/{sid}")
+        assert read.status_code == 200 and read.json["messages"] == []
+        assert read.json["native_persistence_pending"] and read.json["title"] == "My conversation"
+        assert read.json["session_id"] == sid and read.json["cwd"] == str(tmp_path)
         rows = client.get("/api/sessions").json
         assert len(rows) == 1 and rows[0]["display_title"] == "My conversation"
         assert rows[0]["starred"] is True and rows[0]["is_done"] is False
@@ -102,6 +107,7 @@ def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_p
         assert client.post(f"/api/done/{sid}").json["done"] is False
         assert client.post("/api/rename/not-a-session", json={"title": "wrong"}).status_code == 404
         host.journal.mark_clear_cataloged(sid)
+        assert client.get(f"/api/conversation/{sid}").status_code == 404
         assert client.post(f"/api/rename/{sid}", json={"title": "deleted"}).status_code == 404
         assert metadata.get_meta(sid)["custom_title"] == "My conversation"
         for action in ("star", "done"):

@@ -6243,6 +6243,7 @@ async function loadReadTranscript(sid, force) {
     const r = await fetch('/api/conversation/' + sid);
     const data = await r.json();
     if (currentSessionId !== sid) return;  // user switched away while we loaded
+    if (!r.ok) throw new Error(data.error || 'Conversation unavailable');
     const externallyRunning = Boolean(data.external_runtime_active);
     _patchClientSession(sid, { external_runtime_active: externallyRunning });
 
@@ -6273,11 +6274,14 @@ async function loadReadTranscript(sid, force) {
           + '</div>';
       }
     }
-    document.getElementById('convBody').innerHTML = html || '<div class="empty-text">No messages</div>';
+    document.getElementById('convBody').innerHTML = html || (data.native_persistence_pending
+      ? '<div class="empty-text">Native transcript not indexed yet.</div>'
+      : '<div class="empty-text">No messages</div>');
     _convLoaded.add(sid);
-    if ((externallyRunning || _isSerenaVoiceSession(data.agent || sid)) && convMode === 'read') _scheduleExternalReadRefresh(sid);
+    if ((externallyRunning || data.native_persistence_pending || _isSerenaVoiceSession(data.agent || sid)) && convMode === 'read') _scheduleExternalReadRefresh(sid);
     else _stopExternalReadRefresh();
   } catch(e) {
+    if (currentSessionId !== sid) return;
     document.getElementById('convBody').innerHTML = '<div class="empty-text">Error loading conversation</div>';
   }
 }
@@ -12180,7 +12184,18 @@ def api_ask_linked_claude():
 def api_conversation(session_id):
     session = get_session(session_id)
     if not session:
-        return jsonify({"error": "Not found"}), 404
+        pending = _pending_workspace_meta(session_id)
+        workspace = app.extensions.get("workspace_host")
+        target = workspace.describe_pending_session(session_id) if pending is not None else None
+        if target is not None:
+            return jsonify({"session_id": session_id, "agent": target["agent"],
+                            "title": pending.get("custom_title") or target["title"], "date": "",
+                            "cwd": target["cwd"], "messages": [], "native_persistence_pending": True,
+                            "external_runtime_active": _external_runtime_active(session_id),
+                            "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_create_tokens": 0})
+        session = get_session(session_id)
+        if not session:
+            return jsonify({"error": "Not found"}), 404
 
     # Reconcile any slug-copies (laptop/PC/renamed-dir duplicates) so the view
     # shows the full union regardless of which slug this device wrote.
