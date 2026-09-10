@@ -452,7 +452,7 @@ class ClaudeWorkspace:
             if item["name"] in {"clear", "reset", "new", "fork"}:
                 item["workspaceAction"] = "fork" if item["name"] == "fork" else "clear"
             elif item["name"] == "resume":
-                item["unavailableReason"] = "Session switching is not implemented in this pane"
+                item["workspaceAction"] = "resume"
             elif item["name"] in self.events.capabilities.get("terminal_slash_commands", []):
                 item["unavailableReason"] = "Claude reports this command requires a terminal"
             result["data"].append(item)

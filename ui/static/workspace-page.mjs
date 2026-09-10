@@ -12,6 +12,12 @@ const connection = new WorkspaceConnection({
   error: error => connectionFailed(error),
 });
 const controls = connection.controls();
+controls.listSessions = (query, offset=0) => connection.request('/sessions?' + new URLSearchParams({provider:boot.provider.toLowerCase(),q:query,offset}));
+controls.openSession = sid => {
+  if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid))throw Error('Invalid session identity');
+  if(parent!==window)parent.postMessage({type:'serena-workspace-open-session',sid:boot.sessionId,target:sid},location.origin);
+  else location.assign('/workspace/'+encodeURIComponent(sid));
+};
 controls.openCleared = sid => {
   if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid) || sid===boot.sessionId)throw Error('Invalid cleared session identity');
   if(parent!==window)parent.postMessage({type:'serena-workspace-open-cleared',sid:boot.sessionId,target:sid},location.origin);

@@ -74,6 +74,44 @@ def test_provider_badges_distinguish_linked_panes(pane):
     assert not errors
 
 
+@pytest.mark.parametrize("provider", ["Claude", "Codex"])
+@pytest.mark.parametrize("width", [390, 1600])
+def test_saved_session_picker_does_not_submit_or_stop_running_work(pane, provider, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    page.evaluate("() => {pane.dispose();window.calls=[];}")
+    page.evaluate("""async provider => {
+      const {WorkspacePane}=await import('/workspace-pane.mjs');
+      pane=new WorkspacePane(document.querySelector('#left'),{sessionId:'exact',provider,controls:{...controls,
+        listSessions:async(q,offset)=>{calls.push(['list',q,offset]);return {data:[{session_id:offset?'second':'target',title:q||'Saved project',cwd:'/project'}],nextOffset:offset?null:50};},
+        openSession:async sid=>calls.push(['open',sid])}});
+      pane.receive({sequence:1,event:{method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'working',status:'inProgress',items:[]}]}}}});
+      pane.input.value='Keep my draft';
+    }""", provider)
+    assert page.evaluate("calls") == []
+    page.get_by_role("button", name="Open saved conversation", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Saved conversations")
+    dialog.get_by_role("button", name="Load more conversations", exact=True).click()
+    page.wait_for_function("document.querySelector('.aw-command-list').childElementCount===2")
+    search = dialog.get_by_role("searchbox", name="Search saved conversations")
+    search.fill("Custom title")
+    search.press("Enter")
+    dialog.get_by_role("button", name="Custom title target /project").wait_for()
+    page.screenshot(path=str(tmp_path / f"resume-{provider}-{width}.png"))
+    dialog.get_by_role("button", name="Custom title target /project").click()
+    assert page.evaluate("calls.filter(c=>!['list','open'].includes(c[0]))") == []
+    assert page.evaluate("calls.at(-1)") == ["open", "target"]
+    assert page.evaluate("pane.input.value") == "Keep my draft"
+    assert page.evaluate("pane.conversation.turns.get('working').status") == "inProgress"
+    page.evaluate("() => {pane.input.value='/resume';pane.send.disabled=false;}")
+    page.evaluate("pane.submit()")
+    dialog.wait_for()
+    dialog.get_by_role("button", name="Close saved conversations", exact=True).click()
+    assert page.evaluate("pane.input.value") == "/resume"
+    assert page.evaluate("calls.filter(c=>!['list','open'].includes(c[0]))") == []
+    assert not errors
+
+
 @pytest.mark.parametrize("width", [390, 1600])
 def test_grouped_reply_marks_queued_input_without_duplicate_duration(pane, width, tmp_path):
     page, errors = pane

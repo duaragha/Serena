@@ -7067,7 +7067,7 @@ function _startStructuredPane(sid, opts) {
     focus:() => frame.contentWindow?.postMessage({type:'serena-workspace-focus'}, location.origin)};
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
-    if(['serena-workspace-open-fork','serena-workspace-open-cleared','serena-workspace-open-created'].includes(event.data?.type)){
+    if(['serena-workspace-open-fork','serena-workspace-open-cleared','serena-workspace-open-created','serena-workspace-open-session'].includes(event.data?.type)){
       const target=event.data.target;
       if(typeof target !== 'string' || !/^[a-f0-9-]{36}$/.test(target) || target===sid)return;
       try{

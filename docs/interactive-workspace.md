@@ -8,6 +8,41 @@ are retained as history, not a reason to block this two-provider delivery.
 
 ## Authenticated Claude Verification
 
+### Saved Conversation Picker (2026-09-10)
+
+Both providers now have a native saved-conversation picker, including `/resume`.
+It reads authenticated, provider-filtered, paginated catalog rows with custom
+titles and exact IDs. Search treats wildcard characters literally. Selection
+navigates through the existing app conversation route (or the standalone pane
+route); it does not submit text, disconnect the source, or start another owner.
+Destination attachment still goes through normal admission and explicit resume.
+The source draft remains stored, and closing the view does not cancel work.
+
+Verification commands and results:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py tests/test_workspace_pane.py::test_saved_session_picker_does_not_submit_or_stop_running_work tests/test_workspace_claude.py tests/test_workspace_app.py -q
+# exit 0: 88 passed in 36.72s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py tests/test_workspace_pane.py::test_saved_session_picker_does_not_submit_or_stop_running_work -q
+# exit 0: 23 passed in 4.23s after final dark search-field styling
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_catalog.py core/workspace_claude.py ui/workspace_web.py tests/test_workspace_catalog.py tests/test_workspace_pane.py
+# exit 0: All checks passed
+node --check ui/static/workspace-pane.mjs
+# exit 0
+node --check ui/static/workspace-page.mjs
+# exit 0
+```
+
+An authenticated Flask runtime probe against the actual local index returned 50
+Claude and 50 Codex rows, each with a next page, exit 0. It used an inert object
+instead of an owner, so no provider or owner could launch. Browser checks covered
+both providers at 390px and 1600px, paging/search/exact selection, `/resume`, draft
+preservation, running-turn preservation and no unintended control calls. Mobile
+screenshot inspection caught and corrected a white search field. No installed
+app change or default activation is claimed.
+
+### Subscription Roundtrip
+
 2026-09-10: existing subscription authentication was used only in disposable
 private proof storage; metered API fallback was stripped. Claude answered a real
 first turn, resumed the exact saved identity through the TypeScript workspace

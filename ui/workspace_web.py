@@ -49,6 +49,13 @@ def workspace_blueprint(host, *, token: str):
     def attach(sid):
         return jsonify(host.attach(sid))
 
+    @bp.get("/<sid>/sessions")
+    def sessions(sid):
+        from core.workspace_catalog import list_saved_sessions
+
+        return jsonify(list_saved_sessions(request.args.get("provider"), request.args.get("q", ""),
+                                          int(request.args.get("offset", "0"))))
+
     @bp.post("/create")
     def create():
         data = request.get_json(silent=True)

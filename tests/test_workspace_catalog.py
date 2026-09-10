@@ -8,6 +8,56 @@ import pytest
 from core.workspace_catalog import register_fork
 
 
+def test_saved_session_search_uses_full_provider_catalog_and_literal_query(tmp_path, monkeypatch):
+    from core import indexer
+    from core.workspace_catalog import list_saved_sessions
+
+    monkeypatch.setattr(indexer, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(indexer, "DB_PATH", tmp_path / "index.db")
+    monkeypatch.setattr(indexer, "_schema_ready", False)
+    conn = indexer._get_db()
+    for i in range(53):
+        conn.execute("INSERT INTO sessions (session_id,project_dir,file_path,agent,title,custom_title,last_timestamp,is_teammate) VALUES (?,?,?,?,?,?,?,?)",
+                     (str(uuid4()), "project", "missing.jsonl", "claude" if i < 52 else "codex", "original", "100%_custom" if i == 0 else str(i), str(i).zfill(3), 1 if i == 51 else 0))
+    conn.commit()
+    before = conn.execute("SELECT * FROM sessions ORDER BY session_id").fetchall()
+    first = list_saved_sessions("claude")
+    second = list_saved_sessions("claude", offset=first["nextOffset"])
+    assert len(first["data"]) == 50 and len(second["data"]) == 1
+    assert second["nextOffset"] is None
+    assert len(list_saved_sessions("codex")["data"]) == 1
+    assert [row["title"] for row in list_saved_sessions("claude", "%_")["data"]] == ["100%_custom"]
+    assert not list_saved_sessions("claude", "' OR 1=1 --")["data"]
+    assert before == conn.execute("SELECT * FROM sessions ORDER BY session_id").fetchall()
+    conn.close()
+
+
+@pytest.mark.parametrize("provider,query,offset", [("gemini", "", 0), ("claude", "x" * 201, 0), ("codex", "", -1)])
+def test_saved_session_search_rejects_invalid_arguments(provider, query, offset):
+    from core.workspace_catalog import list_saved_sessions
+
+    with pytest.raises(ValueError):
+        list_saved_sessions(provider, query, offset)
+
+
+def test_saved_session_route_requires_auth_without_calling_owner(monkeypatch):
+    from flask import Flask
+
+    from ui.workspace_web import workspace_blueprint
+
+    calls = []
+    monkeypatch.setattr("core.workspace_catalog.list_saved_sessions", lambda *args: calls.append(args) or {"data": [], "nextOffset": None})
+    app = Flask(__name__)
+    app.register_blueprint(workspace_blueprint(object(), token="s" * 40))
+    client = app.test_client()
+    path = "/api/workspace/exact/sessions?provider=codex&q=custom&offset=50"
+    assert client.get(path).status_code == 403
+    assert client.get(path, headers={"X-Serena-Workspace-Token": "s" * 40, "Origin": "https://other.test"}).status_code == 403
+    assert not calls
+    assert client.get(path, headers={"X-Serena-Workspace-Token": "s" * 40}).json == {"data": [], "nextOffset": None}
+    assert calls == [("codex", "custom", 50)]
+
+
 @pytest.mark.parametrize("field", ["uuid", "promptId"])
 def test_claude_registration_waits_for_exact_completed_prompt(tmp_path, monkeypatch, field):
     from core.workspace_catalog import NativeTranscriptPending

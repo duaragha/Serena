@@ -42,6 +42,9 @@ export class WorkspacePane {
     this.status = node('span', 'aw-state', 'Connecting');
     this.status.setAttribute('role', 'status');
     head.append(this.status);
+    this.resumeButton=this.button('Open saved conversation','history',()=>this.openSessions());
+    this.resumeButton.hidden=!['Claude','Codex'].includes(provider) || !controls.listSessions || !controls.openSession;
+    head.append(this.resumeButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
@@ -432,6 +435,44 @@ export class WorkspacePane {
     window.lucide?.createIcons();
   }
 
+  async openSessions() {
+    if(this.sessionsDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Saved conversations');
+    const search=node('input');search.type='search';search.setAttribute('aria-label','Search saved conversations');
+    const status=node('p');status.setAttribute('role','status');
+    const list=node('div','aw-command-list');
+    let generation=0,next=null,query='';
+    const more=this.button('Load more conversations','chevron-down',()=>load(query,next));more.hidden=true;
+    const load=async(value,offset=0)=>{
+      const request=++generation;query=value;more.disabled=true;status.textContent='Searching...';
+      if(offset===0)list.replaceChildren();
+      try{
+        const result=await this.controls.listSessions(value,offset);
+        if(!dialog.open || this.disposed || request!==generation)return;
+        for(const session of result.data){
+          const button=node('button','aw-command');button.type='button';
+          button.append(node('strong','',session.title),node('small','',session.session_id),node('span','',session.cwd || ''));
+          button.disabled=session.session_id===this.conversation.sessionId;
+          button.addEventListener('click',async()=>{
+            button.disabled=true;
+            try{await this.controls.openSession(session.session_id);dialog.close();}
+            catch(error){status.textContent=error.message;button.disabled=false;}
+          });list.append(button);
+        }
+        next=result.nextOffset;more.hidden=next===null;
+        status.textContent=list.childElementCount?`${list.childElementCount} conversations`:'No matching conversations';
+      }catch(error){if(request===generation && dialog.open)status.textContent=error.message;}
+      finally{if(request===generation)more.disabled=false;}
+    };
+    const find=this.button('Search saved conversations','search',()=>load(search.value));
+    search.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();load(search.value);}});
+    const close=this.button('Close saved conversations','x',()=>dialog.close());
+    dialog.addEventListener('close',()=>{generation++;dialog.remove();this.input.focus();});
+    dialog.append(node('h3','','Saved conversations'),close,search,find,status,list,more);
+    this.sessionsDialog=dialog;this.root.append(dialog);dialog.showModal();search.focus();
+    window.lucide?.createIcons();await load('');
+  }
+
   async openCommands() {
     if (this.commandsDialog?.open) return;
     const dialog = node('dialog', 'aw-review-dialog aw-commands-dialog');
@@ -452,15 +493,15 @@ export class WorkspacePane {
         button.append(node('strong','',`${command.kind==='skill'?'$':'/'}${command.name}`),node('small','',command.kind==='skill'?command.path:command.argumentHint || ''),node('span','',command.description || ''));
         button.disabled=busy;
         if(command.paneControl)button.disabled=busy || command.paneControl.hidden || command.paneControl.disabled;
-        const localAction=this.provider==='Claude' && ['clear','fork'].includes(command.workspaceAction) ? command.workspaceAction : null;
+        const localAction=this.provider==='Claude' && ['clear','fork','resume'].includes(command.workspaceAction) ? command.workspaceAction : null;
         if(localAction){
-          const control=localAction==='clear'?this.clearButton:this.forkButton;
+          const control=localAction==='clear'?this.clearButton:localAction==='resume'?this.resumeButton:this.forkButton;
           button.disabled=busy || control.hidden || control.disabled;
         }
         if(command.unavailableReason){button.disabled=true;button.title=command.unavailableReason;button.append(node('small','',command.unavailableReason));}
         button.addEventListener('click',()=>{
           if(command.paneControl){dialog.close();command.paneControl.click();return;}
-          if(localAction){dialog.close();if(localAction==='clear')this.openClear();else this.openFork();return;}
+          if(localAction){dialog.close();if(localAction==='clear')this.openClear();else if(localAction==='resume')this.openSessions();else this.openFork();return;}
           if(command.kind==='skill'){
             if(!this.selectedSkills.some(s=>s.path===command.path))this.selectedSkills.push({name:command.name,path:command.path});
             this.persistSkills();this.renderAttachments();
@@ -883,7 +924,7 @@ export class WorkspacePane {
   }
 
   codexCommandControls() {
-    return {fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
+    return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton};
   }
 
@@ -899,14 +940,14 @@ export class WorkspacePane {
       if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
       if(codexCommand[1]!=='compact'){codexControl.click();return;}
     }
-    const localCommand=this.provider==='Claude' && /^\/(clear|reset|new|fork)(?:\s|$)/.exec(text.trim());
+    const localCommand=this.provider==='Claude' && /^\/(clear|reset|new|fork|resume)(?:\s|$)/.exec(text.trim());
     if(localCommand){
-      const control=localCommand[1]==='fork'?this.forkButton:this.clearButton;
+      const control=localCommand[1]==='fork'?this.forkButton:localCommand[1]==='resume'?this.resumeButton:this.clearButton;
       if(text.trim()!==`/${localCommand[1]}` || this.files.length || this.selectedSkills.length){
         this.error(Error('Session commands do not accept arguments, attachments or skills'));return;
       }
       if(control.hidden || control.disabled){this.error(Error('Session action is not available right now'));return;}
-      if(localCommand[1]==='fork')this.openFork();else this.openClear();
+      if(localCommand[1]==='fork')this.openFork();else if(localCommand[1]==='resume')this.openSessions();else this.openClear();
       return;
     }
     const files = [...this.files];
@@ -1461,6 +1502,7 @@ export class WorkspacePane {
     this.reviewDialog?.close();
     this.tasksDialog?.close();
     this.commandsDialog?.close();
+    this.sessionsDialog?.close();
     this.clearDialog?.close();
     this.disconnectDialog?.close();
     this.sessionModeDialog?.close();
