@@ -14,7 +14,7 @@ import time
 from contextlib import closing, suppress
 from pathlib import Path
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -281,6 +281,14 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
             assert entries[sid]["alive"] and entries[sid]["cwd"] == str(project)
             assert isinstance(entries[sid]["model"], str) and entries[sid]["model"]
             assert entries[sid]["pending_interactions"] is False
+            refused = Request(base + "/api/codex-work-bridge", method="POST",
+                headers={"Content-Type": "application/json"}, data=json.dumps({
+                    "target_sid": sid, "item_id": "11111111-1111-4111-8111-111111111111",
+                    "prompt": "MUST_NOT_RUN", "timeout": 1}).encode())
+            with urlopen(refused, timeout=5) as response:
+                rejection = json.load(response)
+            assert not rejection["ok"] and not rejection["committed"]
+            assert "stable dispatch UUID" in rejection["message"]
             assert "terminal_id" not in entries[sid]
             assert owners() == before_context, "Runtime inventory changed native ownership"
             print("PASS: local runtime context reports exact real Codex owner without launching or replacing it")

@@ -11906,6 +11906,7 @@ def api_codex_work_bridge():
     if not _local_runtime_request():
         return jsonify({"ok": False, "message": "work bridge is local-only"}), 403
     from core.codex_bridge import call_codex_work_via_bridge
+    from ui.workspace_bridge import structured_work_bridge
 
     data = request.get_json(silent=True) or {}
     target_sid = str(data.get("target_sid") or "").strip()
@@ -11922,6 +11923,9 @@ def api_codex_work_bridge():
                 "message": "target_sid, prompt, and item_id are required",
             }
         ), 400
+    native = structured_work_bridge(target_sid, prompt, item_id, data.get("dispatch_id"), timeout)
+    if native is not None:
+        return jsonify(native)
     return jsonify(
         call_codex_work_via_bridge(
             target_sid, prompt, item_id, timeout=timeout
@@ -11934,6 +11938,7 @@ def api_codex_work_interrupt():
     if not _local_runtime_request():
         return jsonify({"ok": False, "message": "work interrupt is local-only"}), 403
     from core.codex_bridge import interrupt_codex_work
+    from ui.workspace_bridge import structured_work_interrupt
 
     data = request.get_json(silent=True) or {}
     target_sid = str(data.get("target_sid") or "").strip()
@@ -11942,7 +11947,9 @@ def api_codex_work_interrupt():
         return jsonify(
             {"ok": False, "message": "target_sid and item_id are required"}
         ), 400
-    result = interrupt_codex_work(target_sid, item_id)
+    result = structured_work_interrupt(target_sid, item_id)
+    if result is None:
+        result = interrupt_codex_work(target_sid, item_id)
     return jsonify(result), 200 if result.get("ok") else 409
 
 

@@ -1575,6 +1575,7 @@ class VoiceWorkSupervisor:
                             "target_sid": session_id,
                             "prompt": full_prompt,
                             "item_id": item.item_id,
+                            "dispatch_id": attempt_id,
                             "timeout": self.reused_turn_timeout,
                         },
                         timeout=self.reused_turn_timeout + 30,

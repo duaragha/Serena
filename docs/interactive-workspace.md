@@ -2,6 +2,43 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Accepted-Job Bridge Wiring (2026-09-10)
+
+The local work bridge now detects an existing native owner (or its pending
+dispatch), requires a stable dispatch UUID, checks work metadata, reserves the
+owner and uses reserved submission. The supervisor sends its durable attempt UUID
+as that dispatch ID. Collection uses the original persisted rollout offset and
+the existing prompt-bound transcript completion parser and route-state writer.
+Native interruption also routes to the exact reserved native turn. Once a native
+owner is involved, failures never fall back to PTY/GTK. Without a native owner,
+the existing terminal bridge path is retained.
+
+Completion returns the actual reservation-release result; it never pretends a
+busy or uncertain native owner was released. Native candidate admission in the
+work router remains disabled pending successful full accepted-job runtime proof
+and recovery/release verification. This wiring is not a released replacement.
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_work_bridge.py tests/test_codex_work_bridge.py tests/test_voice_work_supervisor.py::test_reused_chat_attempt_uses_live_owner_and_captures_exact_turn -q --tb=short
+# exit 0: 10 passed in 1.71s; actual Flask/host/journal with controlled native
+# adapter and rollout, replay offsets, uncertain retention, no terminal fallback,
+# local-only rejection, legacy dispatch and supervisor attempt UUID
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check ui/workspace_bridge.py tests/test_workspace_work_bridge.py tests/test_voice_work_supervisor.py
+# exit 0
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: real native owner HTTP dispatch-ID rejection without submission,
+# reservation/history/focus/draft/resume/fork checks on desktop/mobile;
+# no inference or credentials used, isolated children reaped
+```
+
+The wider Ruff check exited 1 on two pre-existing diagnostics: I001 in
+`core/codex_bridge.py:133` and B904 in `core/voice_work_supervisor.py:2132`.
+Separate `git show HEAD:<path> | ruff check --stdin-filename <path> -` checks
+confirmed each finding already existed before this change (each exited 1).
+Successful reserved job completion here remains controlled-adapter evidence,
+not a claim that a live production accepted job was run.
+
 ## Reserved Transcript Bounds (2026-09-10)
 
 Reserved dispatch claims now persist their original transcript start offset
