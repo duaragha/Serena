@@ -4,6 +4,12 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
 
+async function waitForOwnedPane(frame) {
+  // A hidden-locator check alone also succeeds before the iframe has loaded.
+  await frame.locator('.aw-state').filter({hasText:/^(ready|running|completed|failed|interrupted)$/}).waitFor();
+  await frame.locator('#workspace-connect').waitFor({state:'hidden'});
+}
+
 async function main() {
   const [electronPath, playwrightPath, appDir, base, sid, artifacts, xvfbPath] = process.argv.slice(2);
   const {_electron: electron} = require(playwrightPath);
@@ -71,7 +77,7 @@ async function main() {
     await page.locator(`.session-row[data-sid="${sid}"]`).first().click();
     await page.locator('#viewLiveBtn').click();
     const pane = page.frameLocator(`iframe[src="/workspace/${sid}"]`);
-    await pane.locator('#workspace-connect').waitFor({state:'hidden'});
+    await waitForOwnedPane(pane);
     await pane.getByRole('button', {name: 'Commands and skills', exact: true}).click();
     const dialog = pane.getByRole('dialog', {name: 'Commands and skills'});
     await dialog.getByRole('searchbox', {name: 'Search commands'}).fill('workspace-setting-proof');
@@ -132,9 +138,9 @@ async function main() {
     assert.match(newSid,/^[a-f0-9-]{36}$/);
     await creation.getByRole('button',{name:'Open conversation',exact:true}).click();
     const newPane = page.frameLocator(`iframe[src="/workspace/${newSid}"]`);
-    await newPane.locator('#workspace-connect').waitFor({state:'hidden'});
+    await waitForOwnedPane(newPane);
     assert.equal(await page.locator('#convTitle').innerText(),'Electron native new chat');
-    assert.equal(await page.locator('iframe[src^="/workspace/new?"]').count(),0);
+    await page.waitForFunction(()=>document.querySelectorAll('iframe[src^="/workspace/new?"]').length===0);
     await newPane.getByRole('button',{name:'Run shell command',exact:true}).click();
     const newShell = newPane.getByRole('dialog',{name:'Run shell command'});
     await newShell.getByRole('textbox',{name:'Shell command'}).fill('echo SERENA_ELECTRON_CREATED');
@@ -177,9 +183,9 @@ async function main() {
     assert.notEqual(claudeSid,newSid);
     await claudeCreation.getByRole('button',{name:'Open conversation',exact:true}).click();
     const claudePane = page.frameLocator(`iframe[src="/workspace/${claudeSid}"]`);
-    await claudePane.locator('#workspace-connect').waitFor({state:'hidden'});
+    await waitForOwnedPane(claudePane);
     assert.equal(await page.locator('#convTitle').innerText(),'Electron native Claude chat');
-    assert.equal(await page.locator('iframe[src^="/workspace/new?"]').count(),0);
+    await page.waitForFunction(()=>document.querySelectorAll('iframe[src^="/workspace/new?"]').length===0);
     await claudePane.getByRole('textbox',{name:'Message Claude',exact:true}).fill('/effort low');
     await claudePane.getByRole('button',{name:'Send message',exact:true}).click();
     await claudePane.getByText('/effort low',{exact:true}).waitFor();
@@ -220,8 +226,20 @@ async function main() {
     assert.equal(linkedRows.length,2);
     assert.ok(linkedRows.every(row=>row.display_title==='Electron linked native pair'));
     assert.equal(creations,4);
-    assert.equal(await page.locator('iframe[src^="/workspace/new?"]').count(),0);
+    await page.waitForFunction(()=>document.querySelectorAll('iframe[src^="/workspace/new?"]').length===0);
     await page.screenshot({path:path.join(artifacts,'electron-native-linked-created.png')});
+    assert.ok(linkedRows.every(row=>row.workspace_runtime?.ok && row.workspace_runtime.session_id===row.session_id));
+    const hiddenOwners=await page.evaluate(async ids=>{
+      for(const id of ids)teardownLiveTerminal(id);
+      await loadSessions(currentProject);
+      return ids.map(id=>({id,mounted:termSessions.has(id),localActive:_activeTerms.has(id),
+        listedActive:_sessionHasActiveRuntime(_findClientSession(id))}));
+    },linkedIds);
+    assert.ok(hiddenOwners.every(row=>!row.mounted && !row.localActive && row.listedActive),JSON.stringify(hiddenOwners));
+    assert.ok(await page.locator('.session-row.active-terminal').filter({hasText:'Electron linked native pair'}).count());
+    await page.evaluate(id=>openConv(id),linkedIds[0]);
+    await waitForOwnedPane(page.frameLocator(`iframe[src="/workspace/${linkedIds[0]}"]`));
+    assert.equal(creations,4);
     assert.deepEqual(errors, []);
     console.log('PASS: real Electron main/preload, isolated frozen backend, native session input/output and skill catalog; sandbox/context isolation configured, Node integration off');
     console.log('PASS: real Electron clipboard copied native output and pasted multiline text without sending or losing the session');
@@ -230,6 +248,7 @@ async function main() {
     console.log('PASS: actual Electron Claude New Chat used the selected provider, retained title through indexing, and rendered native local-command output');
     console.log('PASS: corrupt saved creation record disabled submission without replacing the record or launching another session');
     console.log('PASS: multi-agent picker created exact native Claude/Codex identities with one retained title and persisted group before any model input');
+    console.log('PASS: closing both linked views kept their real owners in Active; reopening observed the same session without creating another');
   } catch (error) {
     if (app) {
       const page = await app.firstWindow();

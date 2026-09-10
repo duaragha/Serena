@@ -349,6 +349,7 @@ const termSessions=new Map();let activeTermSid=null;
 const _pseudoSessions=[{session_id:'new-proof',pending_rename_title:'My named conversation'}];
 let sessionSource=[..._pseudoSessions];
 const _pendingTermPartners=new Map();const _fdPairResolved={};window.linked=[];
+const _seenSids=new Set(),_freshSids=new Set(),_autoSwitched=new Set();
 function _pendingPartnersOf(sid){const value=_pendingTermPartners.get(sid);return Array.isArray(value)?value:value?[value]:[];}
 function _setPendingPartners(sid,partners){_pendingTermPartners.set(sid,[...new Set(partners)].filter(value=>value && value!==sid));}
 function _fdLinkPair(sids){window.linked.push(sids);}
@@ -562,12 +563,14 @@ function setTermStatus(status){window.lastStatus=status;}
             created_frame.get_by_role("button", name="Create Codex chat", exact=True).wait_for()
             assert page.evaluate("_pseudoSessions[0].structured_pending")
             assert len(owners) == 1
+            page.evaluate("_freshSids.add('33333333-3333-4333-8333-333333333333')")
             created_frame.evaluate("""() => parent.postMessage({type:'serena-workspace-open-created',sid:'new-proof',target:'33333333-3333-4333-8333-333333333333'},location.origin)""")
             page.wait_for_function("() => openedForks.length === 3")
             assert page.evaluate("openedForks[2]") == "33333333-3333-4333-8333-333333333333"
             assert page.evaluate("retiredPseudo") == "new-proof"
             assert renames == [("33333333-3333-4333-8333-333333333333", "My named conversation")]
             assert not page.evaluate("termSessions.has('new-proof')")
+            assert page.evaluate("_seenSids.has('33333333-3333-4333-8333-333333333333') && !_freshSids.has('33333333-3333-4333-8333-333333333333') && _autoSwitched.has('33333333-3333-4333-8333-333333333333')")
             assert len(owners) == 1 and not owners[0].closed
             page.evaluate("""cwd=>{
               for(const agent of ['claude','codex']){

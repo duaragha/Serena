@@ -2,6 +2,58 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Sidebar Ownership And Packaged Recovery (2026-09-10)
+
+The session-list endpoint now decorates rows with an exact native-owner snapshot,
+independent of mounted panes. It does not start an event loop, resolve a session,
+resume a provider or send input. Active grouping and row styling consume that
+snapshot, continue refreshing while background owners exist, and update promptly
+from live pane state. Unavailable owners no longer remain marked active locally.
+
+The packaged lifecycle proof uncovered two issues. First, its hidden-button
+check could succeed before a new iframe loaded, racing creation-pane cleanup.
+It now waits for actual native state and completed handoff. Second, the real
+background discovery follower treated explicitly created linked chats as new
+external discoveries and reopened their closed panes on the next refresh.
+Exact creation adoption now consumes those discovery markers; unrelated external
+chat discovery behavior is unchanged. The browser regression covers that removal.
+
+Verification commands, run separately from this worktree:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_observation_never_starts_or_replaces_an_owner tests/test_workspace_app.py tests/test_fleet_chat_sidebar.py -q --tb=short
+# exit 0: 19 passed in 47.49s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 64 passed in 25.76s, including exact HTTP sidebar ownership
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short
+# exit 0: 2 passed in 13.11s after the discovery-follower correction
+env PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m PyInstaller --noconfirm --distpath apps/desktop/build/sidecar --workpath apps/desktop/build/pyinstaller-work apps/desktop/build/pyinstaller-work/serena-web-sidecar.spec
+# exit 0: final build completed in 114.6s; earlier two builds also exited 0
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# final exit 0; earlier attempts exited 1 at the two issues described above
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: native Claude controls, queue, clear/fork and frozen desktop/mobile;
+# this ran before the final parent-only discovery-follower correction
+```
+
+Final Linux binary SHA256:
+`c97745f1830ac268b9ab6cefbcb95f715897bf09df8e6d860c282fb5dfd93d67`.
+Actual Electron proved standalone and linked native creation, closing both linked
+views with neither view mounted nor locally marked active, both real owners still
+listed in Active, and reopening the same session. Closing Electron retained all
+existing owners and exactly two newly created owners per provider. Real native
+history, local input/output, clipboard, login start/cancel, desktop/mobile reload
+with GET-only observation, and final disposable-child cleanup passed. No inference,
+user credential changes, installed-app replacement or service restart occurred.
+The linked-created screenshot was inspected; this is native empty-session state,
+not a fabricated conversation or evidence of a model-generated linked turn.
+
+Scoped Ruff and JavaScript syntax checks exited 0. Including all of `ui/web.py`
+in Ruff exited 1 with 25 findings; a baseline/current comparison exited 0,
+confirming the same 25 findings and no new lint diagnostics. Windows source
+verification found three latest files not yet synced, so its older package was
+not represented as proving these changes. Windows refresh, idle-process sleep,
+remaining command/attention parity and release/default activation remain open.
+
 ## Existing-Owner View Recovery (2026-09-10)
 
 Reopened native panes now observe an existing owner and replay its real journal

@@ -3831,6 +3831,7 @@ async function loadSessions(projectOrDirs, opts) {
     // own rows now; user can click them to continue, or mark the old one done.
     // Keep any in-flight pseudo sessions pinned at the top after a reload
     setSessionSource(_pseudoSessions.length ? [..._pseudoSessions, ...allSessions] : allSessions);
+    if (allSessions.some(_sessionHasActiveRuntime)) _ensureActiveRefresh();
     _maybeFollowSpawnedChat();
     renderSessionList();
     updateChatCount();
@@ -4277,9 +4278,7 @@ function renderSessionList() {
   // Do not infer voice ownership from broader Serena work metadata.
   const voiceChats = [];
 
-  const active = _activeTerms.size
-    ? visibleTop.filter(s => rowMembers(s).some(x => _activeTerms.has(x.session_id)))
-    : [];
+  const active = visibleTop.filter(s => rowMembers(s).some(_sessionHasActiveRuntime));
   const activeSet = new Set(active.map(s => s.session_id));
 
   // Done chats — hidden from Active/Starred/time groups, rendered at bottom.
@@ -4604,11 +4603,16 @@ function _agentBadge(agent) {
 // Bootstrap Icons "link" — inline so color: var(--group-color) applies.
 const _LINK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M6.354 5.5H4a3 3 0 0 0 0 6h3a3 3 0 0 0 2.83-4H9q-.13 0-.25.031A2 2 0 0 1 7 10.5H4a2 2 0 1 1 0-4h1.535c.218-.376.495-.714.82-1z"/><path d="M9 5.5a3 3 0 0 0-2.83 4h1.098A2 2 0 0 1 9 6.5h3a2 2 0 1 1 0 4h-1.535a4 4 0 0 1-.82 1H12a3 3 0 1 0 0-6z"/></svg>';
 
+function _sessionHasActiveRuntime(session) {
+  if (session.workspace_runtime) return session.workspace_runtime.ok === true;
+  return _activeTerms.has(session.session_id);
+}
+
 function renderSessionRow(s, idx, opts) {
   opts = opts || {};
   const isFocused = idx === focusedIndex;
   const isSelected = selectedIds.has(s.session_id);
-  const isActive = _activeTerms.has(s.session_id);
+  const isActive = _sessionHasActiveRuntime(s);
   const isDone = !!s.is_done && !_isSerenaVoiceSession(s);
   const needsAttention = _attentionSids.has(s.session_id);
   const childCount = opts.childCount || 0;
@@ -5934,7 +5938,7 @@ let _activeRefreshInFlight = false;
 function _ensureActiveRefresh() {
   if (_activeRefreshTimer) return;
   _activeRefreshTimer = setInterval(async () => {
-    if (_activeTerms.size === 0) {
+    if (_activeTerms.size === 0 && !allSessions.some(_sessionHasActiveRuntime)) {
       clearInterval(_activeRefreshTimer);
       _activeRefreshTimer = null;
       return;
@@ -7089,6 +7093,11 @@ function _adoptStructuredIdentity(sid, target) {
   const existing = _findClientSession(target);
   const replacement = {...pseudo, ...existing, session_id:target, isPseudo:false, structured_pending:false};
   setSessionSource([replacement, ...sessionSource.filter(session => ![sid,target].includes(session.session_id))]);
+  // This handoff already owns navigation; the background discovery follower
+  // must not reopen either member of a user-created pair on a later refresh.
+  _seenSids.add(target);
+  _freshSids.delete(target);
+  _autoSwitched.add(target);
   return pseudo.group || null;
 }
 
@@ -7172,7 +7181,9 @@ function _startStructuredPane(sid, opts) {
     const state = event.data.state;
     if (!['ready','running','completed','failed','interrupted','unavailable'].includes(state)) return;
     runtime.state = state; runtime.busy = state === 'running';
+    _patchClientSession(sid, {workspace_runtime:{ok:state!=='unavailable',session_id:sid,state}});
     if (state !== 'unavailable') _markActive(sid);
+    else _unmarkActive(sid);
     if (activeTermSid === sid) setTermStatus(state, state === 'unavailable' ? 'error' : '');
   };
   window.addEventListener('message', receive);
@@ -11494,6 +11505,7 @@ def api_sessions():
     workspace = app.extensions.get("workspace_host")
     if workspace is not None:
         sessions = workspace.include_pending_sessions(sessions, projects=dirs)
+        sessions = workspace.decorate_runtime_sessions(sessions)
     return jsonify(_decorate_sessions(_include_permanent_serena_session(sessions)))
 
 

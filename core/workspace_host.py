@@ -101,6 +101,19 @@ class WorkspaceHost:
             return {"observing": False, "session_id": sid}
         return {**self._status(sid), "observing": True}
 
+    def decorate_runtime_sessions(self, sessions):
+        """Expose owner state for sidebar rows independently of mounted views."""
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return sessions
+            future = asyncio.run_coroutine_threadsafe(self._runtime_snapshot(), self._loop)
+        states = future.result(timeout=5)
+        return [{**row, "workspace_runtime": states[row["session_id"]]}
+                if row["session_id"] in states else row for row in sessions]
+
+    async def _runtime_snapshot(self):
+        return {sid: self._status(sid) for sid in self._sessions if not sid.startswith("new:")}
+
     def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
             raise ValueError("Creation requires an exact request UUID")

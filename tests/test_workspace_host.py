@@ -99,10 +99,13 @@ def test_observation_never_starts_or_replaces_an_owner(tmp_path):
     app.register_blueprint(workspace_blueprint(host, token="s" * 40))
     client = app.test_client()
     headers = {"X-Serena-Workspace-Token": "s" * 40}
+    rows = [{"session_id": "exact", "title": "Owned"}, {"session_id": "other", "title": "Closed"}]
     try:
         assert client.get("/api/workspace/exact/observe").status_code == 403
         assert client.get("/api/workspace/exact/observe", headers=headers).json == {
             "observing": False, "session_id": "exact"}
+        assert host._loop is None and not owners
+        assert host.decorate_runtime_sessions(rows) == rows
         assert host._loop is None and not owners
         host.attach("exact")
         for state in ["ready", "running", "completed", "failed", "interrupted"]:
@@ -110,9 +113,16 @@ def test_observation_never_starts_or_replaces_an_owner(tmp_path):
             result = client.get("/api/workspace/exact/observe", headers=headers).json
             assert result["observing"] and result["session_id"] == "exact"
             assert result["state"] == state
+            decorated = host.decorate_runtime_sessions(rows)
+            assert decorated[0]["workspace_runtime"]["state"] == state
+            assert decorated[0]["workspace_runtime"]["ok"]
+            assert decorated[1] == rows[1]
+            assert "workspace_runtime" not in rows[0]
         for state in ["opening", "closed", "unavailable"]:
             owners[0].state = state
             assert not host.observe("exact")["observing"]
+            if state != "opening":
+                assert not host.decorate_runtime_sessions(rows)[0]["workspace_runtime"]["ok"]
         assert not host.observe("other")["observing"]
         assert len(owners) == 1 and not owners[0].closed
     finally:
@@ -142,6 +152,36 @@ def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
         assert host.command("exact", "cancel-once", "account_login_cancel", {"loginId": "one"})["ok"]
         assert calls == [("exact", "login"), ("exact", "one")]
         assert not host._sessions["exact"][0].sent
+    finally:
+        host.shutdown()
+
+
+def test_sessions_http_lists_native_owner_without_a_mounted_pane(tmp_path, monkeypatch):
+    from ui import web
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "sidebar.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+        factories={"codex": Owner})
+    rows = [{"session_id": "exact", "agent": "codex", "title": "Background coding"}]
+    monkeypatch.setitem(web.app.extensions, "workspace_host", host)
+    monkeypatch.setattr(web, "list_sessions", lambda **kwargs: rows)
+    monkeypatch.setattr(web, "_include_permanent_serena_session", lambda value: value)
+    monkeypatch.setattr(web, "_decorate_sessions", lambda value: value)
+    try:
+        client = web.app.test_client()
+        assert client.get('/api/sessions').json == rows
+        assert host._loop is None
+        host.attach('exact')
+        owner = host._sessions['exact'][0]
+        owner.state, owner.active_turn = 'running', 'work-in-progress'
+        result = client.get('/api/sessions').json
+        assert result[0]['workspace_runtime'] == {
+            'ok': True, 'session_id': 'exact', 'provider': 'codex',
+            'state': 'running', 'turn_id': 'work-in-progress'}
+        assert host._sessions['exact'][0] is owner and not owner.sent and not owner.closed
+        owner.state = 'unavailable'
+        assert not client.get('/api/sessions').json[0]['workspace_runtime']['ok']
+        assert not owner.closed and 'workspace_runtime' not in rows[0]
     finally:
         host.shutdown()
 
