@@ -288,6 +288,7 @@ def test_failed_attachment_retry_is_explicit_and_does_not_stop_uncertain_owner(t
 def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, provider):
     playwright = pytest.importorskip("playwright.sync_api")
     owners = []
+    closed_view = threading.Event()
 
     class Transport:
         suspended = False
@@ -344,6 +345,12 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
         factories={provider: Owner},
         describe=lambda sid: {"session_id": sid, "agent": provider},
     )
+    @app.after_request
+    def observe_view_close(response):
+        if (request.path == '/api/workspace/exact/view-context' and response.is_json
+                and response.get_json().get('closed') is True):
+            closed_view.set()
+        return response
     from ui.web import HTML
 
     start = HTML.index("function _adoptStructuredIdentity(")
@@ -536,7 +543,19 @@ function setTermStatus(status){window.lastStatus=status;}
             assert len(owners[0].sent) == 2
             assert observations and set(observations) == {"GET"}
             assert not errors
+            closed_view.clear()
             page.goto(f"http://127.0.0.1:{server.server_port}/parent")
+            assert closed_view.wait(3), 'Server did not accept the real pagehide close report'
+            assert not host._active_views('exact')
+            assert len(owners) == 1 and not owners[0].closed and len(owners[0].sent) == 2
+            page.go_back()
+            page.get_by_role("button", name="Resume session").wait_for(state="hidden")
+            page.get_by_text("controlled provider output", exact=True).wait_for()
+            assert len(owners) == 1 and len(owners[0].sent) == 2
+            closed_view.clear()
+            page.go_forward()
+            assert closed_view.wait(3)
+            assert not host._active_views('exact')
             page.evaluate("_startStructuredPane('exact', {})")
             nested = page.frame_locator("iframe")
             nested.get_by_role("button", name="Resume session").wait_for(state="hidden")

@@ -320,6 +320,7 @@ def test_view_context_auth_order_expiry_and_draft_retention(tmp_path, monkeypatc
         assert host.runtime_context_snapshot()['runtimes'][0]['draft']
         for invalid in [{**data, 'focused': 'yes'}, {**data, 'visible': False},
                         {**data, 'sequence': True}, {**data, 'text': 'private draft'},
+                        {**data, 'closed': 'yes'}, {**data, 'closed': True},
                         {**data, 'view_id': 'invalid'}]:
             assert client.post('/api/workspace/exact/view-context', json=invalid, headers=headers).status_code == 400
         clock[0] += 7
@@ -329,6 +330,56 @@ def test_view_context_auth_order_expiry_and_draft_retention(tmp_path, monkeypatc
         host.note_view_context('exact', {**data, 'sequence': 2, 'draft': False, 'focused': False})
         assert not host.runtime_context_snapshot()['runtimes'][0]['draft']
         assert len(host._sessions) == 1 and not host._sessions['exact'][0].sent
+    finally:
+        host.shutdown()
+
+
+def test_closed_views_retire_constraints_without_closing_owner(tmp_path):
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'closed-views.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+        factories={'codex': Owner})
+    data = {'view_id': '11111111-1111-4111-8111-111111111111', 'sequence': 1,
+            'focused': False, 'visible': False, 'draft': True, 'pinned': False}
+    try:
+        host.attach('exact')
+        owner = host._sessions['exact'][0]
+        host.note_view_context('exact', data)
+        host._views['exact'][data['view_id']]['seen'] -= 10
+        fresh = {**data, 'view_id': '22222222-2222-4222-8222-222222222222', 'draft': False, 'visible': True}
+        host.note_view_context('exact', fresh)
+        assert host._sleep_blocker('exact') and host._work_admission_error('exact')
+        assert not host.runtime_context_snapshot()['runtimes'][0]['draft_known']
+        assert host.note_view_context('exact', {**data, 'sequence': 3, 'closed': True})['closed']
+        assert not host._sleep_blocker('exact') and not host._work_admission_error('exact')
+        context = host.runtime_context_snapshot()['runtimes'][0]
+        assert context['draft_known'] and not context['draft']
+        assert host.note_view_context('exact', {**data, 'sequence': 2})['stale']
+        assert len(host._active_views('exact')) == 1
+        host.note_view_context('exact', {**data, 'sequence': 4})
+        assert host._sleep_blocker('exact') and host._work_admission_error('exact')
+        assert len(host._active_views('exact')) == 2
+        assert owner is host._sessions['exact'][0] and not owner.sent and not owner.closed
+    finally:
+        host.shutdown()
+
+
+def test_closed_view_cursors_do_not_consume_live_view_slots(tmp_path):
+    from uuid import uuid4
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'view-slots.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+        factories={'codex': Owner})
+    try:
+        host.attach('exact')
+        base = {'sequence': 1, 'focused': False, 'visible': False, 'draft': False}
+        for _ in range(40):
+            data = {**base, 'view_id': str(uuid4())}
+            host.note_view_context('exact', data)
+            host.note_view_context('exact', {**data, 'sequence': 2, 'closed': True})
+        assert not host._active_views('exact')
+        for _ in range(32):
+            host.note_view_context('exact', {**base, 'view_id': str(uuid4())})
+        with pytest.raises(ValueError, match='Too many views'):
+            host.note_view_context('exact', {**base, 'view_id': str(uuid4())})
     finally:
         host.shutdown()
 

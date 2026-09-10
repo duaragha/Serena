@@ -129,7 +129,7 @@ class WorkspaceHost:
 
     def note_view_context(self, sid, data):
         self._validate_session(sid)
-        if (not isinstance(data, dict) or set(data) - {"split_sids", "pinned", "sleep_peers"} != {"view_id", "sequence", "focused", "visible", "draft"}
+        if (not isinstance(data, dict) or set(data) - {"split_sids", "pinned", "sleep_peers", "closed"} != {"view_id", "sequence", "focused", "visible", "draft"}
                 or not isinstance(data["view_id"], str) or str(UUID(data["view_id"])) != data["view_id"]
                 or type(data["sequence"]) is not int or not 0 <= data["sequence"] <= 2 ** 53 - 1
                 or any(type(data[key]) is not bool for key in ("focused", "visible", "draft"))
@@ -139,6 +139,9 @@ class WorkspaceHost:
             raise ValueError("Pinned context must be boolean")
         if "sleep_peers" in data and type(data["sleep_peers"]) is not bool:
             raise ValueError("Peer sleep intent must be boolean")
+        if "closed" in data and (type(data["closed"]) is not bool or
+                                 (data["closed"] and (data["visible"] or data["focused"] or data.get("sleep_peers")))):
+            raise ValueError("Closed view must be inactive")
         split = data.get("split_sids", [])
         if (not isinstance(split, list) or len(split) > 4
                 or any(not isinstance(value, str) or not value for value in split)
@@ -157,7 +160,12 @@ class WorkspaceHost:
         previous = views.get(data["view_id"])
         if previous is not None and data["sequence"] <= previous["sequence"]:
             return {"ok": True, "stale": True}
-        if previous is None and len(views) >= 32:
+        if data.get("closed"):
+            # Keep only the cursor so delayed pre-close telemetry cannot resurrect
+            # this view. A later page with the same identity may advance it again.
+            views[data["view_id"]] = {"sequence": data["sequence"], "closed": True}
+            return {"ok": True, "closed": True}
+        if (previous is None or previous.get("closed")) and len(self._active_views(sid)) >= 32:
             raise ValueError("Too many views for this session")
         same_focus = previous is not None and all(previous.get(key) == data.get(key)
                                                   for key in ("focused", "visible", "split_sids", "pinned"))
@@ -171,6 +179,9 @@ class WorkspaceHost:
             asyncio.create_task(self._run(self._sleep_clicked_peers(sid, {**data, "focus_epoch": epoch})))
         return {"ok": True}
 
+    def _active_views(self, sid):
+        return [view for view in self._views.get(sid, {}).values() if not view.get("closed")]
+
     def _peer_sleep_current(self, source, data, peer):
         view = self._views.get(source, {}).get(data["view_id"], {})
         split = data.get("split_sids", [])
@@ -179,7 +190,7 @@ class WorkspaceHost:
                 or monotonic() - view.get("seen", 0) >= 6 or source == peer or peer not in split):
             return False
         return any(other.get("visible") and other.get("split_sids") == split
-                   for other in self._views.get(peer, {}).values())
+                   for other in self._active_views(peer))
 
     async def _sleep_clicked_peers(self, source, data):
         # Allow the sibling's blur report to arrive; never retry after busy work.
@@ -221,7 +232,7 @@ class WorkspaceHost:
         tasks = getattr(getattr(owner, "events", None), "tasks", {})
         if any(task.get("status") not in {"completed", "failed", "stopped", "killed"} for task in tasks.values()):
             return "Native background work is active or unknown"
-        views = list(self._views.get(sid, {}).values())
+        views = self._active_views(sid)
         if not views or any(monotonic() - view["seen"] >= 6 for view in views):
             return "Composer state is not freshly confirmed"
         if any(view["draft"] or view["focused"] or view.get("pinned") is not False for view in views):
@@ -267,7 +278,7 @@ class WorkspaceHost:
         for sid, (owner, provider) in self._sessions.items():
             if sid.startswith("new:"):
                 continue
-            views = list(self._views.get(sid, {}).values())
+            views = self._active_views(sid)
             fresh = [view for view in views if now - view["seen"] < 6]
             alive = owner.state not in {"closed", "unavailable"}
             pending_interactions = bool(getattr(owner, "questions", None) or getattr(owner, "elicitations", None))
@@ -321,7 +332,7 @@ class WorkspaceHost:
             return "Native session has active work or pending questions"
         if self._bridge_queues.get(sid):
             return "Native session has queued bridge work"
-        views = list(self._views.get(sid, {}).values())
+        views = self._active_views(sid)
         if not views or any(monotonic() - view["seen"] >= 6 for view in views):
             return "Native composer state is not freshly confirmed"
         if any(view["draft"] for view in views):

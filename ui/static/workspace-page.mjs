@@ -49,9 +49,10 @@ try {
 } catch { /* Context telemetry must not interfere with the session. */ }
 function reportContext(closing=false,sleepPeers=false) {
   closing=closing===true;
-  if(!viewContext)return;
+  if(!viewContext || pane.disposed)return;
   const visible=!closing && intersects && document.visibilityState==='visible';
   const state={visible,focused:visible && document.hasFocus(),split_sids:visible ? splitSids : [],
+    ...(closing ? {closed:true} : {}),
     ...(typeof pinned==='boolean' ? {pinned} : {}),
     ...(sleepPeers===true && visible && document.hasFocus() && pinned===false && splitSids.length>1
       ? {sleep_peers:true} : {}),
@@ -173,4 +174,7 @@ window.addEventListener('pagehide', () => {
   window.removeEventListener('focus',reportFocus);
   visibilityObserver.disconnect();document.removeEventListener('visibilitychange',updateVisibility);
   connection.dispose();pane.dispose();
+});
+window.addEventListener('pageshow', event => {
+  if(event.persisted && pane.disposed)location.reload();
 });

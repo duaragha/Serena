@@ -2,6 +2,44 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Closed View Retirement (2026-09-10)
+
+`pagehide` now sends an explicit, sequenced `closed:true` context report. The host
+keeps only that view's sequence cursor and closed flag, so older delayed reports
+cannot resurrect its draft/focus/pin constraints. A genuinely later report from
+the same identity may reopen it. Closed cursors do not consume the 32 live-view
+slots. Sleep, work admission, runtime context and peer selection use live views;
+merely stale or hidden views are NOT silently discarded. A fresh replacement
+view is still required before admission. Closing the only view is not authority
+to run new work or pause the owner.
+
+The renderer stops reporting after disposal and reloads on restoration of a
+disposed bfcache page; normal observation reuses the same owner. No provider
+close, cancel, resume or wake is sent by view retirement. A crashed browser that
+cannot send its close report remains conservatively unknown; this change does
+not claim that missing telemetry is proof of safe inactivity.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_closed_views_retire_constraints_without_closing_owner tests/test_workspace_host.py::test_closed_view_cursors_do_not_consume_live_view_slots tests/test_workspace_host.py::test_view_context_auth_order_expiry_and_draft_retention -q --tb=short
+# exit 0: 3 passed in 0.72s.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 115 passed in 17.54s.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short
+# exit 0: 2 passed in 14.74s; real pagehide accepted by server, constraints
+# retired, back/forward navigation and iframe reopening retained one owner.
+# Controlled provider adapters; no inference. An initial run exited 1 because
+# Playwright did not expose the unloaded document's keepalive response. The
+# final test observes server acceptance rather than pretending delivery succeeded.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --pause
+# exit 0: real native Codex stayed paused when the old view retired; fresh view
+# admission restored, exact owner retained; later account wake 1.89ms; no
+# credentials, inference or browser login; child and temporary profile reaped.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py tests/test_workspace_app.py scripts/verify-workspace-account.py
+# exit 0: All checks passed after flattening one test's nested conditional.
+```
+
+Final packaged verification and full command parity remain open before release.
+
 ## Live Sleep Label (2026-09-10)
 
 Event polling now includes a separate, non-journaled runtime snapshot containing
