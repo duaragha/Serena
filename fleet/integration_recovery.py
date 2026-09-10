@@ -4,6 +4,7 @@ from contextlib import suppress
 import hashlib
 import json
 from pathlib import Path
+import sys
 import time
 
 from fleet.isolation import _generated_types_preparation
@@ -89,6 +90,12 @@ def _queue(store, run_id, leg_id, attempt_id):
         return True
 
 
+def helper_command():
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--fleet-integration-replay"]
+    return [sys.executable, "-m", "fleet.integration_recovery"]
+
+
 def execute_saved_integration(store, run_id, leg):
     """Use normal leases/claims/gates but spend no provider turn for a replay."""
     with store._connect() as db:
@@ -107,12 +114,53 @@ def execute_saved_integration(store, run_id, leg):
         source = dict(source)
 
     from fleet import supervisor
+    from fleet.workers import WorkerRequest, WorkerResult, _stream_process
+
+    attempt = supervisor._retry_sqlite_busy(lambda: store.begin_attempt(leg["leg_id"]))
+    request = WorkerRequest(
+        run_id=run_id, leg_id=leg["leg_id"], attempt_id=attempt["attempt_id"],
+        task="revalidate saved integration", activity="coding", phase="integration_replay",
+        role="integration-verifier", provider=leg["runtime"], model="", effort="",
+        access_mode="write", cwd=str(Path(__file__).resolve().parent.parent),
+        prompt=json.dumps({"database": str(store.path), "run_id": run_id,
+                           "leg_id": leg["leg_id"], "attempt_id": attempt["attempt_id"]}),
+    )
+
+    def observe(kind, payload):
+        if kind == "process.started":
+            store.mark_attempt_process(attempt["attempt_id"], payload["pid"], payload["event_log_path"])
+
+    error = ""
+    try:
+        process = _stream_process(
+            helper_command(), request=request,
+            parse_stdout=lambda _: None, cancel_requested=lambda: store.run_cancel_requested(run_id),
+            on_event=observe,
+        )
+        error = process.stderr or f"saved integration helper exited {process.exit_code} before recording an outcome"
+    except Exception as exc:
+        error = str(exc)
+    with store._connect() as db:
+        current = dict(db.execute("SELECT * FROM fleet_attempts WHERE attempt_id=?",
+                                  (attempt["attempt_id"],)).fetchone())
+    if current["state"] == "running":
+        cancelled = store.run_cancel_requested(run_id)
+        store.finish_attempt(attempt["attempt_id"], state="cancelled" if cancelled else "failed",
+                             output_text=source["output_text"], error=error, exit_code=-1,
+                             input_blocker_reason=None if cancelled else error)
+        return WorkerResult(False, source["output_text"], None, None, None, -1, error, cancelled)
+    return WorkerResult(current["state"] == "completed", current["output_text"], None, None, None,
+                        current["exit_code"], current["error"], current["state"] == "cancelled")
+
+
+def _replay_in_helper(store, run_id, leg, attempt, source, receipt):
+    """The lease owner is this dedicated process, never the resident service."""
+    from fleet import supervisor
     from fleet.isolation import FleetIsolationStore, integrate_workspace
     from fleet.supervision import FleetSupervisionStore, WorkerLeaseMonitor
     from fleet.workers import WorkerResult
 
     supervision = supervisor._retry_sqlite_busy(lambda: FleetSupervisionStore(store.path))
-    attempt = supervisor._retry_sqlite_busy(lambda: store.begin_attempt(leg["leg_id"]))
     lease = None
     monitor = None
     error = ""
@@ -166,5 +214,31 @@ def execute_saved_integration(store, run_id, leg):
             supervisor._release_write_claims(store, run_id, leg, attempt_id=attempt["attempt_id"])
             if lease:
                 supervision.release(attempt["attempt_id"], lease.lease_token, state=state, reason=error)
+        store.append_event(run_id, "worker.integration_replay_finished",
+                           {"source_attempt_id": receipt["source_attempt_id"], "state": state, "native_turn": False},
+                           leg_id=leg["leg_id"], attempt_id=attempt["attempt_id"])
     return WorkerResult(state == "completed", output, None, None, None,
                         0 if state == "completed" else -1, error or None, state == "cancelled")
+
+
+def main():
+    from fleet.store import FleetStore
+
+    request = json.load(sys.stdin)
+    store = FleetStore(Path(request["database"]))
+    run = store.get_run(request["run_id"])
+    leg = next(leg for phase in run["phases"] for leg in phase["legs"] if leg["leg_id"] == request["leg_id"])
+    if leg["current_attempt"]["attempt_id"] != request["attempt_id"] or leg["state"] != "running":
+        raise RuntimeError("saved integration helper lost its attempt generation")
+    with store._connect() as db:
+        receipt = json.loads(db.execute("SELECT payload_json FROM fleet_events WHERE leg_id=? AND "
+                                        "type='leg.integration_replay_queued' ORDER BY event_seq DESC LIMIT 1",
+                                        (leg["leg_id"],)).fetchone()[0])
+        source = dict(db.execute("SELECT * FROM fleet_attempts WHERE attempt_id=? AND leg_id=? AND state='failed'",
+                                 (receipt["source_attempt_id"], leg["leg_id"])).fetchone())
+    result = _replay_in_helper(store, run["run_id"], leg, {"attempt_id": request["attempt_id"]}, source, receipt)
+    return 0 if result.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

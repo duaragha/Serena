@@ -79,7 +79,10 @@ leg for saved failures in this exact class. Admission requires the current faile
 zero-exit writer attempt, previously accepted completion evidence, a rejected
 local integration receipt, and its saved patch. Cancellation and queueing share
 a transaction; live attempts prevent admission. Other input blockers remain
-untouched. The replay takes a normal worker lease and write claim, revalidates
+untouched. A dedicated Python helper owns the replay's process group and normal
+worker lease; the resident service must never become the worker PID for recovery
+or termination. The parent uses Fleet's bounded process/output transport and
+tracks cancellation. The helper takes the write claim and revalidates
 completion evidence, and requires an exact saved-patch SHA-256 match inside the
 integration lock before applying. It neither refreshes the worker checkout nor
 spends a native model turn. Its new attempt has no observed model identity; the

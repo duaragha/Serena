@@ -2,8 +2,8 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +20,7 @@ def _failed(tmp_path, monkeypatch, phase_index=3):
     monkeypatch.setenv("SERENA_FLEET_DB_PATH", str(tmp_path / "fleet.sqlite3"))
     monkeypatch.setenv("SERENA_FLEET_ISOLATION_DB_PATH", str(tmp_path / "isolation.sqlite3"))
     monkeypatch.setenv("SERENA_FLEET_WORKSPACE_ROOT", str(tmp_path / "worktrees"))
+    monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "events"))
     (root / "package.json").write_text('{"scripts":{"codegen":"generator"}}')
     _git(root, "add", "package.json")
     _git(root, "commit", "-qm", "generator contract")
@@ -97,10 +98,6 @@ def test_replay_checks_real_patch_and_never_calls_provider(tmp_path, monkeypatch
     if changed:
         (Path(workspace.path) / "core/alpha.py").write_text("alpha = 999\n")
     monkeypatch.setattr(supervisor, "run_worker", lambda *a, **kw: pytest.fail("provider called during replay"))
-    monkeypatch.setattr(supervisor, "_completion_verdict", lambda *a, **kw: SimpleNamespace(
-        completion_allowed=True, units=[SimpleNamespace(changed_paths=["core/alpha.py"])],
-    ))
-    monkeypatch.setattr(supervisor, "_declared_integration_tests", lambda *a: [["git", "diff", "--check"]])
     fresh = store.get_run(rid)["phases"][3]["legs"][0]
     result = supervisor._execute_leg(store, rid, fresh)
     assert result.ok is (not changed)
@@ -108,9 +105,18 @@ def test_replay_checks_real_patch_and_never_calls_provider(tmp_path, monkeypatch
     assert current["attempt_count"] == 2
     assert current["current_attempt"]["actual_model"] is None
     assert current["current_attempt"]["actual_effort"] is None
+    with store._connect() as db:
+        lease = db.execute("SELECT owner_pid,owner_token,state FROM fleet_worker_leases WHERE attempt_id=?",
+                           (current["current_attempt"]["attempt_id"],)).fetchone()
+    assert lease["owner_pid"] != os.getpid(), "replay must never lease the resident service process"
+    from fleet.activation import _process_may_live
+    assert not _process_may_live(lease["owner_pid"], lease["owner_token"])
+    assert lease["state"] in {"failed", "completed"}
     assert current["state"] == ("waiting_for_input" if changed else "completed")
     assert (Path(store.get_run(rid)["cwd"]) / "core/alpha.py").read_text() == ("alpha = 1\n" if changed else "alpha = 2\n")
     assert recovery.resume_saved_integrations(store) == []
+    finished = [e for e in store.events(rid) if e["type"] == "worker.integration_replay_finished"]
+    assert finished[-1]["payload"]["native_turn"] is False
 
 
 def test_patch_fingerprint_guard_prevents_integration(tmp_path, monkeypatch):
@@ -124,8 +130,13 @@ def test_patch_fingerprint_guard_prevents_integration(tmp_path, monkeypatch):
     assert "fingerprint changed" in result.reason
 
 
-def test_replay_uses_real_completion_validator_and_git_gate(tmp_path, monkeypatch):
+@pytest.mark.parametrize("entrypoint", ["module", "sidecar"])
+def test_replay_uses_real_completion_validator_and_git_gate(tmp_path, monkeypatch, entrypoint):
     from fleet import supervisor
+    if entrypoint == "sidecar":
+        import sys
+        sidecar = Path(recovery.__file__).resolve().parent.parent / "apps/desktop/sidecar.py"
+        monkeypatch.setattr(recovery, "helper_command", lambda: [sys.executable, str(sidecar), "--fleet-integration-replay"])
     store, rid, _, _, _, _ = _failed(tmp_path, monkeypatch)
     assert recovery.resume_saved_integrations(store) == [rid]
     monkeypatch.setattr(supervisor, "run_worker", lambda *a, **kw: pytest.fail("provider called"))
@@ -136,6 +147,12 @@ def test_replay_uses_real_completion_validator_and_git_gate(tmp_path, monkeypatc
     accepted = [e for e in events if e["type"] == "leg.completion_evidence_accepted"]
     assert len(accepted) == 2
     assert accepted[-1]["payload"]["completion_allowed"] is True
+
+
+def test_frozen_runtime_uses_sidecar_dispatch_not_python_module_flags(monkeypatch):
+    import sys
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert recovery.helper_command() == [sys.executable, "--fleet-integration-replay"]
 
 
 def test_cancellation_after_queue_does_not_launch_replay(tmp_path, monkeypatch):
