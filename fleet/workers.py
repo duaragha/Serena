@@ -798,6 +798,11 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> None:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
         if process.poll() is not None:
+            # The leader may be gone while a descendant ignores SIGTERM and
+            # retains an output pipe. Escalate only this owned process group;
+            # otherwise closing the reader can wait indefinitely for EOF.
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
             return
         try:
             process.wait(timeout=3)
