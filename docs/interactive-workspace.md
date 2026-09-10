@@ -2,6 +2,72 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Existing-Owner View Recovery (2026-09-10)
+
+Reopened native panes now observe an existing owner and replay its real journal
+without another Resume click. The authenticated GET `/observe` inspects only the
+exact in-memory owner on its existing event loop. It never creates that loop,
+resolves a session, starts a provider, sends input or resumes a closed process.
+Absent, opening, closed and unavailable owners still require explicit attachment.
+Saved clear handoffs retain their explicit original-conversation confirmation.
+Closing the view only stops observation; provider work remains independent.
+
+Source verification, commands run separately from this worktree:
+```sh
+node --test tests/workspace-connection.test.mjs
+# exit 0: 43 passed, including GET-only observation and foreign-ID rejection
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_app.py -q --tb=short
+# exit 0: 78 passed in 41.25s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short
+# exit 0: 2 passed in 14.24s after adding GET-only reload assertions
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py
+# exit 0: 51 real native shell turns; desktop/mobile reload uses only GETs,
+# exact PID retained, no resume/command/replacement; disconnect/retry and cleanup
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py
+# exit 0: native Claude SDK/local command/queue/clear/fork, source desktop/mobile
+# observe existing owner, no console/HTTP errors, every isolated child reaped
+```
+
+Initial scoped run: exit 1, 2 failed/14 passed because a controlled HTTP fixture
+did not implement the new observe response. Updated its exact-ID read-only response;
+no production behavior was weakened. First Codex proof invocation incorrectly
+passed `--browser` as a binary path (exit 1 after native checks). Correct no-argument
+invocation above completed successfully. Scoped Ruff exited 0. Screenshots
+`source-mobile.png` and `codex-native-desktop.png` were inspected: neon black,
+native output, usable wrapped mobile controls and preserved composer draft.
+Proof scripts now expect passive observation for owners that are already alive;
+unattached forks and closed sessions still require an explicit Resume action.
+These latest source changes have not yet been rebuilt into either package.
+
+## Windows Integration And Normal Authentication (2026-09-10)
+
+Before the observation changes above, the Windows frozen Codex/Electron proof
+completed with exit 0 using current `728507d` proof scripts and integrated
+production source. Their SHA256s matched the laptop before execution. The previous
+build handle was no longer present; a read-only process check confirmed no
+PyInstaller process and an existing 18,960,681-byte executable. Its final build
+exit was not recovered, so the runtime proof, not an assumed build exit, is evidence.
+
+Invoked `scripts/verify-workspace-codex-windows.py --frozen
+C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\dist\serena-web-sidecar\serena-web-sidecar.exe`
+through SSH and the PC's existing Python, setting the documented Windows Edge,
+Electron and Playwright proof paths. No PC source was written or app installed.
+Observed native 51-turn history, exact resume, desktop/mobile input/output,
+mentions, skill changes, disconnect, native fork, real Electron clipboard,
+browser-login start/reopen/cancel, standalone and linked provider creation,
+unchanged existing owners and exactly two new owners per provider after closing
+Electron. All disposable children were reaped; no inference or credentials used.
+The linked creation view in that package predates the observation fix above.
+
+Normal laptop profile verification also passed: `codex login status` exited 0
+with `Logged in using ChatGPT`. A real app-server account/read followed by
+account/rateLimits/read returned ChatGPT subscription identity and authenticated
+rate limits, then reaped its child (exit 0). A read-only process-environment probe
+confirmed the running desktop backend uses that same `~/.codex` profile. No
+credentials were printed/copied and no coding thread or inference was created.
+This resolves the verified laptop sign-in blocker, not the remaining release,
+installed rich-pane activation or complete provider command/lifecycle gates.
+
 ## Integrated Linux Package Proof (2026-09-10)
 
 Current production source `56f5062` was rebuilt and verified with the expanded

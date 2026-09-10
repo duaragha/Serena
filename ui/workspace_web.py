@@ -49,6 +49,10 @@ def workspace_blueprint(host, *, token: str):
     def attach(sid):
         return jsonify(host.attach(sid))
 
+    @bp.get("/<sid>/observe")
+    def observe(sid):
+        return jsonify(host.observe(sid))
+
     @bp.post("/<sid>/handoff")
     def handoff(sid):
         data = request.get_json(silent=True)

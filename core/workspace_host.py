@@ -86,6 +86,21 @@ class WorkspaceHost:
         self._validate_session(session_id)
         return self._dispatch(self._attach(session_id), timeout)
 
+    def observe(self, session_id: str):
+        """Inspect an existing owner without starting the owner loop or a provider."""
+        self._validate_session(session_id)
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"observing": False, "session_id": session_id}
+            future = asyncio.run_coroutine_threadsafe(self._observe(session_id), self._loop)
+        return future.result(timeout=5)
+
+    async def _observe(self, sid):
+        entry = self._sessions.get(sid)
+        if entry is None or entry[0].state not in {"ready", "running", "completed", "failed", "interrupted"}:
+            return {"observing": False, "session_id": sid}
+        return {**self._status(sid), "observing": True}
+
     def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
             raise ValueError("Creation requires an exact request UUID")

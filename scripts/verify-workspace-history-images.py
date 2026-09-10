@@ -69,7 +69,10 @@ def main():
                         page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
                         page.on("response", lambda response, previews=previews: previews.append(response.url) if "/attachments/" in response.url else None)
                         page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact")
-                        page.get_by_role("button", name="Resume session", exact=True).click()
+                        if label == "desktop":
+                            page.get_by_role("button", name="Resume session", exact=True).click()
+                        else:
+                            page.locator('#workspace-connect').wait_for(state='hidden')
                         if label == "desktop":
                             page.get_by_role("button", name="Load earlier messages", exact=True).click()
                         image = page.get_by_role("img", name="earlier-photo.png", exact=True)

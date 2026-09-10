@@ -11,6 +11,34 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+for(const observing of [false,true])test(`observation reads existing owner only: ${observing}`,async()=>{
+  const calls=[],events=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),
+    receive:event=>events.push(event),error:()=>{},fetcher:async(url,options)=>{
+      calls.push([url,options.method]);
+      return response(url.endsWith('/observe')?{session_id:'exact',observing}:
+        {events:[{sequence:1,method:'workspace/history'}],has_more:false});
+    }});
+  try{
+    assert.equal(await conn.observe(),observing);
+    assert.deepEqual(calls,[['/api/workspace/exact/observe','GET'],
+      ...(observing?[['/api/workspace/exact/events?after=0','GET']]:[])]);
+    assert.equal(events.length,observing?1:0);
+  }finally{conn.dispose();}
+});
+
+test('observation rejects foreign identity without replay or attachment',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),
+    receive:()=>assert.fail('foreign replay'),error:()=>{},fetcher:async(url)=>{
+      calls.push(url);return response({session_id:'foreign',observing:true});
+    }});
+  try{
+    await assert.rejects(conn.observe(),/different identity/);
+    assert.deepEqual(calls,['/api/workspace/exact/observe']);
+  }finally{conn.dispose();}
+});
+
 test('hidden views poll slowly and visibility refreshes without attaching or sending',async t=>{
   const calls=[],delays=[];
   t.mock.method(globalThis,'setTimeout',(_callback,delay)=>{delays.push(delay);return 0;});

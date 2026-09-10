@@ -31,13 +31,14 @@ def test_corrupt_receipts_keep_page_viewable_without_sending_commands(tmp_path, 
 
                 def api(route):
                     calls.append(route.request.url)
-                    route.fulfill(json={"ok": True, "events": [], "has_more": False})
+                    route.fulfill(json={"session_id": "exact", "observing": False} if route.request.url.endswith("/observe")
+                                  else {"ok": True, "events": [], "has_more": False})
 
                 page.route("**/api/workspace/**", api)
                 page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact")
                 button = page.get_by_role("button", name="Resume session", exact=True)
                 playwright.expect(button).to_be_enabled()
-                assert calls == []
+                assert len(calls) == 1 and calls[0].endswith("/observe")
                 button.click()
                 playwright.expect(page.get_by_role("alert")).to_contain_text("receipts are unreadable")
                 assert any("/events?" in call for call in calls)
@@ -435,7 +436,8 @@ function setTermStatus(status){window.lastStatus=status;}
                 inspector.get_by_text("No events", exact=True).wait_for()
                 assert not owners and host._loop is None
             inspector.get_by_role("button", name="Close session events").click()
-            page.get_by_role("button", name="Resume session").click()
+            if provider != "claude":
+                page.get_by_role("button", name="Resume session").click()
             page.get_by_role("button", name="Resume session").wait_for(state="hidden")
             page.get_by_role("textbox", name=f"Message {provider.capitalize()}").fill(
                 "real mounted page control"
@@ -491,16 +493,20 @@ function setTermStatus(status){window.lastStatus=status;}
             assert '"id": "exact"' in inspector.locator("pre").inner_text()
             inspector.get_by_role("button", name="Close session events").click()
             page.screenshot(path=str(tmp_path / "mounted-workspace.png"))
+            observations = []
+            page.on("request", lambda request: observations.append(request.method)
+                    if "/api/workspace/" in request.url else None)
             page.reload()
-            page.get_by_role("button", name="Resume session").click()
+            page.get_by_role("button", name="Resume session").wait_for(state="hidden")
             page.get_by_text("controlled provider output", exact=True).wait_for()
             assert len(owners) == 1 and not owners[0].closed
             assert len(owners[0].sent) == 2
+            assert observations and set(observations) == {"GET"}
             assert not errors
             page.goto(f"http://127.0.0.1:{server.server_port}/parent")
             page.evaluate("_startStructuredPane('exact', {})")
             nested = page.frame_locator("iframe")
-            nested.get_by_role("button", name="Resume session").click()
+            nested.get_by_role("button", name="Resume session").wait_for(state="hidden")
             nested.get_by_text("controlled provider output", exact=True).wait_for()
             assert page.evaluate("termSessions.get('exact').structured")
             page.evaluate("_startStructuredPane('exact', {})")

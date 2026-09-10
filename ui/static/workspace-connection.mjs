@@ -71,6 +71,15 @@ export class WorkspaceConnection {
     return result;
   }
 
+  async observe() {
+    const result = await this.request('/observe');
+    if(result.session_id !== this.sessionId)throw Error('Session observation returned a different identity');
+    if(result.observing !== true)return false;
+    await this.poll({required:true});
+    if(this.storageFailure)this.error(this.storageFailure);
+    return true;
+  }
+
   async poll({required = false} = {}) {
     if (this.polling || this.stopped) return;
     this.observing = true;

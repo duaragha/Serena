@@ -128,7 +128,9 @@ def browser_proof(sid, root, project, env, binary):
                     page.goto(f"http://127.0.0.1:{server.server_port}/workspace/{sid}")
                     if label == "desktop":
                         assert not host._sessions
-                    page.get_by_role("button", name="Resume session", exact=True).click()
+                        page.get_by_role("button", name="Resume session", exact=True).click()
+                    else:
+                        page.locator('#workspace-connect').wait_for(state='hidden')
                     if label == "desktop":
                         retry = page.get_by_role("button", name="Retry connection", exact=True)
                         retry.wait_for()

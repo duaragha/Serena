@@ -153,8 +153,7 @@ def main():
                         page.on("console", lambda message, errors=errors: errors.append(f"{message.text} {message.location}") if message.type == "error" else None)
                         page.on("response", lambda response, errors=errors: errors.append(f"HTTP {response.status} {response.url}") if response.status >= 400 else None)
                         page.goto(f"{base}/workspace/{sid}")
-                        page.get_by_role("button", name="Resume session", exact=True).click()
-                        expect(page.get_by_role("button", name="Resume session", exact=True)).to_be_hidden()
+                        expect(page.locator('#workspace-connect')).to_be_hidden()
                         skill = config / "skills/browser-proof/SKILL.md"
                         skill.parent.mkdir(parents=True, exist_ok=True)
                         skill.write_text("---\nname: browser-proof\ndescription: Isolated browser reload proof\n---\nReturn proof.\n")
@@ -238,7 +237,7 @@ def main():
                                         index.rmdir()
                                     backup.rename(index)
                                 page.reload()
-                                page.get_by_role("button", name="Resume session", exact=True).click()
+                                expect(page.locator('#workspace-connect')).to_be_hidden()
                                 page.get_by_role("button", name="Fork conversation", exact=True).click()
                                 expect(fork_dialog.locator("code")).to_have_text(saved_sid)
                                 fork_dialog.get_by_role("button", name="Retry fork registration", exact=True).click()

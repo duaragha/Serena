@@ -173,7 +173,7 @@ async def main():
                     page.reload()
                     page.get_by_role("button", name="Open conversation", exact=True).click()
                     page.wait_for_url(base + "/workspace/" + sid)
-                    page.get_by_role("button", name="Resume session", exact=True).click()
+                    page.locator('#workspace-connect').wait_for(state='hidden')
                     page.get_by_role("textbox", name="Message Claude").fill("/effort low")
                     page.get_by_role("button", name="Send message", exact=True).click()
                     deadline = time.monotonic() + 20
@@ -214,7 +214,7 @@ async def main():
                     page.reload()
                     frame.get_by_role("button", name="Open conversation", exact=True).click()
                     page.wait_for_url(base + "/workspace/" + sid)
-                    page.get_by_role("button", name="Resume session", exact=True).click()
+                    page.locator('#workspace-connect').wait_for(state='hidden')
                     page.get_by_text("/effort low", exact=True).wait_for()
                     page.get_by_text("Set effort level to low", exact=False).wait_for()
                     complete = [entry["event"] for entry in host.journal.read(sid)["events"] if entry["event"]["method"] == "turn/completed"]

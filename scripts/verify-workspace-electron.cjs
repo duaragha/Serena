@@ -71,7 +71,7 @@ async function main() {
     await page.locator(`.session-row[data-sid="${sid}"]`).first().click();
     await page.locator('#viewLiveBtn').click();
     const pane = page.frameLocator(`iframe[src="/workspace/${sid}"]`);
-    await pane.getByRole('button', {name: 'Resume session', exact: true}).click();
+    await pane.locator('#workspace-connect').waitFor({state:'hidden'});
     await pane.getByRole('button', {name: 'Commands and skills', exact: true}).click();
     const dialog = pane.getByRole('dialog', {name: 'Commands and skills'});
     await dialog.getByRole('searchbox', {name: 'Search commands'}).fill('workspace-setting-proof');
@@ -132,7 +132,7 @@ async function main() {
     assert.match(newSid,/^[a-f0-9-]{36}$/);
     await creation.getByRole('button',{name:'Open conversation',exact:true}).click();
     const newPane = page.frameLocator(`iframe[src="/workspace/${newSid}"]`);
-    await newPane.getByRole('button',{name:'Resume session',exact:true}).click();
+    await newPane.locator('#workspace-connect').waitFor({state:'hidden'});
     assert.equal(await page.locator('#convTitle').innerText(),'Electron native new chat');
     assert.equal(await page.locator('iframe[src^="/workspace/new?"]').count(),0);
     await newPane.getByRole('button',{name:'Run shell command',exact:true}).click();
@@ -177,7 +177,7 @@ async function main() {
     assert.notEqual(claudeSid,newSid);
     await claudeCreation.getByRole('button',{name:'Open conversation',exact:true}).click();
     const claudePane = page.frameLocator(`iframe[src="/workspace/${claudeSid}"]`);
-    await claudePane.getByRole('button',{name:'Resume session',exact:true}).click();
+    await claudePane.locator('#workspace-connect').waitFor({state:'hidden'});
     assert.equal(await page.locator('#convTitle').innerText(),'Electron native Claude chat');
     assert.equal(await page.locator('iframe[src^="/workspace/new?"]').count(),0);
     await claudePane.getByRole('textbox',{name:'Message Claude',exact:true}).fill('/effort low');

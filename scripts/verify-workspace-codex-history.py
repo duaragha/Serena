@@ -80,7 +80,9 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                     page.goto(f"{base}/workspace/{sid}")
                     if pid is None:
                         assert not owners(), "Page load launched an owner"
-                    page.get_by_role("button", name="Resume session", exact=True).click()
+                        page.get_by_role("button", name="Resume session", exact=True).click()
+                    else:
+                        expect(page.locator('#workspace-connect')).to_be_hidden()
                     page.get_by_role("button", name="Mention project file", exact=True).click()
                     picker = page.get_by_role("dialog", name="Mention project file")
                     search = picker.get_by_role("searchbox", name="Find project file")
@@ -140,6 +142,14 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                     if pid is None:
                         pid = actual[0]
                     assert actual == [pid]
+                    observations = []
+                    page.on('request', lambda request, observations=observations: observations.append(request.method)
+                            if '/api/workspace/' in request.url else None)
+                    page.reload()
+                    expect(page.locator('#workspace-connect')).to_be_hidden()
+                    page.locator('summary').filter(has_text=token).first.wait_for()
+                    assert owners() == [pid] and observations and set(observations) == {'GET'}, observations
+                    print(f"PASS: {prefix} {label} reload replayed real output using reads only; no resume, command or replacement owner")
                     assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
                     page.screenshot(path=str(artifacts / f"{prefix}-{label}.png"))
                     if label == "desktop":
@@ -160,7 +170,7 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                     if verify_disconnect:
                         if page.url != f"{base}/workspace/{sid}":
                             page.goto(f"{base}/workspace/{sid}")
-                            page.get_by_role("button", name="Resume session", exact=True).click()
+                            expect(page.locator('#workspace-connect')).to_be_hidden()
                         page.get_by_role("button", name="Disconnect session", exact=True).click()
                         disconnect = page.get_by_role("dialog", name="Disconnect session", exact=True)
                         disconnect.get_by_role("button", name="Cancel", exact=True).click()

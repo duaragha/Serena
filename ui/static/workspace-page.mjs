@@ -100,7 +100,12 @@ button.addEventListener('click', async () => {
     button.disabled = false;
   }
 });
-button.disabled = false;
+// Reopening a view may read its existing owner, but must never resume a process.
+if(pane.clearedSession)button.disabled=false;
+else connection.observe().then(observing=>{
+  button.hidden=observing && pane.conversation.status!=='unavailable';
+  button.disabled=false;
+}).catch(connectionFailed);
 window.addEventListener('pagehide', () => {
   visibilityObserver.disconnect();document.removeEventListener('visibilitychange',updateVisibility);
   connection.dispose();pane.dispose();

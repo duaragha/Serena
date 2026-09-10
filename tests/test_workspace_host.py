@@ -84,6 +84,42 @@ class Owner:
         self.closed = True
 
 
+def test_observation_never_starts_or_replaces_an_owner(tmp_path):
+    owners = []
+
+    class ObservedOwner(Owner):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            owners.append(self)
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "observe.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+        factories={"codex": ObservedOwner})
+    app = Flask(__name__)
+    app.register_blueprint(workspace_blueprint(host, token="s" * 40))
+    client = app.test_client()
+    headers = {"X-Serena-Workspace-Token": "s" * 40}
+    try:
+        assert client.get("/api/workspace/exact/observe").status_code == 403
+        assert client.get("/api/workspace/exact/observe", headers=headers).json == {
+            "observing": False, "session_id": "exact"}
+        assert host._loop is None and not owners
+        host.attach("exact")
+        for state in ["ready", "running", "completed", "failed", "interrupted"]:
+            owners[0].state = state
+            result = client.get("/api/workspace/exact/observe", headers=headers).json
+            assert result["observing"] and result["session_id"] == "exact"
+            assert result["state"] == state
+        for state in ["opening", "closed", "unavailable"]:
+            owners[0].state = state
+            assert not host.observe("exact")["observing"]
+        assert not host.observe("other")["observing"]
+        assert len(owners) == 1 and not owners[0].closed
+    finally:
+        host.shutdown()
+    assert not host.observe("exact")["observing"]
+
+
 def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
     calls = []
     class AccountOwner(Owner):

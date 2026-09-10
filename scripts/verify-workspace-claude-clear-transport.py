@@ -209,8 +209,7 @@ async def main():
                     dialog.get_by_text("Context cleared", exact=True).wait_for()
                     dialog.get_by_role("button", name="Open new conversation", exact=True).click()
                     page.wait_for_url(f"**/workspace/{target}")
-                    page.get_by_role("button", name="Resume session").click()
-                    page.get_by_role("button", name="Resume session").wait_for(state="hidden")
+                    page.locator('#workspace-connect').wait_for(state='hidden')
                     assert browser_host._sessions[target][0].client.owned_pid == pid
                     page.get_by_role("textbox", name="Message Claude").fill("/effort low")
                     page.get_by_role("button", name="Send message", exact=True).click()
