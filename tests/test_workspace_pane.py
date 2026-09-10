@@ -855,6 +855,49 @@ def test_account_status_is_explicit_honest_and_preserves_draft(pane, width):
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_account_connection_check_is_explicit_and_recovers_from_expired_login(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""()=>{
+      controls.accountStatus=async()=>({account:{type:'chatgpt',email:'person@example.test'},login:null});
+      controls.accountRateLimits=async()=>{calls.push('limits');throw Error('Refresh token already used. Sign in again.');};
+      controls.accountLogin=async()=>{calls.push('login');return {status:'pending'};};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='keep my draft';pane.render();
+    }""")
+    page.locator('#left').get_by_role('button', name='Session actions', exact=True).click()
+    page.locator('#left').get_by_role('button', name='Codex account', exact=True).click()
+    dialog = page.get_by_role('dialog', name='Codex account')
+    check = dialog.get_by_role('button', name='Check account connection', exact=True)
+    assert page.evaluate('calls') == []
+    check.click()
+    dialog.get_by_text('Account connection failed: Refresh token already used. Sign in again.', exact=True).wait_for()
+    assert page.evaluate('pane.input.value') == 'keep my draft'
+    page.evaluate("""()=>{controls.accountRateLimits=()=>{calls.push('limits');return new Promise(resolve=>window.resolveLimits=resolve);};}""")
+    check.click()
+    assert check.is_disabled()
+    assert dialog.get_by_role('button', name='Refresh account status', exact=True).is_disabled()
+    page.evaluate("""()=>resolveLimits({observedAt:'2026-09-10T12:00:00Z',limits:[{id:'codex',name:'Codex',primary:null,secondary:null}]})""")
+    dialog.get_by_text('No model request was sent.', exact=False).wait_for()
+    assert 'failed' not in dialog.inner_text()
+    assert page.evaluate('calls') == ['limits', 'limits']
+    assert page.evaluate('pane.conversation.metadata.accountLimits.limits[0].id') == 'codex'
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'account-connection-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button', name='Refresh account status', exact=True).click()
+    playwright.expect(dialog.get_by_text('No model request was sent.', exact=False)).to_have_count(0)
+    check.click()
+    page.keyboard.press('Escape')
+    page.wait_for_function('!pane.accountDialog.open')
+    page.evaluate("""()=>resolveLimits({observedAt:'2026-09-10T13:00:00Z',limits:[{id:'late'}]})""")
+    assert page.evaluate('pane.conversation.metadata.accountLimits.limits[0].id') == 'codex'
+    assert page.evaluate('pane.input.value') == 'keep my draft'
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_browser_login_requires_click_and_closing_does_not_cancel(pane, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})
@@ -863,6 +906,7 @@ def test_browser_login_requires_click_and_closing_does_not_cancel(pane, width):
       controls.accountStatus=async()=>({account:null,login});
       controls.accountLogin=async()=>{calls.push('login');return window.login={status:'pending',loginId:'native-one',authUrl:'https://auth.openai.com/authorize?state=proof'};};
       controls.cancelAccountLogin=async id=>{calls.push(['cancel',id]);return window.login={status:'cancelled'};};
+      controls.accountRateLimits=async()=>{throw Error('Must not check during pending login');};
       pane.accountButton.hidden=false;pane.input.value='draft';
     }""")
     button = page.locator('#left').get_by_role('button', name='Codex account', exact=True)
@@ -873,6 +917,7 @@ def test_browser_login_requires_click_and_closing_does_not_cancel(pane, width):
     dialog.get_by_role('button', name='Sign in with ChatGPT', exact=True).click()
     page.wait_for_function("calls.length===1")
     assert dialog.get_by_role('button', name='Sign in with ChatGPT', exact=True).is_disabled()
+    assert dialog.get_by_role('button', name='Check account connection', exact=True).is_disabled()
     assert dialog.get_by_role('link', name='Continue browser sign-in').get_attribute('href').startswith('https://auth.openai.com/')
     assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
     page.keyboard.press('Escape')

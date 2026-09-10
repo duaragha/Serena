@@ -3,6 +3,34 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Account Connection Check (2026-09-10)
+
+The Codex account dialog now has an explicit Check account connection control.
+It uses the existing native account/rateLimits/read route, not forced token refresh
+or an inference request. Opening the dialog still only reads stored account
+metadata. The check reports the returned observation time or the actual failure;
+it never treats stored credentials as proof of remote validity or rate-limit
+retrieval as proof that model execution succeeds. Successful snapshots also feed
+the existing Session status display without requiring that dialog to be open.
+
+Pending login and in-flight account operations disable the check. Account refresh
+and login actions clear its displayed result; closing the dialog discards late
+responses. The composer is untouched on success, error, and close. No logout or
+personal-account mutation was added or performed.
+
+Official evidence: https://learn.chatgpt.com/docs/app-server, accessed 2026-09-10,
+Authentication API overview and Rate limits sections. Native account/read with
+refreshToken false is a stored-account read; account/rateLimits/read retrieves
+account limits. Positive UI rendering uses a controlled response, not a claim
+of renewed authentication. The dedicated signed-in proof remains outstanding.
+
+Verification:
+
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_account_connection_check_is_explicit_and_recovers_from_expired_login tests/test_workspace_pane.py::test_account_status_is_explicit_honest_and_preserves_draft tests/test_workspace_pane.py::test_browser_login_requires_click_and_closing_does_not_cancel -q --tb=short`: final exit 0, 6 passed in 9.05s. Screenshots inspected at 390px and 1600px. Initial exit 1, 2 failed/4 passed in 69.38s, caught an unconditional call to the status dialog's optional renderer; fixed. Intermediate exit 0, 6 passed in 7.22s; final fixture uses an actual Codex pane.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --browser-login --limits --command-guard`: exit 0. Native unsigned limits refusal, login start/cancel, exact owner, no inference or browser launch, temporary profile removed and child reaped. This checks the underlying native route, not a successful signed-in account.
+- `node --check ui/static/workspace-pane.mjs`: exit 0, no output.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py`: exit 0, all checks passed.
+
 ## Proof Login Isolation Follow-up (2026-09-10)
 
 All five authenticated Codex proof entrypoints now require an explicit separate

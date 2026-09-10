@@ -530,12 +530,14 @@ export class WorkspacePane {
     const status=node('p');status.setAttribute('role','status');
     const details=node('p');details.style.overflowWrap='anywhere';
     const loginStatus=node('p');loginStatus.setAttribute('aria-live','polite');
+    const connectionStatus=node('p');connectionStatus.setAttribute('aria-live','polite');connectionStatus.style.overflowWrap='anywhere';
     const link=node('a','','Continue browser sign-in');link.target='_blank';link.rel='noopener noreferrer';link.hidden=true;
     let login=null,busy=false,timer=null;
     const showLogin=value=>{
       login=value;link.hidden=true;link.removeAttribute('href');
       const pending=['pending','uncertain'].includes(login?.status);
       signIn.disabled=busy || pending;cancel.hidden=!pending || !login?.loginId;cancel.disabled=busy;
+      verify.disabled=busy || pending;
       loginStatus.textContent=login ? `Sign-in: ${login.status}` : '';
       if(login?.status==='pending' && login.authUrl){
         try{
@@ -548,17 +550,17 @@ export class WorkspacePane {
       if(pending && dialog.open)timer=setTimeout(()=>refresh.click(),2000);
     };
     const act=async action=>{
-      if(busy)return;busy=true;signIn.disabled=true;cancel.disabled=true;refresh.disabled=true;
+      if(busy)return;busy=true;signIn.disabled=true;cancel.disabled=true;refresh.disabled=true;verify.disabled=true;connectionStatus.textContent='';
       try{const value=await action();if(dialog.open && !this.disposed)showLogin(value);}
       catch(error){if(dialog.open)loginStatus.textContent=error.message;}
-      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);}
+      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);verify.disabled=signIn.disabled;}
     };
     const signIn=this.button('Sign in with ChatGPT','log-in',()=>act(()=>this.controls.accountLogin()));
     signIn.hidden=!this.controls.accountLogin;
     const cancel=this.button('Cancel browser sign-in','x',()=>act(()=>this.controls.cancelAccountLogin(login.loginId)));cancel.hidden=true;
     const refresh=this.button('Refresh account status','refresh-cw',async()=>{
       if(busy)return;
-      busy=true;signIn.disabled=true;cancel.disabled=true;
+      busy=true;signIn.disabled=true;cancel.disabled=true;verify.disabled=true;connectionStatus.textContent='';
       refresh.disabled=true;status.textContent='Checking account...';details.textContent='';
       try{
         const result=await this.controls.accountStatus();
@@ -568,10 +570,24 @@ export class WorkspacePane {
         details.textContent=[account?.email,account?.planType,account ? 'Credential validity has not been verified.' : 'No account is saved for this session runtime.'].filter(Boolean).join(' · ');
         showLogin(result.login);
       }catch(error){if(dialog.open)status.textContent=error.message;}
-      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);}
+      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);verify.disabled=signIn.disabled;}
     });
+    const verify=this.button('Check account connection','shield-check',async()=>{
+      if(busy || ['pending','uncertain'].includes(login?.status))return;
+      busy=true;verify.disabled=true;signIn.disabled=true;cancel.disabled=true;refresh.disabled=true;
+      connectionStatus.textContent='Checking account connection...';
+      try{
+        const result=await this.controls.accountRateLimits();
+        if(!dialog.open || this.disposed)return;
+        if(!Array.isArray(result?.limits) || !result.limits.length || !Number.isFinite(Date.parse(result.observedAt)))throw Error('Account check returned an invalid response');
+        this.conversation.metadata.accountLimits=result;this.refreshSessionStatus?.();
+        connectionStatus.textContent=`Account limits retrieved at ${new Date(result.observedAt).toLocaleTimeString()}. No model request was sent.`;
+      }catch(error){if(dialog.open && !this.disposed)connectionStatus.textContent=`Account connection failed: ${error.message}`;}
+      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);verify.disabled=signIn.disabled;}
+    });
+    verify.hidden=!this.controls.accountRateLimits;
     const close=this.button('Close account','x',()=>dialog.close());
-    dialog.append(node('h3','','Codex account'),close,status,details,loginStatus,link,signIn,cancel,refresh);
+    dialog.append(node('h3','','Codex account'),close,status,details,loginStatus,link,signIn,cancel,refresh,verify,connectionStatus);
     dialog.addEventListener('close',()=>{clearTimeout(timer);dialog.remove();this.input.focus();});
     this.accountDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();window.lucide?.createIcons();refresh.click();
   }
