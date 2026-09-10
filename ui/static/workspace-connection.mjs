@@ -116,7 +116,7 @@ export class WorkspaceConnection {
           inputs.push({type: 'upload', token: this.uploads[key]});
         }
         if(['queue_input','submit'].includes(action)){
-          const queued=Object.keys(this.pending).filter(key=>key.startsWith('{')).map(key=>JSON.parse(key)).filter(value=>value.action==='queue_input');
+          const queued=this.pendingQueuedInputs();
           if(queued.length){
             const prior=queued.find(value=>JSON.stringify(value.payload.inputs)===JSON.stringify(inputs));
             if(!prior)throw Error('Resolve the unconfirmed queued message before sending different input');
@@ -124,6 +124,19 @@ export class WorkspaceConnection {
           }
         }
         return this.command(action, {inputs, ...(['steer','queue_input'].includes(action) ? {expectedTurnId, ...(action === 'steer' && options.skills?.length ? {skills:options.skills} : {})} : {}), ...(action === 'submit' && Object.keys(options).length ? {options} : {})});
+  }
+
+  pendingQueuedInputs() {
+    return Object.entries(this.pending).filter(([key])=>key.startsWith('{')).map(([key,requestId])=>{
+      const value=JSON.parse(key);
+      return {...value,requestId};
+    }).filter(value=>value.action==='queue_input');
+  }
+
+  async retryQueuedInput(requestId) {
+    const matches=this.pendingQueuedInputs().filter(value=>value.requestId===requestId);
+    if(matches.length!==1)throw Error('Queued receipt is no longer pending');
+    return this.command('queue_input',matches[0].payload);
   }
 
   controls() {
@@ -174,6 +187,8 @@ export class WorkspaceConnection {
       submit: message => this.sendMessage('submit', message),
       steer: message => this.sendMessage('steer', message),
       queueInput: message => this.sendMessage('queue_input', message),
+      pendingQueuedInputs: () => this.pendingQueuedInputs(),
+      retryQueuedInput: requestId => this.retryQueuedInput(requestId),
       interrupt: expectedTurnId => this.command('interrupt', expectedTurnId === undefined ? {} : {expectedTurnId}),
       answer: (request_id, answer) => this.command('answer', {request_id, answer}),
     };

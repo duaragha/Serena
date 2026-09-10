@@ -31,6 +31,28 @@ test('queued follow-up carries active identity and reuses lost receipt after rel
   connection.dispose();
 });
 
+test('explicit queue recovery uses saved payload without the current draft or uploads',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    if(calls.length===1)throw Error('lost');
+    return response({ok:true,result:{turn:{id:'accepted'}}});
+  }};
+  let connection=new WorkspaceConnection(options);
+  await assert.rejects(connection.controls().queueInput({text:'original',expectedTurnId:'first'}),/lost/);
+  connection.dispose();connection=new WorkspaceConnection(options);
+  const pending=connection.controls().pendingQueuedInputs();
+  assert.equal(pending.length,1);assert.equal(calls.length,1);
+  assert.equal(pending[0].payload.inputs[0].text,'original');
+  pending[0].payload.inputs[0].text='local mutation';
+  const id=pending[0].requestId;
+  assert.equal((await connection.controls().retryQueuedInput(id)).turn.id,'accepted');
+  assert.deepEqual(calls[0],calls[1]);
+  assert.deepEqual(connection.controls().pendingQueuedInputs(),[]);
+  await assert.rejects(connection.controls().retryQueuedInput(id),/no longer pending/);
+  assert.equal(calls.length,2);connection.dispose();
+});
+
 test('disconnect is explicit and lost response reuses exact receipt after reload',async()=>{
   const saved=storage(),calls=[];
   const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

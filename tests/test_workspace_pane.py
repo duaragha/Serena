@@ -1677,6 +1677,54 @@ def test_claude_busy_composer_queues_exact_turn_and_preserves_failed_draft(pane,
     assert not errors
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("newer", [False, True])
+def test_explicit_queue_recovery_preserves_newer_draft(pane, width, failure, newer, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    page.evaluate("""failure => {
+      window.pendingQueue=[{requestId:'original-id',payload:{inputs:[{type:'text',text:'original'}],expectedTurnId:'old'}}];
+      controls.pendingQueuedInputs=()=>structuredClone(pendingQueue);
+      controls.retryQueuedInput=async id=>{calls.push(['retry',id]);if(failure)throw Error('Receipt still unconfirmed');pendingQueue=[];return {turn:{id:'confirmed'}};};
+      pane.render();
+    }""", failure)
+    draft = "newer draft" if newer else "original"
+    page.get_by_role("textbox", name="Message Claude").fill(draft)
+    page.get_by_role("button", name="Unconfirmed queued messages", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Unconfirmed queued messages")
+    assert dialog.locator("pre").inner_text() == "original"
+    assert page.evaluate("calls") == []
+    assert dialog.bounding_box()["width"] <= width
+    if newer and not failure:
+        page.screenshot(path=str(tmp_path / f"queue-recovery-{width}.png"))
+    dialog.get_by_role("button", name="Retry original message").click()
+    playwright.expect(dialog.get_by_role("status")).to_have_text("Receipt still unconfirmed" if failure else "Delivery confirmed")
+    assert page.evaluate("calls") == [["retry", "original-id"]]
+    assert page.get_by_role("textbox", name="Message Claude").input_value() == (draft if newer or failure else "")
+    dialog.get_by_role("button", name="Close queued message recovery").click()
+    assert not errors
+
+
+def test_disposed_queue_recovery_does_not_clear_reopened_draft(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      controls.pendingQueuedInputs=()=>[{requestId:'id',payload:{inputs:[{type:'text',text:'original'}]}}];
+      controls.retryQueuedInput=()=>new Promise(resolve=>{window.finishRecovery=resolve;});
+      pane.render();
+    }""")
+    page.get_by_role("textbox", name="Message Claude").fill("original")
+    page.get_by_role("button", name="Unconfirmed queued messages", exact=True).click()
+    page.get_by_role("button", name="Retry original message").click()
+    page.evaluate("""() => {
+      pane.dispose();
+      pane.draftStorage.setItem(pane.draftKey,'newly reopened draft');
+      finishRecovery({turn:{id:'confirmed'}});
+    }""")
+    assert page.evaluate("pane.draftStorage.getItem(pane.draftKey)") == "newly reopened draft"
+    assert not errors
+
+
 def test_stop_with_queued_claude_inputs_targets_oldest_active_turn(pane):
     page, errors = pane
     page.evaluate("""() => {

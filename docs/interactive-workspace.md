@@ -2,6 +2,30 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Explicit Queued Receipt Recovery
+
+Unconfirmed queued messages now have a recovery control in the Claude pane.
+It previews the original text and attachment count, then retries only the saved
+request ID/payload when explicitly clicked. Opening the dialog does not submit.
+No attachment re-upload or replacement prompt is needed, and an already resolved
+ID cannot create a new request. A newer draft is retained; an unchanged text-only
+draft clears on confirmation. Disposed panes cannot clear a reopened view's draft.
+
+Verification, each exit 0:
+
+```sh
+node --test tests/workspace-connection.test.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_explicit_queue_recovery_preserves_newer_draft tests/test_workspace_pane.py::test_disposed_queue_recovery_does_not_clear_reopened_draft -q --tb=short
+node --check ui/static/workspace-pane.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+```
+
+25 connection tests and 9 browser tests passed. Browser cases cover 390px/1600px,
+confirmation/failure, unchanged/newer drafts, explicit-only dispatch and late
+completion after disposal. Inspected the 390px recovery screenshot. This is
+source browser/transport verification; no provider launched or installed app
+changed. Multi-input cancellation and native crash reconciliation remain open.
+
 ## Claude Busy Composer Queue
 
 The Claude pane now offers Queue message while running. Text and session-bound

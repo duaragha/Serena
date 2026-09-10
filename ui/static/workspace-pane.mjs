@@ -138,6 +138,8 @@ export class WorkspacePane {
     footer.insertBefore(this.claudeEffortButton,this.stop);
     this.queueButton = this.button('Queued sibling messages', 'messages-square', () => this.openBridgeQueue());
     this.queueButton.hidden=true; footer.insertBefore(this.queueButton, this.stop);
+    this.queueRecoveryButton=this.button('Unconfirmed queued messages','rotate-ccw',()=>this.openQueueRecovery());
+    this.queueRecoveryButton.hidden=true;footer.insertBefore(this.queueRecoveryButton,this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
     this.disposeMentions=installFileMentions({input:this.input,form:this.form,
       enabled:()=>['Claude','Codex'].includes(this.provider) && typeof this.controls.searchFiles==='function',
@@ -197,6 +199,36 @@ export class WorkspacePane {
       if (this.input.value) this.draftStorage.setItem(this.draftKey, this.input.value);
       else this.draftStorage.removeItem(this.draftKey);
     } catch (error) { this.error(new Error(`Draft could not be saved: ${error.message}`)); }
+  }
+
+  openQueueRecovery() {
+    if(this.queueRecoveryDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Unconfirmed queued messages');
+    const close=this.button('Close queued message recovery','x',()=>dialog.close());
+    dialog.append(node('h3','','Unconfirmed queued messages'),close);
+    for(const pending of this.controls.pendingQueuedInputs()){
+      const inputs=pending.payload.inputs;
+      const text=inputs.filter(input=>input.type==='text').map(input=>input.text).join('');
+      const uploads=inputs.filter(input=>input.type==='upload').length;
+      const preview=node('pre','aw-command',text);preview.style.whiteSpace='pre-wrap';preview.style.overflowWrap='anywhere';
+      const status=node('p','','Delivery unconfirmed');status.setAttribute('role','status');
+      const retry=node('button','','Retry original message');retry.type='button';
+      retry.addEventListener('click',async()=>{
+        if(retry.disabled)return;
+        retry.disabled=true;
+        try{
+          await this.controls.retryQueuedInput(pending.requestId);
+          if(!this.disposed && !uploads && !this.files.length && this.input.value===text){this.input.value='';this.persistDraft();}
+          status.textContent='Delivery confirmed';
+          if(!this.disposed){this.alert.hidden=true;this.render();}
+        }catch(error){status.textContent=error.message;retry.disabled=false;if(!this.disposed)this.render();}
+      });
+      dialog.append(preview);
+      if(uploads)dialog.append(node('p','',`${uploads} attachment${uploads===1?'':'s'}`));
+      dialog.append(status,retry);
+    }
+    dialog.addEventListener('close',()=>dialog.remove());this.queueRecoveryDialog=dialog;
+    this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();
   }
 
   openBridgeQueue() {
@@ -1335,6 +1367,8 @@ export class WorkspacePane {
     if (this.conversation.metadata.bridgeQueueCount > 0) this.status.textContent += ` / ${this.conversation.metadata.bridgeQueueCount} queued`;
     this.queueButton.hidden = !this.controls.cancelQueuedBridge || !(this.conversation.metadata.bridgeQueueCount > 0);
     this.renderBridgeQueue();
+    this.queueRecoveryButton.hidden=this.provider!=='Claude' || !this.controls.retryQueuedInput
+      || !this.controls.pendingQueuedInputs?.().length;
     const tokens = this.conversation.metadata.tokenUsage?.last?.totalTokens;
     const usage = this.conversation.metadata.claudeUsage;
     const acpUsage = this.conversation.metadata.acpUsage;
@@ -1376,6 +1410,7 @@ export class WorkspacePane {
     this.queueEditDialog?.close();
     this.effortDialog?.close();
     this.queueDialog?.close();
+    this.queueRecoveryDialog?.close();
     for (const url of this.historyImageUrls) URL.revokeObjectURL(url);
     this.historyImageUrls.clear();
     this.disposed = true;
