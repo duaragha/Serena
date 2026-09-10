@@ -56,6 +56,14 @@ Write-Host "[windows] testing native Fleet locks and patch transport"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_file_lock.py") (Join-Path $RepoRoot "tests\test_fleet_patch_transport.py") -q
 Assert-LastExitCode "Native Fleet lock and patch tests"
 
+Write-Host "[windows] testing native Fleet helper process ownership"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_job.py") (Join-Path $RepoRoot "tests\test_fleet_helper_crash.py") -q
+Assert-LastExitCode "Native Fleet helper job tests"
+
+Write-Host "[windows] testing unrecorded Fleet helper exit recovery"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_integration_recovery.py") -k "killed_helper or repeated_helper or unrecorded_helper" -q
+Assert-LastExitCode "Native Fleet helper exit recovery tests"
+
 if (Test-Path -LiteralPath $SidecarDist) {
     Remove-Item -LiteralPath $SidecarDist -Recurse -Force
 }

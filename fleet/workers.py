@@ -631,9 +631,15 @@ def _stream_process(
         start_new_session=True,
     )
     readers: list[threading.Thread] = []
+    helper_job = None
     from core.work_jobs import process_start_token
     start_token = process_start_token(process.pid) if cleanup_exited_group and os.name != "nt" else None
     try:
+        if cleanup_exited_group and os.name == "nt":
+            from fleet.windows_job import HelperJob
+            # Only the dedicated replay helper uses this contract: it cannot
+            # launch gates until its request arrives on stdin.
+            helper_job = HelperJob(process)
         # Claude waits only briefly for piped input. Start draining output and
         # deliver the prompt before any callback that may refresh Serena's
         # index or touch slower metadata stores.
@@ -784,6 +790,8 @@ def _stream_process(
     finally:
         if process.poll() is None:
             _terminate_process_group(process)
+        if helper_job is not None:
+            helper_job.close()
         if cleanup_exited_group:
             _cleanup_exited_group(process, start_token)
         with suppress(subprocess.TimeoutExpired):

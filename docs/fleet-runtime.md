@@ -145,8 +145,8 @@ Verification helpers also clean up their POSIX process group after direct-proces
 exit, even when a gate uses private pipes and does not keep the helper's output
 open. A captured process birth identity protects against signalling a reused
 leader PID. Tests cover normal exit and SIGKILL with a SIGTERM-ignoring gate.
-Windows process-tree cleanup and descendants that escape the owned process group
-are separate coverage gaps; this helper-only rule does not claim those solved.
+Descendants that escape the owned POSIX process group remain a coverage gap.
+The separate Windows helper ownership contract is described below.
 
 The Windows sidecar dispatches `--fleet-integration-replay` before GUI startup
 and restores inherited standard pipes for the windowed executable. Repository
@@ -163,8 +163,33 @@ binary patch payloads. The Windows installer build runs native lock/patch tests
 and a saved-integration replay against its actual frozen executable, with real
 completion validation and Git gates. Native Windows source replay has been
 verified; the build smoke is required evidence for each packaged candidate.
-Windows process-tree cleanup and Windows crash-code classification remain
-separate work; successful ordinary replay does not prove those failure cases.
+The dedicated Windows replay helper is assigned to an unnamed, non-inheritable
+Job Object before receiving its stdin request. Assignment failure refuses to
+release that request. Closing the owner handle kills associated descendants,
+including gates with private pipes, on normal helper return or owner death.
+This uses the [Windows Job Object contract](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects);
+it does not enable breakaway. Native tests cover helper return, cancellation,
+owner death and assignment refusal. The Windows build requires those tests.
+This is helper-specific: ordinary provider programs are not stdin-gated and
+cannot safely use this post-launch assignment without a separate launch design.
+If a launched replay helper exits while its current attempt is still running,
+the parent records an unrecorded-helper outcome and uses the existing process
+retry budget. Admission requires that exact attempt's durable helper dispatch
+marker and observed process, inside the attempt-finalization transaction.
+Zero, ordinary nonzero and Windows NTSTATUS exits preserve their actual codes;
+none are fabricated into POSIX signals. Native model failures cannot opt into
+this class without helper provenance. Cancellation, superseded attempts and
+already-recorded verifier rejections do not schedule this recovery. These tests
+exercise real helper subprocess exits and ordinary completion/Git gates on retry;
+they do not claim that Windows model-worker crash classification is solved.
+
+The frozen replay build smoke also runs an external process-kill probe after
+Git application. It checks the attempt PID, lease owner and process birth token
+before killing that disposable helper, verifies its gate process is gone, then
+requires journal postimage recovery and real completion/Git checks on replay.
+The same probe runs against source. Retry cooldown is advanced in the temporary
+test database; this does not prove the resident service timer or a live business
+run recovered unattended.
 
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
@@ -855,6 +880,13 @@ scheduler ticks. The resident automation service registers only the reviewed act
 quiet hours, limits, deduplication, retry, and the voice-to-Telegram fallback share one decision.
 
 ## Deployment and checks
+
+POSIX terminal reads use `poll()` rather than descriptor-limited `select()`.
+Acceptance includes a real PTY duplicated to descriptor1024: output remains
+readable, detached reserved work stays alive, and releasing the reservation lets
+cleanup finish. Invalid/closed descriptors return the terminal-gone result;
+the Windows ConPTY read path is unchanged. Timeout conversion follows the
+[Python poll contract](https://docs.python.org/3/library/select.html#polling-objects).
 
 ### Visual resilience lab
 
