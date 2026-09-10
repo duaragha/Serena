@@ -63,6 +63,17 @@ Exhaustion and non-lock errors remain visible; disk-full and corruption are not 
 
 ## Durable resource recovery and actionable stops
 
+Declared integration test sequences have one narrow generated-type preparation
+pass: when `npm run typecheck` exits 2 with TS2307 naming a `.generated` or
+`/generated` module, and the combined checkout declares a `codegen` script,
+Fleet invokes that script with npm lifecycle hooks disabled and rechecks the
+same typecheck once. The gate retains the original failure, preparation result
+and recheck result. Ordinary missing packages and unrelated TypeScript errors
+do not trigger this path; preparation or recheck failure still rejects the
+integration. This repairs checkout-local generated state without another model
+turn or copying unverified generated files from a peer. It does not yet wake
+historical failed integration attempts or repair unsupported runtime versions.
+
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
 attempt as evidence. Independent ready work continues; a run with only parked work releases its
