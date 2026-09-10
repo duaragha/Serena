@@ -218,7 +218,7 @@ class ClaudeWorkspace:
                     "id": model["value"],
                     "model": model["value"],
                     "displayName": model.get("displayName", model["value"]),
-                    "supportedReasoningEfforts": [],
+                    "supportedReasoningEfforts": [{"reasoningEffort": effort} for effort in self._model_efforts(model)],
                     "claudeCapabilities": model,
                 }
                 for model in self.model_catalog
@@ -226,6 +226,13 @@ class ClaudeWorkspace:
         }
         await self.publish(self.events.event("workspace/models", result))
         return result
+
+    @staticmethod
+    def _model_efforts(model):
+        levels = model.get("supportedEffortLevels")
+        if model.get("supportsEffort") is not True or not isinstance(levels, list):
+            return []
+        return [level for level in levels if isinstance(level, str) and level in {"low", "medium", "high", "xhigh", "max"}]
 
     async def permissions(self):
         if self.client is None or self.state in {"closed", "opening", "unavailable"}:
@@ -468,7 +475,7 @@ class ClaudeWorkspace:
             elif self.state != "ready":
                 raise RuntimeError("Claude is not ready for a new turn")
             options = options or {}
-            if not isinstance(options, dict) or options.keys() - {"model"}:
+            if not isinstance(options, dict) or options.keys() - {"model", "effort"}:
                 raise ValueError("Unsupported Claude per-turn settings")
             if not isinstance(inputs, list) or not inputs:
                 raise ValueError("A message or attachment is required")
@@ -481,15 +488,21 @@ class ClaudeWorkspace:
                 ["/fork"],
             ]:
                 raise ValueError("Session switching is not implemented in this pane")
-            if "model" in options:
+            if "model" in options or "effort" in options:
                 if self.model_catalog is None:
                     await self.list_models()
-                if options["model"] not in {model["value"] for model in self.model_catalog}:
+                selected = next((model for model in self.model_catalog if model["value"] == options.get("model")), None)
+                if selected is None:
                     raise ValueError("Claude did not advertise this model")
+                if "effort" in options and options["effort"] not in self._model_efforts(selected):
+                    raise ValueError("Claude did not advertise this effort for the selected model")
                 await self.client.set_model(options["model"])
                 await self.publish(
                     self.events.event("workspace/settings", {"model": options["model"]})
                 )
+                if "effort" in options:
+                    await self.client.set_effort(options["effort"])
+                    await self.publish(self.events.event("workspace/settings", {"reasoningEffort": options["effort"]}))
             turn_id = str(uuid4())
             self.events.begin_input(turn_id)
             self.active_turn = self.events.turn

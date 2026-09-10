@@ -2,6 +2,43 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Claude Composer Effort
+
+Claude's existing session-effort dialog remains available. The model picker now
+also preserves advertised effort levels rather than discarding them, allowing a
+model and effort to be selected before sending the next message. Only explicit
+model selections expose this composer control; unknown capabilities are not
+guessed. Backend validation checks both selections before changing settings or
+sending input. The TypeScript client uses `applyFlagSettings({effortLevel})` on
+the same stream, and publishes the new effort only after acknowledgement. These
+are session-scoped settings, not an automatic one-turn override or a settings
+file write. Failed application leaves the draft unsent; a preceding acknowledged
+model change remains reported honestly.
+
+The pinned SDK declaration (`sdk.d.ts`, `applyFlagSettings` and `ModelInfo`)
+provides the contract. A separate isolated initialization-only native probe exited
+0 and exposed the installed command catalog without sending a prompt. This
+reconfirmed that a command catalog is not proof that every CLI capability has
+already been implemented.
+
+Verification, each command separately, final exit **0**:
+
+```sh
+env PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py::test_advertised_model_selection_uses_existing_client tests/test_workspace_claude.py::test_advertised_effort_is_validated_before_settings_and_input tests/test_workspace_claude_client.py::test_compatibility_controls_and_native_records tests/test_workspace_pane.py::test_advertised_model_effort_selection_reaches_submit_and_header tests/test_workspace_pane.py::test_claude_effort_uses_native_command_without_consuming_draft -q --tb=short
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_client.py tests/test_workspace_claude.py tests/test_workspace_claude_client.py
+node --check ui/static/workspace-pane.mjs
+```
+
+**7 tests passed**, including invalid/unsupported choices, acknowledgement failure,
+exact-session submission, client control routing, mobile composer selection and
+the unchanged session-effort dialog. The initial browser run exited 1 because its
+locator excluded the now-correctly hidden selector after clearing the model;
+the updated assertion explicitly verifies it is hidden and empty. Native proof
+acknowledged flag settings and local effort commands, exact resume, queue receipts,
+clear/fork and process cleanup, without inference or user credentials. This does
+not prove model reasoning behavior or the full remaining parity matrix.
+
 ## Windows Electron Native Workflow
 
 The full app proof found and fixed a real catalog mismatch: the Codex scanner

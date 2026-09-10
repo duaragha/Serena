@@ -1393,8 +1393,9 @@ def test_advertised_model_effort_selection_reaches_submit_and_header(pane, tmp_p
     )
     page.locator("#left .aw-head small").filter(has_text="chosen").wait_for()
     page.get_by_role("combobox", name="Model", exact=True).first.select_option("")
-    assert effort.input_value() == ""
-    assert page.get_by_role("combobox", name="Speed tier").first.input_value() == ""
+    assert page.get_by_role("combobox", name="Reasoning effort", include_hidden=True).first.input_value() == ""
+    assert page.get_by_role("combobox", name="Reasoning effort", include_hidden=True).first.is_hidden()
+    assert page.get_by_role("combobox", name="Speed tier", include_hidden=True).first.input_value() == ""
     assert not errors
 
 

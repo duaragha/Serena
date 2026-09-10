@@ -794,6 +794,42 @@ def test_advertised_model_selection_uses_existing_client(tmp_path):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("failure", [False, True])
+def test_advertised_effort_is_validated_before_settings_and_input(tmp_path, failure):
+    async def run():
+        owner, events = make(tmp_path)
+        try:
+            await owner.open()
+            async def info():
+                return {"models": [{"value": "sonnet", "supportsEffort": True, "supportedEffortLevels": ["low", "high", "invented"]}]}
+            efforts = []
+            async def set_effort(effort):
+                efforts.append(effort)
+                if failure:
+                    raise RuntimeError("Setting rejected")
+            owner.client.get_server_info = info
+            owner.client.set_effort = set_effort
+            catalog = await owner.list_models()
+            assert catalog["data"][0]["supportedReasoningEfforts"] == [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}]
+            for options in ({"effort": "high"}, {"model": "sonnet", "effort": "max"}, {"model": "sonnet", "effort": "invented"}):
+                with pytest.raises(ValueError, match="advertise"):
+                    await owner.submit([{"type": "text", "text": "hi"}], options=options)
+            assert not owner.client.models_set and not efforts and not owner.client.sent
+            if failure:
+                with pytest.raises(RuntimeError, match="Setting rejected"):
+                    await owner.submit([{"type": "text", "text": "hi"}], options={"model": "sonnet", "effort": "high"})
+                assert not owner.client.sent and owner.state == "ready"
+                assert not any(event.get("params", {}).get("reasoningEffort") for event in events)
+            else:
+                await owner.submit([{"type": "text", "text": "hi"}], options={"model": "sonnet", "effort": "high"})
+                assert owner.client.sent[0][0] == "exact"
+                assert any(event.get("params", {}).get("reasoningEffort") == "high" for event in events)
+            assert efforts == ["high"] and owner.client.models_set == ["sonnet"]
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 def test_clarifying_answers_preserve_question_contract_and_reject_empty_approval(tmp_path):
     async def run():
         owner, events = make(tmp_path)

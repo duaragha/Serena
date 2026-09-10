@@ -101,6 +101,9 @@ class ClaudeTypeScriptClient:
     async def set_model(self, model):
         return await self.transport.control("setModel", model)
 
+    async def set_effort(self, effort):
+        return await self.transport.control("applyFlagSettings", {"effortLevel": effort})
+
     async def set_permission_mode(self, mode):
         result = await self.transport.control("setPermissionMode", mode)
         self.info["current_permission_mode"] = mode

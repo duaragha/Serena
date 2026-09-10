@@ -980,7 +980,7 @@ export class WorkspacePane {
 
   renderEfforts(changedModel) {
     const selected = this.effortSelect.value;
-    const model = this.conversation.models.find(m => m.model === (this.modelSelect.value || this.conversation.metadata.model));
+    const model = this.provider==='Claude' && !this.modelSelect.value ? null : this.conversation.models.find(m => m.model === (this.modelSelect.value || this.conversation.metadata.model));
     this.effortSelect.replaceChildren();
     const unchanged = node('option', '', this.modelSelect.value ? `Default (${model?.defaultReasoningEffort || 'provider'})` : (this.conversation.metadata.reasoningEffort || 'Session effort'));
     unchanged.value = ''; this.effortSelect.append(unchanged);
