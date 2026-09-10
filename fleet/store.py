@@ -49,7 +49,7 @@ from fleet.dag import (
 
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "fleet.sqlite3"
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled", "planned"})
-WAITING_RUN_STATES = frozenset({"waiting_for_capacity", "waiting_for_resources"})
+WAITING_RUN_STATES = frozenset({"waiting_for_capacity", "waiting_for_resources", "waiting_for_input"})
 TERMINAL_ATTEMPT_STATES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 MAX_OUTPUT_CHARS = 256_000
 MAX_EVENT_CHARS = 64_000
@@ -1014,7 +1014,7 @@ class FleetStore:
             state = str(row["state"])
             if state in TERMINAL_RUN_STATES:
                 return self._snapshot(connection, run_id)
-            if state in {"queued", "waiting_for_capacity", "waiting_for_resources"}:
+            if state in {"queued", "waiting_for_capacity", "waiting_for_resources", "waiting_for_input"}:
                 connection.execute(
                     "UPDATE fleet_runs SET state = 'cancelled', cancel_requested = 1, "
                     "error = 'cancelled by user', completed_at = ?, updated_at = ? WHERE run_id = ?",
@@ -1023,7 +1023,7 @@ class FleetStore:
                 connection.execute(
                     "UPDATE fleet_legs SET state = 'cancelled', updated_at = ? "
                     "WHERE run_id = ? AND state IN "
-                    "('queued', 'waiting_for_capacity', 'waiting_for_resources', 'waiting_for_dependencies')",
+                    "('queued', 'waiting_for_capacity', 'waiting_for_resources', 'waiting_for_input', 'waiting_for_dependencies')",
                     (now, run_id),
                 )
                 cancel_unfinished_work_units(
@@ -1057,7 +1057,7 @@ class FleetStore:
                 payload={
                     "state": (
                         "cancelled"
-                        if state in {"queued", "waiting_for_capacity", "waiting_for_resources"}
+                        if state in {"queued", "waiting_for_capacity", "waiting_for_resources", "waiting_for_input"}
                         else "stopping"
                     )
                 },
@@ -1071,7 +1071,7 @@ class FleetStore:
             row = self._require_run(connection, run_id)
             if row["dry_run"]:
                 raise ValueError("a dry-run plan cannot be retried")
-            if row["state"] not in {"failed", "cancelled"}:
+            if row["state"] not in {"failed", "cancelled", "waiting_for_input"}:
                 raise ValueError("only failed or cancelled Fleet runs can be retried")
             running_attempts = connection.execute(
                 "SELECT a.pid, a.process_token FROM fleet_attempts a "
@@ -1364,7 +1364,7 @@ class FleetStore:
             run = self._require_run(connection, run_id)
             if bool(run["dry_run"]):
                 raise ValueError("a dry-run worker cannot be retried")
-            if run["state"] not in {"queued", "running", "failed", "waiting_for_capacity"}:
+            if run["state"] not in {"queued", "running", "failed", "waiting_for_capacity", "waiting_for_input"}:
                 raise RuntimeError(
                     "a failed worker can be retried only while its run is active or failed"
                 )
@@ -1374,10 +1374,10 @@ class FleetStore:
             ).fetchone()
             if leg is None:
                 raise KeyError(f"unknown Fleet worker {leg_id}")
-            if leg["state"] not in {"failed", "waiting_for_capacity"}:
+            if leg["state"] not in {"failed", "waiting_for_capacity", "waiting_for_input"}:
                 raise ValueError("only a failed or capacity-waiting Fleet worker can be retried")
 
-            if run["state"] in {"failed", "waiting_for_capacity"}:
+            if run["state"] in {"failed", "waiting_for_capacity", "waiting_for_input"}:
                 connection.execute(
                     """
                     UPDATE fleet_runs SET state = 'queued', cancel_requested = 0,
@@ -2148,6 +2148,35 @@ class FleetStore:
                 snapshot["retry_activated"] = True
                 return snapshot
 
+            honest_stop = "work stopped before completion" in clean_error.lower()
+            exhausted_transport = connection.execute(
+                "SELECT 1 FROM fleet_events e JOIN fleet_legs l ON l.leg_id = e.leg_id "
+                "WHERE e.run_id = ? AND e.type = 'leg.transport_retry_exhausted' "
+                "AND l.state = 'failed' LIMIT 1", (run_id,),
+            ).fetchone()
+            if honest_stop or exhausted_transport:
+                next_action = (
+                    "resolve the recorded authority/evidence blocker, add steering, then resume the affected worker"
+                    if honest_stop else "verify provider connectivity, then resume the affected worker"
+                )
+                connection.execute(
+                    "UPDATE fleet_runs SET state = 'waiting_for_input', error = ?, owner_pid = NULL, "
+                    "owner_token = NULL, completed_at = NULL, updated_at = ? WHERE run_id = ?",
+                    (clean_error, now, run_id),
+                )
+                connection.execute(
+                    "UPDATE fleet_legs SET state = 'waiting_for_input', updated_at = ? "
+                    "WHERE run_id = ? AND phase = ? AND state = 'failed'",
+                    (now, run_id, phase),
+                )
+                self._insert_event(
+                    connection, run_id=run_id, event_type="run.waiting_for_input",
+                    payload={"state": "waiting_for_input", "reason": clean_error,
+                             "next_action": next_action, "phase": phase},
+                )
+                snapshot = self._snapshot(connection, run_id)
+                snapshot["input_waiting"] = True
+                return snapshot
             connection.execute(
                 """
                 UPDATE fleet_runs SET state = 'failed', result_text = NULL, error = ?,
@@ -3423,6 +3452,8 @@ def _phase_state(states: list[str]) -> str:
         return "running"
     if any(state == "waiting_for_resources" for state in states):
         return "waiting_for_resources"
+    if any(state == "waiting_for_input" for state in states):
+        return "waiting_for_input"
     if any(state == "waiting_for_capacity" for state in states):
         return "waiting_for_capacity"
     if any(state == "failed" for state in states):

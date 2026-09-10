@@ -11,7 +11,7 @@ def autonomy_projection(store, run_id):
             "type LIKE 'peer.request.%' OR type LIKE 'peer.help.%' OR type = 'peer.retry.queued' OR "
             "type LIKE 'learning.review%' OR type IN ('learning.proposed','learning.promoted','learning.revoked') OR "
             "type LIKE '%capacity%' OR type LIKE 'leg.transport_retry_%' OR "
-            "type LIKE '%resource%' OR type = 'run.baseline_provisioned' OR "
+            "type LIKE '%resource%' OR type = 'run.waiting_for_input' OR type = 'run.baseline_provisioned' OR "
             "type = 'attempt.late_result_ignored' OR type = 'leg.difficult_retry_queued') "
             "ORDER BY event_seq DESC LIMIT 80",
             (run_id,),

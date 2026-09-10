@@ -182,3 +182,33 @@ def test_scheduler_recovers_transport_without_manual_retry(fleet_env, monkeypatc
     completed = supervisor.run_supervisor(run["run_id"])
     assert completed["state"] == "completed", completed.get("error")
     assert calls[0] == calls[1]
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_honest_blocker_preserves_work_and_allows_scoped_resume(tmp_path, cancel):
+    store = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _run(store)
+    rid = run["run_id"]
+    store.claim_run(rid)
+    research = store.begin_attempt(run["phases"][0]["legs"][0]["leg_id"])
+    store.finish_attempt(research["attempt_id"], state="completed", output_text="preserved research")
+    leg = run["phases"][1]["legs"][0]
+    failed = store.begin_attempt(leg["leg_id"])
+    reason = "work stopped before completion: missing authority to modify shared service"
+    store.finish_attempt(failed["attempt_id"], state="failed", error=reason)
+    parked_run = store.resolve_phase_failure(rid, "execute", reason)
+    assert parked_run["state"] == "waiting_for_input"
+    assert parked_run["completed_at"] is None
+    assert store.next_queued_run() is None
+    assert resume_ready_resource_waits(store, now=time.time() + 10000) == []
+    store = FleetStore(store.path)
+    if cancel:
+        assert store.request_cancel(rid)["state"] == "cancelled"
+        with pytest.raises(RuntimeError):
+            store.request_leg_retry(rid, leg["leg_id"])
+    else:
+        store.add_steering(rid, "Keep shared services read-only; complete the local evidence instead.")
+        resumed = store.request_leg_retry(rid, leg["leg_id"])
+        assert resumed["state"] == "queued"
+        assert resumed["phases"][1]["legs"][0]["state"] == "queued"
+        assert resumed["phases"][0]["legs"][0]["current_attempt"]["attempt_id"] == research["attempt_id"]

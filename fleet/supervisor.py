@@ -1264,7 +1264,8 @@ def _run_work_unit_scheduler(
             )
             if resolution.pop("retry_activated", False):
                 continue
-            if resolution.pop("capacity_waiting", False) or resolution.pop("resource_waiting", False):
+            if (resolution.pop("capacity_waiting", False) or resolution.pop("resource_waiting", False)
+                    or resolution.pop("input_waiting", False)):
                 return resolution
             return _terminal_outcome(store, resolution)
 

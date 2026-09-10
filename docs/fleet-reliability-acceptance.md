@@ -69,11 +69,17 @@ temporary-failure and 502/503/504 errors now receive two durable same-provider,
 same-model retries with 30/60-second backoff. The budget is per leg and survives
 restart. This is a diagnostic retry, not proof that connectivity recovered.
 Authority, quota, identity, acceptance, integration and cancellation errors are
-excluded. Exhaustion has a durable reason and next-action receipt but still uses
-the existing failed-leg terminal policy; replacing abandonment with actionable
-blocked-work handling remains unfinished. New recovery receipts appear in Autonomy.
+excluded. Exhaustion has a durable reason and next-action receipt. Honest stops
+and exhausted transport retries now park the run in `waiting_for_input`, with
+no completed timestamp and no automatic redispatch. Steering and targeted retry
+are available; cancellation remains terminal, completed work stays preserved,
+and the failed attempt remains truthful failure evidence. New recovery receipts
+appear in Autonomy. Other unclassified terminal failure paths remain under audit.
 Verification: 102 resource/autonomy/supervisor/UI tests and seven real-Git baseline
 tests passed at this checkpoint. Provider responses are scripted, not live models.
+Blocked-work verification: 85 completion/recovery/UI/activation tests and 147
+retry/store/scheduler/UI tests pass, including persistent blockers, no automatic
+resume, explicit steering/targeted resume and cancellation. Not deployed.
 
 Run `bc257933-5fa8-4c77-ba2d-da4c2e11e80e` requested mandatory commit
 `e364331db71c399b948f1a4d87c14dff43c2ec78`, explicitly not main.
