@@ -3,17 +3,22 @@ import asyncio
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import psutil
+from flask import Flask
+from werkzeug.serving import make_server
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.workspace_claude import ClaudeWorkspace
 from core.workspace_claude_client import ClaudeTypeScriptClient
 from core.workspace_lease import SessionLease, SessionOwnedError
+from ui.workspace_app import install_workspace
 
 
 async def main():
@@ -101,6 +106,69 @@ async def main():
     released = SessionLease(owner.session_id, directory=lease_dir)
     released.release()
     print("PASS: real owner reserves exclusive UUID and durable checkpoint before spawn; same-process local turn; close reaps child and releases lease")
+    created = []
+    def owner_factory(**kwargs):
+        instance = ClaudeWorkspace(**kwargs, client_factory=factory,
+                                   lease_factory=lambda sid: SessionLease(sid, directory=lease_dir))
+        created.append(instance)
+        return instance
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
+    host = install_workspace(app, Path(cwd) / "ui.db", describe=lambda sid: None,
+                             factories={"claude": owner_factory})
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    serving = threading.Thread(target=server.serve_forever, daemon=True)
+    serving.start()
+    def browser_proof():
+        from urllib.parse import urlencode
+
+        from playwright.sync_api import sync_playwright
+        artifacts = Path(__file__).resolve().parents[1] / "apps/desktop/build/workspace-proof"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        base = f"http://127.0.0.1:{server.server_port}"
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                for width in (1440, 390):
+                    page = browser.new_page(viewport={"width": width, "height": 900})
+                    errors = []
+                    page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
+                    before = len(created)
+                    page.goto(base + "/workspace/new?" + urlencode({"source": f"new-claude-{width}", "provider": "claude", "cwd": cwd}))
+                    assert len(created) == before
+                    page.get_by_role("button", name="Create Claude chat", exact=True).click()
+                    page.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                    assert len(created) == before + 1
+                    native = created[-1]
+                    sid, pid = native.session_id, native.client.owned_pid
+                    page.reload()
+                    page.get_by_role("button", name="Open conversation", exact=True).click()
+                    page.wait_for_url(base + "/workspace/" + sid)
+                    page.get_by_role("button", name="Resume session", exact=True).click()
+                    page.get_by_role("textbox", name="Message Claude").fill("/effort low")
+                    page.get_by_role("button", name="Send message", exact=True).click()
+                    deadline = time.monotonic() + 20
+                    while not any(event["event"]["method"] == "turn/completed" for event in host.journal.read(sid)["events"]):
+                        assert time.monotonic() < deadline, "Native turn did not complete"
+                        page.wait_for_timeout(50)
+                    assert native.state == "ready" and native.client.owned_pid == pid
+                    page.get_by_text("/effort low", exact=True).wait_for()
+                    assert len(created) == before + 1 and not errors, errors
+                    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                    page.screenshot(path=str(artifacts / f"new-claude-output-{width}.png"))
+                    page.close()
+                    assert psutil.pid_exists(pid) and native.state == "ready"
+                    print(f"PASS: {width}px real Claude New Chat, reload, exact open and local input; one owner survives page close")
+            finally:
+                browser.close()
+    try:
+        await asyncio.to_thread(browser_proof)
+    finally:
+        await asyncio.to_thread(server.shutdown)
+        server.server_close()
+        serving.join(timeout=5)
+        await asyncio.to_thread(host.shutdown)
+    assert all(instance.client.transport.rpc.process is None for instance in created)
+    print("PASS: browser/native owner children reaped")
 
 
 asyncio.run(main())

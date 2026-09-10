@@ -7047,7 +7047,7 @@ function _startStructuredPane(sid, opts) {
     setTermStatus('Seeded structured creation is not available yet; context has not been sent.', 'error');
     return null;
   }
-  if (opts.isNew && opts.agent !== 'codex') {
+  if (opts.isNew && !['codex', 'claude'].includes(opts.agent)) {
     setTermStatus('New structured sessions are not available for this provider yet.', 'error');
     return null;
   }
@@ -7059,7 +7059,7 @@ function _startStructuredPane(sid, opts) {
   const mount = document.createElement('div');
   mount.className = 'term-pane'; mount.dataset.sid = sid;
   const frame = document.createElement('iframe');
-  frame.src = opts.isNew ? '/workspace/new?' + new URLSearchParams({source:sid, provider:'codex', cwd:opts.cwd || _defaultCwd()})
+  frame.src = opts.isNew ? '/workspace/new?' + new URLSearchParams({source:sid, provider:opts.agent, cwd:opts.cwd || _defaultCwd()})
     : '/workspace/' + encodeURIComponent(sid);
   frame.title = 'Session ' + sid.slice(0, 8);
   frame.style.cssText = 'display:block;width:100%;height:100%;border:0;background:#000';

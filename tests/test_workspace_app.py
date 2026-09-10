@@ -13,18 +13,19 @@ from ui.workspace_app import install_workspace
 
 
 @pytest.mark.parametrize("width", [1440, 390])
-def test_new_chat_ui_is_explicit_retains_request_on_reload_and_opens_exact_target(tmp_path, width):
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_new_chat_ui_is_explicit_retains_request_on_reload_and_opens_exact_target(tmp_path, width, provider):
     playwright = pytest.importorskip("playwright.sync_api")
     app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
     target = "11111111-2222-4333-8444-555555555555"
     host = install_workspace(app, tmp_path / "create.db", describe=lambda sid: {
-        "session_id": target, "agent": "codex", "cwd": str(tmp_path)} if sid == target else None)
+        "session_id": target, "agent": provider, "cwd": str(tmp_path)} if sid == target else None)
     calls = []
     def create(request, provider, cwd, *, confirmed):
         calls.append((request, provider, cwd, confirmed))
         if len(calls) == 1:
             return {"ok": False, "pending": True, "error": "Still pending"}
-        return {"ok": True, "result": {"session_id": target, "provider": "codex", "cwd": str(tmp_path)}}
+        return {"ok": True, "result": {"session_id": target, "provider": provider, "cwd": str(tmp_path)}}
     host.create = create
     server = make_server("127.0.0.1", 0, app, threaded=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -38,10 +39,10 @@ def test_new_chat_ui_is_explicit_retains_request_on_reload_and_opens_exact_targe
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 from urllib.parse import urlencode
                 base = f"http://127.0.0.1:{server.server_port}"
-                page.goto(base + "/workspace/new?" + urlencode({"source": "new-codex", "cwd": str(tmp_path)}))
+                page.goto(base + "/workspace/new?" + urlencode({"source": "new-" + provider, "provider": provider, "cwd": str(tmp_path)}))
                 assert page.get_by_role("textbox", name="Project").input_value() == str(tmp_path)
                 assert not calls and host._loop is None
-                page.get_by_role("button", name="Create Codex chat", exact=True).click()
+                page.get_by_role("button", name=f"Create {provider.title()} chat", exact=True).click()
                 page.get_by_role("status").filter(has_text="Still pending").wait_for()
                 assert len(calls) == 1
                 page.reload()

@@ -11,7 +11,8 @@ from ui.workspace_web import workspace_blueprint
 
 
 @pytest.mark.parametrize("failure", [None, "before_checkpoint", "after_checkpoint"])
-def test_creation_request_survives_repeats_and_restart_without_second_owner(tmp_path, failure):
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_creation_request_survives_repeats_and_restart_without_second_owner(tmp_path, failure, provider):
     calls = []
     sid, request = str(uuid4()), str(uuid4())
     journal = WorkspaceJournal(tmp_path / "journal.db")
@@ -25,7 +26,7 @@ def test_creation_request_survives_repeats_and_restart_without_second_owner(tmp_
             await asyncio.sleep(0.03)
             if failure == "before_checkpoint":
                 raise RuntimeError("native response lost")
-            await checkpoint({"session_id": sid, "provider": "codex", "cwd": str(self.cwd)})
+            await checkpoint({"session_id": sid, "provider": provider, "cwd": str(self.cwd)})
             if failure == "after_checkpoint":
                 raise RuntimeError("lease handoff failed")
             self.session_id, self.state = sid, "ready"
@@ -35,11 +36,11 @@ def test_creation_request_survives_repeats_and_restart_without_second_owner(tmp_
             self.state = "closed"
 
     def host():
-        return WorkspaceHost(journal=journal, resolve=lambda sid: None, factories={"codex": Owner})
+        return WorkspaceHost(journal=journal, resolve=lambda sid: None, factories={provider: Owner})
     original = host()
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda _: original.create(request, "codex", str(tmp_path), confirmed=True), range(4)))
+            results = list(pool.map(lambda _: original.create(request, provider, str(tmp_path), confirmed=True), range(4)))
         assert len(calls) == 1
         assert all(result["ok"] is (failure is None) for result in results)
         target = journal.creation_target(request)
@@ -54,12 +55,12 @@ def test_creation_request_survives_repeats_and_restart_without_second_owner(tmp_
         other = tmp_path / "other"
         other.mkdir()
         with pytest.raises(ValueError, match="different content"):
-            original.create(request, "codex", str(other), confirmed=True)
+            original.create(request, provider, str(other), confirmed=True)
     finally:
         original.shutdown()
     restored = host()
     try:
-        result = restored.create(request, "codex", str(tmp_path), confirmed=True)
+        result = restored.create(request, provider, str(tmp_path), confirmed=True)
         assert result["ok"] is (failure is None)
         assert len(calls) == 1 and restored._sessions == {}
     finally:
@@ -71,7 +72,7 @@ def test_creation_validates_authority_before_claiming_or_launching(tmp_path):
     host = WorkspaceHost(journal=journal, resolve=lambda sid: None, factories={})
     request = str(uuid4())
     try:
-        for provider, cwd, confirmed in [("claude", str(tmp_path), True), ("codex", ".", True),
+        for provider, cwd, confirmed in [("gemini", str(tmp_path), True), ("codex", ".", True),
                                          ("codex", str(tmp_path), "true"), ("codex", str(tmp_path / "missing"), True)]:
             with pytest.raises(ValueError):
                 host.create(request, provider, cwd, confirmed=confirmed)
@@ -81,14 +82,15 @@ def test_creation_validates_authority_before_claiming_or_launching(tmp_path):
         host.shutdown()
 
 
-def test_creation_checkpoint_cannot_change_identity_or_claimed_project(tmp_path):
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_creation_checkpoint_cannot_change_identity_or_claimed_project(tmp_path, provider):
     journal = WorkspaceJournal(tmp_path / "journal.db")
     request = str(uuid4())
-    target = {"session_id": str(uuid4()), "provider": "codex", "cwd": str(tmp_path)}
+    target = {"session_id": str(uuid4()), "provider": provider, "cwd": str(tmp_path)}
     with pytest.raises(ValueError, match="unfinished"):
         journal.prepare_creation(request, target)
     journal.claim_command("new:" + request, request, {"action": "create_session", "payload": {
-        "provider": "codex", "cwd": str(tmp_path), "confirmed": True}})
+        "provider": provider, "cwd": str(tmp_path), "confirmed": True}})
     with pytest.raises(ValueError, match="unfinished"):
         journal.prepare_creation(request, {**target, "cwd": str(tmp_path / "different")})
     journal.prepare_creation(request, target)

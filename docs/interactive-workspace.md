@@ -2,6 +2,22 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude New Chat admission (2026-09-09): the persistent host creation request,
+journal target validation and creation screen now admit Claude as well as Codex.
+The parent passes the actual selected provider instead of hardcoding Codex.
+Provider/project/request identity remains immutable; repeated concurrent calls
+and retries after restart reuse the stored receipt and never repeat creation.
+Seeded creation and Gemini remain explicitly unavailable. No auto-launch added.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_creation.py tests/test_workspace_app.py -q --tb=short`: exit 0, 20 passed, including both providers, concurrent success/failure/restart requests and desktop/mobile explicit creation/reload/open.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_journal.py -q --tb=short`: exit 0, 63 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py ui/workspace_app.py tests/test_workspace_creation.py tests/test_workspace_app.py scripts/verify-workspace-claude-create-transport.py`: final exit 0; proof loop callback capture fixed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-create.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: final exit 0. Real browser-to-host-to-SDK creation at 1440/390px, explicit local command rendered, exact single owner through reload/open, owner survives page closure, cleanup reaps children. Screenshots inspected: `apps/desktop/build/workspace-proof/new-claude-output-{1440,390}.png`. No credentials/inference. The first browser extension run exited 1 because isolated HOME hid Playwright; the explicit proof-only import/browser locations correct that without changing native authentication.
+Source/browser verification only. Frozen Electron/installed app unchanged;
+packaged parent New Chat flow, Claude first-turn indexing, seeded context,
+empty-session restart recovery, full provider parity and rollout remain open.
+
 Claude explicit native creation foundation (2026-09-09): the SDK driver,
 JSONL channel, Python transport/client and workspace owner now distinguish fresh
 creation from exact resume. The owner reserves an exclusive caller-chosen UUID

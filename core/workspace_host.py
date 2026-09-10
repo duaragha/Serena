@@ -89,7 +89,7 @@ class WorkspaceHost:
     def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
             raise ValueError("Creation requires an exact request UUID")
-        if confirmed is not True or provider != "codex":
+        if confirmed is not True or provider not in {"codex", "claude"} or provider not in self.factories:
             raise ValueError("Explicit supported-provider creation is required")
         if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
             raise ValueError("An existing absolute project directory is required")
