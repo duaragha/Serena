@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import {resolve} from 'node:path';
+import {mkdtemp, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 import test from 'node:test';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
@@ -28,6 +30,19 @@ function transitionFixture(){
   f.emit=message=>{inbox.push(message);wake?.();wake=null;};
   return f;
 }
+
+test('resume validates actual Windows project casing without redirecting the owner',
+  {skip:process.platform!=='win32'},async()=>{
+    const directory=await mkdtemp(resolve(tmpdir(),'serena-sdk-case-'));
+    const f=fixture({getSessionInfo:async()=>({sessionId:'exact',cwd:directory.toUpperCase()})});
+    f.session.cwd=directory;
+    try{
+      await f.session.open();
+      assert.equal(f.setup.options.cwd,directory);
+      assert.equal(f.setup.options.resume,'exact');
+      assert.deepEqual(f.calls,['spawn']);
+    }finally{await f.session.close();await rm(directory,{recursive:true,force:true});}
+  });
 
 const clearedId='11111111-2222-4333-8444-555555555555';
 test('explicit fresh creation fixes the reserved UUID and never resumes or forks',async()=>{

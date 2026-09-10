@@ -2,6 +2,29 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Claude SDK Windows Casing
+
+Claude's JS resume boundary now accepts alternate Windows casing only when both
+paths resolve to the same real directory. It retains the admitted cwd and exact
+session ID, refuses unrelated paths before filesystem lookup, and preserves the
+post-lookup cancellation check. A real Windows temporary-directory test covers
+the casing variant; existing wrong-project and duplicate-spawn checks remain.
+
+Commands, all exit 0:
+
+```sh
+node --test --test-reporter=dot tests/workspace-claude-sdk.test.mjs
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "node --test --test-reporter=dot C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\workspace-claude-sdk.test.mjs"
+env SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+```
+
+Windows: 21 tests passed, source hashes matched before the run. Linux: 20 passed
+and the Windows-only case skipped. Native Linux proof passed exact-session resume,
+queued local-command UUIDs, SDK controls, skill/plugin reload, fork recovery and
+process cleanup. It used no user authentication, sessions/settings or inference;
+all isolated processes were reaped. Native Windows provider inference and the full
+Electron replacement remain unverified. Existing frozen builds predate this edit.
+
 ## Windows Provider Project Identity
 
 The first actual Windows Codex/Claude owner run found 18 failures (107 passed).
