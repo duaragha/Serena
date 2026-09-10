@@ -12,6 +12,37 @@ from core.sqlite_connection import connect_database
 from fleet.dag import reset_leg_for_retry as reset_work_unit_leg_for_retry
 
 
+_WINDOWS_CRASH_STATUSES = frozenset({
+    0xC0000005,  # STATUS_ACCESS_VIOLATION
+    0xC000001D,  # STATUS_ILLEGAL_INSTRUCTION
+    0xC0000094,  # STATUS_INTEGER_DIVIDE_BY_ZERO
+    0xC0000096,  # STATUS_PRIVILEGED_INSTRUCTION
+    0xC00000FD,  # STATUS_STACK_OVERFLOW
+    0xC000013A,  # STATUS_CONTROL_C_EXIT (explicit Fleet cancellation still wins)
+    0xC0000374,  # STATUS_HEAP_CORRUPTION
+    0xC0000409,  # STATUS_STACK_BUFFER_OVERRUN / fast fail
+    0xC0000602,  # STATUS_FAIL_FAST_EXCEPTION
+    0x40000015,  # STATUS_FATAL_APP_EXIT
+})
+
+
+def is_process_crash(exit_code: object) -> bool:
+    """Recognize recorded native exits, not arbitrary tool or launch failures.
+
+    Windows Popen returns unsigned DWORD statuses; persisted adapters can carry
+    signed int32 equivalents. Neither ordinary exit 1 nor missing-DLL/config
+    statuses are evidence of a recoverable process crash. The caller must still
+    require a recorded process and enforce authority, cancellation and budgets.
+    """
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        return False
+    if exit_code in {-6, -9, -11, -13, -15}:
+        return True
+    if not -(2**31) <= exit_code < 2**32:
+        return False
+    return (exit_code & 0xFFFFFFFF) in _WINDOWS_CRASH_STATUSES
+
+
 def is_disk_exhaustion(error: str) -> bool:
     text = error.lower()
     return any(marker in text for marker in (
