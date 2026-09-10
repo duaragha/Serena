@@ -16,6 +16,37 @@ def tmp_path(tmp_path):
 
 
 @pytest.mark.parametrize('case', ['ok', 'unsupported', 'busy', 'invalid', 'changed', 'malformed'])
+def test_speed_tier_is_native_exact_and_does_not_start_a_turn(tmp_path, case):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.settings['model'] = 'current'
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'model/list':
+                return {'data': [{'model': 'current', 'serviceTiers': [] if case == 'unsupported' else [{'id': 'priority', 'name': 'Fast'}]}]}
+            assert method == 'thread/settings/update'
+            return None if case == 'malformed' else {}
+        rpc.request = request
+        if case == 'busy':
+            owner.state = 'running'
+        try:
+            if case == 'ok':
+                assert (await owner.set_speed_tier('priority', 'current'))['currentValue'] == 'priority'
+                assert calls[-1] == ('thread/settings/update', {'threadId': owner.session_id, 'serviceTier': 'priority'})
+                assert events[-1] == {'method': 'workspace/speed', 'params': {'model': 'current', 'value': 'priority'}}
+                assert (await owner.set_speed_tier(None, 'current'))['currentValue'] is None
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.set_speed_tier('unknown' if case == 'invalid' else 'priority', 'other' if case == 'changed' else 'current')
+                assert any(method == 'thread/settings/update' for method, _ in calls) is (case == 'malformed')
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('case', ['ok', 'unsupported', 'busy', 'invalid', 'changed', 'malformed'])
 def test_personality_uses_native_capability_and_exact_session(tmp_path, case):
     async def run():
         owner, rpc, events = await make(tmp_path)

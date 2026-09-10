@@ -3,6 +3,45 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Session Speed (2026-09-10)
+
+`/fast` now opens an explicit session-speed control. Native model service tiers
+populate the picker; Apply invokes thread/settings/update without submitting a
+turn. The current model is rechecked, busy work and queued/reserved jobs reject
+changes, and null explicitly selects the default. This is session-scoped, not a
+global CLI configuration change; no unsupported tier or pricing is invented.
+The existing next-turn speed selector remains an explicit per-turn override.
+
+Native inspection found that settings/update alone does not preserve speed
+through process replacement. Confirmed workspace/speed events now persist the
+selection in the journal and restore it before work admission. Explicit per-turn
+speed overrides update that record too. Restoration validates against the resumed
+model's current native catalog and fails closed if unsupported.
+
+The live proof also found an unrelated-setting restoration failure: native
+settings updates report a default personality even on models that do not support
+personality. These observations are now marked unconfirmed and are not mistaken
+for explicit user preferences; old records remain compatible. Explicit confirmed
+personality selections still restore, verified on the real runtime.
+
+Source: https://learn.chatgpt.com/docs/app-server accessed 2026-09-10, plus the
+installed v2 ThreadSettingsUpdateParams schema: serviceTier overrides subsequent
+turns, omission leaves it unchanged, null clears it. The installed native runtime
+normalizes an explicit clear to serviceTier `default` in its confirmation event.
+
+Verification:
+
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_speed_tier_is_native_exact_and_does_not_start_a_turn tests/test_workspace_codex.py::test_personality_uses_native_capability_and_exact_session tests/test_workspace_host.py::test_saved_speed_restores_before_admission_and_refuses_failed_restore tests/test_workspace_pane.py::test_session_speed_changes_without_sending_and_keeps_failed_selection -q --tb=short`: exit 0, 18 passed in 8.43s.
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_session_speed_changes_without_sending_and_keeps_failed_selection tests/test_workspace_journal.py -q --tb=short`: exit 0, 9 passed in 9.80s. Desktop/mobile screenshots inspected; drafts and failed choices preserved.
+- `node --test tests/workspace-connection.test.mjs`: exit 0, 54 passed in 498.993ms.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-speed.py`: final exit 0, real `priority` setting and explicit clear retained across host replacements, four native processes reaped, one print-only history turn, no inference/authentication. Earlier exit-1 attempts exposed the unsupported default-personality restore and a proof assumption that cleared native speed was null rather than `default`; fixed both. Initial direct adapter proof also exited 1 and demonstrated the native persistence gap.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-personality.py`: exit 0, native friendly personality restored across replacement, three processes reaped, no inference/authentication.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py core/workspace_journal.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-speed.py`: final exit 0, all checks passed; initial exit 1 for compact one-line statements, expanded without behavioral changes.
+- `node --check ui/static/workspace-pane.mjs`: exit 0, no output.
+
+No release or installed-app change. Existing packaged checkpoints predate this
+speed change; full parity and authenticated workflow evidence remain open.
+
 ## Native Agent Inspection (2026-09-10)
 
 ### Dedicated Authentication for Live-Agent Proof

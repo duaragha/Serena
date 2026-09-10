@@ -899,6 +899,35 @@ def test_agent_history_previews_only_parent_owned_uploads(tmp_path):
         host.shutdown()
 
 
+@pytest.mark.parametrize('value', [None, 'priority'])
+@pytest.mark.parametrize('failure', [False, True])
+def test_saved_speed_restores_before_admission_and_refuses_failed_restore(tmp_path, value, failure):
+    calls = []
+    class SpeedOwner(Owner):
+        async def open(self):
+            result = await super().open()
+            self.settings = {'model': 'resumed-model'}
+            return result
+        async def set_speed_tier(self, tier, model):
+            calls.append((tier, model))
+            if failure:
+                raise ValueError('Unsupported speed')
+    journal = WorkspaceJournal(tmp_path / 'speed.db')
+    journal.append('exact', {'method': 'workspace/speed', 'params': {'model': 'old-model', 'value': value}})
+    journal.append('exact', {'method': 'workspace/settings', 'params': {'serviceTier': None}})
+    journal.append('exact', {'method': 'workspace/settings', 'params': {'personality': 'none', 'personalityConfirmed': False}})
+    assert journal.saved_codex_personality('exact') is None
+    assert journal.saved_codex_speed('other') is None
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)}, factories={'codex': SpeedOwner})
+    try:
+        assert host.attach('exact')['ok'] is (not failure)
+        assert calls == [(value, 'resumed-model')]
+        if failure:
+            assert host._sessions['exact'][0].closed
+    finally:
+        host.shutdown()
+
+
 def test_agent_attachments_validate_parent_scope_and_deduplicate(tmp_path):
     calls = []
     class AgentOwner(Owner):

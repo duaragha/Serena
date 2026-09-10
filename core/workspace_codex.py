@@ -730,6 +730,34 @@ class CodexWorkspace:
                 raise WorkspaceRpcError("Goal is still present; refresh before retrying")
             return state
 
+    async def speed_tiers(self):
+        catalog = await self.list_models()
+        model_id = self.settings.get("model")
+        model = next((item for item in catalog["data"] if item.get("id") == model_id or item.get("model") == model_id), None)
+        if model is None:
+            raise WorkspaceRpcError("Current model is not in the native catalog")
+        return {"model": model_id, "currentValue": self.settings.get("serviceTier"),
+                "options": deepcopy(model.get("serviceTiers", []))}
+
+    async def set_speed_tier(self, value, expected_model):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Finish active work before changing session speed")
+            catalog = await self.speed_tiers()
+            if expected_model != catalog["model"] or expected_model != self.settings.get("model"):
+                raise WorkspaceRpcError("Model changed; refresh session speed")
+            if value is not None and (not isinstance(value, str) or value not in {tier["id"] for tier in catalog["options"]}):
+                raise ValueError("Speed tier is not advertised by this model")
+            if self.state != "ready" or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Session changed during speed lookup")
+            result = await self.rpc.request("thread/settings/update", {"threadId": self.session_id, "serviceTier": value})
+            if not isinstance(result, dict):
+                raise WorkspaceRpcError("Session speed change was not confirmed")
+            self.settings["serviceTier"] = value
+            await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
+            await self.publish({"method": "workspace/speed", "params": {"model": expected_model, "value": value}})
+            return {**catalog, "currentValue": value}
+
     async def set_personality(self, value):
         async with self._control_lock:
             if self.state != "ready" or self.questions:
@@ -744,6 +772,7 @@ class CodexWorkspace:
             if not isinstance(result, dict):
                 raise WorkspaceRpcError("Personality change was not confirmed")
             self.settings["personality"] = value
+            self.settings["personalityConfirmed"] = True
             await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
             return {**catalog, "currentValue": value}
 
@@ -1182,6 +1211,9 @@ class CodexWorkspace:
                 await self.publish(
                     {"method": "workspace/settings", "params": deepcopy(self.settings)}
                 )
+                if "serviceTier" in params:
+                    await self.publish({"method": "workspace/speed", "params": {
+                        "model": self.settings["model"], "value": params["serviceTier"]}})
                 return result
             except BaseException:
                 # A timeout is not proof that Codex rejected the message. Do not
@@ -1411,6 +1443,7 @@ class CodexWorkspace:
                             self.settings[target] = deepcopy(settings[source])
                     if settings.get("personality") in {"none", "friendly", "pragmatic"}:
                         self.settings["personality"] = settings["personality"]
+                        self.settings.setdefault("personalityConfirmed", False)
                     await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
                 elif method == "mcpServer/oauthLogin/completed":
                     login = self._mcp_logins.get(params.get("name"))

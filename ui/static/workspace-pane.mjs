@@ -87,6 +87,8 @@ export class WorkspacePane {
     this.newConversationButton.hidden=!controls.newConversation;head.append(this.newConversationButton);
     this.personalityButton=this.button('Codex personality','smile',()=>this.openPersonality());
     this.personalityButton.hidden=provider!=='Codex' || !controls.personality || !controls.setPersonality;head.append(this.personalityButton);
+    this.speedButton=this.button('Session speed','gauge',()=>this.openSpeed());
+    this.speedButton.hidden=provider!=='Codex' || !controls.speedTiers || !controls.setSpeedTier;head.append(this.speedButton);
     this.goalButton=this.button('Session goal','flag',()=>this.openGoal());
     this.goalButton.hidden=provider!=='Codex' || !controls.goal || !controls.updateGoal || !controls.clearGoal;head.append(this.goalButton);
     this.agentsButton=this.button('Delegated agents','users',()=>this.openAgents());
@@ -1104,6 +1106,36 @@ export class WorkspacePane {
     this.goalDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();enable();await load();
   }
 
+  async openSpeed() {
+    if(this.speedDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Session speed');
+    const status=node('p','','Loading...');status.setAttribute('role','status');
+    const select=node('select');select.setAttribute('aria-label','Session speed tier');select.disabled=true;
+    const apply=node('button','','Apply');apply.type='button';apply.disabled=true;
+    const close=this.button('Close session speed','x',()=>dialog.close());
+    let model=null,busy=false;
+    const render=result=>{
+      model=result.model;select.replaceChildren();
+      const standard=node('option','','Default');standard.value='';select.append(standard);
+      for(const tier of result.options){const option=node('option','',tier.name || tier.id);option.value=tier.id;select.append(option);}
+      select.value=result.currentValue || '';select.disabled=false;apply.disabled=false;
+      status.textContent=`${model} / ${result.currentValue || 'Default'}`;
+    };
+    apply.addEventListener('click',async()=>{
+      if(busy || !model)return;
+      busy=true;apply.disabled=select.disabled=close.disabled=true;
+      try{const result=await this.controls.setSpeedTier(select.value || null,model);if(dialog.open)render(result);}
+      catch(error){status.textContent=error.message;apply.disabled=select.disabled=false;}
+      finally{busy=false;close.disabled=false;}
+    });
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    dialog.append(node('h3','','Session speed'),close,status,select,apply);
+    this.speedDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
+    try{const result=await this.controls.speedTiers();if(dialog.open)render(result);}
+    catch(error){status.textContent=error.message;}
+  }
+
   async openPersonality() {
     if(this.personalityDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Codex personality');
@@ -1632,7 +1664,7 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
-      agent:this.agentsButton,subagents:this.agentsButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
+      agent:this.agentsButton,subagents:this.agentsButton,fast:this.speedButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }
 
   async copyLatestOutput() {

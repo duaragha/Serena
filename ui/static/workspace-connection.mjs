@@ -267,6 +267,8 @@ export class WorkspaceConnection {
       interruptAgent: (thread_id,expected_turn_id) => this.command('interrupt_agent', {thread_id,expected_turn_id,confirmed:true}),
       steerAgent: (thread_id,expected_turn_id,text,files) => this.sendAgentMessage(thread_id,expected_turn_id,text,files),
       continueAgent: (thread_id,expected_latest_turn_id,text) => this.command('continue_agent', {thread_id,expected_latest_turn_id,text,confirmed:true}),
+      speedTiers: () => this.command('speed_tiers', {}),
+      setSpeedTier: (value,expected_model) => this.command('set_speed_tier', {value,expected_model}),
       pendingAgentMessages: () => this.pendingAgentMessages(),
       retryAgentMessage: id => this.retryAgentMessage(id),
       updateGoal: (changes,expected) => this.command('update_goal', {changes,expected,confirmed:true}),

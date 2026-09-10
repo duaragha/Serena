@@ -577,6 +577,8 @@ class WorkspaceHost:
                         if target["provider"] == "codex" else None)
                 personality = (await asyncio.to_thread(self.journal.saved_codex_personality, sid)
                                if target["provider"] == "codex" else None)
+                speed = (await asyncio.to_thread(self.journal.saved_codex_speed, sid)
+                         if target["provider"] == "codex" else None)
                 await owner.open()
                 if mode is not None:
                     try:
@@ -588,6 +590,12 @@ class WorkspaceHost:
                 if personality is not None:
                     try:
                         await owner.set_personality(personality)
+                    except Exception:
+                        await owner.close()
+                        raise
+                if speed is not None:
+                    try:
+                        await owner.set_speed_tier(speed["value"], owner.settings["model"])
                     except Exception:
                         await owner.close()
                         raise
@@ -802,6 +810,8 @@ class WorkspaceHost:
             "set_session_mode",
             "personality",
             "set_personality",
+            "speed_tiers",
+            "set_speed_tier",
             "goal",
             "update_goal",
             "clear_goal",
@@ -861,7 +871,7 @@ class WorkspaceHost:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "interrupt_agent", "models", "permissions", "context_usage", "background_tasks",
-                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes", "personality", "goal", "agents", "inspect_agent",
+                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes", "personality", "speed_tiers", "goal", "agents", "inspect_agent",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1129,6 +1139,16 @@ class WorkspaceHost:
                     if "inputs" in routed:
                         routed["inputs"] = await asyncio.to_thread(self.uploads.codex_inputs, sid, routed["inputs"])
                     result = await owner.steer_agent(**routed)
+                elif action == "speed_tiers":
+                    if provider != "codex" or payload:
+                        raise ValueError("Speed inspection requires an attached Codex session")
+                    result = await owner.speed_tiers()
+                elif action == "set_speed_tier":
+                    if provider != "codex" or set(payload) != {"value", "expected_model"}:
+                        raise ValueError("An exact model and speed tier are required")
+                    if self._bridge_queues.get(sid):
+                        raise ValueError("Resolve queued messages before changing session speed")
+                    result = await owner.set_speed_tier(**payload)
                 elif action == "continue_agent":
                     if provider != "codex" or set(payload) != {"thread_id", "expected_latest_turn_id", "text", "confirmed"}:
                         raise ValueError("An exact confirmed idle agent continuation is required")

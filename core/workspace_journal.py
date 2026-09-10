@@ -74,11 +74,26 @@ class WorkspaceJournal:
             raise ValueError("Saved Codex mode is invalid")
         return mode
 
+    def saved_codex_speed(self, session_id: str) -> dict | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute("""SELECT event FROM workspace_events
+                WHERE session_id=? AND json_extract(event, '$.method')='workspace/speed'
+                ORDER BY sequence DESC LIMIT 1""", (session_id,)).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row[0])["params"]
+        if (not isinstance(value, dict) or set(value) != {"model", "value"}
+                or not isinstance(value["model"], str) or not value["model"]
+                or (value["value"] is not None and (not isinstance(value["value"], str) or not value["value"]))):
+            raise ValueError("Saved Codex speed is invalid")
+        return value
+
     def saved_codex_personality(self, session_id: str) -> str | None:
         with closing(self._connect()) as conn:
             row = conn.execute("""SELECT event FROM workspace_events
                 WHERE session_id=? AND json_extract(event, '$.method')='workspace/settings'
                 AND json_type(event, '$.params.personality') IS NOT NULL
+                AND COALESCE(json_extract(event, '$.params.personalityConfirmed'), 1) != 0
                 ORDER BY sequence DESC LIMIT 1""", (session_id,)).fetchone()
         if row is None:
             return None
