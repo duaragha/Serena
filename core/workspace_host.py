@@ -599,7 +599,7 @@ class WorkspaceHost:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])
                 elif action == "models":
-                    if payload or provider not in {"codex", "claude"}:
+                    if payload or provider not in {"codex", "claude", "gemini"}:
                         raise ValueError("Model discovery is unavailable for this request")
                     result = await owner.list_models()
                 elif action == "submit":

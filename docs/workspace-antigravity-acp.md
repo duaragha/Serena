@@ -198,6 +198,25 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Model controls (2026-09-09): model discovery now uses the loaded ACP select
+option with category `model`. Catalog IDs, labels and current selection come
+from the provider. Explicit submit options apply `session/set_config_option`
+using that exact config ID, and require its response to confirm the requested
+model before sending the prompt. An unconfirmed change disables the owner; it
+does not guess, resend or change permission mode. Configuration notifications
+replace the stored catalog. Unsupported effort/settings remain rejected.
+
+Official contract, accessed 2026-09-09:
+https://agentclientprotocol.com/protocol/v1/session-config-options
+The shipped Google 1.1.1 server's `set_config_option` implementation also
+confirms this path. Grouped/unknown option shapes are not accepted as models.
+
+`/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_session.py tests/test_workspace_gemini.py tests/test_workspace_host.py::test_gemini_explicit_owner_uses_acp_mapping_and_deduplicates_delivery -q --tb=short`:
+exit 0, 20 passed. Scoped Ruff: exit 0. Includes real subprocess framing
+through host/owner: discover without switching, confirm model selection, then
+prompt/permission/output; duplicate requests do not repeat either mutation.
+These are controlled-peer checks, not authenticated Google model execution.
+
 Live submitted messages (2026-09-09): inspection of the shipped 1.1.1
 `server.py` found `UserMessageChunk` emission in historical step replay, not
 the live prompt path. The controller now records the exact submitted content

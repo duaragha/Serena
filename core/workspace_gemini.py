@@ -40,10 +40,12 @@ class GeminiWorkspace:
 
     async def submit(self, inputs, *, options=None):
         async with self._lifecycle:
-            if options:
-                raise ValueError("Gemini per-turn settings are not implemented")
+            if options is not None and (not isinstance(options, dict) or options.keys() - {"model"}):
+                raise ValueError("Unsupported Gemini per-turn settings")
             if self.state != "ready" or (self._turn_task and not self._turn_task.done()):
                 raise ValueError("Gemini is not ready for input")
+            if options and "model" in options:
+                await self.session.set_model(options["model"])
             previous_turn = self.session.last_turn_id
             self._turn_task = asyncio.create_task(self._run_prompt(inputs))
             await asyncio.sleep(0)
@@ -62,6 +64,17 @@ class GeminiWorkspace:
     async def interrupt(self):
         await self.session.cancel()
         return {}
+
+    async def list_models(self):
+        if self.state not in {"ready", "running", "cancelling"}:
+            raise ValueError("Gemini is not attached")
+        option = self.session.model_option()
+        result = {"data": [{"id": choice["value"], "model": choice["value"],
+                            "displayName": choice["name"], "supportedReasoningEfforts": []}
+                           for choice in option["options"]]}
+        await self.publish(self.session.events.event("workspace/models", result))
+        await self.publish(self.session.events.event("workspace/settings", {"model": option["currentValue"]}))
+        return result
 
     async def answer(self, request_id, answer):
         if not isinstance(answer, dict) or set(answer) != {"outcome"}:

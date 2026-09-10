@@ -24,6 +24,65 @@ class Rpc:
         self.calls.append((method, params))
 
 
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_native_model_change_requires_offered_value_and_confirmed_response(tmp_path, confirmed):
+    async def run():
+        rpc, output = Rpc(), []
+        async def publish(event):
+            output.append(event)
+        owner = AcpSession(session_id="exact", cwd=tmp_path, rpc=rpc, publish=publish)
+        def config(current):
+            return [{"id": "native-model", "category": "model", "type": "select",
+                     "currentValue": current, "options": [{"value": "a", "name": "Model A"},
+                                                          {"value": "b", "name": "Model B"}]}]
+        async def handler(method, params):
+            if method == "session/load":
+                return {"configOptions": config("a")}
+            assert method == "session/set_config_option"
+            assert params == {"sessionId": "exact", "configId": "native-model", "value": "b"}
+            assert owner.state == "configuring"
+            return {"configOptions": config("b" if confirmed else "a")}
+        rpc.handler = handler
+        await owner.load({"agentCapabilities": {"loadSession": True}}, mcp_servers=[])
+        assert len(rpc.calls) == 1
+        with pytest.raises(ValueError, match="not offered"):
+            await owner.set_model("invented")
+        await owner.set_model("a")
+        assert len(rpc.calls) == 1
+        if confirmed:
+            await owner.set_model("b")
+            assert owner.state == "ready"
+            assert output[-1]["params"]["model"] == "b"
+        else:
+            with pytest.raises(ValueError, match="unconfirmed"):
+                await owner.set_model("b")
+            assert owner.state == "unavailable"
+            assert not any(event["method"] == "workspace/settings" for event in output)
+        assert len(rpc.calls) == 2
+    asyncio.run(run())
+
+
+def test_native_config_update_replaces_stale_model_options(tmp_path):
+    async def run():
+        rpc = Rpc()
+        async def publish(event):
+            pass
+        owner = AcpSession(session_id="exact", cwd=tmp_path, rpc=rpc, publish=publish)
+        await owner.load({"agentCapabilities": {"loadSession": True}}, mcp_servers=[])
+        with pytest.raises(ValueError, match="not advertised"):
+            owner.model_option()
+        await owner.receive({"method": "session/update", "params": {"sessionId": "exact", "update": {
+            "sessionUpdate": "config_option_update", "configOptions": [{"id": "model", "category": "model",
+            "type": "select", "currentValue": "new", "options": [{"value": "new", "name": "New model"}]}]}}})
+        assert owner.model_option()["currentValue"] == "new"
+        await owner.receive({"method": "session/update", "params": {"sessionId": "exact", "update": {
+            "sessionUpdate": "config_option_update", "configOptions": []}}})
+        with pytest.raises(ValueError, match="not advertised"):
+            owner.model_option()
+        assert len(rpc.calls) == 1
+    asyncio.run(run())
+
+
 def test_exact_load_failure_never_creates_or_retries(tmp_path):
     async def run():
         rpc, output = Rpc(), []

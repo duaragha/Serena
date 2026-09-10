@@ -25,6 +25,7 @@ class AcpSession:
         self._answer_lock = asyncio.Lock()
         self._reader = None
         self.last_turn_id = None
+        self.config_options = []
 
     def start_event_reader(self):
         if self._reader is not None:
@@ -75,6 +76,7 @@ class AcpSession:
                     raise ValueError("ACP session lost verified event routing")
                 if result is not None and not isinstance(result, dict):
                     raise ValueError("Invalid ACP load response")
+                self.config_options = deepcopy((result or {}).get("configOptions", []))
                 history = {"id": "history", "status": "completed", "items": list(self.events.items.values())}
                 await self.publish(self.events.event("workspace/history", {
                     "thread": {"id": self.session_id, "turns": [history] if history["items"] else []},
@@ -97,6 +99,8 @@ class AcpSession:
         method, params = message.get("method"), message.get("params")
         if method == "session/update":
             event = self.events.update(params)
+            if params["update"]["sessionUpdate"] == "config_option_update":
+                self.config_options = deepcopy(params["update"].get("configOptions", []))
             if self.state != "loading" or event["method"] == "workspace/acpMetadata":
                 await self.publish(event)
         elif method == "session/request_permission":
@@ -149,6 +153,50 @@ class AcpSession:
             result = self.events.answer(request_id, option_id)
             await self.rpc.answer(request_id, result)
             await self.publish(self.events.resolved(request_id))
+
+    def model_option(self):
+        if not isinstance(self.config_options, list):
+            raise ValueError("Invalid ACP configuration catalog")
+        candidates = [option for option in self.config_options if isinstance(option, dict)
+                      and option.get("category") == "model" and option.get("type") == "select"]
+        if not candidates:
+            raise ValueError("ACP model selection is not advertised")
+        option = candidates[0]
+        choices = option.get("options")
+        if (not isinstance(option.get("id"), str) or not option["id"]
+            or not isinstance(choices, list) or not choices
+            or any(not isinstance(choice, dict) or not isinstance(choice.get("value"), str)
+                   or not choice["value"] or not isinstance(choice.get("name"), str) for choice in choices)
+            or len({choice["value"] for choice in choices}) != len(choices)
+            or option.get("currentValue") not in {choice["value"] for choice in choices}):
+            raise ValueError("Invalid ACP model options")
+        return deepcopy(option)
+
+    async def set_model(self, model):
+        async with self._lock:
+            if self.state != "ready":
+                raise ValueError("ACP session is not ready for configuration")
+            option = self.model_option()
+            if not isinstance(model, str) or model not in {choice["value"] for choice in option["options"]}:
+                raise ValueError("ACP model was not offered")
+            if model == option["currentValue"]:
+                return
+            self.state = "configuring"
+            try:
+                result = await self.rpc.request("session/set_config_option", {
+                    "sessionId": self.session_id, "configId": option["id"], "value": model})
+                await self._drain_events()
+                if self.state == "unavailable" or not isinstance(result, dict) or "configOptions" not in result:
+                    raise ValueError("ACP model change is unconfirmed")
+                self.config_options = deepcopy(result["configOptions"])
+                confirmed = self.model_option()
+                if confirmed["id"] != option["id"] or confirmed["currentValue"] != model:
+                    raise ValueError("ACP model change is unconfirmed")
+                await self.publish(self.events.event("workspace/settings", {"model": model}))
+                self.state = "ready"
+            except BaseException:
+                self.state = "unavailable"
+                raise
 
     async def cancel(self):
         async with self._answer_lock:

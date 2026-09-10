@@ -36,7 +36,14 @@ send({"id": message["id"], "result": {"protocolVersion": 1,
       "agentInfo": {"name": "antigravity-acp"}}})
 message = read()
 assert message["method"] == "session/load" and message["params"]["sessionId"] == sid
-send({"id": message["id"], "result": {}})
+def config(current):
+    return [{"id": "model", "category": "model", "type": "select", "currentValue": current,
+             "options": [{"value": "first", "name": "First"}, {"value": "second", "name": "Second"}]}]
+send({"id": message["id"], "result": {"configOptions": config("first")}})
+message = read()
+assert message["method"] == "session/set_config_option"
+assert message["params"] == {"sessionId": sid, "configId": "model", "value": "second"}
+send({"id": message["id"], "result": {"configOptions": config("second")}})
 prompt = read()
 assert prompt["method"] == "session/prompt" and prompt["params"]["sessionId"] == sid
 assert prompt["params"]["prompt"] == [{"type": "text", "text": "inspect"}]
@@ -77,7 +84,9 @@ assert sys.stdin.read() == "", "Unexpected duplicate delivery"
         assert rpc.process is None
         assert host.attach(SID)["state"] == "ready"
         process = rpc.process
-        payload = {"inputs": [{"type": "text", "text": "inspect"}]}
+        models = host.command(SID, "models", "models", {})
+        assert models["ok"] and [model["model"] for model in models["result"]["data"]] == ["first", "second"]
+        payload = {"inputs": [{"type": "text", "text": "inspect"}], "options": {"model": "second"}}
         sent = host.command(SID, "send", "submit", payload)
         assert sent["ok"]
         assert host.command(SID, "send", "submit", payload) == sent
