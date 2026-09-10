@@ -31,16 +31,21 @@ reattaches to its updates. `--speak` sends completed observations through
 Serena's existing local voice output. `chats computer steer "new instruction"`
 steers the active Astra turn without starting a second controller.
 
-The desktop indicator shows the complete latest observation, wraps text and
-identifies the focused application and window title from the latest captured
-frame. In browsers this normally includes the selected tab's title. It refreshes
-while the model is thinking, without waiting for another coaching reply. This
-label describes focus within the selected capture scope; desktop mode still
-captures the desktop. Missing or expired frame details show a waiting label.
-The indicator
-grows to fit. Long updates scroll within the popup while the stop button stays
-visible. The screenshot mask follows the popup's size so advice is not fed back
-into the next visual observation.
+The desktop indicator is a compact, movable HUD card. Drag its header to move it
+out of the way; its current position and size are sent back to the helper so the
+card stays masked from screenshots. The header shows whether Astra is starting,
+thinking, watching, or has seen a changed screen. The context row identifies the
+focused application and window title from the latest captured frame (in a
+browser this normally includes the selected tab) and the selected display or
+window scope. The footer shows model/timing metadata, copies the latest guidance,
+and keeps the stop control visible.
+
+Use the chevron in the header to collapse the guidance body while keeping the
+current app, state, timing, copy, and stop controls available. The card refreshes
+while the model is thinking, without waiting for another coaching reply. Missing
+or expired frame details show a waiting label. Long updates scroll inside the
+card, and the screenshot mask follows its size so advice is not fed back into
+the next visual observation.
 
 Watch replies stream into the popup as a labelled draft before completion. A
 changed page clears the draft, and only completed advice enters conversation
