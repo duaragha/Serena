@@ -2,6 +2,13 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+ACP ordered event reader (2026-09-09): response handling now waits for preceding
+queued updates before history/turn completion. A real subprocess burst test
+preserved all 20 chunks with delayed publication; 16 scoped tests passed. Native
+missing-session proof also passed with the reader active. No process teardown on
+reader stop; the controller becomes unavailable. Authentication, native owner and
+app admission remain open; see [ACP evidence](workspace-antigravity-acp.md).
+
 ACP session controller (2026-09-09): exact-ID load/replay, single active prompt,
 advertised input capabilities and explicit permission/cancellation controls now
 exist over an already owned ACP transport. Native missing-session refusal passed

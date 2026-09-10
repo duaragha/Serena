@@ -1,7 +1,10 @@
 import asyncio
+import os
+import sys
 
 import pytest
 
+from core.workspace_acp import WorkspaceAcpRpc
 from core.workspace_acp_session import AcpSession
 
 
@@ -106,4 +109,49 @@ def test_wrong_session_update_disables_further_input(tmp_path):
         with pytest.raises(ValueError, match="not ready"):
             await owner.prompt([{"type": "text", "text": "do not send"}])
         assert len(rpc.calls) == 1 and owner.state == "unavailable"
+    asyncio.run(run())
+
+
+def test_real_pipe_reply_waits_for_all_queued_history_and_turn_events(tmp_path):
+    async def run():
+        rpc, output = WorkspaceAcpRpc(), []
+        async def publish(event):
+            await asyncio.sleep(0.005)
+            output.append(event)
+        owner = AcpSession(session_id="exact", cwd=tmp_path, rpc=rpc, publish=publish)
+        code = """
+import json, sys
+def emit(value):
+    print(json.dumps({'jsonrpc':'2.0',**value}),flush=True)
+for method in ['initialize','session/load','session/prompt']:
+    message=json.loads(sys.stdin.readline())
+    assert message['method']==method
+    if method=='initialize':
+        result={'protocolVersion':1,'agentCapabilities':{'loadSession':True},'authMethods':[]}
+    else:
+        assert message['params']['sessionId']=='exact'
+        for i in range(20):
+            emit({'method':'session/update','params':{'sessionId':'exact','update':{
+                'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':str(i)+','}}}})
+        result={} if method=='session/load' else {'stopReason':'end_turn'}
+    emit({'id':message['id'],'result':result})
+assert sys.stdin.read()==''
+"""
+        try:
+            await rpc.start([sys.executable, "-c", code], cwd=tmp_path, env=dict(os.environ))
+            initialization = await rpc.initialize()
+            owner.start_event_reader()
+            await owner.load(initialization, mcp_servers=[])
+            expected = "".join(f"{i}," for i in range(20))
+            assert output[-1]["params"]["thread"]["turns"][0]["items"][0]["text"] == expected
+            await owner.prompt([{"type": "text", "text": "hello"}])
+            assert output[-1]["method"] == "turn/completed"
+            assert output[-1]["params"]["turn"]["items"][0]["text"] == expected
+            await owner.stop_event_reader()
+            assert rpc.process.returncode is None
+        finally:
+            await owner.stop_event_reader()
+            process = rpc.process
+            await rpc.close()
+        assert process.returncode == 0
     asyncio.run(run())

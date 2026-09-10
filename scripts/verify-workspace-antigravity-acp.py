@@ -20,6 +20,7 @@ from core.workspace_rpc import WorkspaceRpcError
 async def main():
     executable = Path(sys.argv[1]).resolve(strict=True)
     rpc = WorkspaceAcpRpc()
+    session = None
     with tempfile.TemporaryDirectory(prefix="serena-acp-probe-") as directory:
         home = Path(directory)
         env = {"HOME": str(home), "XDG_CONFIG_HOME": str(home / "config"),
@@ -45,6 +46,7 @@ async def main():
             async def publish(event):
                 published.append(event)
             session = AcpSession(session_id=sid, cwd=home, rpc=rpc, publish=publish)
+            session.start_event_reader()
             try:
                 await session.load(result, mcp_servers=[])
             except WorkspaceRpcError as error:
@@ -59,6 +61,8 @@ async def main():
             print("Native stderr:", "".join(rpc.stderr)[-6000:], file=sys.stderr)
             raise
         finally:
+            if session is not None:
+                await session.stop_event_reader()
             process = rpc.process
             await rpc.close()
             assert process is not None and process.returncode is not None

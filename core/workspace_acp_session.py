@@ -5,6 +5,7 @@ never creates a session, launches a process, authenticates, or retries a prompt.
 """
 
 import asyncio
+from contextlib import suppress
 from copy import deepcopy
 from uuid import uuid4
 
@@ -22,6 +23,38 @@ class AcpSession:
         self.capabilities = {}
         self._lock = asyncio.Lock()
         self._answer_lock = asyncio.Lock()
+        self._reader = None
+
+    def start_event_reader(self):
+        if self._reader is not None:
+            raise ValueError("ACP event reader is already active")
+        self._reader = asyncio.create_task(self._read_events())
+
+    async def _read_events(self):
+        while True:
+            message = await self.rpc.events.get()
+            try:
+                if self.state != "unavailable":
+                    await self.receive(message)
+            except Exception as error:
+                self.state = "unavailable"
+                with suppress(Exception):
+                    await self.publish(self.events.event("workspace/transportClosed", {"reason": str(error)}))
+            finally:
+                self.rpc.events.task_done()
+
+    async def stop_event_reader(self):
+        """Detach the controller consumer only; never stop a native process."""
+        if self._reader is not None:
+            self.state = "unavailable"
+            self._reader.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._reader
+            self._reader = None
+
+    async def _drain_events(self):
+        if self._reader is not None:
+            await self.rpc.events.join()
 
     async def load(self, initialization, *, mcp_servers):
         async with self._lock:
@@ -36,6 +69,7 @@ class AcpSession:
             try:
                 result = await self.rpc.request("session/load", {"sessionId": self.session_id,
                     "cwd": str(self.cwd), "mcpServers": deepcopy(mcp_servers)}, timeout=60)
+                await self._drain_events()
                 if self.state == "unavailable":
                     raise ValueError("ACP session lost verified event routing")
                 if result is not None and not isinstance(result, dict):
@@ -95,6 +129,7 @@ class AcpSession:
             await self.publish(start)
             result = await self.rpc.request("session/prompt", {"sessionId": self.session_id,
                 "prompt": deepcopy(content)}, timeout=None)
+            await self._drain_events()
             if self.state == "unavailable":
                 raise ValueError("ACP session lost verified event routing")
             completion = self.events.complete(result.get("stopReason") if isinstance(result, dict) else None)

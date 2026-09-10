@@ -96,6 +96,18 @@ instead of implying Google has no interactive interface. Admission is unchanged.
 
 ## Next Integration Work
 
+Ordered transport consumption added 2026-09-09. The controller can explicitly
+start an event reader on the owned RPC queue. Load and prompt responses wait for
+earlier queued updates to be consumed before publishing history/completion.
+Reader failures disable input and drain remaining queued entries without applying
+them. Stopping the reader disables the controller but does not close the native
+process; process ownership remains the caller's responsibility.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_session.py tests/test_workspace_acp_events.py tests/test_workspace_acp.py -q --tb=short`: exit 0, 16 passed. New real-subprocess case emits 20 chunks immediately before each load/prompt response; delayed publication still retains every chunk before completion. Reader stop leaves subprocess alive until explicit transport cleanup.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_acp_session.py tests/test_workspace_acp_session.py scripts/verify-workspace-antigravity-acp.py`: final exit 0; test import ordering corrected after initial exit 1.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-antigravity-acp.py apps/desktop/build/proof-tools/antigravity-acp/agy_acp_server.par`: exit 0 with controller reader enabled; exact native rejection, no replacement and clean process exit. No authentication or model inference.
+
 Session controller foundation added 2026-09-09 in `core/workspace_acp_session.py`.
 It operates over an already owned transport, loads only the supplied persisted
 ID, retains replayed history, serializes prompts, validates advertised content
