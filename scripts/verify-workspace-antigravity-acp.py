@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.workspace_acp import WorkspaceAcpRpc
 from core.workspace_acp_session import AcpSession
+from core.workspace_gemini import GeminiWorkspace
 from core.workspace_rpc import WorkspaceRpcError
 
 
@@ -57,6 +58,16 @@ async def main():
             assert cli_db.read_bytes() == original
             assert not (home / ".gemini" / "antigravity-acp" / "conversations" / f"{sid}.db").exists()
             print("PASS: CLI-only SQLite fixture absent from ACP list and rejected on exact load; original unchanged and no replacement created", flush=True)
+            candidate = GeminiWorkspace(session_id=sid, cwd=home, gemini_home=home / ".gemini",
+                binary=executable, publish=publish)
+            try:
+                await candidate.open(env=env)
+            except ValueError as error:
+                assert "unavailable" in str(error)
+            else:
+                raise AssertionError("Owner admitted a CLI-only fixture without ACP sign-in")
+            assert candidate.rpc.process is None
+            print("PASS: production Gemini owner refused CLI-only fixture before process launch", flush=True)
         except Exception:
             print("Native stderr:", "".join(rpc.stderr)[-6000:], file=sys.stderr)
             raise

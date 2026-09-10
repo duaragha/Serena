@@ -2,6 +2,12 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Gemini native-owner foundation (2026-09-09): shared lease and bound native PID,
+exact ACP store/project validation, personal OAuth configuration gate, no
+create/authenticate fallback, explicit cleanup. Eleven focused tests and native
+pre-launch refusal proof passed. Successful authenticated load and host admission
+are not yet verified or enabled. See [limitations](workspace-antigravity-acp.md).
+
 ACP ordered event reader (2026-09-09): response handling now waits for preceding
 queued updates before history/turn completion. A real subprocess burst test
 preserved all 20 chunks with delayed publication; 16 scoped tests passed. Native

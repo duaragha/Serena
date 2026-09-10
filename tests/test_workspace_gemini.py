@@ -1,0 +1,101 @@
+import asyncio
+import json
+import os
+import sys
+
+import pytest
+
+from core.workspace_acp import WorkspaceAcpRpc
+from core.workspace_gemini import GeminiWorkspace
+from core.workspace_lease import SessionLease, SessionOwnedError
+
+SID = "11111111-2222-4333-8444-555555555555"
+
+
+def prepare(tmp_path):
+    root = tmp_path / "antigravity-acp"
+    (root / "conversations").mkdir(parents=True)
+    (root / "conversations" / f"{SID}.db").write_bytes(b"fixture")
+    (root / "conversations" / f"{SID}.meta").write_text(json.dumps({"cwd": str(tmp_path)}))
+    (root / "settings.json").write_text('{"auth":{"type":"oauth-personal"}}')
+    (root / "acp_token.json").write_text("fixture-not-a-credential")
+    return root
+
+
+class ProbeRpc(WorkspaceAcpRpc):
+    launched = False
+
+    async def start(self, command, *, cwd, env):
+        self.launched = True
+        self.environment = env
+        code = """
+import json, sys
+for expected in ['initialize','session/load']:
+    message=json.loads(sys.stdin.readline())
+    assert message['method']==expected
+    if expected=='initialize':
+        result={'protocolVersion':1,'agentCapabilities':{'loadSession':True},
+          'authMethods':[],'agentInfo':{'name':'antigravity-acp'}}
+    else:
+        assert message['params']['sessionId']=='11111111-2222-4333-8444-555555555555'
+        result={}
+    print(json.dumps({'jsonrpc':'2.0','id':message['id'],'result':result}),flush=True)
+assert sys.stdin.read()==''
+"""
+        await super().start([sys.executable, "-c", code], cwd=cwd, env=env)
+
+
+def make(tmp_path, rpc):
+    async def publish(event):
+        pass
+    return GeminiWorkspace(session_id=SID, cwd=tmp_path, gemini_home=tmp_path,
+        binary=sys.executable, publish=publish, rpc=rpc,
+        lease_factory=lambda sid: SessionLease(sid, directory=tmp_path / "leases"))
+
+
+def test_owner_retains_single_process_and_releases_only_after_shutdown(tmp_path):
+    prepare(tmp_path)
+    async def run():
+        rpc = ProbeRpc()
+        owner = make(tmp_path, rpc)
+        try:
+            await owner.open(env={**os.environ, "GEMINI_API_KEY": "must-be-removed"})
+            process = rpc.process
+            assert owner.state == "ready"
+            assert rpc.environment["GEMINI_HOME"] == str(tmp_path)
+            assert "GEMINI_API_KEY" not in rpc.environment
+            other = make(tmp_path, ProbeRpc())
+            with pytest.raises(SessionOwnedError):
+                await other.open()
+            assert not other.rpc.launched and process.returncode is None
+        finally:
+            await owner.close()
+        assert process.returncode == 0
+        lease = SessionLease(SID, directory=tmp_path / "leases")
+        lease.release()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("problem", ["missing-token", "api-billing", "wrong-project", "cli-symlink", "cli-hardlink"])
+def test_invalid_native_target_cannot_launch_or_migrate(tmp_path, problem):
+    root = prepare(tmp_path)
+    if problem == "missing-token":
+        (root / "acp_token.json").unlink()
+    elif problem == "api-billing":
+        (root / "settings.json").write_text('{"auth":{"type":"gemini-api-key"}}')
+    elif problem == "wrong-project":
+        (root / "conversations" / f"{SID}.meta").write_text('{"cwd":"/wrong"}')
+    elif problem == "cli-hardlink":
+        os.link(root / "conversations" / f"{SID}.db", tmp_path / "cli.db")
+    else:
+        db = root / "conversations" / f"{SID}.db"
+        original = tmp_path / "cli.db"
+        db.rename(original)
+        db.symlink_to(original)
+    async def run():
+        rpc = ProbeRpc()
+        owner = make(tmp_path, rpc)
+        with pytest.raises(ValueError):
+            await owner.open()
+        assert not rpc.launched and not (tmp_path / "leases").exists()
+    asyncio.run(run())
