@@ -4,6 +4,7 @@ from fleet.attention import notify_blocked_runs
 from test_fleet_ready_resume import _park
 from datetime import datetime
 from dataclasses import replace
+import json
 
 
 def _authority(tmp_path, sent, **policy):
@@ -157,3 +158,16 @@ def test_approved_but_failed_notice_can_retry_without_bypassing_approval(tmp_pat
     # The alternate channel still requests approval; it cannot reuse voice's.
     pending = authority.pending_approvals()
     assert len(pending) == 1 and pending[0]["channel"] == "telegram"
+
+
+def test_voice_bridge_accepts_blocked_notice_and_preserves_delivery_identity(tmp_path, monkeypatch):
+    from voice import brain_bridge
+    store, rid = _park(tmp_path)
+    monkeypatch.setattr("core.fleet_store.FleetStore", lambda: store)
+    notice = {"type": "fleet_notice", "run_id": rid, "state": "waiting_for_input",
+              "token": "attention:private-probe", "text": "Worker reported blocked work."}
+    assert json.loads(brain_bridge.parse_local_event(json.dumps(notice).encode())) == notice
+    brain_bridge._record_fleet_notice(notice, "run.notification.delivered")
+    assert store.terminal_notice_delivered(rid, notice["token"], channel="voice")
+    notice["state"] = "running"
+    assert brain_bridge.parse_local_event(json.dumps(notice).encode()) is None

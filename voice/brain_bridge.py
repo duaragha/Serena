@@ -308,7 +308,7 @@ def parse_local_event(raw: bytes):
             or not run_id
             or len(run_id) > 100
             or not all(char.isalnum() or char == "-" for char in run_id)
-            or notice_state not in {"completed", "failed"}
+            or notice_state not in {"completed", "failed", "waiting_for_input"}
             or not isinstance(token, str)
             or not token
             or len(token) > 160
@@ -718,7 +718,7 @@ def _record_fleet_notice(
     from core.fleet_store import FleetStore
 
     payload = {
-        "token": notice["token"],
+        "notice_id": notice["token"],
         "state": notice["state"],
         "channel": "voice",
     }
@@ -745,7 +745,7 @@ def _fallback_fleet_notice(notice: dict) -> None:
         notice["run_id"],
         "run.notification.delivered" if delivered else "run.notification.failed",
         {
-            "token": notice["token"],
+            "notice_id": notice["token"],
             "state": notice["state"],
             "channel": "telegram",
         },
