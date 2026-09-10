@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import os
 import subprocess
@@ -2210,6 +2209,7 @@ def test_balanced_run_hands_a_parked_worker_to_the_first_recovered_provider(
 
 
 def test_coding_lock_wait_is_polled_and_cancellable(fleet_env, monkeypatch):
+    fcntl = pytest.importorskip("fcntl", reason="POSIX lock-contention fixture")
     monkeypatch.setattr(
         supervisor,
         "run_worker",

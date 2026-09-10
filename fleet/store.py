@@ -931,7 +931,7 @@ class FleetStore:
                 ),
             )
             leg_state = "completed" if state == "completed" else state
-            from fleet.resources import is_disk_exhaustion, is_transient_transport_error
+            from fleet.resources import is_disk_exhaustion, is_process_crash, is_transient_transport_error
 
             recovery_allowed = (
                 state == "failed" and not run["cancel_requested"]
@@ -963,7 +963,7 @@ class FleetStore:
             retry_kind = (
                 "process" if missing_helper else
                 "transport" if is_transient_transport_error(clean_error or "") else
-                "process" if exit_code in {-6, -9, -11, -13, -15} and attempt["pid"] else ""
+                "process" if is_process_crash(exit_code) and attempt["pid"] else ""
             )
             if not input_action and not resource and retry_kind:
                 retries = connection.execute(
@@ -978,7 +978,7 @@ class FleetStore:
                         connection, run_id=str(attempt["run_id"]),
                         leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
                         event_type=f"leg.{retry_kind}_retry_exhausted",
-                        payload={"retries": retries, "reason": clean_error,
+                        payload={"retries": retries, "reason": clean_error, "exit_code": exit_code,
                                  "next_action": "verify provider/runtime health before resuming this worker"},
                     )
             resource_wait = recovery_allowed and bool(resource) and not input_action
@@ -997,7 +997,7 @@ class FleetStore:
                     connection, run_id=str(attempt["run_id"]),
                     leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
                     event_type=f"leg.{resource}_retry_scheduled" if resource != "disk" else "leg.waiting_for_resources",
-                    payload={"resource": resource, "reason": clean_error,
+                    payload={"resource": resource, "reason": clean_error, "exit_code": exit_code,
                              "not_before": not_before, "required_bytes": required_bytes,
                              "retry_number": retries + 1 if resource != "disk" else None},
                 )
