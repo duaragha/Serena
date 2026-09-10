@@ -2,6 +2,25 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Queued bridge recovery on explicit resume (2026-09-09): attached owners now
+restore unsent bridge messages from the latest durable queue snapshot, retaining
+FIFO order and edits. Snapshot identity/provider/schema and unfinished command
+records are validated before native launch. Reading or polling a saved bridge
+receipt never starts the host. The delivery path already persists queue removal
+before native submission; recovery therefore excludes in-flight/uncertain work,
+cancelled entries and finished receipts. Repeated attachment does not requeue it.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_bridge.py -q --tb=short`: exit 0, 26 passed, including both providers, explicit-only restore, FIFO edits, finished/in-flight exclusion, and wrong-provider refusal before open.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_journal.py tests/test_workspace_bridge.py -q --tb=short`: exit 0, 89 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py tests/test_workspace_bridge.py scripts/verify-workspace-bridge-recovery.py`: final exit 0; explicit strict zip added after lint flagged it.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-create.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0. In addition to creation/browser coverage, runs `scripts/verify-workspace-bridge-recovery.py`: real isolated Claude process paused, first native input admitted and a second message queued through production bridge calls; test host killed, its identified children killed, exact persisted session explicitly resumed, only the queued local command completed once. Uncertain first delivery was not retried. Zero inference; crash children and recovered owner no longer live. No user host/session was touched.
+
+Linux source/native proof only; packaged/Windows recovery, automatic background
+job recovery beyond these queued bridge messages, unresolved in-flight receipts,
+empty-session recovery and full CLI parity/rollout remain open. Frozen backend
+and installed app have not been updated for this slice.
+
 Explicit seeded creation (2026-09-09): structured Claude/Codex handoff panes no
 longer discard/refuse supplied context. The owning parent transfers it through
 an origin/source/session-checked message, never the URL. The pane displays the

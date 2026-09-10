@@ -68,6 +68,32 @@ class WorkspaceJournal:
             row = conn.execute("SELECT target, committed FROM workspace_creations WHERE target_id=? AND cataloged=0", (session_id,)).fetchone()
         return {**json.loads(row[0]), "committed": bool(row[1])} if row else None
 
+    def recoverable_bridge_queue(self, session_id: str, provider: str) -> list[dict]:
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN")
+            row = conn.execute("SELECT event FROM workspace_events WHERE session_id=? AND json_extract(event, '$.method')='workspace/bridgeQueue' ORDER BY sequence DESC LIMIT 1",
+                               (session_id,)).fetchone()
+            if row is None:
+                return []
+            params = json.loads(row[0]).get("params", {})
+            requests = params.get("requests")
+            if params.get("threadId") != session_id or not isinstance(requests, list) or params.get("count") != len(requests):
+                raise ValueError("Saved bridge queue is invalid")
+            recovered, seen = [], set()
+            for item in requests:
+                if (not isinstance(item, dict) or set(item) != {"id", "prompt"}
+                        or not isinstance(item["id"], str) or not 1 <= len(item["id"]) <= 100
+                        or item["id"] in seen or not isinstance(item["prompt"], str) or not item["prompt"].strip()):
+                    raise ValueError("Saved bridge request is invalid")
+                seen.add(item["id"])
+                command = conn.execute("SELECT payload, result FROM workspace_commands WHERE session_id=? AND request_id=?",
+                                       (session_id, "bridge:" + item["id"])).fetchone()
+                if command is None or json.loads(command[0]).get("provider") != provider:
+                    raise ValueError("Saved bridge request does not match this session provider")
+                if command[1] is None:
+                    recovered.append(item)
+            return recovered
+
     def uncataloged_targets(self) -> list[dict]:
         with closing(self._connect()) as conn:
             rows = conn.execute("SELECT target, created_at FROM workspace_creations WHERE committed=1 AND cataloged=0").fetchall()

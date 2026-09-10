@@ -158,11 +158,26 @@ class WorkspaceHost:
             # requests reuse this owner even if attachment fails ambiguously.
             self._sessions[sid] = (owner, target["provider"])
             try:
+                queued = await asyncio.to_thread(self.journal.recoverable_bridge_queue, sid, target["provider"])
                 await owner.open()
+                await self._restore_bridge_queue(sid, owner, queued)
             except Exception as error:
                 await publish({"method": "workspace/error", "params": {"reason": str(error)}})
                 return {"ok": False, "session_id": sid, "error": str(error), "state": "unavailable"}
             return self._status(sid)
+
+    async def _restore_bridge_queue(self, sid, owner, requests):
+        if self._bridge_queues.get(sid):
+            return
+        if not requests:
+            return
+        queue = ["bridge:" + item["id"] for item in requests]
+        self._bridge_queues[sid] = queue
+        for key, item in zip(queue, requests, strict=True):
+            self._bridge_messages[(sid, key)] = item["prompt"]
+        await self._publish_bridge_queue(sid)
+        for key, item in zip(list(queue), requests, strict=True):
+            asyncio.create_task(self._run(self._deliver_bridge(sid, owner, item["prompt"], key)))
 
     def _status(self, sid):
         owner, provider = self._sessions[sid]

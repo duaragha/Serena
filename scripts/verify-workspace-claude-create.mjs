@@ -74,6 +74,10 @@ try{
       {env:{...process.env,PLAYWRIGHT_BROWSERS_PATH:browsers,...(proofPythonPath?{PYTHONPATH:proofPythonPath}:{})},stdio:'inherit'});
     const code=await new Promise((done,reject)=>{proof.once('exit',done);proof.once('error',reject);});
     assert.equal(code,0,'Native Python creation proof failed');
+    const recovery=spawn(resolve(pythonPath),[resolve('scripts/verify-workspace-bridge-recovery.py'),
+      resolve(sdkPath),resolve(cliPath),process.execPath,root,sid],{env:{...process.env},stdio:'inherit'});
+    const recovered=await new Promise((done,reject)=>{recovery.once('exit',done);recovery.once('error',reject);});
+    assert.equal(recovered,0,'Native bridge recovery proof failed');
   }
 }finally{
   clearTimeout(deadline);

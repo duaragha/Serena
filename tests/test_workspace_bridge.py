@@ -99,6 +99,43 @@ def test_bridge_exact_turn_and_timeout_retry_preserve_one_owner(host):
         value.bridge("exact", provider, "different", "r")
 
 
+def test_restarted_queue_waits_for_explicit_attach_and_preserves_fifo_edits(host):
+    value, provider = host
+    for key, text in [("in-flight", "uncertain"), ("first", "original"), ("second", "second"), ("done", "done")]:
+        value.journal.claim_command("exact", "bridge:" + key, {"provider": provider, "prompt": text})
+    value.journal.finish_command("exact", "bridge:done", {"ok": True})
+    value.journal.append("exact", {"method": "workspace/bridgeQueue", "params": {"threadId": "exact", "count": 3,
+        "requests": [{"id": "first", "prompt": "edited"}, {"id": "second", "prompt": "second"}, {"id": "done", "prompt": "done"}]}})
+    assert value.bridge("exact", provider, "original", "first")["pending"]
+    assert value._loop is None and not value._sessions
+    assert value.attach("exact")["ok"]
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        first = value.bridge("exact", provider, "original", "first")
+        second = value.bridge("exact", provider, "second", "second")
+        if first.get("ok") and second.get("ok"):
+            break
+        time.sleep(0.02)
+    assert first["ok"] and second["ok"]
+    owner = value._sessions["exact"][0]
+    assert [message[0]["text"] for message in owner.sent] == ["edited", "second"]
+    assert value.bridge("exact", provider, "uncertain", "in-flight")["pending"]
+    assert value.journal.recoverable_bridge_queue("exact", provider) == []
+    value.attach("exact")
+    assert len(owner.sent) == 2
+
+
+def test_corrupt_saved_queue_cannot_launch_or_route_to_wrong_provider(host):
+    value, provider = host
+    value.journal.claim_command("exact", "bridge:wrong", {"provider": "other", "prompt": "wrong"})
+    value.journal.append("exact", {"method": "workspace/bridgeQueue", "params": {"threadId": "exact", "count": 1,
+        "requests": [{"id": "wrong", "prompt": "wrong"}]}})
+    result = value.attach("exact")
+    assert not result["ok"] and "provider" in result["error"]
+    owner = value._sessions["exact"][0]
+    assert owner.state == "closed" and owner.sent == []
+
+
 def test_bridge_wrong_provider_or_busy_owner_does_not_fallback(host):
     value, provider = host
     value.attach("exact")
