@@ -29,6 +29,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.sqlite_connection import connect_database
+
 from fleet.integration_journal import IntegrationJournal, JournalError
 from fleet.file_lock import exclusive_lock
 
@@ -709,10 +711,7 @@ class FleetIsolationStore:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_database(self.path)
 
     def _initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

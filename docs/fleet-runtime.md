@@ -33,6 +33,16 @@ not use Hermes as a dependency, replace Serena's identity, or route through a ge
 
 ## Run ownership and deletion
 
+Fleet, isolation, worker-lease, control-plane and outbox operation scopes close
+their SQLite connection immediately after commit or rollback, including commit
+failure. Resource probes and guarded activation use the same owned-connection
+contract. This prevents finished reads from retaining descriptors until cyclic
+garbage collection happens. Raw callers can still explicitly manage transactions
+and close; a connection must not be nested or reused after its owning scope exits.
+Connection-configuration failure also closes the new handle. Tests cover real
+commit, body-error rollback, deferred-constraint commit failure, explicit manual
+ownership, all five store factories and descriptor counts with GC disabled.
+
 The Linux service starts through `scripts/serena-fleet-service.sh`. When NVM is
 installed, it selects the operator's already-installed `default` alias rather
 than pinning a versioned Node directory in the unit. It does not source login
