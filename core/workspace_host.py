@@ -848,6 +848,7 @@ class WorkspaceHost:
             "diagnostics",
             "account_status",
             "account_rate_limits",
+            "account_token_usage",
             "account_login",
             "account_login_cancel",
             "search_files",
@@ -884,7 +885,7 @@ class WorkspaceHost:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "interrupt_agent", "models", "permissions", "context_usage", "background_tasks",
-                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes", "personality", "speed_tiers", "goal", "agents", "inspect_agent",
+                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "account_token_usage", "mcp_servers", "session_modes", "personality", "speed_tiers", "goal", "agents", "inspect_agent",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1084,6 +1085,11 @@ class WorkspaceHost:
                         raise ValueError("Browser login requires a Codex session and exact payload")
                     result = (await owner.login_account() if action == "account_login"
                               else await owner.cancel_account_login(payload["loginId"]))
+                elif action == "account_token_usage":
+                    if provider != "codex" or payload:
+                        raise ValueError("Account usage requires a Codex session and no payload")
+                    retryable = True
+                    result = await owner.account_token_usage()
                 elif action == "account_rate_limits":
                     if provider != "codex" or payload:
                         raise ValueError("Account limits require a Codex session and no payload")

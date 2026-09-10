@@ -3,6 +3,42 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Native Account Token Activity (2026-09-10)
+
+Codex `/usage` and the Account token usage action now open an account-wide native
+activity snapshot through `account/usage/read` with no thread parameter. Lifetime
+tokens, peak daily tokens, longest turn, current/longest streak and daily buckets
+come from that response. This is not the 5h/7d rate-limit percentage, a local
+transcript token sum, or a per-thread billing estimate.
+
+The adapter whitelists fields, preserves missing metrics as null, rejects invalid
+dates/duplicate days/negative counters and oversized daily lists, and serializes
+int64 counts as decimal strings so JavaScript cannot round them. Native daily
+dates retain their literal date; no client timezone conversion changes the day.
+Daily rows load locally in groups of 31 from the explicit snapshot. Null daily
+data and an empty daily list have distinct unavailable/empty states. Errors clear
+prior data, Refresh is explicit, and closing the dialog leaves the draft intact.
+Readonly usage checks are allowed on the exact attached owner during work or a
+job reservation; they never submit a turn or request token-refresh explicitly.
+
+Official evidence: https://learn.chatgpt.com/docs/app-server, Token usage section,
+accessed 2026-09-10. Checked against installed 0.153.4 schemas
+`GetAccountTokenUsageResponse.json` and `NullableGetAccountTokenUsageParams.json`.
+The installed schema also supports thread-specific estimates; this account view
+does not claim to implement those. A signed-in service response remains a live
+verification gap; positive UI/data contracts use controlled responses.
+
+Verification:
+
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_account_token_usage_is_bounded_exact_and_preserves_missing_data tests/test_workspace_codex.py::test_account_token_usage_rejects_invalid_daily_activity tests/test_workspace_host.py::test_account_status_requires_explicit_owner_and_rejects_mutations tests/test_workspace_pane.py::test_native_token_usage_has_explicit_refresh_and_preserves_draft tests/test_workspace_live_agent_proof.py -q --tb=short`: exit 0, 40 passed in 6.82s. Initial run before explicit null/empty daily UI assertions: exit 0, 40 passed in 8.91s. Screenshots inspected at 390px and 1600px.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --usage`: exit 0. Real installed Codex rejects unsigned token activity, retains the same owner, sends no model turn, and reaps its child/removes its temporary profile. No user credentials copied or changed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py scripts/verify-workspace-account.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py`: exit 0, all checks passed.
+- `node --check ui/static/workspace-pane.mjs`: exit 0, no output.
+- `node --check ui/static/workspace-page.mjs`: exit 0, no output.
+
+Development packages still represent runtime `3725a32`; this feature is not yet
+packaged, installed, released or default-enabled.
+
 ## Failed Preference Recovery (2026-09-10)
 
 Failed Codex personality/speed restoration now exposes an exact failure identity

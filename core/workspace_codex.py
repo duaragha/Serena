@@ -123,6 +123,49 @@ class CodexWorkspace:
             await self.publish({"method": "workspace/accountLimits", "params": deepcopy(safe)})
             return safe
 
+    async def account_token_usage(self):
+        async with self._control_lock:
+            if self.state in {"closed", "opening", "unavailable"}:
+                raise WorkspaceRpcError("Attach Codex before checking account usage")
+            result = await self.rpc.request("account/usage/read", {})
+            if not isinstance(result, dict) or not isinstance(result.get("summary"), dict):
+                raise WorkspaceRpcError("Codex returned invalid account usage")
+
+            def count(value):
+                if value is None:
+                    return None
+                if type(value) is not int or not 0 <= value <= 2**63 - 1:
+                    raise WorkspaceRpcError("Codex returned an invalid usage counter")
+                # Native int64 totals must not lose precision in JavaScript.
+                return str(value)
+
+            fields = ("lifetimeTokens", "peakDailyTokens", "longestRunningTurnSec", "currentStreakDays", "longestStreakDays")
+            summary = {key: count(result["summary"].get(key)) for key in fields}
+            buckets = result.get("dailyUsageBuckets")
+            daily = None
+            if buckets is not None:
+                if not isinstance(buckets, list) or len(buckets) > 10000:
+                    raise WorkspaceRpcError("Codex returned invalid daily usage")
+                daily, seen = [], set()
+                for bucket in buckets:
+                    if not isinstance(bucket, dict) or not isinstance(bucket.get("startDate"), str):
+                        raise WorkspaceRpcError("Codex returned an invalid usage date")
+                    day = bucket["startDate"]
+                    try:
+                        valid = datetime.strptime(day, "%Y-%m-%d").strftime("%Y-%m-%d") == day
+                    except ValueError:
+                        valid = False
+                    if not valid or day in seen:
+                        raise WorkspaceRpcError("Codex returned an invalid or duplicate usage date")
+                    tokens = count(bucket.get("tokens"))
+                    if tokens is None:
+                        raise WorkspaceRpcError("Codex returned a missing daily usage counter")
+                    seen.add(day)
+                    daily.append({"startDate": day, "tokens": tokens})
+                daily.sort(key=lambda item: item["startDate"], reverse=True)
+            return {"summary": summary, "dailyUsageBuckets": daily,
+                    "observedAt": datetime.now(timezone.utc).isoformat()}
+
     def _finish_account_login(self, params):
         if (self._account_login is None or self._account_login["status"] not in {"pending", "uncertain"}
                 or not isinstance(params.get("loginId"), str)

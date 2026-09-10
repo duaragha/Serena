@@ -89,6 +89,8 @@ export class WorkspacePane {
     this.personalityButton.hidden=provider!=='Codex' || !controls.personality || !controls.setPersonality;head.append(this.personalityButton);
     this.speedButton=this.button('Session speed','gauge',()=>this.openSpeed());
     this.speedButton.hidden=provider!=='Codex' || !controls.speedTiers || !controls.setSpeedTier;head.append(this.speedButton);
+    this.accountUsageButton=this.button('Account token usage','chart-no-axes-column',()=>this.openAccountUsage());
+    this.accountUsageButton.hidden=provider!=='Codex' || !controls.accountTokenUsage;head.append(this.accountUsageButton);
     this.goalButton=this.button('Session goal','flag',()=>this.openGoal());
     this.goalButton.hidden=provider!=='Codex' || !controls.goal || !controls.updateGoal || !controls.clearGoal;head.append(this.goalButton);
     this.agentsButton=this.button('Delegated agents','users',()=>this.openAgents());
@@ -558,6 +560,51 @@ export class WorkspacePane {
     dialog.append(node('h3','','Saved conversations'),close,search,find,status,list,more);
     this.sessionsDialog=dialog;this.root.append(dialog);dialog.showModal();search.focus();
     window.lucide?.createIcons();await load('');
+  }
+
+  async openAccountUsage() {
+    if(this.accountUsageDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-session-status-dialog aw-account-usage');dialog.setAttribute('aria-label','Account token usage');
+    const status=node('p');status.setAttribute('role','status');
+    const list=node('dl');
+    const daily=node('div');
+    let busy=false;
+    const refresh=this.button('Refresh token usage','refresh-cw',async()=>{
+      if(busy)return;busy=true;refresh.disabled=true;status.textContent='Checking account token usage...';list.replaceChildren();daily.replaceChildren();
+      try{
+        const result=await this.controls.accountTokenUsage();
+        if(!dialog.open || this.disposed)return;
+        const format=value=>value==null?'Unavailable':BigInt(value).toLocaleString();
+        for(const [key,label,suffix] of [['lifetimeTokens','Lifetime tokens',''],['peakDailyTokens','Peak daily tokens',''],
+          ['longestRunningTurnSec','Longest turn',' seconds'],['currentStreakDays','Current streak',' days'],['longestStreakDays','Longest streak',' days']]){
+          const value=result.summary[key];list.append(node('dt','',label),node('dd','',format(value)+(value==null?'':suffix)));
+        }
+        const buckets=result.dailyUsageBuckets;
+        if(buckets==null)daily.append(node('p','','Daily activity unavailable'));
+        else if(!buckets.length)daily.append(node('p','','No daily activity returned'));
+        else{
+          const table=node('table');table.setAttribute('aria-label','Daily token activity');
+          const header=node('tr');for(const text of ['Date','Tokens']){const th=node('th','',text);th.scope='col';header.append(th);}
+          const head=node('thead');head.append(header);table.append(head);
+          const body=node('tbody');table.append(body);daily.append(table);
+          let shown=0;
+          const more=this.button('Load more daily activity','chevrons-down',()=>load());
+          const load=()=>{
+            for(const bucket of buckets.slice(shown,shown+31)){
+              const row=node('tr');row.append(node('td','',bucket.startDate),node('td','',format(bucket.tokens)));body.append(row);
+            }
+            shown+=31;more.hidden=shown>=buckets.length;
+          };
+          daily.append(more);load();this.refreshIcons();
+        }
+        status.textContent=`Account-wide snapshot: ${new Date(result.observedAt).toLocaleString()}`;
+      }catch(error){if(dialog.open && !this.disposed){list.replaceChildren();daily.replaceChildren();status.textContent=`Token usage unavailable: ${error.message}`;}}
+      finally{busy=false;refresh.disabled=false;}
+    });
+    const close=this.button('Close token usage','x',()=>dialog.close());
+    dialog.append(node('h3','','Account token usage'),close,refresh,status,list,daily);
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.accountUsageDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();refresh.click();
   }
 
   async openAccount() {
@@ -1716,7 +1763,7 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
-      agent:this.agentsButton,subagents:this.agentsButton,fast:this.speedButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
+      agent:this.agentsButton,subagents:this.agentsButton,fast:this.speedButton,usage:this.accountUsageButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }
 
   async copyLatestOutput() {
@@ -2376,6 +2423,7 @@ export class WorkspacePane {
     this.colorDialog?.close();
     this.diagnosticsDialog?.close();
     this.accountDialog?.close();
+    this.accountUsageDialog?.close();
     this.settingRecoveryDialog?.close();
     this.sessionsDialog?.close();
     this.clearDialog?.close();

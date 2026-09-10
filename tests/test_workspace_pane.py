@@ -62,6 +62,50 @@ def test_session_actions_keep_headers_aligned_and_support_keyboard(pane, width):
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_native_token_usage_has_explicit_refresh_and_preserves_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.accountTokenUsage=async()=>{calls.push('usage');throw Error('Not authenticated');};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/usage';pane.render();
+    }""")
+    assert page.evaluate('calls') == []
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role('dialog', name='Account token usage', exact=True)
+    dialog.get_by_text('Token usage unavailable: Not authenticated', exact=True).wait_for()
+    assert page.evaluate('pane.input.value') == '/usage'
+    page.evaluate("""()=>{controls.accountTokenUsage=async()=>{calls.push('usage');return {
+      summary:{lifetimeTokens:'9223372036854775807',peakDailyTokens:null,currentStreakDays:'0'},observedAt:'2026-09-10T12:00:00Z',
+      dailyUsageBuckets:Array.from({length:32},(_,i)=>({startDate:new Date(Date.UTC(2026,8,10-i)).toISOString().slice(0,10),tokens:'0'}))};};}""")
+    dialog.get_by_role('button', name='Refresh token usage').click()
+    table = dialog.get_by_role('table', name='Daily token activity')
+    table.wait_for()
+    assert table.locator('tbody tr').count() == 31
+    assert '9,223,372,036,854,775,807' in dialog.inner_text()
+    assert 'Unavailable' in dialog.inner_text()
+    dialog.get_by_role('button', name='Load more daily activity').click()
+    assert table.locator('tbody tr').count() == 32
+    assert page.evaluate('calls') == ['usage', 'usage']
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    dialog.evaluate('el=>el.scrollTop=0')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'account-usage-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    page.evaluate("()=>{controls.accountTokenUsage=async()=>({summary:{},dailyUsageBuckets:null,observedAt:'2026-09-10T12:00:00Z'});}")
+    dialog.get_by_role('button', name='Refresh token usage').click()
+    dialog.get_by_text('Daily activity unavailable', exact=True).wait_for()
+    assert table.count() == 0
+    page.evaluate("()=>{controls.accountTokenUsage=async()=>({summary:{},dailyUsageBuckets:[],observedAt:'2026-09-10T12:00:00Z'});}")
+    dialog.get_by_role('button', name='Refresh token usage').click()
+    dialog.get_by_text('No daily activity returned', exact=True).wait_for()
+    page.keyboard.press('Escape')
+    page.wait_for_function('!pane.accountUsageDialog.open')
+    assert page.evaluate('pane.input.value') == '/usage'
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_saved_setting_recovery_requires_confirmation_without_reconnect(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

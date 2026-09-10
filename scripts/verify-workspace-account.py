@@ -17,7 +17,7 @@ from core.workspace_lease import SessionLease
 from scripts.workspace_proof_auth import read_test_auth
 
 
-async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False, signed_apps=False, auth_home=None):
+async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False, signed_apps=False, auth_home=None, usage=False):
     auth = read_test_auth(auth_home) if signed_limits or signed_apps else None
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
@@ -77,6 +77,15 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
                 else:
                     raise AssertionError("Unsigned profile unexpectedly returned account limits")
                 assert not any(event.get("method") == "workspace/accountLimits" for event in events)
+            if usage:
+                from core.workspace_rpc import WorkspaceRpcError
+
+                try:
+                    await owner.account_token_usage()
+                except WorkspaceRpcError as error:
+                    assert any(word in str(error).lower() for word in ("auth", "access token", "logged in")), str(error)
+                else:
+                    raise AssertionError("Unsigned profile unexpectedly returned token activity")
             if hooks:
                 catalog = await owner.list_hooks()
                 assert catalog == {"data": [], "errors": [], "warnings": []}, catalog
@@ -162,6 +171,7 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
                       "nativePlanAndDefaultConfirmed": modes,
                       "nativeUnsignedLimitsRefused": limits,
                       "nativeSignedLimitsRead": signed_limits,
+                      "nativeUnsignedTokenUsageRefused": usage,
                       "nativeEmptyHookCatalogRead": hooks,
                       "nativeAppCatalogRead": signed_apps,
                       "appsEnabledOnlyInDisposableProfile": signed_apps,
@@ -178,16 +188,17 @@ if __name__ == "__main__":
     parser.add_argument("--pause", action="store_true", help="Prove POSIX native pause and wake without inference")
     parser.add_argument("--modes", action="store_true", help="Switch native plan/default on the disposable owner without inference")
     parser.add_argument("--limits", action="store_true", help="Verify native unsigned account-limit refusal without inference")
+    parser.add_argument("--usage", action="store_true", help="Verify native unsigned token-activity refusal without inference")
     parser.add_argument("--signed-limits", action="store_true", help="Read real limits with an isolated subscription login copy; no inference")
     parser.add_argument("--hooks", action="store_true", help="Read native empty hook inventory without running hooks")
     parser.add_argument("--command-guard", action="store_true", help="Reject unsupported slash input on a disposable native owner")
     parser.add_argument("--signed-apps", action="store_true", help="Read apps with an isolated subscription login copy; no tool calls or inference")
     parser.add_argument("--auth-home", type=Path, help="Separate disposable ChatGPT test profile; never the normal or active login")
     args = parser.parse_args()
-    if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks or args.command_guard):
+    if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks or args.command_guard or args.usage):
         parser.error("--signed-limits must run alone")
     if args.signed_apps and any(value for key, value in vars(args).items() if key not in {'signed_apps', 'auth_home'}):
         parser.error("--signed-apps must run alone")
     if bool(args.auth_home) != bool(args.signed_limits or args.signed_apps):
         parser.error("--auth-home is required only with --signed-limits or --signed-apps")
-    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard, args.signed_apps, args.auth_home))
+    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard, args.signed_apps, args.auth_home, args.usage))

@@ -576,6 +576,66 @@ def test_account_status_uses_exact_owner_without_refresh_or_inference(tmp_path, 
 
 
 @pytest.mark.parametrize('kind', ['legacy', 'multiple', 'malformed', 'unavailable'])
+def test_account_token_usage_is_bounded_exact_and_preserves_missing_data(tmp_path, kind):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        with pytest.raises(WorkspaceRpcError, match='Attach'):
+            await owner.account_token_usage()
+        await owner.open(binary='codex')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if kind == 'unavailable':
+                raise WorkspaceRpcError('Not authenticated')
+            if kind == 'malformed':
+                return {'summary': {'lifetimeTokens': True}}
+            return {'summary': {'lifetimeTokens': 2**63-1, 'currentStreakDays': 0, 'secret': 'never-forward'},
+                    'dailyUsageBuckets': [{'startDate': '2026-09-09', 'tokens': 0}, {'startDate': '2026-09-10', 'tokens': 2**63-1}] if kind == 'multiple' else None,
+                    'accessToken': 'never-forward'}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'same-turn'
+            if kind in {'unavailable', 'malformed'}:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.account_token_usage()
+            else:
+                result = await owner.account_token_usage()
+                assert result['summary']['lifetimeTokens'] == str(2**63-1)
+                assert result['summary']['peakDailyTokens'] is None
+                assert result['summary']['currentStreakDays'] == '0'
+                assert 'never-forward' not in str(result)
+                if kind == 'multiple':
+                    assert result['dailyUsageBuckets'][0] == {'startDate': '2026-09-10', 'tokens': str(2**63-1)}
+                else:
+                    assert result['dailyUsageBuckets'] is None
+            assert calls == [('account/usage/read', {})]
+            assert owner.state == 'running' and owner.active_turn == 'same-turn'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('buckets', [
+    [{'startDate': '2026-02-30', 'tokens': 1}], [{'startDate': '2026-9-1', 'tokens': 1}],
+    [{'startDate': '2026-09-10', 'tokens': -1}], [{'startDate': '2026-09-10', 'tokens': None}],
+    [{'startDate': '2026-09-10', 'tokens': 1}] * 2, [{}] * 10001,
+])
+def test_account_token_usage_rejects_invalid_daily_activity(tmp_path, buckets):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        async def request(*args):
+            return {'summary': {}, 'dailyUsageBuckets': buckets}
+        rpc.request = request
+        try:
+            with pytest.raises(WorkspaceRpcError):
+                await owner.account_token_usage()
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('kind', ['legacy', 'multiple', 'malformed', 'unavailable'])
 def test_account_limits_are_native_sanitized_and_do_not_submit(tmp_path, kind):
     async def run():
         owner, rpc, events = await make(tmp_path)

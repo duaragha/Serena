@@ -106,3 +106,4 @@
 .aw-message a{color:#e59cce;text-decoration:underline}.aw-message blockquote{margin:12px 0;border-left:2px solid #af78aa;padding-left:12px;color:#b7a8b8}
 .aw-question fieldset{min-width:0;border:0;padding:0;margin:0 0 14px}.aw-question legend{white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:760px){.aw-head{padding:8px 12px}.aw-transcript{padding:18px 14px}.aw-composer{margin:8px 12px 0}.aw-identity{padding:6px 12px}.aw-question{padding:12px}}
+.aw-account-usage table{width:100%;table-layout:fixed;border-collapse:collapse}.aw-account-usage th,.aw-account-usage td{padding:8px 4px;border-bottom:1px solid #302730;text-align:right;overflow-wrap:anywhere}.aw-account-usage th:first-child,.aw-account-usage td:first-child{text-align:left}

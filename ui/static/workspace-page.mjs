@@ -34,6 +34,7 @@ controls.renameSession=async name=>{
 controls.diagnostics = () => connection.command('diagnostics',{});
 controls.accountStatus = () => connection.command('account_status',{});
 controls.accountRateLimits = () => connection.command('account_rate_limits',{});
+controls.accountTokenUsage = () => connection.command('account_token_usage',{});
 controls.accountLogin = () => connection.command('account_login',{});
 controls.cancelAccountLogin = loginId => connection.command('account_login_cancel',{loginId});
 controls.resetSavedSetting = failureId => connection.command('reset_saved_setting',{failure_id:failureId,confirmed:true});
