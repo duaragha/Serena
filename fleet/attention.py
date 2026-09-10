@@ -26,9 +26,11 @@ def notify_blocked_run(store, run, authority_factory):
     with store._connect() as db:
         rows = db.execute("SELECT payload_json FROM fleet_events WHERE run_id=? "
                           "AND type='run.attention.result' ORDER BY event_seq DESC", (run_id,)).fetchall()
-    prior = next((value for row in rows if (value := json.loads(row[0])).get("notice_id") == notice_id), None)
-    if prior and prior["decision"] in {"sent", "pending_approval"}:
+    matches = [value for row in rows if (value := json.loads(row[0])).get("notice_id") == notice_id]
+    # A concurrent duplicate verdict must not obscure an earlier delivery.
+    if any(value["decision"] == "sent" for value in matches) or store.terminal_notice_delivered(run_id, notice_id):
         return
+    prior = next(iter(matches), None)
     if prior and prior["decision"] == "suppressed":
         if time.time() - prior.get("recorded_at", 0) < 3600:
             return

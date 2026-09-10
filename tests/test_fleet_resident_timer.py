@@ -41,6 +41,7 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
                  "_refresh_read_mcp_catalog"):
         monkeypatch.setattr(supervisor, name, lambda *a, **kw: None)
     monkeypatch.setattr(supervisor, "_terminal_outcome", lambda store, run: run)
+    monkeypatch.setattr("fleet.attention.notify_blocked_runs", lambda *args: None)
     capacity = lambda: {"codex": {"usable": True}, "claude": {"usable": True}}
     monkeypatch.setattr(supervisor, "_read_start_capacity", capacity)
     monkeypatch.setattr(supervisor, "read_fleet_capacity", capacity)

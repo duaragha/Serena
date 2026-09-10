@@ -93,3 +93,67 @@ def test_deferred_voice_failure_falls_back_after_restart(tmp_path):
     for _ in range(3):
         notify_blocked_runs(store, lambda *_: authority)
     assert calls == ["voice", "telegram"]
+
+
+def test_resident_poll_reports_blocker_without_operator_call(tmp_path, monkeypatch):
+    import threading
+    from fleet import supervisor
+    store, rid = _park(tmp_path)
+    monkeypatch.setenv("SERENA_CONTROL_PLANE_DB_PATH", str(tmp_path / "control.sqlite3"))
+    monkeypatch.setattr(supervisor, "_store", lambda: store)
+    for name in ("recover_stale_runs", "_reconcile_recent_runs", "_retry_recent_terminal_notices",
+                 "_recover_outstanding_obligations", "resume_ready_capacity_waits"):
+        monkeypatch.setattr(supervisor, name, lambda *args, **kwargs: None)
+    for name in ("fleet.resources.resume_ready_resource_waits",
+                 "fleet.ready_resume.resume_ready_input_runs",
+                 "fleet.integration_recovery.resume_saved_integrations"):
+        monkeypatch.setattr(name, lambda *args: [])
+    stop = threading.Event()
+    sent = []
+    authority = _authority(tmp_path, sent)
+    def sender(request):
+        sent.append(request)
+        stop.set()
+        return True
+    authority._senders = {"voice": sender}
+    monkeypatch.setattr(supervisor, "_terminal_notification_authority", lambda *_: authority)
+    timer = threading.Timer(5, stop.set)
+    timer.start()
+    try:
+        supervisor.serve_forever(poll_interval=.01, stop_event=stop)
+    finally:
+        timer.cancel()
+    assert len(sent) == 1
+    assert sent[0].job_id == rid
+
+
+def test_resolved_blocker_is_not_retried_by_fleet(tmp_path):
+    store, rid = _park(tmp_path)
+    calls = []
+    authority = _authority(tmp_path, [])
+    authority._senders = {channel: lambda request: calls.append(request.channel) or False
+                          for channel in ("voice", "telegram")}
+    notify_blocked_runs(store, lambda *_: authority)
+    with authority._connect() as db:
+        db.execute("UPDATE notifications SET deliver_after=0 WHERE decision='failed'")
+    with store._connect() as db:
+        db.execute("UPDATE fleet_legs SET state='queued' WHERE run_id=? AND state='waiting_for_input'", (rid,))
+    notify_blocked_runs(store, lambda *_: authority)
+    assert calls == ["voice", "telegram"]
+
+
+def test_approved_but_failed_notice_can_retry_without_bypassing_approval(tmp_path):
+    store, _ = _park(tmp_path)
+    calls = []
+    authority = _authority(tmp_path, [], approval_required_kinds=("fleet.run.waiting_for_input",))
+    authority._senders = {"voice": lambda request: calls.append(request.channel) or False}
+    notify_blocked_runs(store, lambda *_: authority)
+    notification_id = authority.pending_approvals()[0]["notification_id"]
+    authority.approve(notification_id)
+    with authority._connect() as db:
+        db.execute("UPDATE notifications SET deliver_after=0 WHERE decision='failed'")
+    notify_blocked_runs(store, lambda *_: authority)
+    assert calls == ["voice", "voice"]
+    # The alternate channel still requests approval; it cannot reuse voice's.
+    pending = authority.pending_approvals()
+    assert len(pending) == 1 and pending[0]["channel"] == "telegram"
