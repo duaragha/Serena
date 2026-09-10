@@ -198,6 +198,18 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Provider-driven model updates (2026-09-09): load, native configuration updates,
+and confirmed selection responses now publish an atomic model catalog/current
+selection event. Missing or unsupported model catalogs clear the picker and
+current label instead of retaining a stale model. The pane explicitly shows
+`Model unavailable` when the native catalog no longer identifies it. No model
+change or prompt is sent by receiving these updates.
+
+`/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_session.py tests/test_workspace_gemini.py tests/test_workspace_pane.py::test_model_catalog_update_clears_unavailable_header_without_submission -q --tb=short`:
+exit 0, 21 passed. The first run had two browser assertions racing the scheduled
+render (19 passed, exit 1); they now wait for the actual DOM state. Scoped Ruff
+and JS syntax check: exit 0. Controlled protocol/browser coverage only.
+
 Model controls (2026-09-09): model discovery now uses the loaded ACP select
 option with category `model`. Catalog IDs, labels and current selection come
 from the provider. Explicit submit options apply `session/set_config_option`

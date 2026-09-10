@@ -68,13 +68,7 @@ class GeminiWorkspace:
     async def list_models(self):
         if self.state not in {"ready", "running", "cancelling"}:
             raise ValueError("Gemini is not attached")
-        option = self.session.model_option()
-        result = {"data": [{"id": choice["value"], "model": choice["value"],
-                            "displayName": choice["name"], "supportedReasoningEfforts": []}
-                           for choice in option["options"]]}
-        await self.publish(self.session.events.event("workspace/models", result))
-        await self.publish(self.session.events.event("workspace/settings", {"model": option["currentValue"]}))
-        return result
+        return await self.session.publish_model_state()
 
     async def answer(self, request_id, answer):
         if not isinstance(answer, dict) or set(answer) != {"outcome"}:

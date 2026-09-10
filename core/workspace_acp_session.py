@@ -81,6 +81,8 @@ class AcpSession:
                 await self.publish(self.events.event("workspace/history", {
                     "thread": {"id": self.session_id, "turns": [history] if history["items"] else []},
                     "acpSettings": result or {}}))
+                if "configOptions" in (result or {}):
+                    await self.publish_model_state()
                 self.events.turn = None
                 self.state = "ready"
                 return result
@@ -101,6 +103,7 @@ class AcpSession:
             event = self.events.update(params)
             if params["update"]["sessionUpdate"] == "config_option_update":
                 self.config_options = deepcopy(params["update"].get("configOptions", []))
+                await self.publish_model_state()
             if self.state != "loading" or event["method"] == "workspace/acpMetadata":
                 await self.publish(event)
         elif method == "session/request_permission":
@@ -172,6 +175,19 @@ class AcpSession:
             raise ValueError("Invalid ACP model options")
         return deepcopy(option)
 
+    async def publish_model_state(self):
+        try:
+            option = self.model_option()
+        except ValueError as error:
+            result = {"data": [], "settings": {"model": None}, "reason": str(error)}
+        else:
+            result = {"data": [{"id": choice["value"], "model": choice["value"],
+                                "displayName": choice["name"], "supportedReasoningEfforts": []}
+                               for choice in option["options"]],
+                      "settings": {"model": option["currentValue"]}}
+        await self.publish(self.events.event("workspace/models", result))
+        return result
+
     async def set_model(self, model):
         async with self._lock:
             if self.state != "ready":
@@ -192,6 +208,7 @@ class AcpSession:
                 confirmed = self.model_option()
                 if confirmed["id"] != option["id"] or confirmed["currentValue"] != model:
                     raise ValueError("ACP model change is unconfirmed")
+                await self.publish_model_state()
                 await self.publish(self.events.event("workspace/settings", {"model": model}))
                 self.state = "ready"
             except BaseException:

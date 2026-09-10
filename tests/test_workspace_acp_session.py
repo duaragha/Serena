@@ -64,9 +64,9 @@ def test_native_model_change_requires_offered_value_and_confirmed_response(tmp_p
 
 def test_native_config_update_replaces_stale_model_options(tmp_path):
     async def run():
-        rpc = Rpc()
+        rpc, output = Rpc(), []
         async def publish(event):
-            pass
+            output.append(event)
         owner = AcpSession(session_id="exact", cwd=tmp_path, rpc=rpc, publish=publish)
         await owner.load({"agentCapabilities": {"loadSession": True}}, mcp_servers=[])
         with pytest.raises(ValueError, match="not advertised"):
@@ -75,10 +75,15 @@ def test_native_config_update_replaces_stale_model_options(tmp_path):
             "sessionUpdate": "config_option_update", "configOptions": [{"id": "model", "category": "model",
             "type": "select", "currentValue": "new", "options": [{"value": "new", "name": "New model"}]}]}}})
         assert owner.model_option()["currentValue"] == "new"
+        model_event = [event for event in output if event["method"] == "workspace/models"][-1]
+        assert model_event["params"]["settings"]["model"] == "new"
         await owner.receive({"method": "session/update", "params": {"sessionId": "exact", "update": {
             "sessionUpdate": "config_option_update", "configOptions": []}}})
         with pytest.raises(ValueError, match="not advertised"):
             owner.model_option()
+        model_event = [event for event in output if event["method"] == "workspace/models"][-1]
+        assert model_event["params"]["data"] == []
+        assert model_event["params"]["settings"]["model"] is None
         assert len(rpc.calls) == 1
     asyncio.run(run())
 

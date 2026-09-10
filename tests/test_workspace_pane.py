@@ -61,6 +61,20 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_model_catalog_update_clears_unavailable_header_without_submission(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    page.evaluate("emit({method:'workspace/models',params:{data:[{id:'native-a',model:'native-a',displayName:'Native A'}],settings:{model:'native-a'}}})")
+    page.wait_for_function("pane.modelLabel.textContent === 'native-a'")
+    page.evaluate("emit({method:'workspace/models',params:{data:[{id:'native-b',model:'native-b',displayName:'Native B'}],settings:{model:'native-b'}}})")
+    page.wait_for_function("pane.modelLabel.textContent === 'native-b'")
+    page.evaluate("emit({method:'workspace/models',params:{data:[],settings:{model:null}}})")
+    page.wait_for_function("pane.modelLabel.textContent === 'Model unavailable'")
+    assert page.evaluate("pane.modelSelect.hidden")
+    assert page.evaluate("calls") == [] and not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_acp_tool_content_is_readable_and_diff_markup_is_inert(pane, width, tmp_path):
     from core.workspace_acp_events import AcpEvents
 

@@ -892,7 +892,7 @@ export class WorkspacePane {
     const signature = JSON.stringify([models, this.conversation.metadata.model, this.conversation.metadata.reasoningEffort, this.conversation.metadata.serviceTier]);
     if (this.modelSignature === signature) return;
     this.modelSignature = signature;
-    if (this.conversation.metadata.model) this.modelLabel.textContent = this.conversation.metadata.model;
+    if (Object.hasOwn(this.conversation.metadata, 'model')) this.modelLabel.textContent = this.conversation.metadata.model || 'Model unavailable';
     const selected = this.modelSelect.value;
     this.modelSelect.replaceChildren();
     const unchanged = node('option', '', this.conversation.metadata.model || 'Session model');
