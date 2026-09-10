@@ -80,6 +80,14 @@ async def prove(root):
             result = await command(text)
             assert not result["is_error"] and result["num_turns"] == 0
             assert expected in result["result"], text
+        title_records = []
+        for path in (root / "config").rglob(f"{sid}.jsonl"):
+            for line in path.read_text().splitlines():
+                record = json.loads(line)
+                if record.get("type") == "custom-title":
+                    title_records.append(record)
+        assert title_records and title_records[-1].get("customTitle") == "command-proof", title_records
+        assert title_records[-1].get("sessionId") == sid
         result = await command("/doctor")
         init = next(message for message in messages if message.get("subtype") == "init")
         assert "doctor" in init["skills"]
@@ -91,6 +99,7 @@ async def prove(root):
                           "catalogCount": len(catalog), "doctorIsNativeSkill": True,
                           "localCommandsVerified": list(local_commands),
                           "exactCommandOutputAndTurnIdentity": True,
+                          "nativeRenamePersistedForExactSession": True,
                           "exactSession": True, "expectedAuthenticationFailure": True,
                           "inference": False, "repairExecuted": False}))
     finally:

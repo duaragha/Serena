@@ -46,8 +46,23 @@ one output row through the production event adapter, exact turn identity and
 same native process/session. `/agents` correctly reports that the native wizard
 was removed, not a fabricated management UI. `/model` here is inspection only.
 `/usage` is the unsigned session report, not proof of subscription-limit fetching.
-Rename succeeds natively; sidebar synchronization is a separate remaining gate.
+Rename persists a `custom-title` JSONL record containing `customTitle` and the
+exact `sessionId`; the native proof now asserts both against the disposable
+session file rather than trusting the success message. Sidebar synchronization
+remains missing: `parse_metadata` ignores this record and `_upsert_session`
+derives the title from the first message, with synced custom metadata taking
+precedence. Integration must preserve explicit existing custom names while
+recognizing a newer intentional native rename; blindly replaying old transcript
+titles into synced metadata would be unsafe.
 All writes and command execution were confined to a disposable profile/project.
+
+```sh
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-commands.py
+# exit 0: 45 native commands, 9 local forms, nativeRenamePersistedForExactSession=true;
+# zero inference, expected unsigned doctor refusal, child and profile cleaned up.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-claude-commands.py
+# exit 0: All checks passed!
+```
 
 ## Codex Pane Command Routes
 
