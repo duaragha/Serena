@@ -160,6 +160,7 @@ node --check ui/static/workspace-pane.mjs
 | `ps` | Existing native background-task dialog | Explicit refresh and task controls; slash routing tested without submitting a prompt |
 | `mention` | Existing project file picker, including inline search | Selection replaces the slash command with a quoted file mention; cancellation preserves draft; desktop/mobile verified |
 | `hooks` | Native project-scoped `hooks/list` inspector | Read-only enabled/trust/source/handler state and diagnostics; trust/enable mutations remain unimplemented |
+| `diff` | Bounded Git working-tree snapshot | Staged/unstaged/untracked regular files, explicit omitted-file notices; native Git and desktop/mobile rendering verified |
 
 ### Codex Documentation Inventory (2026-09-10)
 
@@ -169,7 +170,7 @@ support. These documented names are not yet fully covered by the rows above:
 
 `ide`, `keymap`, `vim`, `setup-default-sandbox`, `sandbox-add-read-dir`, `agent`,
 `subagents`, `apps`, `plugins`, `clear`, `rename`, `archive`, `delete`,
-`diff`, `exit`, `experimental`, `approve`, `memories`, `import`, `feedback`, `init`,
+`exit`, `experimental`, `approve`, `memories`, `import`, `feedback`, `init`,
 `logout`, `fast`, `goal`, `personality`, `stop`, `app`, `side`,
 `btw`, `raw`, `new`, `quit`, `usage`, `debug-config`, `statusline`, `title`, `theme`,
 `pets`, `pet`.
@@ -184,6 +185,36 @@ permissions, background tasks and other non-command controls also retain their
 provider-specific delivery gates in the main contract.
 
 ### Native Hook Inspection and Plugin Constraint
+
+### Project Diff Receipts (2026-09-10)
+
+`/diff` uses Git, not a model request. An attached owner determines the directory;
+caller-supplied paths are rejected. External diff/text conversion and fsmonitor
+helpers are disabled. No Git writes or index refresh are requested. Output is
+limited to 2 MiB, 100 untracked paths and a 15-second command deadline. Untracked
+symlinks/non-regular files are named as omitted, not followed or hidden. Binary
+changes use Git's binary notice rather than a fabricated text patch. Separate
+commands are a working-tree snapshot, not an atomic snapshot during concurrent
+edits. Windows-specific validation remains part of final packaged verification.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_project_diff_is_explicit_read_only_and_text_safe tests/test_workspace_diff.py -q --tb=short
+# exit 0: 5 passed in 5.09s.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_project_diff_requires_existing_owner_and_ignores_caller_paths -q --tb=short
+# exit 0: 1 passed in 0.75s.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python -c 'import hashlib,json; from pathlib import Path; from core.workspace_diff import read_project_diff; root=Path.cwd(); index=root/".git"; import subprocess; p=Path(subprocess.check_output(["git","rev-parse","--git-path","index"],text=True).strip()); before=hashlib.sha256(p.read_bytes()).hexdigest(); result=read_project_diff(root); assert hashlib.sha256(p.read_bytes()).hexdigest()==before; print(json.dumps({"ok":True,"indexUnchanged":True,"sectionBytes":{k:len(result[k]) for k in ("staged","unstaged","untracked")},"omittedCount":len(result["omitted"])}))'
+# exit 0: index unchanged; staged 0, unstaged 9382, untracked 5082 characters,
+# no omitted paths. Field sectionBytes measures decoded characters here.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_diff.py core/workspace_host.py tests/test_workspace_diff.py tests/test_workspace_host.py tests/test_workspace_pane.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+```
+
+Viewed `apps/desktop/build/workspace-proof/diff-390.png` and `diff-1600.png`:
+all three sections and omitted-path notice fit; markup remains literal text.
+
+### Hook API Evidence
 
 [Official App Server documentation](https://learn.chatgpt.com/docs/app-server),
 accessed 2026-09-10, lists `hooks/list` but explicitly warns against calling

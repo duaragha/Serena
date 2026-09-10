@@ -718,6 +718,25 @@ def test_account_status_requires_explicit_owner_and_rejects_mutations(tmp_path, 
         host.shutdown()
 
 
+def test_project_diff_requires_existing_owner_and_ignores_caller_paths(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr('core.workspace_diff.read_project_diff', lambda root: calls.append(root) or {'staged': '', 'unstaged': '', 'untracked': '', 'omitted': []})
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'diff.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': Owner})
+    try:
+        with pytest.raises(ValueError, match='attach'):
+            host.command('exact', 'before', 'project_diff', {})
+        assert not calls
+        host.attach('exact')
+        assert not host.command('exact', 'bad', 'project_diff', {'cwd': '/other'})['ok']
+        assert host.command('exact', 'read', 'project_diff', {})['ok']
+        assert [str(root) for root in calls] == [str(tmp_path)]
+        assert not host._sessions['exact'][0].sent
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize('mode', ['plan', 'default', None, 'invalid'])
 @pytest.mark.parametrize('failure', [False, True])
 def test_explicit_resume_restores_saved_mode_before_admission(tmp_path, mode, failure):

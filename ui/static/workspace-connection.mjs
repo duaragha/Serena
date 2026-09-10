@@ -216,6 +216,7 @@ export class WorkspaceConnection {
       models: () => this.command('models', {}),
       commands: () => this.command('commands', {}),
       hooks: () => this.command('hooks', {}),
+      projectDiff: () => this.command('project_diff', {}),
       reloadSkills: () => this.command('reload_skills', {}),
       reloadPlugins: () => this.command('reload_plugins', {}),
       setSkillEnabled: (path, enabled) => this.command('set_skill_enabled', {path, enabled}),

@@ -61,6 +61,8 @@ export class WorkspacePane {
     this.copyOutputButton.hidden=provider!=='Codex';head.append(this.copyOutputButton);
     this.hooksButton=this.button('Lifecycle hooks','webhook',()=>this.openHooks());
     this.hooksButton.hidden=provider!=='Codex' || !controls.hooks;head.append(this.hooksButton);
+    this.diffButton=this.button('Project diff','file-diff',()=>this.openProjectDiff());
+    this.diffButton.hidden=provider!=='Codex' || !controls.projectDiff;head.append(this.diffButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
@@ -999,6 +1001,36 @@ export class WorkspacePane {
     this.root.append(dialog);dialog.showModal();close.focus();load();
   }
 
+  openProjectDiff() {
+    if(this.diffDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Project diff');
+    dialog.style.width='min(1000px, calc(100vw - 32px))';
+    const status=node('p');status.setAttribute('role','status');const content=node('div');
+    const load=async()=>{
+      refresh.disabled=true;status.textContent='Loading...';
+      try{
+        const result=await this.controls.projectDiff();
+        if(!dialog.open || this.disposed)return;
+        content.replaceChildren();
+        for(const key of ['staged','unstaged','untracked']){
+          if(!result[key])continue;
+          const details=node('details');details.open=true;
+          const output=node('pre','',result[key]);output.style.whiteSpace='pre-wrap';output.style.overflowWrap='anywhere';
+          details.append(node('summary','',key[0].toUpperCase()+key.slice(1)),output);content.append(details);
+        }
+        status.textContent=result.omitted.length?`Not displayed (symlinks or non-regular files): ${result.omitted.join(', ')}`
+          :content.childElementCount?'Current working-tree snapshot':'No changes';
+        status.style.overflowWrap='anywhere';
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{refresh.disabled=false;}
+    };
+    const refresh=this.button('Refresh project diff','refresh-cw',load);
+    const close=this.button('Close project diff','x',()=>dialog.close());
+    dialog.append(node('h3','','Project diff'),close,refresh,status,content);
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.diffDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();load();
+  }
+
   openHooks() {
     if(this.hooksDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Lifecycle hooks');
@@ -1156,7 +1188,7 @@ export class WorkspacePane {
 
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
-      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,
+      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,
       model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton};
   }
 
@@ -1189,7 +1221,7 @@ export class WorkspacePane {
       if(text.trim()!=='/copy' || this.files.length || this.selectedSkills.length){this.error(Error('Copy does not accept arguments or attachments'));return;}
       await this.copyLatestOutput();return;
     }
-    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|mention|hooks)(?:\s|$)/.test(text.trim());
+    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|mention|hooks|diff)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){

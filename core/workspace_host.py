@@ -793,6 +793,7 @@ class WorkspaceHost:
             "background_tasks",
             "commands",
             "hooks",
+            "project_diff",
             "reload_skills",
             "set_skill_enabled",
             "reload_plugins",
@@ -835,7 +836,7 @@ class WorkspaceHost:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "models", "permissions", "context_usage", "background_tasks",
-                "commands", "hooks", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes",
+                "commands", "hooks", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1045,6 +1046,13 @@ class WorkspaceHost:
                         raise ValueError("Hook discovery requires a Codex session and no payload")
                     retryable = True
                     result = await owner.list_hooks()
+                elif action == "project_diff":
+                    if provider != "codex" or payload:
+                        raise ValueError("Project diff requires a Codex session and no payload")
+                    from core.workspace_diff import read_project_diff
+
+                    retryable = True
+                    result = await asyncio.to_thread(read_project_diff, owner.cwd)
                 elif action == "commands":
                     if provider not in {"claude", "codex", "gemini"} or payload:
                         raise ValueError(
