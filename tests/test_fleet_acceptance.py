@@ -7,12 +7,20 @@ import time
 from pathlib import Path
 
 from core.fleet_acceptance import (
+    DEFAULT_DESKTOP_TESTS,
     activation_gate,
     main,
     run_acceptance,
     run_disposable_canary,
     source_fingerprint,
 )
+
+
+def test_default_desktop_checks_target_current_runtime_files():
+    root = Path(__file__).resolve().parents[1]
+    for path in DEFAULT_DESKTOP_TESTS:
+        assert (root / path).is_file(), path
+        assert not path.startswith(("archive/", "desktop/")), path
 
 
 def _git_repo(tmp_path: Path) -> Path:

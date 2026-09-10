@@ -955,8 +955,10 @@ def test_an_honest_stop_is_not_forced_to_fake_completion(gate_env, monkeypatch):
 
     finished = supervisor.run_supervisor(run["run_id"])
 
-    assert finished["state"] == "failed"
-    assert _legs(finished)[0]["state"] == "failed"
+    assert finished["state"] == "waiting_for_input"
+    assert _legs(finished)[0]["state"] == "waiting_for_input"
+    assert _legs(finished)[0]["current_attempt"]["state"] == "failed"
+    assert finished["completed_at"] is None
     stopped = _events(run["run_id"], "leg.completion_evidence_stopped")
     assert stopped
     assert stopped[0]["payload"]["accepted"] is True

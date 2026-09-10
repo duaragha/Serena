@@ -34,7 +34,7 @@ from fleet.store import FleetStore
 SCHEMA_VERSION = 1
 DEFAULT_MAX_RECEIPT_AGE_SECONDS = 24 * 60 * 60
 ACTIVE_RUN_STATES = frozenset(
-    {"queued", "running", "stopping", "waiting_for_capacity"}
+    {"queued", "running", "stopping", "waiting_for_capacity", "waiting_for_resources", "waiting_for_input"}
 )
 DEFAULT_RECEIPT_PATH = (
     Path.home() / ".local" / "state" / "serena" / "fleet-acceptance.json"
@@ -48,6 +48,10 @@ DEFAULT_TESTS = (
     "tests/test_fleet_policy_store.py",
     "tests/test_fleet_supervisor.py",
     "tests/test_fleet_workers.py",
+    "tests/test_fleet_resources.py",
+    "tests/test_fleet_checkout.py",
+    "tests/test_fleet_process_recovery.py",
+    "tests/test_fleet_schema_races.py",
     "tests/test_fleet_chat_sidebar.py",
     "tests/test_fleet_web.py",
     "tests/test_operator_workspace.py",
@@ -56,9 +60,9 @@ DEFAULT_TESTS = (
     "tests/test_terminal_lifecycle_module.py",
 )
 DEFAULT_DESKTOP_TESTS = (
-    "desktop/tests/test_runtime_hot_standby.py",
-    "desktop/tests/test_runtime_lifecycle.py",
-    "desktop/tests/test_split_tab_visibility.py",
+    "tests/test_pty_terminal_runtime.py",
+    "tests/test_terminal_reload_detach.py",
+    "tests/test_terminal_split_exit.py",
 )
 
 
@@ -444,7 +448,7 @@ def run_acceptance(
         [
             _run_tests(root, _pytest_command(root, test_path))
             for test_path in DEFAULT_DESKTOP_TESTS
-        ]
+        ] + [_run_tests(root, ["npm", "--prefix", "apps/desktop", "test"])]
         if test_command is None
         else []
     )
@@ -477,8 +481,8 @@ def run_acceptance(
         "proof_scope": "source and disposable state only; no live process was restarted",
         "live_checks_deferred": [
             {
-                "check": "desktop/tests/test_vte_cold_resume.py",
-                "reason": "requires a live display/VTE process and exits by signal in headless mode",
+                "check": "live Electron renderer and terminal resume",
+                "reason": "requires the installed desktop and a visible display; headless source tests are insufficient",
             },
             {
                 "check": "loaded Fleet and Serena desktop build",
@@ -507,9 +511,8 @@ def active_fleet_runs(database: str | Path) -> list[dict[str, str]]:
     try:
         connection.execute("PRAGMA query_only = ON")
         rows = connection.execute(
-            "SELECT run_id, state FROM fleet_runs WHERE state IN (?, ?, ?, ?) "
+            "SELECT run_id, state FROM fleet_runs WHERE state NOT IN ('completed','failed','cancelled','planned') "
             "ORDER BY created_at",
-            tuple(sorted(ACTIVE_RUN_STATES)),
         ).fetchall()
     except sqlite3.Error as error:
         raise AcceptanceFailure(f"could not inspect Fleet database: {error}") from error
