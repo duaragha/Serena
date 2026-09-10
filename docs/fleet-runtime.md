@@ -33,6 +33,16 @@ not use Hermes as a dependency, replace Serena's identity, or route through a ge
 
 ## Run ownership and deletion
 
+The Linux service starts through `scripts/serena-fleet-service.sh`. When NVM is
+installed, it selects the operator's already-installed `default` alias rather
+than pinning a versioned Node directory in the unit. It does not source login
+profiles or install runtimes. An unavailable configured default refuses startup
+with an explicit error instead of silently using another Node. Without NVM,
+the inherited service PATH is preserved. `--check` reports runtime resolution
+without starting Fleet. This honours the operator default; per-project engine
+compatibility still requires separate validation. Unit changes require a
+systemd daemon reload and a safe Fleet-only restart, never an active-worker kill.
+
 `serena-fleet.service` claims every queued run and supervises each in its own thread. There is no
 numeric cap on simultaneous Fleet runs. Provider availability still controls whether a native turn
 can start, and coding runs targeting the same repository retain the per-checkout lock so integration
