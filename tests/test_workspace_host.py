@@ -1205,7 +1205,8 @@ def test_gemini_explicit_owner_uses_acp_mapping_and_deduplicates_delivery(tmp_pa
 
 
 @pytest.mark.parametrize("blocked", [None, "running", "background", "queued", "confirmation", "cleanup"])
-def test_explicit_disconnect_preserves_history_and_never_stops_other_owner(tmp_path, blocked):
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_explicit_disconnect_preserves_history_and_never_stops_other_owner(tmp_path, blocked, provider):
     class DisconnectOwner(Owner):
         closes = 0
 
@@ -1220,8 +1221,8 @@ def test_explicit_disconnect_preserves_history_and_never_stops_other_owner(tmp_p
             return self.state == "closed" and blocked != "cleanup"
 
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "close.db"),
-                         resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
-                         factories={"claude": DisconnectOwner})
+                         resolve=lambda sid: {"session_id": sid, "provider": provider, "cwd": str(tmp_path)},
+                         factories={provider: DisconnectOwner})
     try:
         host.attach("source")
         host.attach("other")

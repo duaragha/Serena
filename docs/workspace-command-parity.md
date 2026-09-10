@@ -3,6 +3,37 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Explicit Session Exit Commands (2026-09-10)
+
+Codex `/exit` and `/quit` now route to the existing Disconnect session dialog,
+not a model prompt. Unlike the CLI's immediate exit, Serena retains explicit
+confirmation and refuses a busy/queued/reserved session. Cancellation preserves
+the owner and composer. Failure stays visible and retryable; history is retained.
+Arguments, attached files, skills and selected apps are not silently discarded.
+This closes the missing command route, not archive/delete/logout functionality.
+
+Evidence: [official commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
+accessed 2026-09-10, defines exit/quit as CLI exits. Browser discovery still
+returned no connected browser; this turn did not attempt another expired login.
+
+Exact commands, each run separately from this checkout:
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_exit_requires_confirmation_and_preserves_failed_draft tests/test_workspace_host.py::test_explicit_disconnect_preserves_history_and_never_stops_other_owner -q --tb=short
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-codex-history.py
+node --check ui/static/workspace-pane.mjs
+```
+
+All exit 0. Tests: 16 passed in 8.83s (mobile/desktop, both aliases, failed retry,
+cancel, arguments, busy state; Claude/Codex backend history/other-owner/cleanup
+guards). Native proof: 51 print-only persisted turns, 50+1 history, real command
+output/exit 0, receipt deduplication; desktop and mobile `/exit` cancellation kept
+the native owner, confirmed `/quit` reaped it, and retry resumed the exact stored
+session with output intact. Visibility refresh 40ms/59ms. Project unchanged,
+all owned children closed, no credentials or inference. Ruff passed; Node no
+syntax errors. This is source verification, not an installed/released build.
+
 ## Native Session Usage Estimates (2026-09-10)
 
 The usage dialog now separates Account from This session. The latter calls

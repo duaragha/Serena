@@ -187,15 +187,15 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                         if page.url != f"{base}/workspace/{sid}":
                             page.goto(f"{base}/workspace/{sid}")
                             expect(page.locator('#workspace-connect')).to_be_hidden()
-                        if not page.get_by_role('button', name="Disconnect session", exact=True).first.is_visible():
-                            page.get_by_role('button', name='Session actions', exact=True).first.click()
-                        page.get_by_role("button", name="Disconnect session", exact=True).click()
+                        composer = page.locator('.aw-composer textarea')
+                        composer.fill('/exit')
+                        composer.press('Enter')
                         disconnect = page.get_by_role("dialog", name="Disconnect session", exact=True)
                         disconnect.get_by_role("button", name="Cancel", exact=True).click()
                         assert owners() == [pid], "Cancel must preserve runtime"
-                        if not page.get_by_role('button', name="Disconnect session", exact=True).first.is_visible():
-                            page.get_by_role('button', name='Session actions', exact=True).first.click()
-                        page.get_by_role("button", name="Disconnect session", exact=True).click()
+                        assert composer.input_value() == '/exit'
+                        composer.fill('/quit')
+                        composer.press('Enter')
                         page.get_by_role("dialog", name="Disconnect session", exact=True).get_by_role("button", name="Disconnect", exact=True).click()
                         page.get_by_role("dialog", name="Disconnect session", exact=True).wait_for(state="hidden")
                         assert not owners(), "Explicit disconnect must close the native owner"
@@ -209,7 +209,7 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                             summary.click()
                         page.get_by_text(token, exact=True).wait_for()
                         assert page.url.endswith('/workspace/'+sid)
-                        print(f"PASS: {prefix} {label} confirmed disconnect reaped owner; exact session resumed with persisted native command output")
+                        print(f"PASS: {prefix} {label} /exit cancellation preserved owner; confirmed /quit reaped owner; exact session resumed with persisted native command output")
                     assert not errors, errors
                     page.close()
                     assert owners() == [pid], "Closing page cancelled owner"

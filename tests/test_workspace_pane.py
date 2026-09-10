@@ -62,6 +62,45 @@ def test_session_actions_keep_headers_aligned_and_support_keyboard(pane, width):
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+@pytest.mark.parametrize('command', ['exit', 'quit'])
+def test_codex_exit_requires_confirmation_and_preserves_failed_draft(pane, width, command):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.disconnectSession=async()=>{calls.push('disconnect');throw Error('Session still has background work');};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.render();
+    }""")
+    composer = page.locator('#left textarea')
+    composer.fill('/' + command)
+    composer.press('Enter')
+    dialog = page.get_by_role('dialog', name='Disconnect session', exact=True)
+    dialog.wait_for()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('button', name='Cancel', exact=True).click()
+    assert composer.input_value() == '/' + command
+    composer.press('Enter')
+    dialog.get_by_role('button', name='Disconnect', exact=True).click()
+    dialog.get_by_text('Session still has background work', exact=True).wait_for()
+    assert page.evaluate('calls') == ['disconnect']
+    assert composer.input_value() == '/' + command
+    page.evaluate("()=>{controls.disconnectSession=async()=>{calls.push('confirmed');};}")
+    dialog.get_by_role('button', name='Disconnect', exact=True).click()
+    dialog.wait_for(state='hidden')
+    assert page.evaluate('calls') == ['disconnect', 'confirmed']
+    composer.fill('/' + command + ' unexpected')
+    composer.press('Enter')
+    assert page.evaluate('calls') == ['disconnect', 'confirmed']
+    assert dialog.count() == 0
+    page.evaluate("()=>{pane.conversation.status='running';pane.render();}")
+    composer.fill('/' + command)
+    composer.press('Enter')
+    assert dialog.count() == 0
+    assert page.evaluate('calls') == ['disconnect', 'confirmed']
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_session_usage_estimates_keep_scope_precision_and_missing_values(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})
