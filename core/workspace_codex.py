@@ -392,6 +392,49 @@ class CodexWorkspace:
             await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
             return {"mode": mode, "modes": [p["id"] for p in profiles], "profiles": profiles}
 
+    async def list_session_modes(self):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Attach Codex before inspecting session modes")
+        result = await self.rpc.request("collaborationMode/list", {})
+        if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+            raise WorkspaceRpcError("Codex returned an invalid mode catalog")
+        choices, seen = [], set()
+        for item in result["data"]:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                raise WorkspaceRpcError("Codex returned an invalid mode preset")
+            mode = item.get("mode")
+            if mode not in {"plan", "default"}:
+                continue
+            if mode in seen:
+                raise WorkspaceRpcError("Codex returned duplicate mode presets")
+            seen.add(mode)
+            choices.append({"value": mode, "name": item["name"]})
+        return {"currentValue": self.settings.get("collaborationMode"), "options": choices}
+
+    async def set_session_mode(self, mode):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions:
+                raise WorkspaceRpcError("Finish the current Codex turn before changing mode")
+            catalog = await self.list_session_modes()
+            if not isinstance(mode, str) or mode not in {item["value"] for item in catalog["options"]}:
+                raise ValueError("Codex did not advertise this session mode")
+            if self.state != "ready" or self.questions:
+                raise WorkspaceRpcError("Session changed during mode lookup")
+            model = self.settings.get("model")
+            if not isinstance(model, str) or not model:
+                raise WorkspaceRpcError("Current Codex model is unavailable")
+            result = await self.rpc.request("thread/settings/update", {
+                "threadId": self.session_id,
+                "collaborationMode": {"mode": mode, "settings": {
+                    "model": model, "reasoning_effort": self.settings.get("reasoningEffort"),
+                    "developer_instructions": None}},
+            })
+            if not isinstance(result, dict):
+                raise WorkspaceRpcError("Codex mode change was not confirmed")
+            self.settings["collaborationMode"] = mode
+            await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
+            return {**catalog, "currentValue": mode}
+
     async def list_commands(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")
@@ -876,6 +919,19 @@ class CodexWorkspace:
                     self.questions[event["id"]] = deepcopy(event)
                 if method == "account/login/completed":
                     self._finish_account_login(params)
+                elif method == "thread/settings/updated":
+                    settings = params.get("threadSettings")
+                    if not isinstance(settings, dict):
+                        raise WorkspaceRpcError("Codex returned invalid thread settings")
+                    mode = settings.get("collaborationMode")
+                    if isinstance(mode, dict) and mode.get("mode") in {"plan", "default"}:
+                        self.settings["collaborationMode"] = mode["mode"]
+                    for source, target in (("model", "model"), ("effort", "reasoningEffort"),
+                                           ("serviceTier", "serviceTier"), ("approvalPolicy", "approvalPolicy"),
+                                           ("sandboxPolicy", "sandboxPolicy")):
+                        if source in settings:
+                            self.settings[target] = deepcopy(settings[source])
+                    await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
                 elif method == "mcpServer/oauthLogin/completed":
                     login = self._mcp_logins.get(params.get("name"))
                     if login is not None and type(params.get("success")) is bool:

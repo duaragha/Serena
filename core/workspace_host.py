@@ -330,6 +330,8 @@ class WorkspaceHost:
         owner = entry[0]
         if owner.state != "ready" or owner.active_turn or getattr(owner, "questions", None):
             return "Native session has active work or pending questions"
+        if getattr(owner, "settings", {}).get("collaborationMode") == "plan":
+            return "Native session is in Plan mode"
         if self._bridge_queues.get(sid):
             return "Native session has queued bridge work"
         views = self._active_views(sid)
@@ -822,7 +824,7 @@ class WorkspaceHost:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "models", "permissions", "context_usage", "background_tasks",
-                "commands", "search_files", "load_earlier", "account_status", "mcp_servers",
+                "commands", "search_files", "load_earlier", "account_status", "mcp_servers", "session_modes",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1045,11 +1047,11 @@ class WorkspaceHost:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])
                 elif action == "session_modes":
-                    if provider != "gemini" or payload:
+                    if provider not in {"codex", "gemini"} or payload:
                         raise ValueError("Native session modes are unavailable")
                     result = await owner.list_session_modes()
                 elif action == "set_session_mode":
-                    if provider != "gemini" or set(payload) != {"mode"} or not isinstance(payload["mode"], str):
+                    if provider not in {"codex", "gemini"} or set(payload) != {"mode"} or not isinstance(payload["mode"], str):
                         raise ValueError("Invalid native session mode")
                     result = await owner.set_session_mode(payload["mode"])
                 elif action == "models":

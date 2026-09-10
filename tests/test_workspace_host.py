@@ -715,6 +715,37 @@ def test_account_status_requires_explicit_owner_and_rejects_mutations(tmp_path):
         host.shutdown()
 
 
+def test_codex_mode_controls_are_explicit_receipted_and_job_guarded(tmp_path):
+    calls = []
+    class ModeOwner(Owner):
+        async def list_session_modes(self):
+            calls.append(('list', self.sid))
+            return {'currentValue': None, 'options': [{'name': 'Plan', 'value': 'plan'}]}
+        async def set_session_mode(self, mode):
+            calls.append((mode, self.sid))
+            return {'currentValue': mode, 'options': []}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'modes.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': ModeOwner})
+    try:
+        with pytest.raises(ValueError, match='attach'):
+            host.command('exact', 'before', 'session_modes', {})
+        assert not calls
+        host.attach('exact')
+        assert host.command('exact', 'list', 'session_modes', {})['ok']
+        result = host.command('exact', 'set', 'set_session_mode', {'mode': 'plan'})
+        assert result['ok']
+        assert host.command('exact', 'set', 'set_session_mode', {'mode': 'plan'}) == result
+        host._sessions['exact'][0].settings = {'collaborationMode': 'plan'}
+        assert host._work_admission_error('exact') == 'Native session is in Plan mode'
+        host._work_reservations['exact'] = {'item_id': 'job'}
+        assert not host.command('exact', 'job', 'set_session_mode', {'mode': 'default'})['ok']
+        assert calls == [('list', 'exact'), ('plan', 'exact')]
+        assert not host._sessions['exact'][0].sent
+    finally:
+        host.shutdown()
+
+
 def test_diagnostics_route_is_exact_receipted_and_never_submits(tmp_path):
     calls = []
 

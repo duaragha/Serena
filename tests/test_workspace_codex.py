@@ -697,6 +697,45 @@ def test_background_tasks_paginate_and_stop_only_exact_session_process(tmp_path)
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('failure', [None, 'busy', 'changed', 'unknown', 'invalid', 'rejected'])
+def test_session_modes_preserve_model_and_use_exact_native_owner(tmp_path, failure):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.settings.update(model='chosen-model', reasoningEffort='xhigh')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'collaborationMode/list':
+                if failure == 'changed':
+                    owner.state = 'running'
+                return {'data': [{'name': 'Plan', 'mode': 'plan', 'model': 'do-not-switch', 'reasoning_effort': 'medium'}]}
+            if failure == 'rejected':
+                raise WorkspaceRpcError('Native rejection')
+            return None if failure == 'invalid' else {}
+        rpc.request = request
+        try:
+            if failure == 'busy':
+                owner.state = 'running'
+            if failure:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.set_session_mode('invented' if failure == 'unknown' else 'plan')
+                assert 'collaborationMode' not in owner.settings
+            else:
+                result = await owner.set_session_mode('plan')
+                assert result['currentValue'] == 'plan'
+                assert calls[-1] == ('thread/settings/update', {'threadId': 'exact-session', 'collaborationMode': {
+                    'mode': 'plan', 'settings': {'model': 'chosen-model', 'reasoning_effort': 'xhigh', 'developer_instructions': None}}})
+                assert events[-1]['params']['collaborationMode'] == 'plan'
+                assert owner.settings['model'] == 'chosen-model'
+            assert all(method not in {'turn/start', 'thread/start', 'thread/resume'} for method, _ in calls)
+            if failure in {'busy', 'changed', 'unknown'}:
+                assert not any(method == 'thread/settings/update' for method, _ in calls)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 async def make(tmp_path):
     events = []
 

@@ -1274,6 +1274,31 @@ def test_codex_status_is_read_only_updates_and_does_not_invent_values(pane, widt
     assert not errors
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_codex_plan_picker_is_explicit_and_preserves_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      pane.provider='Codex';pane.sessionModeButton.hidden=false;
+      const options=[{name:'Plan',value:'plan'},{name:'Default',value:'default'}];
+      controls.sessionModes=async()=>({currentValue:null,options});
+      controls.setSessionMode=async mode=>{calls.push(['mode',mode]);return {currentValue:mode,options};};
+      pane.input.value='/plan';pane.render();
+    }""")
+    page.locator('#left').get_by_role('button', name='Send message', exact=True).click()
+    dialog = page.get_by_role('dialog', name='Session mode', exact=True)
+    assert dialog.get_by_role('button', name='Apply', exact=True).is_disabled()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('combobox').select_option('plan')
+    dialog.get_by_role('button', name='Apply', exact=True).click()
+    page.wait_for_function("calls.length===1")
+    assert dialog.get_by_role('status').inner_text() == 'Last confirmed: Plan'
+    assert page.evaluate('calls') == [['mode', 'plan']]
+    assert page.evaluate('pane.input.value') == '/plan'
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert not errors
+
+
 def test_session_command_picker_uses_local_action_and_keeps_draft(pane):
     page, errors = pane
     page.evaluate("""() => {

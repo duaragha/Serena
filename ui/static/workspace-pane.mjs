@@ -150,7 +150,7 @@ export class WorkspacePane {
     this.permissionsButton=permissions;
     permissions.hidden=!['Codex','Claude'].includes(provider) || !controls.permissions;footer.insertBefore(permissions,this.stop);
     this.sessionModeButton=this.button('Session mode','sliders-horizontal',()=>this.openSessionMode());
-    this.sessionModeButton.hidden=provider!=='Gemini' || !controls.sessionModes || !controls.setSessionMode;
+    this.sessionModeButton.hidden=!['Codex','Gemini'].includes(provider) || !controls.sessionModes || !controls.setSessionMode;
     footer.insertBefore(this.sessionModeButton,this.stop);
     this.claudeEffortButton=this.button('Claude reasoning effort','gauge',()=>this.openClaudeEffort());
     this.claudeEffortButton.hidden=provider!=='Claude' || !controls.models || !controls.commands;
@@ -695,7 +695,7 @@ export class WorkspacePane {
       const m=this.conversation.metadata;
       const token=value=>Number.isSafeInteger(value) && value>=0 ? value.toLocaleString() : null;
       const rows=[['Session',this.conversation.sessionId],['State',this.sleeping?'sleeping':this.conversation.status],
-        ['Project',m.thread?.cwd],['Model',m.model],['Reasoning effort',m.reasoningEffort],
+        ['Project',m.thread?.cwd],['Model',m.model],['Reasoning effort',m.reasoningEffort],['Mode',m.collaborationMode],
         ['Speed tier',m.serviceTier],['Permission profile',m.permissionProfile],
         ['Approval policy',m.approvalPolicy],['Sandbox',m.sandbox || m.sandboxPolicy],
         ['Last request tokens',token(m.tokenUsage?.last?.totalTokens)],
@@ -790,7 +790,7 @@ export class WorkspacePane {
     const status=node('p','','Loading modes...');status.setAttribute('role','status');
     const description=node('p');let choices=[];
     const select=node('select');select.setAttribute('aria-label','Session mode');select.disabled=true;
-    select.addEventListener('change',()=>{description.textContent=choices.find(choice=>choice.value===select.value)?.description || '';});
+    select.addEventListener('change',()=>{description.textContent=choices.find(choice=>choice.value===select.value)?.description || '';apply.disabled=!choices.some(choice=>choice.value===select.value) || !['ready','completed','interrupted','failed'].includes(this.conversation.status);});
     const apply=node('button','','Apply');apply.type='button';apply.disabled=true;
     const close=this.button('Close session mode','x',()=>dialog.close());
     const render=result=>{
@@ -799,8 +799,8 @@ export class WorkspacePane {
       for(const choice of result.options){const option=node('option','',choice.name);option.value=choice.value;option.title=choice.description || '';select.append(option);}
       select.value=result.currentValue;select.disabled=false;
       description.textContent=choices.find(choice=>choice.value===select.value)?.description || '';
-      status.textContent=`Last confirmed: ${result.options.find(choice=>choice.value===result.currentValue)?.name || result.currentValue}`;
-      apply.disabled=!['ready','completed','interrupted','failed'].includes(this.conversation.status);
+      status.textContent=`Last confirmed: ${result.options.find(choice=>choice.value===result.currentValue)?.name || result.currentValue || 'Unavailable'}`;
+      apply.disabled=!choices.some(choice=>choice.value===select.value) || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     };
     apply.addEventListener('click',async()=>{
       apply.disabled=true;select.disabled=true;
@@ -1086,7 +1086,7 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,
-      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton};
+      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton};
   }
 
   activateCommandControl(control) {

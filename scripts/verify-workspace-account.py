@@ -16,7 +16,7 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
 
 
-async def main(browser_login=False, pause=False):
+async def main(browser_login=False, pause=False, modes=False):
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
     with tempfile.TemporaryDirectory(prefix="serena-account-proof-") as directory:
@@ -43,6 +43,29 @@ async def main(browser_login=False, pause=False):
             sid = owner.session_id
             result = await owner.account_status()
             assert result == {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False, "login": None}, result
+            if modes:
+                from core.workspace_host import WorkspaceHost
+                from core.workspace_journal import WorkspaceJournal
+
+                mode_observer = WorkspaceHost(journal=WorkspaceJournal(root / "modes.db"), resolve=None)
+                mode_observer._sessions[sid] = (owner, "codex")
+                before = dict(owner.settings)
+                catalog = await owner.list_session_modes()
+                assert {item["value"] for item in catalog["options"]} >= {"plan", "default"}
+                for mode in ("plan", "default"):
+                    start = len(events)
+                    assert (await owner.set_session_mode(mode))["currentValue"] == mode
+                    async with asyncio.timeout(5):
+                        while not any(event.get("method") == "thread/settings/updated"
+                                      and event["params"]["threadSettings"]["collaborationMode"]["mode"] == mode
+                                      for event in events[start:]):
+                            await asyncio.sleep(.01)
+                    native = next(event["params"]["threadSettings"] for event in events[start:]
+                                  if event.get("method") == "thread/settings/updated")
+                    assert native["model"] == before["model"]
+                    assert native["effort"] == before.get("reasoningEffort")
+                    assert owner.settings["collaborationMode"] == mode
+                    assert (mode_observer._work_admission_error(sid) == "Native session is in Plan mode") == (mode == "plan")
             if pause:
                 import psutil
 
@@ -91,6 +114,7 @@ async def main(browser_login=False, pause=False):
                       "browserOpened": False, "inference": False,
                       "nativePauseWake": pause, "wakeAccountRoundTripMs": wake_ms,
                       "readOnlyRuntimeSnapshot": pause,
+                      "nativePlanAndDefaultConfirmed": modes,
                       "closedViewRetiredWithoutWaking": pause,
                       "childReaped": True, "temporaryProfileRemoved": True}))
 
@@ -99,5 +123,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser-login", action="store_true", help="Start and cancel native OAuth without opening a browser")
     parser.add_argument("--pause", action="store_true", help="Prove POSIX native pause and wake without inference")
+    parser.add_argument("--modes", action="store_true", help="Switch native plan/default on the disposable owner without inference")
     args = parser.parse_args()
-    asyncio.run(main(args.browser_login, args.pause))
+    asyncio.run(main(args.browser_login, args.pause, args.modes))

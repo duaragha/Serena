@@ -2,6 +2,52 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Codex Planning Mode (2026-09-10)
+
+The existing session-mode picker now supports Codex. `/plan` opens that picker;
+listing modes is read-only, and Apply sends `thread/settings/update` for the
+exact owned session. Choices come from `collaborationMode/list`. The selected
+model and reasoning effort are preserved instead of adopting a preset's model
+or effort. `developer_instructions:null` selects Codex's built-in mode policy.
+This is native mode switching, not a synthetic planning prompt.
+
+Busy sessions, pending questions, unavailable modes and reserved coding jobs
+refuse mode changes. An observed Plan-mode owner cannot accept background coding
+jobs. Native thread-settings events now update the pane's model, effort, mode,
+approval and sandbox snapshot. Unknown initial mode is displayed as unavailable,
+not guessed. Cross-process resume mode restoration remains a separate audit.
+
+Sources: [official App Server reference](https://learn.chatgpt.com/docs/app-server),
+accessed 2026-09-10; installed native generated schemas for
+`CollaborationModeListResponse`, `ThreadSettingsUpdateParams` and
+`ThreadSettingsUpdatedNotification`; actual unsigned app-server responses.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_session_modes_preserve_model_and_use_exact_native_owner tests/test_workspace_host.py::test_codex_mode_controls_are_explicit_receipted_and_job_guarded tests/test_workspace_pane.py::test_codex_plan_picker_is_explicit_and_preserves_draft -q --tb=short
+# exit 0: 9 passed in 5.22s.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q --tb=short
+# exit 0: 62 passed in 0.78s.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_plan_picker_is_explicit_and_preserves_draft tests/test_workspace_pane.py::test_gemini_native_mode_requires_explicit_apply_and_confirmation -q --tb=short
+# exit 0: 6 passed in 5.77s; shared picker regression only, Gemini remains deferred.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 116 passed in 27.72s, before the additional Plan work-admission guard.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_codex_mode_controls_are_explicit_receipted_and_job_guarded -q --tb=short
+# exit 0: 1 passed in 0.62s after adding the Plan work-admission guard.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --modes
+# exit 0: actual native Plan then Default settings notifications; unchanged
+# model/effort and owner; Plan coding-job admission blocked; zero inference,
+# no login/browser, child reaped and disposable profile removed.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-account.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+```
+
+The initial exploratory native command exited 1 because its temporary
+`CODEX_HOME` directory had not been created. After creating that directory the
+same disposable-owner approach passed. No user profile or installed service was
+changed. Rate limits and remaining command parity are not covered by this slice.
+
 ## Native Local Command Output (2026-09-10)
 
 The repeatable Claude command proof now exercises nine local commands through
