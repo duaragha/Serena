@@ -40,6 +40,71 @@ def test_account_status_uses_exact_owner_without_refresh_or_inference(tmp_path, 
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("outcome", ["complete", "early", "cancel", "timeout", "unsafe"])
+def test_browser_login_is_single_owner_subscription_only_and_exact(tmp_path, outcome):
+    from core.workspace_codex_auth import CodexLoginLease
+    from core.workspace_lease import SessionOwnedError
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        client._lease.metadata = tmp_path / "session.json"
+        rpc.process.pid = os.getpid()
+        calls = []
+        completion = {"loginId": "native-login", "success": True}
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "account/login/start":
+                assert params == {"type": "chatgpt"}
+                with pytest.raises(SessionOwnedError):
+                    CodexLoginLease("codex-browser-login", directory=tmp_path)
+                if outcome == "timeout":
+                    raise WorkspaceRpcError("timed out")
+                if outcome == "early":
+                    client._finish_account_login(completion)
+                return {"type": "chatgpt", "loginId": "native-login",
+                        "authUrl": "https://evil.example/" if outcome == "unsafe" else "https://auth.openai.com/authorize?state=proof"}
+            assert method == "account/login/cancel" and params == {"loginId": "native-login"}
+            return {"status": "canceled"}
+        rpc.request = request
+        try:
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.login_account()
+            assert not calls
+            client.state = "ready"
+            if outcome in {"timeout", "unsafe"}:
+                with pytest.raises(WorkspaceRpcError):
+                    await client.login_account()
+                assert (await client.login_account())["status"] == "uncertain"
+            else:
+                result = await client.login_account()
+                assert result["status"] == ("succeeded" if outcome == "early" else "pending")
+                if outcome != "early":
+                    assert await client.login_account() == result
+                    client._finish_account_login({"loginId": "other", "success": True})
+                    assert client._account_login["status"] == "pending"
+                    with pytest.raises(ValueError):
+                        await client.cancel_account_login("other")
+                    if outcome == "cancel":
+                        assert (await client.cancel_account_login("native-login"))["status"] == "cancelled"
+                    else:
+                        await rpc.events.put({"method": "account/login/completed", "params": completion})
+                        await asyncio.sleep(0)
+                        assert client._account_login["status"] == "succeeded"
+                assert client._account_login_lease is None
+                prior = dict(client._account_login)
+                client._finish_account_login({"loginId": "native-login", "success": False})
+                assert client._account_login == prior
+                lease = CodexLoginLease("codex-browser-login", directory=tmp_path)
+                lease.release()
+            assert len([call for call in calls if call[0] == "account/login/start"]) == 1
+            assert client.state == "ready" and client.active_turn is None
+            assert not any(method in {"turn/start", "account/logout"} for method, _ in calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_project_identity_accepts_alias_spelling_not_other_directory(tmp_path):
     async def run():
         client, _, _ = await make(tmp_path)

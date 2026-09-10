@@ -490,7 +490,36 @@ export class WorkspacePane {
     const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Codex account');
     const status=node('p');status.setAttribute('role','status');
     const details=node('p');details.style.overflowWrap='anywhere';
+    const loginStatus=node('p');loginStatus.setAttribute('aria-live','polite');
+    const link=node('a','','Continue browser sign-in');link.target='_blank';link.rel='noopener noreferrer';link.hidden=true;
+    let login=null,busy=false,timer=null;
+    const showLogin=value=>{
+      login=value;link.hidden=true;link.removeAttribute('href');
+      const pending=['pending','uncertain'].includes(login?.status);
+      signIn.disabled=busy || pending;cancel.hidden=!pending || !login?.loginId;cancel.disabled=busy;
+      loginStatus.textContent=login ? `Sign-in: ${login.status}` : '';
+      if(login?.status==='pending' && login.authUrl){
+        try{
+          const url=new URL(login.authUrl);
+          if(url.protocol!=='https:' || !['auth.openai.com','auth0.openai.com','chatgpt.com'].includes(url.hostname) || url.username || url.password || (url.port && url.port!=='443'))throw Error('Unsafe sign-in URL');
+          link.href=url.href;link.hidden=false;
+        }catch{loginStatus.textContent='Sign-in URL unavailable';}
+      }
+      clearTimeout(timer);
+      if(pending && dialog.open)timer=setTimeout(()=>refresh.click(),2000);
+    };
+    const act=async action=>{
+      if(busy)return;busy=true;signIn.disabled=true;cancel.disabled=true;refresh.disabled=true;
+      try{const value=await action();if(dialog.open && !this.disposed)showLogin(value);}
+      catch(error){if(dialog.open)loginStatus.textContent=error.message;}
+      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);}
+    };
+    const signIn=this.button('Sign in with ChatGPT','log-in',()=>act(()=>this.controls.accountLogin()));
+    signIn.hidden=!this.controls.accountLogin;
+    const cancel=this.button('Cancel browser sign-in','x',()=>act(()=>this.controls.cancelAccountLogin(login.loginId)));cancel.hidden=true;
     const refresh=this.button('Refresh account status','refresh-cw',async()=>{
+      if(busy)return;
+      busy=true;signIn.disabled=true;cancel.disabled=true;
       refresh.disabled=true;status.textContent='Checking account...';details.textContent='';
       try{
         const result=await this.controls.accountStatus();
@@ -498,12 +527,13 @@ export class WorkspacePane {
         const account=result.account;
         status.textContent=account ? (account.type==='chatgpt' ? 'ChatGPT account saved' : `Account type: ${account.type}`) : 'Not signed in';
         details.textContent=[account?.email,account?.planType,account ? 'Credential validity has not been verified.' : 'No account is saved for this session runtime.'].filter(Boolean).join(' · ');
+        showLogin(result.login);
       }catch(error){if(dialog.open)status.textContent=error.message;}
-      finally{refresh.disabled=false;}
+      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);}
     });
     const close=this.button('Close account','x',()=>dialog.close());
-    dialog.append(node('h3','','Codex account'),close,status,details,refresh);
-    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    dialog.append(node('h3','','Codex account'),close,status,details,loginStatus,link,signIn,cancel,refresh);
+    dialog.addEventListener('close',()=>{clearTimeout(timer);dialog.remove();this.input.focus();});
     this.accountDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();window.lucide?.createIcons();refresh.click();
   }
 

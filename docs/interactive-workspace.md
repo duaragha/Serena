@@ -2,13 +2,46 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Browser Sign-In (2026-09-10)
+
+The Codex account dialog now has an explicit Sign in with ChatGPT control. Its
+existing app-server starts `account/login/start` with `type:chatgpt`, never an
+API key or device code. The returned HTTPS OpenAI authorization link is clickable;
+Serena does not automatically open a browser. Pending login can be cancelled by
+its exact native ID. Opening/closing the dialog never signs out or cancels work.
+Two-second status polling stops when the dialog closes or login ends.
+
+A machine-local operation lease blocks concurrent callbacks across app panes and
+processes. It binds the actual app-server PID for crash recovery, and releases
+only on native completion/cancellation or confirmed process teardown. An ambiguous
+start stays uncertain and is not repeated. Early completion events, mismatched IDs,
+unsafe URLs, payload injection, and active-turn rejection are covered. Account
+status continues to distinguish stored credentials from verified inference.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py -q
+# exit 0: 118 passed in 15.60s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_browser_login_is_single_owner_subscription_only_and_exact tests/test_workspace_codex.py::test_account_status_uses_exact_owner_without_refresh_or_inference tests/test_workspace_host.py::test_browser_login_controls_are_receipted_and_subscription_only tests/test_workspace_host.py::test_account_status_requires_explicit_owner_and_rejects_mutations tests/test_workspace_pane.py::test_account_status_is_explicit_honest_and_preserves_draft tests/test_workspace_pane.py::test_browser_login_requires_click_and_closing_does_not_cancel -q
+# exit 0: 13 passed in 4.29s, including mobile/desktop dialogs
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --browser-login
+# exit 0: actual installed Codex OAuth start + duplicate-call guard + native cancel,
+# same owner/session, no browser opening or inference, unsigned temporary profile
+# and owned child cleaned up. No normal credentials changed.
+```
+
+Protocol verified against installed generated LoginAccountParams and
+CancelLoginAccountResponse schemas. The normal installed app login, successful
+browser callback through this UI, Windows packaged path and release remain
+delivery gates; this proof does not claim those are completed.
+
 ## Native Account Status (2026-09-10)
 
 The Codex account button explicitly reads `account/read` with `refreshToken:false`
 from the pane's existing owner. It never starts an owner, login, or inference.
 Only account type, email, and plan are forwarded; saved credentials are explicitly
 not presented as verified. Running work and drafts remain unchanged. Browser
-login and installed-profile authentication recovery are still pending.
+login was added in the subsequent section above; installed-profile recovery
+is still pending.
 Official protocol checked 2026-09-10: https://learn.chatgpt.com/docs/app-server
 (Account and authentication section).
 

@@ -370,6 +370,8 @@ class WorkspaceHost:
             "reload_plugins",
             "diagnostics",
             "account_status",
+            "account_login",
+            "account_login_cancel",
             "search_files",
             "load_earlier",
             "shell_command",
@@ -579,6 +581,12 @@ class WorkspaceHost:
                         retryable = True
                         raise ValueError("Wait for Claude's current turn before reloading plugins")
                     result = await owner.reload_plugins()
+                elif action in {"account_login", "account_login_cancel"}:
+                    expected = {"loginId"} if action == "account_login_cancel" else set()
+                    if provider != "codex" or set(payload) != expected:
+                        raise ValueError("Browser login requires a Codex session and exact payload")
+                    result = (await owner.login_account() if action == "account_login"
+                              else await owner.cancel_account_login(payload["loginId"]))
                 elif action == "account_status":
                     if provider != "codex" or payload:
                         raise ValueError("Account status requires a Codex session and no payload")

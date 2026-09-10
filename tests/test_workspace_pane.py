@@ -89,6 +89,35 @@ def test_account_status_is_explicit_honest_and_preserves_draft(pane, width):
     assert not errors
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+def test_browser_login_requires_click_and_closing_does_not_cancel(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      window.login=null;
+      controls.accountStatus=async()=>({account:null,login});
+      controls.accountLogin=async()=>{calls.push('login');return window.login={status:'pending',loginId:'native-one',authUrl:'https://auth.openai.com/authorize?state=proof'};};
+      controls.cancelAccountLogin=async id=>{calls.push(['cancel',id]);return window.login={status:'cancelled'};};
+      pane.accountButton.hidden=false;pane.input.value='draft';
+    }""")
+    button = page.locator('#left').get_by_role('button', name='Codex account', exact=True)
+    button.click()
+    dialog = page.get_by_role('dialog', name='Codex account')
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('button', name='Sign in with ChatGPT', exact=True).click()
+    page.wait_for_function("calls.length===1")
+    assert dialog.get_by_role('button', name='Sign in with ChatGPT', exact=True).is_disabled()
+    assert dialog.get_by_role('link', name='Continue browser sign-in').get_attribute('href').startswith('https://auth.openai.com/')
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.keyboard.press('Escape')
+    assert page.evaluate('calls') == ['login']
+    assert page.evaluate('pane.input.value') == 'draft'
+    button.click()
+    dialog.get_by_role('button', name='Cancel browser sign-in', exact=True).click()
+    assert page.evaluate('calls') == ['login', ['cancel', 'native-one']]
+    assert not errors
+
+
 def test_provider_badges_distinguish_linked_panes(pane):
     page, errors = pane
     assert page.locator("#left .aw-badge").inner_text() == "C"

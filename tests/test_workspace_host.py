@@ -84,6 +84,32 @@ class Owner:
         self.closed = True
 
 
+def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
+    calls = []
+    class AccountOwner(Owner):
+        async def login_account(self):
+            calls.append((self.sid, "login"))
+            return {"loginId": "one", "status": "pending"}
+        async def cancel_account_login(self, login_id):
+            calls.append((self.sid, login_id))
+            return {"status": "cancelled"}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "login.db"),
+                         resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+                         factories={"codex": AccountOwner})
+    try:
+        host.attach("exact")
+        assert calls == []
+        result = host.command("exact", "login-once", "account_login", {})
+        assert result["ok"]
+        assert host.command("exact", "login-once", "account_login", {}) == result
+        assert not host.command("exact", "bad", "account_login", {"apiKey": "forbidden"})["ok"]
+        assert host.command("exact", "cancel-once", "account_login_cancel", {"loginId": "one"})["ok"]
+        assert calls == [("exact", "login"), ("exact", "one")]
+        assert not host._sessions["exact"][0].sent
+    finally:
+        host.shutdown()
+
+
 def test_account_status_requires_explicit_owner_and_rejects_mutations(tmp_path):
     calls = []
     class AccountOwner(Owner):

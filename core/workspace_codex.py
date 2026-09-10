@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from core.billing import strip_metered_auth_env
+from core.workspace_codex_auth import CodexLoginLease
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc, WorkspaceRpcError
 
@@ -59,6 +60,9 @@ class CodexWorkspace:
         self._history_cursors: set[str] = set()
         self._mcp_logins: dict[str, dict] = {}
         self._create_attempted = False
+        self._account_login = None
+        self._account_login_lease = None
+        self._early_login_completions = {}
 
     async def account_status(self):
         async with self._control_lock:
@@ -74,7 +78,73 @@ class CodexWorkspace:
             safe = None if account is None else {key: account[key] for key in ("type", "email", "planType")
                                                 if isinstance(account.get(key), str)}
             return {"account": safe, "requiresOpenaiAuth": result["requiresOpenaiAuth"],
-                    "credentialsVerified": False}
+                    "credentialsVerified": False, "login": deepcopy(self._account_login)}
+
+    def _finish_account_login(self, params):
+        if (self._account_login is None or self._account_login["status"] not in {"pending", "uncertain"}
+                or not isinstance(params.get("loginId"), str)
+                or type(params.get("success")) is not bool):
+            return
+        login_id = params["loginId"]
+        if not self._account_login.get("loginId"):
+            if len(self._early_login_completions) < 8:
+                self._early_login_completions[login_id] = deepcopy(params)
+            return
+        if login_id != self._account_login["loginId"]:
+            return
+        self._account_login = {"loginId": login_id, "status": "succeeded" if params["success"] else "failed"}
+        if self._account_login_lease:
+            self._account_login_lease.confirmed_finished()
+            self._account_login_lease = None
+
+    async def login_account(self):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions:
+                raise WorkspaceRpcError("Finish the current Codex turn before signing in")
+            if self._account_login and self._account_login["status"] in {"pending", "uncertain"}:
+                return deepcopy(self._account_login)
+            # One callback operation across panes/processes. Never kill another
+            # login or automatically log out an existing account to acquire it.
+            directory = self._lease.metadata.parent if self._lease else None
+            self._account_login_lease = CodexLoginLease("codex-browser-login", directory=directory)
+            try:
+                self._account_login_lease.bind(self.rpc.process.pid)
+                self._account_login = {"status": "pending"}
+                self._early_login_completions.clear()
+                result = await self.rpc.request("account/login/start", {"type": "chatgpt"})
+                if not isinstance(result, dict) or result.get("type") != "chatgpt":
+                    raise WorkspaceRpcError("Codex returned an invalid browser login")
+                login_id, url = result.get("loginId"), result.get("authUrl")
+                if not isinstance(login_id, str) or not login_id or not isinstance(url, str):
+                    raise WorkspaceRpcError("Codex did not return a browser login identity")
+                self._account_login["loginId"] = login_id
+                parsed = urlsplit(url)
+                if (parsed.scheme != "https" or parsed.hostname not in {"auth.openai.com", "auth0.openai.com", "chatgpt.com"}
+                        or parsed.username or parsed.password or parsed.port not in {None, 443}):
+                    raise WorkspaceRpcError("Codex returned an unsafe authorization URL")
+                self._account_login["authUrl"] = url
+                completion = self._early_login_completions.pop(login_id, None)
+                if completion:
+                    self._finish_account_login(completion)
+                return deepcopy(self._account_login)
+            except BaseException:
+                self._account_login = {**(self._account_login or {}), "status": "uncertain"}
+                raise
+
+    async def cancel_account_login(self, login_id):
+        async with self._control_lock:
+            if (not isinstance(login_id, str) or not login_id or not self._account_login
+                    or self._account_login.get("loginId") != login_id
+                    or self._account_login["status"] not in {"pending", "uncertain"}):
+                raise ValueError("No matching pending browser login")
+            result = await self.rpc.request("account/login/cancel", {"loginId": login_id})
+            if not isinstance(result, dict) or result.get("status") not in {"canceled", "notFound"}:
+                raise WorkspaceRpcError("Codex did not confirm login cancellation")
+            if self._account_login["status"] == "succeeded":
+                return deepcopy(self._account_login)
+            self._finish_account_login({"loginId": login_id, "success": False})
+            self._account_login["status"] = "cancelled"
+            return deepcopy(self._account_login)
 
     def _same_project(self, value):
         if not isinstance(value, str) or not value or not Path(value).is_absolute():
@@ -804,7 +874,9 @@ class CodexWorkspace:
                     raise WorkspaceRpcError("Received an event for a different coding session")
                 if "id" in event:
                     self.questions[event["id"]] = deepcopy(event)
-                if method == "mcpServer/oauthLogin/completed":
+                if method == "account/login/completed":
+                    self._finish_account_login(params)
+                elif method == "mcpServer/oauthLogin/completed":
                     login = self._mcp_logins.get(params.get("name"))
                     if login is not None and type(params.get("success")) is bool:
                         login.clear()
@@ -844,6 +916,9 @@ class CodexWorkspace:
         try:
             await self.rpc.close()
         finally:
+            if self._account_login_lease:
+                self._account_login_lease.release()
+                self._account_login_lease = None
             if self._lease:
                 self._lease.release()
                 self._lease = None
@@ -853,6 +928,8 @@ class CodexWorkspace:
         self.settings = {}
         self.model_catalog = None
         self._mcp_logins.clear()
+        self._account_login = None
+        self._early_login_completions.clear()
         self.questions.clear()
         self._completed.clear()
         self.history_cursor = None
