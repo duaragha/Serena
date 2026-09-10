@@ -3,6 +3,31 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Subagent Integration Audit (2026-09-10)
+
+Re-read the current renderer and installed 0.153.4 schemas, then checked
+https://learn.chatgpt.com/docs/app-server and
+https://learn.chatgpt.com/docs/agent-configuration/subagents
+(accessed 2026-09-10). This audit did not launch agents.
+
+The current pane preserves `collabAgentToolCall` as inspectable JSON, but has no
+dedicated agent switcher. That is an actual interaction gap, not full parity.
+The native item supplies sender and receiver thread IDs, last-known agent
+states, and optional requested model/effort. Requested model must not be
+presented as a independently verified running model. The list API can filter
+direct children with `parentThreadId`, or descendants with `ancestorThreadId`,
+under the existing experimental capability handshake. These filters must not
+be combined; ordinary unfiltered session listing is not an agent inventory.
+
+Next implementation must use the parent's existing native connection for child
+inspection and control. Opening a child through the current saved-session
+attachment path could create a competing owner while the parent runtime still
+owns that child. Do not wire an agent row to generic `openSession` without
+resolving that ownership contract. Start with native list/read validation,
+paged child history and last-known state, then exact child control through the
+same connection. A spawned-child live proof is still required before claiming
+full agent interaction, with no inferred model names or generic JSON substitute.
+
 ## Codex Goals (2026-09-10)
 
 `/goal` and Session actions inspect the exact persisted native goal. Explicit

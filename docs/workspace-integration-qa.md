@@ -4,7 +4,53 @@
 Full Claude/Codex delivery remains incomplete and unreleased; this is an
 integration checkpoint, not a claim that every CLI capability is finished.
 
-## Current Source Regression Check
+## Current Integration Checkpoint: 064b97e
+
+2026-09-10. No runtime source changed during these checks. Disposable profiles
+only; no installed app restart, release or default enablement.
+
+```sh
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_journal.py -q --tb=short
+# exit 0: 328 passed in 29.53s.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q --tb=short
+# exit 0: 237 passed in 229.23s.
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: 51 print-only native turns; 50+1 pagination; exact resume and one-time
+# shell execution; job reservation exclusion; native skills and mentions;
+# desktop/mobile reload and retained drafts; visible refresh 52ms/56ms.
+# Actual Electron clipboard, cancelled login, native Claude/Codex creation,
+# linked focus/identity and view-close preservation passed. Children reaped,
+# disposable project untouched, no inference or credentials used.
+env PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m PyInstaller --noconfirm --distpath apps/desktop/build/sidecar --workpath apps/desktop/build/pyinstaller-work apps/desktop/build/pyinstaller-work/serena-web-sidecar.spec
+# exit 0: build completed in approximately 227s. Warnings included optional
+# TensorBoard, HIP and Windows libraries unavailable in the Linux environment.
+```
+
+Real Electron linked-pane screenshot inspected. Empty linked conversations and
+retained drafts prove layout/ownership, not visual parity with model prose and
+all tool types. Subagent navigation remains a concrete uncovered interaction;
+see the current subagent audit in `workspace-command-parity.md`.
+
+### Linux Frozen Proof
+
+The same `064b97e` build was then exercised with the real Electron shell:
+
+```sh
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: all source-proof scenarios above passed against the frozen backend.
+# Visible refresh 144ms desktop / 94ms mobile. Native child cleanup completed;
+# no credentials used and isolated project untouched.
+sha256sum apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: fa735a23b3834d76e6cafd95ae1397d7839502138c94c48beb05cf2c1b4ce9d3
+git diff --check
+# exit 0: no whitespace errors.
+```
+
+This does not refresh Windows packaging evidence, prove all model-backed
+commands, or install/publish an update. The latest Windows packaged checkpoint
+remains the earlier source revision documented separately.
+
+## Earlier Source Regression Check
 
 Source `5eae176` with the test-only timing corrections below, 2026-09-10.
 The initial full pane run exited 1: 227 passed, 2 failed in 147.01s. Both
