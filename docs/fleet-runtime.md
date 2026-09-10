@@ -135,8 +135,8 @@ Verification helpers also clean up their POSIX process group after direct-proces
 exit, even when a gate uses private pipes and does not keep the helper's output
 open. A captured process birth identity protects against signalling a reused
 leader PID. Tests cover normal exit and SIGKILL with a SIGTERM-ignoring gate.
-Windows process-tree cleanup and descendants that escape the owned process group
-are separate coverage gaps; this helper-only rule does not claim those solved.
+Descendants that escape the owned POSIX process group remain a coverage gap.
+The separate Windows helper ownership contract is described below.
 
 The Windows sidecar dispatches `--fleet-integration-replay` before GUI startup
 and restores inherited standard pipes for the windowed executable. Repository
@@ -153,8 +153,17 @@ binary patch payloads. The Windows installer build runs native lock/patch tests
 and a saved-integration replay against its actual frozen executable, with real
 completion validation and Git gates. Native Windows source replay has been
 verified; the build smoke is required evidence for each packaged candidate.
-Windows process-tree cleanup and Windows crash-code classification remain
-separate work; successful ordinary replay does not prove those failure cases.
+The dedicated Windows replay helper is assigned to an unnamed, non-inheritable
+Job Object before receiving its stdin request. Assignment failure refuses to
+release that request. Closing the owner handle kills associated descendants,
+including gates with private pipes, on normal helper return or owner death.
+This uses the [Windows Job Object contract](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects);
+it does not enable breakaway. Native tests cover helper return, cancellation,
+owner death and assignment refusal. The Windows build requires those tests.
+This is helper-specific: ordinary provider programs are not stdin-gated and
+cannot safely use this post-launch assignment without a separate launch design.
+Windows crash-code classification remains separate work; cleanup does not
+itself schedule retries for unrecorded helper outcomes.
 
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed

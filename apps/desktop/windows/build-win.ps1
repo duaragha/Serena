@@ -56,6 +56,10 @@ Write-Host "[windows] testing native Fleet locks and patch transport"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_file_lock.py") (Join-Path $RepoRoot "tests\test_fleet_patch_transport.py") -q
 Assert-LastExitCode "Native Fleet lock and patch tests"
 
+Write-Host "[windows] testing native Fleet helper process ownership"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_job.py") -q
+Assert-LastExitCode "Native Fleet helper job tests"
+
 if (Test-Path -LiteralPath $SidecarDist) {
     Remove-Item -LiteralPath $SidecarDist -Recurse -Force
 }
