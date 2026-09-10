@@ -56,7 +56,7 @@ All writes and command execution were confined to a disposable profile/project.
 | `resume`, `fork`, `review`, `compact` | Existing native session controls | Preserve exact session and confirmation contracts; no claim for every CLI argument |
 | `mcp`, `permissions`, `skills` | Native catalogs/control dialogs | Audit full CLI option coverage separately |
 | `model`, `reasoning` | Focus native-catalog-backed selectors | Selection applies to next turn; not a claim of persistent TUI configuration |
-| `status` | Read-only existing event snapshot | No account-rate-limit display or fresh provider configuration read yet |
+| `status` | Existing event snapshot plus explicit native account-limit refresh | Native unsigned refusal and controlled positive rendering verified; signed-in successful limits retrieval remains |
 | `plan` | Explicit native mode picker and `thread/settings/update` | Native Plan/Default confirmed with unchanged model/effort; workspace-confirmed mode restored across two real process replacements, no inference |
 
 Other documented CLI commands are not yet accounted for by this matrix. The

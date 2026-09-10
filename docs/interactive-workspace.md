@@ -2,6 +2,48 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Explicit Codex Account Limits (2026-09-10)
+
+Session status now offers an explicit Refresh account limits control, routed to
+the exact owner's `account/rateLimits/read`. Opening the dialog alone makes no
+account request. The backend validates and selects only bucket labels, window
+usage/duration/reset fields, and a local observation timestamp. It does not
+forward account identifiers, credentials or backend upsell content. Multiple
+buckets are retained; missing windows are unavailable, never guessed as 0%.
+Window labels use native durations rather than assuming every primary is 5h.
+
+The last checked snapshot is retained on a failed refresh with a visible error.
+The error scrolls into view in the bounded mobile dialog. This is an explicit
+snapshot, not a continuous live limit feed. Signed-in positive retrieval remains
+to be exercised; the native proof covers honest unsigned refusal only.
+
+Source: [official App Server account API](https://learn.chatgpt.com/docs/app-server),
+accessed 2026-09-10, and installed `GetAccountRateLimitsResponse` schema.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_account_limits_are_native_sanitized_and_do_not_submit tests/test_workspace_host.py::test_account_status_requires_explicit_owner_and_rejects_mutations tests/test_workspace_pane.py::test_codex_limits_refresh_is_explicit_and_missing_windows_are_not_zero -q --tb=short
+# exit 0: 8 passed in 2.53s; initial exit 1 was a fixture assigning an async
+# function as Playwright's evaluated return value, which invoked it immediately.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_limits_refresh_is_explicit_and_missing_windows_are_not_zero -q --tb=short
+# final exit 0: 2 passed in 2.49s, with error-in-viewport assertions and screenshots.
+node --test tests/workspace-events.test.mjs
+# exit 0: 12 passed, 67.615211ms; snapshot preserved through event reduction.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --limits
+# exit 0: native unsigned rate-limit request refused, no snapshot fabricated,
+# same owner retained, no login/inference/browser, child/profile cleaned up.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-account.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+node --check ui/static/workspace-page.mjs
+# exit 0.
+```
+
+Visually inspected `apps/desktop/build/workspace-proof/codex-limits-390.png`
+and `codex-limits-1600.png`. Controlled browser data proves layout, not actual
+account percentages. The initial screenshot exposed the error below the visible
+dialog area; the final implementation and screenshots fix that.
+
 ## Codex Mode Restoration (2026-09-10)
 
 Native `thread/resume` does not return a collaboration-mode field. Serena now

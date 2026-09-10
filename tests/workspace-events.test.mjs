@@ -89,6 +89,9 @@ test('provider usage is retained without deriving invented context percentages',
   assert.equal(model.metadata.tokenUsage.modelContextWindow,null);
   model.apply(wrap(2,{method:'workspace/claudeUsage',params:{threadId:'exact',usage:{input_tokens:12,output_tokens:34}}}));
   assert.deepEqual(model.metadata.claudeUsage,{input_tokens:12,output_tokens:34});
+  const limits={limits:[{name:'Codex',primary:null,secondary:{usedPercent:57}}],observedAt:'2026-09-10T12:00:00Z'};
+  model.apply(wrap(3,{method:'workspace/accountLimits',params:limits}));
+  assert.deepEqual(model.metadata.accountLimits,limits);
 });
 
 test('history, streaming and completion update one real item', () => {

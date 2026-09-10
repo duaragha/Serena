@@ -692,24 +692,26 @@ def test_sessions_http_lists_native_owner_without_a_mounted_pane(tmp_path, monke
         host.shutdown()
 
 
-def test_account_status_requires_explicit_owner_and_rejects_mutations(tmp_path):
+@pytest.mark.parametrize('action', ['account_status', 'account_rate_limits'])
+def test_account_status_requires_explicit_owner_and_rejects_mutations(tmp_path, action):
     calls = []
     class AccountOwner(Owner):
         async def account_status(self):
             calls.append(self.sid)
             return {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False}
+        account_rate_limits = account_status
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "account.db"),
                          resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
                          factories={"codex": AccountOwner})
     try:
         with pytest.raises(ValueError, match="attach"):
-            host.command("exact", "before", "account_status", {})
+            host.command("exact", "before", action, {})
         assert not calls
         host.attach("exact")
-        result = host.command("exact", "account-once", "account_status", {})
+        result = host.command("exact", "account-once", action, {})
         assert result["ok"] and result["result"]["account"] is None
-        assert host.command("exact", "account-once", "account_status", {}) == result
-        assert not host.command("exact", "invalid", "account_status", {"refreshToken": True})["ok"]
+        assert host.command("exact", "account-once", action, {}) == result
+        assert not host.command("exact", "invalid", action, {"refreshToken": True})["ok"]
         assert calls == ["exact"] and not host._sessions["exact"][0].sent
     finally:
         host.shutdown()

@@ -16,7 +16,7 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
 
 
-async def main(browser_login=False, pause=False, modes=False):
+async def main(browser_login=False, pause=False, modes=False, limits=False):
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
     with tempfile.TemporaryDirectory(prefix="serena-account-proof-") as directory:
@@ -43,6 +43,16 @@ async def main(browser_login=False, pause=False, modes=False):
             sid = owner.session_id
             result = await owner.account_status()
             assert result == {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False, "login": None}, result
+            if limits:
+                from core.workspace_rpc import WorkspaceRpcError
+
+                try:
+                    await owner.account_rate_limits()
+                except WorkspaceRpcError as error:
+                    assert "auth" in str(error).lower() or "access token" in str(error).lower(), str(error)
+                else:
+                    raise AssertionError("Unsigned profile unexpectedly returned account limits")
+                assert not any(event.get("method") == "workspace/accountLimits" for event in events)
             if modes:
                 from core.workspace_host import WorkspaceHost
                 from core.workspace_journal import WorkspaceJournal
@@ -115,6 +125,7 @@ async def main(browser_login=False, pause=False, modes=False):
                       "nativePauseWake": pause, "wakeAccountRoundTripMs": wake_ms,
                       "readOnlyRuntimeSnapshot": pause,
                       "nativePlanAndDefaultConfirmed": modes,
+                      "nativeUnsignedLimitsRefused": limits,
                       "closedViewRetiredWithoutWaking": pause,
                       "childReaped": True, "temporaryProfileRemoved": True}))
 
@@ -124,5 +135,6 @@ if __name__ == "__main__":
     parser.add_argument("--browser-login", action="store_true", help="Start and cancel native OAuth without opening a browser")
     parser.add_argument("--pause", action="store_true", help="Prove POSIX native pause and wake without inference")
     parser.add_argument("--modes", action="store_true", help="Switch native plan/default on the disposable owner without inference")
+    parser.add_argument("--limits", action="store_true", help="Verify native unsigned account-limit refusal without inference")
     args = parser.parse_args()
-    asyncio.run(main(args.browser_login, args.pause, args.modes))
+    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits))

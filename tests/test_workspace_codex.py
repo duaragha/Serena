@@ -40,6 +40,41 @@ def test_account_status_uses_exact_owner_without_refresh_or_inference(tmp_path, 
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('kind', ['legacy', 'multiple', 'malformed', 'unavailable'])
+def test_account_limits_are_native_sanitized_and_do_not_submit(tmp_path, kind):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        bucket = {'primary': None, 'secondary': {'usedPercent': 57, 'windowDurationMins': 10080, 'resetsAt': None}, 'accessToken': 'secret'}
+        async def request(method, params):
+            calls.append((method, params))
+            if kind == 'unavailable':
+                raise WorkspaceRpcError('Not authenticated')
+            if kind == 'malformed':
+                return {'rateLimits': {'primary': {'usedPercent': True}}}
+            return {'rateLimits': bucket, 'accountId': 'private', 'rateLimitsByLimitId': {'codex': bucket, 'other': {'primary': {'usedPercent': 0}}} if kind == 'multiple' else None}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'same-turn'
+            if kind in {'malformed', 'unavailable'}:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.account_rate_limits()
+                assert not any(e['method'] == 'workspace/accountLimits' for e in events)
+            else:
+                result = await owner.account_rate_limits()
+                assert result['limits'][0]['primary'] is None
+                assert result['limits'][0]['secondary']['usedPercent'] == 57
+                assert 'secret' not in str(result) and 'private' not in str(result)
+                assert len(result['limits']) == (2 if kind == 'multiple' else 1)
+                assert events[-1]['params'] == result
+            assert calls == [('account/rateLimits/read', {})]
+            assert owner.state == 'running' and owner.active_turn == 'same-turn'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("outcome", ["complete", "early", "cancel", "timeout", "unsafe"])
 def test_browser_login_is_single_owner_subscription_only_and_exact(tmp_path, outcome):
     from core.workspace_codex_auth import CodexLoginLease

@@ -14,6 +14,7 @@ import shutil
 from collections import deque
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -79,6 +80,44 @@ class CodexWorkspace:
                                                 if isinstance(account.get(key), str)}
             return {"account": safe, "requiresOpenaiAuth": result["requiresOpenaiAuth"],
                     "credentialsVerified": False, "login": deepcopy(self._account_login)}
+
+    async def account_rate_limits(self):
+        async with self._control_lock:
+            if self.state in {"closed", "opening", "unavailable"}:
+                raise WorkspaceRpcError("Attach Codex before checking account limits")
+            result = await self.rpc.request("account/rateLimits/read", {})
+            if not isinstance(result, dict) or not isinstance(result.get("rateLimits"), dict):
+                raise WorkspaceRpcError("Codex returned invalid account limits")
+            buckets = result.get("rateLimitsByLimitId")
+            if buckets is None or buckets == {}:
+                buckets = {"codex": result["rateLimits"]}
+            if not isinstance(buckets, dict) or len(buckets) > 100:
+                raise WorkspaceRpcError("Codex returned invalid limit buckets")
+            limits = []
+            for key, source in buckets.items():
+                if not isinstance(key, str) or not isinstance(source, dict):
+                    raise WorkspaceRpcError("Codex returned invalid limit bucket")
+                item = {"id": key, "name": source.get("limitName") or key}
+                if not isinstance(item["name"], str):
+                    raise WorkspaceRpcError("Codex returned invalid limit name")
+                for name in ("primary", "secondary"):
+                    window = source.get(name)
+                    item[name] = None
+                    if window is None:
+                        continue
+                    if (not isinstance(window, dict) or type(window.get("usedPercent")) is not int
+                            or window["usedPercent"] < 0):
+                        raise WorkspaceRpcError("Codex returned invalid usage percentage")
+                    item[name] = {"usedPercent": window["usedPercent"]}
+                    for field in ("windowDurationMins", "resetsAt"):
+                        value = window.get(field)
+                        if value is not None and (type(value) is not int or value < 0):
+                            raise WorkspaceRpcError("Codex returned invalid usage window")
+                        item[name][field] = value
+                limits.append(item)
+            safe = {"limits": limits, "observedAt": datetime.now(timezone.utc).isoformat()}
+            await self.publish({"method": "workspace/accountLimits", "params": deepcopy(safe)})
+            return safe
 
     def _finish_account_login(self, params):
         if (self._account_login is None or self._account_login["status"] not in {"pending", "uncertain"}

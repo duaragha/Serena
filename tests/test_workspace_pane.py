@@ -1275,6 +1275,39 @@ def test_codex_status_is_read_only_updates_and_does_not_invent_values(pane, widt
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_codex_limits_refresh_is_explicit_and_missing_windows_are_not_zero(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""async()=>{
+      pane.dispose();window.seq=0;
+      const {WorkspacePane}=await import('/workspace-pane.mjs');
+      controls.accountRateLimits=async()=>{calls.push('limits');return {observedAt:'2026-09-10T12:00:00Z',limits:[{name:'Codex',primary:null,secondary:{usedPercent:57,windowDurationMins:10080,resetsAt:null}}]};};
+      window.pane=new WorkspacePane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      pane.input.value='draft';pane.openSessionStatus();
+    }""")
+    dialog = page.get_by_role('dialog', name='Session status', exact=True)
+    assert page.evaluate('calls') == []
+    assert 'Not checked' in dialog.inner_text()
+    dialog.get_by_role('button', name='Refresh account limits', exact=True).click()
+    page.wait_for_function("pane.sessionStatusDialog.textContent.includes('57% used')")
+    assert 'Codex 7d' in dialog.inner_text()
+    assert '0% used' not in dialog.inner_text()
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.evaluate("()=>{controls.accountRateLimits=async()=>{throw Error('Not authenticated');};}")
+    dialog.get_by_role('button', name='Refresh account limits', exact=True).click()
+    page.get_by_text('Account limits unavailable: Not authenticated', exact=True).wait_for()
+    playwright.expect(dialog.get_by_role('status')).to_be_in_viewport()
+    assert 'Last checked' in dialog.inner_text() and '57% used' in dialog.inner_text()
+    assert page.evaluate('pane.input.value') == 'draft'
+    assert page.evaluate('calls') == ['limits']
+    artifact = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'codex-limits-{width}.png'
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(artifact))
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_codex_plan_picker_is_explicit_and_preserves_draft(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

@@ -691,6 +691,18 @@ export class WorkspacePane {
     dialog.setAttribute('aria-label','Session status');
     const list=node('dl');
     const close=this.button('Close session status','x',()=>dialog.close());
+    const limitStatus=node('p');limitStatus.setAttribute('role','status');
+    const refreshLimits=this.button('Refresh account limits','refresh-cw',async()=>{
+      refreshLimits.disabled=true;limitStatus.textContent='Checking account limits...';
+      try{
+        const result=await this.controls.accountRateLimits();
+        if(!dialog.open || this.disposed)return;
+        this.conversation.metadata.accountLimits=result;this.refreshSessionStatus();
+        limitStatus.textContent='Account limits updated';
+      }catch(error){if(dialog.open){limitStatus.textContent=`Account limits unavailable: ${error.message}`;limitStatus.scrollIntoView({block:'nearest'});}}
+      finally{refreshLimits.disabled=false;}
+    });
+    refreshLimits.hidden=!this.controls.accountRateLimits;
     this.refreshSessionStatus=()=>{
       const m=this.conversation.metadata;
       const token=value=>Number.isSafeInteger(value) && value>=0 ? value.toLocaleString() : null;
@@ -706,8 +718,25 @@ export class WorkspacePane {
         const display=value==null || value==='' ? 'Unavailable' : typeof value==='object' ? JSON.stringify(value,null,2) : String(value);
         list.append(node('dt','',label),node('dd','',display));
       }
+      const limits=m.accountLimits;
+      if(!limits)list.append(node('dt','','Account limits'),node('dd','','Not checked'));
+      for(const bucket of limits?.limits || []){
+        for(const name of ['primary','secondary']){
+          const window=bucket[name];
+          const minutes=window?.windowDurationMins;
+          const duration=Number.isSafeInteger(minutes) && minutes>0 ? minutes%1440===0 ? `${minutes/1440}d` : minutes%60===0 ? `${minutes/60}h` : `${minutes}m` : name;
+          const value=node('dd','',window ? `${window.usedPercent}% used` : 'Unavailable');
+          const reset=window?.resetsAt==null ? null : new Date(window.resetsAt*1000);
+          if(reset && Number.isFinite(reset.getTime()))value.append(node('div','',`Resets ${reset.toLocaleString()}`));
+          list.append(node('dt','',`${bucket.name} ${duration}`),value);
+        }
+      }
+      if(limits?.observedAt){
+        const checked=new Date(limits.observedAt);
+        list.append(node('dt','','Last checked'),node('dd','',Number.isFinite(checked.getTime())?checked.toLocaleString():'Unavailable'));
+      }
     };
-    dialog.append(node('h3','','Session status'),close,list);
+    dialog.append(node('h3','','Session status'),close,list,refreshLimits,limitStatus);
     dialog.addEventListener('close',()=>{this.refreshSessionStatus=null;this.sessionStatusDialog=null;dialog.remove();this.input.focus();});
     this.sessionStatusDialog=dialog;this.root.append(dialog);this.refreshSessionStatus();
     this.refreshIcons();dialog.showModal();close.focus();
