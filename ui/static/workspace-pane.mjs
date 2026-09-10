@@ -1148,13 +1148,39 @@ export class WorkspacePane {
   appendHistoryImage(parent, part, label) {
     const image = node('img', 'aw-history-image');
     image.alt = part.name || label;
+    const trigger=node('button','aw-image-trigger');trigger.type='button';
+    trigger.setAttribute('aria-label',`Open image: ${image.alt}`);trigger.title='Open image';trigger.disabled=true;
+    trigger.append(image);trigger.addEventListener('click',()=>this.openImage(image));
+    image.addEventListener('load',()=>{trigger.disabled=false;},{once:true});
     const unavailable = () => {
+      if(this.imageDialogSource===image)this.imageDialog?.close();
       if (this.historyImageUrls.delete(image.src)) URL.revokeObjectURL(image.src);
-      image.replaceWith(node('span', '', `${label} unavailable`));
+      trigger.replaceWith(node('span', '', `${label} unavailable`));
     };
     image.addEventListener('error', unavailable, {once:true});
-    parent.append(image);
+    parent.append(trigger);
     this.loadHistoryImage(image, part).catch(unavailable);
+  }
+
+  openImage(source) {
+    if(this.disposed || !source.isConnected || !source.naturalWidth || !this.historyImageUrls.has(source.src))return;
+    this.imageDialog?.close();
+    const dialog=node('dialog','aw-review-dialog aw-image-dialog');dialog.setAttribute('aria-label','Image viewer');
+    const header=node('header');const title=node('span','',source.alt);
+    const viewport=node('div','aw-image-viewport');viewport.tabIndex=0;viewport.setAttribute('aria-label','Image');
+    const image=node('img');image.alt=source.alt;image.src=source.src;viewport.append(image);
+    const size=this.button('Actual size','expand',()=>{
+      const actual=viewport.classList.toggle('aw-image-actual');
+      size.setAttribute('aria-pressed',String(actual));viewport.scrollTop=viewport.scrollLeft=0;
+    });size.setAttribute('aria-pressed','false');
+    const close=this.button('Close image','x',()=>dialog.close());
+    header.append(title,size,close);dialog.append(header,viewport);
+    dialog.addEventListener('close',()=>{
+      image.removeAttribute('src');dialog.remove();
+      if(this.imageDialog===dialog){this.imageDialog=null;this.imageDialogSource=null;}
+    },{once:true});
+    this.imageDialog=dialog;this.imageDialogSource=source;
+    this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();
   }
 
   async loadHistoryImage(image, part) {
@@ -1319,6 +1345,7 @@ export class WorkspacePane {
 
   releaseHistoryImages(element) {
     for (const image of element.querySelectorAll('.aw-history-image')) {
+      if(this.imageDialogSource===image)this.imageDialog?.close();
       if (this.historyImageUrls.delete(image.src)) URL.revokeObjectURL(image.src);
     }
   }
@@ -1429,6 +1456,7 @@ export class WorkspacePane {
   }
 
   dispose() {
+    this.imageDialog?.close();
     this.disposeMentions?.();
     this.reviewDialog?.close();
     this.tasksDialog?.close();

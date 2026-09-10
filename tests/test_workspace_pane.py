@@ -1654,10 +1654,30 @@ def test_history_image_renders_without_base64_text(pane, provider, width, tmp_pa
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     assert page.locator('.aw-history-image').evaluate("image => {const c=document.createElement('canvas');c.width=c.height=8;const ctx=c.getContext('2d');ctx.drawImage(image,0,0);return [...ctx.getImageData(0,0,1,1).data]}") == [0, 128, 0, 255]
     page.screenshot(path=str(tmp_path / f"{provider}-{width}.png"))
+    page.evaluate("pane.input.value='draft survives image inspection'")
+    trigger = page.locator('.aw-image-trigger')
+    trigger.focus()
+    page.keyboard.press('Enter')
+    dialog = page.get_by_role('dialog', name='Image viewer')
+    dialog.wait_for()
+    page.wait_for_function("document.querySelector('.aw-image-dialog img')?.naturalWidth === 800")
+    assert page.evaluate('pane.historyImageUrls.size') == 1
+    dialog.get_by_role('button', name='Actual size', exact=True).click()
+    assert dialog.get_by_role('button', name='Actual size', exact=True).get_attribute('aria-pressed') == 'true'
+    assert dialog.locator('img').evaluate('image=>image.getBoundingClientRect().width') == 800
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path=str(tmp_path / f"{provider}-{width}-viewer.png"))
+    page.keyboard.press('Escape')
+    dialog.wait_for(state='hidden')
+    assert trigger.evaluate('button=>document.activeElement===button')
+    assert page.evaluate('pane.input.value') == 'draft survives image inspection'
+    trigger.click()
+    dialog.wait_for()
     page.evaluate(
         "emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'text',text:'image replaced'}]}}})"
     )
     page.wait_for_function("pane.historyImageUrls.size === 0")
+    dialog.wait_for(state='hidden')
     page.evaluate("pane.dispose()")
     assert page.evaluate("pane.historyImageUrls.size") == 0
     assert not errors

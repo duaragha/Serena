@@ -2,6 +2,31 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Shared Image Viewer
+
+2026-09-10: decoded history, assistant and tool images open in a native modal
+with fit and actual-size views. Keyboard activation and Escape preserve the
+draft and restore focus. The viewer reuses the bounded blob URL; source replacement
+closes it before revocation, and pane disposal closes it without stopping a provider.
+No remote image loading, duplicate blob creation or provider commands are added.
+
+Commands executed separately:
+
+```sh
+env PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -k image -q --tb=short
+node --check ui/static/workspace-pane.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+```
+
+Final exits **0**: **14 passed, 145 deselected**, syntax and Ruff clean. Initial
+browser run exited **1**, **12 passed, 2 failed**, because the assertion inspected
+naturalWidth before the modal image loaded; it now waits for decoding. Tests cover
+Claude, Codex and Gemini user/assistant/tool images at 390px and 1600px, unsupported
+images, keyboard opening, actual size, no document overflow, preserved draft,
+focus restoration and source replacement cleanup. Mobile Codex and desktop Gemini
+tool screenshots were visually inspected. These use controlled image content,
+not authenticated provider-generated images or installed-app verification.
+
 ## Codex Pane Command Routing
 
 2026-09-10: `/fork`, `/review`, `/mcp`, `/permissions` and `/skills` now invoke
