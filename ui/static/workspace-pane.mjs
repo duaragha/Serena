@@ -969,7 +969,7 @@ export class WorkspacePane {
         block.append(copy);
       }
       entry.append(message);
-    } else if (item.type === 'claudeToolCall') {
+    } else if (['claudeToolCall','acpToolCall'].includes(item.type)) {
       const detail=node('details','aw-tool');
       const summary=node('summary');summary.append(node('span','',item.input?.description || item.tool || 'Tool'));
       if(item.status)summary.append(node('small','',item.status));detail.append(summary);
@@ -1052,7 +1052,17 @@ export class WorkspacePane {
     for (const [id, question] of this.conversation.questions) {
       const form = node('form', 'aw-question');
       const p = question.params || {};
-      if (question.method === 'mcpServer/elicitation/request') {
+      if (question.method === 'session/request_permission') {
+        form.append(node('p','',p.toolCall?.title || 'Tool permission requested'));
+        if(p.toolCall?.rawInput!==undefined)form.append(node('pre','',JSON.stringify(p.toolCall.rawInput,null,2)));
+        for(const option of p.options || []){
+          const button=node('button','',option.name);button.type='button';
+          button.addEventListener('click',()=>this.answer(id,{outcome:{outcome:'selected',optionId:option.optionId}},form));
+          form.append(button);
+        }
+        const cancel=node('button','','Cancel');cancel.type='button';
+        cancel.addEventListener('click',()=>this.answer(id,{outcome:{outcome:'cancelled'}},form));form.append(cancel);
+      } else if (question.method === 'mcpServer/elicitation/request') {
         renderElicitation(form,p,answer=>this.answer(id,answer,form));
       } else if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(question.method)) {
         form.append(node('p', '', p.reason || p.command || 'Approve proposed file changes?'));

@@ -2,6 +2,14 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+ACP events and permission surface (2026-09-09): added session-bound streamed text
+and incremental tool translation, retained opaque content, and explicit native
+permission choices in the rich pane. Eight focused adapter/browser tests passed
+at desktop/mobile sizes, along with Ruff and JS syntax checks. See
+[ACP integration notes](workspace-antigravity-acp.md#next-integration-work).
+Not connected to an authenticated Gemini owner; real model-turn proof and
+exact-session migration remain unverified. No rollout or installed-app change.
+
 ACP session-store check (2026-09-09): native list/load against an isolated
 CLI-only SQLite fixture confirms it is not an ACP session. Load returns -32002
 without modifying the fixture or creating a replacement. Shipped vendor source

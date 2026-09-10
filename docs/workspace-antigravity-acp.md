@@ -96,6 +96,28 @@ instead of implying Google has no interactive interface. Admission is unchanged.
 
 ## Next Integration Work
 
+Event translation foundation added 2026-09-09 in `core/workspace_acp_events.py`:
+exact-session validation, explicit turn boundaries, optional native message IDs,
+contiguous ID-less text chunks, incremental tool updates and retained unknown
+content. Idle command/config/usage metadata does not fabricate a turn. Permission
+requests retain native choices, reject unoffered answers and stay pending until
+explicit resolution. The shared pane renders ACP tools and native permission
+choices without automatic approval or HTML interpretation.
+
+Protocol sources accessed 2026-09-09:
+https://agentclientprotocol.com/protocol/v1/prompt-turn and
+https://agentclientprotocol.com/protocol/v1/tool-calls. This implementation is not
+yet wired to an authenticated ACP owner. History reconstruction, rich content,
+configuration controls and cancellation orchestration still need integration.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_events.py tests/test_workspace_pane.py::test_acp_permission_options_are_explicit_and_exact -q --tb=short`: exit 0, 8 passed, including desktop/mobile explicit native option IDs and literal tool output.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_acp_events.py tests/test_workspace_acp_events.py tests/test_workspace_pane.py`: exit 0.
+- `node --check ui/static/workspace-pane.mjs`: exit 0.
+
+These are adapter/browser tests using controlled protocol records, not a claim
+that a real Gemini model produced these events or executed a permissioned tool.
+
 The JSON-RPC foundation is implemented, not the provider adapter or UI admission.
 Gemini remains unavailable in the development rich pane until these checks pass:
 

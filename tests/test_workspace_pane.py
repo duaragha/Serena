@@ -61,6 +61,30 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+@pytest.mark.parametrize("choice", ["Allow once", "Cancel"])
+def test_acp_permission_options_are_explicit_and_exact(pane, width, choice):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{
+        id:'acp-tool',type:'acpToolCall',tool:'Inspect config',input:{path:'settings.json'},
+        output:'<script>not executable</script>',status:'completed'}}});
+      emit({id:'acp-permission',method:'session/request_permission',params:{threadId:'exact',sessionId:'exact',
+        toolCall:{title:'Change config',rawInput:{path:'settings.json'}},
+        options:[{optionId:'native-once',name:'Allow once',kind:'allow_once'}]}});
+    }""")
+    page.get_by_text("Change config", exact=True).wait_for()
+    page.locator("summary").filter(has_text="Inspect config").click()
+    page.get_by_text("<script>not executable</script>", exact=True).wait_for()
+    assert page.evaluate("calls") == []
+    page.get_by_role("button", name=choice, exact=True).click()
+    outcome = {"outcome": "cancelled"} if choice == "Cancel" else {"outcome": "selected", "optionId": "native-once"}
+    assert page.evaluate("calls") == [["answer", "acp-permission", {"outcome": outcome}]]
+    assert page.locator("body").evaluate("el=>el.scrollWidth<=innerWidth")
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_codex_skill_toggle_waits_for_confirmation_and_preserves_draft(pane, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})
