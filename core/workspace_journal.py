@@ -100,9 +100,10 @@ class WorkspaceJournal:
                          (source_id, request_id))
             return receipt
 
-    def clear_target(self, session_id: str) -> dict | None:
+    def clear_target(self, session_id: str, *, uncataloged_only=False) -> dict | None:
         with closing(self._connect()) as conn:
-            row = conn.execute("SELECT target, committed FROM workspace_clears WHERE target_id=?", (session_id,)).fetchone()
+            row = conn.execute("SELECT target, committed FROM workspace_clears WHERE target_id=? AND (?=0 OR cataloged=0)",
+                               (session_id, int(uncataloged_only))).fetchone()
         return {**json.loads(row[0]), "committed": bool(row[1])} if row else None
 
     def has_pending_clear(self, source_id: str) -> bool:

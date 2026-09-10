@@ -11037,6 +11037,9 @@ def _decorate_sessions(sessions: list[dict]) -> list[dict]:
         # === GROUP FEATURE === (per-row group id — frontend hashes it for color)
         sid = s.get("session_id")
         session_meta = (all_meta.get(sid) or {}) if sid else {}
+        if s.get("native_persistence_pending") and session_meta.get("custom_title"):
+            s["custom_title"] = session_meta["custom_title"]
+            s["display_title"] = session_meta["custom_title"]
         gid = session_meta.get("group")
         if gid:
             s["group"] = gid
@@ -12359,7 +12362,14 @@ def api_rename(session_id):
     if not title:
         return jsonify({"error": "Title required"}), 400
     try:
-        set_title(session_id, title)
+        workspace = app.extensions.get("workspace_host")
+        pending = workspace.journal.clear_target(session_id, uncataloged_only=True) if workspace else None
+        if pending and pending["committed"] and get_session(session_id) is None:
+            from core.metadata import set_custom_title
+
+            set_custom_title(session_id, title)
+        else:
+            set_title(session_id, title)
         return jsonify({"ok": True, "title": title})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404

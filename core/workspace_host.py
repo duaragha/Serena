@@ -605,7 +605,7 @@ class WorkspaceHost:
 
     def describe_pending_session(self, sid):
         """Read-only catalog fallback; never claims a transcript exists yet."""
-        target = self.journal.clear_target(sid)
+        target = self.journal.clear_target(sid, uncataloged_only=True)
         if target is None:
             return None
         return {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],

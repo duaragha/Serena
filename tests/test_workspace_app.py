@@ -25,6 +25,9 @@ def test_pending_native_clear_page_uses_durable_identity_without_launch(tmp_path
         assert b'"provider": "Claude"' in response.data
         assert host._loop is None and not host._sessions
         assert app.test_client().get("/workspace/missing").status_code == 404
+        host.journal.complete_clear("source", "clear")
+        host.journal.mark_clear_cataloged(target)
+        assert app.test_client().get(f"/workspace/{target}").status_code == 404
     finally:
         host.shutdown()
 

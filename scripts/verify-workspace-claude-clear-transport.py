@@ -1,5 +1,6 @@
 """Real worker handoff proof; invoked with the isolated native clear fixture."""
 
+import ast
 import asyncio
 import json
 import os
@@ -121,10 +122,12 @@ async def main():
     assert not psutil.pid_exists(native_pid)
 
     def browser_clear(width):
-        from flask import Flask
+        from flask import Flask, jsonify, request
         from playwright.sync_api import sync_playwright
         from werkzeug.serving import make_server
 
+        from core import indexer, metadata
+        from core.workspace_catalog import register_fork
         from ui.workspace_app import install_workspace
 
         repo = Path(__file__).resolve().parents[1]
@@ -132,6 +135,18 @@ async def main():
         browser_host = install_workspace(app, Path(root) / f"browser-{width}.db", resolve=resolve,
                                          factories={"claude": create_owner},
                                          describe=lambda sid: {"session_id": sid, "agent": "claude"} if sid == source else None)
+        assert indexer.DB_PATH.resolve().is_relative_to(Path(root).resolve())
+        assert metadata.METADATA_DIR.resolve().is_relative_to(Path(root).resolve())
+        web_source = repo / "ui/web.py"
+        definitions = [item for item in ast.parse(web_source.read_text()).body
+                       if isinstance(item, ast.FunctionDef) and item.name in {"api_rename", "api_sessions", "_decorate_sessions"}]
+        namespace = {"app": app, "jsonify": jsonify, "request": request,
+                     "get_session": indexer.get_session, "list_sessions": indexer.list_sessions,
+                     "set_title": indexer.set_title, "_include_permanent_serena_session": lambda rows: rows,
+                     "_ambiguous_shorts": lambda: set(), "_get_session_cwd": lambda session: session["cwd"],
+                     "_resolve_project_cwd": lambda project, cwd: cwd,
+                     "_shorten_project": lambda project, cwd: project, "_external_runtime_active": lambda sid: False}
+        exec(compile(ast.Module(body=definitions, type_ignores=[]), str(web_source), "exec"), namespace)
         server = make_server("127.0.0.1", 0, app, threaded=True)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -159,6 +174,13 @@ async def main():
                     target = dialog.locator("code").inner_text()
                     assert target != source and browser_host._sessions[target][0].client.owned_pid == pid
                     assert browser_host.include_pending_sessions([])[0]["session_id"] == target
+                    title = f"Clear proof {width}"
+                    renamed = page.evaluate("async ({sid,title}) => (await fetch('/api/rename/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})})).json()", {"sid": target, "title": title})
+                    assert renamed == {"ok": True, "title": title}
+                    assert metadata.get_meta(target)["custom_title"] == title
+                    pending_rows = page.evaluate("async () => (await fetch('/api/sessions')).json()")
+                    pending_row = next(row for row in pending_rows if row["session_id"] == target)
+                    assert pending_row["display_title"] == title and pending_row["native_persistence_pending"]
                     page.reload()
                     page.get_by_role("button", name="Clear context", exact=True).click()
                     dialog = page.get_by_role("dialog", name="Clear context", exact=True)
@@ -182,6 +204,14 @@ async def main():
                     assert all(turn["providerOriginal"]["total_cost_usd"] == 0 for turn in complete)
                     assert all(turn["providerOriginal"]["num_turns"] == 0 for turn in complete)
                     page.wait_for_function("() => document.querySelector('.aw-state').textContent === 'completed'")
+                    register_fork({"session_id": target, "provider": "claude", "cwd": root})
+                    indexed = indexer.get_session(target)
+                    assert indexed and not indexed.get("is_teammate"), indexed
+                    indexed_rows = page.evaluate("async () => (await fetch('/api/sessions')).json()")
+                    matching = [row for row in indexed_rows if row["session_id"] == target]
+                    assert len(matching) == 1 and matching[0]["display_title"] == title
+                    assert not matching[0].get("native_persistence_pending")
+                    assert not browser_host.journal.uncataloged_clears()
                     assert not errors, errors
                     assert not failures, failures
                     assert page.locator("body").evaluate("el=>el.scrollWidth<=innerWidth")
@@ -201,6 +231,7 @@ async def main():
                     browser.close()
             assert psutil.pid_exists(pid), "Closing the page must preserve native ownership"
             print(f"PASS: {width}px browser confirmed native clear, recovered receipt on reload, opened exact target, sent local command; one retained PID")
+            print(f"PASS: {width}px pending rename used synced metadata and survived real native transcript indexing without a duplicate row")
         finally:
             server.shutdown()
             server.server_close()

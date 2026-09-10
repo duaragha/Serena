@@ -9,6 +9,59 @@ from core.workspace_host import WorkspaceHost
 from core.workspace_journal import WorkspaceJournal
 
 
+def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_path, monkeypatch):
+    from core import metadata
+
+    monkeypatch.setattr(metadata, "METADATA_DIR", tmp_path / "metadata")
+    monkeypatch.setattr(metadata, "METADATA_PATH", tmp_path / "legacy.json")
+    monkeypatch.setattr(metadata, "_migrated", False)
+    app = Flask(__name__)
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "pending.db"), resolve=lambda sid: None)
+    app.extensions["workspace_host"] = host
+    normal_calls = []
+
+    def normal_title(sid, title):
+        normal_calls.append((sid, title))
+        raise ValueError("No indexed session")
+
+    source = Path(__file__).resolve().parents[1] / "ui/web.py"
+    tree = ast.parse(source.read_text())
+    selected = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name in {"api_rename", "api_sessions", "_decorate_sessions"}]
+    namespace = {"app": app, "jsonify": jsonify, "request": request, "set_title": normal_title,
+                 "get_session": lambda sid: None, "list_sessions": lambda **kwargs: [],
+                 "_include_permanent_serena_session": lambda rows: rows,
+                 "_ambiguous_shorts": lambda: set(), "_get_session_cwd": lambda session: session["cwd"],
+                 "_resolve_project_cwd": lambda project, cwd: cwd,
+                 "_shorten_project": lambda project, cwd: project,
+                 "_external_runtime_active": lambda sid: False}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), str(source), "exec"), namespace)
+    sid = "11111111-2222-4333-8444-555555555555"
+    target = {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)}
+    try:
+        host.journal.claim_command("source", "clear", {"action": "clear_session", "payload": {"confirmed": True}})
+        host.journal.prepare_clear("source", "clear", target)
+        client = app.test_client()
+        assert client.post(f"/api/rename/{sid}", json={"title": "too early"}).status_code == 404
+        assert not (metadata.METADATA_DIR / f"{sid}.json").exists()
+        host.journal.complete_clear("source", "clear")
+        metadata.set_starred(sid, True)
+        response = client.post(f"/api/rename/{sid}", json={"title": "My conversation"})
+        assert response.status_code == 200 and response.json["title"] == "My conversation"
+        stored = metadata.get_meta(sid)
+        assert stored["custom_title"] == "My conversation" and stored["starred"] is True
+        rows = client.get("/api/sessions").json
+        assert len(rows) == 1 and rows[0]["display_title"] == "My conversation"
+        assert client.post("/api/rename/not-a-session", json={"title": "wrong"}).status_code == 404
+        host.journal.mark_clear_cataloged(sid)
+        assert client.post(f"/api/rename/{sid}", json={"title": "deleted"}).status_code == 404
+        assert metadata.get_meta(sid)["custom_title"] == "My conversation"
+        assert len(normal_calls) == 3
+        assert host._loop is None and not host._sessions
+    finally:
+        host.shutdown()
+
+
 def test_sessions_route_includes_only_matching_committed_pending_chat(tmp_path):
     app = Flask(__name__)
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "pending.db"), resolve=lambda sid: None)

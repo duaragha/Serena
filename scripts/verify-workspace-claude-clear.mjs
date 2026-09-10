@@ -10,7 +10,7 @@ import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
 const [sdkPath,cliPath,pythonPath]=process.argv.slice(2);
 assert(sdkPath && cliPath);
-const root=await mkdtemp(join(tmpdir(),'serena-clear-proof-'));
+const root=await mkdtemp(join(tmpdir(),'workspace-clear-proof-'));
 const path=process.env.PATH;
 const proofPythonPath=process.env.SERENA_PROOF_PYTHONPATH;
 const browsers=process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(),'.cache','ms-playwright');

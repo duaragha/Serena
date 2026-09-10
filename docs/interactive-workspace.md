@@ -2,6 +2,19 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Pending-chat titles (2026-09-09): committed Claude clear targets can now be
+renamed before their native transcript exists, through the existing synced
+custom-title store. Indexed chats keep the existing rename path. Uncommitted,
+unknown and retired placeholders cannot acquire titles through this fallback;
+retired placeholders also cannot reopen a phantom workspace page. Native indexing
+preserves the title and retires the temporary catalog row without duplication.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_journal.py tests/test_workspace_pending_catalog_api.py tests/test_workspace_app.py::test_pending_native_clear_page_uses_durable_identity_without_launch -q --tb=short`: exit 0, 9 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py tests/test_workspace_app.py tests/test_workspace_pending_catalog_api.py scripts/verify-workspace-claude-clear-transport.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: final exit 0. Real native clear, browser rename, synced metadata, real transcript registration and sessions route passed at 1440px and 390px, with one row and retained native PID. Original history preserved; zero model turns/cost; isolated homes and children cleaned up. The preceding run exited 1 because its temporary project prefix matched the existing internal-session exclusion. The fixture now uses a non-internal project prefix and asserts the real indexed row is not hidden; no production exclusion was weakened.
+Remaining: pending-chat deletion and other metadata/read workflows, full installed
+app/Windows verification and the broader provider parity work remain open.
+
 Visible Claude clear and pending catalog (2026-09-09): the pane now exposes an
 explicit Clear context confirmation. Opening/dismissing the dialog does not clear
 anything. In-flight input is blocked; success preserves the source draft/history
@@ -14,7 +27,7 @@ index, an overlay is durably retired so deleting that indexed chat cannot revive
 its old placeholder. Existing clear journals migrate their timestamp/catalog state
 without dropping identities. No native transcript is fabricated for pending rows.
 Remaining: full metadata operations on not-yet-indexed placeholders (including
-deletion, renaming and file/read side panels), installed-app/Windows integration,
+deletion and read side panels; renaming is addressed above), installed-app/Windows integration,
 and the broader provider-parity gates remain unfinished. Original cleared views
 are non-writable until an explicit Resume original conversation succeeds; that
 retires the saved navigation receipt and restores input to the exact old session,
