@@ -15,6 +15,31 @@ def tmp_path(tmp_path):
     return tmp_path.resolve()
 
 
+@pytest.mark.parametrize('command', ['/plugins', '/delete', '/debug-config', '/prompts:custom', '/unknown arg'])
+def test_unrouted_commands_never_reach_submit_or_steer(tmp_path, command):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        async def request(*args, **kwargs):
+            pytest.fail('Unrouted command reached native RPC')
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match='not sent to the model'):
+                await owner.submit([{'type': 'text', 'text': command}])
+            owner.state, owner.active_turn = 'running', 'existing'
+            with pytest.raises(ValueError, match='not sent to the model'):
+                await owner.steer([{'type': 'text', 'text': command}], expected_turn_id='existing')
+            assert owner.state == 'running' and owner.active_turn == 'existing'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('text', ['/home/user/file.py', '/foo/bar explain', 'Explain /plugins', '$skill', 'ordinary text'])
+def test_paths_and_normal_text_are_not_slash_commands(text):
+    CodexWorkspace._reject_unrouted_command([{'type': 'text', 'text': text}])
+
+
 @pytest.mark.parametrize('invalid', [None, 'cwd', 'state', 'warnings'])
 def test_hook_catalog_is_project_scoped_read_only_and_validated(tmp_path, invalid):
     async def run():

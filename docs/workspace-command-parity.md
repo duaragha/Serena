@@ -128,6 +128,27 @@ piped separately to Ruff `check --stdin-filename <path> --output-format concise 
 
 ## Codex Pane Command Routes
 
+Unhandled slash commands now fail explicitly in the pane and in the Codex owner
+instead of becoming model prompts. The owner guard also covers steering and
+non-pane callers. Native controls remain separate actions; paths containing
+slashes, ordinary prose and `$skill` mentions remain ordinary input. This is an
+honest failure boundary, not completion of the still-missing commands below.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_unrouted_commands_never_reach_submit_or_steer tests/test_workspace_codex.py::test_paths_and_normal_text_are_not_slash_commands tests/test_workspace_pane.py::test_unknown_codex_command_stays_in_draft_without_model_call -q --tb=short
+# exit 0: 15 passed in 6.38s; unsupported, destructive, hyphenated and custom
+# prompt command forms cannot silently become model input.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_pane.py::test_codex_local_commands_use_controls_not_model_prompts tests/test_workspace_pane.py::test_codex_inline_mention_replaces_command_only_after_file_selection -q --tb=short
+# exit 0: 90 passed in 11.83s, full Codex owner and supported-control regressions.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --command-guard
+# exit 0: four commands refused on the same real native owner; no turn started,
+# inference=false, child reaped and temporary profile removed.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py tests/test_workspace_codex.py tests/test_workspace_pane.py scripts/verify-workspace-account.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+```
+
 | Names | Current route | Remaining gap |
 | --- | --- | --- |
 | `resume`, `fork`, `review`, `compact` | Existing native session controls | Preserve exact session and confirmation contracts; no claim for every CLI argument |

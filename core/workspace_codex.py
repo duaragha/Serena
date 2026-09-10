@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -781,12 +782,20 @@ class CodexWorkspace:
             raise ValueError("Selected skill is no longer enabled in this project")
         return [{"type": "skill", "name": catalog[path]["name"], "path": path} for path in skills]
 
+    @staticmethod
+    def _reject_unrouted_command(inputs):
+        text = "".join(part.get("text", "") for part in inputs if part.get("type") == "text")
+        command = re.match(r"^/([A-Za-z][A-Za-z0-9_:-]*)(?:\s|$)", text.lstrip())
+        if command:
+            raise ValueError(f"/{command[1]} requires a native session control; it was not sent to the model")
+
     async def submit(self, inputs: list[dict], *, options: dict | None = None) -> dict:
         async with self._control_lock:
             if self.state != "ready":
                 raise WorkspaceRpcError("Session is not ready for a new turn")
             if not inputs:
                 raise ValueError("A message or attachment is required")
+            self._reject_unrouted_command(inputs)
             params = deepcopy(options or {})
             selected = await self._skill_inputs(params.pop("skills", []))
             allowed = {
@@ -833,6 +842,7 @@ class CodexWorkspace:
                 raise
 
     async def steer(self, inputs: list[dict], *, expected_turn_id: str | None = None, skills=None) -> Any:
+        self._reject_unrouted_command(inputs)
         turn_id = self.active_turn
         if not self.active_turn or self.state != "running":
             raise WorkspaceRpcError("No running turn to steer")

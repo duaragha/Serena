@@ -1204,8 +1204,9 @@ export class WorkspacePane {
       }
       await this.openCommands(reloadCommand[1]);return;
     }
-    const codexCommand=this.provider==='Codex' && /^\/([a-z]+)(?:\s|$)/.exec(text.trim());
+    const codexCommand=this.provider==='Codex' && /^\/([A-Za-z][A-Za-z0-9_:-]*)(?:\s|$)/.exec(text.trim());
     const codexControl=codexCommand && this.codexCommandControls()[codexCommand[1]];
+    if(codexCommand && !codexControl){this.error(Error(`/${codexCommand[1]} is not implemented in this pane; nothing was sent`));return;}
     if(codexControl){
       if(codexCommand[1]==='mention' && /^\/mention\s+\S/.test(text.trim()) && !this.files.length && !this.selectedSkills.length){
         if(text.trim().slice('/mention'.length).trim().length>200){this.error(Error('File search is limited to 200 characters'));return;}

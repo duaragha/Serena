@@ -10,6 +10,17 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('command', ['/plugins', '/delete', '/debug-config', '/prompts:custom', '/unknown arg'])
+def test_unknown_codex_command_stays_in_draft_without_model_call(pane, command):
+    page, errors = pane
+    page.evaluate("command=>{pane.provider='Codex';pane.input.value=command;pane.render();}", command)
+    page.get_by_role('button',name='Send message',exact=True).first.click()
+    assert 'nothing was sent' in page.locator('#left [role=alert]').inner_text()
+    assert page.evaluate('calls') == []
+    assert page.evaluate('pane.input.value') == command
+    assert not errors
+
+
 @pytest.mark.parametrize('width', [390, 1600])
 def test_hook_inspector_reads_only_and_preserves_draft(pane, width):
     page, errors = pane

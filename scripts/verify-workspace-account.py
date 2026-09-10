@@ -16,7 +16,7 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
 
 
-async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False):
+async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False):
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
     with tempfile.TemporaryDirectory(prefix="serena-account-proof-") as directory:
@@ -71,6 +71,14 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
             if hooks:
                 catalog = await owner.list_hooks()
                 assert catalog == {"data": [], "errors": [], "warnings": []}, catalog
+            if command_guard:
+                for command in ("/plugins", "/delete", "/debug-config", "/unknown"):
+                    try:
+                        await owner.submit([{"type": "text", "text": command}])
+                    except ValueError as error:
+                        assert "not sent to the model" in str(error)
+                    else:
+                        raise AssertionError("Unrouted command was accepted")
             if modes:
                 from core.workspace_host import WorkspaceHost
                 from core.workspace_journal import WorkspaceJournal
@@ -146,6 +154,7 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
                       "nativeUnsignedLimitsRefused": limits,
                       "nativeSignedLimitsRead": signed_limits,
                       "nativeEmptyHookCatalogRead": hooks,
+                      "unroutedCommandsRefusedOnNativeOwner": command_guard,
                       "closedViewRetiredWithoutWaking": pause,
                       "childReaped": True, "temporaryProfileRemoved": True}))
 
@@ -158,7 +167,8 @@ if __name__ == "__main__":
     parser.add_argument("--limits", action="store_true", help="Verify native unsigned account-limit refusal without inference")
     parser.add_argument("--signed-limits", action="store_true", help="Read real limits with an isolated subscription login copy; no inference")
     parser.add_argument("--hooks", action="store_true", help="Read native empty hook inventory without running hooks")
+    parser.add_argument("--command-guard", action="store_true", help="Reject unsupported slash input on a disposable native owner")
     args = parser.parse_args()
-    if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks):
+    if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks or args.command_guard):
         parser.error("--signed-limits must run alone")
-    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks))
+    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard))
