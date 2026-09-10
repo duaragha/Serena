@@ -398,6 +398,8 @@ class CodexWorkspace:
             if self.state != 'ready' or self.questions:
                 raise WorkspaceRpcError('Finish the active turn before rewinding history')
             revision = self._history_revision
+            if (await self.list_background_tasks())["data"]:
+                raise WorkspaceRpcError('Stop background tasks before rewinding history')
             page = await self._history_page()
             if (self.state != 'ready' or revision != self._history_revision or not page['turns']
                     or page['turns'][-1]['id'] != expected_latest_turn_id):
@@ -406,7 +408,8 @@ class CodexWorkspace:
             try:
                 result = await self.rpc.request('thread/revert', {
                     'threadId': self.session_id, 'beforeTurnId': before_turn_id})
-                if not isinstance(result, dict) or result.get('thread', {}).get('id') != self.session_id:
+                thread = result.get('thread') if isinstance(result, dict) else None
+                if not isinstance(thread, dict) or thread.get('id') != self.session_id:
                     raise WorkspaceRpcError('Native rewind was not confirmed; do not repeat it')
                 async with asyncio.timeout(15):
                     while self._history_revision == revision or self.state == 'reconciling':

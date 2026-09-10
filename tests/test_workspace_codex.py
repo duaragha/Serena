@@ -1051,7 +1051,8 @@ def test_revert_rejects_inflight_old_history_page(tmp_path):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('case', ['ok', 'unconfirmed', 'busy', 'stale', 'rejected'])
+@pytest.mark.parametrize('case', ['ok', 'unconfirmed', 'busy', 'stale', 'rejected',
+                                  'background', 'unknown_background', 'null_thread', 'foreign_thread'])
 def test_rewind_requires_confirmation_current_history_and_same_owner(tmp_path, case):
     async def run():
         owner, rpc, _ = await make(tmp_path)
@@ -1059,11 +1060,19 @@ def test_rewind_requires_confirmation_current_history_and_same_owner(tmp_path, c
         calls = []
         async def request(method, params):
             calls.append((method, params))
+            if method == 'thread/backgroundTerminals/list':
+                assert params == {'threadId': owner.session_id, 'limit': 100}
+                if case == 'unknown_background':
+                    raise WorkspaceRpcError('Background query failed')
+                return {'data': ([{'processId': 'live', 'itemId': 'item', 'command': 'sleep 60',
+                                  'cwd': str(tmp_path)}] if case == 'background' else [])}
             if method == 'thread/turns/list':
                 return {'data': [{'id': 'latest', 'status': 'completed', 'items': []}], 'nextCursor': None}
             assert method == 'thread/revert'
             if case == 'rejected':
                 raise WorkspaceRpcError('Native refusal')
+            if case in {'null_thread', 'foreign_thread'}:
+                return {'thread': None if case == 'null_thread' else {'id': 'foreign'}}
             owner._history_revision += 1
             owner.state = 'ready'
             return {'thread': {'id': owner.session_id}}
@@ -1078,9 +1087,12 @@ def test_rewind_requires_confirmation_current_history_and_same_owner(tmp_path, c
             else:
                 with pytest.raises((ValueError, WorkspaceRpcError)):
                     await owner.revert_history('latest', 'old' if case == 'stale' else 'latest', case != 'unconfirmed')
-                assert any(m == 'thread/revert' for m, _ in calls) is (case == 'rejected')
-                if case == 'rejected':
+                ambiguous = case in {'rejected', 'null_thread', 'foreign_thread'}
+                assert any(m == 'thread/revert' for m, _ in calls) is ambiguous
+                if ambiguous:
                     assert owner.state == 'uncertain'
+                elif case in {'background', 'unknown_background'}:
+                    assert owner.state == 'ready'
         finally:
             await owner.close()
     asyncio.run(run())

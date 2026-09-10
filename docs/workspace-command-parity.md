@@ -5,6 +5,22 @@ that a command's full behavior works. Gemini is deferred.
 
 ## Explicit Codex Rewind Control (2026-09-10)
 
+Follow-up safety audit: native background terminals must also be empty before
+rewind; idle turn state alone is insufficient. Failed task discovery refuses
+rewind without mutating history. Null or foreign native thread confirmations
+leave the owner uncertain instead of claiming success.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q --tb=short
+# exit 0: 112 passed in 4.03s, including active/unknown background tasks and
+# null/foreign native confirmations.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-revert.py
+# exit 0: native empty-background query and exact-session rewind; same process,
+# retained prefix, no inference, complete disposable cleanup.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py tests/test_workspace_codex.py
+# exit 0: All checks passed.
+```
+
 Session actions now exposes Rewind conversation for Codex. It requires a chosen
 turn and explicit confirmation, verifies the latest turn has not changed, and
 uses the existing owner's native `thread/revert` request. It does not undo files,
@@ -449,6 +465,13 @@ permissions, background tasks and other non-command controls also retain their
 provider-specific delivery gates in the main contract.
 
 ### Native Hook Inspection and Plugin Constraint
+
+Rechecked [official hooks documentation](https://learn.chatgpt.com/docs/hooks)
+on 2026-09-10: trust applies to the current hook definition hash; changed hooks
+require renewed review, while managed hooks cannot be disabled. The installed
+0.153.4 `ClientRequest.json` exposes `hooks/list`, not a trust/enable mutation.
+Do not substitute a blanket bypass or project trust change for exact hook trust.
+Hook management remains an explicit parity gap, not covered by the inspector.
 
 ### Project Diff Receipts (2026-09-10)
 
