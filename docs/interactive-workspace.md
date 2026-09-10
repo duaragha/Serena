@@ -2,6 +2,38 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Pane Focus (2026-09-10)
+
+Native frames now report real focus/pointer interaction to the parent. The parent
+checks origin, exact frame identity, exact session, actual focused iframe,
+document focus and visible geometry before updating its selected runtime,
+highlight and status and acknowledging that chat. It does not call the composer
+focus function, replace the iframe, start a provider or send input. Focus listeners
+are removed with the view. Toolbar/dialog focus therefore is not stolen by the
+parent when the user clicks a control inside the other half of a split.
+
+Verified with both-provider mounted-browser regressions, including a real input
+click, toolbar focus preservation and rejection of hidden/forged frame messages:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short
+# exit 0: 2 passed in 13.76s
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: actual Electron and native linked Claude/Codex sessions; clicking each
+# composer selected its exact parent runtime, toolbar dialogs retained focus,
+# drafts survived, no extra owners, all isolated processes reaped
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_app.py
+# exit 0
+node --check scripts/verify-workspace-electron.cjs
+# exit 0
+```
+
+The live check also retained all existing attention, clipboard, login controls,
+native command/history, linked-creation and view-close checks. No inference or
+user session changes occurred. This establishes renderer focus routing, not
+resident work-router focus publication: `_reportWebRuntimeContext` still assumes
+a PTY websocket. That host-context integration, idle-process sleep, Windows refresh
+and final release/default activation remain open. No installed app was replaced.
+
 ## Attention Acknowledgement (2026-09-10)
 
 Native output used to call `_markActive()` unconditionally, which also cleared

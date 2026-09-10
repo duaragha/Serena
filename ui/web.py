@@ -7141,6 +7141,16 @@ function _startStructuredPane(sid, opts) {
   });
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
+    if(event.data.type==='serena-workspace-focused'){
+      const rect=mount.getBoundingClientRect();
+      if(currentTab!=='chats' || convMode!=='live' || !document.hasFocus() || document.activeElement!==frame
+        || !rect.width || !rect.height || getComputedStyle(mount).visibility!=='visible')return;
+      activeTermSid=sid;_webRuntimeFocusSid=sid;
+      for(const [id,entry] of termSessions)entry.mount.classList.toggle('runtime-focused',id===sid);
+      setTermStatus(runtime.state,runtime.state==='unavailable'?'error':'');
+      _clearAttention(sid);
+      return;
+    }
     if(event.data?.type==='serena-workspace-handoff-result'){
       const pending=handoffs.get(event.data.requestId);
       if(pending){clearTimeout(pending.timer);handoffs.delete(event.data.requestId);pending.resolve(event.data.result);}

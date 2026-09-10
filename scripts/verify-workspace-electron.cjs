@@ -257,6 +257,19 @@ async function main() {
     assert.ok(linkedRows.every(row=>row.display_title==='Electron linked native pair'));
     assert.equal(creations,4);
     await page.waitForFunction(()=>document.querySelectorAll('iframe[src^="/workspace/new?"]').length===0);
+    for(const [index,id] of linkedIds.entries()){
+      const linkedPane=page.frameLocator(`iframe[src="/workspace/${id}"]`);
+      const draft=linkedPane.getByRole('textbox',{name:`Message ${index===0?'Claude':'Codex'}`,exact:true});
+      await draft.fill(`Keep the ${index===0?'Claude':'Codex'} draft`);
+      await draft.click();
+      await page.waitForFunction(id=>activeTermSid===id && _webRuntimeFocusSid===id,id);
+      assert.equal(await page.locator(`.term-pane[data-sid="${id}"]`).evaluate(el=>el.classList.contains('runtime-focused')),true);
+      await linkedPane.getByRole('button',{name:'Session events',exact:true}).click();
+      await linkedPane.getByRole('dialog',{name:'Session events',exact:true}).waitFor();
+      assert.equal(await draft.evaluate(el=>el===document.activeElement),false);
+      await linkedPane.getByRole('button',{name:'Close session events',exact:true}).click();
+      assert.equal(await draft.inputValue(),`Keep the ${index===0?'Claude':'Codex'} draft`);
+    }
     await page.screenshot({path:path.join(artifacts,'electron-native-linked-created.png')});
     assert.ok(linkedRows.every(row=>row.workspace_runtime?.ok && row.workspace_runtime.session_id===row.session_id));
     const hiddenOwners=await page.evaluate(async ids=>{
@@ -280,6 +293,7 @@ async function main() {
     console.log('PASS: corrupt saved creation record disabled submission without replacing the record or launching another session');
     console.log('PASS: multi-agent picker created exact native Claude/Codex identities with one retained title and persisted group before any model input');
     console.log('PASS: closing both linked views kept their real owners in Active; reopening observed the same session without creating another');
+    console.log('PASS: clicking either native linked composer selected its exact parent session; toolbar dialogs retained focus and drafts survived');
   } catch (error) {
     if (app) {
       const page = await app.firstWindow();

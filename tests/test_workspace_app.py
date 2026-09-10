@@ -347,7 +347,7 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
             """<!doctype html><html><body style="margin:0;background:#000">
 <main id="termMounts" style="height:100vh"></main><script>
 const termSessions=new Map();let activeTermSid=null;
-let convMode='live',currentTab='chats';
+let convMode='live',currentTab='chats',_webRuntimeFocusSid=null;
 const _pseudoSessions=[{session_id:'new-proof',pending_rename_title:'My named conversation'}];
 let sessionSource=[..._pseudoSessions];
 const _pendingTermPartners=new Map();const _fdPairResolved={};window.linked=[];
@@ -520,6 +520,23 @@ function setTermStatus(status){window.lastStatus=status;}
             assert page.locator("iframe").count() == 1
             assert nested.locator(".xterm").count() == 0
             assert page.evaluate("termSessions.get('exact').state") == "ready"
+            page.evaluate("activeTermSid='other';_attentionSids.add('exact')")
+            nested.get_by_role('textbox', name=f'Message {provider.capitalize()}').click()
+            page.wait_for_function("activeTermSid==='exact' && _webRuntimeFocusSid==='exact'")
+            assert not page.evaluate("_attentionSids.has('exact')")
+            assert page.evaluate("termSessions.get('exact').mount.classList.contains('runtime-focused')")
+            nested.get_by_role('button', name='Session events', exact=True).click()
+            nested.get_by_role('dialog', name='Session events').wait_for()
+            assert not nested.get_by_role('textbox', name=f'Message {provider.capitalize()}').evaluate('el=>el===document.activeElement')
+            nested.get_by_role('button', name='Close session events', exact=True).click()
+            page.evaluate("activeTermSid='other';_attentionSids.add('exact');termSessions.get('exact').mount.style.display='none'")
+            page.frames[1].evaluate("""()=>parent.postMessage({type:'serena-workspace-focused',sid:'exact'},location.origin)""")
+            page.wait_for_timeout(50)
+            assert page.evaluate("activeTermSid==='other' && _attentionSids.has('exact')")
+            page.evaluate("termSessions.get('exact').mount.style.display=''")
+            page.evaluate("window.postMessage({type:'serena-workspace-focused',sid:'exact'},location.origin)")
+            page.wait_for_timeout(50)
+            assert page.evaluate("activeTermSid==='other' && _attentionSids.has('exact')")
             page.evaluate("_attentionSids.add('exact'); activeTermSid='another-chat'")
             page.frames[1].evaluate("""()=>parent.postMessage({type:'serena-workspace-state',sid:'exact',state:'running'},location.origin)""")
             page.wait_for_function("termSessions.get('exact').busy")

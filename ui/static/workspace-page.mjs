@@ -43,6 +43,13 @@ const visibilityObserver=new IntersectionObserver(entries=>{
 });
 visibilityObserver.observe(pane.root);
 document.addEventListener('visibilitychange',updateVisibility);
+function reportFocus() {
+  if(parent!==window && intersects && document.visibilityState==='visible' && document.hasFocus())
+    parent.postMessage({type:'serena-workspace-focused',sid:boot.sessionId},location.origin);
+}
+document.addEventListener('focusin',reportFocus);
+document.addEventListener('pointerdown',reportFocus);
+window.addEventListener('focus',reportFocus);
 function reportState() {
   if (pane.conversation.status === 'unavailable') showRetry();
   if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:pane.conversation.status},location.origin);
@@ -107,6 +114,8 @@ else connection.observe().then(observing=>{
   button.disabled=false;
 }).catch(connectionFailed);
 window.addEventListener('pagehide', () => {
+  document.removeEventListener('focusin',reportFocus);document.removeEventListener('pointerdown',reportFocus);
+  window.removeEventListener('focus',reportFocus);
   visibilityObserver.disconnect();document.removeEventListener('visibilitychange',updateVisibility);
   connection.dispose();pane.dispose();
 });
