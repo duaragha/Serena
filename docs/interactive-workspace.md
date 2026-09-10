@@ -2,6 +2,60 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Integrated Linux Package Proof (2026-09-10)
+
+Current production source `56f5062` was rebuilt and verified with the expanded
+Electron proof below. The native binary SHA256 is
+`7a77fec7eb14e352a67c905e40c4d4c6e93edaf8e7b25d5be87bf142f60d3a8a`.
+No installed app or running user service was replaced or restarted.
+
+The initial build failed with ENOSPC, desktop tests exited 228, and the concurrent
+Python suite was interrupted after filesystem failures (exit 1). Removed only
+three disposable Gemini proof dependency files (2.6 GiB) inside this worktree's
+ignored build directory. Space remained unavailable until a subsequent external
+change left 17 GiB free. The interrupted owned processes were confirmed gone;
+build resumed from the unchanged saved analysis rather than repeating it.
+
+Commands run separately from repository root unless noted:
+```sh
+env PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m PyInstaller --noconfirm --distpath apps/desktop/build/sidecar --workpath apps/desktop/build/pyinstaller-work apps/desktop/build/pyinstaller-work/serena-web-sidecar.spec
+# exit 0: frozen sidecar collected successfully
+/home/raghav/Documents/Projects/serena/.venv/bin/python scripts/fleet_peer_smoke.py --binary /home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: bundled capability-refusal smoke; no Fleet run or worker started
+# initial relative-path invocation exited 1 because smoke changes cwd
+npm test
+# from apps/desktop; exit 0: 73 tests passed
+env PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace*.py -q --tb=short
+# exit 0: 632 passed, 10 skipped, forkpty warning, 207.38s
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: native Codex + actual Electron flows described below
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: native Claude frozen desktop/mobile flows described below
+```
+
+Expanded Electron verification selects exactly the intended picker agents, then
+creates standalone Codex, standalone Claude and an actual linked Claude/Codex pair.
+Each receives its exact persisted identity and chosen title. The pair shares a
+persisted group before any model input. Closing Electron preserves exactly two
+new owned processes per provider, plus all pre-existing proof owners. No duplicate
+writer, credentials or inference are used; every isolated child is reaped at end.
+The account dialog starts real native ChatGPT browser login, survives dismissal,
+then cancels explicitly by native ID without opening a browser or replacing auth.
+Clipboard output-copy and multiline paste, corrupted-creation refusal, history,
+native shell commands, mentions, skills, fork and disconnect/resume all pass.
+
+Claude separately proves actual SDK queued UUIDs, local command output, native
+effort/agent controls, Python/Electron worker ownership, skills/plugins reload,
+mentions, history, clear and fork on desktop/mobile with no console/HTTP errors.
+Screenshots in `apps/desktop/build/workspace-proof/` were inspected, including
+`electron-native-workspace.png` and `electron-native-linked-created.png`.
+The latter intentionally shows empty newly created panes awaiting explicit
+view attachment; it is not evidence of linked inference or auto-attachment.
+
+Windows current-source packaging, installed-profile auth, remaining command/
+lifecycle parity and release/default activation remain unproven. Gemini remains
+deferred by the user's explicit scope change.
+
 ## Current Desktop Integration (2026-09-10)
 
 Integrated origin/master through `559ffeb` into this feature branch, including
@@ -3963,7 +4017,7 @@ Each gate requires provider-specific proof, not a generic mock passing.
   work. Inventory each provider's advertised commands and account for each one.
 - CLI-only presentation functions need native equivalents; no raw-terminal toggle
   presented as satisfying the requested full custom interface.
-- Linked Claude/Codex/Gemini isolation and routing; Fleet/bridge callers use the
+- Linked Claude/Codex isolation and routing (Gemini deferred); Fleet/bridge callers use the
   same owner, not a second process. Usage, pause/wake and attention remain accurate.
 - Reconnect, reload, close view, app restart, provider failure, process failure and
   history restore are tested. Closing a view must not cancel work.

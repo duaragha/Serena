@@ -43,6 +43,17 @@ async function main() {
         image:formats.includes('image/png')?clipboard.readImage().toDataURL():null};
     });
     const page = await app.firstWindow();
+    async function selectAgents(wanted) {
+      for(const agent of wanted){
+        const button=page.locator(`#modalAgentPicker [data-agent="${agent}"]`);
+        if(await button.getAttribute('aria-pressed')!=='true')await button.click();
+      }
+      for(const agent of ['claude','codex','gemini']){
+        const button=page.locator(`#modalAgentPicker [data-agent="${agent}"]`);
+        if(!wanted.includes(agent) && await button.getAttribute('aria-pressed')==='true')await button.click();
+      }
+      assert.deepEqual(await page.locator('#modalAgentPicker [aria-pressed="true"]').evaluateAll(buttons=>buttons.map(button=>button.dataset.agent)),wanted);
+    }
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.waitForURL(base + '/');
@@ -90,6 +101,18 @@ async function main() {
     await input.press('Control+V');
     assert.equal((await input.inputValue()).trim(), 'SERENA_ELECTRON_NATIVE');
     assert.match(await pane.locator('.aw-state').innerText(), /^(ready|completed)$/);
+    await pane.getByRole('button',{name:'Codex account',exact:true}).click();
+    const account=pane.getByRole('dialog',{name:'Codex account',exact:true});
+    await account.getByRole('button',{name:'Sign in with ChatGPT',exact:true}).click();
+    const authorize=account.getByRole('link',{name:'Continue browser sign-in',exact:true});
+    await authorize.waitFor();
+    assert.match(await authorize.getAttribute('href'),/^https:\/\/(auth\.openai\.com|auth0\.openai\.com|chatgpt\.com)\//);
+    await account.getByRole('button',{name:'Close account',exact:true}).click();
+    await pane.getByRole('button',{name:'Codex account',exact:true}).click();
+    await account.getByRole('button',{name:'Cancel browser sign-in',exact:true}).click();
+    await account.getByText('Sign-in: cancelled',{exact:true}).waitFor();
+    await account.getByRole('button',{name:'Close account',exact:true}).click();
+    assert.equal((await input.inputValue()).trim(),'SERENA_ELECTRON_NATIVE');
     assert.equal(page.url(), base + '/');
     await page.screenshot({path: path.join(artifacts, 'electron-native-workspace.png')});
     let creations = 0;
@@ -98,7 +121,7 @@ async function main() {
     });
     await page.getByRole('button', {name:'New chat',exact:true}).click();
     await page.locator('#modalInput').fill('Electron native new chat');
-    await page.locator('#modalAgentPicker [data-agent="codex"]').click();
+    await selectAgents(['codex']);
     await page.locator('#modalConfirmBtn').click();
     const creation = page.frameLocator('iframe[src^="/workspace/new?"]');
     await creation.getByRole('button',{name:'Create Codex chat',exact:true}).waitFor();
@@ -132,7 +155,7 @@ async function main() {
     await page.screenshot({path:path.join(artifacts,'electron-native-created.png')});
     await page.getByRole('button',{name:'New chat',exact:true}).click();
     await page.locator('#modalInput').fill('Electron native Claude chat');
-    await page.locator('#modalAgentPicker [data-agent="claude"]').click();
+    await selectAgents(['claude']);
     await page.locator('#modalConfirmBtn').click();
     const claudeCreation = page.frameLocator('iframe[src^="/workspace/new?"]');
     await claudeCreation.getByRole('button',{name:'Create Claude chat',exact:true}).waitFor();
@@ -172,12 +195,41 @@ async function main() {
     assert.equal(claudeRows[0].agent,'claude');
     assert.equal(creations,2);
     await page.screenshot({path:path.join(artifacts,'electron-native-claude-created.png')});
+    await page.getByRole('button',{name:'New chat',exact:true}).click();
+    await page.locator('#modalInput').fill('Electron linked native pair');
+    await selectAgents(['claude','codex']);
+    await page.locator('#modalConfirmBtn').click();
+    assert.equal(creations,2);
+    const linkedIds=[];
+    for(const provider of ['claude','codex']){
+      const label=provider==='claude'?'Claude':'Codex';
+      const pending=page.frameLocator(`iframe[src^="/workspace/new?"][src*="provider=${provider}"]`);
+      await pending.getByRole('button',{name:`Create ${label} chat`,exact:true}).click();
+      await pending.getByRole('button',{name:'Open conversation',exact:true}).waitFor();
+      const target=(await pending.getByRole('status').innerText()).replace('Session ','');
+      assert.match(target,/^[a-f0-9-]{36}$/);linkedIds.push(target);
+      await pending.getByRole('button',{name:'Open conversation',exact:true}).click();
+      await page.locator(`iframe[src="/workspace/${target}"]`).waitFor();
+    }
+    await page.waitForFunction(async ids=>{
+      const rows=await(await fetch('/api/sessions')).json();
+      const members=ids.map(id=>rows.find(row=>row.session_id===id));
+      return members.every(Boolean) && members[0].group && members[0].group===members[1].group;
+    },linkedIds);
+    const linkedRows=await page.evaluate(async ids=>(await(await fetch('/api/sessions')).json()).filter(row=>ids.includes(row.session_id)),linkedIds);
+    assert.equal(linkedRows.length,2);
+    assert.ok(linkedRows.every(row=>row.display_title==='Electron linked native pair'));
+    assert.equal(creations,4);
+    assert.equal(await page.locator('iframe[src^="/workspace/new?"]').count(),0);
+    await page.screenshot({path:path.join(artifacts,'electron-native-linked-created.png')});
     assert.deepEqual(errors, []);
     console.log('PASS: real Electron main/preload, isolated frozen backend, native session input/output and skill catalog; sandbox/context isolation configured, Node integration off');
     console.log('PASS: real Electron clipboard copied native output and pasted multiline text without sending or losing the session');
+    console.log('PASS: packaged native browser-login start, reopen and cancellation preserved the draft; no browser opened or credentials replaced');
     console.log('PASS: actual Electron New Chat button preserved its chosen title through exact native creation, iframe handoff and native input');
     console.log('PASS: actual Electron Claude New Chat used the selected provider, retained title through indexing, and rendered native local-command output');
     console.log('PASS: corrupt saved creation record disabled submission without replacing the record or launching another session');
+    console.log('PASS: multi-agent picker created exact native Claude/Codex identities with one retained title and persisted group before any model input');
   } catch (error) {
     if (app) {
       const page = await app.firstWindow();

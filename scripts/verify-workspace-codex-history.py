@@ -283,7 +283,7 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                 if windows_job is not None:
                     windows_job.assign(proof.pid)
                 try:
-                    out, err = proof.communicate(timeout=90)
+                    out, err = proof.communicate(timeout=150)
                 finally:
                     with suppress(ProcessLookupError):
                         if os.name != "nt":
@@ -294,10 +294,10 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                 print(out)
                 assert proof.returncode == 0, err
                 after = owners()
-                assert set(before).issubset(after) and len(after) == len(before) + 1, "Expected exactly one additional New Chat owner"
+                assert set(before).issubset(after) and len(after) == len(before) + 2, "Expected exactly two additional Codex owners (standalone and linked)"
                 claude_after = claude_owners()
-                assert set(claude_before).issubset(claude_after) and len(claude_after) == len(claude_before) + 1, "Expected exactly one new Claude owner"
-                print("PASS: closing the real Electron shell preserved existing native owners and its one new Codex and one new Claude owner")
+                assert set(claude_before).issubset(claude_after) and len(claude_after) == len(claude_before) + 2, "Expected exactly two additional Claude owners (standalone and linked)"
+                print("PASS: closing the real Electron shell preserved existing owners and exactly two new owners per provider")
         except BaseException:
             log.seek(0)
             print(log.read()[-5000:], file=sys.stderr)
