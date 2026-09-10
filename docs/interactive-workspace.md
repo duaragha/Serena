@@ -2,6 +2,46 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Current Linux Packaged Verification
+
+2026-09-10, source `7c2cb28`: rebuilt the Linux sidecar and exercised actual native
+Codex/Claude sessions through the frozen HTTP backend and real Electron shell.
+Each command below exited **0**. No installed app, user credentials, existing
+chat, or live service was changed. These are local-command lifecycle proofs,
+not authenticated model inference or a completed three-provider replacement.
+
+From `apps/desktop`:
+
+```sh
+env PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar
+```
+
+Build and bundled capability-refusal smoke passed. PyInstaller emitted optional
+dependency/library warnings (including tensorboard, pycparser tables, HIP and
+Windows libraries); do not interpret this as a warning-free build.
+
+From the worktree root:
+
+```sh
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+```
+
+Codex: 51 print-only turns, 50-plus-older history, exact resume, duplicate receipt
+suppression, mentions, skill settings, disconnect/reopen and fork passed. Real
+Electron main/preload verified sandbox/context isolation, Node integration off,
+clipboard copy/multiline paste, Codex/Claude creation with retained titles,
+corrupt-creation refusal and surviving owners after window close. Desktop Electron
+and mobile frozen-pane screenshots were inspected. Cleanup reaped all isolated
+owners and left the fixture project unchanged.
+
+Claude: exact queued UUID completions, effort/agent acknowledgment, Python/SDK
+transport, exclusive lease, reloads, history and fork recovery passed. Frozen
+desktop/mobile checks reported no page/console/HTTP errors or horizontal overflow.
+Clear handed off identity within the same process; fork left its source unchanged.
+All isolated processes were reaped. Windows latest-source rebuild and authenticated
+provider flows remain separate outstanding verification gates.
+
 ## Shared Image Viewer
 
 2026-09-10: decoded history, assistant and tool images open in a native modal
