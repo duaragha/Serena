@@ -57,6 +57,7 @@ DEFAULT_TESTS = (
     "tests/test_fleet_supervisor.py",
     "tests/test_fleet_workers.py",
     "tests/test_fleet_windows_job.py",
+    "tests/test_fleet_helper_crash.py",
     "tests/test_fleet_resources.py",
     "tests/test_fleet_evidence_recovery.py",
     "tests/test_fleet_checkout.py",

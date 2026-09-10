@@ -173,6 +173,14 @@ already-recorded verifier rejections do not schedule this recovery. These tests
 exercise real helper subprocess exits and ordinary completion/Git gates on retry;
 they do not claim that Windows model-worker crash classification is solved.
 
+The frozen replay build smoke also runs an external process-kill probe after
+Git application. It checks the attempt PID, lease owner and process birth token
+before killing that disposable helper, verifies its gate process is gone, then
+requires journal postimage recovery and real completion/Git checks on replay.
+The same probe runs against source. Retry cooldown is advanced in the temporary
+test database; this does not prove the resident service timer or a live business
+run recovered unattended.
+
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
 attempt as evidence. Independent ready work continues; a run with only parked work releases its

@@ -57,7 +57,7 @@ Write-Host "[windows] testing native Fleet locks and patch transport"
 Assert-LastExitCode "Native Fleet lock and patch tests"
 
 Write-Host "[windows] testing native Fleet helper process ownership"
-& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_job.py") -q
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_job.py") (Join-Path $RepoRoot "tests\test_fleet_helper_crash.py") -q
 Assert-LastExitCode "Native Fleet helper job tests"
 
 Write-Host "[windows] testing unrecorded Fleet helper exit recovery"
