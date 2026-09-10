@@ -194,13 +194,13 @@ export class WorkspaceConnection {
   pendingAgentMessages() {
     return Object.entries(this.pending).filter(([key])=>key.startsWith('{')).map(([key,requestId])=>({
       ...JSON.parse(key),requestId,
-    })).filter(value=>value.action==='steer_agent');
+    })).filter(value=>['steer_agent','continue_agent'].includes(value.action));
   }
 
   async retryAgentMessage(requestId) {
     const matches=this.pendingAgentMessages().filter(value=>value.requestId===requestId);
     if(matches.length!==1)throw Error('Agent receipt is no longer pending');
-    return this.command('steer_agent',matches[0].payload);
+    return this.command(matches[0].action,matches[0].payload);
   }
 
   async sendMessage(action, {text, files = [], options = {}, expectedTurnId}) {
@@ -266,6 +266,7 @@ export class WorkspaceConnection {
       inspectAgent: (thread_id,cursor=null) => this.command('inspect_agent', {thread_id,cursor}),
       interruptAgent: (thread_id,expected_turn_id) => this.command('interrupt_agent', {thread_id,expected_turn_id,confirmed:true}),
       steerAgent: (thread_id,expected_turn_id,text,files) => this.sendAgentMessage(thread_id,expected_turn_id,text,files),
+      continueAgent: (thread_id,expected_latest_turn_id,text) => this.command('continue_agent', {thread_id,expected_latest_turn_id,text,confirmed:true}),
       pendingAgentMessages: () => this.pendingAgentMessages(),
       retryAgentMessage: id => this.retryAgentMessage(id),
       updateGoal: (changes,expected) => this.command('update_goal', {changes,expected,confirmed:true}),

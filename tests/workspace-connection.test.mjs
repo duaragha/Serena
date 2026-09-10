@@ -11,6 +11,28 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('idle continuation retry preserves original expected history and command receipt',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'parent',token:'token',storage:saved,receive:()=>{},error:()=>{},
+    fetcher:async(url,request)=>{
+      calls.push([url,JSON.parse(request.body)]);
+      if(calls.length===1)throw Error('lost response');
+      return response({ok:true,result:{accepted:true,threadId:'child',turnId:'new-turn'}});
+    }};
+  let conn=new WorkspaceConnection(options);
+  assert.deepEqual(calls,[]);
+  await assert.rejects(conn.controls().continueAgent('child','latest','Continue'),/lost response/);
+  conn.dispose();conn=new WorkspaceConnection(options);
+  try{
+    const [pending]=conn.controls().pendingAgentMessages();
+    assert.equal(pending.action,'continue_agent');
+    await conn.controls().retryAgentMessage(pending.requestId);
+    assert.deepEqual(calls[0],calls[1]);
+    assert.deepEqual(calls[0][1].payload,{thread_id:'child',expected_latest_turn_id:'latest',text:'Continue',confirmed:true});
+    assert.deepEqual(conn.pending,{});
+  }finally{conn.dispose();}
+});
+
 test('agent files use parent uploads and survive lost response without reupload or duplicate receipt',async()=>{
   const saved=storage(),calls=[];
   const options={sessionId:'parent',token:'token',storage:saved,receive:()=>{},error:()=>{},

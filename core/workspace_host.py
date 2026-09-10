@@ -809,6 +809,7 @@ class WorkspaceHost:
             "inspect_agent",
             "interrupt_agent",
             "steer_agent",
+            "continue_agent",
             "review",
             "compact",
             "background_tasks",
@@ -1128,6 +1129,12 @@ class WorkspaceHost:
                     if "inputs" in routed:
                         routed["inputs"] = await asyncio.to_thread(self.uploads.codex_inputs, sid, routed["inputs"])
                     result = await owner.steer_agent(**routed)
+                elif action == "continue_agent":
+                    if provider != "codex" or set(payload) != {"thread_id", "expected_latest_turn_id", "text", "confirmed"}:
+                        raise ValueError("An exact confirmed idle agent continuation is required")
+                    if self._bridge_queues.get(sid):
+                        raise ValueError("Resolve queued messages before continuing an idle agent")
+                    result = await owner.continue_agent(**payload)
                 elif action == "interrupt_agent":
                     if provider != "codex" or set(payload) != {"thread_id", "expected_turn_id", "confirmed"}:
                         raise ValueError("An exact confirmed agent interruption is required")

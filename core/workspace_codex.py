@@ -460,6 +460,38 @@ class CodexWorkspace:
                 raise WorkspaceRpcError("Agent message delivery was not confirmed")
             return {"threadId": thread_id, "turnId": expected_turn_id, "accepted": True}
 
+    async def continue_agent(self, thread_id, expected_latest_turn_id, text, confirmed):
+        if (confirmed is not True or not isinstance(expected_latest_turn_id, str)
+                or not 1 <= len(expected_latest_turn_id) <= 256
+                or not isinstance(text, str) or not text.strip() or "\0" in text or len(text.encode()) > 65536):
+            raise ValueError("Confirm the exact idle agent and a message of at most 64 KiB")
+        inputs = [{"type": "text", "text": text}]
+        self._reject_unrouted_command(inputs)
+        async with self._control_lock:
+            if self.state != "ready" or self.active_turn or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Wait for parent and delegated work before continuing an idle agent")
+            snapshot = await self.inspect_agent(thread_id)
+            thread = snapshot["thread"]
+            turns = thread["turns"]
+            if (thread.get("status", {}).get("type") != "idle" or not turns
+                    or turns[-1]["id"] != expected_latest_turn_id
+                    or any(turn.get("status") not in {"completed", "interrupted", "failed"} for turn in turns)
+                    or self.state != "ready" or self.active_turn or self.questions or self.active_agent_threads):
+                raise WorkspaceRpcError("Agent changed or is not loaded and idle; refresh before continuing")
+            # Reserve before issuing the request: a fast native completion may
+            # arrive before the response, and must remain authoritative.
+            self.active_agent_threads.add(thread_id)
+            try:
+                result = await self.rpc.request("turn/start", {"threadId": thread_id, "input": inputs})
+                turn = result.get("turn") if isinstance(result, dict) else None
+                if not isinstance(turn, dict) or not isinstance(turn.get("id"), str) or not turn["id"]:
+                    raise WorkspaceRpcError("Agent continuation was not confirmed")
+                return {"accepted": True, "threadId": thread_id, "turnId": turn["id"]}
+            except BaseException:
+                # Do not make an ambiguous start eligible for a second writer.
+                self.state = "uncertain"
+                raise
+
     async def interrupt_agent(self, thread_id, expected_turn_id, confirmed):
         if confirmed is not True or not isinstance(expected_turn_id, str) or not 1 <= len(expected_turn_id) <= 256:
             raise ValueError("An exact agent turn and explicit stop confirmation are required")

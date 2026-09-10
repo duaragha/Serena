@@ -942,6 +942,9 @@ def test_agent_reads_use_existing_parent_even_when_job_reserved(tmp_path):
         async def steer_agent(self, **payload):
             calls.append(('steer', self.sid, payload))
             return {'accepted': True}
+        async def continue_agent(self, **payload):
+            calls.append(('continue', self.sid, payload))
+            return {'accepted': True}
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'agents.db'),
                          resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
                          factories={'codex': AgentOwner})
@@ -963,6 +966,16 @@ def test_agent_reads_use_existing_parent_even_when_job_reserved(tmp_path):
         assert host.command('exact', 'steer', 'steer_agent', message)['ok']
         assert host.command('exact', 'steer', 'steer_agent', message)['ok']
         assert calls[3:] == [('steer', 'exact', message)]
+        continuation = {'thread_id': 'child', 'expected_latest_turn_id': 'old', 'text': 'Continue', 'confirmed': True}
+        host._work_reservations['exact'] = {'item_id': 'job'}
+        assert not host.command('exact', 'reserved-continue', 'continue_agent', continuation)['ok']
+        host._work_reservations.clear()
+        host._bridge_queues['exact'] = ['queued']
+        assert not host.command('exact', 'queued-continue', 'continue_agent', continuation)['ok']
+        host._bridge_queues.clear()
+        assert host.command('exact', 'continue', 'continue_agent', continuation)['ok']
+        assert host.command('exact', 'continue', 'continue_agent', continuation)['ok']
+        assert calls[4:] == [('continue', 'exact', continuation)]
         assert list(host._sessions) == ['exact']
         assert not host._sessions['exact'][0].sent
         owner = host._sessions['exact'][0]

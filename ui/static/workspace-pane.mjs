@@ -863,14 +863,18 @@ export class WorkspacePane {
     const stop=this.button('Stop agent turn','square',()=>stopAgent());stop.hidden=true;
     const message=node('textarea');message.setAttribute('aria-label','Message active agent');message.placeholder='Message active agent...';message.rows=3;
     const send=this.button('Send to active agent','arrow-up',()=>sendAgent());
+    const continueConfirm=node('input');continueConfirm.type='checkbox';
+    const continueLabel=node('label');continueLabel.append(continueConfirm,document.createTextNode(' Continue this idle agent'));
+    const continueButton=this.button('Continue idle agent','play',()=>continueAgent());
     this.agentFiles ??= new Map();
     const fileInput=node('input');fileInput.type='file';fileInput.multiple=true;fileInput.hidden=true;
     const attach=this.button('Attach agent files','paperclip',()=>fileInput.click());
     const attachments=node('div','aw-attachments');
     const pending=node('div','aw-agent-pending');pending.setAttribute('aria-label','Unconfirmed agent messages');
-    const composer=node('div','aw-agent-composer');composer.append(message,attachments,fileInput,attach,send,pending);composer.hidden=true;
+    const composer=node('div','aw-agent-composer');composer.append(message,attachments,fileInput,attach,send,continueLabel,continueButton,pending);composer.hidden=true;
     let busy=false,selected=null,listCursor=null,historyCursor=null,activeTurn=null;
-    let draftError=false;
+    let draftError=false,idleLatest=null;
+    const continued=new Set();
     const draftKey=id=>`${this.draftKey}:agent:${id}`;
     const stops=new Set();
     const listCursors=new Set(),historyCursors=new Set(),rows=new Map(),turns=new Map();
@@ -886,10 +890,15 @@ export class WorkspacePane {
       stop.disabled=busy || !stopConfirm.checked || stops.has(JSON.stringify([selected,activeTurn]));
       stopConfirm.disabled=busy;
       composer.hidden=!this.controls.steerAgent || !selected;
-      message.disabled=busy || !activeTurn;
+      const canContinue=!!this.controls.continueAgent && !!idleLatest && this.conversation.status==='ready';
+      message.disabled=busy || (!activeTurn && !canContinue);
+      message.setAttribute('aria-label',canContinue?'Message idle agent':'Message active agent');
+      continueLabel.hidden=continueButton.hidden=!canContinue;
+      continueConfirm.disabled=busy;
       attach.disabled=busy || !activeTurn;
       const files=this.agentFiles.get(selected)||[];
       send.disabled=busy || draftError || !activeTurn || (!message.value.trim() && !files.length);
+      continueButton.disabled=busy || draftError || !canContinue || !continueConfirm.checked || !message.value.trim() || !!files.length || continued.has(JSON.stringify([selected,idleLatest]));
       attachments.replaceChildren();
       for(const file of files){
         const remove=this.button(`Remove agent attachment: ${file.name}`,'x',()=>{
@@ -901,18 +910,35 @@ export class WorkspacePane {
       for(const receipt of this.controls.pendingAgentMessages?.()||[]){
         if(receipt.payload.thread_id!==selected)continue;
         send.disabled=true;
+        continueButton.disabled=true;
         const retry=this.button('Retry unconfirmed agent message','refresh-cw',async()=>{
           if(busy)return;busy=true;enable();
           try{
             const result=await this.controls.retryAgentMessage(receipt.requestId);
-            if(result?.accepted!==true || result.threadId!==receipt.payload.thread_id || result.turnId!==receipt.payload.expected_turn_id)throw Error('Agent message delivery was not confirmed');
+            if(result?.accepted!==true || result.threadId!==receipt.payload.thread_id || !result.turnId
+              || (receipt.action!=='continue_agent' && result.turnId!==receipt.payload.expected_turn_id))throw Error('Agent message delivery was not confirmed');
+            if(receipt.action==='continue_agent')continued.add(JSON.stringify([receipt.payload.thread_id,receipt.payload.expected_latest_turn_id]));
             status.textContent='Previous agent message accepted; current draft retained';
           }catch(error){status.textContent=error.message;}
           finally{busy=false;enable();}
         });retry.disabled=busy;
-        pending.append(node('p','',`Unconfirmed message / turn ${receipt.payload.expected_turn_id}`),retry);
+        pending.append(node('p','',`Unconfirmed message / turn ${receipt.payload.expected_turn_id || receipt.payload.expected_latest_turn_id}`),retry);
       }
       this.refreshIcons();
+    };
+    continueConfirm.addEventListener('change',enable);
+    const continueAgent=async()=>{
+      if(continueButton.disabled)return;
+      const target=selected,latest=idleLatest,text=message.value;busy=true;enable();
+      try{
+        const result=await this.controls.continueAgent(target,latest,text);
+        if(result?.accepted!==true || result.threadId!==target || !result.turnId)throw Error('Agent continuation was not confirmed');
+        continued.add(JSON.stringify([target,latest]));message.value='';
+        status.textContent='Agent continuation accepted; refresh snapshot';
+        try{this.draftStorage.removeItem(draftKey(target));}
+        catch{draftError=true;status.textContent='Agent continuation accepted; saved draft could not be cleared';}
+      }catch(error){status.textContent=error.message;}
+      finally{busy=false;continueConfirm.checked=false;enable();}
     };
     const addFiles=files=>{
       if(busy || !selected || !activeTurn)return;
@@ -973,9 +999,10 @@ export class WorkspacePane {
         if(result.thread?.id!==id || !Array.isArray(result.thread.turns))throw Error('Agent identity or history is invalid');
         if(older && result.historyCursor && historyCursors.has(result.historyCursor))throw Error('Agent history pagination did not advance');
         if(!older){
-          turns.clear();historyCursors.clear();stopConfirm.checked=false;
+          turns.clear();historyCursors.clear();stopConfirm.checked=false;continueConfirm.checked=false;
           const running=result.thread.turns.filter(turn=>turn.status==='inProgress');
           activeTurn=running.length===1?running[0].id:null;
+          idleLatest=result.thread.status?.type==='idle' && !running.length ? result.thread.turns.at(-1)?.id || null : null;
         }
         const merged=new Map(result.thread.turns.map(turn=>[turn.id,turn]));
         for(const [key,value] of turns)if(!merged.has(key))merged.set(key,value);

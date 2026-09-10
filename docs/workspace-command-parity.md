@@ -5,6 +5,42 @@ that a command's full behavior works. Gemini is deferred.
 
 ## Native Agent Inspection (2026-09-10)
 
+### Explicit Idle-Child Continuation
+
+An inspected, loaded idle child can receive a new text turn after checkbox
+confirmation. The existing parent connection rechecks native ancestry, latest
+turn identity, terminal history, parent readiness, outstanding questions and
+active delegated work. Reserved jobs and queued bridge messages reject this
+action. No thread/start, thread/resume, new process, model or permission override
+is used: only turn/start on that child. An ambiguous response leaves ownership
+uncertain and prevents another start, including cancellation while awaiting the
+response. Native completion can release child busy state before acknowledgment
+without the acknowledgment making it busy again.
+
+The UI retains failures, clears accepted drafts, blocks another continuation of
+the same displayed snapshot, and recovers lost-response receipts after reload
+through the original action/payload/request ID. This is text-only continuation;
+active-turn attachment steering remains separate. Unloaded children are not
+silently resumed. Starting while the parent/delegated work is active is rejected.
+
+Official API evidence accessed 2026-09-10:
+https://learn.chatgpt.com/docs/app-server documents turn/start on a specified
+thread and turn/steer's expectedTurnId guard. Installed TurnStartParams has no
+equivalent latest-history compare-and-swap field. The local snapshot recheck is
+not an atomic server-side history guard; no such guarantee is claimed.
+
+Verification:
+
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_idle_agent_continuation_keeps_exact_owner_and_checks_snapshot tests/test_workspace_host.py::test_agent_reads_use_existing_parent_even_when_job_reserved tests/test_workspace_pane.py::test_idle_agent_continuation_is_explicit_and_preserves_failed_draft tests/test_workspace_pane.py::test_active_agent_message_keeps_failed_draft_and_never_starts_idle_turn -q --tb=short`: exit 0, 19 passed in 9.63s. Ready/busy parent, stale/foreign/unloaded child, missing acknowledgment, fast completion, explicit confirmation, duplicate receipts and 390/1600px UI. Screenshots inspected.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_idle_agent_continuation_keeps_exact_owner_and_checks_snapshot -q --tb=short`: exit 0, 14 passed in 0.59s after aligning ambiguity handling with the existing uncertain-state contract.
+- `node --test tests/workspace-connection.test.mjs`: exit 0, 54 passed in 213.402ms, including continuation receipt recovery.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-agents.py`: exit 0, actual native foreign continuation refused with thread/read only, same owner/process, no inference or agents, native shell interruption and cleanup passed. This does not prove successful model-spawned child continuation.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-agents.py`: exit 0, all checks passed.
+- `node --check ui/static/workspace-pane.mjs`: exit 0, no output.
+
+The real spawned-child positive test still requires a fresh dedicated ChatGPT
+login. Full parity, packaged QA, integration and release remain open.
+
 ### Active Child Attachments
 
 The active-child composer accepts picker, dropped and pasted files through the

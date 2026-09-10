@@ -265,6 +265,53 @@ def test_agent_message_steers_exact_turn_without_start_or_resume(tmp_path, case)
 
 
 @pytest.mark.parametrize('state', ['ready', 'running'])
+@pytest.mark.parametrize('case', ['ok', 'stale', 'foreign', 'unloaded', 'ambiguous', 'fast', 'unconfirmed'])
+def test_idle_agent_continuation_keeps_exact_owner_and_checks_snapshot(tmp_path, state, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.state = state
+        owner.active_turn = 'parent-turn' if state == 'running' else None
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/read':
+                return {'thread': {'id': 'child', 'parentThreadId': 'foreign' if case == 'foreign' else owner.session_id,
+                                   'status': {'type': 'notLoaded' if case == 'unloaded' else 'idle'}}}
+            if method == 'thread/turns/list':
+                return {'data': [{'id': 'changed' if case == 'stale' else 'latest', 'status': 'completed', 'items': []}], 'nextCursor': None}
+            assert method == 'turn/start'
+            assert params == {'threadId': 'child', 'input': [{'type': 'text', 'text': 'Continue the review'}]}
+            assert 'child' in owner.active_agent_threads
+            if case == 'ambiguous':
+                raise WorkspaceRpcError('lost response')
+            if case == 'fast':
+                owner.active_agent_threads.discard('child')
+            return {} if case == 'unconfirmed' else {'turn': {'id': 'next', 'status': 'inProgress'}}
+        rpc.request = request
+        try:
+            if state == 'ready' and case in {'ok', 'fast'}:
+                assert await owner.continue_agent('child', 'latest', 'Continue the review', True) == {'accepted': True, 'threadId': 'child', 'turnId': 'next'}
+                assert owner.state == 'ready' and owner.active_turn is None
+                assert ('child' in owner.active_agent_threads) is (case != 'fast')
+            else:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.continue_agent('child', 'latest', 'Continue the review', True)
+            assert any(method == 'turn/start' for method, _ in calls) is (state == 'ready' and case in {'ok', 'fast', 'ambiguous', 'unconfirmed'})
+            if state == 'ready' and case in {'ambiguous', 'unconfirmed'}:
+                assert owner.state == 'uncertain'
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.continue_agent('child', 'latest', 'Continue the review', True)
+                assert sum(method == 'turn/start' for method, _ in calls) == 1
+            assert all(method in {'thread/read', 'thread/turns/list', 'turn/start'} for method, _ in calls)
+            with pytest.raises(ValueError):
+                await owner.continue_agent('child', 'latest', 'Continue', False)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('state', ['ready', 'running'])
 def test_native_rename_targets_and_verifies_exact_thread_without_new_turn(tmp_path, state):
     async def run():
         owner, rpc, _ = await make(tmp_path)

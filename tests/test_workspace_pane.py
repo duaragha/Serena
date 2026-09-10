@@ -378,6 +378,50 @@ def test_agent_drop_paste_and_pending_receipt_recovery(pane, width):
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_idle_agent_continuation_is_explicit_and_preserves_failed_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.agents=async()=>({data:[{id:'child',name:'Review',status:{type:'idle'}}],nextCursor:null});
+      controls.inspectAgent=async id=>({thread:{id,status:{type:'idle'},turns:[{id:'latest',status:'completed',items:[]}]},historyCursor:null});
+      controls.continueAgent=async(...args)=>{calls.push(args);throw Error('Agent changed; refresh');};
+      controls.steerAgent=async()=>{throw Error('Must not steer idle child');};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      pane.input.value='parent draft';pane.openAgents();
+    }""")
+    dialog = page.get_by_role('dialog', name='Delegated agents', exact=True)
+    dialog.get_by_role('button', name='Review child idle', exact=True).click()
+    message = dialog.get_by_role('textbox', name='Message idle agent', exact=True)
+    message.fill('Continue the review')
+    button = dialog.get_by_role('button', name='Continue idle agent', exact=True)
+    assert button.is_disabled()
+    assert dialog.get_by_role('button', name='Attach agent files', exact=True).is_disabled()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('checkbox', name='Continue this idle agent').check()
+    button.click()
+    dialog.get_by_text('Agent changed; refresh', exact=True).wait_for()
+    assert message.input_value() == 'Continue the review'
+    assert button.is_disabled()
+    page.evaluate("()=>{controls.continueAgent=async(...args)=>{calls.push(args);return {accepted:true,threadId:'child',turnId:'next'};};}")
+    dialog.get_by_role('checkbox', name='Continue this idle agent').check()
+    button.click()
+    dialog.get_by_text('Agent continuation accepted; refresh snapshot', exact=True).wait_for()
+    assert message.input_value() == ''
+    message.fill('another message')
+    dialog.get_by_role('checkbox', name='Continue this idle agent').check()
+    assert button.is_disabled()
+    assert page.evaluate('calls') == [['child', 'latest', 'Continue the review']] * 2
+    assert page.evaluate('pane.input.value') == 'parent draft'
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'agent-continue-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_agent_stop_requires_exact_confirmation_and_waits_for_native_completion(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})
