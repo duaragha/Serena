@@ -51,6 +51,7 @@ class PeerStore:
                     dispatches INTEGER NOT NULL DEFAULT 0
                 );
             """)
+            db.execute("BEGIN IMMEDIATE")
             if "dispatches" not in {r[1] for r in db.execute("PRAGMA table_info(fleet_peer_help)")}:
                 db.execute(
                     "ALTER TABLE fleet_peer_help ADD COLUMN dispatches INTEGER NOT NULL DEFAULT 0"

@@ -3308,6 +3308,8 @@ class FleetStore:
                 """
             )
             ensure_work_unit_schema(connection)
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
             columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(fleet_attempts)").fetchall()

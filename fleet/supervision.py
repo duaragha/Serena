@@ -614,6 +614,7 @@ class FleetSupervisionStore:
                 );
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
             columns = {row[1] for row in connection.execute("PRAGMA table_info(fleet_worker_leases)")}
             for name, definition in (("progress_stage", "TEXT NOT NULL DEFAULT 'healthy'"), ("turn_deadline", "REAL")):
                 if name not in columns:

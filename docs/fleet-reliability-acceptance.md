@@ -62,6 +62,15 @@ worktree `.venv` executable link and a real learning project-scope regression.
 Both were corrected; 63 targeted tests and six checkout tests pass afterward,
 alongside 69 desktop tests. A fresh full-suite pass is still required before delivery.
 
+The subsequent full suite found a genuine parallel schema-migration race:
+502 tests passed, one run failed with `duplicate column name: progress_stage`.
+The persisted test database confirmed the error before any worker attempt began.
+Supervision, peer, isolation and attempt-column migrations now lock before their
+check-then-ALTER sequence. Eight-way concurrent initialization tests cover all four
+stores; 103 focused tests pass after repair. Full-suite evidence from the failed
+pass is retained at `_artifacts/fleet-recovery-verification-20260910/full-suite.xml`.
+Another full pass is still required; this finding must not be dismissed as flakiness.
+
 ## Production evidence, 2026-09-10
 
 Transport recovery checkpoint: narrow connection-reset/disconnected-stream/DNS

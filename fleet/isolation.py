@@ -771,6 +771,7 @@ class FleetIsolationStore:
                     ON fleet_integrations(run_id, created_at);
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
             columns = {
                 str(row["name"])
                 for row in connection.execute(
