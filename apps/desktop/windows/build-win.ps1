@@ -81,6 +81,10 @@ Write-Host "[windows] smoke-testing the frozen Fleet peer MCP"
 & $Python (Join-Path $RepoRoot "scripts\fleet_peer_smoke.py") --binary $SidecarExe
 Assert-LastExitCode "Frozen Fleet peer MCP smoke test"
 
+Write-Host "[windows] smoke-testing the frozen workspace gate"
+& $Python (Join-Path $RepoRoot "scripts\verify-workspace-frozen-windows.py") $SidecarExe
+Assert-LastExitCode "Frozen workspace gate and process ownership smoke test"
+
 Write-Host "[windows] smoke-testing the frozen PTY backend"
 $PtySmoke = Start-Process -FilePath $SidecarExe `
     -ArgumentList @("--pty-smoke") `

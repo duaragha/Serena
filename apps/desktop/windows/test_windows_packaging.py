@@ -260,6 +260,14 @@ def test_build_script_boots_the_frozen_sidecar():
     assert "$PtySmoke.Kill($true)" in script, "a stuck PTY probe must not consume the CI timeout"
 
 
+def test_build_checks_frozen_workspace_before_packaging():
+    script = BUILD_SCRIPT.read_text(encoding="utf-8")
+    command = '& $Python (Join-Path $RepoRoot "scripts\\verify-workspace-frozen-windows.py") $SidecarExe'
+    assert command in script
+    assert 'Assert-LastExitCode "Frozen workspace gate and process ownership smoke test"' in script
+    assert script.index(command) < script.index('& npx --no-install electron-builder')
+
+
 def test_build_script_defaults_to_not_publishing():
     script = BUILD_SCRIPT.read_text(encoding="utf-8")
     assert '"always" } else { "never" }' in script

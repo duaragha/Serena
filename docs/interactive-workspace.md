@@ -2,6 +2,35 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Frozen Windows Gate Verification
+
+Built the actual `console=False` onedir sidecar on Windows 11 / Python 3.13.7 /
+PyInstaller 6.21.0, from runtime commit fd4283f. The safe frozen probe exercises
+that executable's `--workspace-child` dispatch with inherited pipes and a real
+Windows job. It checks EOF before authorization, exact echo input/output, and
+termination of surviving descendants. It starts no AI provider or Flask listener.
+`build-win.ps1` now runs this probe and checks its exit before installer packaging.
+
+Exact commands:
+
+```sh
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B -m PyInstaller --noconfirm --distpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-fd4283f\dist --workpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-fd4283f\work C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\windows\sidecar-win.spec"
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-frozen-windows.py C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-fd4283f\dist\serena-web-sidecar\serena-web-sidecar.exe"
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest apps/desktop/windows/test_windows_packaging.py::test_build_checks_frozen_workspace_before_packaging -q
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-frozen-windows.py
+```
+
+Build exit 0, 85.5s. Warnings included pycparser generated tables and OpenConsole
+UI Automation DLL names; this gate proof does not establish PTY behavior.
+Live proof exit 0: no-gate child exit 2 (expected), echo exit 0, descendant exit 0,
+all jobs confirmed empty after cleanup, provider_started false. Probe source hash
+matched both machines before invocation. Static build guard: final exit 0, 1 test
+passed in 0.02s (initial red test exited 1 before the build-script edit). Ruff exit 0.
+
+This closes the frozen bootstrap/stdio verification gap, not Windows Electron
+visual QA, native provider inference, or a frozen host's complete session workflow.
+No installation, publishing, release, running-user-session changes, or host restart.
+
 ## Windows Gated Transport Integration
 
 WorkspaceRpc now launches a minimal Windows bootstrap, assigns it to its owned
