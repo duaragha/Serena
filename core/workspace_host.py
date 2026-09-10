@@ -15,6 +15,7 @@ import threading
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
+from uuid import UUID
 
 from core.workspace_codex import CodexWorkspace
 from core.workspace_journal import WorkspaceJournal
@@ -84,6 +85,43 @@ class WorkspaceHost:
     def attach(self, session_id: str, *, timeout=35):
         self._validate_session(session_id)
         return self._dispatch(self._attach(session_id), timeout)
+
+    def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, timeout=35):
+        if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
+            raise ValueError("Creation requires an exact request UUID")
+        if confirmed is not True or provider != "codex":
+            raise ValueError("Explicit supported-provider creation is required")
+        if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
+            raise ValueError("An existing absolute project directory is required")
+        return self._dispatch(self._create(request_id, provider, str(Path(cwd).resolve())), timeout)
+
+    async def _create(self, request_id, provider, cwd):
+        reservation = "new:" + request_id
+        payload = {"action": "create_session", "payload": {"provider": provider, "cwd": cwd, "confirmed": True}}
+        async with self._locks.setdefault(reservation, asyncio.Lock()):
+            claimed, receipt = await asyncio.to_thread(self.journal.claim_command, reservation, request_id, payload)
+            if not claimed:
+                return receipt or {"ok": False, "pending": True, "error": "Creation is unconfirmed; it will not be repeated"}
+            owner = None
+            try:
+                async def publish(event):
+                    await self._publish(owner.session_id, event)
+                owner = self.factories[provider](session_id=reservation, cwd=Path(cwd), publish=publish)
+                self._sessions[reservation] = (owner, provider)
+                async def checkpoint(target):
+                    if target["session_id"] in self._sessions:
+                        raise ValueError("Native creation returned an already owned identity")
+                    await asyncio.to_thread(self.journal.prepare_creation, request_id, target)
+                    self._sessions[target["session_id"]] = (owner, provider)
+                    self._sessions.pop(reservation, None)
+                await owner.create(checkpoint=checkpoint)
+                receipt = await asyncio.to_thread(self.journal.complete_creation, request_id)
+                self._sessions.pop(reservation, None)
+                return receipt
+            except Exception as error:
+                # The durable claim is deliberately retained even if native
+                # creation or its acknowledgement was lost. Never auto-replay it.
+                return {"ok": False, "pending": True, "error": str(error)}
 
     async def _attach(self, sid):
         async with self._locks.setdefault(sid, asyncio.Lock()):

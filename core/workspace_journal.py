@@ -51,6 +51,52 @@ class WorkspaceJournal:
                 conn.execute("ALTER TABLE workspace_clears ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
             if "cataloged" not in columns:
                 conn.execute("ALTER TABLE workspace_clears ADD COLUMN cataloged INTEGER NOT NULL DEFAULT 0")
+            conn.execute("""CREATE TABLE IF NOT EXISTS workspace_creations (
+                request_id TEXT PRIMARY KEY, target_id TEXT NOT NULL UNIQUE,
+                target TEXT NOT NULL, created_at TEXT NOT NULL,
+                committed INTEGER NOT NULL DEFAULT 0 CHECK (committed IN (0, 1))
+            )""")
+
+    def prepare_creation(self, request_id: str, target: dict) -> None:
+        sid = target.get("session_id")
+        if (not isinstance(sid, str) or str(UUID(sid)) != sid
+                or target.get("provider") != "codex" or set(target) != {"session_id", "provider", "cwd"}
+                or not isinstance(target.get("cwd"), str) or not Path(target["cwd"]).is_absolute()):
+            raise ValueError("Exact native creation target required")
+        encoded = json.dumps(target, sort_keys=True, allow_nan=False)
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            command = conn.execute("SELECT payload, result FROM workspace_commands WHERE session_id=? AND request_id=?",
+                                   ("new:" + request_id, request_id)).fetchone()
+            expected = {"action": "create_session", "payload": {"provider": target["provider"], "cwd": target["cwd"], "confirmed": True}}
+            if not command or json.loads(command[0]) != expected or command[1] is not None:
+                raise ValueError("An unfinished explicit creation request is required")
+            row = conn.execute("SELECT target FROM workspace_creations WHERE request_id=?", (request_id,)).fetchone()
+            if row:
+                if row[0] != encoded:
+                    raise ValueError("Creation already recorded a different identity")
+                return
+            conn.execute("INSERT INTO workspace_creations (request_id, target_id, target, created_at) VALUES (?, ?, ?, ?)",
+                         (request_id, sid, encoded, datetime.now(timezone.utc).isoformat()))
+
+    def complete_creation(self, request_id: str) -> dict:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT target FROM workspace_creations WHERE request_id=?", (request_id,)).fetchone()
+            if not row:
+                raise ValueError("Native creation checkpoint is missing")
+            receipt = {"ok": True, "result": json.loads(row[0])}
+            changed = conn.execute("UPDATE workspace_commands SET result=? WHERE session_id=? AND request_id=? AND result IS NULL",
+                                   (json.dumps(receipt), "new:" + request_id, request_id)).rowcount
+            if changed != 1:
+                raise ValueError("Creation request is missing or already finished")
+            conn.execute("UPDATE workspace_creations SET committed=1 WHERE request_id=?", (request_id,))
+            return receipt
+
+    def creation_target(self, request_id: str) -> dict | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT target, committed FROM workspace_creations WHERE request_id=?", (request_id,)).fetchone()
+        return {**json.loads(row[0]), "committed": bool(row[1])} if row else None
 
     def prepare_clear(self, source_id: str, request_id: str, target: dict) -> None:
         sid = target.get("session_id")

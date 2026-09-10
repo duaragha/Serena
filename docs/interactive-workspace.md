@@ -2,6 +2,23 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Persistent creation host/API (2026-09-09): `WorkspaceHost.create` now validates
+explicit confirmation, canonical request UUID, supported provider and absolute
+existing project directory before reserving a durable command. Concurrent
+requests share that reservation. A native target is checkpointed to a unique
+creation record before ownership transfer; completion and its receipt commit
+together. Lost responses replay the receipt, including after host restart,
+without launching another owner. Uncertain attempts remain unresolved rather
+than repeating creation. The authenticated loopback-only POST
+`/api/workspace/create` accepts exactly request_id/provider/cwd/confirmed.
+No launch occurs on route registration or reads. New Chat UI, pending catalog
+visibility and explicit recovery of unmaterialized sessions remain unwired.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_creation.py tests/test_workspace_host.py -q --tb=short`: exit 0, 63 passed. Concurrent/restarted requests, uncertainty before/after checkpoint, project/content mismatch, checkpoint immutability and authentication/origin/HTTP-method refusal covered.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py ui/workspace_web.py tests/test_workspace_creation.py scripts/verify-workspace-codex-create.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-create.py`: exit 0. Four concurrent authenticated real loopback HTTP requests created one real native owner. Exact-session shell input produced native output on the retained process. Restart replay created no process. Earlier adapter create/resume and lease assertions also passed; HTTP server and native children cleaned up, zero inference/credentials.
+Source verified only; packaged binary and installed app are unchanged.
+
 Native Codex creation adapter (2026-09-09): `CodexWorkspace.create` accepts only
 an explicit provisional `new:<UUID>` identity and a durable checkpoint callback.
 It sends one native `thread/start`, validates the returned identity/project and

@@ -6,14 +6,21 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
+from urllib.request import Request, urlopen
 from uuid import uuid4
+
+from flask import Flask
+from werkzeug.serving import make_server
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.workspace_codex import CodexWorkspace
+from core.workspace_host import WorkspaceHost
 from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease, SessionOwnedError
+from ui.workspace_web import workspace_blueprint
 
 
 async def main():
@@ -76,6 +83,58 @@ async def main():
             await owner.close()
             assert owner.rpc.process is None
         print("PASS: native child reaped")
+        created = []
+        class NativeOwner(CodexWorkspace):
+            async def create(self, *, checkpoint):
+                return await super().create(checkpoint=checkpoint, binary=binary, env=env)
+        def factory(**kwargs):
+            instance = NativeOwner(**kwargs, lease_factory=lambda sid: SessionLease(sid, directory=root / "leases"))
+            created.append(instance)
+            return instance
+        request_id = str(uuid4())
+        host = WorkspaceHost(journal=journal, resolve=lambda sid: None, factories={"codex": factory})
+        app = Flask(__name__)
+        token = "proof-token-" + str(uuid4())
+        app.register_blueprint(workspace_blueprint(host, token=token))
+        server = make_server("127.0.0.1", 0, app, threaded=True)
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        def create_request():
+            body = json.dumps({"request_id": request_id, "provider": "codex", "cwd": str(project), "confirmed": True}).encode()
+            request = Request(f"http://127.0.0.1:{server.server_port}/api/workspace/create", data=body,
+                              headers={"Content-Type": "application/json", "X-Serena-Workspace-Token": token})
+            with urlopen(request, timeout=40) as response:
+                return json.load(response)
+        try:
+            assert not created
+            receipts = await asyncio.gather(*(asyncio.to_thread(create_request) for _ in range(4)))
+            assert all(receipt == receipts[0] and receipt["ok"] for receipt in receipts)
+            assert len(created) == 1
+            target = receipts[0]["result"]["session_id"]
+            assert journal.creation_target(request_id)["committed"]
+            pid = created[0].rpc.process.pid
+            command = await asyncio.to_thread(host.command, target, "native-input", "shell_command",
+                                              {"command": "printf SERENA_HOST_CREATED", "confirmed": True})
+            assert command["ok"], command
+            async with asyncio.timeout(15):
+                while not any(row["event"].get("method") == "turn/completed" for row in journal.read(target)["events"]):
+                    await asyncio.sleep(0.02)
+            assert "SERENA_HOST_CREATED" in json.dumps(journal.read(target))
+            assert created[0].rpc.process.pid == pid
+        finally:
+            await asyncio.to_thread(server.shutdown)
+            server.server_close()
+            serving.join(timeout=5)
+            assert not serving.is_alive()
+            await asyncio.to_thread(host.shutdown)
+        assert created[0].rpc.process is None
+        restored = WorkspaceHost(journal=journal, resolve=lambda sid: None, factories={"codex": factory})
+        try:
+            assert await asyncio.to_thread(restored.create, request_id, "codex", str(project), confirmed=True) == receipts[0]
+            assert len(created) == 1 and restored._sessions == {}
+        finally:
+            await asyncio.to_thread(restored.shutdown)
+        print("PASS: four concurrent authenticated HTTP requests created one native owner; exact input worked; restart replay did not launch again")
 
 
 asyncio.run(main())
