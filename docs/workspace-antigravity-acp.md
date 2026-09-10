@@ -198,6 +198,21 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Native settings compatibility (2026-09-09): the shipped Google settings parser
+uses Hjson. Serena now uses pinned `hjson==3.1.0`, accepting comments, unquoted
+keys and trailing commas without rewriting settings. Explicit personal OAuth
+and valid object shapes are still required; API-key settings remain refused.
+Package reference, accessed 2026-09-09: https://pypi.org/project/hjson/3.1.0/
+
+`PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_gemini.py -q --tb=short`:
+exit 0, 17 passed. Scoped Ruff: exit 0.
+`SERENA_EVIDENCE_KIND=live PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-antigravity-acp.py apps/desktop/build/proof-tools/antigravity-acp/agy_acp_server.par`:
+exit 0, native initialization and missing-session refusal, clean process exit.
+The parser was installed only in the ignored branch-local proof dependency
+directory; shared environment and user configuration were untouched. The
+previous frozen backend predates this parser dependency and needs rebuilding
+before claiming packaged Gemini settings support. Authentication remains unverified.
+
 Provider-driven model updates (2026-09-09): load, native configuration updates,
 and confirmed selection responses now publish an atomic model catalog/current
 selection event. Missing or unsupported model catalogs clear the picker and

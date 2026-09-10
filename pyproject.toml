@@ -20,6 +20,7 @@ dependencies = [
     "watchdog>=4.0",
     "mcp>=1.28.1,<2",
     "Pillow>=11.0,<13",
+    "hjson==3.1.0",
     "python-xlib>=0.33,<0.34; sys_platform == 'linux'",
 ]
 

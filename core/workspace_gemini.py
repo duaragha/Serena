@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from uuid import UUID
 
+import hjson
+
 from core.billing import strip_metered_auth_env
 from core.workspace_acp import WorkspaceAcpRpc
 from core.workspace_acp_session import AcpSession
@@ -96,8 +98,9 @@ class GeminiWorkspace:
                 raise ValueError("Exact ACP session, subscription sign-in or native settings unavailable; no migration or login was attempted")
         if transcript.stat().st_nlink != 1:
             raise ValueError("ACP trajectory has another filesystem alias; migration is not verified")
-        settings = json.loads((root / "settings.json").read_text())
-        if settings.get("auth", {}).get("type") != "oauth-personal":
+        settings = hjson.loads((root / "settings.json").read_text(encoding="utf-8"))
+        auth = settings.get("auth") if isinstance(settings, dict) else None
+        if not isinstance(auth, dict) or auth.get("type") != "oauth-personal":
             raise ValueError("Gemini workspace requires existing Google-account subscription settings")
         saved = json.loads(metadata.read_text())
         if not isinstance(saved.get("cwd"), str) or Path(saved["cwd"]).resolve() != self.cwd:

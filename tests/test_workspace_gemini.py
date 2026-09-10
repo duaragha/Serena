@@ -121,6 +121,31 @@ def prepare(tmp_path):
     return root
 
 
+@pytest.mark.parametrize("settings", [
+    '{\n// personal account\n"auth": {"type": "oauth-personal",},\n}',
+    'auth: {\n  type: oauth-personal\n}\n',
+])
+def test_native_hjson_settings_are_accepted_without_rewriting(tmp_path, settings):
+    root = prepare(tmp_path)
+    path = root / "settings.json"
+    path.write_text(settings, encoding="utf-8")
+    owner = make(tmp_path, ProbeRpc())
+    assert owner._validate_native_target().name == f"{SID}.db"
+    assert path.read_text(encoding="utf-8") == settings
+    assert owner.rpc.process is None
+
+
+@pytest.mark.parametrize("settings", ['[]', '{"auth": null}', '{"auth": "oauth-personal"}',
+                                      '{auth: {type: "gemini-api-key"}}', '{"auth":'])
+def test_native_settings_invalid_shape_or_auth_remains_unavailable(tmp_path, settings):
+    root = prepare(tmp_path)
+    (root / "settings.json").write_text(settings)
+    owner = make(tmp_path, ProbeRpc())
+    with pytest.raises(ValueError):
+        owner._validate_native_target()
+    assert owner.rpc.process is None
+
+
 class ProbeRpc(WorkspaceAcpRpc):
     launched = False
 
