@@ -48,14 +48,20 @@ def test_external_helper_kill_preserves_applied_patch_and_reaps_gate(tmp_path, m
             helper = psutil.Process(helper_pid)
             gate_process = psutil.Process(gate_pid)
             with store._connect() as db:
-                lease = db.execute('SELECT owner_pid FROM fleet_worker_leases WHERE attempt_id=? AND state=?',
+                lease = db.execute('SELECT owner_pid,owner_token FROM fleet_worker_leases WHERE attempt_id=? AND state=?',
                                    (current['attempt_id'], 'active')).fetchone()
                 process_token = db.execute('SELECT process_token FROM fleet_attempts WHERE attempt_id=?',
                                            (current['attempt_id'],)).fetchone()[0]
             assert lease is not None
-            assert helper.pid == current['pid'] == lease['owner_pid']
+            assert helper.pid == lease['owner_pid']
+            launched = psutil.Process(current['pid'])
+            # Windows venv python.exe can be a launcher whose child owns the
+            # lease. Verify this exact ancestry rather than assuming one PID.
+            assert helper == launched or helper in launched.children(recursive=True)
             assert helper.pid not in {os.getpid(), os.getppid()}
-            assert process_start_token(helper.pid) == process_token
+            assert launched.pid not in {os.getpid(), os.getppid()}
+            assert process_start_token(launched.pid) == process_token
+            assert process_start_token(helper.pid) == lease['owner_token']
             assert gate_process.ppid() == helper.pid
             assert (root / 'core/alpha.py').read_bytes() == b'alpha = 2\n'
             helper.kill()  # psutil fences PID reuse against this process instance
