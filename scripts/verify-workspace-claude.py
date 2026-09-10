@@ -16,7 +16,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from core.billing import METERED_AUTH_ENV_VARS, strip_metered_auth_env
 
 
-async def main(local_effort=False):
+async def main(local_effort=False, inventory=False):
     binary = shutil.which("claude")
     if not binary:
         raise RuntimeError("Installed Claude CLI is unavailable")
@@ -51,6 +51,8 @@ async def main(local_effort=False):
             commands = info.get("commands")
             assert isinstance(commands, list)
             print("Advertised commands:", ", ".join(command["name"] for command in commands))
+            if inventory:
+                print("Command definitions:", json.dumps(commands))
             print("Advertised models:", json.dumps(info.get("models", [])))
             models = info.get("models", [])
             assert models and models[0].get("value")
@@ -90,6 +92,9 @@ async def main(local_effort=False):
                 async with asyncio.timeout(30):
                     async for message in client.receive_response():
                         if converter is None and getattr(message, "subtype", None) == "init":
+                            if inventory:
+                                print("Native init capability keys:", sorted(message.data))
+                                print("Native terminal-only commands:", json.dumps(message.data.get("terminal_slash_commands", [])))
                             converter = ClaudeEvents(message.data["session_id"])
                             converter.turn = "isolated-local-command"
                         if converter is not None:
@@ -113,4 +118,6 @@ async def main(local_effort=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--local-effort", action="store_true")
-    asyncio.run(main(parser.parse_args().local_effort))
+    parser.add_argument("--inventory", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(main(args.local_effort, args.inventory))

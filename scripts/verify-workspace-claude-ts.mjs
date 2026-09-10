@@ -38,9 +38,11 @@ try {
   await stream.applyFlagSettings({effortLevel:null});
   const agents=await stream.supportedAgents();
   const skills=await stream.reloadSkills();
+  const plugins=await stream.reloadPlugins();
   assert(Array.isArray(agents));
   assert(skills && typeof skills==='object');
-  console.log('PASS: public TypeScript SDK initialization, session-only effort apply/clear, agent inventory and skill reload');
+  assert(Array.isArray(plugins.commands) && Array.isArray(plugins.plugins) && Array.isArray(plugins.mcpServers));
+  console.log('PASS: public TypeScript SDK initialization, session-only effort apply/clear, agent inventory, skill and plugin reload');
   console.log('No user prompt, inference, resume, copied authentication or user settings; elicitation registered but not exercised');
 } finally {
   stopInput?.(); stream?.close();

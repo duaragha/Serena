@@ -459,6 +459,29 @@ def test_plugin_reload_is_explicit_refreshes_commands_and_reports_native_errors(
     assert not errors
 
 
+@pytest.mark.parametrize("command", ["reload-plugins", "reload-skills"])
+@pytest.mark.parametrize("entry", ["typed", "picker"])
+def test_reload_commands_use_native_controls_without_model_input(pane, command, entry):
+    page, errors = pane
+    page.evaluate("""command => {
+      const data=[{name:command,workspaceAction:command}];
+      controls.commands=async()=>({data});
+      controls.reloadPlugins=async()=>{calls.push('reload-plugins');return {data,plugins:[],error_count:0};};
+      controls.reloadSkills=async()=>{calls.push('reload-skills');return {data};};
+      pane.commandsButton.hidden=false;pane.input.value='/'+command;
+    }""", command)
+    if entry == "typed":
+        page.evaluate("pane.submit()")
+    else:
+        page.get_by_role('button', name='Commands and skills', exact=True).click()
+        assert page.evaluate('calls') == []
+        page.get_by_role('dialog', name='Commands and skills').get_by_role('button', name=f'/{command}', exact=True).click()
+    page.wait_for_function('calls.length===1')
+    assert page.evaluate('calls') == [command]
+    assert page.evaluate('pane.input.value') == f'/{command}'
+    assert not errors
+
+
 def test_pending_command_streams_output_without_raw_event_json(pane):
     page, errors = pane
     page.evaluate("""() => emit({method:'item/started',params:{turnId:'t',item:{

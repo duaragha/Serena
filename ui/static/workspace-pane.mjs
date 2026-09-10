@@ -473,7 +473,7 @@ export class WorkspacePane {
     window.lucide?.createIcons();await load('');
   }
 
-  async openCommands() {
+  async openCommands(initialAction=null) {
     if (this.commandsDialog?.open) return;
     const dialog = node('dialog', 'aw-review-dialog aw-commands-dialog');
     dialog.setAttribute('aria-label', 'Commands and skills');
@@ -493,15 +493,16 @@ export class WorkspacePane {
         button.append(node('strong','',`${command.kind==='skill'?'$':'/'}${command.name}`),node('small','',command.kind==='skill'?command.path:command.argumentHint || ''),node('span','',command.description || ''));
         button.disabled=busy;
         if(command.paneControl)button.disabled=busy || command.paneControl.hidden || command.paneControl.disabled;
-        const localAction=this.provider==='Claude' && ['clear','fork','resume'].includes(command.workspaceAction) ? command.workspaceAction : null;
+        const actionControls={clear:this.clearButton,fork:this.forkButton,resume:this.resumeButton,'reload-plugins':plugins,'reload-skills':reload};
+        const localAction=this.provider==='Claude' && Object.hasOwn(actionControls,command.workspaceAction) ? command.workspaceAction : null;
         if(localAction){
-          const control=localAction==='clear'?this.clearButton:localAction==='resume'?this.resumeButton:this.forkButton;
-          button.disabled=busy || control.hidden || control.disabled;
+          const control=actionControls[localAction];
+          button.disabled=busy || control.hidden || (!localAction.startsWith('reload-') && control.disabled);
         }
         if(command.unavailableReason){button.disabled=true;button.title=command.unavailableReason;button.append(node('small','',command.unavailableReason));}
         button.addEventListener('click',()=>{
           if(command.paneControl){dialog.close();command.paneControl.click();return;}
-          if(localAction){dialog.close();if(localAction==='clear')this.openClear();else if(localAction==='resume')this.openSessions();else this.openFork();return;}
+          if(localAction){if(!localAction.startsWith('reload-'))dialog.close();actionControls[localAction].click();return;}
           if(command.kind==='skill'){
             if(!this.selectedSkills.some(s=>s.path===command.path))this.selectedSkills.push({name:command.name,path:command.path});
             this.persistSkills();this.renderAttachments();
@@ -545,14 +546,16 @@ export class WorkspacePane {
     reload.hidden=this.provider==='Codex'?!this.controls.commands:this.provider!=='Claude' || !this.controls.reloadSkills;
     reload.disabled=true;
     const plugins = this.button('Reload plugins from disk', 'plug', async () => {
+      if(busy)return;
+      busy=true;render();
       plugins.disabled=true;reload.disabled=true;status.textContent='Reloading plugins...';
       try {
         const result=await this.controls.reloadPlugins();
         if(!dialog.open || this.disposed)return;
-        commands=result.data;render();
+        commands=result.data;busy=false;render();
         status.textContent+=` · ${result.plugins.length} plugins · ${result.error_count} plugin errors`;
-      }catch(error){if(dialog.open)status.textContent=error.message;}
-      finally{plugins.disabled=false;reload.disabled=false;}
+      }catch(error){if(dialog.open){busy=false;render();status.textContent=error.message;}}
+      finally{busy=false;plugins.disabled=false;reload.disabled=false;}
     });
     plugins.hidden=this.provider!=='Claude' || !this.controls.reloadPlugins;
     plugins.disabled=true;
@@ -563,6 +566,10 @@ export class WorkspacePane {
     try { const result=await this.controls.commands(); if(!dialog.open || this.disposed)return; commands=result.data; render(); }
     catch(error){if(dialog.open)status.textContent=error.message;}
     finally{reload.disabled=false;plugins.disabled=false;}
+    if(dialog.open && !this.disposed){
+      const control=initialAction==='reload-plugins'?plugins:initialAction==='reload-skills'?reload:null;
+      if(control && !control.hidden && !control.disabled && commands.some(command=>command.workspaceAction===initialAction))control.click();
+    }
   }
 
   async openEvents() {
@@ -931,6 +938,13 @@ export class WorkspacePane {
   async submit() {
     const text = this.input.value;
     if (this.sending || this.send.disabled || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
+    const reloadCommand=this.provider==='Claude' && /^\/(reload-plugins|reload-skills)(?:\s|$)/.exec(text.trim());
+    if(reloadCommand){
+      if(text.trim()!==`/${reloadCommand[1]}` || this.files.length || this.selectedSkills.length){
+        this.error(Error('Reload commands do not accept arguments, attachments or skills'));return;
+      }
+      await this.openCommands(reloadCommand[1]);return;
+    }
     const codexCommand=this.provider==='Codex' && /^\/([a-z]+)(?:\s|$)/.exec(text.trim());
     const codexControl=codexCommand && this.codexCommandControls()[codexCommand[1]];
     if(codexControl){

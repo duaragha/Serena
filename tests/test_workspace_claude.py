@@ -753,14 +753,17 @@ def test_command_catalog_and_session_switch_guard(tmp_path):
 
             owner.client.get_server_info = info
             owner.events.capabilities = {
-                "slash_commands": ["context", "extra", "color"],
-                "terminal_slash_commands": ["color"],
+                "slash_commands": ["context", "extra", "color", "reload-plugins", "reload-skills"],
+                "terminal_slash_commands": ["color", "reload-plugins"],
             }
             result = await owner.list_commands()
-            assert [c["name"] for c in result["data"]] == ["context", "clear", "extra", "color"]
+            assert [c["name"] for c in result["data"]] == ["context", "clear", "extra", "color", "reload-plugins", "reload-skills"]
             assert result["data"][1]["workspaceAction"] == "clear"
             assert "unavailableReason" not in result["data"][1]
-            assert result["data"][-1]["unavailableReason"]
+            assert result["data"][3]["unavailableReason"]
+            for command in result["data"][-2:]:
+                assert command["workspaceAction"] == command["name"]
+                assert "unavailableReason" not in command
             assert events[-1]["method"] == "workspace/commands"
             for name in ("clear", "new", "reset", "resume", "fork"):
                 with pytest.raises(ValueError, match="Session switching"):

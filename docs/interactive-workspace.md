@@ -2,6 +2,51 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Current Command Audit (2026-09-10)
+
+Native Claude initialization advertises 46 commands. A local `/effort high`
+control turn reports only `doctor`, `color`, and `reload-plugins` as terminal-only.
+The full native definitions can now be reproduced with `--inventory`; names
+alone are not treated as proof of working invocation. Reload plugins and skills
+now map to existing public SDK controls from both typed slash commands and the
+command picker, rather than submitting model input or disabling the supported
+plugin action. The reload UI prevents overlapping reload operations and retains
+the draft. `doctor` and `color` still need explicit native-interface equivalents;
+the terminal-only flag is retained for those commands, not hidden.
+
+Commands and observed exits:
+
+```sh
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude.py --local-effort --inventory
+# exit 0: actual catalog and terminal-only list, model/mode/MCP controls,
+# local effort acknowledgement with zero API duration/cost; process reaped
+env SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-ts.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude
+# exit 0: public SDK initialization, effort apply/clear, agents, skills/plugins
+# reload; no inference/authentication; child reaped with exit 0
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py::test_command_catalog_and_session_switch_guard tests/test_workspace_pane.py::test_reload_commands_use_native_controls_without_model_input tests/test_workspace_pane.py::test_plugin_reload_is_explicit_refreshes_commands_and_reports_native_errors -q
+# exit 0: 7 passed in 2.46s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py tests/test_workspace_claude.py tests/test_workspace_pane.py scripts/verify-workspace-claude.py
+# exit 0: All checks passed
+node --check ui/static/workspace-pane.mjs
+# exit 0
+```
+
+Integration baseline at `245791b`, before this reload mapping:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace*.py -q
+# exit 2: collection required optional hjson, absent in the shared venv
+env PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace*.py -q
+# exit 0: 606 passed, 10 skipped, 1 forkpty multithread warning, 112.74s
+node --test tests/workspace-*.test.mjs
+# exit 0: 94 passed, 1 Windows-only skip
+```
+
+This broad suite includes the deferred Gemini tests for regression detection; it
+does not reinstate Gemini delivery scope. The passing suite does not establish
+complete command parity, idle-runtime sleep policy, installed authentication,
+default activation, or release. These remain separate delivery checks.
+
 ## Native Handoff Routing (2026-09-10)
 
 The main app's Handoff action previously waited for a terminal WebSocket even
