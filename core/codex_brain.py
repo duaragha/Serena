@@ -192,8 +192,8 @@ class CodexBrainClient:
             params["config"]["features"]["hooks"] = False
         return params
 
-    async def _open_thread(self) -> None:
-        saved_thread = None if self.ephemeral else self._read_saved_thread()
+    async def _open_thread(self, *, force_new: bool = False) -> None:
+        saved_thread = None if (self.ephemeral or force_new) else self._read_saved_thread()
         if saved_thread:
             try:
                 result = await self._request(
@@ -219,6 +219,30 @@ class CodexBrainClient:
             raise CodexBrainError("Codex did not accept fast mode for this thread")
         if not self.ephemeral:
             self._write_saved_thread(self.thread_id)
+
+    async def reset_thread(self) -> None:
+        """Start a fresh model thread without restarting the app-server process.
+
+        Computer watching rotates visual history periodically so screenshots do
+        not accumulate forever.  Keeping the stdio process and initialized
+        subscription connection alive avoids paying the cold startup cost again.
+        """
+
+        process = self.process
+        if process is None or process.returncode is not None:
+            await self.start()
+            return
+        if self.active_turn_id:
+            raise CodexBrainError("cannot reset a thread while a turn is active")
+        async with self._start_lock:
+            if self.process is None or self.process.returncode is not None:
+                needs_start = True
+            else:
+                needs_start = False
+                self.thread_id = None
+                await asyncio.wait_for(self._open_thread(force_new=True), timeout=START_TIMEOUT_SECONDS)
+        if needs_start:
+            await self.start()
 
     @staticmethod
     def _thread_id_from(result: Any) -> str | None:
