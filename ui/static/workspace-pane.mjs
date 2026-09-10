@@ -51,6 +51,9 @@ export class WorkspacePane {
     this.diagnosticsButton=this.button('Installation diagnostics','stethoscope',()=>this.openDiagnostics());
     this.diagnosticsButton.hidden=provider!=='Claude' || !controls.diagnostics;
     head.append(this.diagnosticsButton);
+    this.accountButton=this.button('Codex account','user-round',()=>this.openAccount());
+    this.accountButton.hidden=provider!=='Codex' || !controls.accountStatus;
+    head.append(this.accountButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
@@ -480,6 +483,28 @@ export class WorkspacePane {
     dialog.append(node('h3','','Saved conversations'),close,search,find,status,list,more);
     this.sessionsDialog=dialog;this.root.append(dialog);dialog.showModal();search.focus();
     window.lucide?.createIcons();await load('');
+  }
+
+  async openAccount() {
+    if(this.accountDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Codex account');
+    const status=node('p');status.setAttribute('role','status');
+    const details=node('p');details.style.overflowWrap='anywhere';
+    const refresh=this.button('Refresh account status','refresh-cw',async()=>{
+      refresh.disabled=true;status.textContent='Checking account...';details.textContent='';
+      try{
+        const result=await this.controls.accountStatus();
+        if(!dialog.open || this.disposed)return;
+        const account=result.account;
+        status.textContent=account ? (account.type==='chatgpt' ? 'ChatGPT account saved' : `Account type: ${account.type}`) : 'Not signed in';
+        details.textContent=[account?.email,account?.planType,account ? 'Credential validity has not been verified.' : 'No account is saved for this session runtime.'].filter(Boolean).join(' · ');
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{refresh.disabled=false;}
+    });
+    const close=this.button('Close account','x',()=>dialog.close());
+    dialog.append(node('h3','','Codex account'),close,status,details,refresh);
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.accountDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();window.lucide?.createIcons();refresh.click();
   }
 
   async openDiagnostics() {
@@ -1584,6 +1609,7 @@ export class WorkspacePane {
     this.commandsDialog?.close();
     this.colorDialog?.close();
     this.diagnosticsDialog?.close();
+    this.accountDialog?.close();
     this.sessionsDialog?.close();
     this.clearDialog?.close();
     this.disconnectDialog?.close();

@@ -60,6 +60,22 @@ class CodexWorkspace:
         self._mcp_logins: dict[str, dict] = {}
         self._create_attempted = False
 
+    async def account_status(self):
+        async with self._control_lock:
+            if self.state in {"closed", "opening", "unavailable"}:
+                raise WorkspaceRpcError("Attach the Codex session before checking its account")
+            result = await self.rpc.request("account/read", {"refreshToken": False})
+            if not isinstance(result, dict) or type(result.get("requiresOpenaiAuth")) is not bool:
+                raise WorkspaceRpcError("Codex returned invalid account status")
+            account = result.get("account")
+            if account is not None and (not isinstance(account, dict) or not isinstance(account.get("type"), str)):
+                raise WorkspaceRpcError("Codex returned invalid account identity")
+            # Never forward credentials or claim a stored login proves token validity.
+            safe = None if account is None else {key: account[key] for key in ("type", "email", "planType")
+                                                if isinstance(account.get(key), str)}
+            return {"account": safe, "requiresOpenaiAuth": result["requiresOpenaiAuth"],
+                    "credentialsVerified": False}
+
     def _same_project(self, value):
         if not isinstance(value, str) or not value or not Path(value).is_absolute():
             return False

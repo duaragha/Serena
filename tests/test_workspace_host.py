@@ -84,6 +84,29 @@ class Owner:
         self.closed = True
 
 
+def test_account_status_requires_explicit_owner_and_rejects_mutations(tmp_path):
+    calls = []
+    class AccountOwner(Owner):
+        async def account_status(self):
+            calls.append(self.sid)
+            return {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "account.db"),
+                         resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+                         factories={"codex": AccountOwner})
+    try:
+        with pytest.raises(ValueError, match="attach"):
+            host.command("exact", "before", "account_status", {})
+        assert not calls
+        host.attach("exact")
+        result = host.command("exact", "account-once", "account_status", {})
+        assert result["ok"] and result["result"]["account"] is None
+        assert host.command("exact", "account-once", "account_status", {}) == result
+        assert not host.command("exact", "invalid", "account_status", {"refreshToken": True})["ok"]
+        assert calls == ["exact"] and not host._sessions["exact"][0].sent
+    finally:
+        host.shutdown()
+
+
 def test_diagnostics_route_is_exact_receipted_and_never_submits(tmp_path):
     calls = []
 

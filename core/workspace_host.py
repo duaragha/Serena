@@ -369,6 +369,7 @@ class WorkspaceHost:
             "set_skill_enabled",
             "reload_plugins",
             "diagnostics",
+            "account_status",
             "search_files",
             "load_earlier",
             "shell_command",
@@ -578,6 +579,11 @@ class WorkspaceHost:
                         retryable = True
                         raise ValueError("Wait for Claude's current turn before reloading plugins")
                     result = await owner.reload_plugins()
+                elif action == "account_status":
+                    if provider != "codex" or payload:
+                        raise ValueError("Account status requires a Codex session and no payload")
+                    retryable = True
+                    result = await owner.account_status()
                 elif action == "diagnostics":
                     if provider != "claude" or payload:
                         raise ValueError("Installation diagnostics requires a Claude session and no payload")

@@ -67,6 +67,28 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         yield page, errors
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+def test_account_status_is_explicit_honest_and_preserves_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      controls.accountStatus=async()=>{calls.push('account');return {account:{type:'chatgpt',email:'person@example.test',planType:'pro'},credentialsVerified:false};};
+      pane.accountButton.hidden=false;pane.input.value='keep my draft';
+    }""")
+    assert page.evaluate('calls') == []
+    page.locator('#left').get_by_role('button', name='Codex account', exact=True).click()
+    dialog = page.get_by_role('dialog', name='Codex account')
+    assert dialog.get_by_role('status').inner_text() == 'ChatGPT account saved'
+    assert 'Credential validity has not been verified.' in dialog.inner_text()
+    assert 'person@example.test' in dialog.inner_text()
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert page.evaluate('calls') == ['account']
+    page.keyboard.press('Escape')
+    assert page.evaluate('pane.input.value') == 'keep my draft'
+    assert page.evaluate('document.activeElement===pane.input')
+    assert not errors
+
+
 def test_provider_badges_distinguish_linked_panes(pane):
     page, errors = pane
     assert page.locator("#left .aw-badge").inner_text() == "C"

@@ -2,6 +2,28 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Account Status (2026-09-10)
+
+The Codex account button explicitly reads `account/read` with `refreshToken:false`
+from the pane's existing owner. It never starts an owner, login, or inference.
+Only account type, email, and plan are forwarded; saved credentials are explicitly
+not presented as verified. Running work and drafts remain unchanged. Browser
+login and installed-profile authentication recovery are still pending.
+Official protocol checked 2026-09-10: https://learn.chatgpt.com/docs/app-server
+(Account and authentication section).
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_account_status_uses_exact_owner_without_refresh_or_inference tests/test_workspace_host.py::test_account_status_requires_explicit_owner_and_rejects_mutations tests/test_workspace_pane.py::test_account_status_is_explicit_honest_and_preserves_draft -q
+# exit 0: 5 passed in 4.37s, including 390px and 1600px browser dialogs
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py
+# exit 0: real unsigned Codex owner, native account read, same process/session,
+# no login/inference, child reaped and temporary profile removed.
+# Initial proof exited 1 because its CODEX_HOME directory did not exist; fixed.
+```
+
+Scoped Ruff, node syntax check and git diff --check each exited 0. This does not
+prove the normal app's existing login can refresh, nor complete overall delivery.
+
 ## Installation Diagnostics (2026-09-10)
 
 Claude `/doctor` opens an explicit native-report dialog. Run invokes only the

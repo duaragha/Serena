@@ -15,6 +15,31 @@ def tmp_path(tmp_path):
     return tmp_path.resolve()
 
 
+@pytest.mark.parametrize("account", [None, {"type": "chatgpt", "email": "person@example.test", "planType": "pro", "accessToken": "never-forward"}])
+def test_account_status_uses_exact_owner_without_refresh_or_inference(tmp_path, account):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        with pytest.raises(WorkspaceRpcError, match="Attach"):
+            await client.account_status()
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            return {"account": account, "requiresOpenaiAuth": True, "refreshToken": "never-forward"}
+        rpc.request = request
+        try:
+            client.state, client.active_turn = "running", "preserved"
+            result = await client.account_status()
+            assert result["credentialsVerified"] is False
+            assert "never-forward" not in str(result)
+            assert result["account"] == (None if account is None else {k: account[k] for k in ("type", "email", "planType")})
+            assert calls == [("account/read", {"refreshToken": False})]
+            assert client.state == "running" and client.active_turn == "preserved"
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_project_identity_accepts_alias_spelling_not_other_directory(tmp_path):
     async def run():
         client, _, _ = await make(tmp_path)
