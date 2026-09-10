@@ -2,6 +2,36 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Current Windows Packaged Verification
+
+2026-09-10: rebuilt Windows from synced source after verifying the pane JavaScript
+and ACP controller SHA-256 match the laptop. Reused the ignored build directory
+`windows-proof-5cadd13` (its name is historical; the executable was rebuilt now).
+Build and both native proof commands exited **0**. No PC source edits, installed
+app changes, user credentials, signed-in sessions or inference were involved.
+
+The exact commands used are the existing Windows PyInstaller command and the
+`verify-workspace-codex-windows.py --frozen` and `verify-workspace-claude-driver.mjs`
+frozen Windows invocations recorded below under prior Windows proof entries;
+their complete current executions and exit codes are recorded in this chat's
+command events. The Codex runner was streamed from the laptop over stdin.
+
+Codex verified gated ownership, exact resume, 50 recent plus one older turn,
+native output/exit 0, file mentions, skill configuration, disconnect/reopen,
+fork/indexing and unchanged ownership on history reads. Real Windows Electron
+verified clipboard, native input/output, retained new-chat titles for both
+providers, corrupt-creation refusal, sandbox/context isolation and background
+owners surviving window closure. The screenshot was copied back and inspected.
+Cleanup and isolated temporary-directory removal passed.
+
+Claude verified queued exact UUID correlation, effort/agent controls, public SDK
+transport, exclusive lease, native plugin/skill reloads, exact fork recovery,
+same-process clear handoff and source-preserving forks. Frozen desktop/mobile
+checks reported no page/console/HTTP errors or horizontal overflow. All isolated
+processes were reaped. PyInstaller retained pycparser-table and OpenConsole DLL
+warnings. These results do not establish authenticated inference or Gemini
+admission, and do not authorize activating the replacement by default.
+
 ## Current Linux Packaged Verification
 
 2026-09-10, source `7c2cb28`: rebuilt the Linux sidecar and exercised actual native
