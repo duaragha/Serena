@@ -74,6 +74,32 @@ def test_provider_badges_distinguish_linked_panes(pane):
     assert not errors
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+def test_prompt_color_is_session_scoped_persistent_and_never_sent(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.locator('#left').get_by_role('button', name='Prompt color', exact=True).click()
+    dialog = page.get_by_role('dialog', name='Prompt color')
+    dialog.get_by_role('button', name='cyan prompt color', exact=True).click()
+    assert dialog.get_by_role('button', name='cyan prompt color').get_attribute('aria-pressed') == 'true'
+    assert page.locator('#left .aw-composer').evaluate('el=>getComputedStyle(el).borderColor') == 'rgb(112, 219, 225)'
+    assert page.locator('#right .aw-composer').evaluate('el=>getComputedStyle(el).borderColor') == 'rgb(80, 53, 74)'
+    assert page.locator('#left').evaluate('el=>getComputedStyle(el).backgroundColor') == 'rgb(0, 0, 0)'
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.screenshot(path=str(tmp_path / f'prompt-color-{width}.png'))
+    page.keyboard.press('Escape')
+    assert page.evaluate('calls') == []
+    page.reload()
+    page.wait_for_function('window.pane && pane.conversation.sequence===1')
+    assert page.locator('#left .aw-composer').evaluate('el=>getComputedStyle(el).borderColor') == 'rgb(112, 219, 225)'
+    page.evaluate("() => {pane.input.value='/color default';pane.submit();}")
+    assert page.locator('#left .aw-composer').evaluate('el=>getComputedStyle(el).borderColor') == 'rgb(80, 53, 74)'
+    page.evaluate("() => {pane.input.value='/color url(evil)';pane.submit();}")
+    assert page.evaluate('calls') == []
+    assert page.evaluate("sessionStorage.getItem(pane.draftKey+':color')") is None
+    assert not errors
+
+
 @pytest.mark.parametrize("provider", ["Claude", "Codex"])
 @pytest.mark.parametrize("width", [390, 1600])
 def test_saved_session_picker_does_not_submit_or_stop_running_work(pane, provider, width, tmp_path):

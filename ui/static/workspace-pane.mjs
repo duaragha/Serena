@@ -10,6 +10,7 @@ const node = (tag, cls, text) => {
   return el;
 };
 const icon = name => { const el = node('i'); el.dataset.lucide = name; return el; };
+const promptColors={default:'#50354a',red:'#ff7979',blue:'#82b3ff',green:'#77d99b',yellow:'#ead976',purple:'#c09bff',orange:'#f4ae75',pink:'#ff80bf',cyan:'#70dbe1'};
 
 /** A real session view. Controls are supplied by the session owner, not a CLI scraper. */
 export class WorkspacePane {
@@ -45,6 +46,8 @@ export class WorkspacePane {
     this.resumeButton=this.button('Open saved conversation','history',()=>this.openSessions());
     this.resumeButton.hidden=!['Claude','Codex'].includes(provider) || !controls.listSessions || !controls.openSession;
     head.append(this.resumeButton);
+    this.colorButton=this.button('Prompt color','palette',()=>this.openPromptColor());
+    head.append(this.colorButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
@@ -81,6 +84,9 @@ export class WorkspacePane {
       this.draftStorage ??= window.sessionStorage;
       this.input.value = this.draftStorage.getItem(this.draftKey) || '';
       const skills=JSON.parse(this.draftStorage.getItem(`${this.draftKey}:skills`) || '[]');
+      this.promptColor=this.draftStorage.getItem(`${this.draftKey}:color`) || 'default';
+      if(!Object.hasOwn(promptColors,this.promptColor))this.promptColor='default';
+      this.form.style.borderColor=promptColors[this.promptColor];
       if(provider==='Codex' && Array.isArray(skills))this.selectedSkills=skills.filter(s=>typeof s?.name==='string' && typeof s?.path==='string');
     }
     catch (error) { this.error(new Error(`Draft storage unavailable: ${error.message}`)); }
@@ -473,6 +479,32 @@ export class WorkspacePane {
     window.lucide?.createIcons();await load('');
   }
 
+  setPromptColor(value) {
+    if(!Object.hasOwn(promptColors,value))throw Error('Choose one of the available prompt colors');
+    if(value==='default')this.draftStorage.removeItem(`${this.draftKey}:color`);
+    else this.draftStorage.setItem(`${this.draftKey}:color`,value);
+    this.promptColor=value;this.form.style.borderColor=promptColors[value];
+  }
+
+  openPromptColor() {
+    if(this.colorDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Prompt color');
+    const choices=node('div','aw-color-swatches');
+    const refresh=()=>{for(const button of choices.children)button.setAttribute('aria-pressed',String(button.dataset.color===(this.promptColor || 'default')));};
+    for(const [name,color] of Object.entries(promptColors)){
+      const button=node('button','aw-color-swatch');button.type='button';button.title=name;
+      button.setAttribute('aria-label',name==='default'?'Default prompt color':`${name} prompt color`);
+      button.dataset.color=name;button.style.backgroundColor=color;
+      button.addEventListener('click',()=>{try{this.setPromptColor(name);refresh();}catch(error){this.error(error);}});
+      choices.append(button);
+    }
+    const close=this.button('Close prompt color','x',()=>dialog.close());
+    dialog.append(node('h3','','Prompt color'),close,choices);refresh();
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.colorDialog=dialog;this.root.append(dialog);dialog.showModal();choices.querySelector('[aria-pressed="true"]').focus();
+    window.lucide?.createIcons();
+  }
+
   async openCommands(initialAction=null) {
     if (this.commandsDialog?.open) return;
     const dialog = node('dialog', 'aw-review-dialog aw-commands-dialog');
@@ -493,7 +525,7 @@ export class WorkspacePane {
         button.append(node('strong','',`${command.kind==='skill'?'$':'/'}${command.name}`),node('small','',command.kind==='skill'?command.path:command.argumentHint || ''),node('span','',command.description || ''));
         button.disabled=busy;
         if(command.paneControl)button.disabled=busy || command.paneControl.hidden || command.paneControl.disabled;
-        const actionControls={clear:this.clearButton,fork:this.forkButton,resume:this.resumeButton,'reload-plugins':plugins,'reload-skills':reload};
+        const actionControls={clear:this.clearButton,fork:this.forkButton,resume:this.resumeButton,color:this.colorButton,'reload-plugins':plugins,'reload-skills':reload};
         const localAction=this.provider==='Claude' && Object.hasOwn(actionControls,command.workspaceAction) ? command.workspaceAction : null;
         if(localAction){
           const control=actionControls[localAction];
@@ -938,6 +970,12 @@ export class WorkspacePane {
   async submit() {
     const text = this.input.value;
     if (this.sending || this.send.disabled || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
+    const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
+    if(colorCommand){
+      if(this.files.length || this.selectedSkills.length){this.error(Error('Prompt color does not accept attachments or skills'));return;}
+      try{if(colorCommand[1])this.setPromptColor(colorCommand[1]);else this.openPromptColor();}catch(error){this.error(error);}
+      return;
+    }
     const reloadCommand=this.provider==='Claude' && /^\/(reload-plugins|reload-skills)(?:\s|$)/.exec(text.trim());
     if(reloadCommand){
       if(text.trim()!==`/${reloadCommand[1]}` || this.files.length || this.selectedSkills.length){
@@ -1516,6 +1554,7 @@ export class WorkspacePane {
     this.reviewDialog?.close();
     this.tasksDialog?.close();
     this.commandsDialog?.close();
+    this.colorDialog?.close();
     this.sessionsDialog?.close();
     this.clearDialog?.close();
     this.disconnectDialog?.close();

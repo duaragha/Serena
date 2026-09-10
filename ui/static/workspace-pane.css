@@ -7,7 +7,8 @@
 .agent-workspace-pane :focus-visible{outline:2px solid #ff80bf;outline-offset:2px}
 .agent-workspace-pane [hidden]{display:none!important}
 .agent-workspace-pane svg{width:14px;height:14px;flex-shrink:0}
-.aw-head{height:48px;flex-shrink:0;border-bottom:1px solid #2c252f;display:flex;align-items:center;gap:8px;padding:8px 24px;font:12px 'Segoe UI',Arial,sans-serif}
+.aw-head{min-height:48px;flex-shrink:0;border-bottom:1px solid #2c252f;display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 24px;font:12px 'Segoe UI',Arial,sans-serif}
+.aw-head button{flex:0 0 30px;width:30px}.aw-head small{min-width:0;overflow-wrap:anywhere}.aw-head .aw-badge{flex-shrink:0}
 .aw-head strong{font-weight:500}.aw-head small{font:9px monospace;color:#a398ad}
 .aw-badge{width:19px;height:19px;display:grid;place-items:center;border:1px solid #a5baff;border-radius:5px;color:#a5baff;font:10px monospace}
 .aw-badge[data-provider=claude]{color:#e4ac86;border-color:#e4ac86}.aw-badge[data-provider=gemini]{color:#87cda8;border-color:#87cda8}
@@ -34,6 +35,9 @@
 .aw-diff{border-left:2px solid #52735f;background:#0c1b12;padding:9px 11px;white-space:pre-wrap;font:10px/1.9 monospace;overflow-wrap:anywhere}
 .aw-add{color:#a9dfb7}.aw-remove{color:#ff969f}
 .aw-composer{position:relative;margin:10px 25px 0;padding:11px;border:1px solid #50354a;border-radius:6px;background:#140e17;flex-shrink:0}
+.aw-color-swatches{display:flex;flex-wrap:wrap;gap:12px;margin-top:16px}
+.agent-workspace-pane .aw-color-swatch{width:32px;height:32px;padding:0;border:2px solid transparent;border-radius:4px}
+.agent-workspace-pane .aw-color-swatch[aria-pressed=true]{outline:2px solid #fff;outline-offset:3px}
 .aw-mentions{position:absolute;z-index:5;bottom:calc(100% + 6px);left:0;right:0;max-height:min(240px,30vh);overflow:auto;background:#110d12;border:1px solid #63455d;border-radius:5px;padding:6px;overflow-wrap:anywhere}
 .aw-mentions [role=status]{font-size:10px;color:#b7a6b4;padding:4px}
 .aw-mentions [role=option]{padding:6px;cursor:pointer}

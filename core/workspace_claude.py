@@ -455,6 +455,8 @@ class ClaudeWorkspace:
                 item["workspaceAction"] = "resume"
             elif item["name"] in {"reload-plugins", "reload-skills"}:
                 item["workspaceAction"] = item["name"]
+            elif item["name"] == "color":
+                item["workspaceAction"] = "color"
             elif item["name"] in self.events.capabilities.get("terminal_slash_commands", []):
                 item["unavailableReason"] = "Claude reports this command requires a terminal"
             result["data"].append(item)

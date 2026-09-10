@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Prompt Presentation (2026-09-10)
+
+Claude `/color` now maps to native UI swatches; the palette control is also
+available in Codex panes. Choices change only the composer border, keep the
+neon-black background, and persist independently per provider/session in browser
+session storage. Default restores the original border. Invalid values cannot
+become CSS, and no model input or provider setting mutation is performed. Mobile
+header controls now wrap rather than clipping off-screen.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py::test_command_catalog_and_session_switch_guard tests/test_workspace_pane.py::test_prompt_color_is_session_scoped_persistent_and_never_sent -q
+# exit 0: 3 passed in 2.81s
+env SERENA_EVIDENCE_KIND=live SERENA_STRUCTURED_WORKSPACE=1 /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace.py --screenshots apps/desktop/build/workspace-proof/presentation --pane-presentation
+# exit 0: actual 566-session index, Read/Git inspector/Tooling; both providers'
+# actual saved pane pages at 390px and 1600px; color restore and control bounds;
+# zero owner loops/runtime launches and no JavaScript errors
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py tests/test_workspace_claude.py tests/test_workspace_pane.py scripts/verify-workspace.py
+# final exit 0; initial exit 1 required explicit strict=True on zip
+node --check ui/static/workspace-pane.mjs
+# exit 0
+```
+
+Desktop/mobile screenshots were inspected. The proof uses an independent
+read-only loopback server and disposable browser, not the installed app. A
+read-only `git merge-tree --write-tree HEAD origin/master` check at `ea7c695`
+returned exit 0 with no textual conflicts; no branch merge or rollout occurred.
+
 ## Current Command Audit (2026-09-10)
 
 Native Claude initialization advertises 46 commands. A local `/effort high`
@@ -11,8 +38,8 @@ alone are not treated as proof of working invocation. Reload plugins and skills
 now map to existing public SDK controls from both typed slash commands and the
 command picker, rather than submitting model input or disabling the supported
 plugin action. The reload UI prevents overlapping reload operations and retains
-the draft. `doctor` and `color` still need explicit native-interface equivalents;
-the terminal-only flag is retained for those commands, not hidden.
+the draft. `doctor` still needs an explicit native-interface equivalent; its
+terminal-only flag is retained. The later prompt-presentation slice covers color.
 
 Commands and observed exits:
 
