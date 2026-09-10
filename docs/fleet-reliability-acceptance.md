@@ -2,6 +2,43 @@
 
 Status: incomplete. Passing the existing resilience lab is not acceptance of this repair.
 
+## Current delivery and live proof
+
+PR #38 is merged as `cce7123`, the repaired Fleet service was activated after a
+root-bound acceptance gate proved no active runs, and desktop v0.2.31 is published
+with Linux/Windows binaries and both channel files. The chat host was not restarted.
+The unattended live canary `8c893009-fb07-4b08-8a99-c2d2ee1c6aee` completed 8/8 logical
+steps in 746.52 seconds: seven native turns, with one Fix skipped. No orchestration
+steering or retry was supplied. Both implementation integrations passed their real
+test gates. Seven independent unit tests, baseline ancestry and diff checks passed
+after completion. Original source branch, dirty files, staged file and index bytes
+were preserved. Detailed receipts: `_artifacts/fleet-recovery-verification-20260910/live-canary-plan.md`.
+
+The affected work run was resumed with all three Research attempt IDs preserved.
+Its Agent A confirms the baseline problem is resolved and is now blocked on genuinely
+unavailable authenticated evidence. Agent C's Code subsequently completed and its five
+focused tests passed, but the run parked: Agent B's own blocker prevented B from
+reviewing C, and C's blocked rotated Review was mislabeled failed without an attempt.
+The new regression covers two and three workers, allowing disjoint ready Review/Fix
+turns past quiescent unrelated input/dependency waits without clearing any blocker.
+That business blocker
+must not be rewritten as completion or bypassed with invented authority.
+
+Follow-up PR #39 (not deployed at this checkpoint) makes evidence failure/corrective
+retry atomic, preserves failed attempts on bounded exhaustion, immediately exposes
+per-leg input blockers while siblings run, and permits targeted input resume beside
+resource waits. Skipped phases no longer claim an observed model execution.
+Scheduler fix `024a43e` covers the observed cross-worker scheduling gap; the old
+ordering fails the regression and the corrected ordering passes it. Tests are invoked
+with the worktree Python module entrypoint (`.venv/bin/python -m pytest`) so the
+shared environment's installed checkout cannot silently replace the source under test.
+The full suite at `d2f127c` passed 526 tests in 190.48 seconds; JUnit is retained as
+`_artifacts/fleet-recovery-verification-20260910/full-suite-immediate-blockers.xml`.
+Remaining work includes delivery of this follow-up, automatic attention delivery
+without closing the final-result obligation, the remaining resource/failure-class
+audit, and current-desktop visual/loaded-version proof. The earlier checkpoints below
+are historical observations, not claims that those old states still apply.
+
 ### Disk recovery implementation checkpoint
 
 Disk-exhaustion attempt receipts now atomically park the leg in
