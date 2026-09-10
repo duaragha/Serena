@@ -30,6 +30,7 @@ Concurrency model:
 from __future__ import annotations
 
 import atexit
+from core.process_probe import probe_process
 import json
 import os
 import signal
@@ -355,7 +356,7 @@ def list_proxies() -> dict[str, dict]:
 
 def _pid_alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
         return True
     except (OSError, ProcessLookupError):
         return False

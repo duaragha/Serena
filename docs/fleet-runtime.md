@@ -1,5 +1,15 @@
 # Fleet runtime and recovery
 
+## Read-only process liveness
+
+Fleet, work jobs, external-session leases and shared process owners use
+`core.process_probe.probe_process` for existence checks. On Windows it uses
+psutil's read-only PID query; `os.kill(pid, 0)` sends `CTRL_C_EVENT` there and
+is not a safe existence query. POSIX retains signal-zero semantics. Existing
+birth-token fencing and each caller's permission-denial policy remain intact.
+`tests/test_process_probe.py` checks both no-signal routing and a real private
+child's continued survival, then confirms its absence after owned cleanup.
+
 ## Opt-in Gemini research pilot
 
 For a matched research comparison, use `activity: research`, `provider_mode: balanced`,

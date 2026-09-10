@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import psutil
+from core.process_probe import probe_process
 
 DEFAULT_JOBS_PATH = Path.home() / ".local" / "state" / "serena" / "work_jobs.sqlite3"
 TERMINAL_STATES = frozenset({"artifact_ready", "failed", "cancelled"})
@@ -567,7 +568,7 @@ def _process_alive(value: object, token: object = None) -> bool:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         return False
     try:
-        os.kill(value, 0)
+        probe_process(value)
     except ProcessLookupError:
         return False
     except PermissionError:

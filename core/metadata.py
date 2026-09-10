@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.config import METADATA_DIR, METADATA_PATH
+from core.process_probe import probe_process
 
 _MIGRATION_LOCK = threading.Lock()
 _migrated = False
@@ -349,7 +350,7 @@ def external_runtime_active(session_id: str) -> bool:
 
     if runtime.get("host") == socket.gethostname():
         try:
-            os.kill(pid, 0)
+            probe_process(pid)
             return True
         except PermissionError:
             return True
