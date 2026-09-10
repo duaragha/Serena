@@ -2,6 +2,46 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Current Desktop Integration (2026-09-10)
+
+Integrated origin/master through `559ffeb` into this feature branch, including
+the multi-agent picker and progressive group linking, current workspace sizing,
+project filtering and explanatory terminal writer-lock errors. No main-branch
+merge, release, install or default activation was performed.
+
+Structured creation now adopts only the exact ID returned by its owned iframe,
+preserving names, provisional group membership and every pending partner mapping.
+It removes resolved placeholders and links returned native IDs without requiring
+messages or using transcript/cwd/time heuristics. Duplicate concurrent creation
+notifications and changed returned identities are guarded. The browser integration
+test resolves Claude then Codex, checking exact links, titles, placeholders and
+unchanged existing owner count. This uses controlled provider creation events;
+packaged dual-native creation remains a separate delivery gate.
+
+Verification commands, run separately:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch tests/test_multi_agent_new_chat_links.py tests/test_new_chat_multi_agent.py tests/test_linked_terminal_startup.py -q
+# exit 0: 29 passed in 16.49s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_browser.py tests/test_codex_writer_lock_is_explained.py tests/test_fleet_workers_are_not_projects.py -q
+# exit 0: 30 passed in 12.49s; forkpty multithreading warning
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_pty_stranded_sweep.py -q
+# exit 0: 3 passed, 2 skipped in 10.21s
+env SERENA_EVIDENCE_KIND=live SERENA_STRUCTURED_WORKSPACE=1 /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace.py --screenshots apps/desktop/build/workspace-proof/integrated --pane-presentation
+# exit 0: actual index (570 chats), nonempty Read transcript, Git/Tooling,
+# 390px/1600px layouts and native-pane presentation; no runtime launches/JS errors
+```
+
+The initial combined incoming-test run exited 1: two orphan fixtures were adopted
+by this runner's subreaper, not PID 1. They now clean up even on constructor failure
+and explicitly skip that unavailable kernel precondition; production sweep logic
+is unchanged. The initial screenshot proof captured Loading despite passing;
+it now waits for actual message elements before capture. Updated desktop/mobile
+screenshots were visually inspected and contain rendered transcript text.
+
+Ruff on `tests/test_workspace_app.py` and `scripts/verify-workspace.py` exited 0;
+including the imported orphan test reports two pre-existing SIM105 style findings
+in untouched cleanup blocks. `git diff --check HEAD` exited 0.
+
 ## Native Browser Sign-In (2026-09-10)
 
 The Codex account dialog now has an explicit Sign in with ChatGPT control. Its

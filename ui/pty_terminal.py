@@ -106,6 +106,10 @@ class Terminal:
     backlog: bytearray = field(default_factory=bytearray)
     backlog_truncated: bool = False
     drain_thread: threading.Thread | None = None
+    # The last few KB the child printed, kept whether or not anyone was
+    # attached. When a child dies seconds after spawning, this is the only
+    # record of what it said on the way out.
+    tail: bytearray = field(default_factory=bytearray)
 
 
 _terminals: dict[str, Terminal] = {}
@@ -1291,6 +1295,121 @@ def resize(tid: str, rows: int, cols: int) -> bool:
         return False
 
 
+# ── why did that pane die a second after it opened? ─────────────────────────
+# Codex 0.153 holds a per-thread writer lock. A `codex resume` on a thread
+# some other process already owns draws its banner, prints one line, and
+# exits 1 inside a second -- and the renderer showed "Session ended." with no
+# hint of why. The usual owner is the ChatGPT desktop app: in code-mode it
+# spawns its own `codex app-server`, which loads the user's recent local
+# threads and locks every one of them. Seven at once, on the day this was
+# found. Only Codex has this lock, which is why it was always Codex.
+#
+# The child says exactly what happened on its way out. Keep those bytes,
+# recognise the message, name the holder, and hand the renderer a reason
+# instead of a shrug.
+
+_TAIL_BYTES = 4096
+EARLY_EXIT_SECONDS = 20.0
+_WRITER_LOCK_RE = re.compile(rb"already has an? (?:active|live local) writer")
+
+
+def _remember_tail(term: Terminal, chunk: bytes) -> None:
+    term.tail.extend(chunk)
+    overflow = len(term.tail) - _TAIL_BYTES
+    if overflow > 0:
+        del term.tail[:overflow]
+
+
+def _holder_label(cmdline: str) -> str:
+    """Who a process holding a rollout is, in words the user recognises."""
+    low = cmdline.lower()
+    if "/usr/lib/chatgpt/" in low or "chatgpt" in low.split("/")[-1][:40]:
+        return "the ChatGPT desktop app"
+    if "app-server" in low and "--disable shell_tool" in low:
+        return "Serena's codex brain"
+    if "codex resume" in low or "codex" in low and "resume" in low:
+        return "another Codex pane"
+    if "app-server" in low:
+        return "a Codex app-server"
+    return "another process"
+
+
+def writer_lock_holders(sid: str) -> list[dict]:
+    """Processes holding this thread's rollout open, found through /proc.
+
+    Codex keeps the rollout file open for the life of the session, so the
+    holder of the writer lock is whoever has ``rollout-*-<sid>.jsonl`` among
+    its descriptors. Same evidence ``lsof`` would give, without shelling out.
+    """
+    if _IS_WINDOWS or not sid:
+        return []
+    needle = f"-{sid}.jsonl"
+    found: list[dict] = []
+    me = os.getpid()
+    try:
+        pids = [int(e.name) for e in os.scandir("/proc") if e.name.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        if pid == me:
+            continue
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            entries = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                target = os.readlink(f"{fd_dir}/{entry}")
+            except OSError:
+                continue
+            if not target.endswith(needle):
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as handle:
+                    cmdline = handle.read().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+            except OSError:
+                cmdline = ""
+            found.append({"pid": pid, "cmdline": cmdline, "label": _holder_label(cmdline)})
+            break
+    return found
+
+
+def explain_early_exit(tid: str) -> str | None:
+    """A reason for a pane that died right after spawning, or None.
+
+    Only speaks when it knows: the child is gone, it lived under
+    EARLY_EXIT_SECONDS, it was Codex, and its last words were the writer-lock
+    refusal. Anything else stays an ordinary exit.
+    """
+    term = get(tid)
+    if term is None or (term.agent or "").lower() != "codex":
+        return None
+    if time.monotonic() - term.started_at > EARLY_EXIT_SECONDS:
+        return None
+    try:
+        if term.proc.isalive():
+            return None
+    except Exception:
+        pass
+    if not _WRITER_LOCK_RE.search(bytes(term.tail)):
+        return None
+    sid = term.session_id or ""
+    short = sid[:8] if sid else "this chat"
+    holders = writer_lock_holders(sid)
+    if holders:
+        who = ", ".join(f"{h['label']} (pid {h['pid']})" for h in holders[:3])
+        return (
+            f"Codex refused to resume {short}: the thread is already open in {who}. "
+            "Close it there, then reopen this chat."
+        )
+    return (
+        f"Codex refused to resume {short}: it reports another active writer, but no "
+        "process is holding the thread now -- a previous Codex likely died without "
+        "releasing its lock. Reopen this chat; if it repeats, restart Codex-using apps."
+    )
+
+
 def read_available(tid: str, max_bytes: int = 4096, timeout: float = 0.05) -> bytes | None:
     """Non-blocking read. Returns b'' when nothing's ready, None when the PTY is gone."""
     term = get(tid)
@@ -1310,6 +1429,7 @@ def read_available(tid: str, max_bytes: int = 4096, timeout: float = 0.05) -> by
                 del term.buf[:max_bytes]
                 if not term.buf:
                     term.data_event.clear()
+                _remember_tail(term, head)
                 return head
             if term.eof:
                 return None
@@ -1324,6 +1444,7 @@ def read_available(tid: str, max_bytes: int = 4096, timeout: float = 0.05) -> by
             return b""
         chunk = os.read(fd, max_bytes)
         if chunk:
+            _remember_tail(term, chunk)
             # Output counts as activity: an agent still printing is working,
             # even while the user is reading a different pane.
             term.last_activity = time.monotonic()

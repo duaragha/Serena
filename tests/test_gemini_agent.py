@@ -176,7 +176,11 @@ def test_the_spawn_endpoint_routes_gemini() -> None:
 def test_gemini_appears_everywhere_the_other_agents_do() -> None:
     page = _page()
 
-    assert 'data-agent="gemini"' in page, "cannot start a Gemini chat"
+    # The picker renders one pill per entry of _AGENT_PANE_ORDER, which the
+    # next test pins to include gemini; a hand-written gemini pill no longer
+    # exists to grep for.
+    assert "picker.innerHTML = _AGENT_PANE_ORDER.map(a =>" in page, "cannot start a Gemini chat"
+    assert """data-agent="' + a + '\"""" in page, "the pill lost its agent attribute"
     assert "filterGemini" in page, "no sidebar filter"
     assert "liveUsageCompactHtml('gemini'" in page, "no limits pill"
     assert "_GEMINI_SVG" in page, "no agent badge"

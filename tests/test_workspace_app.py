@@ -335,7 +335,7 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
     )
     from ui.web import HTML
 
-    start = HTML.index("function _startStructuredPane(")
+    start = HTML.index("function _adoptStructuredIdentity(")
     end = HTML.index("async function startLiveTerminal(", start)
     mount_source = HTML[start:end]
 
@@ -346,9 +346,16 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
 <main id="termMounts" style="height:100vh"></main><script>
 const termSessions=new Map();let activeTermSid=null;
 const _pseudoSessions=[{session_id:'new-proof',pending_rename_title:'My named conversation'}];
+let sessionSource=[..._pseudoSessions];
+const _pendingTermPartners=new Map();const _fdPairResolved={};window.linked=[];
+function _pendingPartnersOf(sid){const value=_pendingTermPartners.get(sid);return Array.isArray(value)?value:value?[value]:[];}
+function _setPendingPartners(sid,partners){_pendingTermPartners.set(sid,[...new Set(partners)].filter(value=>value && value!==sid));}
+function _fdLinkPair(sids){window.linked.push(sids);}
+function setSessionSource(rows){sessionSource=rows;}
+function _patchClientSession(sid,patch){Object.assign(sessionSource.find(row=>row.session_id===sid)||{},patch);}
 const currentProject=null;window.openedForks=[];
 async function loadSessions(){}
-function _findClientSession(sid){return {session_id:sid};}
+function _findClientSession(sid){return sessionSource.find(row=>row.session_id===sid)||{session_id:sid};}
 async function openConv(sid){window.openedForks.push(sid);}
 function showToast(message){throw Error(message);}
 function _activateTermPane(sid){activeTermSid=sid;}
@@ -556,6 +563,30 @@ function setTermStatus(status){window.lastStatus=status;}
             assert renames == [("33333333-3333-4333-8333-333333333333", "My named conversation")]
             assert not page.evaluate("termSessions.has('new-proof')")
             assert len(owners) == 1 and not owners[0].closed
+            page.evaluate("""cwd=>{
+              for(const agent of ['claude','codex']){
+                const sid='linked-'+agent;
+                const pseudo={session_id:sid,agent,cwd,fd_pair_id:'linked-proof',group:'provisional',pending_rename_title:'Linked title'};
+                _pseudoSessions.push(pseudo);sessionSource.push(pseudo);
+                _setPendingPartners(sid,['linked-claude','linked-codex']);
+                _startStructuredPane(sid,{isNew:true,agent,cwd,background:agent==='codex'});
+              }
+            }""", str(tmp_path))
+            first = page.frame_locator('iframe[src*="source=linked-claude"]')
+            first.get_by_role('button', name='Create Claude chat', exact=True).wait_for()
+            first.locator('body').evaluate("""()=>parent.postMessage({type:'serena-workspace-open-created',sid:'linked-claude',target:'44444444-4444-4444-8444-444444444444'},location.origin)""")
+            page.wait_for_function("openedForks.length===4")
+            assert page.evaluate("_pendingPartnersOf('linked-codex')") == ['44444444-4444-4444-8444-444444444444']
+            assert page.evaluate('linked') == []
+            second = page.frame_locator('iframe[src*="source=linked-codex"]')
+            second.get_by_role('button', name='Create Codex chat', exact=True).wait_for()
+            second.locator('body').evaluate("""()=>parent.postMessage({type:'serena-workspace-open-created',sid:'linked-codex',target:'55555555-5555-4555-8555-555555555555'},location.origin)""")
+            page.wait_for_function("openedForks.length===5")
+            assert page.evaluate('linked') == [['44444444-4444-4444-8444-444444444444', '55555555-5555-4555-8555-555555555555']]
+            assert page.evaluate("_pendingPartnersOf('44444444-4444-4444-8444-444444444444')") == ['55555555-5555-4555-8555-555555555555']
+            assert page.evaluate('_pseudoSessions.length') == 0
+            assert renames[-2:] == [('44444444-4444-4444-8444-444444444444','Linked title'), ('55555555-5555-4555-8555-555555555555','Linked title')]
+            assert len(owners) == 1 and not owners[0].closed and not errors
             browser.close()
     finally:
         server.shutdown()

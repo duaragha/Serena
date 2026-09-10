@@ -53,11 +53,11 @@ def main():
                 count = page.evaluate("allSessions.length")
                 pane_ids = page.evaluate("['claude','codex'].map(agent=>allSessions.find(s=>s.agent===agent)?.session_id)")
                 sid = page.evaluate(
-                    "allSessions.find(s=>!s.is_done && s.agent==='codex').session_id"
+                    "allSessions.find(s=>!s.is_done && s.agent==='codex' && s.output_tokens>0 && s.output_tokens<5000)?.session_id"
                 )
+                assert sid, "A bounded nonempty Codex transcript is required for read-only proof"
                 page.evaluate("sid=>openConv(sid,{mode:'read'})", sid)
-                page.locator("#convBody").wait_for()
-                page.wait_for_timeout(500)
+                page.locator("#convBody .msg").first.wait_for(timeout=30000)
                 page.screenshot(path=str(args.screenshots / "desktop.png"))
                 page.locator("#workspaceChanges").click()
                 page.wait_for_function(
@@ -70,6 +70,7 @@ def main():
                 page.screenshot(path=str(args.screenshots / "tooling.png"))
                 page.set_viewport_size({"width": 390, "height": 844})
                 page.locator('.tab[data-tab="chats"]').click()
+                page.locator("#convBody .msg").first.wait_for(timeout=30000)
                 page.screenshot(path=str(args.screenshots / "mobile.png"))
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 assert not spawns, spawns

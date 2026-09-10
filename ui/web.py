@@ -1834,6 +1834,15 @@ body.pane-dragging * {
   border-color: var(--accent);
 }
 .agent-pill .agent-icon { width: 14px; height: 14px; }
+.agent-picker { flex-wrap: wrap; }
+.agent-picker-hint {
+  flex-basis: 100%;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
 #convContent {
   display: flex;
   flex-direction: column;
@@ -5591,6 +5600,19 @@ let convMode = 'live';            // 'read' | 'live' (Code tab)
 const termSessions = new Map();   // sid -> { term, fit, ws, tid, mount }
 let activeTermSid = null;         // sid of the currently visible terminal pane (or null)
 const _pendingTermPartners = new Map(); // temporary pairs created by bridge auto-spawn
+// A value is one sid (the bridge's pairs) or a list (a thread created from
+// the picker with three agents). Read through these so nothing downstream
+// has to know which.
+function _pendingPartnersOf(sid) {
+  const p = _pendingTermPartners.get(sid);
+  if (!p) return [];
+  return Array.isArray(p) ? p.filter(Boolean) : [p];
+}
+function _setPendingPartners(sid, partners) {
+  const list = Array.from(new Set(partners)).filter(x => x && x !== sid);
+  if (!list.length) { _pendingTermPartners.delete(sid); return; }
+  _pendingTermPartners.set(sid, list.length === 1 ? list[0] : list);
+}
 const _termStarting = new Set();  // prevent duplicate PTYs from fast repeated opens
 let _webRuntimePollTimer = null;
 let _webRuntimeFocusSid = null;
@@ -6092,11 +6114,18 @@ async function _reconcilePseudos(fresh, opts) {
     // pseudos have resolved so they render as one thread and the bridge works.
     if (pseudo.fd_pair_id) {
       const bucket = (_fdPairResolved[pseudo.fd_pair_id] = _fdPairResolved[pseudo.fd_pair_id] || []);
-      bucket.push(match.session_id);
-      if (bucket.length === 2) {
-        _fdLinkPair([...bucket], 0);
-        delete _fdPairResolved[pseudo.fd_pair_id];
-      }
+      if (!bucket.includes(match.session_id)) bucket.push(match.session_id);
+      // Link whatever has arrived instead of waiting for the whole thread.
+      //
+      // A pane only becomes a real session once its agent writes a transcript,
+      // and codex and gemini write nothing until their first message. Holding
+      // the link until every member resolved therefore meant a thread never
+      // linked at all unless the user typed into all of them: the one pane
+      // that was used became an ordinary chat and the rest expired as
+      // placeholders. Linking from the second arrival on, and letting later
+      // members join the group already made, matches how the thread is
+      // actually used.
+      if (bucket.length >= 2) _fdLinkPair([...bucket], 0);
     }
     // === FRONT DOOR FEATURE END ===
 
@@ -6662,7 +6691,7 @@ function _agentOf(sid) {
  * silently drops whichever the lookup did not happen to pick.
  */
 function _linkedGroupSids(sid, { liveOnly = true } = {}) {
-  const pending = _pendingTermPartners.get(sid);
+  const pending = _pendingPartnersOf(sid);
   const src = (sessionSource.length ? sessionSource : sessions);
   const me = src.find(x => x && x.session_id === sid);
 
@@ -6671,8 +6700,8 @@ function _linkedGroupSids(sid, { liveOnly = true } = {}) {
     ids = _siblingsInGroup(me.group, sid)
       .filter(s => !s.external_runtime_active && !s.fleet_worker && !(s.metadata && s.metadata.fleet_worker))
       .map(s => s.session_id);
-  } else if (pending) {
-    ids = [pending];
+  } else if (pending.length) {
+    ids = pending;
   }
 
   // Layout needs existing panes; startup must also see unopened members.
@@ -6695,7 +6724,7 @@ function _startLinkedTerminals(sid) {
 
 function _linkedSiblingSid(sid) {
   // The other half of a linked claude↔codex pair, if any.
-  const pending = _pendingTermPartners.get(sid);
+  const pending = _pendingPartnersOf(sid)[0];
   if (pending) return pending;
   const src = (sessionSource.length ? sessionSource : sessions);
   const me = src.find(x => x && x.session_id === sid);
@@ -7038,6 +7067,31 @@ function _revealSurvivingLinkedTerminals(sid) {
   if (available.length) _activateTermPane(available.includes(activeTermSid) ? activeTermSid : available[0]);
 }
 
+function _adoptStructuredIdentity(sid, target) {
+  const pseudo = _pseudoSessions.find(session => session.session_id === sid);
+  if (!pseudo) return null;
+  const partners = _pendingPartnersOf(sid);
+  _pendingTermPartners.delete(sid);
+  _setPendingPartners(target, partners);
+  for (const other of partners) {
+    _setPendingPartners(other, _pendingPartnersOf(other).map(value => value === sid ? target : value));
+  }
+  if (pseudo.fd_pair_id) {
+    const bucket = (_fdPairResolved[pseudo.fd_pair_id] ||= []);
+    if (!bucket.includes(target)) bucket.push(target);
+    if (bucket.length >= 2) _fdLinkPair([...bucket], 0);
+  }
+  if (pseudo.pending_group_link_with) {
+    const members = pseudo.pending_group_member_sids || [pseudo.pending_group_link_with];
+    _fdLinkPair(Array.from(new Set([...members.filter(Boolean), target])), 0);
+  }
+  _pseudoSessions.splice(_pseudoSessions.indexOf(pseudo), 1);
+  const existing = _findClientSession(target);
+  const replacement = {...pseudo, ...existing, session_id:target, isPseudo:false, structured_pending:false};
+  setSessionSource([replacement, ...sessionSource.filter(session => ![sid,target].includes(session.session_id))]);
+  return pseudo.group || null;
+}
+
 function _startStructuredPane(sid, opts) {
   if (opts.isNew) {
     const pseudo = _pseudoSessions.find(session => session.session_id === sid);
@@ -7067,6 +7121,7 @@ function _startStructuredPane(sid, opts) {
     focus:() => frame.contentWindow?.postMessage({type:'serena-workspace-focus'}, location.origin)};
   const handoffs = new Map();
   let frameLoaded=false;
+  let createdTarget=null,creationOpening=false;
   frame.addEventListener('load',()=>{frameLoaded=true;});
   runtime.handoff = text => new Promise(resolve => {
     const requestId=crypto.randomUUID();
@@ -7085,6 +7140,9 @@ function _startStructuredPane(sid, opts) {
     if(['serena-workspace-open-fork','serena-workspace-open-cleared','serena-workspace-open-created','serena-workspace-open-session'].includes(event.data?.type)){
       const target=event.data.target;
       if(typeof target !== 'string' || !/^[a-f0-9-]{36}$/.test(target) || target===sid)return;
+      const created=event.data.type==='serena-workspace-open-created' && opts.isNew;
+      if(created && (creationOpening || (createdTarget && createdTarget!==target)))return;
+      if(created){createdTarget=target;creationOpening=true;}
       try{
         if (event.data.type === 'serena-workspace-open-created' && opts.isNew) {
           const title = _pseudoSessions.find(session => session.session_id === sid)?.pending_rename_title;
@@ -7095,7 +7153,9 @@ function _startStructuredPane(sid, opts) {
             if (!response.ok) throw Error(result.error || 'Could not preserve the new chat name');
           }
         }
+        const provisionalGroup=created ? _adoptStructuredIdentity(sid,target) : null;
         await loadSessions(currentProject);
+        if(provisionalGroup && !_findClientSession(target)?.group) _patchClientSession(target,{group:provisionalGroup});
         if(!_findClientSession(target))document.getElementById('convTitle').textContent='Conversation ' + target.slice(0,8);
         await openConv(target);
         if (event.data.type === 'serena-workspace-open-created' && opts.isNew) {
@@ -7105,6 +7165,7 @@ function _startStructuredPane(sid, opts) {
           mount.remove();
         }
       }catch(error){showToast('Could not open conversation: '+error.message,{variant:'error'});}
+      finally{if(created)creationOpening=false;}
       return;
     }
     if(event.data?.type !== 'serena-workspace-state')return;
@@ -7805,12 +7866,12 @@ function _migrateLiveTerminalSid(oldSid, newSid) {
     window.__termDrafts.set(newSid, window.__termDrafts.get(oldSid));
     window.__termDrafts.delete(oldSid);
   }
-  const partner = _pendingTermPartners.get(oldSid);
-  if (partner) {
+  const partners = _pendingPartnersOf(oldSid);
+  if (partners.length) {
     _pendingTermPartners.delete(oldSid);
-    _pendingTermPartners.set(newSid, partner);
-    if (_pendingTermPartners.get(partner) === oldSid) {
-      _pendingTermPartners.set(partner, newSid);
+    _setPendingPartners(newSid, partners);
+    for (const other of partners) {
+      _setPendingPartners(other, _pendingPartnersOf(other).map(x => x === oldSid ? newSid : x));
     }
   }
   fetch('/api/terminal-runtime/migrate', {
@@ -7876,10 +7937,10 @@ function teardownLiveTerminal(sid) {
   if (!s) return;
   termSessions.delete(sid);
   const survivorSid = _collapseWebSplitAfterTerminalExit(sid);
-  const partner = _pendingTermPartners.get(sid);
+  const partners = _pendingPartnersOf(sid);
   _pendingTermPartners.delete(sid);
-  if (partner && _pendingTermPartners.get(partner) === sid) {
-    _pendingTermPartners.delete(partner);
+  for (const other of partners) {
+    _setPendingPartners(other, _pendingPartnersOf(other).filter(x => x !== sid));
   }
   if (window.__termDrafts) window.__termDrafts.delete(sid);
   _unmarkActive(sid);
@@ -8429,11 +8490,18 @@ async function newChatInline(cwdOverride) {
     confirm: 'Create',
     agentPicker: true,
     defaultAgent: _lastNewChatAgent || 'claude',
+    defaultAgents: _lastNewChatAgents,
   });
   if (res === null) return;
   const typedTitle = (res.value || '').trim();
   let agent = res.agent || 'claude';
   _lastNewChatAgent = agent;
+  const agents = Array.isArray(res.agents) && res.agents.length ? res.agents : [agent];
+  _lastNewChatAgents = agents.slice();
+  if (agents.length > 1) {
+    await newLinkedChatInline(agents, cwdOverride, typedTitle);
+    return;
+  }
 
   // cwd: explicit override (from folder picker) > active project chip > empty
   // (Python defaults empty to $HOME).
@@ -8496,6 +8564,76 @@ async function newChatInline(cwdOverride) {
 }
 
 let _lastNewChatAgent = 'claude';
+let _lastNewChatAgents = null;
+
+/**
+ * A new chat on more than one agent: every pane spawned together, in one
+ * split, linked as one thread as soon as the real sessions exist.
+ *
+ * This is the front door's claude+codex spawn generalised to whatever the
+ * picker selected. The first agent in pane order takes focus; the rest start
+ * in the background so the user is looking at a live pane while the others
+ * come up. A typed name lands on every member, so the thread reads as one
+ * chat in the sidebar rather than three strangers with the same timestamp.
+ */
+async function newLinkedChatInline(agents, cwdOverride, typedTitle) {
+  const ordered = _AGENT_PANE_ORDER.filter(a => agents.includes(a));
+  if (ordered.length < 2) return newChatInline(cwdOverride);
+
+  await _loadDefaultCwd();
+  const cwd = (cwdOverride !== undefined && cwdOverride !== null)
+    ? cwdOverride
+    : (currentProjectCwd || _defaultCwd() || '');
+  const shortProj = cwd ? (cwd.split('/').filter(Boolean).pop() || '~') : '~';
+  const label = typedTitle || 'New chat';
+  const pairId = 'fdp-' + Math.random().toString(36).slice(2, 10);
+
+  // A provisional group so the thread renders as ONE row from the moment it
+  // is created. The sidebar folds on `group`, which only existed once the
+  // backend had linked real sessions, so three placeholders sat in the list as
+  // three unrelated chats for as long as it took anyone to type.
+  const clientGroup = 'fdg-' + pairId;
+  const pseudos = ordered.map(a => {
+    const pseudo = _fdPseudo(a, cwd, label, pairId, ordered.length);
+    pseudo.pending_rename_title = typedTitle || null;
+    pseudo.group = clientGroup;
+    return pseudo;
+  });
+  _pseudoSessions.unshift(...pseudos);
+  setSessionSource([...pseudos, ...sessionSource]);
+  pseudos.forEach(p => _markActive(p.session_id));
+
+  const lead = pseudos[0];
+  currentSessionId = lead.session_id;
+  focusedSid = lead.session_id;
+  convMode = 'live';
+  document.getElementById('viewReadBtn').classList.remove('active');
+  document.getElementById('viewLiveBtn').classList.add('active');
+  document.getElementById('convBody').classList.add('hidden');
+  document.getElementById('convTerminal').classList.remove('hidden');
+  document.getElementById('convEmpty').classList.add('hidden');
+  document.getElementById('convContent').classList.remove('hidden');
+  document.getElementById('convTitle').textContent = label;
+  document.getElementById('convMeta').textContent = cwd || '~';
+  setTermStatus('Starting ' + ordered.map(_agentLabel).join(' + ') + '…', 'live');
+
+  // Every member knows every other member before any of them starts, so the
+  // split lays out the whole thread from the first pane up.
+  const sids = pseudos.map(p => p.session_id);
+  pseudos.forEach(p => _setPendingPartners(p.session_id, sids));
+
+  for (const p of pseudos.slice(1)) {
+    await startLiveTerminal(p.session_id, { cwd, agent: p.agent, isNew: true, background: true });
+  }
+  const leadRuntime = await startLiveTerminal(lead.session_id, { cwd, agent: lead.agent, isNew: true });
+  if (!leadRuntime) {
+    setTermStatus('Could not start ' + _agentLabel(lead.agent), 'error');
+    return;
+  }
+  _activateTermPane(lead.session_id);
+  _startPseudoReconciler();
+  _ensureActiveRefresh();
+}
 
 // ═══════════════════════════════════════════════════════════════
 // === FOLDER PICKER === (Alt+Shift+N → native file chooser → new chat
@@ -10272,6 +10410,9 @@ async function _fdLinkPair(sids, attempt) {
     });
     const ld = await lr.json().catch(() => ({}));
     if (lr.ok && ld.ok && ld.group_id) {
+      // A later member re-links the whole bucket, and link_sessions merges
+      // into whichever group already exists, so the thread grows rather than
+      // splitting. Nothing else is needed to catch the stragglers.
       _applyClientGroup(sids, ld.group_id);
       return;
     }
@@ -10304,7 +10445,7 @@ function fdSpawn(spawn) {
   }
 }
 
-function _fdPseudo(agent, cwd, label, pairId) {
+function _fdPseudo(agent, cwd, label, pairId, pairSize) {
   const tempId = 'new-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   const iso = new Date().toISOString();
   return {
@@ -10313,6 +10454,9 @@ function _fdPseudo(agent, cwd, label, pairId) {
     cwd, first_timestamp: iso, last_timestamp: iso, starred: false,
     input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_create_tokens: 0,
     isPseudo: true, agent, pending_rename_title: null, fd_pair_id: pairId || null,
+    // How many panes share this pair id. The reconciler links them the moment
+    // the last one resolves, so it has to know how many that is.
+    fd_pair_size: pairId ? (pairSize || 2) : null,
     // Expiry so a pane that never materializes can't lurk and claim an
     // unrelated same-agent/same-cwd session opened minutes later.
     fd_expires: pairId ? Date.now() + 120000 : null,
@@ -10581,7 +10725,21 @@ function showConfirm({ title = 'Are you sure?', body = '', confirm = 'OK', cance
   });
 }
 
-function showPrompt({ title = 'Enter value', body = '', placeholder = '', defaultValue = '', confirm = 'OK', cancel = 'Cancel', agentPicker = false, defaultAgent = 'claude' } = {}) {
+// The picker's selection, kept as an ordered list in pane order so a thread
+// created from it reads the same way the split lays it out. Deselecting the
+// only remaining agent is refused: a chat has to run on something, and an
+// empty pill row would just be the Create button doing nothing.
+function _toggleAgentChoice(chosen, agent) {
+  const set = new Set(chosen);
+  if (set.has(agent)) {
+    if (set.size > 1) set.delete(agent);
+  } else {
+    set.add(agent);
+  }
+  return _AGENT_PANE_ORDER.filter(a => set.has(a));
+}
+
+function showPrompt({ title = 'Enter value', body = '', placeholder = '', defaultValue = '', confirm = 'OK', cancel = 'Cancel', agentPicker = false, defaultAgent = 'claude', defaultAgents = null } = {}) {
   return new Promise((resolve) => {
     const bd = document.getElementById('modalBackdrop');
     const input = document.getElementById('modalInput');
@@ -10598,24 +10756,30 @@ function showPrompt({ title = 'Enter value', body = '', placeholder = '', defaul
 
     // Agent picker (only when requested by caller)
     const picker = document.getElementById('modalAgentPicker');
-    let chosenAgent = defaultAgent;
+    // More than one pill can be active. One agent makes an ordinary chat;
+    // two or three make a linked thread, opened together as a split, the way
+    // the front door opens claude+codex.
+    let chosenAgents = _AGENT_PANE_ORDER.filter(a =>
+      (Array.isArray(defaultAgents) && defaultAgents.length ? defaultAgents : [defaultAgent]).includes(a));
+    if (!chosenAgents.length) chosenAgents = ['claude'];
     if (agentPicker) {
-      picker.innerHTML =
-        '<button type="button" class="agent-pill' + (defaultAgent === 'claude' ? ' active' : '') + '" data-agent="claude">'
-          + '<span class="agent-icon claude">' + _CLAUDE_SVG + '</span>Claude'
-        + '</button>'
-        + '<button type="button" class="agent-pill' + (defaultAgent === 'codex' ? ' active' : '') + '" data-agent="codex">'
-          + '<span class="agent-icon codex">' + _CODEX_SVG + '</span>Codex'
-        + '</button>'
-        + '<button type="button" class="agent-pill' + (defaultAgent === 'gemini' ? ' active' : '') + '" data-agent="gemini">'
-          + '<span class="agent-icon gemini">' + _GEMINI_SVG + '</span>Gemini'
-        + '</button>';
+      const icons = { claude: _CLAUDE_SVG, codex: _CODEX_SVG, gemini: _GEMINI_SVG };
+      picker.innerHTML = _AGENT_PANE_ORDER.map(a =>
+        '<button type="button" class="agent-pill' + (chosenAgents.includes(a) ? ' active' : '')
+          + '" data-agent="' + a + '" aria-pressed="' + chosenAgents.includes(a) + '">'
+          + '<span class="agent-icon ' + a + '">' + icons[a] + '</span>' + _agentLabel(a)
+        + '</button>').join('')
+        + '<div class="agent-picker-hint">pick more than one to open them linked</div>';
       picker.style.display = '';
       const pills = picker.querySelectorAll('.agent-pill');
+      const paint = () => pills.forEach(x => {
+        const on = chosenAgents.includes(x.getAttribute('data-agent'));
+        x.classList.toggle('active', on);
+        x.setAttribute('aria-pressed', String(on));
+      });
       pills.forEach(p => p.addEventListener('click', () => {
-        chosenAgent = p.getAttribute('data-agent');
-        pills.forEach(x => x.classList.remove('active'));
-        p.classList.add('active');
+        chosenAgents = _toggleAgentChoice(chosenAgents, p.getAttribute('data-agent'));
+        paint();
         input.focus();
       }));
     } else {
@@ -10633,7 +10797,7 @@ function showPrompt({ title = 'Enter value', body = '', placeholder = '', defaul
       picker.innerHTML = '';
       _modalRestoreTerminal();
       if (result === null) resolve(null);
-      else if (agentPicker) resolve({ value: result, agent: chosenAgent });
+      else if (agentPicker) resolve({ value: result, agent: chosenAgents[0], agents: chosenAgents.slice() });
       else resolve(result);
     };
     const onBackdrop = (e) => { if (e.target === bd) close(null); };
@@ -13277,8 +13441,13 @@ def ws_terminal(ws, tid):
             chunk = pty_terminal.read_available(tid, max_bytes=65536, timeout=0.05)
             if chunk is None:
                 pty_dead.set()
+                # A pane that died seconds after it opened may have said why.
+                # Codex's writer-lock refusal is the case that kept looking
+                # like a mystery; hand the renderer the reason and it stays
+                # on screen instead of vanishing into "Session ended."
+                reason = pty_terminal.explain_early_exit(tid)
                 try:
-                    ws.send(json.dumps({"exit": True}))
+                    ws.send(json.dumps({"error": reason} if reason else {"exit": True}))
                 except Exception:
                     pass
                 stop_reader.set()

@@ -1422,10 +1422,31 @@ def list_projects(*, include_machinery: bool = False) -> list[dict]:
     machine ran it and nothing about which project it was for, and a handful of
     old sessions never recorded a cwd at all. Both fall back to the slug, which
     is mapped back to a real directory using the cwds other sessions recorded.
+
+    Fleet workers are left out entirely. They belong to a run, not to a place:
+    the sidebar already gathers them under Fleet Chats, and their checkouts are
+    disposable. Excluding them by their own marker rather than by where they
+    happen to sit is what keeps this true when Fleet changes its workspace --
+    the isolated worktrees under the state directory were already treated as
+    machinery, but a run given a directory beside real work was not, so every
+    worker turned that scratch checkout into a project of its own.
     """
 
+    from core import metadata as meta_sync
     from core.config import claude_project_dir_for
     from core.projects import is_machinery, project_root
+
+    def _is_fleet_worker(entry: object) -> bool:
+        # Same shape the sidebar keys on: a marker naming the run it served.
+        marker = entry.get("fleet_worker") if isinstance(entry, dict) else None
+        return isinstance(marker, dict) and bool(marker.get("run_id"))
+
+    all_meta = meta_sync.get_all_meta() or {}
+    fleet_workers = {
+        session_id
+        for session_id, entry in all_meta.items()
+        if _is_fleet_worker(entry)
+    }
 
     conn = _get_db()
     rows = [
@@ -1443,6 +1464,8 @@ def list_projects(*, include_machinery: bool = False) -> list[dict]:
     # cwd. This is what lets a Fleet-worktree session rejoin its own project.
     slug_to_root: dict[str, str] = {}
     for row in rows:
+        if row.get("session_id") in fleet_workers:
+            continue
         cwd = row.get("cwd") or ""
         if not cwd or is_machinery(cwd):
             continue
@@ -1454,6 +1477,8 @@ def list_projects(*, include_machinery: bool = False) -> list[dict]:
 
     grouped: dict[str, dict] = {}
     for row in rows:
+        if row.get("session_id") in fleet_workers:
+            continue
         cwd = row.get("cwd") or ""
         slug = str(row.get("project_dir") or "")
         if cwd and not is_machinery(cwd):
