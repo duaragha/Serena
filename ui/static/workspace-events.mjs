@@ -72,6 +72,8 @@ export class WorkspaceConversation {
       this.metadata.tokenUsage = p.tokenUsage;
     } else if (method === 'workspace/claudeUsage') {
       this.metadata.claudeUsage = p.usage;
+    } else if (method === 'workspace/acpUsage') {
+      this.metadata.acpUsage = p.usage;
     } else if (method === 'workspace/bridgeQueue') {
       this.metadata.bridgeQueueCount = p.count;
       this.metadata.bridgeQueue = p.requests || [];

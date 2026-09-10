@@ -27,6 +27,7 @@ class AcpSession:
         self.last_turn_id = None
         self.config_options = []
         self.commands = []
+        self.usage = None
 
     def start_event_reader(self):
         if self._reader is not None:
@@ -81,7 +82,7 @@ class AcpSession:
                 history = {"id": "history", "status": "completed", "items": list(self.events.items.values())}
                 await self.publish(self.events.event("workspace/history", {
                     "thread": {"id": self.session_id, "turns": [history] if history["items"] else []},
-                    "acpSettings": result or {}}))
+                    "acpSettings": result or {}, "acpUsage": self.usage}))
                 if "configOptions" in (result or {}):
                     await self.publish_model_state()
                 self.events.turn = None
@@ -102,6 +103,8 @@ class AcpSession:
         method, params = message.get("method"), message.get("params")
         if method == "session/update":
             event = self.events.update(params)
+            if event["method"] == "workspace/acpUsage":
+                self.usage = deepcopy(event["params"]["usage"])
             if params["update"]["sessionUpdate"] == "config_option_update":
                 self.config_options = deepcopy(params["update"].get("configOptions", []))
                 await self.publish_model_state()
@@ -119,7 +122,7 @@ class AcpSession:
                                   "argumentHint": (command.get("input") or {}).get("hint", ""),
                                   "kind": "command"} for command in commands]
                 await self.publish(self.events.event("workspace/commands", {"data": self.commands}))
-            if self.state != "loading" or event["method"] == "workspace/acpMetadata":
+            if self.state != "loading" or event["method"] in {"workspace/acpMetadata", "workspace/acpUsage"}:
                 await self.publish(event)
         elif method == "session/request_permission":
             async with self._answer_lock:

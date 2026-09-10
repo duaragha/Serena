@@ -61,6 +61,26 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_acp_context_usage_is_labeled_and_invalid_updates_clear_it(pane, width):
+    from core.workspace_acp_events import AcpEvents
+
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    events = AcpEvents("exact")
+    def usage(used, size):
+        page.evaluate("event => emit(event)", events.update({"sessionId": "exact", "update": {
+            "sessionUpdate": "usage_update", "used": used, "size": size}}))
+    usage(53000, 200000)
+    page.wait_for_function("pane.usageLabel.textContent === 'Context: 53,000 / 200,000 tokens (27%)'")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    usage(0, 200000)
+    page.wait_for_function("pane.usageLabel.textContent.includes('(0%)')")
+    usage(None, 0)
+    page.wait_for_function("pane.usageLabel.textContent === ''")
+    assert not errors and page.evaluate("calls") == []
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 @pytest.mark.parametrize("reason,label", [("max_tokens", "Stopped: token limit reached"),
     ("max_turn_requests", "Stopped: model request limit reached"), ("refusal", "Provider declined to continue")])
 def test_acp_stop_reason_visible_without_duration_or_auto_continuation(pane, width, reason, label):

@@ -81,6 +81,20 @@ def test_idle_metadata_never_creates_a_turn():
         update(events, "agent_message_chunk", content={"type": "text", "text": "late"})
 
 
+@pytest.mark.parametrize("used,size,valid", [(0, 200000, True), (53000, 200000, True),
+    (210000, 200000, True), (True, 200000, False), (10, 0, False), (-1, 100, False),
+    (None, 100, False), (10, 2**54, False)])
+def test_context_usage_is_provider_reported_not_an_account_limit(used, size, valid):
+    events = AcpEvents("exact")
+    raw = {"sessionUpdate": "usage_update", "used": used, "size": size,
+           "cost": {"amount": 0.5, "currency": "USD"}}
+    event = events.update({"sessionId": "exact", "update": raw})
+    assert event["method"] == "workspace/acpUsage"
+    assert event["params"]["usage"] == ({"used": used, "size": size} if valid else None)
+    assert event["params"]["providerOriginal"] == raw
+    assert events.turn is None and not events.items
+
+
 def test_user_image_keeps_text_boundaries_and_original_content():
     events = AcpEvents("exact")
     events.begin("history")

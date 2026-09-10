@@ -198,6 +198,20 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Context usage (2026-09-09): native `usage_update` used/size token counts now
+reach the pane as explicitly labeled context usage, not account quota. Valid
+zero is retained; invalid/unsafe counts clear stale values. Native cost metadata
+is preserved but not turned into a billing claim. Usage arriving during load
+is included in the final history snapshot so the renderer does not discard it.
+Contract: https://agentclientprotocol.com/protocol/v1/prompt-turn#session-usage-updates
+(accessed 2026-09-09).
+
+`PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_events.py tests/test_workspace_acp_session.py tests/test_workspace_pane.py::test_acp_context_usage_is_labeled_and_invalid_updates_clear_it -q --tb=short`:
+exit 0, 33 passed. Scoped Ruff and both changed JS module syntax checks: exit 0.
+Includes invalid/zero/over-capacity counts, load ordering and mobile/desktop
+display. Controlled event coverage; actual authenticated Gemini usage reporting
+and installed-app rollout remain unverified.
+
 Honest stopped turns (2026-09-09): `max_tokens` and `max_turn_requests`
 now map to interrupted rather than completed; `refusal` maps to failed with
 the original stop reason retained. The pane displays the concrete reason even

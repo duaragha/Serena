@@ -108,6 +108,23 @@ def test_command_notifications_replace_catalog_without_execution(tmp_path):
     asyncio.run(run())
 
 
+def test_context_usage_during_load_survives_history_snapshot(tmp_path):
+    async def run():
+        rpc, output = Rpc(), []
+        async def publish(event):
+            output.append(event)
+        owner = AcpSession(session_id="exact", cwd=tmp_path, rpc=rpc, publish=publish)
+        async def load(method, params):
+            await owner.receive({"method": "session/update", "params": {"sessionId": "exact", "update": {
+                "sessionUpdate": "usage_update", "used": 123, "size": 1000}}})
+            return {}
+        rpc.handler = load
+        await owner.load({"agentCapabilities": {"loadSession": True}}, mcp_servers=[])
+        assert output[-1]["method"] == "workspace/history"
+        assert output[-1]["params"]["acpUsage"] == {"used": 123, "size": 1000}
+    asyncio.run(run())
+
+
 def test_exact_load_failure_never_creates_or_retries(tmp_path):
     async def run():
         rpc, output = Rpc(), []

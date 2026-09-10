@@ -30,7 +30,12 @@ class AcpEvents:
         if not isinstance(update, dict) or not isinstance(update.get("sessionUpdate"), str):
             raise ValueError("Invalid ACP update")
         kind = update["sessionUpdate"]
-        if kind in {"available_commands_update", "config_option_update", "current_mode_update", "usage_update", "session_info_update"}:
+        if kind == "usage_update":
+            used, size = update.get("used"), update.get("size")
+            valid = type(used) is int and type(size) is int and 0 <= used <= 2**53 - 1 and 0 < size <= 2**53 - 1
+            return self.event("workspace/acpUsage", {"usage": {"used": used, "size": size} if valid else None,
+                              "providerOriginal": update})
+        if kind in {"available_commands_update", "config_option_update", "current_mode_update", "session_info_update"}:
             return self.event("workspace/acpMetadata", {"update": update})
         if self.turn is None:
             raise ValueError("ACP update has no active turn")

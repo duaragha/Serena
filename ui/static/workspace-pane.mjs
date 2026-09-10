@@ -1298,7 +1298,9 @@ export class WorkspacePane {
     this.renderBridgeQueue();
     const tokens = this.conversation.metadata.tokenUsage?.last?.totalTokens;
     const usage = this.conversation.metadata.claudeUsage;
-    this.usageLabel.textContent = Number.isFinite(tokens) && tokens >= 0 ? `Last request: ${tokens.toLocaleString()} tokens` :
+    const acpUsage = this.conversation.metadata.acpUsage;
+    this.usageLabel.textContent = Number.isSafeInteger(acpUsage?.used) && acpUsage.used >= 0 && Number.isSafeInteger(acpUsage?.size) && acpUsage.size > 0 ? `Context: ${acpUsage.used.toLocaleString()} / ${acpUsage.size.toLocaleString()} tokens (${Math.round(acpUsage.used/acpUsage.size*100)}%)` :
+      Number.isFinite(tokens) && tokens >= 0 ? `Last request: ${tokens.toLocaleString()} tokens` :
       Number.isFinite(usage?.input_tokens) && Number.isFinite(usage?.output_tokens) ? `Turn: ${usage.input_tokens.toLocaleString()} input / ${usage.output_tokens.toLocaleString()} output` : '';
     this.stop.hidden = this.conversation.status !== 'running';
     this.stop.disabled = this.interrupting;
