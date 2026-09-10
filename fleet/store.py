@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.work_jobs import process_start_token
+from core.process_probe import probe_process
 from core.sqlite_connection import connect_database
 from fleet.context import redact_text, redact_value
 from fleet.contracts import derive_work_unit_views
@@ -3652,7 +3653,7 @@ def _process_alive(pid: object, token: object = None) -> bool:
     if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
         return False
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -3706,7 +3707,7 @@ def _terminate_owned_process(pid: object, token: object) -> bool:
 
 def _pid_exists(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
     except ProcessLookupError:
         return False
     except PermissionError:

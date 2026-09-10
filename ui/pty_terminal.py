@@ -26,6 +26,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 
 from core.process_launch import windows_launch_argv
+from core.process_probe import probe_process
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -380,7 +381,7 @@ _SCOPE_UNIT = re.compile(r"^serena-pty-(\d+)-[0-9a-f]+(?:\.scope)?$")
 
 def _process_alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
     except ProcessLookupError:
         return False
     except PermissionError:

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fleet.acceptance import activation_gate
 from core.work_jobs import process_start_token
+from core.process_probe import probe_process
 from core.sqlite_connection import connect_database
 
 SERVICE = "serena-fleet.service"
@@ -25,7 +26,7 @@ def _process_may_live(pid: object, token: object = None) -> bool:
         number = int(pid)
         if number <= 0:
             return True
-        os.kill(number, 0)
+        probe_process(number)
     except ProcessLookupError:
         return False
     except (TypeError, ValueError):
