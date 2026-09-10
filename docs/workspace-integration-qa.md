@@ -4,7 +4,53 @@
 Full Claude/Codex delivery remains incomplete and unreleased; this is an
 integration checkpoint, not a claim that every CLI capability is finished.
 
-## Current Integration Checkpoint: 064b97e
+## Current Source Checkpoint: e07b5ce
+
+2026-09-10. Integrated agent inspection, steering, attachments, receipt recovery
+and explicit idle continuation are included. No runtime source changed during
+this checkpoint. Full delivery remains incomplete.
+
+```sh
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_journal.py -q --tb=short
+# exit 0: 373 passed in 25.66s.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q --tb=short
+# exit 0: 251 passed in 276.33s.
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: 51 native print-only turns, 50+1 history pagination, same-owner
+# reservation exclusion, exact resume, one-time shell output, native skills
+# and mentions. Desktop/mobile visibility refresh 43ms/53ms. Real Electron
+# clipboard, login cancellation, native Claude/Codex creation, linked identity,
+# focus, draft recovery and view-close preservation passed. Owners reaped,
+# isolated project unchanged, no inference or credentials used.
+```
+
+The actual Electron linked-pane screenshot was inspected. It proves real shell
+integration and layout with empty sessions/drafts, not full mockup parity with
+model prose or authenticated child-agent work. Those gates remain separate.
+
+### Current Linux Package
+
+The package was rebuilt from the same `e07b5ce` runtime source and exercised
+through the actual Electron shell, without installing it:
+
+```sh
+env PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m PyInstaller --noconfirm --distpath apps/desktop/build/sidecar --workpath apps/desktop/build/pyinstaller-work apps/desktop/build/pyinstaller-work/serena-web-sidecar.spec
+# exit 0: build completed in approximately 215s. Optional TensorBoard,
+# pycparser table, HIP and Windows library warnings remain; no build error.
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: all source-proof scenarios above passed against the frozen backend.
+# Visible refresh 38ms desktop / 35ms mobile. Actual Electron linked views,
+# clipboard, native provider creation and owner preservation all passed.
+# Disposable project untouched; owners reaped; no inference or credentials.
+sha256sum apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: b6788f4e933230d62ef6e1c8fb9d09f27958e9956178df328d1dfbffd179fe8d
+```
+
+This refreshes Linux packaging evidence only. Windows packaging, authenticated
+positive subagent workflows, remaining command parity, final visual parity and
+release/default enablement are not established by these checks.
+
+## Earlier Integration Checkpoint: 064b97e
 
 2026-09-10. No runtime source changed during these checks. Disposable profiles
 only; no installed app restart, release or default enablement.
