@@ -6,6 +6,37 @@ assumption that Antigravity has no suitable interactive interface. The installed
 
 ## Primary Evidence
 
+### Disconnect Capability Boundary
+
+Rechecked the official [ACP terminal contract](https://agentclientprotocol.com/protocol/v1/terminals)
+on 2026-09-10. Its terminal methods manage client-created terminals and require
+the client terminal capability; this is not an inventory of provider-owned
+background work. The current adapter advertises no client terminal capability
+and has no background-task query. Consequently, a ready prompt state alone is
+not evidence that closing the native process will preserve all work.
+
+The host now explicitly refuses Gemini's `disconnect_session` before calling an
+unsupported adapter method. It reports that background completion cannot be
+confirmed, rather than exposing an AttributeError or assuming an empty task
+list. A real-pipe integration test completes a prompt, attempts disconnect,
+repeats the receipt, and verifies the same process remains alive and history is
+unchanged. Ordinary view close still does not shut down the owner. This is an
+honest capability boundary, not implemented Gemini safe-disconnect parity.
+
+Executed separately, each exit **0**:
+
+```sh
+env PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_gemini.py::test_host_routes_real_pipe_prompt_permission_output_and_receipt tests/test_workspace_host.py::test_explicit_disconnect_preserves_history_and_never_stops_other_owner -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_gemini.py
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-antigravity-acp.py apps/desktop/build/proof-tools/antigravity-acp/agy_acp_server.par
+```
+
+Tests: **7 passed**; Ruff clean. Native proof revalidated Google server 1.1.1's
+handshake, exact CLI-only session rejection without replacement, owner refusal
+before launch, and native cleanup exit 0. The disconnect assertion uses the
+controlled real-pipe peer, not an authenticated Google session. Authentication,
+session-store compatibility and full Gemini admission remain unverified.
+
 ### Attachment Recovery After Cleanup
 
 Gemini now implements the host's `can_retry_attachment` contract. A failed

@@ -126,6 +126,14 @@ assert sys.stdin.read() == "", "Unexpected duplicate delivery"
         assert final["items"][1]["text"] == "pipe result"
         assert host.attach(SID)["state"] == "ready" and rpc.process is process
         assert process.returncode is None
+        before = host.events(SID)["events"]
+        disconnect = host.command(SID, "disconnect", "disconnect_session", {"confirmed": True})
+        assert not disconnect["ok"]
+        assert "cannot confirm background task completion" in disconnect["error"]
+        assert host.command(SID, "disconnect", "disconnect_session", {"confirmed": True}) == disconnect
+        assert host.attach(SID)["state"] == "ready" and rpc.process is process
+        assert process.returncode is None
+        assert host.events(SID)["events"] == before
     finally:
         host.shutdown()
     assert process is not None and process.returncode == 0

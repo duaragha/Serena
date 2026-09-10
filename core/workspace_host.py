@@ -517,6 +517,8 @@ class WorkspaceHost:
                 elif action == "disconnect_session":
                     if payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
                         raise ValueError("Explicit session disconnect confirmation is required")
+                    if provider not in {"claude", "codex"}:
+                        raise ValueError("Safe disconnect is unavailable: this provider cannot confirm background task completion. Closing the view keeps the session running.")
                     retryable = True
                     if owner.state != "ready" or owner.active_turn or self._bridge_queues.get(sid):
                         raise ValueError("Finish active and queued work before disconnecting")
