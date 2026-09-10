@@ -2,6 +2,31 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Combined Regression Pass
+
+At source revision `1aa5cb1`, the complete workspace test family was run together
+after the Windows discovery, Gemini lifecycle/image, and Claude composer changes.
+Commands were executed separately:
+
+```sh
+env PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages:apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace*.py -q --tb=short
+node --test tests/workspace-*.test.mjs
+```
+
+Both exited **0**. Python/browser: **573 passed, 10 skipped**, 89.18 seconds.
+One warning: the PTY/custom-session exclusivity test invokes `forkpty` in a
+multithreaded process (Python deprecation warning); this is not a warning-free
+run. JavaScript: **92 passed, 1 skipped**, no failures. This combines the current
+transport, host, event, storage, receipt, control and browser regression coverage;
+it does not substitute for authenticated provider flows or cross-platform live
+proof. Skips are not counted as successful verification.
+
+Current source still gates registration on `SERENA_STRUCTURED_WORKSPACE=1`
+(`ui/web.py`) and includes only Codex and Claude in `WorkspaceHost`'s default
+factories. Gemini default admission, full CLI-parity evidence and installed-app
+migration remain delivery gates. No default was enabled, release built, or
+installed app modified during this pass.
+
 ## Claude Composer Effort
 
 Claude's existing session-effort dialog remains available. The model picker now
