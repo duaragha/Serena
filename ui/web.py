@@ -6107,11 +6107,18 @@ async function _reconcilePseudos(fresh, opts) {
     // pseudos have resolved so they render as one thread and the bridge works.
     if (pseudo.fd_pair_id) {
       const bucket = (_fdPairResolved[pseudo.fd_pair_id] = _fdPairResolved[pseudo.fd_pair_id] || []);
-      bucket.push(match.session_id);
-      if (bucket.length >= (pseudo.fd_pair_size || 2)) {
-        _fdLinkPair([...bucket], 0);
-        delete _fdPairResolved[pseudo.fd_pair_id];
-      }
+      if (!bucket.includes(match.session_id)) bucket.push(match.session_id);
+      // Link whatever has arrived instead of waiting for the whole thread.
+      //
+      // A pane only becomes a real session once its agent writes a transcript,
+      // and codex and gemini write nothing until their first message. Holding
+      // the link until every member resolved therefore meant a thread never
+      // linked at all unless the user typed into all of them: the one pane
+      // that was used became an ordinary chat and the rest expired as
+      // placeholders. Linking from the second arrival on, and letting later
+      // members join the group already made, matches how the thread is
+      // actually used.
+      if (bucket.length >= 2) _fdLinkPair([...bucket], 0);
     }
     // === FRONT DOOR FEATURE END ===
 
@@ -8442,9 +8449,15 @@ async function newLinkedChatInline(agents, cwdOverride, typedTitle) {
   const label = typedTitle || 'New chat';
   const pairId = 'fdp-' + Math.random().toString(36).slice(2, 10);
 
+  // A provisional group so the thread renders as ONE row from the moment it
+  // is created. The sidebar folds on `group`, which only existed once the
+  // backend had linked real sessions, so three placeholders sat in the list as
+  // three unrelated chats for as long as it took anyone to type.
+  const clientGroup = 'fdg-' + pairId;
   const pseudos = ordered.map(a => {
     const pseudo = _fdPseudo(a, cwd, label, pairId, ordered.length);
     pseudo.pending_rename_title = typedTitle || null;
+    pseudo.group = clientGroup;
     return pseudo;
   });
   _pseudoSessions.unshift(...pseudos);
@@ -10243,6 +10256,9 @@ async function _fdLinkPair(sids, attempt) {
     });
     const ld = await lr.json().catch(() => ({}));
     if (lr.ok && ld.ok && ld.group_id) {
+      // A later member re-links the whole bucket, and link_sessions merges
+      // into whichever group already exists, so the thread grows rather than
+      // splitting. Nothing else is needed to catch the stragglers.
       _applyClientGroup(sids, ld.group_id);
       return;
     }

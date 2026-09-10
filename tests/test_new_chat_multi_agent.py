@@ -128,10 +128,18 @@ def test_a_pseudo_knows_how_big_its_thread_is() -> None:
     assert "fd_pair_size: pairId ? (pairSize || 2) : null" in page
 
 
-def test_the_reconciler_waits_for_the_whole_thread_before_linking() -> None:
-    """Linking at two would have paired two of a trio and stranded the third."""
+def test_the_reconciler_links_from_the_second_member_on() -> None:
+    """This originally waited for the whole thread, on the reasoning that
+    linking at two would strand the third. In practice the opposite happened: a
+    pane only becomes a real session once its agent writes a transcript, and
+    Codex and Gemini write nothing until their first message, so a thread whose
+    other panes were never typed into simply never linked.
+
+    Linking from the second arrival and re-linking the bucket as later members
+    appear is safe because link_sessions merges into whichever group already
+    exists. Covered in full in test_multi_agent_new_chat_links.py."""
     page = web.HTML
-    assert "if (bucket.length >= (pseudo.fd_pair_size || 2))" in page
+    assert "if (bucket.length >= 2) _fdLinkPair([...bucket], 0);" in page
     assert "if (bucket.length === 2)" not in page
 
 
