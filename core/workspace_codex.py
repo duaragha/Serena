@@ -58,6 +58,7 @@ class CodexWorkspace:
         self.history_cursor: str | None = None
         self._history_cursors: set[str] = set()
         self._mcp_logins: dict[str, dict] = {}
+        self._create_attempted = False
 
     async def _history_page(self, cursor=None):
         params = {"threadId": self.session_id, "limit": 50, "sortDirection": "desc", "itemsView": "full"}
@@ -107,9 +108,33 @@ class CodexWorkspace:
                 self._fork_ready.set()
 
     async def open(self, *, binary: str | None = None, env: dict[str, str] | None = None) -> dict:
+        if self.session_id.startswith("new:"):
+            raise WorkspaceRpcError("New sessions require explicit creation")
+        return await self._open(binary=binary, env=env)
+
+    async def create(self, *, checkpoint: Callable[[dict], Awaitable[None]], binary=None, env=None) -> dict:
+        """Create once under a caller-reserved request identity, never as resume fallback.
+
+        The host must durably reserve the creation request before calling, then
+        persist the returned native identity in checkpoint before input is enabled.
+        An uncertain attempt must not be retried with another owner instance.
+        """
+        try:
+            valid = self.session_id.startswith("new:") and str(UUID(self.session_id[4:])) == self.session_id[4:]
+        except ValueError:
+            valid = False
+        if not valid or not callable(checkpoint):
+            raise ValueError("Creation requires a reserved new UUID and durable checkpoint callback")
+        return await self._open(binary=binary, env=env, checkpoint=checkpoint)
+
+    async def _open(self, *, binary=None, env=None, checkpoint=None) -> dict:
         async with self._control_lock:
             if self.state != "closed":
                 raise WorkspaceRpcError("Session already opened or awaiting recovery")
+            if checkpoint is not None:
+                if self._create_attempted:
+                    raise WorkspaceRpcError("Creation was already attempted; recover its recorded identity")
+                self._create_attempted = True
             executable = binary or shutil.which("codex")
             if not executable:
                 raise WorkspaceRpcError("Codex executable is unavailable")
@@ -135,13 +160,28 @@ class CodexWorkspace:
                 self._events_task = asyncio.create_task(self._events())
                 # Do not set baseInstructions, disable coding tools, or override
                 # the session's configured model and permission policy here.
-                result = await self.rpc.request("thread/resume", {"threadId": self.session_id})
+                if checkpoint is None:
+                    result = await self.rpc.request("thread/resume", {"threadId": self.session_id})
+                else:
+                    result = await self.rpc.request("thread/start", {"cwd": str(self.cwd), "ephemeral": False})
+                    thread = result.get("thread") if isinstance(result, dict) else None
+                    sid = thread.get("id") if isinstance(thread, dict) else None
+                    try:
+                        valid = isinstance(sid, str) and str(UUID(sid)) == sid
+                    except ValueError:
+                        valid = False
+                    if (not valid or thread.get("cwd") != str(self.cwd)
+                            or thread.get("ephemeral") is not False or thread.get("turns") != []):
+                        raise WorkspaceRpcError("Codex returned an invalid new thread")
+                    await checkpoint({"session_id": sid, "provider": "codex", "cwd": str(self.cwd)})
+                    self._lease = self._lease.transfer_after_transition(sid)
+                    self.session_id = sid
                 thread = result.get("thread") if isinstance(result, dict) else None
                 if not isinstance(thread, dict) or thread.get("id") != self.session_id:
                     raise WorkspaceRpcError(
                         "Codex returned a different session; refusing attachment"
                     )
-                if thread.get("historyMode") == "paginated":
+                if checkpoint is None and thread.get("historyMode") == "paginated":
                     page = await self._history_page()
                     turns = {turn["id"]: turn for turn in page["turns"]}
                     turns.update({turn["id"]: turn for turn in thread.get("turns", [])

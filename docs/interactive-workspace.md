@@ -2,6 +2,30 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native Codex creation adapter (2026-09-09): `CodexWorkspace.create` accepts only
+an explicit provisional `new:<UUID>` identity and a durable checkpoint callback.
+It sends one native `thread/start`, validates the returned identity/project and
+empty non-ephemeral history, checkpoints before transferring the shared runtime
+lease, then enables existing native input/output. Resume never falls back to
+creation. Failed attempts cannot be repeated on the same adapter instance.
+The host must still durably reserve request IDs across instances/restarts;
+host/API/sidebar creation and pre-first-message recovery are NOT implemented by
+this adapter step. No New Chat UI capability is claimed yet.
+
+Official evidence accessed 2026-09-09:
+https://learn.chatgpt.com/docs/app-server (redirected from
+https://developers.openai.com/codex/app-server/). It distinguishes thread/start
+from thread/resume and describes event subscriptions. Local native evidence
+adds an important constraint: a newly created thread reports paginated history
+but rejects thread/turns/list before materialization. The adapter therefore uses
+the validated empty creation history, while keeping resume pagination unchanged.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q --tb=short`: exit 0, 47 passed, including 7 creation cases for valid identity, invalid identity/project/history, ephemeral refusal, checkpoint failure and uncertain native response.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py tests/test_workspace_codex.py scripts/verify-workspace-codex-create.py`: final exit 0; initial exit 1 for proof import ordering, corrected.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-create.py`: final exit 0. Real creation, durable journal checkpoint, competing-lease refusal, same-process print-only input, exact resume with native output, one transcript and child cleanup passed. Zero inference, no credentials, isolated project unchanged. Earlier exits 1 identified an absent fixture CODEX_HOME, premature native history read (adapter fixed), and incorrect proof journal accessor (changed to actual read API).
+The frozen sidecar predates this adapter addition. Complete provider parity and
+installed delivery remain open.
+
 Embedded Electron verification (2026-09-09): rebuilt the frozen backend from
 955aa29, including the pending read/delete and reconnect fixes. The Electron
 proof now opens the exact chat through the actual sidebar and Code button,

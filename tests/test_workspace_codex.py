@@ -584,6 +584,71 @@ async def make(tmp_path):
     return client, rpc, events
 
 
+@pytest.mark.parametrize("failure", [None, "identity", "cwd", "ephemeral", "turns", "checkpoint", "transport"])
+def test_new_thread_checkpoints_before_ownership_and_never_retries_creation(tmp_path, failure):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        client.session_id = "new:" + str(uuid4())
+        native_sid = str(uuid4())
+        order = []
+        lease = SimpleNamespace(launching=lambda: None, bind=lambda pid: None,
+                                release=lambda: order.append("release"))
+        def transfer(sid):
+            assert sid == native_sid and order == ["checkpoint"]
+            order.append("transfer")
+            return lease
+        lease.transfer_after_transition = transfer
+        client._lease_factory = lambda sid: lease
+        original = rpc.request
+        async def request(method, params):
+            if method != "thread/start":
+                assert method != "thread/resume"
+                return await original(method, params)
+            rpc.calls.append((method, params))
+            assert params == {"cwd": str(tmp_path), "ephemeral": False}
+            if failure == "transport":
+                raise WorkspaceRpcError("lost response")
+            thread = {"id": native_sid, "cwd": str(tmp_path), "ephemeral": False, "turns": [], "historyMode": "paginated"}
+            if failure == "identity":
+                thread["id"] = "unknown"
+            elif failure == "cwd":
+                thread["cwd"] = "/wrong"
+            elif failure == "ephemeral":
+                thread["ephemeral"] = True
+            elif failure == "turns":
+                thread["turns"] = [{"id": "existing"}]
+            return {"thread": thread, "model": "configured-model"}
+        rpc.request = request
+        async def checkpoint(target):
+            assert target == {"session_id": native_sid, "provider": "codex", "cwd": str(tmp_path)}
+            assert events == [] and client.state == "opening"
+            order.append("checkpoint")
+            if failure == "checkpoint":
+                raise OSError("durable write failed")
+        try:
+            with pytest.raises(WorkspaceRpcError, match="explicit creation"):
+                await client.open(binary="codex")
+            assert rpc.calls == []
+            if failure:
+                with pytest.raises((OSError, WorkspaceRpcError)):
+                    await client.create(checkpoint=checkpoint, binary="codex")
+                assert events == [] and "transfer" not in order
+                with pytest.raises(WorkspaceRpcError, match="already attempted"):
+                    await client.create(checkpoint=checkpoint, binary="codex")
+            else:
+                result = await client.create(checkpoint=checkpoint, binary="codex")
+                assert client.session_id == result["thread"]["id"] == native_sid
+                assert client.state == "ready" and order == ["checkpoint", "transfer"]
+                assert events[0]["method"] == "workspace/history"
+                with pytest.raises(ValueError):
+                    await client.create(checkpoint=checkpoint, binary="codex")
+            assert len([call for call in rpc.calls if call[0] == "thread/start"]) == 1
+            assert not any(method in {"turn/start", "thread/resume"} for method, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
 def test_model_discovery_and_unsupported_effort_never_starts_turn(tmp_path):
     async def run():
         client, rpc, events = await make(tmp_path)
