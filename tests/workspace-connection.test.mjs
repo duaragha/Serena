@@ -11,6 +11,35 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+for(const raw of ['{','null','[]','42','{"{bad":"receipt"}','{"{}":null}'])test(`invalid stored receipts preserve data and block delivery: ${raw}`,async()=>{
+  const saved=storage(),calls=[],errors=[];
+  saved.setItem('serena-workspace-pending:exact',raw);
+  const connection=new WorkspaceConnection({sessionId:'exact',token:'t',storage:saved,receive:()=>{},error:e=>errors.push(e.message),
+    fetcher:async(url)=>{calls.push(url);return response(url.endsWith('/attach')?{ok:true}:{events:[],has_more:false});}});
+  try{
+    await connection.connect();
+    assert.equal(errors.length,1);
+    assert.deepEqual(connection.pendingQueuedInputs(),[]);
+    await assert.rejects(connection.controls().submit({text:'do not duplicate'}),/receipts are unreadable/);
+    await assert.rejects(connection.command('fork_session',{}),/receipts are unreadable/);
+    assert.equal(calls.length,2);
+    assert.equal(saved.getItem('serena-workspace-pending:exact'),raw);
+  }finally{connection.dispose();}
+});
+
+for(const kind of ['uploads','fork','clear'])test(`corrupt ${kind} record cannot be silently overwritten`,async()=>{
+  const saved=storage();saved.setItem(`serena-workspace-${kind}:exact`,'{');
+  const connection=new WorkspaceConnection({sessionId:'exact',token:'t',storage:saved,receive:()=>{},error:()=>{},fetcher:()=>{throw Error('must not deliver');}});
+  const controls=connection.controls();
+  if(kind==='fork')assert.equal(controls.lastFork(),null);
+  if(kind==='clear')assert.equal(controls.lastClear(),null);
+  await assert.rejects(controls.submit({text:'new'}),/receipts are unreadable/);
+  assert.throws(()=>controls.clearForkReceipt(),/receipts are unreadable/);
+  assert.throws(()=>controls.forgetClear(),/receipts are unreadable/);
+  assert.equal(saved.getItem(`serena-workspace-${kind}:exact`),'{');
+  connection.dispose();
+});
+
 for(const action of ['submit','queue_input'])for(const reload of [false,true])test(`receipt cleanup storage failure retains ${action} identity (reload=${reload})`,async()=>{
   const saved=storage(),write=saved.setItem,calls=[],receipts=new Map();
   let failCleanup=false,executions=0;

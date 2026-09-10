@@ -12,6 +12,47 @@ from werkzeug.serving import make_server
 from ui.workspace_app import install_workspace
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_corrupt_receipts_keep_page_viewable_without_sending_commands(tmp_path, width):
+    playwright = pytest.importorskip("playwright.sync_api")
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
+    host = install_workspace(app, tmp_path / "events.db", describe=lambda sid: {"session_id": sid, "agent": "claude"})
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": width, "height": 900})
+                errors, calls = [], []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.add_init_script("sessionStorage.setItem('serena-workspace-pending:exact','{')")
+
+                def api(route):
+                    calls.append(route.request.url)
+                    route.fulfill(json={"ok": True, "events": [], "has_more": False})
+
+                page.route("**/api/workspace/**", api)
+                page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact")
+                button = page.get_by_role("button", name="Resume session", exact=True)
+                playwright.expect(button).to_be_enabled()
+                assert calls == []
+                button.click()
+                playwright.expect(page.get_by_role("alert")).to_contain_text("receipts are unreadable")
+                assert any("/events?" in call for call in calls)
+                assert not any("/commands" in call or "/uploads" in call for call in calls)
+                assert page.evaluate("sessionStorage.getItem('serena-workspace-pending:exact')") == "{"
+                assert not errors and host._loop is None
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+        host.shutdown()
+
+
 @pytest.mark.parametrize("saved", ['{"request_id":"broken"}', '{'])
 def test_corrupt_creation_record_cannot_launch_replacement(tmp_path, saved):
     from urllib.parse import urlencode

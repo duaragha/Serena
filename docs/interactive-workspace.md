@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Damaged Browser Receipt Handling
+
+Malformed JSON or invalid map shapes in session storage no longer crash connection
+construction. Pending-command signatures and IDs are validated before reuse;
+upload, clear and fork records are also checked. A failure latches a command
+refusal without clearing or rewriting saved bytes. Explicit attachment and event
+replay still work, with a visible warning. Uploading, new commands and receipt
+cleanup remain blocked so damaged state cannot manufacture a fresh retry identity.
+This is honest viewing-only fallback, not automatic receipt repair.
+
+Verification, all exit 0:
+
+```sh
+node --test tests/workspace-connection.test.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -k corrupt_receipts -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_app.py
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/sidecar.py
+```
+
+Node: 38 passed. Browser: 2 passed, 13 deselected at desktop/mobile widths;
+malformed storage retained exactly, no page exception, no command/upload delivery
+and no automatic attachment. Native Linux source proof: real session commands,
+queued inputs, skills/plugins, file mentions, fork/reload recovery after catalog
+failure, clear handoff and process cleanup passed without inference. Healthy
+receipt recovery remains functional. These changes are not yet in a rebuilt
+Windows package or an installed release.
+
 ## Packaged Windows Browser Pass
 
 Rebuilt the Windows onedir sidecar from 5cadd13 plus the favicon fix below. The

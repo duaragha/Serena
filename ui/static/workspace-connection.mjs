@@ -10,14 +10,40 @@ export class WorkspaceConnection {
     this.key = `serena-workspace-pending:${sessionId}`;
     this.forkKey = `serena-workspace-fork:${sessionId}`;
     this.clearKey = `serena-workspace-clear:${sessionId}`;
-    this.pending = JSON.parse(storage.getItem(this.key) || '{}');
+    this.storageFailure = null;
+    this.pending = this.readSaved(this.key, {}, value => value && !Array.isArray(value) && typeof value==='object'
+      && Object.entries(value).every(([key,id])=>{
+        if(typeof id!=='string' || !id)return false;
+        if(/^answer:[a-f0-9]{64}$/.test(key))return true;
+        const receipt=JSON.parse(key);
+        return receipt && typeof receipt.action==='string' && receipt.payload && typeof receipt.payload==='object' && !Array.isArray(receipt.payload);
+      }));
     this.uploadKey = `serena-workspace-uploads:${sessionId}`;
-    this.uploads = JSON.parse(storage.getItem(this.uploadKey) || '{}');
+    this.uploads = this.readSaved(this.uploadKey, {}, value => value && !Array.isArray(value) && typeof value==='object'
+      && Object.values(value).every(token=>typeof token==='string' && token));
+    for(const key of [this.clearKey,this.forkKey])this.readSaved(key,null,value=>value===null || (typeof value==='object' && !Array.isArray(value)));
     this.cursor = 0;
     this.stopped = false;
     this.polling = false;
     this.timer = null;
     this.base = `/api/workspace/${encodeURIComponent(sessionId)}`;
+  }
+
+  readSaved(key, fallback, validate) {
+    try {
+      const raw=this.storage.getItem(key);
+      if(raw===null || raw===undefined)return fallback;
+      const value=JSON.parse(raw);
+      if(!validate(value))throw Error('Invalid saved record');
+      return value;
+    } catch {
+      this.storageFailure=Error('Saved session receipts are unreadable. Commands are disabled to avoid duplicate delivery; saved data has not been cleared.');
+      return fallback;
+    }
+  }
+
+  requireReceipts() {
+    if(this.storageFailure)throw this.storageFailure;
   }
 
   async request(path, body) {
@@ -39,6 +65,7 @@ export class WorkspaceConnection {
     const result = await this.request('/attach', {});
     if (!result.ok) throw Error(result.error || 'Session attachment is not confirmed');
     await this.poll({required: true});
+    if(this.storageFailure)this.error(this.storageFailure);
     return result;
   }
 
@@ -69,6 +96,7 @@ export class WorkspaceConnection {
   }
 
   async command(action, payload) {
+    this.requireReceipts();
     const encoded = JSON.stringify({action, payload});
     const signature = action === 'answer' ? 'answer:' + [...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(encoded)))].map(byte=>byte.toString(16).padStart(2,'0')).join('') : encoded;
     const request_id = this.pending[signature] || crypto.randomUUID();
@@ -105,6 +133,7 @@ export class WorkspaceConnection {
   }
 
   async sendMessage(action, {text, files = [], options = {}, expectedTurnId}) {
+        this.requireReceipts();
         if (['steer','queue_input'].includes(action) && !expectedTurnId) throw Error('Running turn identity is unavailable');
         if (files.length > 16) throw Error('Attach up to 16 files per message');
         const inputs = text || options.skills?.length ? [{type: 'text', text: text || ''}] : [];
@@ -169,11 +198,11 @@ export class WorkspaceConnection {
       forkSession: () => this.command('fork_session', {}),
       clearSession: () => this.command('clear_session', {confirmed:true}),
       disconnectSession: () => this.command('disconnect_session', {confirmed:true}),
-      lastClear: () => JSON.parse(this.storage.getItem(this.clearKey) || 'null'),
-      forgetClear: () => this.storage.setItem(this.clearKey,'null'),
+      lastClear: () => this.readSaved(this.clearKey,null,value=>value===null || (typeof value==='object' && !Array.isArray(value))),
+      forgetClear: () => {this.requireReceipts();this.storage.setItem(this.clearKey,'null');},
       recoverFork: fork_request_id => this.command('register_fork', {fork_request_id}),
-      lastFork: () => JSON.parse(this.storage.getItem(this.forkKey) || 'null'),
-      clearForkReceipt: () => this.storage.setItem(this.forkKey,'null'),
+      lastFork: () => this.readSaved(this.forkKey,null,value=>value===null || (typeof value==='object' && !Array.isArray(value))),
+      clearForkReceipt: () => {this.requireReceipts();this.storage.setItem(this.forkKey,'null');},
       contextUsage: () => this.command('context_usage', {}),
       permissions: () => this.command('permissions', {}),
       sessionModes: () => this.command('session_modes', {}),
