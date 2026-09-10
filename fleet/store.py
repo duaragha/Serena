@@ -11,7 +11,7 @@ import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.work_jobs import process_start_token
 from fleet.context import redact_text, redact_value
@@ -475,6 +475,37 @@ class FleetStore:
                     payload=result,
                 )
             return result
+
+    def resume_ready_input_work(self, run_id: str, select_ready: Callable[[dict[str, Any]], str | None]) -> bool:
+        """Wake a ready peer review, never retry or clear an input-blocked leg.
+
+        Selection and wakeup share the cancellation/dispatch transaction. The
+        selector is an internal pure scheduler predicate, not a provider callback.
+        """
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = self._require_run(connection, run_id)
+            if run["state"] != "waiting_for_input" or run["cancel_requested"]:
+                return False
+            if connection.execute("SELECT 1 FROM fleet_legs WHERE run_id=? AND state='running'", (run_id,)).fetchone():
+                return False
+            for phase in connection.execute("SELECT phase_index FROM fleet_legs WHERE run_id=? GROUP BY phase_index ORDER BY phase_index", (run_id,)).fetchall():
+                prepare_work_unit_phase(connection, run_id=run_id, phase_index=int(phase[0]))
+            snapshot = self._snapshot(connection, run_id)
+            leg_id = select_ready(snapshot)
+            if not leg_id:
+                connection.rollback()
+                return False
+            leg = connection.execute("SELECT state,access_mode FROM fleet_legs WHERE run_id=? AND leg_id=?", (run_id, leg_id)).fetchone()
+            if not leg or leg["state"] != "queued" or leg["access_mode"] != "review":
+                connection.rollback()
+                return False
+            now = time.time()
+            connection.execute("UPDATE fleet_runs SET state='queued', owner_pid=NULL, owner_token=NULL, error=NULL, completed_at=NULL, updated_at=? WHERE run_id=?", (now, run_id))
+            self._insert_event(connection, run_id=run_id, leg_id=leg_id,
+                               event_type="run.ready_work_resumed",
+                               payload={"reason": "independent peer review is ready; input blockers preserved"})
+            return True
 
     def begin_attempt(self, leg_id: str) -> dict[str, Any]:
         now = time.time()
