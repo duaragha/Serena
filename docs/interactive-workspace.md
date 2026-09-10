@@ -2,6 +2,23 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Codex New Chat UI (2026-09-09): opt-in structured new-chat panes now load a
+neon-black creation screen for an explicit Codex/project choice. No native
+creation occurs on GET or mount. A sessionStorage request record must persist
+before POST; reload/retry reuses it, and confirmed results expose an explicit
+Open conversation action. The parent accepts only its exact iframe/source/origin
+message and removes the pseudo pane only after opening the target succeeds.
+Seeded handoffs remain explicitly unavailable rather than silently dropping
+their required context. Claude/Gemini creation remains unavailable.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --tb=short`: final exit 0, 7 passed, including desktop/mobile explicit creation, retry after reload, exact target opening, iframe routing and seeded-context refusal.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check ui/workspace_app.py tests/test_workspace_app.py scripts/verify-workspace-codex-create.py`: final exit 0; initial proof import ordering and loop callback binding warnings corrected.
+- `node --check ui/static/workspace-create.mjs`: exit 0.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-create.py`: exit 0. At 1440px and 390px, real New Chat creation retained one native process through reload, exact target open, explicit attachment and native print-only input. Closing the page retained the owner, and proof cleanup reaped all children. Existing concurrent-HTTP, durable receipt, indexing and lease checks also passed. No credentials or inference. Screenshots inspected: `apps/desktop/build/workspace-proof/new-codex-390.png` and `new-codex-output-1440.png`.
+Source/browser verification only: the rebuilt installed-Electron new-chat flow,
+pre-materialization restart recovery, seeded creation, other providers and
+complete rollout still remain open. The user's installed app is unchanged.
+
 New-session pending catalog (2026-09-09): committed Codex creations now share
 the pending catalog/read/metadata/deletion path with native Claude clears.
 Creation records gain a cataloged marker. Placeholder rows retain their provider,

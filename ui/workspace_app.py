@@ -2,8 +2,9 @@
 
 import json
 import secrets
+from pathlib import Path
 
-from flask import Blueprint, Response, abort
+from flask import Blueprint, Response, abort, request
 
 from core.workspace_admission import resolve_workspace_session
 from core.workspace_catalog import register_fork
@@ -26,6 +27,28 @@ def install_workspace(
     app.register_blueprint(workspace_blueprint(host, token=token))
     pages = Blueprint("workspace_pages", __name__)
     pages.before_request(local_workspace_request)
+
+    @pages.get("/workspace/new")
+    def new_page():
+        cwd = request.args.get("cwd", "")
+        source = request.args.get("source", "")
+        if (request.args.get("provider", "codex") != "codex" or not source or len(source) > 200
+                or "\0" in source or not Path(cwd).is_absolute() or not Path(cwd).is_dir()):
+            abort(400)
+        boot = json.dumps({"source": source, "cwd": str(Path(cwd).resolve()), "provider": "codex", "token": token}).replace("<", "\\u003c")
+        response = Response("""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>New Codex chat</title>
+<link rel="stylesheet" href="/static/workspace-page.css"></head><body>
+<main class="workspace-create"><h1>New Codex chat</h1><label for="creation-project">Project</label>
+<input id="creation-project" readonly><p id="creation-status" role="status"></p>
+<button id="creation-submit" type="button" disabled>Create Codex chat</button>
+<button id="creation-open" type="button" hidden>Open conversation</button></main>
+<script id="workspace-creation-boot" type="application/json">""" + boot + """</script>
+<script type="module" src="/static/workspace-create.mjs"></script></body></html>""", mimetype="text/html")
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'none'"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        return response
 
     @pages.get("/workspace/<sid>")
     def page(sid):

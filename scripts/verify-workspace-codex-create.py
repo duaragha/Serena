@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_host import WorkspaceHost
 from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease, SessionOwnedError
+from ui.workspace_app import install_workspace
 from ui.workspace_web import workspace_blueprint
 
 
@@ -165,6 +167,65 @@ print(json.dumps(get_session(target['session_id'])))
             await asyncio.to_thread(restored.shutdown)
         print("PASS: four concurrent authenticated HTTP requests created one native owner; exact input worked; restart replay did not launch again")
         print("PASS: real native first command indexed the exact pending Codex identity; placeholder retired without duplicate or revival")
+        repo = Path(__file__).resolve().parents[1]
+        app = Flask("native-creation-ui", static_folder=str(repo / "ui/static"))
+        ui_host = install_workspace(app, root / "ui-journal.db", factories={"codex": factory},
+                                    resolve=lambda sid: None, describe=lambda sid: None)
+        ui_host.register_fork = register
+        server = make_server("127.0.0.1", 0, app, threaded=True)
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        def browser_proof():
+            from playwright.sync_api import sync_playwright
+            artifacts = repo / "apps/desktop/build/workspace-proof"
+            artifacts.mkdir(parents=True, exist_ok=True)
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                try:
+                    for width in (1440, 390):
+                        page = browser.new_page(viewport={"width": width, "height": 900})
+                        errors = []
+                        page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
+                        base = f"http://127.0.0.1:{server.server_port}"
+                        before = len(created)
+                        page.goto(base + "/workspace/new?" + urlencode({"source": f"new-{width}", "cwd": str(project)}))
+                        page.get_by_role("button", name="Create Codex chat", exact=True).wait_for()
+                        assert len(created) == before
+                        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                        page.screenshot(path=str(artifacts / f"new-codex-{width}.png"))
+                        page.get_by_role("button", name="Create Codex chat", exact=True).click()
+                        page.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                        native = created[-1]
+                        assert len(created) == before + 1
+                        pid, sid = native.rpc.process.pid, native.session_id
+                        page.reload()
+                        page.get_by_role("button", name="Open conversation", exact=True).click()
+                        page.wait_for_url(base + "/workspace/" + sid)
+                        page.get_by_role("button", name="Resume session", exact=True).click()
+                        page.get_by_role("button", name="Run shell command", exact=True).click()
+                        shell = page.get_by_role("dialog", name="Run shell command")
+                        shell.get_by_role("textbox", name="Shell command").fill("printf SERENA_NEW_UI_NATIVE")
+                        shell.get_by_role("checkbox").check()
+                        shell.get_by_role("button", name="Run command", exact=True).click()
+                        page.locator("summary").filter(has_text="SERENA_NEW_UI_NATIVE").first.click()
+                        page.get_by_text("SERENA_NEW_UI_NATIVE", exact=True).wait_for()
+                        assert len(created) == before + 1 and native.rpc.process.pid == pid
+                        assert not errors, errors
+                        page.screenshot(path=str(artifacts / f"new-codex-output-{width}.png"))
+                        page.close()
+                        assert native.rpc.process.pid == pid
+                        print(f"PASS: {width}px real New Chat creation, reload, exact open and native input; one owner retained after page close")
+                finally:
+                    browser.close()
+        try:
+            await asyncio.to_thread(browser_proof)
+        finally:
+            await asyncio.to_thread(server.shutdown)
+            server.server_close()
+            serving.join(timeout=5)
+            await asyncio.to_thread(ui_host.shutdown)
+        assert all(owner.rpc.process is None for owner in created)
+        print("PASS: native creation UI children reaped")
 
 
 asyncio.run(main())

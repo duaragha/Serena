@@ -12,6 +12,58 @@ from werkzeug.serving import make_server
 from ui.workspace_app import install_workspace
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_new_chat_ui_is_explicit_retains_request_on_reload_and_opens_exact_target(tmp_path, width):
+    playwright = pytest.importorskip("playwright.sync_api")
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
+    target = "11111111-2222-4333-8444-555555555555"
+    host = install_workspace(app, tmp_path / "create.db", describe=lambda sid: {
+        "session_id": target, "agent": "codex", "cwd": str(tmp_path)} if sid == target else None)
+    calls = []
+    def create(request, provider, cwd, *, confirmed):
+        calls.append((request, provider, cwd, confirmed))
+        if len(calls) == 1:
+            return {"ok": False, "pending": True, "error": "Still pending"}
+        return {"ok": True, "result": {"session_id": target, "provider": "codex", "cwd": str(tmp_path)}}
+    host.create = create
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": width, "height": 900})
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                from urllib.parse import urlencode
+                base = f"http://127.0.0.1:{server.server_port}"
+                page.goto(base + "/workspace/new?" + urlencode({"source": "new-codex", "cwd": str(tmp_path)}))
+                assert page.get_by_role("textbox", name="Project").input_value() == str(tmp_path)
+                assert not calls and host._loop is None
+                page.get_by_role("button", name="Create Codex chat", exact=True).click()
+                page.get_by_role("status").filter(has_text="Still pending").wait_for()
+                assert len(calls) == 1
+                page.reload()
+                page.get_by_role("button", name="Check creation", exact=True).click()
+                page.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                assert len(calls) == 2 and calls[0] == calls[1]
+                page.reload()
+                page.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                assert len(calls) == 2
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                page.get_by_role("button", name="Open conversation", exact=True).click()
+                page.wait_for_url(base + "/workspace/" + target)
+                assert not errors and host._loop is None
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        host.shutdown()
+
+
 def test_pending_native_clear_page_uses_durable_identity_without_launch(tmp_path):
     app = Flask(__name__)
     host = install_workspace(app, tmp_path / "clear.db", describe=lambda sid: None,
@@ -167,6 +219,7 @@ function showToast(message){throw Error(message);}
 function _activateTermPane(sid){activeTermSid=sid;}
 function _startLinkedTerminals(sid){}
 function _markActive(sid){}
+function _unmarkActive(sid){window.retiredPseudo=sid;}
 function setTermStatus(status){window.lastStatus=status;}
 """
             + mount_source
@@ -319,6 +372,19 @@ function setTermStatus(status){window.lastStatus=status;}
             )
             assert not owners[0].closed
             assert not errors
+            page.evaluate("(cwd) => _startStructuredPane('seeded-proof', {isNew:true,agent:'codex',cwd,seed:'Required context'})", str(tmp_path))
+            assert not page.evaluate("termSessions.has('seeded-proof')")
+            assert "context has not been sent" in page.evaluate("lastStatus")
+            page.evaluate("(cwd) => _startStructuredPane('new-proof', {isNew:true,agent:'codex',cwd})", str(tmp_path))
+            created_frame = page.frames[-1]
+            created_frame.get_by_role("button", name="Create Codex chat", exact=True).wait_for()
+            assert len(owners) == 1
+            created_frame.evaluate("""() => parent.postMessage({type:'serena-workspace-open-created',sid:'new-proof',target:'33333333-3333-4333-8333-333333333333'},location.origin)""")
+            page.wait_for_function("() => openedForks.length === 3")
+            assert page.evaluate("openedForks[2]") == "33333333-3333-4333-8333-333333333333"
+            assert page.evaluate("retiredPseudo") == "new-proof"
+            assert not page.evaluate("termSessions.has('new-proof')")
+            assert len(owners) == 1 and not owners[0].closed
             browser.close()
     finally:
         server.shutdown()

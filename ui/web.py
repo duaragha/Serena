@@ -7037,8 +7037,12 @@ function _revealSurvivingLinkedTerminals(sid) {
 }
 
 function _startStructuredPane(sid, opts) {
-  if (opts.isNew) {
-    setTermStatus('New structured sessions are not implemented yet.', 'error');
+  if (opts.isNew && opts.seed) {
+    setTermStatus('Seeded structured creation is not available yet; context has not been sent.', 'error');
+    return null;
+  }
+  if (opts.isNew && opts.agent !== 'codex') {
+    setTermStatus('New structured sessions are not available for this provider yet.', 'error');
     return null;
   }
   if (termSessions.has(sid)) {
@@ -7049,7 +7053,8 @@ function _startStructuredPane(sid, opts) {
   const mount = document.createElement('div');
   mount.className = 'term-pane'; mount.dataset.sid = sid;
   const frame = document.createElement('iframe');
-  frame.src = '/workspace/' + encodeURIComponent(sid);
+  frame.src = opts.isNew ? '/workspace/new?' + new URLSearchParams({source:sid, provider:'codex', cwd:opts.cwd || _defaultCwd()})
+    : '/workspace/' + encodeURIComponent(sid);
   frame.title = 'Session ' + sid.slice(0, 8);
   frame.style.cssText = 'display:block;width:100%;height:100%;border:0;background:#000';
   mount.appendChild(frame); container.appendChild(mount);
@@ -7057,13 +7062,19 @@ function _startStructuredPane(sid, opts) {
     focus:() => frame.contentWindow?.postMessage({type:'serena-workspace-focus'}, location.origin)};
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
-    if(['serena-workspace-open-fork','serena-workspace-open-cleared'].includes(event.data?.type)){
+    if(['serena-workspace-open-fork','serena-workspace-open-cleared','serena-workspace-open-created'].includes(event.data?.type)){
       const target=event.data.target;
       if(typeof target !== 'string' || !/^[a-f0-9-]{36}$/.test(target) || target===sid)return;
       try{
         await loadSessions(currentProject);
         if(!_findClientSession(target))document.getElementById('convTitle').textContent='Conversation ' + target.slice(0,8);
         await openConv(target);
+        if (event.data.type === 'serena-workspace-open-created' && opts.isNew) {
+          _unmarkActive(sid);
+          runtime.cancelOutput();
+          termSessions.delete(sid);
+          mount.remove();
+        }
       }catch(error){showToast('Could not open conversation: '+error.message,{variant:'error'});}
       return;
     }

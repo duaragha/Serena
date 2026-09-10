@@ -3,3 +3,12 @@ body{display:flex;flex-direction:column}
 #workspace-pane{flex:1;min-height:0}
 #workspace-connect{align-self:center;flex:none;background:#190f18;border:1px solid #68455d;border-radius:4px;color:#f5a1cc;padding:8px 16px;margin:8px;font:12px ui-monospace,monospace;cursor:pointer}
 #workspace-connect:focus-visible{outline:2px solid #ff80bf;outline-offset:2px}
+.workspace-create{box-sizing:border-box;width:100%;max-width:720px;padding:24px;font:12px/1.7 ui-monospace,monospace;letter-spacing:0}
+.workspace-create h1{font:18px 'Segoe UI',Arial,sans-serif;margin:0 0 24px;color:#eee}
+.workspace-create label{display:block;margin-bottom:6px;color:#b7a9bf}
+.workspace-create input{box-sizing:border-box;width:100%;min-width:0;background:#100d11;border:1px solid #493545;color:#dfd8e3;padding:10px;font:inherit;border-radius:4px}
+.workspace-create p{overflow-wrap:anywhere;min-height:22px}
+.workspace-create button{background:#21131e;color:#ffacd2;border:1px solid #68455d;border-radius:4px;padding:8px 12px;font:inherit;cursor:pointer}
+.workspace-create button:disabled{opacity:.5;cursor:default}
+.workspace-create :focus-visible{outline:2px solid #ff80bf;outline-offset:2px}
+.workspace-create [hidden]{display:none}
