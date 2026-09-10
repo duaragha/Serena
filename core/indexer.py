@@ -1500,6 +1500,8 @@ def list_projects(*, include_machinery: bool = False) -> list[dict]:
 
 def delete_session(session_id_prefix: str, *, source: str = "unknown") -> str:
     """Remove a session from the index while retaining a recoverable copy."""
+    from core.workspace_lease import SessionLease
+
     session = get_session(session_id_prefix)
     if not session:
         raise ValueError(f"No session found with ID '{session_id_prefix}'")
@@ -1507,6 +1509,15 @@ def delete_session(session_id_prefix: str, *, source: str = "unknown") -> str:
     sid = session["session_id"]
     if sid == VOICE_SESSION_ID or session.get("agent") == "serena-voice":
         raise PermissionError("Serena's permanent conversation cannot be deleted")
+    lease = SessionLease(sid)
+    try:
+        return _delete_unowned_session(session, source=source)
+    finally:
+        lease.release()
+
+
+def _delete_unowned_session(session: dict, *, source: str) -> str:
+    sid = session["session_id"]
     file_path = Path(session["file_path"])
 
     # Remove from DB

@@ -2,6 +2,20 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Deletion ownership and Codex disconnect verification (2026-09-09): indexed chat
+deletion now holds the shared exact-session lease through catalog removal,
+recoverable transcript archival and metadata cleanup. Active or ambiguous lease
+ownership refuses deletion before mutation. The single-delete API reports HTTP
+409 with a disconnect instruction; bulk deletion retains per-item errors and
+continues with unowned selections. This covers lease-participating native/PTY
+owners, not arbitrary external tools that bypass the lease. Pending unindexed
+chat deletion and transactional recovery from archive failures remain unfinished.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_session_recovery.py tests/test_workspace_pending_catalog_api.py -q --tb=short`: exit 0, 7 passed; active-owner rejection, lock held throughout deletion and released on failure, recovery copy, HTTP conflict and mixed bulk results.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-delete.py`: exit 0. Disposable real SQLite catalog and real child-process lease: deletion refused without mutation while owned, then succeeded after child exit with transcript/title preserved in recovery storage. No user data used.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py`: exit 0. Real Codex desktop/mobile browsers cancelled disconnect without stopping the owner, confirmed disconnect and reaped it, then explicitly resumed the same session with persisted native command output. Existing history pagination, file mentions, skill toggles and page-close independence passed. Zero inference and isolated credentials.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_session_recovery.py tests/test_workspace_pending_catalog_api.py scripts/verify-workspace-delete.py scripts/verify-workspace-codex-history.py`: exit 0, all checks passed.
+
 Explicit idle disconnect (2026-09-09): added a separate unplug control with a
 confirmation dialog. It never runs on pane disposal. The host serializes the
 action with other controls, rejects active/queued work, background tasks and

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from core import indexer
 from core.parser import parse_full
 
@@ -43,6 +45,7 @@ class _FakeConnection:
 
 
 def test_delete_session_retains_recovery_copy(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SERENA_RUNTIME_LEASE_DIR", str(tmp_path / "leases"))
     sid = "019f5bbd-2597-7800-8840-e5f2aa7619b8"
     rollout = tmp_path / "rollout.jsonl"
     rollout.write_text('{"type":"session_meta"}\n')
@@ -68,3 +71,38 @@ def test_delete_session_retains_recovery_copy(tmp_path: Path, monkeypatch):
     assert manifest["deleted_via"] == "test-ui"
     assert manifest["metadata"]["custom_title"] == "Mobile"
     assert deleted_meta == [sid]
+
+
+def test_owned_session_delete_cannot_modify_index_transcript_or_metadata(tmp_path, monkeypatch):
+    from core.workspace_lease import SessionLease, SessionOwnedError
+
+    monkeypatch.setenv("SERENA_RUNTIME_LEASE_DIR", str(tmp_path / "leases"))
+    path = tmp_path / "chat.jsonl"
+    path.write_text("original\n")
+    monkeypatch.setattr(indexer, "get_session", lambda sid: {"session_id": "exact", "file_path": str(path)})
+    monkeypatch.setattr(indexer, "_get_db", lambda: pytest.fail("Deletion reached database while owned"))
+    owner = SessionLease("exact")
+    try:
+        with pytest.raises(SessionOwnedError):
+            indexer.delete_session("exact")
+        assert path.read_text() == "original\n"
+    finally:
+        owner.release()
+
+
+def test_delete_retains_lock_through_archive_and_releases_on_failure(tmp_path, monkeypatch):
+    from core.workspace_lease import SessionLease, SessionOwnedError
+
+    monkeypatch.setenv("SERENA_RUNTIME_LEASE_DIR", str(tmp_path / "leases"))
+    monkeypatch.setattr(indexer, "get_session", lambda sid: {"session_id": "exact"})
+
+    def deletion(session, *, source):
+        with pytest.raises(SessionOwnedError):
+            SessionLease("exact")
+        raise OSError("archive failure")
+
+    monkeypatch.setattr(indexer, "_delete_unowned_session", deletion)
+    with pytest.raises(OSError, match="archive failure"):
+        indexer.delete_session("exact")
+    lease = SessionLease("exact")
+    lease.release()

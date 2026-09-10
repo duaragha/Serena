@@ -12362,6 +12362,8 @@ def api_bulk_done():
 
 @app.route("/api/session/<session_id>", methods=["DELETE"])
 def api_delete_session(session_id):
+    from core.workspace_lease import SessionOwnedError
+
     session = get_session(session_id)
     if _is_serena_voice_session(session):
         return jsonify({"error": "Serena's permanent conversation cannot be deleted"}), 403
@@ -12370,6 +12372,8 @@ def api_delete_session(session_id):
     try:
         path = delete_session(session_id, source="serena-web")
         return jsonify({"ok": True, "path": path})
+    except SessionOwnedError:
+        return jsonify({"error": "Disconnect the session before deleting it; runtime ownership is still active or unconfirmed"}), 409
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
 

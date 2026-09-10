@@ -9,6 +9,34 @@ from core.workspace_host import WorkspaceHost
 from core.workspace_journal import WorkspaceJournal
 
 
+def test_owned_delete_reports_conflict_and_bulk_keeps_other_results():
+    from core.workspace_lease import SessionOwnedError
+
+    app = Flask(__name__)
+    calls = []
+
+    def delete(sid, *, source):
+        calls.append(sid)
+        if sid == "owned":
+            raise SessionOwnedError("Owned")
+        return "recovery-path"
+
+    source = Path(__file__).resolve().parents[1] / "ui/web.py"
+    selected = [node for node in ast.parse(source.read_text()).body if isinstance(node, ast.FunctionDef)
+                and node.name in {"api_delete_session", "api_bulk_delete"}]
+    namespace = {"app": app, "request": request, "jsonify": jsonify,
+                 "get_session": lambda sid: {"session_id": sid}, "delete_session": delete,
+                 "_is_serena_voice_session": lambda row: False, "_fleet_worker_marker": lambda sid: None}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), str(source), "exec"), namespace)
+    client = app.test_client()
+    response = client.delete("/api/session/owned")
+    assert response.status_code == 409 and "Disconnect" in response.json["error"]
+    response = client.post("/api/sessions/bulk-delete", json={"ids": ["owned", "free"]})
+    assert response.json["deleted"] == ["free"]
+    assert response.json["errors"] == [{"id": "owned", "error": "Owned"}]
+    assert calls == ["owned", "owned", "free"]
+
+
 def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_path, monkeypatch):
     from core import indexer, metadata
 

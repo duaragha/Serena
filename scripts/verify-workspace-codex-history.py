@@ -51,7 +51,7 @@ def browser_proof(sid, root, project, env, binary):
         def owners():
             return [owner.rpc.process.pid for owner, _ in host._sessions.values()
                     if owner.rpc.process and owner.rpc.process.returncode is None]
-        browser_roundtrip(f"http://127.0.0.1:{server.server_port}", sid, owners, "codex-native")
+        browser_roundtrip(f"http://127.0.0.1:{server.server_port}", sid, owners, "codex-native", verify_disconnect=True)
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -59,7 +59,7 @@ def browser_proof(sid, root, project, env, binary):
         host.shutdown()
 
 
-def browser_roundtrip(base, sid, owners, prefix, verify_forks=False):
+def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disconnect=False):
     from playwright.sync_api import expect, sync_playwright
 
     repo = Path(__file__).resolve().parents[1]
@@ -142,6 +142,22 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False):
                             page.get_by_role("button", name="Resume session", exact=True).wait_for()
                             assert owners() == [pid], "Opening fork view launched another owner"
                             forks.append(fork_id)
+                    if verify_disconnect:
+                        page.get_by_role("button", name="Disconnect session", exact=True).click()
+                        disconnect = page.get_by_role("dialog", name="Disconnect session", exact=True)
+                        disconnect.get_by_role("button", name="Cancel", exact=True).click()
+                        assert owners() == [pid], "Cancel must preserve runtime"
+                        page.get_by_role("button", name="Disconnect session", exact=True).click()
+                        page.get_by_role("dialog", name="Disconnect session", exact=True).get_by_role("button", name="Disconnect", exact=True).click()
+                        page.get_by_role("dialog", name="Disconnect session", exact=True).wait_for(state="hidden")
+                        assert not owners(), "Explicit disconnect must close the native owner"
+                        page.get_by_role("button", name="Retry connection", exact=True).click()
+                        expect(page.locator('.aw-state')).to_have_text(re.compile(r'^(ready|completed)$'))
+                        assert len(owners()) == 1 and owners()[0] != pid
+                        pid = owners()[0]
+                        page.get_by_text(token, exact=True).wait_for()
+                        assert page.url.endswith('/workspace/'+sid)
+                        print(f"PASS: {prefix} {label} confirmed disconnect reaped owner; exact session resumed with persisted native command output")
                     assert not errors, errors
                     page.close()
                     assert owners() == [pid], "Closing page cancelled owner"
