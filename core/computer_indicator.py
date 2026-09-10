@@ -9,6 +9,18 @@ from tkinter import font
 from core.computer_client import ComputerClient
 
 
+def focus_label(session):
+    context = session.get("focused_window") or {}
+    title = " ".join(context.get("title", "").split())
+    # WM_CLASS commonly contains the same app name twice, with different casing.
+    app = " ".join(
+        dict((part.casefold(), part) for part in context.get("app", "").split()).values()
+    )
+    if title or app:
+        return " · ".join(value for value in (app, title) if value)
+    return f"{session['target']} · waiting for window details"
+
+
 class ComputerIndicator:
     def __init__(self, root, client):
         self.root = root
@@ -94,7 +106,8 @@ class ComputerIndicator:
         else:
             waiting = "screen shared with your chat; automatic coaching is off"
         observation = session.get("observation") or waiting
-        shown = (session["id"], mode, session["target"], observation)
+        focus = focus_label(session)
+        shown = (session["id"], mode, focus, observation)
         if shown == self.shown:
             return  # Keep the user's scroll position when the advice has not changed.
         if not self.root.winfo_viewable():
@@ -102,7 +115,7 @@ class ComputerIndicator:
             self.heartbeat()
             self.root.deiconify()
             self.root.update_idletasks()
-        self.header.configure(text=f"serena is {mode} · {session['target']}")
+        self.header.configure(text=f"serena is {mode}\n{focus}")
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         self.text.insert("1.0", observation)

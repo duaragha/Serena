@@ -26,6 +26,12 @@ Serena's existing local voice output. `chats computer steer "new instruction"`
 steers the active Astra turn without starting a second controller.
 
 The desktop indicator shows the complete latest observation, wraps text and
+identifies the focused application and window title from the latest captured
+frame. In browsers this normally includes the selected tab's title. It refreshes
+while the model is thinking, without waiting for another coaching reply. This
+label describes focus within the selected capture scope; desktop mode still
+captures the desktop. Missing or expired frame details show a waiting label.
+The indicator
 grows to fit. Long updates scroll within the popup while the stop button stays
 visible. The screenshot mask follows the popup's size so advice is not fed back
 into the next visual observation.

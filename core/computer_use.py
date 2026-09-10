@@ -91,6 +91,18 @@ class ComputerController:
     def status(self):
         with self.lock:
             s = self.session
+            latest = next(reversed(s.frames.values()), None) if s else None
+            focused = None
+            if latest and s.state == "active" and self.clock() < latest["expires_at"]:
+                context = latest["context"]
+                window, capture = context.get("rect"), latest["rect"]
+                if window and (
+                    max(window["x"], capture["x"])
+                    < min(window["x"] + window["width"], capture["x"] + capture["width"])
+                    and max(window["y"], capture["y"])
+                    < min(window["y"] + window["height"], capture["y"] + capture["height"])
+                ):
+                    focused = {key: context.get(key, "") for key in ("id", "app", "title")}
             info = (
                 None
                 if s is None
@@ -112,6 +124,7 @@ class ComputerController:
                     "context_message_count": s.context_message_count,
                     "service_tier": "fast" if s.driver == "astra" else None,
                     "latest_frame": next(reversed(s.frames), None),
+                    "focused_window": focused,
                 }
             )
         return {
