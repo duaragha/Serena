@@ -253,6 +253,17 @@ class WorkspaceJournal:
             raise ValueError("Request ID was already used with different content")
         return True, json.loads(row[1]) if row[1] is not None else None
 
+    def command_record(self, session_id: str, request_id: str):
+        """Read a claimed operation's original input and acknowledgement."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT payload, result FROM workspace_commands WHERE session_id=? AND request_id=?",
+                (session_id, request_id),
+            ).fetchone()
+        return None if row is None else {
+            "payload": json.loads(row[0]), "result": json.loads(row[1]) if row[1] is not None else None,
+        }
+
     def has_pending_work(self, session_id: str) -> bool:
         """A pending reserved-dispatch claim is not permission to resend."""
         with closing(self._connect()) as conn:

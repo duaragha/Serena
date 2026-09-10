@@ -399,13 +399,19 @@ def test_reserved_submission_is_durable_and_interrupt_is_turn_bound(tmp_path, un
                 raise OSError('receipt write failed')
             monkeypatch.setattr(host.journal, 'finish_command', lost_receipt)
         assert not host.submit_work('exact', dispatch, 'wrong owner', dispatch)['ok']
-        result = host.submit_work('exact', item, 'accepted job', dispatch)
-        repeated = host.submit_work('exact', item, 'accepted job', dispatch)
+        result = host.submit_work('exact', item, 'accepted job', dispatch, start_offset=12)
+        repeated = host.submit_work('exact', item, 'accepted job', dispatch, start_offset=200)
+        assert result['start_offset'] == repeated['start_offset'] == 12
+        stored = WorkspaceJournal(host.journal.path).command_record('exact', 'work:' + item + ':' + dispatch)
+        assert stored['payload']['start_offset'] == 12
         owner = host._sessions['exact'][0]
         assert owner.sent == [[{'type': 'text', 'text': 'accepted job'}]]
         assert not host.interrupt_work('exact', dispatch)['ok']
         with pytest.raises(ValueError):
             host.submit_work('exact', item, 'changed prompt', dispatch)
+        for invalid_offset in [-1, True, '12']:
+            with pytest.raises(ValueError):
+                host.submit_work('exact', item, 'accepted job', dispatch, start_offset=invalid_offset)
         if uncertain:
             assert result['uncertain'] and repeated['uncertain']
             assert not host.release_work('exact', item)

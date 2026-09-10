@@ -249,7 +249,7 @@ class WorkspaceHost:
             self._work_turns.pop(sid, None)
             return True
 
-    def submit_work(self, sid, item_id, prompt, dispatch_id):
+    def submit_work(self, sid, item_id, prompt, dispatch_id, *, start_offset=None):
         self._validate_session(sid)
         if not isinstance(item_id, str) or str(UUID(item_id)) != item_id:
             raise ValueError("An exact work item UUID is required")
@@ -257,20 +257,28 @@ class WorkspaceHost:
             raise ValueError("An exact dispatch UUID is required")
         if not isinstance(prompt, str) or not prompt.strip() or "\0" in prompt or len(prompt.encode()) > 1024 * 1024:
             raise ValueError("A nonempty work prompt of at most 1 MiB without NUL is required")
-        return self._dispatch(self._submit_work(sid, item_id, prompt, dispatch_id), 35)
+        if start_offset is not None and (type(start_offset) is not int or start_offset < 0):
+            raise ValueError("Transcript start offset must be a nonnegative integer")
+        return self._dispatch(self._submit_work(sid, item_id, prompt, dispatch_id, start_offset=start_offset), 35)
 
-    async def _submit_work(self, sid, item_id, prompt, dispatch_id):
+    async def _submit_work(self, sid, item_id, prompt, dispatch_id, *, start_offset=None):
         async with self._locks.setdefault(sid, asyncio.Lock()):
             if self._work_reservations.get(sid) != item_id:
                 return {"ok": False, "committed": False, "message": "Job does not reserve this native owner"}
             digest = hashlib.sha256(prompt.encode()).hexdigest()
             key = "work:" + item_id + ":" + dispatch_id
             payload = {"action": "work_submit", "item_id": item_id, "prompt_sha256": digest}
-            found, prior = await asyncio.to_thread(self.journal.command_receipt, sid, key, payload)
-            if found:
+            record = await asyncio.to_thread(self.journal.command_record, sid, key)
+            if record is not None:
+                stored = dict(record["payload"])
+                original_offset = stored.pop("start_offset", None)
+                if stored != payload:
+                    raise ValueError("Request ID was already used with different content")
+                prior = record["result"]
                 if prior is None:
                     self._work_turns[sid] = {"uncertain": True}
                 return prior or {"ok": False, "committed": True, "uncertain": True,
+                                 "start_offset": original_offset,
                                  "message": "Prior native work submission is unconfirmed; it will not be repeated"}
             if self._work_turns.get(sid, {}).get("uncertain"):
                 return {"ok": False, "committed": False, "message": "Prior native work dispatch is uncertain"}
@@ -289,12 +297,14 @@ class WorkspaceHost:
             error = self._work_admission_error(sid)
             if error or self._stopped:
                 return {"ok": False, "committed": False, "message": error or "Host stopped"}
+            payload["start_offset"] = start_offset
             claimed, prior = await asyncio.to_thread(self.journal.claim_command, sid, key, payload)
             if not claimed:
                 return prior or {"ok": False, "committed": True, "uncertain": True}
             error = self._work_admission_error(sid)
             if error or self._stopped:
-                receipt = {"ok": False, "committed": False, "message": error or "Host stopped"}
+                receipt = {"ok": False, "committed": False, "start_offset": start_offset,
+                           "message": error or "Host stopped"}
                 await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
                 return receipt
             self._work_turns[sid] = {"uncertain": True}
@@ -303,14 +313,16 @@ class WorkspaceHost:
                 turn_id = result.get("turn", {}).get("id") if isinstance(result, dict) else None
                 if not isinstance(turn_id, str) or not turn_id:
                     raise RuntimeError("Native submission returned no exact turn identity")
-                receipt = {"ok": True, "committed": True, "session_id": sid, "turn_id": turn_id}
+                receipt = {"ok": True, "committed": True, "session_id": sid, "turn_id": turn_id,
+                           "start_offset": start_offset}
                 await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
                 self._work_turns[sid] = {"uncertain": False, "turn_id": turn_id}
                 return receipt
             except Exception as error:
                 # Keep the pending durable claim and reservation after any
                 # ambiguous native result or failure to persist acknowledgement.
-                return {"ok": False, "committed": True, "uncertain": True, "message": str(error)}
+                return {"ok": False, "committed": True, "uncertain": True,
+                        "start_offset": start_offset, "message": str(error)}
 
     def interrupt_work(self, sid, item_id):
         self._validate_session(sid)

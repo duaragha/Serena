@@ -2,6 +2,31 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Reserved Transcript Bounds (2026-09-10)
+
+Reserved dispatch claims now persist their original transcript start offset
+before native submission. Both confirmed and uncertain receipts return that
+offset. Retrying the same dispatch with a later observed offset does not replace
+the original boundary or resend the prompt. Item/prompt content remains immutable
+under the dispatch ID; invalid offsets are rejected. A journal record reader
+exposes the original payload and acknowledgement for recovery without mutation.
+
+This is required for the pending HTTP work-bridge integration: recomputing the
+offset after a lost HTTP reply would miss the original response. The bridge and
+supervisor wiring is still not enabled for native job reuse.
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_reserved_submission_is_durable_and_interrupt_is_turn_bound tests/test_workspace_host.py::test_pending_work_receipt_blocks_restart_and_new_dispatch -q --tb=short
+# exit 0: 4 passed in 0.53s; acknowledged/uncertain/receipt-failure retries retain
+# offset 12 even when retried with 200, no duplicate submission, invalid offsets refused
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py tests/test_workspace_host.py
+# exit 0
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-work-recovery.py
+# exit 0: fresh process observed original SQLite offset and pending claim,
+# blocked attachment before provider creation, and exited cleanly
+```
+
 ## Pending Dispatch Restart Guard (2026-09-10)
 
 Pending `work:` receipts now block replacement attachment, new reservation,
