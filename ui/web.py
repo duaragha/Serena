@@ -11841,7 +11841,9 @@ def api_runtime_context():
         return jsonify({"ok": False, "error": "runtime context is local-only"}), 403
     native = _native_runtime_context()
     browser = pty_terminal.runtime_context_snapshot()
-    contexts = [context for context in (native, browser) if context]
+    workspace = app.extensions.get("workspace_host")
+    structured = workspace.runtime_context_snapshot() if workspace is not None else None
+    contexts = [context for context in (native, browser, structured) if context]
     runtimes = [
         _decorate_runtime_entry(entry)
         for context in contexts

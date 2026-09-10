@@ -2,6 +2,35 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Owner Inventory (2026-09-10)
+
+The local-only runtime-context endpoint now includes existing structured owners,
+their exact provider/session/project, native state, active turn/transition busy
+flag and bridge queue reservation. Reads never resolve, attach, submit or create
+an owner loop. No terminal ID or fabricated focus/draft is reported.
+
+Historical work routing now excludes every reported living owner, not just
+owners whose states happen to be the PTY-specific `live` or `paused`. This
+prevents a native `ready`/`running`/transition owner being treated as an unowned
+saved transcript. Native reuse is still unavailable until the focus, draft and
+complete activity/admission contract is connected; inventory is not that contract.
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_native_runtime_context_is_read_only_and_local tests/test_work_session_router.py -q --tb=short
+# exit 0: 52 passed in 4.16s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 65 passed in 34.89s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/work_session_router.py tests/test_workspace_host.py tests/test_work_session_router.py
+# exit 0: All checks passed
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: real Codex owner in local runtime context with unchanged owner PIDs;
+# desktop/mobile native history, commands, reload, disconnect/resume and fork;
+# isolated children closed, no credentials or inference used
+```
+
+This proof uses the source backend, not a new installed or frozen release.
+
 ## Native Pane Focus (2026-09-10)
 
 Native frames now report real focus/pointer interaction to the parent. The parent

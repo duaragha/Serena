@@ -53,6 +53,7 @@ class Owner:
 
     def __init__(self, *, session_id, cwd, publish):
         self.sid, self.publish = session_id, publish
+        self.cwd = cwd
         self.state, self.active_turn = "opening", None
         self.sent, self.closed = [], False
         self.instances.append(self)
@@ -128,6 +129,46 @@ def test_observation_never_starts_or_replaces_an_owner(tmp_path):
     finally:
         host.shutdown()
     assert not host.observe("exact")["observing"]
+
+
+def test_native_runtime_context_is_read_only_and_local(tmp_path, monkeypatch):
+    from ui import web
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "context.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+        factories={"codex": Owner})
+    monkeypatch.setitem(web.app.extensions, "workspace_host", host)
+    monkeypatch.setattr(web, "_native_runtime_context", lambda: None)
+    monkeypatch.setattr(web.pty_terminal, "runtime_context_snapshot", lambda: {"runtimes": []})
+    monkeypatch.setattr(web, "_decorate_runtime_entry", lambda entry: dict(entry))
+    try:
+        client = web.app.test_client()
+        assert client.get('/api/runtime-context').json['runtimes'] == []
+        assert host._loop is None
+        host.attach('exact')
+        owner = host._sessions['exact'][0]
+        for state, turn, alive, busy in [
+            ('ready', None, True, False), ('running', 'turn', True, True),
+            ('uncertain', None, True, True), ('opening', None, True, True),
+            ('ready', 'turn', True, True), ('closed', None, False, False),
+            ('unavailable', None, False, False),
+        ]:
+            owner.state, owner.active_turn = state, turn
+            context = client.get('/api/runtime-context').json
+            assert context['runtimes'] == [{
+                'sid': 'exact', 'agent': 'codex', 'cwd': str(tmp_path),
+                'alive': alive, 'state': state, 'busy': busy,
+                'reserved': False, 'owner': 'workspace'}]
+            assert context['sessions'] == context['runtimes']
+            assert not context['focused_sid'] and not context['window_active']
+        host._bridge_queues['exact'] = ['pending']
+        assert host.runtime_context_snapshot()['runtimes'][0]['reserved']
+        assert client.get('/api/runtime-context', environ_overrides={
+            'REMOTE_ADDR': '100.100.100.100'}).status_code == 403
+        assert not owner.sent and not owner.closed and len(host._sessions) == 1
+    finally:
+        host.shutdown()
+    assert host.runtime_context_snapshot() == {'runtimes': []}
 
 
 def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):

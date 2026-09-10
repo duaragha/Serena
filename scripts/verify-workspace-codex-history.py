@@ -263,6 +263,15 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                 return [child.pid for child in psutil.Process(process.pid).children(recursive=True)
                         if child.name().lower() in {"codex", "codex.exe"} and "app-server" in child.cmdline()]
             forks = browser_roundtrip(base, sid, owners, f"codex-{backend_mode}", verify_forks=True, verify_disconnect=True)
+            before_context = owners()
+            with urlopen(base + "/api/runtime-context", timeout=5) as response:
+                context = json.load(response)
+            entries = {row["sid"]: row for row in context["runtimes"] if row.get("owner") == "workspace"}
+            assert sid in entries and entries[sid]["agent"] == "codex"
+            assert entries[sid]["alive"] and entries[sid]["cwd"] == str(project)
+            assert "terminal_id" not in entries[sid]
+            assert owners() == before_context, "Runtime inventory changed native ownership"
+            print("PASS: local runtime context reports exact real Codex owner without launching or replacing it")
             for fork_id in forks:
                 metadata_path = Path(env["HOME"]) / ".claude" / "projects" / ".chats-meta" / f"{fork_id}.json"
                 assert json.loads(metadata_path.read_text())["resident_work"] is True

@@ -114,6 +114,34 @@ class WorkspaceHost:
     async def _runtime_snapshot(self):
         return {sid: self._status(sid) for sid in self._sessions if not sid.startswith("new:")}
 
+    def runtime_context_snapshot(self):
+        """Report existing native owners without resolving or attaching sessions."""
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"runtimes": []}
+            future = asyncio.run_coroutine_threadsafe(self._runtime_context_snapshot(), self._loop)
+        return future.result(timeout=5)
+
+    async def _runtime_context_snapshot(self):
+        runtimes = []
+        for sid, (owner, provider) in self._sessions.items():
+            if sid.startswith("new:"):
+                continue
+            runtimes.append({
+                "sid": sid,
+                "agent": provider,
+                "cwd": str(owner.cwd),
+                "alive": owner.state not in {"closed", "unavailable"},
+                "state": owner.state,
+                "busy": bool(owner.active_turn) or owner.state not in {
+                    "ready", "completed", "failed", "interrupted", "closed", "unavailable"},
+                "reserved": bool(self._bridge_queues.get(sid)),
+                "owner": "workspace",
+            })
+        # View focus/drafts must be supplied separately. Owner existence is not
+        # evidence that a user is viewing it or that its composer is empty.
+        return {"runtimes": runtimes}
+
     def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
             raise ValueError("Creation requires an exact request UUID")

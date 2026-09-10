@@ -647,7 +647,6 @@ def choose_work_route(
         for member in _context_members(context)
         if _session_id(member)
         and bool(member.get("alive", True))
-        and str(member.get("state") or "live") in {"live", "paused"}
     }
     owned_sids.update(str(value).strip() for value in active_session_ids if str(value).strip())
     historical: list[tuple[float, str, dict[str, Any]]] = []

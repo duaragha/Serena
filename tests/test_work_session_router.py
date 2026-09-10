@@ -51,6 +51,15 @@ def _git_repo(path):
     return path.resolve()
 
 
+@pytest.mark.parametrize("state", ["ready", "running", "opening", "uncertain", "awaiting-handoff"])
+def test_native_owner_is_not_resumed_as_unowned_history(state):
+    session = _session("native")
+    context = _context("", {"sid": "native", "agent": "codex", "owner": "workspace",
+                            "alive": True, "state": state})
+    route = choose_work_route(PROJECT, "fix it", [context], [session])
+    assert route.mode == "private" and route.session_id == ""
+
+
 @pytest.mark.parametrize(
     "spoken,expected",
     [
