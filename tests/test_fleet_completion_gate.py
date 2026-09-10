@@ -869,7 +869,9 @@ def test_a_worker_that_exits_zero_with_no_evidence_does_not_complete(gate_env, m
 
     assert finished["state"] != "completed"
     first = _legs(finished)[0]
-    assert first["state"] == "failed"
+    assert finished["state"] == "waiting_for_input"
+    assert first["state"] == "waiting_for_input"
+    assert first["current_attempt"]["state"] == "failed"
     assert "completion evidence" in str(first.get("current_attempt", {}).get("error") or "")
     rejected = _events(run["run_id"], "leg.completion_evidence_rejected")
     assert rejected, "the rejection must be durably visible, not silent"
@@ -1060,7 +1062,9 @@ def test_a_gate_crash_fails_closed_and_stays_retryable(gate_env, monkeypatch):
     finished = supervisor.run_supervisor(run["run_id"])
 
     assert finished["state"] != "completed"
-    assert _legs(finished)[0]["state"] == "failed"
+    assert finished["state"] == "waiting_for_input"
+    assert _legs(finished)[0]["state"] == "waiting_for_input"
+    assert _legs(finished)[0]["current_attempt"]["state"] == "failed"
     failed = _events(run["run_id"], "leg.completion_gate_failed")
     assert failed and failed[0]["payload"]["retryable"] is True
 

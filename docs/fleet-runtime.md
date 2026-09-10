@@ -640,6 +640,15 @@ exhaustion, it deliberately does not trigger automatic capacity handoff. If the 
 the leg fails closed and a retryable `leg.completion_gate_failed` event distinguishes evidence
 infrastructure failure from contradictory worker evidence.
 
+The first enforced rejection receives one same-model corrective turn. Its failed attempt,
+queued leg/DAG state and `leg.completion_repair_requested` receipt commit in one transaction;
+there is no post-failure callback window in which an interruption can lose the repair.
+The budget survives restart and duplicate callbacks. Repeated rejection records
+`leg.completion_repair_exhausted` and parks in `waiting_for_input` when the phase resolves,
+retaining the failed attempt and rejection reasons. An unchanged blocker does not spin.
+Disk exhaustion takes precedence and waits for storage readiness without spending this budget.
+Cancellation never schedules correction, and an accepted honest stop is not a format repair.
+
 An honest stop emits `leg.completion_evidence_stopped` with `accepted: true` and
 `completion_allowed: false`; it is not auto-retried as though the worker merely formatted its
 receipt incorrectly. Retrying a terminal run is refused while any recorded worker process is still
