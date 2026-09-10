@@ -2,6 +2,30 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Atomic Browser Receipt Cleanup
+
+After a server accepted a message, a failure writing cleaned-up sessionStorage
+could previously delete the request ID from memory while leaving it on disk.
+Retrying in the same pane then created a new request ID and risked another turn.
+Cleanup now persists a replacement pending map before swapping the in-memory map.
+Failed cleanup retains the original receipt in both places. The same operation
+is used after retryable refusals. No server receipt or provider behavior changes.
+
+Verification:
+
+```sh
+node --test --test-reporter=dot tests/workspace-connection.test.mjs
+node --check ui/static/workspace-connection.mjs
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "node --test --test-reporter=dot C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\workspace-connection.test.mjs"
+```
+
+All exit 0; 29 connection tests passed on Linux and Windows, with matching source
+and test hashes before Windows execution. New cases inject cleanup-storage failure
+after acceptance for submit and queue_input, with and without view recreation.
+They verify a receipt-deduplicating server executes once across recovery, and an
+explicit subsequent new send gets a new identity after successful cleanup.
+This is controlled transport evidence, not authenticated provider inference.
+
 ## Combined Reply Visibility
 
 The pane now marks a completed queued input as `Included in combined reply` when

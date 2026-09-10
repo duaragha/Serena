@@ -79,8 +79,7 @@ export class WorkspaceConnection {
     const result = await this.request('/commands', {request_id, action, payload});
     if (!result.ok) {
       if(result.retryable === true){
-        delete this.pending[signature];
-        this.storage.setItem(this.key, JSON.stringify(this.pending));
+        this.forgetPending(signature);
       }
       throw Error(result.error || 'Control delivery is unconfirmed');
     }
@@ -93,9 +92,16 @@ export class WorkspaceConnection {
       value={...value,request_id:action==='fork_session'?request_id:payload.fork_request_id};
       this.storage.setItem(this.forkKey,JSON.stringify(value));
     }
-    delete this.pending[signature];
-    this.storage.setItem(this.key, JSON.stringify(this.pending));
+    this.forgetPending(signature);
     return value;
+  }
+
+  forgetPending(signature) {
+    const remaining={...this.pending};
+    delete remaining[signature];
+    // A failed cleanup must retain the receipt in memory as well as on disk.
+    this.storage.setItem(this.key,JSON.stringify(remaining));
+    this.pending=remaining;
   }
 
   async sendMessage(action, {text, files = [], options = {}, expectedTurnId}) {

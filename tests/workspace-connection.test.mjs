@@ -11,6 +11,35 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+for(const action of ['submit','queue_input'])for(const reload of [false,true])test(`receipt cleanup storage failure retains ${action} identity (reload=${reload})`,async()=>{
+  const saved=storage(),write=saved.setItem,calls=[],receipts=new Map();
+  let failCleanup=false,executions=0;
+  saved.setItem=(key,value)=>{
+    if(failCleanup && key.startsWith('serena-workspace-pending:') && value==='{}'){
+      failCleanup=false;throw Error('receipt storage unavailable');
+    }
+    write(key,value);
+  };
+  const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    const id=calls.at(-1).request_id;
+    if(!receipts.has(id))receipts.set(id,{turn:{id:`accepted-${++executions}`}});
+    if(calls.length===1)failCleanup=true;
+    return response({ok:true,result:receipts.get(id)});
+  }};
+  let connection=new WorkspaceConnection(options);
+  const payload={inputs:[{type:'text',text:'one message'}],...(action==='queue_input'?{expectedTurnId:'running'}:{})};
+  await assert.rejects(connection.command(action,payload),/receipt storage unavailable/);
+  if(reload){connection.dispose();connection=new WorkspaceConnection(options);}
+  assert.equal((await connection.command(action,payload)).turn.id,'accepted-1');
+  assert.equal(calls[0].request_id,calls[1].request_id);
+  assert.equal(executions,1);
+  await connection.command(action,payload);
+  assert.notEqual(calls[1].request_id,calls[2].request_id);
+  assert.equal(executions,2);
+  connection.dispose();
+});
+
 test('queued follow-up carries active identity and reuses lost receipt after reload',async()=>{
   const saved=storage(),calls=[];
   const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
