@@ -2,6 +2,37 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Windows Edge Pane Verification
+
+The full pane contract file now runs against installed Edge on Windows using
+`SERENA_PROOF_BROWSER_CHANNEL=msedge`. The fixture shares a browser process but
+creates and closes a fresh context for every case, preserving storage isolation.
+The provider badge now uses X for Codex rather than the same C as Claude, matching
+the approved mockup. Browser automation dependencies were installed only into the
+ignored proof-tools directory, not the shared Python environment.
+
+Exact verification commands:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_provider_badges_distinguish_linked_panes tests/test_workspace_pane.py::test_pasted_image_drop_preview_and_mobile_cleanup tests/test_workspace_pane.py::test_markdown_code_copy_and_mobile_layout -q --tb=short
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys; os.chdir(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); sys.path[:0]=[os.getcwd(),os.path.join(os.getcwd(),'apps','desktop','build','proof-tools','windows-python')]; sys.dont_write_bytecode=True; os.environ['SERENA_PROOF_BROWSER_CHANNEL']='msedge'; import pytest; sys.exit(pytest.main(['tests/test_workspace_pane.py','-q','-p','no:cacheprovider','--tb=short','--basetemp=apps/desktop/build/windows-pane-proof-contexts']))\""
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+```
+
+Final exits all 0: Linux 3 passed in 1.18s; Windows 137 passed in 55.60s. Test and
+renderer hashes matched both machines before execution. Inspected actual Windows
+390px and 1600px screenshots: badges, queued reply markers, composer and content
+fit without overlap. Coverage includes uploads, typed approvals, model controls,
+commands, queue recovery, rendering, draft preservation and scroll behavior.
+
+The initial per-test-browser Windows run showed one setup error and slow progress;
+it was deliberately stopped (exit 1), after identifying its exact Python parent
+PID, and its owned browser tree was terminated. It was not counted as passing.
+The revised context-isolated run completed all cases. Playwright 1.58.0 was
+installed in `apps/desktop/build/proof-tools/windows-python`; no browser install
+or app update was performed. This is controlled Edge UI verification, not Windows
+Electron OS clipboard integration or native provider inference.
+
 ## Atomic Browser Receipt Cleanup
 
 After a server accepted a message, a failure writing cleaned-up sessionStorage

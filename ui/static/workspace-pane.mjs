@@ -35,7 +35,7 @@ export class WorkspacePane {
     root.classList.add('agent-workspace-pane');
     root.setAttribute('aria-label', `${provider} conversation`);
     const head = node('header', 'aw-head');
-    const badge = node('span', 'aw-badge', provider.slice(0, 1).toUpperCase());
+    const badge = node('span', 'aw-badge', provider.toLowerCase()==='codex'?'X':provider.slice(0, 1).toUpperCase());
     badge.dataset.provider = provider.toLowerCase();
     this.modelLabel = node('small', '', model);
     head.append(badge, node('strong', '', provider), this.modelLabel);

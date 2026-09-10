@@ -1,5 +1,6 @@
 """Browser contract for the real rich-event pane, without starting agents."""
 
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -9,11 +10,18 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
-@pytest.fixture
-def pane():
+@pytest.fixture(scope="module")
+def pane_browser():
     with playwright.sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1600, "height": 1000})
+        browser = p.chromium.launch(channel=os.environ.get("SERENA_PROOF_BROWSER_CHANNEL"))
+        yield browser
+        browser.close()
+
+
+@pytest.fixture
+def pane(pane_browser):
+    with pane_browser.new_context(viewport={"width": 1600, "height": 1000}) as context:
+        page = context.new_page()
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
 
@@ -57,7 +65,13 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
         page.wait_for_function("window.pane && pane.conversation.sequence === 1", timeout=5000)
         page.locator(".aw-message").wait_for()
         yield page, errors
-        browser.close()
+
+
+def test_provider_badges_distinguish_linked_panes(pane):
+    page, errors = pane
+    assert page.locator("#left .aw-badge").inner_text() == "C"
+    assert page.locator("#right .aw-badge").inner_text() == "X"
+    assert not errors
 
 
 @pytest.mark.parametrize("width", [390, 1600])
