@@ -86,6 +86,8 @@ def main():
                         for width in (390, 1600):
                             page.set_viewport_size({"width": width, "height": 900})
                             page.goto(f"http://127.0.0.1:{server.server_port}/workspace/{target}")
+                            if not page.get_by_role('button', name="Prompt color", exact=True).first.is_visible():
+                                page.get_by_role('button', name='Session actions', exact=True).first.click()
                             page.get_by_role("button", name="Prompt color", exact=True).click()
                             dialog = page.get_by_role("dialog", name="Prompt color")
                             dialog.get_by_role("button", name="cyan prompt color", exact=True).click()
@@ -96,6 +98,8 @@ def main():
                             page.screenshot(path=str(args.screenshots / f"{provider}-color-{width}.png"))
                             page.keyboard.press("Escape")
                             page.reload()
+                            if not page.get_by_role('button', name="Prompt color", exact=True).first.is_visible():
+                                page.get_by_role('button', name='Session actions', exact=True).first.click()
                             page.get_by_role("button", name="Prompt color", exact=True).wait_for()
                             assert page.locator(".aw-composer").evaluate("el=>getComputedStyle(el).borderColor") == "rgb(112, 219, 225)"
                     assert host._loop is None and not host._sessions

@@ -7,8 +7,12 @@
 .agent-workspace-pane :focus-visible{outline:2px solid #ff80bf;outline-offset:2px}
 .agent-workspace-pane [hidden]{display:none!important}
 .agent-workspace-pane svg{width:14px;height:14px;flex-shrink:0}
-.aw-head{min-height:48px;flex-shrink:0;border-bottom:1px solid #2c252f;display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 24px;font:12px 'Segoe UI',Arial,sans-serif}
-.aw-head button{flex:0 0 30px;width:30px}.aw-head small{min-width:0;overflow-wrap:anywhere}.aw-head .aw-badge{flex-shrink:0}
+.aw-head{height:48px;box-sizing:border-box;flex-shrink:0;border-bottom:1px solid #2c252f;display:flex;align-items:center;gap:8px;padding:8px 24px;font:12px 'Segoe UI',Arial,sans-serif}
+.aw-head>button{flex:0 0 30px;width:30px}.aw-head small{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.aw-head .aw-badge,.aw-head strong,.aw-state{flex-shrink:0}
+.aw-session-actions{position:fixed;inset:auto;margin:0;width:260px;max-width:calc(100vw - 16px);box-sizing:border-box;overflow:auto;padding:6px;background:#110d12;color:#d9cddd;border:1px solid #50354a;border-radius:6px;box-shadow:0 8px 24px #0009}
+.aw-session-actions button{display:flex;align-items:center;gap:10px;width:100%;min-height:34px;text-align:left}
+.aw-session-actions button span{overflow-wrap:anywhere}.aw-session-actions button svg{flex-shrink:0}
+.aw-session-actions button:hover,.aw-session-actions button:focus-visible{background:#2a1b27}
 .aw-head strong{font-weight:500}.aw-head small{font:9px monospace;color:#a398ad}
 .aw-badge{width:19px;height:19px;display:grid;place-items:center;border:1px solid #a5baff;border-radius:5px;color:#a5baff;font:10px monospace}
 .aw-badge[data-provider=claude]{color:#e4ac86;border-color:#e4ac86}.aw-badge[data-provider=gemini]{color:#87cda8;border-color:#87cda8}

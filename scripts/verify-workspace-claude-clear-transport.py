@@ -204,6 +204,8 @@ async def main():
                     marked = metadata.get_meta(target)
                     assert marked["starred"] and marked["done"] and marked["done_at"]
                     page.reload()
+                    if not page.get_by_role('button', name="Clear context", exact=True).first.is_visible():
+                        page.get_by_role('button', name='Session actions', exact=True).first.click()
                     page.get_by_role("button", name="Clear context", exact=True).click()
                     dialog = page.get_by_role("dialog", name="Clear context", exact=True)
                     dialog.get_by_text("Context cleared", exact=True).wait_for()
@@ -254,6 +256,8 @@ async def main():
                     assert browser_host._sessions[target][0].client.owned_pid == pid
                     assert page.evaluate("sid=>sessionStorage.getItem('serena-workspace-clear:'+sid)", source) == "null"
                     original_pid = browser_host._sessions[source][0].client.owned_pid
+                    if not page.get_by_role('button', name="Disconnect session", exact=True).first.is_visible():
+                        page.get_by_role('button', name='Session actions', exact=True).first.click()
                     page.get_by_role("button", name="Disconnect session", exact=True).click()
                     disconnect = page.get_by_role("dialog", name="Disconnect session", exact=True)
                     assert psutil.pid_exists(original_pid)

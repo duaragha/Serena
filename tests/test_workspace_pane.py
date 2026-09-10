@@ -10,6 +10,57 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('width', [390, 1400])
+def test_session_actions_keep_headers_aligned_and_support_keyboard(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      const Pane=pane.constructor;right.dispose();
+      const all={...controls,listSessions:async()=>[],openSession:()=>{},accountStatus:async()=>({}),
+        hooks:async()=>[],apps:async()=>({data:[]}),renameSession:async()=>{},projectDiff:async()=>({}),
+        events:async()=>[],forkSession:async()=>{},openFork:()=>{},disconnectSession:async()=>{},shellCommand:async()=>{}};
+      window.right=new Pane(document.querySelector('#right'),{sessionId:'other',provider:'Codex',model:'A very long model name that must not resize the header',controls:all});
+    }""")
+    headers = page.locator('.aw-head').evaluate_all('els=>els.map(el=>el.getBoundingClientRect().height)')
+    assert headers[0] == 48
+    if width > 600:
+        assert headers == [48, 48]
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    left = page.locator('#left')
+    trigger = left.get_by_role('button', name='Session actions', exact=True)
+    assert left.get_by_role('button', name='Prompt color', exact=True).is_hidden()
+    assert page.evaluate('calls') == []
+    trigger.focus()
+    page.keyboard.press('ArrowDown')
+    playwright.expect(left.get_by_role('button', name='Prompt color', exact=True)).to_be_focused()
+    page.keyboard.press('Escape')
+    playwright.expect(trigger).to_be_focused()
+    trigger.click()
+    left.get_by_role('button', name='Prompt color', exact=True).click()
+    dialog = page.get_by_role('dialog', name='Prompt color')
+    playwright.expect(dialog).to_be_visible()
+    assert not page.locator('.aw-session-actions:popover-open').count()
+    page.keyboard.press('Escape')
+    trigger.click()
+    left.locator('textarea').click()
+    assert not page.locator('.aw-session-actions:popover-open').count()
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'actions-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    scope = page.locator('#right' if width > 600 else '#left')
+    scope.get_by_role('button', name='Session actions', exact=True).focus()
+    page.keyboard.press('ArrowDown')
+    menu = scope.get_by_role('group', name='Session actions', exact=True)
+    assert menu.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.keyboard.press('End')
+    assert menu.evaluate('el=>[...el.querySelectorAll("button")].filter(b=>!b.hidden&&!b.disabled).at(-1)===document.activeElement')
+    page.keyboard.press('Home')
+    assert menu.evaluate('el=>[...el.querySelectorAll("button")].filter(b=>!b.hidden&&!b.disabled)[0]===document.activeElement')
+    page.screenshot(path=str(shot.with_name(f'actions-menu-{width}.png')))
+    page.keyboard.press('Escape')
+    assert not errors
+
+
 @pytest.mark.parametrize('width', [390, 1600])
 def test_native_rename_requires_confirmation_and_preserves_failed_draft(pane, width):
     page, errors = pane
@@ -72,6 +123,8 @@ def test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_load
     assert page.evaluate('pane.input.value') == 'Read selected app'
     assert page.evaluate('pane.selectedApps.length') == 1
     page.evaluate("()=>{controls.apps=async()=>{throw Error('Apps unavailable');};}")
+    if not page.get_by_role('button', name="Apps and connectors", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role('button', name='Apps and connectors', exact=True).click()
     dialog.get_by_text('Apps unavailable', exact=True).wait_for()
     assert dialog.get_by_role('button', name='Select app Demo App').count() == 0
@@ -170,6 +223,8 @@ def test_copy_completed_output_ignores_running_turn_and_preserves_draft(pane, ac
       pane.input.value='Keep this draft';
     }""")
     if action == 'button':
+        if not page.get_by_role('button', name="Copy latest completed output", exact=True).first.is_visible():
+            page.get_by_role('button', name='Session actions', exact=True).first.click()
         page.get_by_role('button', name='Copy latest completed output', exact=True).first.click()
     elif action == 'slash':
         page.evaluate("pane.input.value='/copy';pane.submit()")
@@ -253,6 +308,8 @@ def test_account_status_is_explicit_honest_and_preserves_draft(pane, width):
       pane.accountButton.hidden=false;pane.input.value='keep my draft';
     }""")
     assert page.evaluate('calls') == []
+    if not page.locator('#left').get_by_role('button', name="Codex account", exact=True).first.is_visible():
+        page.locator('#left').get_by_role('button', name='Session actions', exact=True).first.click()
     page.locator('#left').get_by_role('button', name='Codex account', exact=True).click()
     dialog = page.get_by_role('dialog', name='Codex account')
     assert dialog.get_by_role('status').inner_text() == 'ChatGPT account saved'
@@ -278,6 +335,7 @@ def test_browser_login_requires_click_and_closing_does_not_cancel(pane, width):
       pane.accountButton.hidden=false;pane.input.value='draft';
     }""")
     button = page.locator('#left').get_by_role('button', name='Codex account', exact=True)
+    page.locator('#left').get_by_role('button', name='Session actions', exact=True).click()
     button.click()
     dialog = page.get_by_role('dialog', name='Codex account')
     assert page.evaluate('calls') == []
@@ -289,6 +347,7 @@ def test_browser_login_requires_click_and_closing_does_not_cancel(pane, width):
     page.keyboard.press('Escape')
     assert page.evaluate('calls') == ['login']
     assert page.evaluate('pane.input.value') == 'draft'
+    page.locator('#left').get_by_role('button', name='Session actions', exact=True).click()
     button.click()
     dialog.get_by_role('button', name='Cancel browser sign-in', exact=True).click()
     assert page.evaluate('calls') == ['login', ['cancel', 'native-one']]
@@ -341,6 +400,8 @@ def test_claude_doctor_skill_is_not_replaced_with_installation_diagnostics(pane,
 def test_prompt_color_is_session_scoped_persistent_and_never_sent(pane, width, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})
+    if not page.locator('#left').get_by_role('button', name="Prompt color", exact=True).first.is_visible():
+        page.locator('#left').get_by_role('button', name='Session actions', exact=True).first.click()
     page.locator('#left').get_by_role('button', name='Prompt color', exact=True).click()
     dialog = page.get_by_role('dialog', name='Prompt color')
     dialog.get_by_role('button', name='cyan prompt color', exact=True).click()
@@ -378,6 +439,8 @@ def test_saved_session_picker_does_not_submit_or_stop_running_work(pane, provide
       pane.input.value='Keep my draft';
     }""", provider)
     assert page.evaluate("calls") == []
+    if not page.get_by_role('button', name="Open saved conversation", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role("button", name="Open saved conversation", exact=True).click()
     dialog = page.get_by_role("dialog", name="Saved conversations")
     dialog.get_by_role("button", name="Load more conversations", exact=True).click()
@@ -895,6 +958,8 @@ def test_event_inspector_pages_lazily_without_session_actions(pane, tmp_path, wi
       window.pane=new Constructor(root,{sessionId:'exact',provider:'Claude',controls});
     }""")
     assert page.evaluate("eventReads") == []
+    if not page.get_by_role('button', name="Session events", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role("button", name="Session events", exact=True).click()
     dialog = page.get_by_role("dialog", name="Session events")
     dialog.get_by_text("1 native-event", exact=True).wait_for()
@@ -1585,14 +1650,18 @@ def test_clear_requires_confirmation_and_recovers_exact_target_without_repeating
       controls.openCleared=async sid=>calls.push(['open',sid]);pane.clearButton.hidden=false;
       pane.input.value='keep original draft';pane.render();
     }""")
+    if not page.get_by_role('button', name="Clear context", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role("button", name="Clear context", exact=True).click()
     dialog = page.get_by_role("dialog", name="Clear context", exact=True)
     assert page.evaluate("calls") == []
     dialog.get_by_role("button", name="Confirm clear context", exact=True).click()
     assert page.get_by_role("button", name="Send message", exact=True).first.is_disabled()
     dialog.get_by_role("button", name="Close clear context", exact=True).click()
-    assert page.get_by_role("button", name="Clear context", exact=True).is_disabled()
+    assert page.locator('#left').get_by_role("button", name="Clear context", exact=True, include_hidden=True).is_disabled()
     page.evaluate("finishClear()")
+    if not page.get_by_role('button', name="Clear context", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role("button", name="Clear context", exact=True).click()
     dialog = page.get_by_role("dialog", name="Clear context", exact=True)
     dialog.get_by_text("Context cleared", exact=True).wait_for()
@@ -1622,6 +1691,8 @@ def test_fork_dialog_never_creates_or_opens_automatically(pane, tmp_path, indexe
           pane.dispose();pane=new WorkspacePane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
           pane.conversation.status='ready';pane.render();pane.input.value='draft stays';
         }""")
+    if not page.get_by_role('button', name="Fork conversation", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role("button", name="Fork conversation", exact=True).click()
     dialog = page.get_by_role("dialog", name="Fork conversation", exact=True)
     assert page.evaluate("calls") == []
@@ -1651,6 +1722,8 @@ def test_shell_dialog_requires_explicit_confirmation_and_keeps_chat_draft(pane, 
       pane.dispose();pane=new WorkspacePane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
       pane.conversation.status='ready';pane.render();pane.input.value='unsent draft';
     }""")
+    if not page.get_by_role('button', name="Run shell command", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role('button', name='Run shell command', exact=True).click()
     dialog = page.get_by_role('dialog', name='Run shell command')
     assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
@@ -1693,14 +1766,18 @@ def test_closing_pending_fork_cannot_start_second_creation(pane):
       controls.forkSession=()=>{calls.push('fork');return new Promise(resolve=>{window.finishFork=()=>resolve({session_id:'11111111-1111-4111-8111-111111111111',indexed:true});});};
       controls.openFork=()=>{};pane.forkButton.hidden=false;
     }""")
+    if not page.get_by_role('button', name="Fork conversation", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role("button", name="Fork conversation", exact=True).click()
     page.get_by_role("button", name="Create fork", exact=True).click()
     page.get_by_role("button", name="Close fork", exact=True).click()
-    assert page.get_by_role("button", name="Fork conversation", exact=True).is_disabled()
+    assert page.locator('#left').get_by_role("button", name="Fork conversation", exact=True, include_hidden=True).is_disabled()
     page.evaluate("pane.openFork()")
     assert page.get_by_role("dialog", name="Fork conversation", exact=True).count() == 0
     page.evaluate("finishFork()")
     page.wait_for_function("!pane.forkButton.disabled")
+    if not page.get_by_role('button', name="Fork conversation", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role("button", name="Fork conversation", exact=True).click()
     page.get_by_role("button", name="Open fork", exact=True).wait_for()
     assert page.evaluate("calls") == ["fork"]
@@ -1715,6 +1792,8 @@ def test_saved_fork_recovery_never_recreates_session(pane):
       controls.forkSession=async()=>{throw Error('Must not recreate fork');};controls.openFork=()=>{};
       pane.forkButton.hidden=false;
     }""")
+    if not page.get_by_role('button', name="Fork conversation", exact=True).first.is_visible():
+        page.get_by_role('button', name='Session actions', exact=True).first.click()
     page.get_by_role("button", name="Fork conversation", exact=True).click()
     dialog = page.get_by_role("dialog", name="Fork conversation", exact=True)
     assert dialog.get_by_text("Catalog unavailable", exact=True).is_visible()

@@ -2,6 +2,7 @@ import {WorkspaceConversation} from './workspace-events.mjs';
 import {renderWorkspaceMarkdown} from './workspace-markdown.mjs';
 import {renderElicitation} from './workspace-elicitation.mjs';
 import {installFileMentions} from './workspace-mentions.mjs';
+import {installSessionActions} from './workspace-actions.mjs';
 
 const node = (tag, cls, text) => {
   const el = document.createElement(tag);
@@ -83,6 +84,7 @@ export class WorkspacePane {
     this.shellButton=this.button('Run shell command','terminal',()=>this.openShell());
     this.shellButton.hidden=provider!=='Codex' || !controls.shellCommand;
     head.append(this.shellButton);
+    this.disposeActions = installSessionActions(head, this.button('Session actions', 'ellipsis'));
     this.log = node('div', 'aw-transcript');
     this.log.tabIndex = 0;
     this.log.setAttribute('aria-label', `${provider} messages and tool output`);
@@ -1894,6 +1896,7 @@ export class WorkspacePane {
   }
 
   dispose() {
+    this.disposeActions?.();
     this.sessionStatusDialog?.close();
     this.imageDialog?.close();
     this.disposeMentions?.();

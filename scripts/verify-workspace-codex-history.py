@@ -127,7 +127,11 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                     latency_ms = round((time.monotonic() - returned) * 1000)
                     assert owners() == existing_owners and composer.input_value() == draft
                     print(f"PASS: {prefix} {label} hidden polling reduced; visible refresh in {latency_ms}ms; exact native owners/draft unchanged")
+                    if not page.get_by_role('button', name="Run shell command", exact=True).first.is_visible():
+                        page.get_by_role('button', name='Session actions', exact=True).first.click()
                     page.get_by_role("button", name="Run shell command", exact=True).wait_for(state="visible")
+                    if not page.get_by_role('button', name="Run shell command", exact=True).first.is_visible():
+                        page.get_by_role('button', name='Session actions', exact=True).first.click()
                     page.get_by_role("button", name="Run shell command", exact=True).click()
                     dialog = page.get_by_role("dialog", name="Run shell command")
                     token = f"SERENA_BROWSER_{label.upper()}"
@@ -166,6 +170,8 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                         page.get_by_role("button", name="Load earlier messages", exact=True).click()
                         page.locator("summary").filter(has_text="SERENA_HISTORY_000").first.wait_for(state="attached", timeout=10000)
                         if verify_forks:
+                            if not page.get_by_role('button', name="Fork conversation", exact=True).first.is_visible():
+                                page.get_by_role('button', name='Session actions', exact=True).first.click()
                             page.get_by_role("button", name="Fork conversation", exact=True).click()
                             dialog = page.get_by_role("dialog", name="Fork conversation")
                             dialog.get_by_role("button", name="Create fork", exact=True).click()
@@ -181,10 +187,14 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                         if page.url != f"{base}/workspace/{sid}":
                             page.goto(f"{base}/workspace/{sid}")
                             expect(page.locator('#workspace-connect')).to_be_hidden()
+                        if not page.get_by_role('button', name="Disconnect session", exact=True).first.is_visible():
+                            page.get_by_role('button', name='Session actions', exact=True).first.click()
                         page.get_by_role("button", name="Disconnect session", exact=True).click()
                         disconnect = page.get_by_role("dialog", name="Disconnect session", exact=True)
                         disconnect.get_by_role("button", name="Cancel", exact=True).click()
                         assert owners() == [pid], "Cancel must preserve runtime"
+                        if not page.get_by_role('button', name="Disconnect session", exact=True).first.is_visible():
+                            page.get_by_role('button', name='Session actions', exact=True).first.click()
                         page.get_by_role("button", name="Disconnect session", exact=True).click()
                         page.get_by_role("dialog", name="Disconnect session", exact=True).get_by_role("button", name="Disconnect", exact=True).click()
                         page.get_by_role("dialog", name="Disconnect session", exact=True).wait_for(state="hidden")

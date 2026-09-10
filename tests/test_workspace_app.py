@@ -466,6 +466,8 @@ function setTermStatus(status){window.lastStatus=status;}
                 assert page.evaluate("sessionStorage.getItem('serena-workspace-clear:exact')") == "null"
                 assert not page.get_by_role("button", name="Send message", exact=True).is_disabled()
                 page.reload()
+            if not page.get_by_role('button', name="Session events", exact=True).first.is_visible():
+                page.get_by_role('button', name='Session actions', exact=True).first.click()
             page.get_by_role("button", name="Session events", exact=True).click()
             inspector = page.get_by_role("dialog", name="Session events")
             if provider == "claude":
@@ -487,6 +489,8 @@ function setTermStatus(status){window.lastStatus=status;}
             playwright.expect(page.locator('.aw-state')).to_have_text('ready')
             page.unroute('**/api/workspace/exact/view-context')
             if provider == 'codex':
+                if not page.get_by_role('button', name="Apps and connectors", exact=True).first.is_visible():
+                    page.get_by_role('button', name='Session actions', exact=True).first.click()
                 page.get_by_role('button', name='Apps and connectors', exact=True).click()
                 with page.expect_response(lambda response: response.url.endswith('/view-context')
                                           and response.request.post_data_json.get('draft') is True):
@@ -550,6 +554,8 @@ function setTermStatus(status){window.lastStatus=status;}
                 token,
             )
             assert previews == [200, "image/png", len(raw), 400]
+            if not page.get_by_role('button', name="Session events", exact=True).first.is_visible():
+                page.get_by_role('button', name='Session actions', exact=True).first.click()
             page.get_by_role("button", name="Session events", exact=True).click()
             inspector = page.get_by_role("dialog", name="Session events")
             inspector.get_by_text("1 workspace/history", exact=True).click()
@@ -606,6 +612,8 @@ function setTermStatus(status){window.lastStatus=status;}
                                       and response.request.post_data_json.get('sleep_peers') is True):
                 nested.get_by_role('textbox', name=f'Message {provider.capitalize()}').click()
             page.evaluate("_gtkSplitActive=false;_gtkSplitSids=null;termSessions.delete('partner')")
+            if not nested.get_by_role('button', name="Session events", exact=True).first.is_visible():
+                nested.get_by_role('button', name='Session actions', exact=True).first.click()
             nested.get_by_role('button', name='Session events', exact=True).click()
             nested.get_by_role('dialog', name='Session events').wait_for()
             assert not nested.get_by_role('textbox', name=f'Message {provider.capitalize()}').evaluate('el=>el===document.activeElement')
@@ -674,6 +682,8 @@ function setTermStatus(status){window.lastStatus=status;}
                 page.evaluate("window.postMessage({type:'serena-workspace-title-changed',sid:'exact'},location.origin)")
                 page.wait_for_timeout(50)
                 assert page.evaluate('titleRefreshes') == 0
+                if not nested.get_by_role('button', name="Rename conversation", exact=True).first.is_visible():
+                    nested.get_by_role('button', name='Session actions', exact=True).first.click()
                 nested.get_by_role('button', name='Rename conversation', exact=True).click()
                 rename = nested.get_by_role('dialog', name='Rename conversation', exact=True)
                 rename.get_by_role('textbox', name='Conversation title').fill('Requested native title')

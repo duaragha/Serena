@@ -36,6 +36,8 @@ pane.receive({sequence:1,event:{method:'workspace/history',params:{thread:{id:'p
 
             page.route("**/*", route)
             page.goto("http://127.0.0.1:19837/")
+            if not page.get_by_role('button', name="Copy latest completed output", exact=True).first.is_visible():
+                page.get_by_role('button', name='Session actions', exact=True).first.click()
             page.get_by_role("button", name="Copy latest completed output", exact=True).click()
             page.wait_for_function("async()=>await navigator.clipboard.readText()==='Exact completed output\\nSecond line'")
             assert page.evaluate("pane.input.value") == "Unsent draft"

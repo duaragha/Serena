@@ -219,6 +219,8 @@ def main():
                         assert not errors, errors
                         page.screenshot(path=str(screenshots / f"{label_prefix}-{label}.png"))
                         if source:
+                            if not page.get_by_role('button', name="Fork conversation", exact=True).first.is_visible():
+                                page.get_by_role('button', name='Session actions', exact=True).first.click()
                             page.get_by_role("button", name="Fork conversation", exact=True).click()
                             fork_dialog = page.get_by_role("dialog", name="Fork conversation", exact=True)
                             if label == "mobile":
@@ -238,6 +240,8 @@ def main():
                                     backup.rename(index)
                                 page.reload()
                                 expect(page.locator('#workspace-connect')).to_be_hidden()
+                                if not page.get_by_role('button', name="Fork conversation", exact=True).first.is_visible():
+                                    page.get_by_role('button', name='Session actions', exact=True).first.click()
                                 page.get_by_role("button", name="Fork conversation", exact=True).click()
                                 expect(fork_dialog.locator("code")).to_have_text(saved_sid)
                                 fork_dialog.get_by_role("button", name="Retry fork registration", exact=True).click()

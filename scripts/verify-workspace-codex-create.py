@@ -202,6 +202,8 @@ print(json.dumps(get_session(target['session_id'])))
                         page.get_by_role("button", name="Open conversation", exact=True).click()
                         page.wait_for_url(base + "/workspace/" + sid)
                         page.locator('#workspace-connect').wait_for(state='hidden')
+                        if not page.get_by_role('button', name="Run shell command", exact=True).first.is_visible():
+                            page.get_by_role('button', name='Session actions', exact=True).first.click()
                         page.get_by_role("button", name="Run shell command", exact=True).click()
                         shell = page.get_by_role("dialog", name="Run shell command")
                         shell.get_by_role("textbox", name="Shell command").fill("printf SERENA_NEW_UI_NATIVE")

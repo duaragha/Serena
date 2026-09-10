@@ -85,6 +85,7 @@ async function main() {
     await skill.waitFor();
     assert.equal(await skill.isChecked(), true);
     await dialog.getByRole('button', {name: 'Close commands'}).click();
+    await pane.getByRole('button', {name: 'Session actions', exact: true}).click();
     await pane.getByRole('button', {name: 'Run shell command', exact: true}).click();
     const shell = pane.getByRole('dialog', {name: 'Run shell command'});
     await shell.getByRole('textbox', {name: 'Shell command'}).fill('echo SERENA_ELECTRON_NATIVE');
@@ -137,6 +138,7 @@ async function main() {
     await input.press('Control+V');
     assert.equal((await input.inputValue()).trim(), 'SERENA_ELECTRON_NATIVE');
     assert.match(await pane.locator('.aw-state').innerText(), /^(ready|completed)$/);
+    await pane.getByRole('button', {name: 'Session actions', exact: true}).click();
     await pane.getByRole('button',{name:'Codex account',exact:true}).click();
     const account=pane.getByRole('dialog',{name:'Codex account',exact:true});
     await account.getByRole('button',{name:'Sign in with ChatGPT',exact:true}).click();
@@ -144,6 +146,7 @@ async function main() {
     await authorize.waitFor();
     assert.match(await authorize.getAttribute('href'),/^https:\/\/(auth\.openai\.com|auth0\.openai\.com|chatgpt\.com)\//);
     await account.getByRole('button',{name:'Close account',exact:true}).click();
+    await pane.getByRole('button', {name: 'Session actions', exact: true}).click();
     await pane.getByRole('button',{name:'Codex account',exact:true}).click();
     await account.getByRole('button',{name:'Cancel browser sign-in',exact:true}).click();
     await account.getByText('Sign-in: cancelled',{exact:true}).waitFor();
@@ -171,6 +174,7 @@ async function main() {
     await waitForOwnedPane(newPane);
     assert.equal(await page.locator('#convTitle').innerText(),'Electron native new chat');
     await page.waitForFunction(()=>document.querySelectorAll('iframe[src^="/workspace/new?"]').length===0);
+    await newPane.getByRole('button', {name: 'Session actions', exact: true}).click();
     await newPane.getByRole('button',{name:'Run shell command',exact:true}).click();
     const newShell = newPane.getByRole('dialog',{name:'Run shell command'});
     await newShell.getByRole('textbox',{name:'Shell command'}).fill('echo SERENA_ELECTRON_CREATED');
@@ -270,6 +274,7 @@ async function main() {
           && context.runtimes.find(row=>row.sid===id)?.draft;
       },{id,ids:linkedIds});
       assert.equal(await page.locator(`.term-pane[data-sid="${id}"]`).evaluate(el=>el.classList.contains('runtime-focused')),true);
+      await linkedPane.getByRole('button', {name: 'Session actions', exact: true}).click();
       await linkedPane.getByRole('button',{name:'Session events',exact:true}).click();
       await linkedPane.getByRole('dialog',{name:'Session events',exact:true}).waitFor();
       assert.equal(await draft.evaluate(el=>el===document.activeElement),false);

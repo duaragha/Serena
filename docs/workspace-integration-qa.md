@@ -80,6 +80,87 @@ passed. `node --check ui/static/workspace-page.mjs`,
 `node --check ui/static/workspace-pane.mjs` and `git diff --check` each exited 0
 with no output.
 
+## Compact Session Actions (2026-09-10)
+
+The source-sidecar/native Electron proof exposed a visual mismatch: the complete
+Codex action strip wrapped and made its header taller than Claude's. Both panes
+now have a fixed 48px header and one Session actions button. The actual existing
+controls move into a labeled popover; their provider visibility, disabled states,
+confirmation dialogs, exact-session handlers and slash-command routing remain
+unchanged. No alternative session or transcript renderer was introduced.
+
+The browser handles light dismissal. Arrow keys, Home/End and Escape support
+keyboard navigation; clicking an action dismisses the popover before its modal
+opens. Long model names truncate without changing header height. Tests and proof
+scripts now explicitly open the menu before clicking a moved action.
+
+Commands were executed separately from this worktree:
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q --tb=short
+```
+
+Exit 1: 215 passed, 3 failed in 225.15s. All failures were the new hidden-control
+assertions matching both fixture panes. Scoping them to the intended pane fixed
+the selectors without weakening the disabled-state checks.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_clear_requires_confirmation_and_recovers_exact_target_without_repeating tests/test_workspace_pane.py::test_closing_pending_fork_cannot_start_second_creation tests/test_workspace_pane.py::test_session_actions_keep_headers_aligned_and_support_keyboard -q --tb=short
+```
+
+Exit 0: 5 passed in 7.57s. The complete pane file was not repeated after the
+selector-only repair.
+
+```sh
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --tb=short
+```
+
+Exit 1: 12 failed, 3 passed in 29.58s. The default Chromium tests lacked the
+explicit path to the already installed proof browser; no product defect.
+
+```sh
+env PLAYWRIGHT_BROWSERS_PATH=apps/desktop/build/proof-tools/playwright SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --tb=short
+```
+
+Exit 0: 15 passed in 48.45s, including mounted native-pane controls, no-auto-launch,
+corrupt receipt/creation guards and the linked frame path.
+
+```sh
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+```
+
+Exit 0 both before and after the menu change. Actual source sidecar, native
+Codex and Claude children, Edge mobile/desktop pages and Electron main/preload:
+51 print-only native turns; real shell I/O; exact resume, fork and new-chat
+identities; real clipboard; login start/reopen/cancel without credential changes;
+linked composer focus and drafts; view closure preserving owners; stale-history
+and competing-work rejection. Post-change visible refresh was 59ms desktop and
+31ms mobile. All disposable owners closed and the isolated project remained
+untouched. No inference, user-profile edits or installed-app restart.
+
+Viewed `apps/desktop/build/workspace-proof/actions-1400.png`,
+`codex-source-mobile.png` and `electron-native-linked-created.png`: the real
+linked headers are now aligned. These are source checks, not a fresh packaged
+Windows/Linux release proof.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_session_actions_keep_headers_aligned_and_support_keyboard -q --tb=short
+```
+
+Exit 0: 2 passed in 3.25s after extending keyboard coverage to Home/End and the
+full Codex action list. Viewed `actions-menu-1400.png`: labels and disabled
+states fit the popover with the expected neon-black styling.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py tests/test_workspace_app.py scripts/verify-workspace-claude-clear-transport.py scripts/verify-workspace-codex-create.py scripts/verify-workspace-codex-history.py scripts/verify-workspace-copy.py scripts/verify-workspace-frozen.py scripts/verify-workspace.py
+node --check ui/static/workspace-actions.mjs
+node --check scripts/verify-workspace-electron.cjs
+git diff --check
+```
+
+Each command ran separately and exited 0. Ruff reported all checks passed;
+the other checks produced no output.
+
 ## Remaining Gates
 
 See `interactive-workspace.md` (Required Delivery Gates) and
