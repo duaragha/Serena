@@ -9,6 +9,47 @@ def event(events, method):
     return next(item["params"] for item in events if item["method"] == method)
 
 
+def test_queued_user_echo_and_individual_results_keep_exact_turns():
+    events = ClaudeEvents("exact")
+    events.begin_input("first")
+    events.begin_input("second")
+    assert events.turn == "first"
+    echo = event(events.receive({"type": "user", "session_id": "exact", "uuid": "second",
+                                 "message": {"role": "user", "content": "follow-up"}}), "item/completed")
+    assert echo["turnId"] == "second"
+    result = {"type": "result", "session_id": "exact", "is_error": False}
+    first = event(events.receive({**result, "user_message_uuid": "first"}), "turn/completed")
+    assert first["turn"]["id"] == "first" and events.turn == "second"
+    second = event(events.receive({**result, "user_message_uuid": "second"}), "turn/completed")
+    assert second["turn"]["id"] == "second" and events.turn is None
+    assert events.pending_inputs == []
+
+
+def test_grouped_result_completes_only_acknowledged_prefix_without_duplicate_output():
+    events = ClaudeEvents("exact")
+    for input_id in ["first", "second", "third"]:
+        events.begin_input(input_id)
+    output = events.receive({"type": "result", "session_id": "exact", "is_error": False,
+                             "user_message_uuids": ["first", "second"], "num_turns": 0,
+                             "result": "Combined reply", "duration_ms": 10})
+    completed = [entry["params"]["turn"] for entry in output if entry["method"] == "turn/completed"]
+    assert [turn["id"] for turn in completed] == ["first", "second"]
+    assert completed[1]["combinedWithTurnId"] == "first" and "durationMs" not in completed[1]
+    assert sum(entry["method"] == "item/completed" for entry in output) == 1
+    assert events.turn == "third" and events.pending_inputs == ["third"]
+
+
+@pytest.mark.parametrize("ack", [{}, {"user_message_uuids": ["first", "third"]},
+    {"user_message_uuids": ["first", "unknown"]}])
+def test_ambiguous_queued_result_preserves_pending_inputs(ack):
+    events = ClaudeEvents("exact")
+    for input_id in ["first", "second", "third"]:
+        events.begin_input(input_id)
+    with pytest.raises(ValueError, match="acknowledge"):
+        events.receive({"type": "result", "session_id": "exact", "is_error": False, **ack})
+    assert events.pending_inputs == ["first", "second", "third"] and events.turn == "first"
+
+
 @pytest.mark.parametrize("acknowledgement", [
     {"user_message_uuid": "older"}, {"user_message_uuids": ["older"]},
     {"user_message_uuids": "active"}, {"user_message_uuids": [None]},

@@ -184,8 +184,8 @@ class ClaudeWorkspace:
             async for message in self.client.receive_messages():
                 for event in self.events.receive(message):
                     if event["method"] == "turn/completed" and self.state not in {"clearing", "awaiting-handoff", "committing-handoff", "unavailable", "closed"}:
-                        self.active_turn = None
-                        self.state = "ready"
+                        self.active_turn = self.events.turn
+                        self.state = "running" if self.active_turn else "ready"
                     await self.publish(event)
             raise RuntimeError("Claude output stream ended")
         except asyncio.CancelledError:
@@ -477,7 +477,8 @@ class ClaudeWorkspace:
                     self.events.event("workspace/settings", {"model": options["model"]})
                 )
             turn_id = str(uuid4())
-            self.active_turn = self.events.turn = turn_id
+            self.events.begin_input(turn_id)
+            self.active_turn = self.events.turn
             self.state = "submitting"
 
             async def message():

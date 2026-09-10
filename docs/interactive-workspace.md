@@ -2,6 +2,41 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Queued Turn Accounting Foundation
+
+Claude submission now registers its input with the event translator rather than
+overwriting a lone turn field. The translator retains ordered pending identities,
+routes an echoed queued user message to its own turn, and advances only through
+the acknowledged prefix. Grouped results emit one reply and complete the covered
+inputs; secondary completions reference the primary turn without copying its
+duration. Unknown, out-of-order or missing acknowledgements with multiple inputs
+fail without dropping the pending list. Legacy single-input results still work.
+
+The owner derives its active/ready state from the remaining input tracker. The
+browser also remains running while another accepted turn is in progress, and
+normalizes omitted start/completion status fields so it cannot become stuck busy.
+
+Verification commands (each exit 0):
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_wire.py tests/test_workspace_claude.py -q --tb=short
+node --test tests/workspace-events.test.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_questions_resolve_only_from_provider_and_stream_does_not_collapse_tools tests/test_workspace_pane.py::test_acp_stream_deltas_render_exactly_before_and_after_completion -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_pending_turn_keeps_claude_busy_after_another_turn_completes -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_events.py tests/test_workspace_claude_wire.py
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+```
+
+Results: 76 Python tests, 12 reducer tests, 2 browser regressions and 1 new busy
+state browser test passed; lint clean. Native driver/Python owner proof passed,
+including two queued local commands with exact UUID acknowledgements, existing
+single-input rendering and cleanup. No authentication or model inference.
+
+This is the accounting foundation, not an enabled user queue: the public Claude
+submit guard still requires ready state. Explicit queued-submit admission,
+composer controls, ambiguous-delivery/restart recovery and mid-inference proof
+remain required. No installed app/default activation was changed.
+
 ## Claude Queued Input Identity
 
 Rechecked https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode

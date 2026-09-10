@@ -5,6 +5,27 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('completion of one input does not mark another accepted turn ready',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,history));
+  model.apply(wrap(2,{method:'turn/started',params:{turn:{id:'first',status:'inProgress'}}}));
+  model.apply(wrap(3,{method:'turn/started',params:{turn:{id:'second',status:'inProgress'}}}));
+  model.apply(wrap(4,{method:'turn/completed',params:{turn:{id:'first',status:'completed'}}}));
+  assert.equal(model.status,'running');
+  model.apply(wrap(5,{method:'turn/completed',params:{turn:{id:'second',status:'completed',combinedWithTurnId:'first'}}}));
+  assert.equal(model.status,'completed');
+  assert.equal(model.turns.get('second').combinedWithTurnId,'first');
+});
+
+test('implicit turn statuses do not leave the pane permanently busy',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,{method:'turn/started',params:{turn:{id:'one'}}}));
+  assert.equal(model.turns.get('one').status,'inProgress');
+  model.apply(wrap(2,{method:'turn/completed',params:{turn:{id:'one'}}}));
+  assert.equal(model.status,'completed');
+  assert.equal(model.turns.get('one').status,'completed');
+});
+
 test('fresh exact history clears stale disconnection error but older pages do not',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,history));

@@ -1657,6 +1657,22 @@ def test_composer_upload_failure_retains_draft_and_closing_does_not_cancel(pane)
     assert not errors
 
 
+def test_pending_turn_keeps_claude_busy_after_another_turn_completes(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      emit({method:'turn/started',params:{turn:{id:'first',status:'inProgress'}}});
+      emit({method:'turn/started',params:{turn:{id:'second',status:'inProgress'}}});
+      emit({method:'turn/completed',params:{turn:{id:'first',status:'completed'}}});
+    }""")
+    page.wait_for_function("pane.status.textContent === 'running'")
+    assert page.evaluate("pane.send.disabled")
+    assert page.evaluate("!pane.stop.hidden")
+    page.evaluate("emit({method:'turn/completed',params:{turn:{id:'second',status:'completed'}}})")
+    page.wait_for_function("pane.status.textContent === 'completed' && !pane.send.disabled")
+    assert page.evaluate("pane.stop.hidden")
+    assert not errors
+
+
 def test_acp_stream_deltas_render_exactly_before_and_after_completion(pane):
     from core.workspace_acp_events import AcpEvents
 

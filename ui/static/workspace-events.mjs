@@ -89,9 +89,10 @@ export class WorkspaceConversation {
     } else if (method === 'turn/started' || method === 'turn/completed') {
       const turn = this.turn(p.turn.id);
       const items = turn.items;
-      Object.assign(turn, p.turn, {items});
+      Object.assign(turn, p.turn, {items, status: p.turn.status || (method === 'turn/started' ? 'inProgress' : 'completed')});
       for (const item of p.turn.items || []) items.set(item.id, item);
-      this.status = method === 'turn/started' ? 'running' : (p.turn.status || 'completed');
+      this.status = method === 'turn/started' || [...this.turns.values()].some(item => item.status === 'inProgress')
+        ? 'running' : (p.turn.status || 'completed');
     } else if (method === 'item/started' || method === 'item/completed') {
       if (!p.item?.id) throw new Error('Missing provider item');
       if (p.item.type === 'contextCompaction') p.item.status = method === 'item/completed' ? 'completed' : 'inProgress';

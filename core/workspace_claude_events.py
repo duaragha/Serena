@@ -46,6 +46,14 @@ class ClaudeEvents:
         self.capabilities = {}
         self.tasks = {}
         self.last_root_text = None
+        self.pending_inputs = []
+
+    def begin_input(self, turn_id):
+        if not isinstance(turn_id, str) or not turn_id or turn_id in self.pending_inputs:
+            raise ValueError("Unique Claude input identity is required")
+        self.pending_inputs.append(turn_id)
+        if self.turn is None:
+            self.turn = turn_id
 
     def event(self, method, params):
         return {"method": method, "params": {"threadId": self.sid, **params}}
@@ -255,10 +263,12 @@ class ClaudeEvents:
                         # The SDK may emit the authoritative tool before its
                         # trailing stream stop. Late fragments must not replace it.
                         self.streaming_tools = {key: value for key, value in self.streaming_tools.items() if value != item["id"]}
-                    events.append(self.event("item/completed", {"turnId": self.turn, "item": item}))
+                    target_turn = message_id if kind == "UserMessage" and message_id in self.pending_inputs else self.turn
+                    events.append(self.event("item/completed", {"turnId": target_turn, "item": item}))
             if parent == "root" and data.get("model") and data["model"] != "<synthetic>":
                 events.append(self.event("workspace/settings", {"model": data["model"]}))
         elif kind == "ResultMessage" and self.turn:
+            completed_inputs = [self.turn]
             # A delayed result must not complete a newer input. Older SDK
             # records without acknowledgement fields keep their legacy path.
             if "user_message_uuid" in data or "user_message_uuids" in data:
@@ -268,6 +278,14 @@ class ClaudeEvents:
                 acknowledged = [*acknowledged, data.get("user_message_uuid")]
                 if self.turn not in acknowledged:
                     raise ValueError("Claude result does not acknowledge the active input")
+                if self.pending_inputs:
+                    acknowledged = set(value for value in acknowledged if value is not None)
+                    completed_inputs = [value for value in self.pending_inputs if value in acknowledged]
+                    if (acknowledged - set(self.pending_inputs)
+                            or completed_inputs != self.pending_inputs[:len(completed_inputs)]):
+                        raise ValueError("Claude result acknowledgement is out of input order")
+            elif len(self.pending_inputs) > 1:
+                raise ValueError("Queued Claude inputs require exact result acknowledgements")
             if (
                 data.get("num_turns") == 0
                 and isinstance(data.get("result"), str)
@@ -290,22 +308,18 @@ class ClaudeEvents:
                         },
                     )
                 )
-            events.append(
-                self.event(
-                    "turn/completed",
-                    {
-                        "turn": {
-                            "id": self.turn,
-                            "status": "failed" if data["is_error"] else "completed",
-                            "providerOriginal": data,
-                            "durationMs": data.get("duration_ms"),
-                        }
-                    },
-                )
-            )
+            for index, input_id in enumerate(completed_inputs):
+                turn = {"id": input_id, "status": "failed" if data["is_error"] else "completed",
+                        "providerOriginal": data}
+                if index == 0:
+                    turn["durationMs"] = data.get("duration_ms")
+                else:
+                    turn["combinedWithTurnId"] = completed_inputs[0]
+                events.append(self.event("turn/completed", {"turn": turn}))
             if isinstance(data.get("usage"), dict):
                 events.append(self.event("workspace/claudeUsage", {"usage": data["usage"]}))
-            self.turn = None
+            self.pending_inputs = [value for value in self.pending_inputs if value not in completed_inputs]
+            self.turn = self.pending_inputs[0] if self.pending_inputs else None
             self.last_root_text = None
             self.streaming_tools.clear()
         return events
