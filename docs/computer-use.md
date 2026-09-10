@@ -48,7 +48,7 @@ card, and the screenshot mask follows its size so advice is not fed back into
 the next visual observation.
 
 Watch replies stream into the popup as a labelled draft before completion. A
-changed page clears the draft, and only completed advice enters conversation
+major page change clears the draft, and only completed advice enters conversation
 history. The initial check asks for a useful step or visible blocker even when
 the parent chat already contains related advice. Later `UNCHANGED` replies show
 that the screen was checked rather than leaving a reading message. Active checks
@@ -56,6 +56,16 @@ display elapsed seconds; `inspection_completed` events expose model and first
 token timings, including checks that produce no new advice.
 When a fresh check returns `UNCHANGED`, the last complete guidance is restored:
 the model has confirmed it remains applicable, rather than leaving a blank popup.
+
+Watch tolerates small repaint changes during inference. A window/title or scope
+change, or at least 5% changed sampled pixels relative to the actual inspected
+frame, invalidates the turn immediately. Smaller changes queue a fresh inspection
+after the current answer finishes; they do not discard its draft. This is a pixel
+heuristic, not a guarantee of semantic equivalence. Settling adapts between 0.2
+and 1 second during repeated paints, with a one-second maximum wait. Failed
+interrupt recovery cancels the local turn, resets the model thread, and reloads
+the full conversation/task pack while preserving the app-server process.
+See the [latency research](../knowledge/openai-computer-use/astra-watch-latency-2026-09-10.md).
 
 Sessions default to five minutes and allow at most thirty minutes using
 `--seconds`. The resident brain can start five-minute sessions from a matching

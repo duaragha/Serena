@@ -332,7 +332,7 @@ class CodexBrainClient:
             )
         except BaseException:
             with contextlib.suppress(Exception):
-                await self.interrupt()
+                await asyncio.wait_for(self.interrupt(), timeout=2)
             raise
         finally:
             self.active_turn_id = None
