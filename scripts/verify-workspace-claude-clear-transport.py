@@ -139,10 +139,13 @@ async def main():
         assert metadata.METADATA_DIR.resolve().is_relative_to(Path(root).resolve())
         web_source = repo / "ui/web.py"
         definitions = [item for item in ast.parse(web_source.read_text()).body
-                       if isinstance(item, ast.FunctionDef) and item.name in {"api_rename", "api_sessions", "_decorate_sessions"}]
+                       if isinstance(item, ast.FunctionDef) and item.name in {"api_rename", "api_sessions", "_decorate_sessions",
+                                                                            "_pending_workspace_meta", "_toggle_workspace_done",
+                                                                            "api_star", "api_done", "api_bulk_done"}]
         namespace = {"app": app, "jsonify": jsonify, "request": request,
                      "get_session": indexer.get_session, "list_sessions": indexer.list_sessions,
-                     "set_title": indexer.set_title, "_include_permanent_serena_session": lambda rows: rows,
+                     "set_title": indexer.set_title, "toggle_star": indexer.toggle_star,
+                     "_include_permanent_serena_session": lambda rows: rows,
                      "_ambiguous_shorts": lambda: set(), "_get_session_cwd": lambda session: session["cwd"],
                      "_resolve_project_cwd": lambda project, cwd: cwd,
                      "_shorten_project": lambda project, cwd: project, "_external_runtime_active": lambda sid: False}
@@ -181,6 +184,10 @@ async def main():
                     pending_rows = page.evaluate("async () => (await fetch('/api/sessions')).json()")
                     pending_row = next(row for row in pending_rows if row["session_id"] == target)
                     assert pending_row["display_title"] == title and pending_row["native_persistence_pending"]
+                    assert page.evaluate("async sid => (await fetch('/api/star/'+sid,{method:'POST'})).json()", target) == {"starred": True}
+                    assert page.evaluate("async sid => (await fetch('/api/done/'+sid,{method:'POST'})).json()", target) == {"ok": True, "done": True}
+                    marked = metadata.get_meta(target)
+                    assert marked["starred"] and marked["done"] and marked["done_at"]
                     page.reload()
                     page.get_by_role("button", name="Clear context", exact=True).click()
                     dialog = page.get_by_role("dialog", name="Clear context", exact=True)
@@ -211,6 +218,7 @@ async def main():
                     matching = [row for row in indexed_rows if row["session_id"] == target]
                     assert len(matching) == 1 and matching[0]["display_title"] == title
                     assert not matching[0].get("native_persistence_pending")
+                    assert matching[0]["starred"] and not matching[0]["is_done"], "New native activity must reopen a done chat"
                     assert not browser_host.journal.uncataloged_clears()
                     assert not errors, errors
                     assert not failures, failures

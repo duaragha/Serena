@@ -11037,9 +11037,13 @@ def _decorate_sessions(sessions: list[dict]) -> list[dict]:
         # === GROUP FEATURE === (per-row group id — frontend hashes it for color)
         sid = s.get("session_id")
         session_meta = (all_meta.get(sid) or {}) if sid else {}
-        if s.get("native_persistence_pending") and session_meta.get("custom_title"):
-            s["custom_title"] = session_meta["custom_title"]
-            s["display_title"] = session_meta["custom_title"]
+        if s.get("native_persistence_pending"):
+            if session_meta.get("custom_title"):
+                s["custom_title"] = session_meta["custom_title"]
+                s["display_title"] = session_meta["custom_title"]
+            s["starred"] = bool(session_meta.get("starred"))
+            s["is_done"] = bool(session_meta.get("done"))
+            s["done_at"] = session_meta.get("done_at")
         gid = session_meta.get("group")
         if gid:
             s["group"] = gid
@@ -12279,10 +12283,38 @@ def api_open_path():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def _pending_workspace_meta(session_id):
+    """Only committed, not-yet-indexed native identities may use metadata alone."""
+    workspace = app.extensions.get("workspace_host")
+    pending = workspace.journal.clear_target(session_id, uncataloged_only=True) if workspace else None
+    if pending and pending["committed"] and get_session(session_id) is None:
+        from core.metadata import get_meta
+
+        return get_meta(session_id)
+    return None
+
+
+def _toggle_workspace_done(session_id, pending):
+    from datetime import datetime, timezone
+
+    from core.metadata import set_done
+
+    done = not pending.get("done", False)
+    set_done(session_id, done, datetime.now(timezone.utc).isoformat() if done else None)
+    return done
+
+
 @app.route("/api/star/<session_id>", methods=["POST"])
 def api_star(session_id):
     try:
-        starred = toggle_star(session_id)
+        pending = _pending_workspace_meta(session_id)
+        if pending is None:
+            starred = toggle_star(session_id)
+        else:
+            from core.metadata import set_starred
+
+            starred = not pending.get("starred", False)
+            set_starred(session_id, starred)
         return jsonify({"starred": starred})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
@@ -12292,7 +12324,8 @@ def api_star(session_id):
 def api_done(session_id):
     from core.indexer import toggle_done
     try:
-        done = toggle_done(session_id)
+        pending = _pending_workspace_meta(session_id)
+        done = toggle_done(session_id) if pending is None else _toggle_workspace_done(session_id, pending)
         return jsonify({"ok": True, "done": done})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
@@ -12309,6 +12342,13 @@ def api_bulk_done():
         try:
             cur = get_session(sid)
             if cur is None:
+                pending = _pending_workspace_meta(sid)
+                if pending is None:
+                    continue
+                desired = mark if mark is not None else not pending.get("done")
+                if bool(pending.get("done")) != bool(desired):
+                    _toggle_workspace_done(sid, pending)
+                    count += 1
                 continue
             desired = mark if mark is not None else (not cur.get("is_done"))
             if bool(cur.get("is_done")) == bool(desired):
@@ -12362,9 +12402,7 @@ def api_rename(session_id):
     if not title:
         return jsonify({"error": "Title required"}), 400
     try:
-        workspace = app.extensions.get("workspace_host")
-        pending = workspace.journal.clear_target(session_id, uncataloged_only=True) if workspace else None
-        if pending and pending["committed"] and get_session(session_id) is None:
+        if _pending_workspace_meta(session_id) is not None:
             from core.metadata import set_custom_title
 
             set_custom_title(session_id, title)

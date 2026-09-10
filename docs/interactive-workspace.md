@@ -2,6 +2,16 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Pending-chat organization (2026-09-09): star, done and bulk-done now use the
+existing synced metadata for committed, uncataloged clear targets. Rename shares
+the same eligibility helper. Ordinary indexed operations retain their indexer
+path; unknown, uncommitted and retired targets remain rejected. Pending list rows
+expose star/done state and done timestamps. No metadata action starts a runtime.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pending_catalog_api.py -q --tb=short`: exit 0, 2 passed, covering toggles, duplicate bulk IDs, idempotent explicit bulk state, invalid targets, title preservation and indexed-path delegation.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pending_catalog_api.py scripts/verify-workspace-claude-clear-transport.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0. Desktop/mobile browsers set star and done on real pending native sessions; subsequent local CLI activity indexed one row, preserved its star/title and correctly reopened its done state. All native ownership/history/cleanup assertions passed with zero inference. Pending deletion, other remaining workflows and full product parity are not complete.
+
 Pending-chat titles (2026-09-09): committed Claude clear targets can now be
 renamed before their native transcript exists, through the existing synced
 custom-title store. Indexed chats keep the existing rename path. Uncommitted,
