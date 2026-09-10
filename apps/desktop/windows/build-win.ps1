@@ -60,6 +60,10 @@ Write-Host "[windows] testing Fleet database connection lifetime"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_connection_lifetime.py") (Join-Path $RepoRoot "tests\test_process_probe.py") -q
 Assert-LastExitCode "Fleet database lifetime tests"
 
+Write-Host "[windows] testing atomic native worker ownership"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_process.py") -q
+Assert-LastExitCode "Atomic native worker ownership tests"
+
 Write-Host "[windows] testing native Fleet helper process ownership"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_job.py") (Join-Path $RepoRoot "tests\test_fleet_helper_crash.py") (Join-Path $RepoRoot "tests\test_fleet_resident_timer.py") -q
 Assert-LastExitCode "Native Fleet helper job tests"
