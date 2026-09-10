@@ -2,6 +2,31 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Windows Codex Ownership
+
+Verified the installed npm Codex launcher through the actual Windows gated RPC
+path. An isolated profile starts with an empty catalog, persists a print-only
+shell command, closes the original runtime, resumes that exact session through
+`CodexWorkspace`, and runs a second shell command with real output and exit 0.
+The resumed history contains the first command. Both runtimes are closed before
+temporary profile deletion; no inference or user credentials are involved.
+
+The initial probe exited 1 because its new CODEX_HOME directory was missing.
+Creating that isolated directory fixed the fixture; no runtime change was needed.
+Source was sent over stdin for execution while Syncthing caught up, not written
+to the PC checkout. Final command, exit 0:
+
+```sh
+SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import sys; __file__=r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-codex-windows.py'; exec(compile(sys.stdin.read(),__file__,'exec'))\"" < scripts/verify-workspace-codex-windows.py
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_rpc.py -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-windows.py
+```
+
+Observed JSON: gated startup, empty isolated catalog, exact resume and cleanup
+true; native command exit code 0; inference false. RPC tests exited 0 (7 passed,
+1 Windows skip), Ruff exited 0. Windows Electron UI interaction with this Codex
+session and authenticated model turns are still separate unverified gates.
+
 ## Damaged Browser Receipt Handling
 
 Malformed JSON or invalid map shapes in session storage no longer crash connection
