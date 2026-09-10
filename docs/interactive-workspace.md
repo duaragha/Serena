@@ -2,6 +2,27 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Native session slash-command routing (2026-09-09): Claude's advertised clear
+and fork commands now point to the existing confirmed workspace actions instead
+of being disabled. Typed `/clear`, `/reset`, `/new` and `/fork` open those dialogs;
+they never enter ordinary native message submission. Opening the picker/dialog
+does not mutate the session, and existing drafts are preserved. Arguments,
+attachments and skills are rejected for these identity-changing commands.
+The backend raw-message guard remains intact for other callers. `/resume` and
+other terminal-only command gaps remain open.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py::test_command_catalog_and_session_switch_guard tests/test_workspace_pane.py -q --tb=short`: exit 1, 90 passed and one new picker fixture failed because it had not revealed the optional command button. Corrected the fixture; production native picker proof already passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py::test_command_catalog_and_session_switch_guard tests/test_workspace_pane.py::test_session_slash_commands_open_confirmed_action_without_sending tests/test_workspace_pane.py::test_session_command_picker_uses_local_action_and_keeps_draft tests/test_workspace_pane.py::test_session_command_arguments_never_reach_native_submit -q --tb=short`: exit 0, 12 passed, desktop/mobile confirmation, preserved draft, catalog metadata and raw-submit guard.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py tests/test_workspace_claude.py tests/test_workspace_pane.py scripts/verify-workspace-claude-clear-transport.py`: exit 0.
+- `node --check ui/static/workspace-pane.mjs`: exit 0.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0. Desktop used the actual native command catalog; mobile typed `/clear`. Both waited for confirmation, retained the same native PID through exact identity transfer, preserved original history, recovered the receipt on reload and completed a subsequent local command without inference. Proof children cleaned up; user sessions untouched.
+- `git diff --check`: exit 0.
+
+Source/native browser proof only for this slice; frozen backend and installed
+app predate this command routing change. Full provider parity and rollout remain
+unfinished.
+
 Creation recovery guard and current frozen desktop verification (2026-09-09):
 malformed or mismatched browser creation records now disable submission and are
 guarded inside the click handler, including synthetic events. The invalid record

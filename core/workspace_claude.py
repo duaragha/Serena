@@ -439,7 +439,9 @@ class ClaudeWorkspace:
             if not isinstance(command, dict) or not isinstance(command.get("name"), str):
                 raise ValueError("Claude returned an invalid command catalog")
             item = deepcopy(command)
-            if item["name"] in {"clear", "reset", "new", "resume", "fork"}:
+            if item["name"] in {"clear", "reset", "new", "fork"}:
+                item["workspaceAction"] = "fork" if item["name"] == "fork" else "clear"
+            elif item["name"] == "resume":
                 item["unavailableReason"] = "Session switching is not implemented in this pane"
             elif item["name"] in self.events.capabilities.get("terminal_slash_commands", []):
                 item["unavailableReason"] = "Claude reports this command requires a terminal"

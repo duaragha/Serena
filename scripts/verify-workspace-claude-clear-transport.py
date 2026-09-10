@@ -173,8 +173,18 @@ async def main():
                     page.get_by_role("button", name="Resume session").click()
                     page.get_by_role("button", name="Resume session").wait_for(state="hidden")
                     pid = browser_host._sessions[source][0].client.owned_pid
-                    page.get_by_role("button", name="Clear context", exact=True).click()
+                    if width == 390:
+                        page.get_by_role("textbox", name="Message Claude").fill("/clear")
+                        page.get_by_role("button", name="Send message", exact=True).click()
+                    else:
+                        page.get_by_role("button", name="Commands and skills", exact=True).click()
+                        commands = page.get_by_role("dialog", name="Commands and skills", exact=True)
+                        commands.get_by_role("searchbox", name="Search commands").fill("clear")
+                        commands.locator("button.aw-command").filter(has=page.locator("strong", has_text="/clear")).first.click()
                     dialog = page.get_by_role("dialog", name="Clear context", exact=True)
+                    dialog.wait_for()
+                    assert source in browser_host._sessions
+                    assert browser_host._sessions[source][0].client.owned_pid == pid
                     dialog.get_by_role("button", name="Confirm clear context", exact=True).click()
                     dialog.get_by_text("Context cleared", exact=True).wait_for()
                     target = dialog.locator("code").inner_text()

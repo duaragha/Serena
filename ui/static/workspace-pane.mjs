@@ -414,8 +414,14 @@ export class WorkspacePane {
         const button=node('button','aw-command'); button.type='button';
         button.append(node('strong','',`${command.kind==='skill'?'$':'/'}${command.name}`),node('small','',command.kind==='skill'?command.path:command.argumentHint || ''),node('span','',command.description || ''));
         button.disabled=busy;
+        const localAction=this.provider==='Claude' && ['clear','fork'].includes(command.workspaceAction) ? command.workspaceAction : null;
+        if(localAction){
+          const control=localAction==='clear'?this.clearButton:this.forkButton;
+          button.disabled=busy || control.hidden || control.disabled;
+        }
         if(command.unavailableReason){button.disabled=true;button.title=command.unavailableReason;button.append(node('small','',command.unavailableReason));}
         button.addEventListener('click',()=>{
+          if(localAction){dialog.close();if(localAction==='clear')this.openClear();else this.openFork();return;}
           if(command.kind==='skill'){
             if(!this.selectedSkills.some(s=>s.path===command.path))this.selectedSkills.push({name:command.name,path:command.path});
             this.persistSkills();this.renderAttachments();
@@ -810,6 +816,16 @@ export class WorkspacePane {
   async submit() {
     const text = this.input.value;
     if (this.sending || this.send.disabled || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
+    const localCommand=this.provider==='Claude' && /^\/(clear|reset|new|fork)(?:\s|$)/.exec(text.trim());
+    if(localCommand){
+      const control=localCommand[1]==='fork'?this.forkButton:this.clearButton;
+      if(text.trim()!==`/${localCommand[1]}` || this.files.length || this.selectedSkills.length){
+        this.error(Error('Session commands do not accept arguments, attachments or skills'));return;
+      }
+      if(control.hidden || control.disabled){this.error(Error('Session action is not available right now'));return;}
+      if(localCommand[1]==='fork')this.openFork();else this.openClear();
+      return;
+    }
     const files = [...this.files];
     const skills = [...this.selectedSkills];
     this.sending = true; this.send.disabled = true; this.alert.hidden = true;

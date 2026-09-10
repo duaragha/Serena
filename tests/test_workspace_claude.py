@@ -696,7 +696,8 @@ def test_command_catalog_and_session_switch_guard(tmp_path):
             }
             result = await owner.list_commands()
             assert [c["name"] for c in result["data"]] == ["context", "clear", "extra", "color"]
-            assert result["data"][1]["unavailableReason"]
+            assert result["data"][1]["workspaceAction"] == "clear"
+            assert "unavailableReason" not in result["data"][1]
             assert result["data"][-1]["unavailableReason"]
             assert events[-1]["method"] == "workspace/commands"
             for name in ("clear", "new", "reset", "resume", "fork"):

@@ -770,6 +770,57 @@ def test_command_picker_reload_is_explicit_and_keeps_draft(pane):
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+@pytest.mark.parametrize("command", ["clear", "reset", "new", "fork"])
+def test_session_slash_commands_open_confirmed_action_without_sending(pane, width, command):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""command => {
+      controls.clearSession=async()=>{calls.push('clear');return {session_id:'11111111-1111-4111-8111-111111111111'};};
+      controls.openCleared=async()=>{};
+      controls.forkSession=async()=>{calls.push('fork');return {session_id:'11111111-1111-4111-8111-111111111111',indexed:true};};
+      controls.openFork=async()=>{};
+      pane.clearButton.hidden=false;pane.forkButton.hidden=false;
+      pane.input.value='/'+command;pane.render();
+    }""", command)
+    page.get_by_role("button", name="Send message", exact=True).first.click()
+    dialog = page.get_by_role("dialog", name="Fork conversation" if command == "fork" else "Clear context", exact=True)
+    dialog.wait_for()
+    assert page.evaluate("calls") == []
+    assert page.evaluate("pane.input.value") == "/" + command
+    dialog.get_by_role("button", name="Create fork" if command == "fork" else "Confirm clear context", exact=True).click()
+    page.wait_for_function("calls.length === 1")
+    assert page.evaluate("calls") == ["fork" if command == "fork" else "clear"]
+    assert not errors
+
+
+def test_session_command_picker_uses_local_action_and_keeps_draft(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      controls.commands=async()=>({data:[{name:'clear',workspaceAction:'clear'}]});
+      pane.commandsButton.hidden=false;
+      controls.clearSession=async()=>calls.push('clear');controls.openCleared=async()=>{};
+      pane.clearButton.hidden=false;pane.input.value='keep draft';pane.render();
+    }""")
+    page.get_by_role("button", name="Commands and skills", exact=True).first.click()
+    page.get_by_role("dialog", name="Commands and skills").get_by_role("button", name="/clear", exact=True).click()
+    page.get_by_role("dialog", name="Clear context", exact=True).wait_for()
+    assert page.evaluate("calls") == []
+    assert page.evaluate("pane.input.value") == "keep draft"
+    assert not errors
+
+
+@pytest.mark.parametrize("invalid", ["/clear extra", "/fork other"])
+def test_session_command_arguments_never_reach_native_submit(pane, invalid):
+    page, errors = pane
+    page.evaluate("text=>{pane.input.value=text;pane.render();}", invalid)
+    page.get_by_role("button", name="Send message", exact=True).first.click()
+    page.get_by_text("Session commands do not accept arguments, attachments or skills", exact=True).wait_for()
+    assert page.evaluate("calls") == []
+    assert page.evaluate("pane.input.value") == invalid
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_clear_requires_confirmation_and_recovers_exact_target_without_repeating(pane, width, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})
