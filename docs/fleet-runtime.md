@@ -57,6 +57,9 @@ an already terminal failed run still requires explicit `fleet_retry`.
 
 Store initialization serializes check-then-ALTER schema migrations with an immediate SQLite
 transaction. This prevents simultaneous worker startup from adding the same migration column twice.
+Concurrent WAL-mode switches can return SQLITE_BUSY/SQLITE_LOCKED before that transaction;
+Fleet and isolation stores retry only those codes up to five times with bounded backoff.
+Exhaustion and non-lock errors remain visible; disk-full and corruption are not hidden.
 
 ## Durable resource recovery and actionable stops
 

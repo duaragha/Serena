@@ -3191,7 +3191,9 @@ class FleetStore:
     def _initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode = WAL")
+            from fleet.sqlite_support import enable_wal
+
+            enable_wal(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS fleet_runs (
