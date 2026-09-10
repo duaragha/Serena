@@ -6,6 +6,27 @@ assumption that Antigravity has no suitable interactive interface. The installed
 
 ## Primary Evidence
 
+### Unconfirmed Stop Delivery
+
+2026-09-10: failures while rejecting pending permissions or sending
+`session/cancel` now set the controller unavailable and publish an explicit
+warning that the provider may still be running. No process is killed or replaced.
+Further prompts are rejected; a late prompt response cannot restore ready state
+or produce a false completion event. Successful interruption is unchanged.
+
+Executed separately, each exit **0**:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_session.py -q --tb=short
+env PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_gemini.py -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_acp_session.py tests/test_workspace_acp_session.py
+```
+
+Results: **16 controller tests**, **27 Gemini owner tests**, lint clean. Added
+failure cases cover notification write failure, permission response failure and
+cancelled stop delivery. These are controlled transport tests, not an authenticated
+Google interruption proof.
+
 ### Isolated Real CLI Conversation Copy
 
 2026-09-10: the user approved testing an isolated session copy. The offline

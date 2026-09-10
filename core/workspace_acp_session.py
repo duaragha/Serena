@@ -261,7 +261,14 @@ class AcpSession:
             if self.state != "running":
                 raise ValueError("No ACP turn is running")
             self.state = "cancelling"
-            for request_id in list(self.events.questions):
-                await self.rpc.answer(request_id, self.events.answer(request_id))
-                await self.publish(self.events.resolved(request_id))
-            await self.rpc.notify("session/cancel", {"sessionId": self.session_id})
+            try:
+                for request_id in list(self.events.questions):
+                    await self.rpc.answer(request_id, self.events.answer(request_id))
+                    await self.publish(self.events.resolved(request_id))
+                await self.rpc.notify("session/cancel", {"sessionId": self.session_id})
+            except BaseException:
+                self.state = "unavailable"
+                with suppress(Exception):
+                    await self.publish(self.events.event("workspace/transportClosed", {
+                        "reason": "Stop delivery could not be confirmed; the provider may still be running"}))
+                raise

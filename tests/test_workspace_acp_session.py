@@ -182,6 +182,54 @@ def test_history_prompt_and_late_permission_cancel_keep_exact_identity(tmp_path)
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("failure", ["notify", "permission", "cancelled"])
+def test_failed_stop_never_admits_more_input_or_claims_completion(tmp_path, failure):
+    async def run():
+        rpc, output = Rpc(), []
+        async def publish(event):
+            output.append(event)
+        owner = AcpSession(session_id="exact", cwd=tmp_path, rpc=rpc, publish=publish)
+        done = asyncio.Event()
+        async def handler(method, params):
+            if method == "session/load":
+                return {}
+            await done.wait()
+            return {"stopReason": "end_turn"}
+        async def fail(*args):
+            if failure == "cancelled":
+                raise asyncio.CancelledError()
+            raise OSError("write failed")
+        rpc.handler = handler
+        await owner.load({"agentCapabilities": {"loadSession": True}}, mcp_servers=[])
+        task = asyncio.create_task(owner.prompt([{"type": "text", "text": "hello"}]))
+        await asyncio.sleep(0)
+        if failure == "permission":
+            await owner.receive({"method": "session/request_permission", "id": "pending", "params": {
+                "sessionId": "exact", "options": [{"optionId": "once", "kind": "allow_once", "name": "Allow"}]}})
+            rpc.answer = fail
+        else:
+            rpc.notify = fail
+        try:
+            with pytest.raises(asyncio.CancelledError if failure == "cancelled" else OSError):
+                await owner.cancel()
+            assert owner.state == "unavailable"
+            assert output[-1]["method"] == "workspace/transportClosed"
+            assert "may still be running" in output[-1]["params"]["reason"]
+            with pytest.raises(ValueError, match="not ready"):
+                await owner.prompt([{"type": "text", "text": "must not send"}])
+            done.set()
+            with pytest.raises(ValueError, match="lost verified event routing"):
+                await task
+            assert owner.state == "unavailable"
+            assert not any(event["method"] == "turn/completed" for event in output)
+            assert len([call for call in rpc.calls if call[0] == "session/prompt"]) == 1
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(run())
+
+
 def test_permission_during_load_can_be_answered_without_deadlock(tmp_path):
     async def run():
         rpc = Rpc()
