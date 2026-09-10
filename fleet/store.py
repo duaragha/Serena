@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.work_jobs import process_start_token
+from core.sqlite_connection import connect_database
 from fleet.context import redact_text, redact_value
 from fleet.contracts import derive_work_unit_views
 from fleet.dag import (
@@ -3252,11 +3253,7 @@ class FleetStore:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_database(self.path, foreign_keys=True)
 
     def _initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

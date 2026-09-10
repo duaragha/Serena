@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import shutil
 import os
-import sqlite3
 import time
 from pathlib import Path
+
+from core.sqlite_connection import connect_database
 
 from fleet.dag import reset_leg_for_retry as reset_work_unit_leg_for_retry
 
@@ -97,7 +98,7 @@ def _disk_probe_paths(store, row) -> list[Path]:
         leg = next((leg for phase in (run or {}).get("phases", []) for leg in phase["legs"] if leg["leg_id"] == row["leg_id"]), None)
         if leg is None:
             raise ValueError("resource wait has no worker identity")
-        with sqlite3.connect(isolation_db.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        with connect_database(isolation_db.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as db:
             # ENOSPC can interrupt initial schema creation. No registry yet is
             # not corruption: after headroom returns, normal startup creates it.
             has_registry = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fleet_workspaces'").fetchone()
