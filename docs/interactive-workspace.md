@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Packaged backend refresh and reconnect visual repair (2026-09-09): rebuilt the
+frozen sidecar from 523034d and exercised both providers through it. Codex proof
+now includes packaged disconnect/reconnect after fork navigation. Its initial
+extended run exited 1 because the restored tool output was present but collapsed;
+the proof now expands its native output disclosure before checking visible text.
+Screenshot inspection then found a real stale Session disconnected warning after
+successful reconnect. Fresh exact-session history now clears that model error,
+and the pane hides only the matching alert (not unrelated draft/storage errors).
+Verification:
+- `env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar` in `apps/desktop`: exit 0. Frozen build and bundled peer capability smoke passed; optional-library build warnings remain, with no failure in the exercised paths.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: final exit 0. Both viewports passed native history, shell output, mentions, skills, exact fork, disconnect/reconnect and page-close ownership checks.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python '' /home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: exit 0. Frozen Claude desktop/mobile HTTP/UI paths, Electron Node worker, skills/plugins/file mentions and exact-session native input/output passed. All children reaped; no credentials/inference.
+- `node --test tests/workspace-events.test.mjs`: exit 0, 10 passed, including reconnect error clearing and wrong-session/older-history rejection.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py`: exit 0 after the UI fix, including absence of the stale warning after desktop/mobile reconnect.
+The frozen binary predates this final warning fix and needs rebuilding before
+delivery. No installed app, full Electron window, Windows or rollout completion
+is claimed by these backend/browser checks.
+
 Recoverable deletion failure handling (2026-09-09): deletion now serializes with
 index scans, refreshes the exact row under that lock, writes its recovery manifest
 before moving the transcript, and only then removes database rows transactionally.

@@ -773,6 +773,7 @@ export class WorkspacePane {
 
   receive(envelope) {
     if (this.disposed) return false;
+    const previousError=this.conversation.error;
     const older=envelope.event?.method==='workspace/historyPage';
     const scroll=older?{height:this.log.scrollHeight,top:this.log.scrollTop,count:[...this.conversation.turns.values()].reduce((n,t)=>n+t.items.size,0)}:null;
     try {
@@ -782,6 +783,9 @@ export class WorkspacePane {
       this.send.disabled = true;
       this.controls.replay?.(this.conversation.sequence);
       return false;
+    }
+    if(previousError && !this.conversation.error && this.alert.textContent===previousError){
+      this.alert.hidden=true;this.alert.textContent='';
     }
     if(['mcpServer/oauthLogin/completed','mcpServer/startupStatus/updated'].includes(envelope.event?.method))this.refreshMcp?.();
     if(older){

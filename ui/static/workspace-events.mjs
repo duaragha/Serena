@@ -52,6 +52,7 @@ export class WorkspaceConversation {
     const p = structuredClone(params);
     if (method === 'workspace/history') {
       if (!p.thread || p.thread.id !== this.sessionId) throw new Error('History identity mismatch');
+      this.error = null;
       this.metadata = p;
       if (!this.metadata.model && typeof p.thread.model === 'string') this.metadata.model = p.thread.model;
       this.turns.clear();

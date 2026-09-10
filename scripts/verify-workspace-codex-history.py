@@ -143,6 +143,9 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                             assert owners() == [pid], "Opening fork view launched another owner"
                             forks.append(fork_id)
                     if verify_disconnect:
+                        if page.url != f"{base}/workspace/{sid}":
+                            page.goto(f"{base}/workspace/{sid}")
+                            page.get_by_role("button", name="Resume session", exact=True).click()
                         page.get_by_role("button", name="Disconnect session", exact=True).click()
                         disconnect = page.get_by_role("dialog", name="Disconnect session", exact=True)
                         disconnect.get_by_role("button", name="Cancel", exact=True).click()
@@ -153,8 +156,12 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                         assert not owners(), "Explicit disconnect must close the native owner"
                         page.get_by_role("button", name="Retry connection", exact=True).click()
                         expect(page.locator('.aw-state')).to_have_text(re.compile(r'^(ready|completed)$'))
+                        expect(page.get_by_text('Session disconnected', exact=True)).not_to_be_visible()
                         assert len(owners()) == 1 and owners()[0] != pid
                         pid = owners()[0]
+                        summary = page.locator("summary").filter(has_text=token).first
+                        if not summary.evaluate("el => el.parentElement.open"):
+                            summary.click()
                         page.get_by_text(token, exact=True).wait_for()
                         assert page.url.endswith('/workspace/'+sid)
                         print(f"PASS: {prefix} {label} confirmed disconnect reaped owner; exact session resumed with persisted native command output")
@@ -211,7 +218,7 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
             def owners():
                 return [child.pid for child in psutil.Process(process.pid).children(recursive=True)
                         if child.name() == "codex" and "app-server" in child.cmdline()]
-            forks = browser_roundtrip(base, sid, owners, "codex-frozen", verify_forks=True)
+            forks = browser_roundtrip(base, sid, owners, "codex-frozen", verify_forks=True, verify_disconnect=True)
             for fork_id in forks:
                 metadata_path = Path(env["HOME"]) / ".claude" / "projects" / ".chats-meta" / f"{fork_id}.json"
                 assert json.loads(metadata_path.read_text())["resident_work"] is True

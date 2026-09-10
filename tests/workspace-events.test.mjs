@@ -5,6 +5,18 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('fresh exact history clears stale disconnection error but older pages do not',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,history));
+  model.apply(wrap(2,{method:'workspace/transportClosed',params:{reason:'Session disconnected'}}));
+  model.apply(wrap(3,{method:'workspace/historyPage',params:{turns:[],historyCursor:null}}));
+  assert.equal(model.error,'Session disconnected');
+  assert.throws(()=>model.apply(wrap(4,{method:'workspace/history',params:{thread:{id:'wrong',turns:[]}}})),/session/);
+  assert.equal(model.error,'Session disconnected');
+  model.apply(wrap(4,history));
+  assert.equal(model.error,null);assert.equal(model.status,'ready');
+});
+
 test('older pages prepend without overwriting live turns or changing working status',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,{method:'workspace/history',params:{historyCursor:'older',thread:{id:'exact',turns:[{id:'live',status:'inProgress',items:[{id:'a',type:'agentMessage',text:'current'}]}]}}}));
