@@ -13,6 +13,11 @@ class Transport:
         self.calls = []
 
     async def open(self, **kwargs):
+        self.calls.append(("open", kwargs))
+        return {"models": [{"value": "model"}]}
+
+    async def create(self, **kwargs):
+        self.calls.append(("create", kwargs))
         return {"models": [{"value": "model"}]}
 
     async def close(self):
@@ -24,6 +29,28 @@ class Transport:
 
     async def send(self, message):
         self.calls.append(("send", message))
+
+
+def test_creation_is_explicit_and_input_keeps_reserved_identity():
+    async def run():
+        sid = "c981689e-e6d0-466e-b98a-3a3e37666739"
+        options = SimpleNamespace(resume=sid, cwd="/project", cli_path="claude", env={})
+        client = ClaudeTypeScriptClient(options=options, sdk_path="sdk", node_path="node", transport_factory=Transport)
+        assert client.transport.calls == []
+        assert client.transport.options["session_id"] == sid
+        await client.create()
+        assert client.transport.calls == [("create", {"env": {}})]
+        assert (await client.get_server_info())["models"] == [{"value": "model"}]
+        message = {"type": "user", "session_id": sid, "message": {"role": "user", "content": "hello"}}
+        async def messages():
+            yield message
+        with pytest.raises(ValueError, match="different session"):
+            await client.query(messages(), "wrong")
+        await client.query(messages(), sid)
+        assert client.transport.calls[-1] == ("send", message)
+        await client.disconnect()
+        assert client.transport.calls[-1] == ("close",)
+    asyncio.run(run())
 
 
 def test_clear_waits_for_old_output_to_be_consumed_before_identity_handoff():

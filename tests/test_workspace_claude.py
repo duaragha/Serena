@@ -86,6 +86,57 @@ def make(tmp_path):
     return owner, events
 
 
+@pytest.mark.parametrize("failure", [None, "checkpoint", "native"])
+def test_creation_checkpoints_leased_identity_before_single_native_launch(tmp_path, failure):
+    async def run():
+        owner, events = make(tmp_path)
+        owner.session_id = "new:de6ddc26-7e96-42bb-86db-6c39ed682758"
+        steps = []
+        class CreatingClient(Client):
+            async def connect(self):
+                raise AssertionError("Fresh creation must not resume")
+            async def create(self):
+                self.open_task = asyncio.current_task()
+                steps.append("create")
+                if failure == "native":
+                    raise RuntimeError("native failure")
+            async def disconnect(self):
+                steps.append("close")
+                self.closed = True
+        owner.client_factory = CreatingClient
+        def lease(sid):
+            assert sid == owner.session_id and not sid.startswith("new:")
+            steps.append("lease")
+            return SimpleNamespace(launching=lambda: steps.append("launching"),
+                                   bind=lambda pid: steps.append("bind"), release=lambda: steps.append("release"))
+        owner.lease_factory = lease
+        async def checkpoint(target):
+            assert target == {"session_id": owner.session_id, "provider": "claude", "cwd": str(tmp_path)}
+            assert steps == ["lease"]
+            steps.append("checkpoint")
+            if failure == "checkpoint":
+                raise RuntimeError("checkpoint failure")
+        with pytest.raises(ValueError, match="explicit creation"):
+            await owner.open()
+        if failure:
+            with pytest.raises(RuntimeError, match=failure):
+                await owner.create(checkpoint=checkpoint)
+            await owner._owner_task
+            assert steps[-2:] == ["close", "release"]
+            assert steps.count("create") == (1 if failure == "native" else 0)
+        else:
+            await owner.create(checkpoint=checkpoint)
+            assert steps == ["lease", "checkpoint", "launching", "create", "bind"]
+            assert owner.state == "ready"
+            assert events[0]["params"]["thread"]["id"] == owner.session_id
+            assert events[0]["params"]["thread"]["turns"] == []
+            await owner.close()
+            assert steps[-2:] == ["close", "release"]
+        with pytest.raises(RuntimeError, match="already attempted"):
+            await owner.create(checkpoint=checkpoint)
+    asyncio.run(run())
+
+
 def test_clear_moves_lease_converter_and_output_before_native_ack(tmp_path):
     async def run():
         owner, original = make(tmp_path)

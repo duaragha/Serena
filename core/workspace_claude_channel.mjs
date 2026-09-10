@@ -33,12 +33,14 @@ export class ClaudeSdkChannel {
       let result;
       switch(method) {
         case 'open':
+        case 'create':
+          if (Object.keys(params).length) throw new Error('Session startup takes no parameters');
           if (this.session) throw new Error('Session owner already exists');
           this.session=this.createSession({...this.sessionOptions,
             publish:message=>this.write({method:'claude/message',params:{message}}),
             request:(kind,request,options)=>this.ask(kind,request,options),
           });
-          result=await this.session.open();
+          result=await this.session[method]();
           this.session.done?.catch(error=>{
             if(!this.closed) return this.write({method:'workspace/error',params:{reason:error.message}});
           }).catch(()=>{});

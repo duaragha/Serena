@@ -9,11 +9,26 @@ function fixture() {
     createSession:value=>{
       options=value;
       calls.push('create');
-      return {open:async()=>({ready:true}),send:value=>calls.push(value),
+      return {open:async()=>({ready:true}),create:async()=>{calls.push('native-create');return {ready:true};},send:value=>calls.push(value),
         control:async(method,...args)=>({method,args}),close:async()=>calls.push('close')};
     }});
   return {channel,messages,calls,get options(){return options;}};
 }
+
+test('creation is explicit, parameter-free and cannot replace an existing owner',async()=>{
+  const f=fixture();
+  await f.channel.receive({id:1,method:'create',params:{resume:'other'}});
+  assert.ok(f.messages.at(-1).error);
+  assert.deepEqual(f.calls,[]);
+  await f.channel.receive({id:2,method:'create',params:{}});
+  assert.deepEqual(f.calls,['create','native-create']);
+  for(const method of ['create','open']){
+    await f.channel.receive({id:3,method,params:{}});
+    assert.match(f.messages.at(-1).error.message,/already exists/);
+  }
+  assert.deepEqual(f.calls,['create','native-create']);
+  await f.channel.close();
+});
 
 test('clear handoff has explicit private methods with exact payloads',async()=>{
   const f=fixture();

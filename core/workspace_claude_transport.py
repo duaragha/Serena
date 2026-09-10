@@ -36,6 +36,14 @@ class ClaudeSdkTransport:
         self.transition_committing = False
 
     async def open(self, *, env=None):
+        return await self._open(env=env, method="open")
+
+    async def create(self, *, env=None):
+        if not isinstance(self.session_id, str) or str(UUID(self.session_id)) != self.session_id:
+            raise ValueError("Native creation requires a reserved UUID")
+        return await self._open(env=env, method="create")
+
+    async def _open(self, *, env=None, method):
         if self.started or self.closing:
             raise WorkspaceRpcError("Claude transport cannot be started twice")
         self.started = True
@@ -60,7 +68,7 @@ class ClaudeSdkTransport:
         await self.rpc.start(self.command, cwd=self.cwd, env=clean)
         self.reader = asyncio.create_task(self._read())
         try:
-            initialized = await self.rpc.request("open", {})
+            initialized = await self.rpc.request(method, {})
             # The process notification precedes the open response on stdout,
             # but its consumer runs in a separate task. Drain that event first.
             await asyncio.wait_for(self.process_ready.wait(), 3)

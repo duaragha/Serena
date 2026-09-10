@@ -125,7 +125,7 @@ class FakeRpc:
 
     async def request(self, method, params, **kwargs):
         self.calls.append((method, params))
-        if method == "open":
+        if method in {"open", "create"}:
             await self.events.put({"method": "claude/process", "params": {"pid": 22}})
         return {"ok": True}
 
@@ -137,7 +137,7 @@ class FakeRpc:
         self.process = None
 
 
-def make(monkeypatch, tmp_path, request=None):
+def make(monkeypatch, tmp_path, request=None, session_id="exact"):
     monkeypatch.setattr("core.workspace_claude_transport.psutil.Process", lambda pid: SimpleNamespace(ppid=lambda: 11))
     output = []
 
@@ -147,10 +147,29 @@ def make(monkeypatch, tmp_path, request=None):
     async def decline(*args):
         return {"action": "decline"}
 
-    transport = ClaudeSdkTransport(session_id="exact", cwd=tmp_path, sdk_path="sdk.mjs",
+    transport = ClaudeSdkTransport(session_id=session_id, cwd=tmp_path, sdk_path="sdk.mjs",
                                   cli_path="claude", node_path="node", publish=publish,
                                   request=request or decline, rpc_factory=FakeRpc)
     return transport, output
+
+
+def test_native_creation_uses_distinct_method_and_reserved_identity_once(monkeypatch, tmp_path):
+    async def run():
+        invalid, _ = make(monkeypatch, tmp_path)
+        with pytest.raises(ValueError):
+            await invalid.create()
+        assert invalid.rpc.calls == []
+        transport, _ = make(monkeypatch, tmp_path, session_id=TARGET)
+        await transport.create(env={"PATH": "/bin"})
+        assert transport.rpc.calls[0][0][-2] == TARGET
+        assert transport.rpc.calls[1] == ("create", {})
+        assert transport.owned_pid == 22
+        with pytest.raises(WorkspaceRpcError, match="twice"):
+            await transport.create()
+        with pytest.raises(WorkspaceRpcError, match="twice"):
+            await transport.open()
+        await transport.close()
+    asyncio.run(run())
 
 
 def test_explicit_open_sanitizes_auth_and_preserves_exact_routing(monkeypatch, tmp_path):

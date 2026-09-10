@@ -16,17 +16,30 @@ export class ClaudeSdkSession {
   }
 
   async open() {
+    return this.openMode(false);
+  }
+
+  async create() {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(this.sessionId)) {
+      throw new Error('Native creation requires a reserved UUID');
+    }
+    return this.openMode(true);
+  }
+
+  async openMode(create) {
     if (this.started) throw new Error('Session driver cannot be started twice');
     this.started=true;
     this.state='opening';
     try {
       const info=await this.sdk.getSessionInfo(this.sessionId,{dir:this.cwd});
-      if (!info || info.sessionId!==this.sessionId || (info.cwd && resolve(info.cwd)!==this.cwd)) {
+      if (create && info) throw new Error('Creation identity already exists; refusing overwrite');
+      if (!create && (!info || info.sessionId!==this.sessionId || (info.cwd && resolve(info.cwd)!==this.cwd))) {
         throw new Error('Exact persisted session is unavailable in this project');
       }
       if (this.state!=='opening') throw new Error('Session opening was cancelled');
       this.stream=this.sdk.query({prompt:this.input(),options:{
-        ...this.options, cwd:this.cwd, resume:this.sessionId, forkSession:false,
+        ...this.options, cwd:this.cwd, resume:create?undefined:this.sessionId, forkSession:false,
+        ...(create?{sessionId:this.sessionId,continue:false,resumeSessionAt:undefined,persistSession:true}:{}),
         spawnClaudeCodeProcess:options=>{
           if (this.spawned || this.state!=='opening') throw new Error('Duplicate or late CLI spawn rejected');
           this.spawned=true;

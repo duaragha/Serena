@@ -60,9 +60,29 @@ class ClaudeWorkspace:
         self._cleanup_complete = True
         self._lease = None
         self._clear_target = None
+        self._creation_attempted = False
+
+    async def create(self, *, checkpoint):
+        async with self._control:
+            if self._owner_task is not None or self._creation_attempted:
+                raise RuntimeError("Claude creation was already attempted")
+            if not callable(checkpoint) or not self.session_id.startswith("new:"):
+                raise ValueError("Creation requires a provisional request and durable checkpoint")
+            request_id = self.session_id[4:]
+            if str(UUID(request_id)) != request_id:
+                raise ValueError("Creation requires an exact request UUID")
+            self._creation_attempted = True
+            self.session_id = str(uuid4())
+            self.events = ClaudeEvents(self.session_id)
+            self.state = "opening"
+            self._ready = asyncio.get_running_loop().create_future()
+            self._owner_task = asyncio.create_task(self._lifetime(self.events.history([]), checkpoint))
+            await asyncio.shield(self._ready)
 
     async def open(self):
         async with self._control:
+            if self.session_id.startswith("new:"):
+                raise ValueError("New sessions require explicit creation")
             if self._owner_task is not None:
                 raise RuntimeError("Claude owner already exists")
             info = await asyncio.to_thread(
@@ -79,7 +99,7 @@ class ClaudeWorkspace:
             self._owner_task = asyncio.create_task(self._lifetime(history))
             await asyncio.shield(self._ready)
 
-    async def _lifetime(self, history):
+    async def _lifetime(self, history, checkpoint=None):
         reader = None
         try:
             binary = shutil.which("claude")
@@ -109,11 +129,18 @@ class ClaudeWorkspace:
                 env=env,
             )
             self.client = self.client_factory(options=options)
+            if checkpoint is not None:
+                if not callable(getattr(self.client, "create", None)):
+                    raise RuntimeError("This Claude client cannot create a reserved native session")
+                await checkpoint({"session_id": self.session_id, "provider": "claude", "cwd": str(self.cwd)})
             if hasattr(self.client, "on_elicitation"):
                 self.client.on_elicitation = self._elicitation
             self._lease.launching()
             self._cleanup_complete = False
-            await self.client.connect()
+            if checkpoint is None:
+                await self.client.connect()
+            else:
+                await self.client.create()
             pid = getattr(self.client, "owned_pid", None)
             if pid is None:
                 process = getattr(getattr(self.client, "_transport", None), "_process", None)

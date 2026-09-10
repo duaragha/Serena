@@ -29,6 +29,33 @@ function transitionFixture(){
 }
 
 const clearedId='11111111-2222-4333-8444-555555555555';
+test('explicit fresh creation fixes the reserved UUID and never resumes or forks',async()=>{
+  const f=fixture({getSessionInfo:async()=>undefined});
+  f.session.sessionId=clearedId;
+  f.session.options={continue:true,resume:'wrong',forkSession:true,persistSession:false,resumeSessionAt:'old-message'};
+  await f.session.create();
+  const options=f.setup.options;
+  assert.equal(options.sessionId,clearedId);
+  assert.equal(options.resume,undefined);
+  assert.equal(options.continue,false);
+  assert.equal(options.forkSession,false);
+  assert.equal(options.persistSession,true);
+  assert.equal(options.resumeSessionAt,undefined);
+  assert.equal(f.session.state,'ready');
+  assert.deepEqual(f.calls,['spawn']);
+  await assert.rejects(f.session.create(),/twice/);
+  await f.session.close();
+});
+
+test('fresh creation rejects existing identity and invalid UUID without spawning',async()=>{
+  const f=fixture();
+  await assert.rejects(f.session.create(),/reserved UUID/);
+  f.session.sessionId=clearedId;
+  await assert.rejects(f.session.create(),/already exists/);
+  assert.deepEqual(f.calls,[]);
+  await assert.rejects(f.session.create(),/twice/);
+});
+
 test('clear blocks input until exact handoff acknowledgement and retains the runtime',async()=>{
   const f=transitionFixture();await f.session.open();
   const clear=f.session.beginClear();

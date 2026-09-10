@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude explicit native creation foundation (2026-09-09): the SDK driver,
+JSONL channel, Python transport/client and workspace owner now distinguish fresh
+creation from exact resume. The owner reserves an exclusive caller-chosen UUID
+and awaits a durable checkpoint before launching. Creation cannot be retried on
+the same owner/transport, cannot overwrite an existing native session, and does
+not inherit continue/resume/fork settings. Native input/output retains the UUID.
+The host journal/API/New Chat provider admission is still Codex-only; this does
+not enable Claude creation in the UI or change the installed app.
+
+Evidence and limitations:
+- Official session documentation: https://code.claude.com/docs/en/agent-sdk/sessions (accessed 2026-09-09). Installed pinned TypeScript SDK declarations expose fresh `sessionId` separately from `resume`; native proof confirms the distinction.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_claude_transport.py -q --tb=short`: exit 0, 71 passed, including lease/checkpoint-before-launch ordering, checkpoint/native failures, one-shot creation and unchanged resume/clear behavior.
+- `node --test tests/workspace-claude-sdk.test.mjs tests/workspace-claude-channel.test.mjs`: exit 0, 28 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_claude_client.py core/workspace_claude_transport.py tests/test_workspace_claude.py tests/test_workspace_claude_client.py tests/test_workspace_claude_transport.py scripts/verify-workspace-claude-create-transport.py`: final exit 0; initial proof import ordering corrected.
+- `SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-create.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: final exit 0. Real SDK, JSONL worker, client and owner; exact creation, same-process local `/effort low`, duplicate rejection, persisted exact resume, real exclusive lease and fsynced checkpoint before launch, child reaping and lease release. Isolated HOME/config, no credentials or model inference.
+- Initialization yields no session events or transcript until explicit input. The first owner proof exited 1 by checking the transcript immediately at turn completion; the corrected proof checks after process flush/close. Existing pending-index handling remains necessary; native completion does not guarantee synchronous disk visibility.
+- This is source/native lifecycle verification, not authenticated model inference, packaged UI admission, restart recovery of an empty session, or Windows proof. The frozen backend has not been rebuilt for this slice.
+
 Exact New Chat identity/name and packaged Electron path (2026-09-09): structured
 pseudos are now excluded from legacy cwd/time reconciliation. Their native
 returned identity alone controls handoff. The user's pending title is applied

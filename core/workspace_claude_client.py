@@ -28,6 +28,9 @@ class ClaudeTypeScriptClient:
     async def connect(self):
         self.info = await self.transport.open(env=self.options.env)
 
+    async def create(self):
+        self.info = await self.transport.create(env=self.options.env)
+
     async def disconnect(self):
         await self.transport.close()
         await self.messages.put(None)
