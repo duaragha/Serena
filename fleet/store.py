@@ -507,7 +507,8 @@ class FleetStore:
                                payload={"reason": "independent peer review is ready; input blockers preserved"})
             return True
 
-    def begin_attempt(self, leg_id: str) -> dict[str, Any]:
+    def begin_attempt(self, leg_id: str, *, integration_replay_source: str | None = None,
+                      expected_attempt_id: str | None = None) -> dict[str, Any]:
         now = time.time()
         attempt_id = str(uuid.uuid4())
         with self._connect() as connection:
@@ -534,6 +535,19 @@ class FleetStore:
                 "ORDER BY attempt_number DESC LIMIT 1",
                 (leg_id,),
             ).fetchone()
+            if integration_replay_source is not None:
+                if not previous or previous["attempt_id"] != expected_attempt_id or leg["state"] != "queued":
+                    raise RuntimeError("saved integration replay generation changed before dispatch")
+                source = connection.execute(
+                    "SELECT 1 FROM fleet_attempts WHERE attempt_id=? AND leg_id=? AND state='failed' AND exit_code=0",
+                    (integration_replay_source, leg_id),
+                ).fetchone()
+                queued = connection.execute(
+                    "SELECT payload_json FROM fleet_events WHERE leg_id=? AND type='leg.integration_replay_queued' "
+                    "ORDER BY event_seq DESC LIMIT 1", (leg_id,),
+                ).fetchone()
+                if not source or not queued or json.loads(queued[0]).get("source_attempt_id") != integration_replay_source:
+                    raise RuntimeError("saved integration replay has no matching durable source")
             number = int(previous["attempt_number"] or 0) + 1 if previous else 1
             resume_sid = ""
             resume_kind: str | None = None
@@ -661,6 +675,12 @@ class FleetStore:
                     ),
                 },
             )
+            if integration_replay_source is not None:
+                self._insert_event(
+                    connection, run_id=str(leg["run_id"]), leg_id=leg_id, attempt_id=attempt_id,
+                    event_type="worker.integration_replay_dispatched",
+                    payload={"source_attempt_id": integration_replay_source, "native_turn": False},
+                )
             return {
                 "attempt_id": attempt_id,
                 "attempt_number": number,

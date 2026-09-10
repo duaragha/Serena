@@ -105,10 +105,20 @@ def execute_saved_integration(store, run_id, leg):
         if not event:
             return None
         receipt = json.loads(event[0])
-        source = db.execute("SELECT a.* FROM fleet_attempts a JOIN fleet_legs l ON l.leg_id=a.leg_id "
-                            "WHERE a.attempt_id=? AND a.attempt_number=l.current_attempt AND l.state='queued' "
-                            "AND a.state='failed' AND l.leg_id=? AND l.run_id=?",
-                            (receipt["source_attempt_id"], leg["leg_id"], run_id)).fetchone()
+        current = db.execute("SELECT a.* FROM fleet_attempts a JOIN fleet_legs l ON l.leg_id=a.leg_id "
+                             "WHERE a.attempt_number=l.current_attempt AND l.state='queued' "
+                             "AND a.state IN ('failed','interrupted') AND l.leg_id=? AND l.run_id=?",
+                             (leg["leg_id"], run_id)).fetchone()
+        if not current:
+            return None
+        if current["attempt_id"] != receipt["source_attempt_id"]:
+            dispatched = db.execute("SELECT payload_json FROM fleet_events WHERE attempt_id=? "
+                                    "AND type='worker.integration_replay_dispatched' ORDER BY event_seq DESC LIMIT 1",
+                                    (current["attempt_id"],)).fetchone()
+            if not dispatched or json.loads(dispatched[0]).get("source_attempt_id") != receipt["source_attempt_id"]:
+                return None
+        source = db.execute("SELECT * FROM fleet_attempts WHERE attempt_id=? AND leg_id=? AND state='failed'",
+                            (receipt["source_attempt_id"], leg["leg_id"])).fetchone()
         if source is None:
             return None
         source = dict(source)
@@ -116,7 +126,9 @@ def execute_saved_integration(store, run_id, leg):
     from fleet import supervisor
     from fleet.workers import WorkerRequest, WorkerResult, _stream_process
 
-    attempt = supervisor._retry_sqlite_busy(lambda: store.begin_attempt(leg["leg_id"]))
+    attempt = supervisor._retry_sqlite_busy(lambda: store.begin_attempt(
+        leg["leg_id"], integration_replay_source=source["attempt_id"], expected_attempt_id=current["attempt_id"],
+    ))
     request = WorkerRequest(
         run_id=run_id, leg_id=leg["leg_id"], attempt_id=attempt["attempt_id"],
         task="revalidate saved integration", activity="coding", phase="integration_replay",
@@ -131,12 +143,14 @@ def execute_saved_integration(store, run_id, leg):
             store.mark_attempt_process(attempt["attempt_id"], payload["pid"], payload["event_log_path"])
 
     error = ""
+    exit_code = -1
     try:
         process = _stream_process(
             helper_command(), request=request,
             parse_stdout=lambda _: None, cancel_requested=lambda: store.run_cancel_requested(run_id),
             on_event=observe,
         )
+        exit_code = process.exit_code
         error = process.stderr or f"saved integration helper exited {process.exit_code} before recording an outcome"
     except Exception as exc:
         error = str(exc)
@@ -146,9 +160,9 @@ def execute_saved_integration(store, run_id, leg):
     if current["state"] == "running":
         cancelled = store.run_cancel_requested(run_id)
         store.finish_attempt(attempt["attempt_id"], state="cancelled" if cancelled else "failed",
-                             output_text=source["output_text"], error=error, exit_code=-1,
-                             input_blocker_reason=None if cancelled else error)
-        return WorkerResult(False, source["output_text"], None, None, None, -1, error, cancelled)
+                             output_text=source["output_text"], error=error, exit_code=exit_code,
+                             input_blocker_reason=None if cancelled or exit_code in {-6, -9, -11, -13, -15} else error)
+        return WorkerResult(False, source["output_text"], None, None, None, exit_code, error, cancelled)
     return WorkerResult(current["state"] == "completed", current["output_text"], None, None, None,
                         current["exit_code"], current["error"], current["state"] == "cancelled")
 
