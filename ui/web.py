@@ -12301,7 +12301,7 @@ def api_open_path():
 def _pending_workspace_meta(session_id):
     """Only committed, not-yet-indexed native identities may use metadata alone."""
     workspace = app.extensions.get("workspace_host")
-    pending = workspace.journal.clear_target(session_id, uncataloged_only=True) if workspace else None
+    pending = workspace.journal.pending_target(session_id) if workspace else None
     if pending and pending["committed"] and get_session(session_id) is None:
         from core.metadata import get_meta
 

@@ -627,7 +627,7 @@ class WorkspaceHost:
         await asyncio.to_thread(self.journal.append, sid, decorated)
         if event.get("method") != "turn/completed" or self.register_fork is None:
             return
-        target = await asyncio.to_thread(self.journal.clear_target, sid, uncataloged_only=True)
+        target = await asyncio.to_thread(self.journal.pending_target, sid)
         if not target or not target["committed"]:
             return
         # Clear creates an identity before a transcript. Only later native
@@ -643,7 +643,7 @@ class WorkspaceHost:
             if attempt < 4:
                 await asyncio.sleep(0.05 * (2 ** attempt))
         if result["indexed"]:
-            await asyncio.to_thread(self.journal.mark_clear_cataloged, sid)
+            await asyncio.to_thread(self.journal.mark_target_cataloged, sid)
         await asyncio.to_thread(self.journal.append, sid, {"method": "workspace/catalog", "params": result})
 
     async def _register_created_fork(self, target):
@@ -689,11 +689,11 @@ class WorkspaceHost:
 
     def describe_pending_session(self, sid):
         """Read-only catalog fallback; never claims a transcript exists yet."""
-        target = self.journal.clear_target(sid, uncataloged_only=True)
+        target = self.journal.pending_target(sid)
         if target is None:
             return None
         return {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],
-                "title": "New Claude conversation", "native_persistence_pending": True}
+                "title": f"New {target['provider'].title()} conversation", "native_persistence_pending": True}
 
     def delete_pending_session(self, sid, *, source):
         """Explicit deletion only; retain journal history and a recovery manifest."""
@@ -703,12 +703,12 @@ class WorkspaceHost:
         from core.workspace_catalog import NativeTranscriptPending
         from core.workspace_lease import SessionLease
 
-        target = self.journal.clear_target(sid, uncataloged_only=True)
+        target = self.journal.pending_target(sid)
         if not target or not target["committed"]:
             return None
         lease = SessionLease(sid)
         try:
-            target = self.journal.clear_target(sid, uncataloged_only=True)
+            target = self.journal.pending_target(sid)
             if not target or not target["committed"]:
                 return None
             if self.register_fork is None:
@@ -731,7 +731,7 @@ class WorkspaceHost:
                     if indexed is None:
                         raise ValueError("Native registration did not produce the exact session")
                     result = indexer._delete_unowned_session(indexed, source=source)
-            self.journal.mark_clear_cataloged(sid)
+            self.journal.mark_target_cataloged(sid)
             metadata.delete_meta(sid)
             return result
         finally:
@@ -742,17 +742,18 @@ class WorkspaceHost:
 
         result = list(sessions)
         seen = {session["session_id"] for session in sessions}
-        for target in reversed(self.journal.uncataloged_clears()):
+        for target in reversed(self.journal.uncataloged_targets()):
             sid = target["session_id"]
             if sid in seen:
-                self.journal.mark_clear_cataloged(sid)
+                self.journal.mark_target_cataloged(sid)
                 continue
             project = claude_project_dir_for(target["cwd"])
             if projects and not any(value in project for value in projects):
                 continue
-            result.insert(0, {"session_id": sid, "agent": "claude", "cwd": target["cwd"],
-                              "project_dir": project, "display_title": "New Claude conversation",
-                              "title": "New Claude conversation", "created_at": target["created_at"],
+            title = f"New {target['provider'].title()} conversation"
+            result.insert(0, {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],
+                              "project_dir": project, "display_title": title,
+                              "title": title, "created_at": target["created_at"],
                               "last_timestamp": target["created_at"], "native_persistence_pending": True})
         return result
 

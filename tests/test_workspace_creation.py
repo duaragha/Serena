@@ -122,3 +122,30 @@ def test_creation_api_requires_explicit_authenticated_same_origin_post(tmp_path)
     assert calls == []
     assert client.post("/api/workspace/create", headers=headers, json=body).json["ok"]
     assert calls == [(body["request_id"], "codex", str(tmp_path), True)]
+
+
+def test_created_pending_identity_is_visible_until_exact_indexing_then_stays_retired(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "journal.db")
+    request, sid = str(uuid4()), str(uuid4())
+    target = {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)}
+    journal.claim_command("new:" + request, request, {"action": "create_session", "payload": {
+        "provider": "codex", "cwd": str(tmp_path), "confirmed": True}})
+    journal.prepare_creation(request, target)
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: pytest.fail("Catalog must not launch"))
+    try:
+        assert host.include_pending_sessions([]) == []
+        journal.complete_creation(request)
+        rows = host.include_pending_sessions([])
+        assert len(rows) == 1 and rows[0]["session_id"] == sid
+        assert rows[0]["agent"] == "codex" and rows[0]["native_persistence_pending"]
+        assert rows[0]["display_title"] == "New Codex conversation"
+        assert host.describe_pending_session(sid)["agent"] == "codex"
+        assert host.include_pending_sessions([], projects=["unrelated-project"]) == []
+        assert host.include_pending_sessions([{"session_id": sid, "title": "Indexed"}]) == [{"session_id": sid, "title": "Indexed"}]
+        assert host.include_pending_sessions([]) == []
+        assert host.describe_pending_session(sid) is None
+        assert journal.creation_target(request)["committed"]
+        assert WorkspaceJournal(journal.path).uncataloged_targets() == []
+        assert host._loop is None and host._sessions == {}
+    finally:
+        host.shutdown()

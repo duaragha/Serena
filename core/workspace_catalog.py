@@ -25,7 +25,7 @@ def register_fork(target):
         projects = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
         candidates = [p for directory in (projects / "sessions", projects / "archived_sessions")
                       for p in directory.rglob(f"rollout-*{sid}.jsonl")]
-    if not candidates and provider == "claude":
+    if not candidates:
         raise NativeTranscriptPending("Completed prompt transcript is not persisted yet")
     if len(candidates) != 1:
         raise ValueError("Native fork transcript is missing or ambiguous")

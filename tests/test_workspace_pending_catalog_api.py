@@ -3,6 +3,7 @@
 import ast
 from pathlib import Path
 
+import pytest
 from flask import Flask, jsonify, request
 
 from core.workspace_host import WorkspaceHost
@@ -37,7 +38,8 @@ def test_owned_delete_reports_conflict_and_bulk_keeps_other_results():
     assert calls == ["owned", "owned", "free"]
 
 
-def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_path, monkeypatch):
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_path, monkeypatch, provider):
     from core import indexer, metadata
 
     monkeypatch.setattr(metadata, "METADATA_DIR", tmp_path / "metadata")
@@ -71,17 +73,25 @@ def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_p
                  "_external_runtime_active": lambda sid: False}
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(source), "exec"), namespace)
     sid = "11111111-2222-4333-8444-555555555555"
-    target = {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)}
+    target = {"session_id": sid, "provider": provider, "cwd": str(tmp_path)}
     try:
-        host.journal.claim_command("source", "clear", {"action": "clear_session", "payload": {"confirmed": True}})
-        host.journal.prepare_clear("source", "clear", target)
+        if provider == "claude":
+            host.journal.claim_command("source", "clear", {"action": "clear_session", "payload": {"confirmed": True}})
+            host.journal.prepare_clear("source", "clear", target)
+        else:
+            host.journal.claim_command("new:create", "create", {"action": "create_session", "payload": {
+                "provider": provider, "cwd": str(tmp_path), "confirmed": True}})
+            host.journal.prepare_creation("create", target)
         client = app.test_client()
         assert client.post(f"/api/rename/{sid}", json={"title": "too early"}).status_code == 404
         assert client.get(f"/api/conversation/{sid}").status_code == 404
         for action in ("star", "done"):
             assert client.post(f"/api/{action}/{sid}").status_code == 404
         assert not (metadata.METADATA_DIR / f"{sid}.json").exists()
-        host.journal.complete_clear("source", "clear")
+        if provider == "claude":
+            host.journal.complete_clear("source", "clear")
+        else:
+            host.journal.complete_creation("create")
         metadata.set_starred(sid, True)
         response = client.post(f"/api/rename/{sid}", json={"title": "My conversation"})
         assert response.status_code == 200 and response.json["title"] == "My conversation"
@@ -106,7 +116,7 @@ def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_p
         assert client.post("/api/bulk-done", json={"ids": [sid]}).json["count"] == 1
         assert client.post(f"/api/done/{sid}").json["done"] is False
         assert client.post("/api/rename/not-a-session", json={"title": "wrong"}).status_code == 404
-        host.journal.mark_clear_cataloged(sid)
+        host.journal.mark_target_cataloged(sid)
         assert client.get(f"/api/conversation/{sid}").status_code == 404
         assert client.post(f"/api/rename/{sid}", json={"title": "deleted"}).status_code == 404
         assert metadata.get_meta(sid)["custom_title"] == "My conversation"

@@ -56,6 +56,28 @@ class WorkspaceJournal:
                 target TEXT NOT NULL, created_at TEXT NOT NULL,
                 committed INTEGER NOT NULL DEFAULT 0 CHECK (committed IN (0, 1))
             )""")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_creations)")}
+            if "cataloged" not in columns:
+                conn.execute("ALTER TABLE workspace_creations ADD COLUMN cataloged INTEGER NOT NULL DEFAULT 0")
+
+    def pending_target(self, session_id: str) -> dict | None:
+        target = self.clear_target(session_id, uncataloged_only=True)
+        if target:
+            return target
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT target, committed FROM workspace_creations WHERE target_id=? AND cataloged=0", (session_id,)).fetchone()
+        return {**json.loads(row[0]), "committed": bool(row[1])} if row else None
+
+    def uncataloged_targets(self) -> list[dict]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT target, created_at FROM workspace_creations WHERE committed=1 AND cataloged=0").fetchall()
+        return sorted(self.uncataloged_clears() + [{**json.loads(target), "created_at": created} for target, created in rows],
+                      key=lambda target: target["created_at"], reverse=True)
+
+    def mark_target_cataloged(self, session_id: str) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE workspace_clears SET cataloged=1 WHERE target_id=? AND committed=1", (session_id,))
+            conn.execute("UPDATE workspace_creations SET cataloged=1 WHERE target_id=? AND committed=1", (session_id,))
 
     def prepare_creation(self, request_id: str, target: dict) -> None:
         sid = target.get("session_id")

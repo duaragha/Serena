@@ -2,6 +2,22 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+New-session pending catalog (2026-09-09): committed Codex creations now share
+the pending catalog/read/metadata/deletion path with native Claude clears.
+Creation records gain a cataloged marker. Placeholder rows retain their provider,
+project and creation time; exact indexed rows retire them durably so deleted rows
+do not revive. Completion events admit the actual native transcript, and a
+missing Codex transcript is now retryable pending rather than ambiguous failure.
+Unknown or uncommitted IDs still cannot mutate metadata. Existing read-only
+inspection of a prepared clear identity remains unchanged.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_creation.py tests/test_workspace_journal.py tests/test_workspace_host.py tests/test_workspace_app.py tests/test_workspace_pending_catalog_api.py tests/test_workspace_catalog.py -q --tb=short`: final exit 0, 92 passed. Initial exit 1 caught an unintended restriction on the existing prepared-clear page; reverted that restriction.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pending_catalog_api.py tests/test_workspace_creation.py -q --tb=short`: exit 0, 11 passed after adding Codex coverage for rename/star/done/read, early/retired identity refusal and exact-row retirement.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py core/workspace_catalog.py tests/test_workspace_creation.py tests/test_workspace_pending_catalog_api.py scripts/verify-workspace-codex-create.py`: final exit 0; initial proof import-order warning corrected.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-create.py`: exit 0. Real creation appeared pending, its native first print-only command registered the exact transcript through the production parser/indexer in isolated storage, and its placeholder retired without duplication or revival. Concurrent HTTP/restart/lease/input/cleanup checks still passed; zero inference.
+New Chat button/page wiring, unmaterialized-session restart recovery, other
+providers and final packaged delivery remain open.
+
 Persistent creation host/API (2026-09-09): `WorkspaceHost.create` now validates
 explicit confirmation, canonical request UUID, supported provider and absolute
 existing project directory before reserving a durable command. Concurrent
