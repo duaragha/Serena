@@ -265,7 +265,7 @@ async def main():
     binary = shutil.which("codex")
     if not binary:
         raise RuntimeError("Native Codex unavailable")
-    with tempfile.TemporaryDirectory(prefix="serena-history-proof-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="workspace-history-proof-") as temporary:
         root = Path(temporary)
         home, project = root / "home", root / "project"
         (home / ".codex").mkdir(parents=True)

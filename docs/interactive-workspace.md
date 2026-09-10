@@ -2,6 +2,23 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Embedded Electron verification (2026-09-09): rebuilt the frozen backend from
+955aa29, including the pending read/delete and reconnect fixes. The Electron
+proof now opens the exact chat through the actual sidebar and Code button,
+interacts with its embedded iframe, and verifies the top-level page remains the
+app shell. It no longer bypasses that integration by navigating directly to a
+standalone workspace URL. Real native shell output, the skill catalog, native
+clipboard copy/paste and retained ownership after window close passed.
+Screenshot inspected: `apps/desktop/build/workspace-proof/electron-native-workspace.png`.
+Verification:
+- `env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar` in `apps/desktop`: exit 0, frozen build and bundled capability-refusal smoke passed; optional-library warnings remain.
+- `node --check scripts/verify-workspace-electron.cjs`: exit 0.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-history.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: final exit 0. Frozen desktop/mobile history, native input/output, forks, reconnect, skills and mentions passed, followed by actual Electron sidebar/iframe/clipboard checks. No inference or credentials; all proof children cleaned up. First run exited 1: the fixture's `serena-history-proof-` directory matched the internal-project hiding rule. Renamed it to `workspace-history-proof-`; the proof now also asserts exact-session catalog visibility before clicking.
+This uses the real desktop main/preload with a frozen backend in an isolated
+virtual display, not an installed AppImage or Windows runtime. Provider parity,
+new-session creation and rollout remain incomplete; the installed app is unchanged.
+
 Pending read-view handling (2026-09-09): committed native clear identities now
 return an explicit unindexed state instead of a false missing-session error.
 The read view refreshes until the actual transcript is indexed; it never invents
