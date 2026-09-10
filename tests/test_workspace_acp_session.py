@@ -97,6 +97,33 @@ def test_permission_during_load_can_be_answered_without_deadlock(tmp_path):
     asyncio.run(run())
 
 
+def test_submitted_input_is_preserved_before_delivery_failure_without_replay(tmp_path):
+    async def run():
+        rpc, output = Rpc(), []
+        content = [{"type": "text", "text": "original"}]
+        async def publish(event):
+            output.append(event)
+            if event["method"] == "turn/started":
+                content[0]["text"] = "changed by caller"
+        owner = AcpSession(session_id="exact", cwd=tmp_path, rpc=rpc, publish=publish)
+        await owner.load({"agentCapabilities": {"loadSession": True}}, mcp_servers=[])
+        async def fail(method, params):
+            assert params["prompt"] == [{"type": "text", "text": "original"}]
+            assert output[-1]["params"]["item"]["origin"] == "client"
+            raise RuntimeError("delivery unconfirmed")
+        rpc.handler = fail
+        with pytest.raises(RuntimeError, match="unconfirmed"):
+            await owner.prompt(content)
+        item = output[-1]["params"]["item"]
+        assert item["content"] == [{"type": "text", "text": "original"}]
+        assert "providerOriginal" not in item
+        assert owner.state == "unavailable"
+        with pytest.raises(ValueError, match="not ready"):
+            await owner.prompt(content)
+        assert [method for method, _ in rpc.calls].count("session/prompt") == 1
+    asyncio.run(run())
+
+
 def test_wrong_session_update_disables_further_input(tmp_path):
     async def run():
         rpc = Rpc()
@@ -146,7 +173,7 @@ assert sys.stdin.read()==''
             assert output[-1]["params"]["thread"]["turns"][0]["items"][0]["text"] == expected
             await owner.prompt([{"type": "text", "text": "hello"}])
             assert output[-1]["method"] == "turn/completed"
-            assert output[-1]["params"]["turn"]["items"][0]["text"] == expected
+            assert output[-1]["params"]["turn"]["items"][1]["text"] == expected
             await owner.stop_event_reader()
             assert rpc.process.returncode is None
         finally:

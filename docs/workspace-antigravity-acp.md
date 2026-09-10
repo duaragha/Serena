@@ -198,6 +198,20 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Live submitted messages (2026-09-09): inspection of the shipped 1.1.1
+`server.py` found `UserMessageChunk` emission in historical step replay, not
+the live prompt path. The controller now records the exact submitted content
+as a client-origin user item before dispatch, without claiming a provider echo
+or acknowledgement. Input is snapshotted before yielding; delivery failure
+retains that item and disables further input instead of resending it. Successful
+completion includes the submitted item followed by actual provider output.
+
+`/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_events.py tests/test_workspace_acp_session.py tests/test_workspace_gemini.py -q --tb=short`:
+exit 0, 22 passed. Initial run: exit 1, 20 passed and one old positional
+assertion needed updating for the added user item. Scoped Ruff: exit 0.
+Includes real-pipe integrated host checks and a delivery-failure test; no
+authenticated Google prompt was executed.
+
 Integrated owner/host proof (2026-09-09): a real Python subprocess exchanges
 ACP frames through production RPC, Gemini owner, shared lease, persistent host
 and journal. The test verifies no launch on reads, exact-ID load/prompt,

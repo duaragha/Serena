@@ -92,7 +92,9 @@ assert sys.stdin.read() == "", "Unexpected duplicate delivery"
         assert receipt["ok"] and host.command(SID, "answer", "answer", answer) == receipt
         final = wait_event("turn/completed")["params"]["turn"]
         assert final["id"] == sent["result"]["turn"]["id"]
-        assert final["items"][0]["text"] == "pipe result"
+        assert final["items"][0]["origin"] == "client"
+        assert final["items"][0]["content"] == payload["inputs"]
+        assert final["items"][1]["text"] == "pipe result"
         assert host.attach(SID)["state"] == "ready" and rpc.process is process
         assert process.returncode is None
     finally:

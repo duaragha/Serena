@@ -85,6 +85,27 @@ class AcpEvents:
         return self.event("item/completed" if item.get("status") in {"completed", "failed"} else "item/started",
                           {"turnId": self.turn, "item": item})
 
+    def submitted(self, content):
+        """Record client input, not a fabricated provider echo or acknowledgement."""
+        if self.turn is None:
+            raise ValueError("ACP submission has no active turn")
+        item_id = f"{self.turn}:submitted"
+        if item_id in self.items:
+            raise ValueError("ACP submission was already recorded")
+        parts = []
+        for block in deepcopy(content):
+            if block["type"] == "image":
+                parts.append({"type": "image", "source": {"type": "base64",
+                    "media_type": block["mimeType"], "data": block["data"]}})
+            elif block["type"] == "resource_link":
+                parts.append({"type": "text", "text": block.get("name", block["uri"])})
+            else:
+                parts.append(block)
+        item = {"id": item_id, "type": "userMessage", "content": parts,
+                "origin": "client", "submittedContent": deepcopy(content)}
+        self.items[item_id] = item
+        return self.event("item/started", {"turnId": self.turn, "item": item})
+
     def permission(self, request_id, params):
         if type(request_id) not in (str, int) or request_id in self.questions:
             raise ValueError("Invalid or duplicate ACP permission identity")

@@ -116,6 +116,7 @@ class AcpSession:
                 raise ValueError("ACP session is not ready for input")
             if not isinstance(content, list) or not content:
                 raise ValueError("ACP prompt content is required")
+            content = deepcopy(content)
             supported = self.capabilities.get("promptCapabilities", {})
             for block in content:
                 kind = block.get("type") if isinstance(block, dict) else None
@@ -129,6 +130,7 @@ class AcpSession:
             self.last_turn_id = self.events.turn
         try:
             await self.publish(start)
+            await self.publish(self.events.submitted(content))
             result = await self.rpc.request("session/prompt", {"sessionId": self.session_id,
                 "prompt": deepcopy(content)}, timeout=None)
             await self._drain_events()
