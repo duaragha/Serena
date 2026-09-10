@@ -822,11 +822,71 @@ def test_supervisor_allows_first_indicator_handshake_but_stops_lost_heartbeat(co
         # The supervisor must not mistake its initial zero timestamp for a loss.
         time.sleep(0.15)
         assert controller.session.state == "active"
+        # A late heartbeat from a live HUD is a stall, not a disconnect.
         server.indicator_seen = time.monotonic() - 4
+        time.sleep(0.3)
+        assert controller.session.state == "active"
+        server.indicator_seen = time.monotonic() - (server.INDICATOR_STALE_SECONDS + 1)
         deadline = time.monotonic() + 1
         while controller.session.state == "active" and time.monotonic() < deadline:
             time.sleep(0.01)
         assert controller.session.reason == "visible indicator disconnected"
+    finally:
+        controller.shutdown.set()
+        worker.join(timeout=2)
+        server.server_close()
+
+
+def test_supervisor_stops_at_once_when_indicator_process_exits(controller):
+    from types import SimpleNamespace
+
+    from core.computer_service import ComputerServer
+
+    server = ComputerServer(controller)
+    server.indicator_process = SimpleNamespace(poll=lambda: 1)
+    begin(controller, mode="watch")
+    worker = threading.Thread(target=server.supervise, daemon=True)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 1
+        while controller.session.state == "active" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller.session.reason == "visible indicator disconnected"
+    finally:
+        controller.shutdown.set()
+        worker.join(timeout=2)
+        server.server_close()
+
+
+def test_supervisor_tolerates_transient_lock_probe_failures(controller, monkeypatch):
+    from core.computer_service import ComputerServer
+
+    server = ComputerServer(controller)
+    server.LOCK_PROBE_GRACE_SECONDS = 0.6
+    begin(controller, mode="watch")
+    failing = {"value": True}
+
+    def locked():
+        if failing["value"]:
+            raise ComputerError("cannot verify desktop lock state")
+        return False
+
+    monkeypatch.setattr(controller.desktop, "locked", locked)
+    worker = threading.Thread(target=server.supervise, daemon=True)
+    worker.start()
+    try:
+        # One or two failed probes inside the grace window keep the session alive.
+        time.sleep(0.3)
+        assert controller.session.state == "active"
+        failing["value"] = False
+        time.sleep(0.6)
+        assert controller.session.state == "active"
+        # A probe that keeps failing past the grace window still fails closed.
+        failing["value"] = True
+        deadline = time.monotonic() + 2
+        while controller.session.state == "active" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller.session.reason == "desktop lock state unavailable"
     finally:
         controller.shutdown.set()
         worker.join(timeout=2)
