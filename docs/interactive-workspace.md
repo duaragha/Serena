@@ -2,6 +2,34 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Activity Reporting (2026-09-10)
+
+Runtime `busy` now includes pending provider questions/elicitations and active or
+unknown-status Claude background tasks, not just the top-level turn/state.
+Codex model and reasoning effort come from its owner-held native settings; an
+adapter without those settings reports empty values rather than indexed guesses.
+This remains read-only and makes no provider requests.
+
+Codex background terminal discovery is an explicit RPC, not a complete cached
+activity snapshot. Safe job reuse still requires native reservation, atomic
+admission and reserved submission/interrupt handling through the durable work
+bridge. The existing `/api/codex-work-bridge` only dispatches GTK/PTY owners, so
+native states deliberately remain ineligible for reusable-work routing for now.
+Ordinary linked-message bridging already has a separate native path; substituting
+that path would lose the accepted-job reservation and dispatch-boundary contract.
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_runtime_busy_includes_native_questions_and_claude_background_work tests/test_workspace_host.py::test_native_runtime_context_is_read_only_and_local -q --tb=short
+# exit 0: 2 passed in 2.20s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py
+# exit 0: All checks passed
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: real native Codex model present, no pending interactions after local
+# commands; desktop/mobile history, focus, drafts, resume/fork retained owners;
+# no inference or credentials used, isolated children reaped
+```
+
 ## Linked Native Context (2026-09-10)
 
 The native frame asks its verified parent for current split membership on focus

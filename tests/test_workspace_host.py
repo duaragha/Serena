@@ -158,7 +158,8 @@ def test_native_runtime_context_is_read_only_and_local(tmp_path, monkeypatch):
             assert context['runtimes'] == [{
                 'sid': 'exact', 'agent': 'codex', 'cwd': str(tmp_path),
                 'alive': alive, 'state': state, 'busy': busy,
-                'reserved': False, 'owner': 'workspace', 'draft': False, 'draft_known': False}]
+                'reserved': False, 'owner': 'workspace', 'draft': False, 'draft_known': False,
+                'pending_interactions': False, 'model': '', 'effort': ''}]
             assert context['sessions'] == context['runtimes']
             assert not context['focused_sid'] and not context['window_active']
         host._bridge_queues['exact'] = ['pending']
@@ -239,6 +240,32 @@ def test_split_context_stays_with_its_focused_owner(tmp_path, monkeypatch):
         host._sessions['right'][0].state = 'closed'
         assert host.runtime_context_snapshot()['split_pair'] == []
         assert len(host._sessions) == 2 and all(not owner.sent for owner, _ in host._sessions.values())
+    finally:
+        host.shutdown()
+
+
+def test_runtime_busy_includes_native_questions_and_claude_background_work(tmp_path):
+    from types import SimpleNamespace
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'activity.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'claude', 'cwd': str(tmp_path)},
+        factories={'claude': Owner})
+    try:
+        host.attach('exact')
+        owner = host._sessions['exact'][0]
+        owner.settings = {'model': 'native-model', 'reasoningEffort': 'high'}
+        for attribute in ['questions', 'elicitations']:
+            setattr(owner, attribute, {'pending': {}})
+            row = host.runtime_context_snapshot()['runtimes'][0]
+            assert row['busy'] and row['pending_interactions']
+            assert row['model'] == 'native-model' and row['effort'] == 'high'
+            setattr(owner, attribute, {})
+        for status, busy in [('running', True), ('queued', True), (None, True),
+                             ('completed', False), ('failed', False), ('stopped', False), ('killed', False)]:
+            owner.events = SimpleNamespace(tasks={'background': {'status': status}})
+            row = host.runtime_context_snapshot()['runtimes'][0]
+            assert row['busy'] is busy and not row['pending_interactions']
+        assert not owner.sent and not owner.closed
     finally:
         host.shutdown()
 

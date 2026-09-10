@@ -166,6 +166,11 @@ class WorkspaceHost:
             views = list(self._views.get(sid, {}).values())
             fresh = [view for view in views if now - view["seen"] < 6]
             alive = owner.state not in {"closed", "unavailable"}
+            pending_interactions = bool(getattr(owner, "questions", None) or getattr(owner, "elicitations", None))
+            tasks = getattr(getattr(owner, "events", None), "tasks", {})
+            background_busy = any(task.get("status") not in {"completed", "failed", "stopped", "killed"}
+                                  for task in tasks.values())
+            settings = getattr(owner, "settings", {})
             if alive:
                 focus.extend((view["focused_at"], sid, view.get("split_sids", []))
                              for view in fresh if view["focused"])
@@ -175,12 +180,15 @@ class WorkspaceHost:
                 "cwd": str(owner.cwd),
                 "alive": alive,
                 "state": owner.state,
-                "busy": bool(owner.active_turn) or owner.state not in {
+                "busy": pending_interactions or background_busy or bool(owner.active_turn) or owner.state not in {
                     "ready", "completed", "failed", "interrupted", "closed", "unavailable"},
                 "reserved": bool(self._bridge_queues.get(sid)),
                 "owner": "workspace",
                 "draft": any(view["draft"] for view in views),
                 "draft_known": bool(views) and len(fresh) == len(views),
+                "pending_interactions": pending_interactions,
+                "model": settings.get("model", ""),
+                "effort": settings.get("reasoningEffort", ""),
             })
         focused_at, focused_sid, split = max(focus, default=(0, None, []))
         split = [sid for sid in split if sid in self._sessions

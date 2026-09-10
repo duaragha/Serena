@@ -279,6 +279,8 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
             entries = {row["sid"]: row for row in context["runtimes"] if row.get("owner") == "workspace"}
             assert sid in entries and entries[sid]["agent"] == "codex"
             assert entries[sid]["alive"] and entries[sid]["cwd"] == str(project)
+            assert isinstance(entries[sid]["model"], str) and entries[sid]["model"]
+            assert entries[sid]["pending_interactions"] is False
             assert "terminal_id" not in entries[sid]
             assert owners() == before_context, "Runtime inventory changed native ownership"
             print("PASS: local runtime context reports exact real Codex owner without launching or replacing it")
