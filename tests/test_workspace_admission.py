@@ -35,7 +35,7 @@ def test_exact_session_only_no_cwd_guess_or_provider_substitution(session):
     with pytest.raises(ValueError, match="Exact"):
         admission.resolve_workspace_session("prefix")
     session["agent"] = "gemini"
-    with pytest.raises(ValueError, match="interactive approvals"):
+    with pytest.raises(ValueError, match="exact-session compatibility"):
         admission.resolve_workspace_session("exact")
     session["agent"] = "codex"
     session["cwd"] = "/missing-workspace-directory"

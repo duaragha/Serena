@@ -63,6 +63,37 @@ Exact verification:
 - `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_acp.py tests/test_workspace_acp.py scripts/verify-workspace-antigravity-acp.py`: exit 0.
 - `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-antigravity-acp.py apps/desktop/build/proof-tools/antigravity-acp/agy_acp_server.par`: exit 0; capability response above, isolated native server exit 0. Repeated after replacing the probe-local transport with production transport.
 
+## Session Store Verification
+
+Additional verification on 2026-09-09 used source files shipped inside the pinned
+Google archive, read without modifying or importing the vendor application:
+
+- `google3/cloud/developer_experience/antigravity_extensions/acp_server/paths.py`
+  places trajectories under `$GEMINI_HOME/antigravity-acp/conversations` (default
+  home is `~/.gemini`). CLI storage is `antigravity-cli/conversations` instead.
+  ACP also has separate credential and trust files. Shared global hooks and
+  CLI-installed skills do not imply shared sessions or authentication.
+- `session_store.py::strip_thought_signatures_from_db` updates stored protobuf
+  payloads in place during restoration. Do not symlink existing user databases
+  into ACP merely to make an ID resolve: loading can modify those files.
+- `server.py::_restore_session` requires a database in the ACP store and raises
+  resource-not-found (-32002) otherwise. It does not search the CLI directory.
+
+Extended the native probe with an isolated empty SQLite fixture in the CLI
+directory. The actual ACP server returned an empty catalog from `session/list`
+and rejected `session/load` for that exact fixture ID with -32002. The CLI
+database remained byte-for-byte unchanged and no ACP replacement database was
+created. No authenticate/new/prompt call was made, and no user database was read
+or copied. This proves store separation, not compatibility of real trajectories.
+
+Exact verification:
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-antigravity-acp.py apps/desktop/build/proof-tools/antigravity-acp/agy_acp_server.par`: exit 0; handshake, empty catalog, exact missing-session rejection, no replacement, native exit 0.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_admission.py tests/test_workspace_acp.py -q --tb=short`: exit 0, 15 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_admission.py scripts/verify-workspace-antigravity-acp.py tests/test_workspace_admission.py`: exit 0.
+
+The unavailable reason now states the unverified exact-session integration
+instead of implying Google has no interactive interface. Admission is unchanged.
+
 ## Next Integration Work
 
 The JSON-RPC foundation is implemented, not the provider adapter or UI admission.

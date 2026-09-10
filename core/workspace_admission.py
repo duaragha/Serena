@@ -64,9 +64,10 @@ def resolve_workspace_session(sid: str) -> dict:
     provider = str(session.get("agent") or "").lower()
     if provider == "gemini":
         raise ValueError(
-            "Antigravity's streaming interface does not support interactive approvals "
-            "or image input. A full-fidelity custom Gemini pane is not available yet; "
-            "this session has not been opened or changed."
+            "Gemini's ACP integration is not ready for this saved session. "
+            "The ACP server uses a separate session store from the CLI; "
+            "exact-session compatibility has not been verified. "
+            "This session has not been opened or changed."
         )
     if provider not in {"codex", "claude"}:
         raise ValueError("This provider's structured workspace is not implemented yet")

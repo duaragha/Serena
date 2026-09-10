@@ -2,6 +2,14 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+ACP session-store check (2026-09-09): native list/load against an isolated
+CLI-only SQLite fixture confirms it is not an ACP session. Load returns -32002
+without modifying the fixture or creating a replacement. Shipped vendor source
+also shows ACP restore can rewrite trajectory metadata, so no automatic copying
+or symlinking is introduced. Updated the unavailable reason, not admission.
+See [store evidence](workspace-antigravity-acp.md#session-store-verification):
+15 focused tests, Ruff and native rejection proof all exited 0.
+
 Antigravity ACP discovery (2026-09-09): Google's separate `antigravity-acp`
 registry binary successfully initialized through the new production ACP
 transport, advertising saved-session load/resume, images/audio and Google-account
