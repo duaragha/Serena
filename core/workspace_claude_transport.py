@@ -95,7 +95,12 @@ class ClaudeSdkTransport:
                     if type(pid) is not int or self.owned_pid is not None:
                         raise WorkspaceRpcError("Invalid or duplicate native process identity")
                     wrapper = self.rpc.process
-                    if wrapper is None or psutil.Process(pid).ppid() != wrapper.pid:
+                    parent = psutil.Process(pid).ppid()
+                    # Windows owns a gated bootstrap above the Node SDK worker.
+                    # Require that exact extra hop, not any arbitrary descendant.
+                    if getattr(self.rpc, "windows_gated", False):
+                        parent = psutil.Process(parent).ppid()
+                    if wrapper is None or parent != wrapper.pid:
                         raise WorkspaceRpcError("Native process does not belong to this worker")
                     self.owned_pid = pid
                     self.process_ready.set()

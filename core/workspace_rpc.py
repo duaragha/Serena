@@ -83,6 +83,10 @@ class WorkspaceRpc:
                 raise
             self._tasks = [asyncio.create_task(self._read()), asyncio.create_task(self._stderr())]
 
+    @property
+    def windows_gated(self):
+        return self._windows_job is not None
+
     async def request(self, method: str, params: dict, *, timeout: float = 30) -> Any:
         self._next_id += 1
         request_id = self._next_id

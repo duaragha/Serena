@@ -2,6 +2,38 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Claude Gated Windows Process Identity
+
+The Windows bootstrap adds one process level above the Node worker. Claude's
+transport still required the CLI to be a direct child of WorkspaceRpc's process,
+so it would reject a valid Windows launch. WorkspaceRpc now exposes its active
+gated state, and Claude checks the exact bootstrap -> worker -> CLI chain in that
+case. Ungated transport retains the original direct-parent requirement. Unrelated
+grandparents remain rejected. No arbitrary-depth descendant admission is added.
+
+Verification commands:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_transport.py tests/test_workspace_rpc.py -q --tb=short
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys; os.chdir(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); sys.path.insert(0,os.getcwd()); sys.dont_write_bytecode=True; import pytest; sys.exit(pytest.main(['tests/test_workspace_claude_transport.py','tests/test_workspace_rpc.py','-q','-p','no:cacheprovider','--tb=short']))\""
+env SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_transport.py core/workspace_rpc.py tests/test_workspace_claude_transport.py
+```
+
+Linux scoped tests exited 0: 26 passed, 2 Windows skips in 2.36s. Windows initially
+exited 1 (27 passed, 1 failed): the Linux environment simulation retained Windows'
+path separator. After explicitly simulating the Linux separator, Windows exited
+0: 28 passed in 3.48s. The Windows-only test uses real gated Python processes
+speaking the worker protocol, not a Claude provider; native PID admission and
+cleanup both passed. Ruff exited 0.
+
+The native Linux proof exited 0: exact persisted-session resume, queued input
+UUID acknowledgement, native input/output, shared-lease duplicate rejection,
+skill/plugin reload, fork recovery and process cleanup all passed. It used local
+commands with zero inference and no user credentials. Native Windows SDK
+inference and a rebuilt packaged provider flow remain outstanding. No installed
+application was changed or activated.
+
 ## Windows Edge Pane Verification
 
 The full pane contract file now runs against installed Edge on Windows using

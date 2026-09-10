@@ -1,4 +1,6 @@
 import asyncio
+import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +9,60 @@ from core.workspace_claude_transport import ClaudeSdkTransport
 from core.workspace_rpc import WorkspaceRpcError
 
 TARGET = "11111111-2222-4333-8444-555555555555"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Real Windows gated process ancestry")
+def test_real_windows_gated_worker_reports_owned_child(tmp_path):
+    program = r"""
+import json, subprocess, sys
+child = None
+for line in sys.stdin:
+    message=json.loads(line)
+    if message['method']=='open':
+        child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],
+            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        print(json.dumps({'method':'claude/process','params':{'pid':child.pid}}),flush=True)
+    if message['method']=='close':
+        child.terminate(); child.wait(timeout=5)
+    print(json.dumps({'id':message['id'],'result':{'models':[]}}),flush=True)
+"""
+    async def run():
+        async def publish(event):
+            pass
+        async def request(*args):
+            raise AssertionError("No approval expected")
+        transport = ClaudeSdkTransport(session_id="local-proof", cwd=tmp_path,
+            sdk_path="unused", cli_path="unused", node_path="unused",
+            publish=publish, request=request)
+        transport.command = [getattr(sys, "_base_executable", sys.executable), "-u", "-c", program]
+        try:
+            await transport.open()
+            assert transport.rpc.windows_gated
+            assert transport.owned_pid != transport.rpc.process.pid
+            assert transport.owned_pid is not None
+        finally:
+            await transport.close()
+        assert transport.rpc.process is None
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("parent_of_worker", [11, 99])
+def test_gated_windows_native_identity_requires_exact_bootstrap_chain(monkeypatch, tmp_path, parent_of_worker):
+    async def run():
+        transport, _ = make(monkeypatch, tmp_path)
+        transport.rpc.windows_gated = True
+        parents = {22: 33, 33: parent_of_worker}
+        monkeypatch.setattr("core.workspace_claude_transport.psutil.Process",
+                            lambda pid: SimpleNamespace(ppid=lambda: parents[pid]))
+        if parent_of_worker == 11:
+            await transport.open()
+            assert transport.owned_pid == 22
+        else:
+            with pytest.raises(WorkspaceRpcError, match="does not belong"):
+                await transport.open()
+            assert transport.owned_pid is None
+        await transport.close()
+    asyncio.run(run())
 
 
 def test_clear_blocks_input_until_exact_handoff_ack(monkeypatch, tmp_path):
@@ -288,6 +344,7 @@ def test_external_worker_does_not_inherit_frozen_library_paths(monkeypatch, tmp_
     async def run():
         transport, _ = make(monkeypatch, tmp_path)
         monkeypatch.setattr("core.workspace_claude_transport.sys.platform", "linux")
+        monkeypatch.setattr("core.workspace_claude_transport.os.pathsep", ":")
         monkeypatch.setattr("core.workspace_claude_transport.sys._MEIPASS", "/frozen", raising=False)
         await transport.open(env={"APPDIR": "/mount", "LD_LIBRARY_PATH": "/frozen:/mount/lib:/wrong",
                                   "LD_LIBRARY_PATH_ORIG": "/mount/lib:/custom:/mount-other:"})
