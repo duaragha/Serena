@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Lost Native Acknowledgement Recovery (2026-09-10)
+
+Each new job claim now records its pre-dispatch journal sequence. When no
+acceptance checkpoint exists, recovery requires one unique native turn start
+after that boundary, one exact text-only user input matching the persisted
+prompt digest on that turn, and its terminal completion. Started/completed
+notifications of the same input are deduplicated by turn and item identity.
+Old events, mismatched prompts, multiple turns/inputs, unknown boundaries and
+incomplete turns never unlock or resend work. Legacy claims without a boundary
+still require an explicit acceptance checkpoint. Tool output is not loaded by
+the recovery query. A late acknowledgement failure cannot leave a completed
+owner stuck in uncertain state after confirmed recovery.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_work_recovery.py tests/test_workspace_host.py::test_reserved_submission_is_durable_and_interrupt_is_turn_bound tests/test_workspace_work_bridge.py -q --tb=short
+# exit 0: 30 passed in 10.28s; final rerun after query filtering: 30 passed in 10.63s
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-work.py --allow-inference --lose-ack
+# first exit 1: proof observed owner-ready before journal completion was durable
+# corrected proof waits for durable completion; exit 0: real native reply lost
+# after acceptance, exact event-based recovery, no duplicate job turn, original
+# reply/bounds reused, reservation released, project unchanged, children reaped
+```
+
+This recovers durable terminal evidence; it cannot invent evidence lost with a
+host crash. Missing/ambiguous evidence remains unavailable instead of creating a
+competing writer. Idle sleeping and final cross-platform release gates remain.
+
 ## Lost Native Receipt Recovery (2026-09-10)
 
 After native acceptance, the host journals an exact `workspace/workSubmitted`

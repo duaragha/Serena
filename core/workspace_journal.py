@@ -6,6 +6,7 @@ control/event stream across renderer reconnects without retaining it all in RAM.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -288,9 +289,12 @@ class WorkspaceJournal:
                     "SELECT event FROM workspace_events WHERE session_id=? "
                     "AND json_extract(event, '$.method')='workspace/workSubmitted' "
                     "AND json_extract(event, '$.params.requestId')=? LIMIT 2", (session_id, key)).fetchall()
-                if len(checkpoints) != 1:
+                if len(checkpoints) > 1:
                     continue
-                checkpoint = json.loads(checkpoints[0][0])["params"]
+                checkpoint = (json.loads(checkpoints[0][0])["params"] if checkpoints
+                              else self._work_event_checkpoint(conn, session_id, payload))
+                if checkpoint is None:
+                    continue
                 receipt = checkpoint.get("receipt", {})
                 turn_id = receipt.get("turn_id")
                 if (checkpoint.get("threadId") != session_id or checkpoint.get("payload") != payload
@@ -315,6 +319,52 @@ class WorkspaceJournal:
                     "UPDATE workspace_commands SET result=? WHERE session_id=? AND request_id=? AND result IS NULL",
                     (json.dumps(receipt, allow_nan=False), session_id, key)).rowcount
         return recovered
+
+    @staticmethod
+    def _work_event_checkpoint(conn, session_id, payload):
+        """Infer only a unique, exact text input after the pre-dispatch boundary."""
+        boundary = payload.get("event_start")
+        if type(boundary) is not int or boundary < 0:
+            return None
+        rows = conn.execute(
+            "SELECT event FROM workspace_events WHERE session_id=? AND sequence>? "
+            "AND (json_extract(event, '$.method')='turn/started' OR "
+            "(json_extract(event, '$.method') IN ('item/started', 'item/completed') "
+            "AND json_extract(event, '$.params.item.type')='userMessage')) "
+            "ORDER BY sequence", (session_id, boundary)).fetchall()
+        turns, inputs = set(), {}
+        for row in rows:
+            event = json.loads(row[0])
+            params = event.get("params", {})
+            if params.get("threadId") != session_id:
+                return None
+            if event["method"] == "turn/started":
+                turn = params.get("turn", {}).get("id")
+                if not isinstance(turn, str) or not turn:
+                    return None
+                turns.add(turn)
+                continue
+            item = params.get("item", {})
+            if item.get("type") != "userMessage":
+                continue
+            turn, item_id, content = params.get("turnId"), item.get("id"), item.get("content")
+            if (not isinstance(turn, str) or not turn or not isinstance(item_id, str) or not item_id
+                    or not isinstance(content, list) or len(content) != 1
+                    or not isinstance(content[0], dict) or content[0].get("type") != "text"
+                    or not isinstance(content[0].get("text"), str)):
+                return None
+            digest = hashlib.sha256(content[0]["text"].encode()).hexdigest()
+            if digest != payload.get("prompt_sha256"):
+                return None
+            inputs[(turn, item_id)] = digest
+        if len(turns) != 1 or len(inputs) != 1:
+            return None
+        turn = next(iter(turns))
+        if next(iter(inputs))[0] != turn:
+            return None
+        return {"threadId": session_id, "payload": payload, "receipt": {
+            "ok": True, "committed": True, "session_id": session_id,
+            "turn_id": turn, "start_offset": payload.get("start_offset")}}
 
     def turn_completion(self, session_id: str, turn_id: str):
         with closing(self._connect()) as conn:

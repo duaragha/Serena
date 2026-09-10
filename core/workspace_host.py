@@ -273,6 +273,7 @@ class WorkspaceHost:
             if record is not None:
                 stored = dict(record["payload"])
                 original_offset = stored.pop("start_offset", None)
+                stored.pop("event_start", None)
                 if stored != payload:
                     raise ValueError("Request ID was already used with different content")
                 prior = record["result"]
@@ -280,6 +281,10 @@ class WorkspaceHost:
                     self._work_turns[sid] = {"uncertain": True}
                 elif prior.get("ok") and prior.get("turn_id"):
                     self._work_turns[sid] = {"uncertain": False, "turn_id": prior["turn_id"]}
+                    owner = self._sessions[sid][0]
+                    if (owner.state == "uncertain" and not owner.active_turn
+                            and await asyncio.to_thread(self.journal.turn_completion, sid, prior["turn_id"])):
+                        owner.state = "ready"
                 return prior or {"ok": False, "committed": True, "uncertain": True,
                                  "start_offset": original_offset,
                                  "message": "Prior native work submission is unconfirmed; it will not be repeated"}
@@ -301,6 +306,7 @@ class WorkspaceHost:
             if error or self._stopped:
                 return {"ok": False, "committed": False, "message": error or "Host stopped"}
             payload["start_offset"] = start_offset
+            payload["event_start"] = await asyncio.to_thread(self.journal.latest_sequence, sid)
             claimed, prior = await asyncio.to_thread(self.journal.claim_command, sid, key, payload)
             if not claimed:
                 return prior or {"ok": False, "committed": True, "uncertain": True}

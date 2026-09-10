@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def child(root, expect_auth_failure=False, lose_receipt=False):
+def child(root, expect_auth_failure=False, lose_receipt=False, lose_ack=False):
     from werkzeug.serving import make_server
 
     from core.coding_job_contract import CodingJobBrief, capture_git_snapshot
@@ -81,13 +81,15 @@ def child(root, expect_auth_failure=False, lose_receipt=False):
                     [{'type': 'text', 'text': 'Reply exactly READY. Do not use tools.'}],
                     options={'model': SOL_MODEL, 'effort': 'high'})
                 async with asyncio.timeout(90):
-                    while owner.active_turn or owner.state != 'ready':
+                    while (owner.active_turn or owner.state != 'ready'
+                           or not host.journal.turn_completion(sid, result['turn']['id'])):
                         await asyncio.sleep(0.05)
                 completion = host.journal.turn_completion(sid, result['turn']['id'])
                 assert completion and completion['status'] == 'completed', completion
             host._dispatch(seed_model_selection(), 100)
         initial_turns = sum(event['event'].get('method') == 'turn/started'
                             for event in host.journal.read(sid)['events'])
+        initial_completed = set(owner._completed)
         item, dispatch, view = str(uuid4()), str(uuid4()), str(uuid4())
         prompt = 'Reply exactly SERENA_NATIVE_WORK_PROOF. Do not use tools.'
         host.note_view_context(sid, {'view_id': view, 'sequence': 0,
@@ -112,19 +114,29 @@ def child(root, expect_auth_failure=False, lose_receipt=False):
                 host.journal.finish_command = finish
                 raise OSError('Injected lost receipt after native acceptance')
             host.journal.finish_command = fail_once
+        if lose_ack:
+            rpc_request = owner.rpc.request
+            async def lose_native_reply(method, *args, **kwargs):
+                result = await rpc_request(method, *args, **kwargs)
+                if method == 'turn/start':
+                    owner.rpc.request = rpc_request
+                    raise TimeoutError('Injected native acknowledgement loss')
+                return result
+            owner.rpc.request = lose_native_reply
         outcomes = []
-        for sequence in ((1, 2, 3) if lose_receipt else (1, 2)):
+        for sequence in ((1, 2, 3) if lose_receipt or lose_ack else (1, 2)):
             host.note_view_context(sid, {'view_id': view, 'sequence': sequence,
                                         'visible': True, 'focused': True, 'draft': False})
             request = Request(f'http://127.0.0.1:{server.server_port}/api/codex-work-bridge',
                 method='POST', headers={'Content-Type': 'application/json'}, data=json.dumps(body).encode())
             with urlopen(request, timeout=150) as response:
                 result = json.load(response)
-            if lose_receipt and sequence == 1:
+            if (lose_receipt or lose_ack) and sequence == 1:
                 assert not result['ok'] and result['committed'] and result['reserved'], result
                 async def wait_completed():
                     async with asyncio.timeout(90):
-                        while owner.active_turn or owner.state != 'ready':
+                        while not any(host.journal.turn_completion(sid, turn_id)
+                                      for turn_id in set(owner._completed).difference(initial_completed)):
                             await asyncio.sleep(0.05)
                 host._dispatch(wait_completed(), 100)
                 continue
@@ -148,6 +160,8 @@ def child(root, expect_auth_failure=False, lose_receipt=False):
             print('PASS: after one user model-selection turn, actual native runtime inventory selected the exact existing owner and HTTP bridge')
         if lose_receipt:
             print('PASS: injected receipt failure recovered from durable exact-turn evidence without resubmission')
+        if lose_ack:
+            print('PASS: injected native acknowledgement loss recovered from unique exact input and terminal events without resubmission')
         print('PASS: real native authentication failure reported honestly, not as job success; one submitted turn, retry reused original bounds; reservation released; project unchanged'
               if expect_auth_failure else 'PASS: one real ChatGPT-subscription job turn through HTTP/native owner; repeated dispatch reused its original reply and bounds; reservation released; project unchanged')
     finally:
@@ -165,10 +179,12 @@ def main():
     parser.add_argument('--allow-inference', action='store_true', required=True)
     parser.add_argument('--child', type=Path)
     parser.add_argument('--expect-auth-failure', action='store_true')
-    parser.add_argument('--lose-receipt', action='store_true')
+    failure = parser.add_mutually_exclusive_group()
+    failure.add_argument('--lose-receipt', action='store_true')
+    failure.add_argument('--lose-ack', action='store_true')
     args = parser.parse_args()
     if args.child:
-        child(args.child, args.expect_auth_failure, args.lose_receipt)
+        child(args.child, args.expect_auth_failure, args.lose_receipt, args.lose_ack)
         return
     from core.billing import strip_metered_auth_env
     from core.work_session_router import SOL_MODEL
@@ -196,7 +212,8 @@ def main():
             env.pop(key, None)
         process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--allow-inference', '--child', str(root),
                                     *(['--expect-auth-failure'] if args.expect_auth_failure else []),
-                                    *(['--lose-receipt'] if args.lose_receipt else [])],
+                                    *(['--lose-receipt'] if args.lose_receipt else []),
+                                    *(['--lose-ack'] if args.lose_ack else [])],
                                    cwd=ROOT, env=env)
         try:
             raise SystemExit(process.wait(timeout=240))
