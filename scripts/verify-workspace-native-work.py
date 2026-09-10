@@ -23,6 +23,7 @@ def child(root, expect_auth_failure=False):
 
     from core.coding_job_contract import CodingJobBrief, capture_git_snapshot
     from core.voice_inbox import get_default_voice_inbox
+    from core.work_session_router import SOL_MODEL, discover_work_route
     from core.workspace_host import WorkspaceHost
     from core.workspace_journal import WorkspaceJournal
     from core.workspace_rpc import WorkspaceRpc
@@ -44,9 +45,11 @@ def child(root, expect_auth_failure=False):
             account = await rpc.request('account/read', {'refreshToken': False})
             assert account['account']['type'] == 'chatgpt'
             result = await rpc.request('thread/start', {
+                'model': SOL_MODEL,
                 'cwd': str(project), 'sandbox': 'read-only', 'approvalPolicy': 'never',
                 'developerInstructions': 'Transport verification only. Do not use tools. Reply only with the exact requested text.',
-                'config': {'features.shell_tool': False, 'web_search': 'disabled'},
+                'config': {'features.shell_tool': False, 'web_search': 'disabled',
+                           'model_reasoning_effort': 'high'},
             })
             sid = result['thread']['id']
             await rpc.request('thread/shellCommand', {'threadId': sid, 'command': 'printf SERENA_WORK_SEED', 'timeoutMs': 5000})
@@ -72,8 +75,30 @@ def child(root, expect_auth_failure=False):
         assert host.attach(sid)['ok']
         owner = host._sessions[sid][0]
         pid = owner.rpc.process.pid
+        if not expect_auth_failure:
+            async def seed_model_selection():
+                result = await owner.submit(
+                    [{'type': 'text', 'text': 'Reply exactly READY. Do not use tools.'}],
+                    options={'model': SOL_MODEL, 'effort': 'high'})
+                async with asyncio.timeout(90):
+                    while owner.active_turn or owner.state != 'ready':
+                        await asyncio.sleep(0.05)
+                completion = host.journal.turn_completion(sid, result['turn']['id'])
+                assert completion and completion['status'] == 'completed', completion
+            host._dispatch(seed_model_selection(), 100)
+        initial_turns = sum(event['event'].get('method') == 'turn/started'
+                            for event in host.journal.read(sid)['events'])
         item, dispatch, view = str(uuid4()), str(uuid4()), str(uuid4())
         prompt = 'Reply exactly SERENA_NATIVE_WORK_PROOF. Do not use tools.'
+        host.note_view_context(sid, {'view_id': view, 'sequence': 0,
+                                    'visible': True, 'focused': True, 'draft': False})
+        context = host.runtime_context_snapshot()
+        context['bridge_port'] = server.server_port
+        route = discover_work_route(str(project), prompt, runtime_contexts=[context],
+                                    sessions=[], active_session_ids=[])
+        if not expect_auth_failure:
+            assert route.mode == 'reuse' and route.session_id == sid, (route, context)
+            assert route.bridge_port == server.server_port
         store = get_default_voice_inbox()
         brief = CodingJobBrief.create(item_id=item, exact_request=prompt, triggering_request=prompt,
             project_root=project, initial_git=capture_git_snapshot(project, item_id=item, label='baseline'),
@@ -101,9 +126,12 @@ def child(root, expect_auth_failure=False):
         assert store.route_record(item)['state'] == ('uncertain' if expect_auth_failure else 'completed')
         commands = [host.journal.command_record(sid, 'work:' + item + ':' + dispatch)]
         assert commands[0]['result']['ok'] and commands[0]['result']['turn_id']
-        assert sum(event['event'].get('method') == 'turn/started' for event in host.journal.read(sid)['events']) == 1
+        assert sum(event['event'].get('method') == 'turn/started'
+                   for event in host.journal.read(sid)['events']) == initial_turns + 1
         assert not host.journal.has_pending_work(sid) and not host._work_reservations
         assert subprocess.check_output(['git', '-C', str(project), 'status', '--porcelain'], text=True) == ''
+        if not expect_auth_failure:
+            print('PASS: after one user model-selection turn, actual native runtime inventory selected the exact existing owner and HTTP bridge')
         print('PASS: real native authentication failure reported honestly, not as job success; one submitted turn, retry reused original bounds; reservation released; project unchanged'
               if expect_auth_failure else 'PASS: one real ChatGPT-subscription job turn through HTTP/native owner; repeated dispatch reused its original reply and bounds; reservation released; project unchanged')
     finally:
@@ -126,6 +154,7 @@ def main():
         child(args.child, args.expect_auth_failure)
         return
     from core.billing import strip_metered_auth_env
+    from core.work_session_router import SOL_MODEL
 
     source = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'auth.json'
     auth = json.loads(source.read_text())
@@ -136,6 +165,8 @@ def main():
         home = root / 'home'
         codex = home / '.codex'
         codex.mkdir(parents=True, mode=0o700)
+        (codex / 'config.toml').write_text(
+            f'model = {json.dumps(SOL_MODEL)}\nmodel_reasoning_effort = "high"\n', encoding='utf-8')
         with open(codex / 'auth.json', 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
             # Preserve refresh age so isolation does not force an unnecessary refresh.
             json.dump({'auth_mode': 'chatgpt', 'tokens': auth['tokens'],

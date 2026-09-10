@@ -2,6 +2,34 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Routing Admission (2026-09-10)
+
+Focused and recent native Codex owners now participate in existing-job routing
+when ready, with freshly known empty composers. Missing/stale composer state,
+pending interactions, busy/reserved/dead owners, and incompatible models or
+efforts remain excluded. Existing Sol/high-or-xhigh routing policy is unchanged.
+The native bridge rechecks ownership, composer state and real background tasks
+under the reservation lock before submitting; selection alone grants no writer.
+
+The real proof now goes through `discover_work_route`, including actual Git-root
+enrichment and the owner's runtime inventory. It makes one explicit user
+model-selection turn first, then one accepted-job turn, and repeats the dispatch
+without a second job turn. A shell-only persisted seed reports unknown reasoning
+effort on resume and is correctly ineligible. No normal profile is changed.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_work_session_router.py tests/test_workspace_work_bridge.py -q --tb=short
+# exit 0: 87 passed in 6.56s
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-work.py --allow-inference
+# initial four diagnostic attempts exit 1 before job submission: fixture skipped
+# project enrichment, then exposed default/unknown-effort settings on resume
+# final corrected proof exit 0: exact native routing, real successful job,
+# idempotent retry, released reservation, unchanged project, children reaped
+```
+
+Pending-dispatch recovery and idle sleeping remain unfinished; this is not a
+release or default activation of the native UI.
+
 ## Successful Native Job Proof (2026-09-10)
 
 The isolated credential copy omitted `last_refresh`. Preserving that metadata
