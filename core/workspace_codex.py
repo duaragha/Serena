@@ -431,6 +431,26 @@ class CodexWorkspace:
         selected["turns"] = list(reversed(deepcopy(page["data"])))
         return {"thread": selected, "historyCursor": following}
 
+    async def steer_agent(self, thread_id, expected_turn_id, text):
+        if (not isinstance(expected_turn_id, str) or not 1 <= len(expected_turn_id) <= 256
+                or not isinstance(text, str) or not text.strip() or "\0" in text or len(text.encode()) > 65536):
+            raise ValueError("An exact active agent turn and message of at most 64 KiB are required")
+        inputs = [{"type": "text", "text": text}]
+        self._reject_unrouted_command(inputs)
+        async with self._control_lock:
+            if self.state not in {"ready", "running"}:
+                raise WorkspaceRpcError("Parent connection is not available for agent controls")
+            snapshot = await self.inspect_agent(thread_id)
+            running = [turn["id"] for turn in snapshot["thread"]["turns"] if turn.get("status") == "inProgress"]
+            if running != [expected_turn_id] or self.state not in {"ready", "running"}:
+                raise WorkspaceRpcError("Agent turn changed; refresh before sending")
+            result = await self.rpc.request("turn/steer", {
+                "threadId": thread_id, "expectedTurnId": expected_turn_id, "input": inputs,
+            })
+            if not isinstance(result, dict) or result.get("turnId") != expected_turn_id:
+                raise WorkspaceRpcError("Agent message delivery was not confirmed")
+            return {"threadId": thread_id, "turnId": expected_turn_id, "accepted": True}
+
     async def interrupt_agent(self, thread_id, expected_turn_id, confirmed):
         if confirmed is not True or not isinstance(expected_turn_id, str) or not 1 <= len(expected_turn_id) <= 256:
             raise ValueError("An exact agent turn and explicit stop confirmation are required")

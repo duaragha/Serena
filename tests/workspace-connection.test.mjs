@@ -11,6 +11,33 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+for(const kind of ['interrupt','steer']){
+  test(`agent ${kind} retains exact parent route and receipt after lost response`,async()=>{
+    const saved=storage(),calls=[];
+    const options={sessionId:'parent',token:'token',storage:saved,receive:()=>{},error:()=>{},
+      fetcher:async(url,request)=>{
+        calls.push([url,JSON.parse(request.body)]);
+        if(calls.length===1)throw Error('lost response');
+        return response({ok:true,result:{threadId:'child',turnId:'child-turn',accepted:true,requested:true}});
+      }};
+    const invoke=conn=>kind==='interrupt'?conn.controls().interruptAgent('child','child-turn'):conn.controls().steerAgent('child','child-turn','Exact message\nSecond line');
+    let conn=new WorkspaceConnection(options);
+    assert.deepEqual(calls,[]);
+    await assert.rejects(invoke(conn),/lost response/);
+    conn.dispose();conn=new WorkspaceConnection(options);
+    try{
+      await invoke(conn);
+      assert.equal(calls.length,2);
+      assert.deepEqual(calls[0],calls[1]);
+      assert.equal(calls[0][0],'/api/workspace/parent/commands');
+      assert.equal(calls[0][1].action,kind==='interrupt'?'interrupt_agent':'steer_agent');
+      assert.equal(calls[0][1].payload.thread_id,'child');
+      assert.equal(calls[0][1].payload.expected_turn_id,'child-turn');
+      assert.deepEqual(conn.pending,{});
+    }finally{conn.dispose();}
+  });
+}
+
 test('runtime sleep snapshots update on empty read polls without commands',async()=>{
   const calls=[],states=[];
   const snapshots=[{session_id:'exact',sleeping:true},{session_id:'exact',sleeping:false},null];

@@ -307,6 +307,56 @@ def test_agent_stop_requires_exact_confirmation_and_waits_for_native_completion(
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_active_agent_message_keeps_failed_draft_and_never_starts_idle_turn(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.agents=async()=>({data:[{id:'child',agentNickname:'Research',status:{type:'active'}}],nextCursor:null});
+      window.childStatus='inProgress';
+      controls.inspectAgent=async id=>({thread:{id,status:{type:'active'},turns:[{id:'child-turn',status:childStatus,items:[]}]},historyCursor:null});
+      controls.steerAgent=async(id,turn,text)=>{calls.push(['steer',id,turn,text]);throw Error('Delivery unconfirmed');};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'turn/started',params:{turn:{id:'parent-running',status:'inProgress'}}});pane.input.value='/agent';pane.render();
+    }""")
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role('dialog', name='Delegated agents', exact=True)
+    dialog.get_by_role('button', name='Research child active', exact=True).click()
+    message = dialog.get_by_role('textbox', name='Message active agent', exact=True)
+    message.fill('Focus on tests\nKeep the scope')
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('button', name='Send to active agent', exact=True).click()
+    dialog.get_by_text('Delivery unconfirmed', exact=True).wait_for()
+    assert message.input_value() == 'Focus on tests\nKeep the scope'
+    assert page.evaluate('pane.input.value') == '/agent'
+    dialog.get_by_role('button', name='Close agents', exact=True).click()
+    page.locator('#left textarea').press('Enter')
+    dialog.get_by_role('button', name='Research child active', exact=True).click()
+    playwright.expect(message).to_have_value('Focus on tests\nKeep the scope')
+    assert len(page.evaluate('calls')) == 1
+    page.evaluate("()=>{controls.steerAgent=async(threadId,turnId,text)=>{calls.push(['steer',threadId,turnId,text]);return {accepted:true,threadId,turnId};};}")
+    dialog.get_by_role('button', name='Send to active agent', exact=True).click()
+    dialog.get_by_text('Message accepted by active agent', exact=True).wait_for()
+    assert message.input_value() == ''
+    assert page.evaluate('calls') == [['steer', 'child', 'child-turn', 'Focus on tests\nKeep the scope']] * 2
+    message.fill('Next instruction')
+    page.evaluate("()=>{window.childStatus='completed';}")
+    dialog.get_by_role('button', name='Refresh selected agent', exact=True).click()
+    dialog.get_by_text('Turn child-turn / completed', exact=True).wait_for()
+    assert message.is_disabled()
+    assert dialog.get_by_role('button', name='Send to active agent', exact=True).is_disabled()
+    assert message.input_value() == 'Next instruction'
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'agent-message-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button', name='Close agents', exact=True).click()
+    assert page.evaluate('pane.conversation.status') == 'running'
+    assert len(page.evaluate('calls')) == 2
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

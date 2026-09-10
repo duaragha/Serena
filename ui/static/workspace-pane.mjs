@@ -861,7 +861,12 @@ export class WorkspacePane {
     const stopConfirm=node('input');stopConfirm.type='checkbox';
     const stopLabel=node('label','aw-agent-stop');stopLabel.append(stopConfirm,document.createTextNode(' Stop this agent\'s current turn'));stopLabel.hidden=true;
     const stop=this.button('Stop agent turn','square',()=>stopAgent());stop.hidden=true;
+    const message=node('textarea');message.setAttribute('aria-label','Message active agent');message.placeholder='Message active agent...';message.rows=3;
+    const send=this.button('Send to active agent','arrow-up',()=>sendAgent());
+    const composer=node('div','aw-agent-composer');composer.append(message,send);composer.hidden=true;
     let busy=false,selected=null,listCursor=null,historyCursor=null,activeTurn=null;
+    let draftError=false;
+    const draftKey=id=>`${this.draftKey}:agent:${id}`;
     const stops=new Set();
     const listCursors=new Set(),historyCursors=new Set(),rows=new Map(),turns=new Map();
     const changes=new Map();
@@ -875,6 +880,31 @@ export class WorkspacePane {
       stop.hidden=stopLabel.hidden=!this.controls.interruptAgent || !activeTurn;
       stop.disabled=busy || !stopConfirm.checked || stops.has(JSON.stringify([selected,activeTurn]));
       stopConfirm.disabled=busy;
+      composer.hidden=!this.controls.steerAgent || !selected;
+      message.disabled=busy || !activeTurn;
+      send.disabled=busy || draftError || !activeTurn || !message.value.trim();
+    };
+    message.addEventListener('input',()=>{
+      try{this.draftStorage.setItem(draftKey(selected),message.value);draftError=false;}
+      catch{draftError=true;status.textContent='Agent draft could not be saved';}
+      enable();
+    });
+    const sendAgent=async()=>{
+      if(send.disabled)return;
+      const target=selected,turn=activeTurn,text=message.value;busy=true;enable();
+      try{
+        const result=await this.controls.steerAgent(target,turn,text);
+        if(result?.accepted!==true || result.threadId!==target || result.turnId!==turn)throw Error('Agent message delivery was not confirmed');
+        message.value='';
+        try{
+          this.draftStorage.removeItem(draftKey(target));
+          if(dialog.open)status.textContent='Message accepted by active agent';
+        }catch{
+          draftError=true;
+          if(dialog.open)status.textContent='Message accepted; saved draft could not be cleared';
+        }
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;enable();}
     };
     stopConfirm.addEventListener('change',enable);
     const stopAgent=async()=>{
@@ -904,6 +934,10 @@ export class WorkspacePane {
         const merged=new Map(result.thread.turns.map(turn=>[turn.id,turn]));
         for(const [key,value] of turns)if(!merged.has(key))merged.set(key,value);
         turns.clear();for(const [key,value] of merged)turns.set(key,value);
+        if(selected!==id){
+          try{message.value=this.draftStorage.getItem(draftKey(id))||'';draftError=false;}
+          catch{message.value='';draftError=true;}
+        }
         selected=id;historyCursor=result.historyCursor;historyCursors.add(historyCursor);
         for(const [key,row] of rows)row.setAttribute('aria-pressed',String(key===selected));
         output.replaceChildren(node('h4','',result.thread.agentNickname || result.thread.name || 'Agent'),node('code','aw-agent-id',id));
@@ -938,7 +972,7 @@ export class WorkspacePane {
       finally{busy=false;enable();}
     };
     dialog.addEventListener('close',()=>{this.notifyAgentChange=null;dialog.remove();this.input.focus();});
-    dialog.append(node('h3','','Delegated agents'),close,refresh,status,list,more,reload,earlier,stopLabel,stop,output);
+    dialog.append(node('h3','','Delegated agents'),close,refresh,status,list,more,reload,earlier,stopLabel,stop,output,composer);
     this.agentsDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();await loadList(true);
   }
 

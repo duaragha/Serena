@@ -66,10 +66,16 @@ async def main():
                 assert "does not belong" in str(error)
             else:
                 raise AssertionError("Unrelated native thread stop was accepted")
-            assert calls == ["thread/list", "thread/read", "thread/read"]
+            try:
+                await owner.steer_agent(other, "not-a-child-turn", "Do not deliver this proof message")
+            except WorkspaceRpcError as error:
+                assert "does not belong" in str(error)
+            else:
+                raise AssertionError("Unrelated native thread message was accepted")
+            assert calls == ["thread/list", "thread/read", "thread/read", "thread/read"]
             assert owner.rpc.process is process and process.returncode is None
             assert owner.session_id == sid and owner.state == "ready"
-            print(json.dumps({"nativeAgentList": "empty", "foreignThreadRejected": True, "foreignStopRejected": True,
+            print(json.dumps({"nativeAgentList": "empty", "foreignThreadRejected": True, "foreignStopRejected": True, "foreignMessageRejected": True,
                               "sameProcess": True, "sameSession": True, "calls": calls,
                               "inference": False, "spawnedAgents": 0}))
             owner.rpc.request = request

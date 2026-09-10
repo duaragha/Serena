@@ -5,6 +5,36 @@ that a command's full behavior works. Gemini is deferred.
 
 ## Native Agent Inspection (2026-09-10)
 
+### Messages to Active Children
+
+The selected agent now has a text composer for its existing active turn. Native
+ancestry and the displayed turn are rechecked before `turn/steer`; no turn/start,
+resume, model override, shell or replacement session is used. Native confirmation
+must name the expected turn. Slash commands are rejected rather than passed to
+the model as text. Reserved durable jobs reject steering, while explicit stop
+retains its separately permitted cancellation semantics.
+
+Drafts are isolated by parent/child identity and persist when the dialog closes.
+Failed or ambiguous delivery keeps the text. Stable connection receipts survive
+lost HTTP responses and page replacement; the same intent reuses its original
+request ID. Accepted text clears locally even if storage cleanup fails, and that
+cleanup failure is labeled as an accepted message with a saved-draft problem,
+not as failed delivery. Idle children cannot receive input through this control.
+
+Verification (all final exit codes 0):
+
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_agent_message_steers_exact_turn_without_start_or_resume tests/test_workspace_host.py::test_agent_reads_use_existing_parent_even_when_job_reserved -q --tb=short`: 7 passed in 2.12s.
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_active_agent_message_keeps_failed_draft_and_never_starts_idle_turn tests/test_workspace_pane.py::test_agent_stop_requires_exact_confirmation_and_waits_for_native_completion -q --tb=short`: 4 passed in 15.01s; desktop/mobile, multiline text, failed-draft reopen, exact target, accepted clearing and idle refusal. Mobile screenshot inspected.
+- `node --test tests/workspace-connection.test.mjs`: 52 passed in 335.46ms; explicit child stop/steer receipt identity survives lost response and connection replacement on the unchanged parent route.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-agents.py`: actual native foreign-thread inspection/stop/message rejection, same process/session, native active shell turn interrupted with matching completion; no inference or agent spawn; cleanup passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-agents.py`: all checks passed.
+- `node --check ui/static/workspace-pane.mjs` and `git diff --check`: separate commands, both exit 0 with no output.
+
+Still open: actual model-spawned child send/stop end-to-end proof, intentional
+idle-child continuation, child uploads/previews, full parity and release. The
+positive steering checks here use protocol doubles, not a claim of an actual
+model accepting the child message. No installed app was changed.
+
 ### Confirmed Child-Turn Interruption
 
 The inspector now provides Stop agent turn only for a snapshot containing one

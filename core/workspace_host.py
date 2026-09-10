@@ -808,6 +808,7 @@ class WorkspaceHost:
             "agents",
             "inspect_agent",
             "interrupt_agent",
+            "steer_agent",
             "review",
             "compact",
             "background_tasks",
@@ -1117,6 +1118,10 @@ class WorkspaceHost:
                     if provider != "codex" or set(payload) != {"target"}:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])
+                elif action == "steer_agent":
+                    if provider != "codex" or set(payload) != {"thread_id", "expected_turn_id", "text"}:
+                        raise ValueError("An exact active agent message is required")
+                    result = await owner.steer_agent(**payload)
                 elif action == "interrupt_agent":
                     if provider != "codex" or set(payload) != {"thread_id", "expected_turn_id", "confirmed"}:
                         raise ValueError("An exact confirmed agent interruption is required")

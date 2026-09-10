@@ -228,6 +228,39 @@ def test_agent_stop_is_confirmed_exact_and_does_not_complete_parent(tmp_path, ca
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('case', ['ok', 'stale', 'foreign', 'unconfirmed', 'command', 'empty'])
+def test_agent_message_steers_exact_turn_without_start_or_resume(tmp_path, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.state = 'running'
+        owner.active_turn = 'parent-turn'
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/read':
+                return {'thread': {'id': 'child', 'parentThreadId': None if case == 'foreign' else owner.session_id}}
+            if method == 'thread/turns/list':
+                return {'data': [{'id': 'changed' if case == 'stale' else 'child-turn', 'status': 'inProgress', 'items': []}], 'nextCursor': None}
+            assert method == 'turn/steer'
+            assert params == {'threadId': 'child', 'expectedTurnId': 'child-turn', 'input': [{'type': 'text', 'text': 'Focus on tests\nKeep the scope'}]}
+            return {'turnId': 'wrong' if case == 'unconfirmed' else 'child-turn'}
+        rpc.request = request
+        try:
+            text = '/new' if case == 'command' else '' if case == 'empty' else 'Focus on tests\nKeep the scope'
+            if case == 'ok':
+                assert await owner.steer_agent('child', 'child-turn', text) == {'accepted': True, 'threadId': 'child', 'turnId': 'child-turn'}
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.steer_agent('child', 'child-turn', text)
+            assert any(method == 'turn/steer' for method, _ in calls) is (case in {'ok', 'unconfirmed'})
+            assert owner.active_turn == 'parent-turn' and owner.state == 'running'
+            assert all(method in {'thread/read', 'thread/turns/list', 'turn/steer'} for method, _ in calls)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('state', ['ready', 'running'])
 def test_native_rename_targets_and_verifies_exact_thread_without_new_turn(tmp_path, state):
     async def run():

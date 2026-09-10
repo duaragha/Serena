@@ -91,6 +91,9 @@
 .aw-agent-history{min-width:0;border-top:1px solid #302631;margin-top:12px}
 .aw-agent-history .aw-item{margin:12px 0}
 .aw-agent-stop input{width:auto;accent-color:#ff85cb;color-scheme:dark}
+.aw-agent-composer{display:flex;align-items:flex-end;gap:8px;margin-top:16px}
+.aw-agent-composer[hidden]{display:none}
+.aw-agent-composer textarea{box-sizing:border-box;min-width:0;flex:1;resize:vertical;background:#100d11;color:#dfd8e3;border:1px solid #493545;padding:10px;font:inherit}
 .aw-review-dialog h2{font-size:16px;margin:0 0 16px}.aw-review-dialog label{display:block;margin-bottom:14px}.aw-review-dialog label[hidden]{display:none}.aw-review-dialog select,.aw-review-dialog textarea{box-sizing:border-box;display:block;width:100%;margin-top:6px;background:#000;color:inherit;border:1px solid #63455d;padding:8px}.aw-review-dialog button{margin-right:8px}
 .aw-tasks-dialog{max-height:80vh;overflow:auto}.aw-tasks-dialog h3{font-size:16px;margin:0 0 12px}.aw-background-task{border-top:1px solid #392b36;padding:12px 0;display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:8px}.aw-background-task pre{grid-column:1/-1;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:inherit}.aw-background-task small{overflow-wrap:anywhere;color:#b7a6b4}.aw-tasks-dialog svg{width:16px;height:16px}
 .aw-message h1,.aw-message h2,.aw-message h3{font-size:15px;line-height:1.5;margin:16px 0 8px}

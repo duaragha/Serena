@@ -234,6 +234,7 @@ export class WorkspaceConnection {
       agents: (cursor=null) => this.command('agents', {cursor}),
       inspectAgent: (thread_id,cursor=null) => this.command('inspect_agent', {thread_id,cursor}),
       interruptAgent: (thread_id,expected_turn_id) => this.command('interrupt_agent', {thread_id,expected_turn_id,confirmed:true}),
+      steerAgent: (thread_id,expected_turn_id,text) => this.command('steer_agent', {thread_id,expected_turn_id,text}),
       updateGoal: (changes,expected) => this.command('update_goal', {changes,expected,confirmed:true}),
       clearGoal: expected => this.command('clear_goal', {expected,confirmed:true}),
       disconnectSession: () => this.command('disconnect_session', {confirmed:true}),

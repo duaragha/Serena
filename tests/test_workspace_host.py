@@ -877,6 +877,9 @@ def test_agent_reads_use_existing_parent_even_when_job_reserved(tmp_path):
         async def interrupt_agent(self, **payload):
             calls.append(('stop', self.sid, payload))
             return {'requested': True}
+        async def steer_agent(self, **payload):
+            calls.append(('steer', self.sid, payload))
+            return {'accepted': True}
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'agents.db'),
                          resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
                          factories={'codex': AgentOwner})
@@ -892,6 +895,12 @@ def test_agent_reads_use_existing_parent_even_when_job_reserved(tmp_path):
         assert host.command('exact', 'stop', 'interrupt_agent', payload)['ok']
         assert host.command('exact', 'stop', 'interrupt_agent', payload)['ok']
         assert calls[2:] == [('stop', 'exact', payload)]
+        message = {'thread_id': 'child', 'expected_turn_id': 'child-turn', 'text': 'Focus on tests'}
+        assert not host.command('exact', 'reserved-steer', 'steer_agent', message)['ok']
+        host._work_reservations.clear()
+        assert host.command('exact', 'steer', 'steer_agent', message)['ok']
+        assert host.command('exact', 'steer', 'steer_agent', message)['ok']
+        assert calls[3:] == [('steer', 'exact', message)]
         assert list(host._sessions) == ['exact']
         assert not host._sessions['exact'][0].sent
         owner = host._sessions['exact'][0]
