@@ -127,3 +127,47 @@ def test_owner_submit_returns_exact_turn_without_blocking_interrupt(tmp_path):
         with pytest.raises(ValueError, match="Invalid ACP"):
             await owner.answer("request", {"outcome": {"outcome": "selected", "optionId": None}})
     asyncio.run(run())
+
+
+def test_owner_shutdown_cancels_prompt_waiting_on_stopped_event_reader(tmp_path):
+    async def run():
+        owner = make(tmp_path, ProbeRpc())
+        waiting = asyncio.Event()
+        order = []
+
+        async def prompt():
+            waiting.set()
+            try:
+                await asyncio.Future()
+            finally:
+                order.append("prompt-stopped")
+
+        async def close_rpc():
+            order.append("native-stopped")
+
+        owner.rpc.close = close_rpc
+        owner._turn_task = asyncio.create_task(prompt())
+        await waiting.wait()
+        await asyncio.wait_for(owner.close(), timeout=1)
+        assert owner._turn_task.cancelled()
+        assert order == ["native-stopped", "prompt-stopped"]
+        assert owner.state == "unavailable"
+    asyncio.run(run())
+
+
+def test_owner_acknowledges_turn_that_completes_before_submit_returns(tmp_path):
+    async def run():
+        owner = make(tmp_path, ProbeRpc())
+        owner.session.state = "ready"
+
+        async def prompt(inputs):
+            owner.session.events.begin("fast-turn")
+            owner.session.last_turn_id = "fast-turn"
+            owner.session.events.complete("end_turn")
+
+        owner.session.prompt = prompt
+        assert await owner.submit([{"type": "text", "text": "hello"}]) == {
+            "turn": {"id": "fast-turn"}}
+        assert owner.active_turn is None
+        assert owner._turn_task.done()
+    asyncio.run(run())

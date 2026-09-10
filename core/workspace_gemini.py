@@ -128,6 +128,8 @@ class GeminiWorkspace:
         try:
             await self.rpc.close()
             if self._turn_task is not None:
+                if not self._turn_task.done():
+                    self._turn_task.cancel()
                 await asyncio.gather(self._turn_task, return_exceptions=True)
         finally:
             self.session.state = "unavailable"
