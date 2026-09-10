@@ -72,14 +72,14 @@ test('fresh creation rejects existing identity and invalid UUID without spawning
   await assert.rejects(f.session.create(),/twice/);
 });
 
-test('clear blocks input until exact handoff acknowledgement and retains the runtime',async()=>{
+for(const receipt of [true,false])test(`clear blocks input until handoff and retains runtime (native receipt: ${receipt})`,async()=>{
   const f=transitionFixture();await f.session.open();
   const clear=f.session.beginClear();
   const input=(await f.setup.prompt.next()).value;
   assert.equal(input.message.content,'/clear');assert.equal(input.session_id,'exact');
   assert.throws(()=>f.session.send({type:'user',session_id:'exact'}),/not ready/);
   await assert.rejects(f.session.beginClear(),/not ready/);
-  f.emit({type:'result',subtype:'success',is_error:false,session_id:clearedId,user_message_uuid:input.uuid});
+  f.emit({type:'result',subtype:'success',is_error:false,session_id:clearedId,...(receipt?{user_message_uuid:input.uuid}:{})});
   assert.deepEqual(await clear,{sessionId:clearedId});
   assert.equal(f.session.sessionId,'exact');assert.equal(f.session.state,'awaiting-handoff');
   assert.deepEqual(f.outputs,[]);
@@ -87,11 +87,23 @@ test('clear blocks input until exact handoff acknowledgement and retains the run
   assert.throws(()=>f.session.send({type:'user',session_id:clearedId}),/not ready/);
   assert.deepEqual(await f.session.commitClear(clearedId),{sessionId:clearedId});
   assert.equal(f.session.sessionId,clearedId);assert.equal(f.outputs[0].session_id,clearedId);
+  assert.equal(f.outputs[0].user_message_uuid,input.uuid);
+  if(!receipt)assert.equal(f.outputs[0].workspaceReceiptSource,'single-inflight');
   assert.deepEqual(f.calls,['spawn']);
   assert.throws(()=>f.session.send({type:'user',session_id:'exact'}),/exact/);
   f.session.send({type:'user',session_id:clearedId,message:{role:'user',content:'next'}});
   assert.equal((await f.setup.prompt.next()).value.session_id,clearedId);
   await f.session.close();
+});
+
+test('receiptless clear result before input delivery cannot change session identity',async()=>{
+  const f=transitionFixture();await f.session.open();
+  const clear=f.session.beginClear();
+  f.emit({type:'result',subtype:'success',session_id:clearedId});
+  await assert.rejects(clear,/did not confirm/);
+  assert.equal(f.session.sessionId,'exact');
+  assert.equal(f.session.state,'unavailable');
+  await f.session.close().catch(()=>{});
 });
 
 for(const grouped of [false,true])test(`queued inputs retain order and exact ${grouped?'grouped':'individual'} acknowledgements`,async()=>{

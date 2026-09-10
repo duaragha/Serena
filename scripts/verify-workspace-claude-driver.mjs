@@ -180,6 +180,20 @@ try {
   assert.equal(forkCompleted.session_id,fork.sessionId);
   assert.equal(forkCompleted.num_turns,0);
   assert.equal(forkCompleted.total_cost_usd,0);
+  const ownersBeforeClear=children.length;
+  const cleared=await driver.beginClear();
+  assert(cleared.sessionId && cleared.sessionId!==fork.sessionId);
+  assert.equal(driver.sessionId,fork.sessionId,'Clear must wait for owner handoff');
+  await driver.commitClear(cleared.sessionId);
+  const afterClearResult=new Promise(done=>{finishFork=done;});
+  driver.send({type:'user',session_id:cleared.sessionId,uuid:randomUUID(),parent_tool_use_id:null,
+    message:{role:'user',content:'/effort low'}});
+  const clearedCompleted=await Promise.race([afterClearResult,driver.done.then(()=>{throw new Error('Clear stream closed before result');})]);
+  assert.equal(clearedCompleted.session_id,cleared.sessionId);
+  assert.equal(clearedCompleted.num_turns,0);
+  assert.equal(clearedCompleted.total_cost_usd,0);
+  assert.equal(children.length,ownersBeforeClear,'Clear spawned another owner');
+  console.log('PASS: native clear changed session identity only after handoff and routed the next local command through the same CLI process');
   await driver.close();
   assert.equal((await exits.at(-1)).code,0);
   assert.deepEqual(await sdk.getSessionMessages(sid,{dir:root}),sourceHistory,'Fork input changed source history');

@@ -86,6 +86,7 @@ export class ClaudeSdkSession {
       if (this.pending.length && (this.receiptMode==='exact' || !this.inFlight.size)) {
         const message=this.pending.shift();
         if(this.outstanding.has(message.uuid))this.inFlight.add(message.uuid);
+        if(this.transition?.requestId===message.uuid)this.transition.delivered=true;
         yield message;
       }
       else await new Promise(done=>{this.wake=done;});
@@ -97,6 +98,9 @@ export class ClaudeSdkSession {
       for await (let message of this.stream) {
         if(this.transition){
           const transition=this.transition;
+          if(message.type==='result' && transition.delivered && !message.user_message_uuid && !message.user_message_uuids?.length){
+            message={...message,user_message_uuid:transition.requestId,workspaceReceiptSource:'single-inflight'};
+          }
           if(transition.events.length>=256)throw new Error('Session transition emitted excessive output');
           transition.events.push(structuredClone(message));
           if(message.session_id && message.session_id!==transition.source){

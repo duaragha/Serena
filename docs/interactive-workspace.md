@@ -2,6 +2,26 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Receiptless Native Clear Handoff
+
+The single-in-flight compatibility path now includes `/clear`. It attributes a
+receiptless completion only after the dedicated clear input was delivered. It
+still rejects failed results, unchanged or conflicting session IDs and explicit
+wrong receipts. New input remains blocked until the owning layer commits the
+handoff; no process replacement occurs. Attributed records carry the same
+`workspaceReceiptSource` marker as ordinary receiptless completions.
+
+`node --test tests/workspace-claude-sdk.test.mjs` exited 0 on Linux
+(24 passed, 1 Windows skip). The exact Windows equivalent,
+`ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "node --test C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\workspace-claude-sdk.test.mjs"`,
+exited 0 (25 passed). Python transport/owner regressions:
+`/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_transport.py tests/test_workspace_claude.py -q --tb=short`
+exited 0 (67 passed, 1 Windows skip). The native proof commands in the next section
+now additionally clear the isolated fork, commit its new identity, and submit a
+local command through the same process. Linux and Windows both exited 0,
+including cleanup. No inference, installed application changes or user session
+mutation occurs.
+
 ## Older Claude Completion Compatibility
 
 An actual isolated Windows Claude 2.1.260 run exposed a missing receipt contract:
@@ -16,7 +36,8 @@ the result is correlated to that unique in-flight input, marked
 `workspaceReceiptSource: single-inflight`. This is adapter correlation, not a
 claim that the CLI supplied a receipt. A receiptless result for multiple in-flight
 inputs fails closed. Queued messages remain ordered and no second owner is
-spawned. Native clear still requires its exact handoff acknowledgement.
+spawned. Native clear still requires a successful new-identity handoff; the
+receiptless compatibility extension is documented above.
 
 The proof environment preserves Windows system executables but isolates profile,
 AppData and temporary paths, excluding inherited credentials and Node injection
