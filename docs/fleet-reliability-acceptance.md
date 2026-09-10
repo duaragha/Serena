@@ -122,6 +122,12 @@ scheduler resuming a disk-failed lane beside an unchanged honest stop. 92 resour
 capacity and store tests, then 72 resource/supervisor tests pass. Providers in this
 checkpoint are scripted; this is not live-model acceptance.
 
+The full Fleet suite after mixed-failure repair (`6ba83cd`) passed **517 tests in
+117.21 seconds**. Receipt:
+`_artifacts/fleet-recovery-verification-20260910/full-suite-mixed-recovery.xml`.
+Production inspection still shows the original work run failed and no active Fleet
+runs; no service has been restarted and no production worker retried at this checkpoint.
+
 New baseline checkout receipts now place Projects-based deliverables under the
 synced `_artifacts/fleet-checkouts/<run-id>/` tree. Standalone test repositories
 retain colocated private state, and existing receipts are not relocated or erased.
