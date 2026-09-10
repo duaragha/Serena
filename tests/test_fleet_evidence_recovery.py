@@ -82,3 +82,67 @@ def test_disk_readiness_precedes_evidence_repair(tmp_path):
     current = store.get_run(run["run_id"])["phases"][0]["legs"][0]
     assert current["state"] == "waiting_for_resources"
     assert not store.has_event(run["run_id"], "leg.completion_repair_requested")
+
+
+def test_honest_blocker_is_visible_while_sibling_still_runs(tmp_path):
+    from test_fleet_policy_store import _create
+
+    store = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _create(store)
+    rid = run["run_id"]
+    store.claim_run(rid)
+    blocked, healthy = run["phases"][0]["legs"]
+    first = store.begin_attempt(blocked["leg_id"])
+    sibling = store.begin_attempt(healthy["leg_id"])
+    reason = "work stopped before completion: authenticated readback is unavailable"
+    store.finish_attempt(first["attempt_id"], state="failed", error=reason,
+                         input_blocker_reason=reason)
+    # Reconciliation must not turn a resumable blocker into runnable or dead work.
+    store = FleetStore(store.path)
+    assert blocked["leg_id"] not in store.prepare_phase_runnable(rid, 0)["runnable_leg_ids"]
+    store.prepare_phase_runnable(rid, 1)
+    current = store.get_run(rid)
+    assert current["state"] == "running"
+    assert current["phases"][0]["legs"][0]["state"] == "waiting_for_input"
+    assert current["phases"][0]["legs"][0]["current_attempt"]["state"] == "failed"
+    assert current["phases"][0]["legs"][1]["state"] == "running"
+    assert current["phases"][0]["legs"][1]["current_attempt"]["attempt_id"] == sibling["attempt_id"]
+    assert all(leg["state"] == "waiting_for_dependencies" for leg in current["phases"][1]["legs"])
+    with store._connect() as db:
+        assert db.execute("SELECT completed_at FROM fleet_work_unit_phases WHERE leg_id = ?",
+                          (blocked["leg_id"],)).fetchone()[0] is None
+    assert store.has_event(rid, "leg.waiting_for_input")
+    assert not store.has_event(rid, "leg.completion_repair_requested")
+
+
+def test_an_authority_stop_is_not_overridden_by_disk_words(tmp_path):
+    store, run, leg, attempt = _attempt(tmp_path)
+    reason = "work stopped before completion: [Errno 28], no authority to delete customer data"
+    store.finish_attempt(attempt["attempt_id"], state="failed", error=reason,
+                         input_blocker_reason=reason)
+    current = store.get_run(run["run_id"])
+    assert current["phases"][0]["legs"][0]["state"] == "waiting_for_input"
+    assert current["resource_waits"] == []
+
+
+def test_targeted_input_resume_preserves_siblings_resource_wait(tmp_path):
+    from test_fleet_policy_store import _create
+
+    store = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _create(store)
+    rid = run["run_id"]
+    store.claim_run(rid)
+    blocked, disk = run["phases"][0]["legs"]
+    first = store.begin_attempt(blocked["leg_id"])
+    second = store.begin_attempt(disk["leg_id"])
+    reason = "work stopped before completion: evidence unavailable"
+    store.finish_attempt(first["attempt_id"], state="failed", error=reason, input_blocker_reason=reason)
+    store.finish_attempt(second["attempt_id"], state="failed", error="[Errno 28] No space left on device")
+    parked = store.resolve_phase_failure(rid, "discover", reason)
+    assert parked["state"] == "waiting_for_resources"
+    original_wait = parked["resource_waits"]
+    resumed = store.request_leg_retry(rid, blocked["leg_id"])
+    assert resumed["state"] == "queued"
+    assert resumed["phases"][0]["legs"][0]["state"] == "queued"
+    assert resumed["phases"][0]["legs"][1]["state"] == "waiting_for_resources"
+    assert resumed["resource_waits"] == original_wait

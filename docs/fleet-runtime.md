@@ -81,11 +81,13 @@ Cooldown expiry is a diagnostic retry, not evidence that a connection or process
 Retry counts survive restart. Cancellation prevents wakeup, and terminal or superseded attempt
 callbacks are fenced before they can overwrite the current leg.
 
-An accepted honest stop or exhausted transport/process budget becomes `waiting_for_input` when
-the scheduler resolves the failed phase. The failed attempt remains failed; the run has no completion
-timestamp and does not automatically redispatch an unchanged blocker. The durable event and UI expose
+An accepted honest stop or exhausted transport/process budget immediately parks its leg in
+`waiting_for_input`, even while healthy siblings run. The scheduler parks the whole run only when
+no independent work can advance. The failed attempt remains failed; the unfinished phase/run has no
+completion timestamp and does not automatically redispatch an unchanged blocker. The durable event and UI expose
 the reason and next action. Steering and explicit whole-run or targeted-leg retry preserve valid
-completed work. Other unclassified failures still fail closed; these mechanisms are not a universal
+completed work. A targeted input-blocker retry can also wake a resource-parked run without waking
+or removing the sibling's resource wait. Other unclassified failures still fail closed; these mechanisms are not a universal
 recovery guarantee. Autonomy shows scheduled retries, resource wakeups, ignored late callbacks and
 actionable stops separately from successful completion.
 
@@ -644,7 +646,7 @@ The first enforced rejection receives one same-model corrective turn. Its failed
 queued leg/DAG state and `leg.completion_repair_requested` receipt commit in one transaction;
 there is no post-failure callback window in which an interruption can lose the repair.
 The budget survives restart and duplicate callbacks. Repeated rejection records
-`leg.completion_repair_exhausted` and parks in `waiting_for_input` when the phase resolves,
+`leg.completion_repair_exhausted` and immediately parks its leg in `waiting_for_input`,
 retaining the failed attempt and rejection reasons. An unchanged blocker does not spin.
 Disk exhaustion takes precedence and waits for storage readiness without spending this budget.
 Cancellation never schedules correction, and an accepted honest stop is not a format repair.

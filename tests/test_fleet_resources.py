@@ -251,7 +251,8 @@ def test_transport_retry_budget_survives_restart_and_preserves_provider(tmp_path
         assert current["runtime"] == leg["runtime"]
         assert current["model"] == leg["model"]
         if index == 2:
-            assert current["state"] == "failed"
+            assert current["state"] == "waiting_for_input"
+            assert current["current_attempt"]["state"] == "failed"
             assert snapshot["resource_waits"] == []
             break
         wait = snapshot["resource_waits"][0]

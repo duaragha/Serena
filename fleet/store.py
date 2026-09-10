@@ -819,6 +819,7 @@ class FleetStore:
         actual_effort: str | None = None,
         exit_code: int | None = None,
         completion_repair_reason: str | None = None,
+        input_blocker_reason: str | None = None,
     ) -> None:
         if state not in {"completed", "failed", "cancelled", "interrupted"}:
             raise ValueError("invalid Fleet attempt terminal state")
@@ -882,13 +883,17 @@ class FleetStore:
                 state == "failed" and not run["cancel_requested"]
                 and run["state"] not in TERMINAL_RUN_STATES
             )
-            resource = "disk" if is_disk_exhaustion(clean_error or "") else ""
+            input_action = (
+                "resolve the recorded authority/evidence blocker, then resume the affected worker"
+                if recovery_allowed and input_blocker_reason else ""
+            )
+            resource = "disk" if not input_action and is_disk_exhaustion(clean_error or "") else ""
             retries = 0
             retry_kind = (
                 "transport" if is_transient_transport_error(clean_error or "") else
                 "process" if exit_code in {-6, -9, -11, -13, -15} and attempt["pid"] else ""
             )
-            if not resource and retry_kind:
+            if not input_action and not resource and retry_kind:
                 retries = connection.execute(
                     "SELECT COUNT(*) FROM fleet_events WHERE leg_id = ? "
                     "AND type = ?", (attempt["leg_id"], f"leg.{retry_kind}_retry_scheduled"),
@@ -896,6 +901,7 @@ class FleetStore:
                 if retries < 2:
                     resource = retry_kind
                 elif recovery_allowed:
+                    input_action = "verify provider/runtime health before resuming this worker"
                     self._insert_event(
                         connection, run_id=str(attempt["run_id"]),
                         leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
@@ -903,7 +909,7 @@ class FleetStore:
                         payload={"retries": retries, "reason": clean_error,
                                  "next_action": "verify provider/runtime health before resuming this worker"},
                     )
-            resource_wait = recovery_allowed and bool(resource)
+            resource_wait = recovery_allowed and bool(resource) and not input_action
             if resource_wait:
                 leg_state = "waiting_for_resources"
                 required_bytes = 2 * 1024**3 if resource == "disk" else 0
@@ -923,19 +929,7 @@ class FleetStore:
                              "not_before": not_before, "required_bytes": required_bytes,
                              "retry_number": retries + 1 if resource != "disk" else None},
                 )
-            connection.execute(
-                "UPDATE fleet_legs SET state = ?, updated_at = ? WHERE leg_id = ?",
-                (leg_state, now, str(attempt["leg_id"])),
-            )
-            mark_work_unit_leg_finished(
-                connection,
-                leg_id=str(attempt["leg_id"]),
-                attempt_id=attempt_id,
-                state=leg_state,
-                error=clean_error,
-                now=now,
-            )
-            if recovery_allowed and completion_repair_reason and not resource_wait:
+            if recovery_allowed and completion_repair_reason and not resource_wait and not input_action:
                 prior_repair = connection.execute(
                     "SELECT 1 FROM fleet_events WHERE leg_id = ? "
                     "AND type = 'leg.completion_repair_requested' LIMIT 1",
@@ -943,6 +937,7 @@ class FleetStore:
                 ).fetchone()
                 reason = redact_text(completion_repair_reason)[0][:400]
                 if prior_repair:
+                    input_action = "resolve the recorded evidence blocker, then resume the affected worker"
                     self._insert_event(
                         connection, run_id=str(attempt["run_id"]),
                         leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
@@ -954,11 +949,7 @@ class FleetStore:
                     # The failed attempt, bounded repair and queued DAG state
                     # commit together. A crash cannot strand a repair between
                     # finish_attempt and a later supervisor callback.
-                    connection.execute(
-                        "UPDATE fleet_legs SET state = 'queued', updated_at = ? WHERE leg_id = ?",
-                        (now, attempt["leg_id"]),
-                    )
-                    reset_work_unit_leg_for_retry(connection, leg_id=str(attempt["leg_id"]), now=now)
+                    leg_state = "queued"
                     self._insert_event(
                         connection, run_id=str(attempt["run_id"]),
                         leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
@@ -967,6 +958,26 @@ class FleetStore:
                                  "resume_session_id": session_id or attempt["session_id"],
                                  "state": "queued"},
                     )
+            if input_action:
+                leg_state = "waiting_for_input"
+                self._insert_event(
+                    connection, run_id=str(attempt["run_id"]),
+                    leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                    event_type="leg.waiting_for_input",
+                    payload={"state": leg_state,
+                             "reason": redact_text(input_blocker_reason or clean_error or "unresolved blocker")[0][:4000],
+                             "next_action": input_action},
+                )
+            connection.execute(
+                "UPDATE fleet_legs SET state = ?, updated_at = ? WHERE leg_id = ?",
+                (leg_state, now, str(attempt["leg_id"])),
+            )
+            mark_work_unit_leg_finished(
+                connection, leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                state=leg_state, error=clean_error, now=now,
+            )
+            if leg_state == "queued":
+                reset_work_unit_leg_for_retry(connection, leg_id=str(attempt["leg_id"]), now=now)
             self._insert_event(
                 connection,
                 run_id=str(attempt["run_id"]),
@@ -1401,7 +1412,7 @@ class FleetStore:
             run = self._require_run(connection, run_id)
             if bool(run["dry_run"]):
                 raise ValueError("a dry-run worker cannot be retried")
-            if run["state"] not in {"queued", "running", "failed", "waiting_for_capacity", "waiting_for_input"}:
+            if run["state"] not in {"queued", "running", "failed", "waiting_for_capacity", "waiting_for_resources", "waiting_for_input"}:
                 raise RuntimeError(
                     "a failed worker can be retried only while its run is active or failed"
                 )
@@ -1414,7 +1425,7 @@ class FleetStore:
             if leg["state"] not in {"failed", "waiting_for_capacity", "waiting_for_input"}:
                 raise ValueError("only a failed or capacity-waiting Fleet worker can be retried")
 
-            if run["state"] in {"failed", "waiting_for_capacity", "waiting_for_input"}:
+            if run["state"] in {"failed", "waiting_for_capacity", "waiting_for_resources", "waiting_for_input"}:
                 connection.execute(
                     """
                     UPDATE fleet_runs SET state = 'queued', cancel_requested = 0,
@@ -2179,14 +2190,23 @@ class FleetStore:
                 return snapshot
 
             honest_stop = "work stopped before completion" in clean_error.lower()
+            input_wait = connection.execute(
+                "SELECT a.error FROM fleet_legs l JOIN fleet_attempts a ON a.leg_id = l.leg_id "
+                "AND a.attempt_number = l.current_attempt WHERE l.run_id = ? "
+                "AND l.state = 'waiting_for_input' ORDER BY l.phase_index, l.ordinal LIMIT 1",
+                (run_id,),
+            ).fetchone()
             exhausted_transport = connection.execute(
                 "SELECT e.type FROM fleet_events e JOIN fleet_legs l ON l.leg_id = e.leg_id "
                 "WHERE e.run_id = ? AND e.type IN ('leg.transport_retry_exhausted','leg.process_retry_exhausted',"
                 "'leg.completion_repair_exhausted') "
                 "AND l.state = 'failed' LIMIT 1", (run_id,),
             ).fetchone()
-            if honest_stop or exhausted_transport:
+            if honest_stop or exhausted_transport or input_wait:
+                if input_wait and input_wait["error"]:
+                    clean_error = str(input_wait["error"])
                 next_action = (
+                    "resolve the recorded blocker, then resume the affected worker" if input_wait else
                     "resolve the recorded authority/evidence blocker, add steering, then resume the affected worker"
                     if honest_stop or (exhausted_transport and exhausted_transport["type"] == "leg.completion_repair_exhausted")
                     else "verify provider/runtime health, then resume the affected worker"

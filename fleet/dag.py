@@ -454,7 +454,7 @@ def prepare_phase(
                 now=at,
             )
             continue
-        if stored_leg_state == "waiting_for_resources":
+        if stored_leg_state in {"waiting_for_resources", "waiting_for_input"}:
             continue
         dependency_block_only = all(
             str(record["state"])
@@ -654,7 +654,7 @@ def mark_leg_finished(
                 phase_state,
                 attempt_id,
                 clean_error,
-                at,
+                None if phase_state in {"queued", "waiting_for_resources", "waiting_for_input"} else at,
                 at,
                 run_id,
                 unit_id,

@@ -1258,7 +1258,7 @@ def _run_work_unit_scheduler(
             errors = [
                 leg.get("current_attempt", {}).get("error")
                 for leg in unresolved["legs"]
-                if leg.get("current_attempt") and leg["state"] == "failed"
+                if leg.get("current_attempt") and leg["state"] in {"failed", "waiting_for_input"}
             ]
             detail = next((str(error) for error in errors if error), "phase did not complete")
             resolution = store.resolve_phase_failure(
@@ -2755,6 +2755,7 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
                 if evidence_blocked and verdict is not None and _should_auto_repair_completion(verdict)
                 else None
             ),
+            input_blocker_reason=verdict.summary() if verdict is not None and verdict.terminal_stop else None,
         )
         _wake_pending_integrations_after_terminal(store, snapshot, leg)
     finally:
