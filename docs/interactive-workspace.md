@@ -2,6 +2,39 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Live Sleep Label (2026-09-10)
+
+Event polling now includes a separate, non-journaled runtime snapshot containing
+the exact session ID and sleeping boolean, or null if no owner exists. Reads do
+not create the host loop, resolve a session, attach, or wake. The browser validates
+the snapshot identity/type and updates only the status label when it changes;
+conversation state and send eligibility are unchanged. Empty event pages still
+refresh the label. Old servers without this optional field remain compatible.
+
+```sh
+node --test tests/workspace-connection.test.mjs
+# exit 0: 46 passed; snapshots on empty polls, identity/type rejection, read-only
+# routing and existing receipt/replay tests.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 113 passed in 17.96s.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short
+# exit 0: 2 passed in 12.75s. Real browser/page with controlled Claude/Codex
+# adapters; sleeping/ready labels, input eligibility and owner count checked.
+# Initial run exited 1: test used CSP-blocked string evaluation and allowed
+# focus telemetry to wake its simulated sleeper. Neither app CSP nor actual
+# wake behavior was weakened; the label fixture isolates context telemetry.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --pause
+# exit 0: real native Codex paused/read snapshot/wake/read snapshot, same owner,
+# account round trip 1.83ms, no loop created by reads, no credentials/inference,
+# child and disposable profile removed.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py tests/test_workspace_app.py scripts/verify-workspace-account.py
+# exit 0: All checks passed after correcting one import-format finding.
+```
+
+The packaged proofs below predate this UI snapshot change. A final packaged
+verification is still needed before release. Stale closed-view admission and
+full command parity remain separate open checks.
+
 ## Fresh Packaged Electron Checks (2026-09-10, 765021a)
 
 Both source-current sidecars built and passed the native Codex history/browser

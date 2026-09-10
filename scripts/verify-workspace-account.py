@@ -45,15 +45,25 @@ async def main(browser_login=False, pause=False):
             assert result == {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False, "login": None}, result
             if pause:
                 import psutil
+
+                from core.workspace_host import WorkspaceHost
+                from core.workspace_journal import WorkspaceJournal
+
+                observer = WorkspaceHost(journal=WorkspaceJournal(root / "observer.db"), resolve=None)
+                observer._sessions[sid] = (owner, "codex")
                 async with asyncio.timeout(5):
                     while not await owner.rpc.pause_idle():
                         await asyncio.sleep(.01)
                     while psutil.Process(process.pid).status() != psutil.STATUS_STOPPED:
                         await asyncio.sleep(.01)
+                assert observer.events(sid)["runtime"] == {"session_id": sid, "sleeping": True}
+                assert observer._loop is None and owner.rpc.suspended
                 started = asyncio.get_running_loop().time()
                 assert (await owner.account_status())["account"] is None
                 wake_ms = round((asyncio.get_running_loop().time() - started) * 1000, 2)
                 assert not owner.rpc.suspended
+                assert observer.events(sid)["runtime"] == {"session_id": sid, "sleeping": False}
+                assert observer._loop is None
             if browser_login:
                 login = await owner.login_account()
                 assert login["status"] == "pending" and login["loginId"] and login["authUrl"].startswith("https://")
@@ -71,6 +81,7 @@ async def main(browser_login=False, pause=False):
                       "signedIn": False, "loginStarted": browser_login, "loginCancelled": browser_login,
                       "browserOpened": False, "inference": False,
                       "nativePauseWake": pause, "wakeAccountRoundTripMs": wake_ms,
+                      "readOnlyRuntimeSnapshot": pause,
                       "childReaped": True, "temporaryProfileRemoved": True}))
 
 

@@ -592,7 +592,12 @@ class WorkspaceHost:
     def events(self, session_id: str, *, after=0):
         self._validate_session(session_id)
         # Reading a journal must never resume a process or create the loop.
-        return self.journal.read(session_id, after=after)
+        page = self.journal.read(session_id, after=after)
+        entry = self._sessions.get(session_id)
+        page["runtime"] = ({"session_id": session_id,
+                            "sleeping": bool(getattr(self._owner_transport(*entry), "suspended", False))}
+                           if entry is not None else None)
+        return page
 
     def bridge(self, sid, provider, prompt, request_id, *, timeout=300):
         """Use an already attached owner; None alone permits legacy fallback."""

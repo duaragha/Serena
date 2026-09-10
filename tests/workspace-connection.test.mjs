@@ -11,6 +11,29 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('runtime sleep snapshots update on empty read polls without commands',async()=>{
+  const calls=[],states=[];
+  const snapshots=[{session_id:'exact',sleeping:true},{session_id:'exact',sleeping:false},null];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),
+    receive:()=>assert.fail('no events'),runtime:value=>states.push(value),error:()=>{},
+    fetcher:async(url,options)=>{calls.push([url,options.method]);return response({events:[],has_more:false,runtime:snapshots.shift()});}});
+  try{
+    for(let i=0;i<3;i++)await conn.poll({required:true});
+    assert.deepEqual(states,[{session_id:'exact',sleeping:true},{session_id:'exact',sleeping:false},null]);
+    assert.ok(calls.every(([url,method])=>url==='/api/workspace/exact/events?after=0' && method==='GET'));
+  }finally{conn.dispose();}
+});
+
+for(const runtime of [{session_id:'other',sleeping:true},{session_id:'exact',sleeping:'yes'}]){
+  test(`invalid runtime snapshot is refused: ${JSON.stringify(runtime)}`,async()=>{
+    const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),
+      receive:()=>assert.fail('invalid page'),runtime:()=>assert.fail('invalid runtime'),error:()=>{},
+      fetcher:async()=>response({events:[],has_more:false,runtime})});
+    try{await assert.rejects(conn.poll({required:true}),/Invalid session runtime/);}
+    finally{conn.dispose();}
+  });
+}
+
 for(const observing of [false,true])test(`observation reads existing owner only: ${observing}`,async()=>{
   const calls=[],events=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),

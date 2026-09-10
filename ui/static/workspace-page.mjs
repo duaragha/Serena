@@ -10,6 +10,7 @@ const connection = new WorkspaceConnection({
     return accepted;
   },
   error: error => connectionFailed(error),
+  runtime: runtime => pane.setSleeping(runtime?.sleeping === true),
 });
 const controls = connection.controls();
 controls.diagnostics = () => connection.command('diagnostics',{});

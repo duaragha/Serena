@@ -21,6 +21,7 @@ export class WorkspacePane {
     this.draftStorage = draftStorage;
     this.draftKey = `serena-workspace-draft:${provider.toLowerCase()}:${sessionId}`;
     this.conversation = new WorkspaceConversation(sessionId);
+    this.sleeping = false;
     this.rendered = new Map();
     this.visibleItemLimit = 100;
     this.lastItemCount = 0;
@@ -1004,6 +1005,17 @@ export class WorkspacePane {
     dialog.showModal(); select.focus();
   }
 
+  setSleeping(sleeping) {
+    if(this.disposed || this.sleeping === sleeping)return;
+    this.sleeping = sleeping;
+    this.renderStatus();
+  }
+
+  renderStatus() {
+    this.status.textContent = this.sleeping ? 'sleeping' : this.conversation.status;
+    if (this.conversation.metadata.bridgeQueueCount > 0) this.status.textContent += ` / ${this.conversation.metadata.bridgeQueueCount} queued`;
+  }
+
   receive(envelope) {
     if (this.disposed) return false;
     const previousError=this.conversation.error;
@@ -1600,8 +1612,7 @@ export class WorkspacePane {
       if (element !== cursor) this.log.insertBefore(element, cursor);
       cursor = element.nextSibling;
     }
-    this.status.textContent = this.conversation.status;
-    if (this.conversation.metadata.bridgeQueueCount > 0) this.status.textContent += ` / ${this.conversation.metadata.bridgeQueueCount} queued`;
+    this.renderStatus();
     this.queueButton.hidden = !this.controls.cancelQueuedBridge || !(this.conversation.metadata.bridgeQueueCount > 0);
     this.renderBridgeQueue();
     this.queueRecoveryButton.hidden=this.provider!=='Claude' || !this.controls.retryQueuedInput

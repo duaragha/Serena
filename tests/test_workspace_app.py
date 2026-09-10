@@ -4,6 +4,7 @@ import io
 import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from flask import Flask, jsonify, request
@@ -288,6 +289,11 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
     playwright = pytest.importorskip("playwright.sync_api")
     owners = []
 
+    class Transport:
+        suspended = False
+        def wake(self):
+            self.suspended = False
+
     class Owner:
         state = "closed"
         active_turn = None
@@ -296,6 +302,8 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
             self.sid, self.publish = session_id, publish
             self.cwd = cwd
             self.sent, self.closed = [], False
+            self.rpc = Transport()
+            self.client = SimpleNamespace(transport=SimpleNamespace(rpc=self.rpc))
             owners.append(self)
 
         async def open(self):
@@ -450,6 +458,14 @@ function setTermStatus(status){window.lastStatus=status;}
             if provider != "claude":
                 page.get_by_role("button", name="Resume session").click()
             page.get_by_role("button", name="Resume session").wait_for(state="hidden")
+            page.route('**/api/workspace/exact/view-context', lambda route: route.fulfill(json={"ok": True}))
+            owners[0].rpc.suspended = True
+            playwright.expect(page.locator('.aw-state')).to_have_text('sleeping')
+            assert owners[0].state == 'ready' and not owners[0].sent and len(owners) == 1
+            assert not page.get_by_role("button", name="Send message", exact=True).is_disabled()
+            owners[0].rpc.suspended = False
+            playwright.expect(page.locator('.aw-state')).to_have_text('ready')
+            page.unroute('**/api/workspace/exact/view-context')
             with page.expect_response(lambda response: response.url.endswith('/view-context')
                                       and response.request.post_data_json.get('draft') is True):
                 page.get_by_role("textbox", name=f"Message {provider.capitalize()}").fill(

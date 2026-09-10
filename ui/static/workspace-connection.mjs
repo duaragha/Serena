@@ -1,9 +1,10 @@
 /** Browser transport for a persistent owner. Disposal never closes the owner. */
 export class WorkspaceConnection {
-  constructor({sessionId, token, receive, error, fetcher = fetch, storage = sessionStorage}) {
+  constructor({sessionId, token, receive, error, runtime = () => {}, fetcher = fetch, storage = sessionStorage}) {
     this.sessionId = sessionId;
     this.token = token;
     this.receive = receive;
+    this.runtime = runtime;
     this.error = error;
     this.fetcher = fetcher;
     this.storage = storage;
@@ -91,12 +92,16 @@ export class WorkspaceConnection {
       do {
         page = await this.request(`/events?after=${this.cursor}`);
         if (this.stopped) return;
+        if(page.runtime != null && (page.runtime.session_id !== this.sessionId || typeof page.runtime.sleeping !== 'boolean')){
+          throw Error('Invalid session runtime snapshot');
+        }
         for (const envelope of page.events) {
           if (envelope.sequence !== this.cursor + 1) throw Error('Session event replay has a gap');
           if (this.receive(envelope) === false) throw Error('Session event was not accepted by the view');
           this.cursor = envelope.sequence;
         }
       } while (page.has_more && !this.stopped);
+      if(!this.stopped)this.runtime(page.runtime ?? null);
     } catch (error) {
       failed = true;
       if (required) throw error;

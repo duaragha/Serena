@@ -103,6 +103,7 @@ def test_native_sleep_admission_and_focus_wake(tmp_path, provider, blocker):
                            environ_overrides={"REMOTE_ADDR": "192.0.2.1"}).status_code == 403
         assert client.post("/api/workspace/exact/sleep", json={"sleeping": "true"}, headers=headers).status_code == 400
         assert not host.set_sleep("exact", True)["ok"] and host._loop is None
+        assert host.events("exact")["runtime"] is None and host._loop is None
         host.attach("exact")
         data = {"view_id": view, "sequence": 1, "visible": True,
                 "focused": blocker == "focused", "draft": blocker == "draft", "pinned": blocker == "pinned"}
@@ -126,8 +127,11 @@ def test_native_sleep_admission_and_focus_wake(tmp_path, provider, blocker):
         assert owner.transport.pauses == (1 if blocker is None else 0)
         if blocker is None:
             assert host.observe("exact")["sleeping"]
+            assert host.events("exact")["runtime"] == {"session_id": "exact", "sleeping": True}
+            assert owner.transport.suspended and owner.transport.pauses == 1
             host.note_view_context("exact", {**data, "sequence": 2, "focused": True})
             assert not owner.transport.suspended
+            assert host.events("exact")["runtime"] == {"session_id": "exact", "sleeping": False}
     finally:
         host._bridge_queues.clear()
         host.shutdown()
