@@ -2,6 +2,44 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Attention Acknowledgement (2026-09-10)
+
+Native output used to call `_markActive()` unconditionally, which also cleared
+attention for hidden chats. Runtime-state updates now acknowledge attention only
+when that exact pane is selected in Code, the Chats tab is selected, and the
+document has focus. Explicit focus callers retain their previous acknowledgement
+behavior. Receiving background output is not equivalent to the user seeing it.
+
+The real mounted-page regression covers both providers and background sessions,
+Read mode, another tab, an unfocused window and the genuinely viewed foreground.
+Final focused command:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short
+# exit 0: 2 passed in 13.50s (earlier intermediate runs also exited 0)
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: real Electron, source backend, exact native background shell output
+# preserved attention; explicit sidebar focus acknowledged it exactly once;
+# existing clipboard/login/linked-creation/owner-retention flows also passed
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-history.py tests/test_workspace_app.py
+# exit 0
+node --check scripts/verify-workspace-electron.cjs
+# exit 0
+```
+
+The attention flag supplied to this live proof is a controlled GET response;
+the background command, session process, output stream and acknowledgement
+request are real. This does not prove notification generation or delivery hooks.
+The verifier now accepts the Python sidecar entry point as well as a frozen
+binary, labels source/frozen output correctly, and uses the same isolated homes,
+owner checks and cleanup. This allows source UI iteration without rebuilding the
+package for every attempt; it is not substituted for final packaged verification.
+No inference, user session changes, release or installed-app changes occurred.
+
+Remaining lifecycle work includes native iframe focus reporting: clicking inside
+the opposite rich pane must update the parent's focused session, not merely focus
+the child document. Idle-process sleep and final provider/Windows/release gates
+also remain open. The prior Linux package does not yet contain this attention fix.
+
 ## Native Sidebar Ownership And Packaged Recovery (2026-09-10)
 
 The session-list endpoint now decorates rows with an exact native-owner snapshot,

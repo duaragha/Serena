@@ -6192,10 +6192,10 @@ async function _reconcilePseudos(fresh, opts) {
   }
 }
 
-function _markActive(sid) {
+function _markActive(sid, clearAttention = true) {
   if (!sid) return;
   // Focusing a chat clears any "needs attention" flag for it
-  _clearAttention(sid);
+  if (clearAttention) _clearAttention(sid);
   if (_activeTerms.has(sid)) return;
   _rememberActive(sid);
   renderSessionList();
@@ -7182,7 +7182,8 @@ function _startStructuredPane(sid, opts) {
     if (!['ready','running','completed','failed','interrupted','unavailable'].includes(state)) return;
     runtime.state = state; runtime.busy = state === 'running';
     _patchClientSession(sid, {workspace_runtime:{ok:state!=='unavailable',session_id:sid,state}});
-    if (state !== 'unavailable') _markActive(sid);
+    if (state !== 'unavailable') _markActive(sid,
+      activeTermSid === sid && convMode === 'live' && currentTab === 'chats' && document.hasFocus());
     else _unmarkActive(sid);
     if (activeTermSid === sid) setTermStatus(state, state === 'unavailable' ? 'error' : '');
   };

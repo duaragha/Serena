@@ -203,7 +203,11 @@ def frozen_browser_proof(sid, root, project, env, frozen):
     import psutil
 
     repo = Path(__file__).resolve().parents[1]
+    entry = Path(frozen).resolve()
+    backend_mode = 'source' if entry.suffix == '.py' else 'frozen'
+    argv = [sys.executable, str(entry)] if backend_mode == 'source' else [str(entry)]
     env = {**env, "CHATS_DATA_DIR": str(root / "frozen-data"), "SERENA_STRUCTURED_WORKSPACE": "1",
+           "SERENA_PROOF_BACKEND_MODE": backend_mode,
            "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
            "SERENA_CALL_RUNTIME": "lazy", "SERENA_RUNTIME_LEASE_DIR": str(root / "frozen-leases"),
            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={root}/unavailable-bus", "XDG_RUNTIME_DIR": str(root / "xdg")}
@@ -235,7 +239,7 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
         port = port_socket.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
     with (root / "frozen.log").open("w+") as log:
-        process = subprocess.Popen([str(Path(frozen).resolve()), "--host", "127.0.0.1", "--port", str(port)],
+        process = subprocess.Popen([*argv, "--host", "127.0.0.1", "--port", str(port)],
                                    cwd=project, env=env, stdout=log, stderr=log, start_new_session=True)
         children = []
         windows_job = None
@@ -246,24 +250,24 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                 windows_job.assign(process.pid)
             deadline = time.monotonic() + 30
             while True:
-                assert process.poll() is None, "Frozen sidecar exited before readiness"
+                assert process.poll() is None, f"{backend_mode} sidecar exited before readiness"
                 try:
                     with urlopen(base + f"/workspace/{sid}", timeout=1) as response:
                         assert response.status == 200
                     break
                 except (URLError, TimeoutError):
                     if time.monotonic() >= deadline:
-                        raise RuntimeError("Frozen workspace did not become ready") from None
+                        raise RuntimeError(f"{backend_mode} workspace did not become ready") from None
                     time.sleep(0.1)
             def owners():
                 return [child.pid for child in psutil.Process(process.pid).children(recursive=True)
                         if child.name().lower() in {"codex", "codex.exe"} and "app-server" in child.cmdline()]
-            forks = browser_roundtrip(base, sid, owners, "codex-frozen", verify_forks=True, verify_disconnect=True)
+            forks = browser_roundtrip(base, sid, owners, f"codex-{backend_mode}", verify_forks=True, verify_disconnect=True)
             for fork_id in forks:
                 metadata_path = Path(env["HOME"]) / ".claude" / "projects" / ".chats-meta" / f"{fork_id}.json"
                 assert json.loads(metadata_path.read_text())["resident_work"] is True
             assert forks
-            print("PASS: frozen native fork created/indexed through UI, persisted scanner ownership and opened without a second owner")
+            print(f"PASS: {backend_mode} native fork created/indexed through UI, persisted scanner ownership and opened without a second owner")
             if os.environ.get("SERENA_PROOF_ELECTRON"):
                 before = owners()
                 def claude_owners():

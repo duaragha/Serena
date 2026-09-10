@@ -93,6 +93,36 @@ async function main() {
     await pane.locator('summary').filter({hasText: 'SERENA_ELECTRON_NATIVE'}).first().click();
     await pane.getByText('SERENA_ELECTRON_NATIVE', {exact: true}).waitFor();
     await pane.locator('.aw-state').filter({hasText:/^(ready|completed)$/}).waitFor();
+    let attentionPending=true,attentionClears=0;
+    const attentionRoute=route=>route.fulfill({json:{sessions:attentionPending?{[sid]:Date.now()/1000}:{}}});
+    const cleared=request=>{
+      if(request.url().endsWith('/api/chat-attention/clear')){attentionPending=false;attentionClears++;}
+    };
+    await page.route('**/api/chat-attention',attentionRoute);
+    page.on('request',cleared);
+    await page.evaluate(id=>{_attentionSids.add(id);renderSessionList();setConvMode('read');},sid);
+    const boot=await pane.locator('#workspace-boot').textContent();
+    const background=await page.evaluate(async ({sid,token})=>{
+      const response=await fetch(`/api/workspace/${sid}/commands`,{method:'POST',
+        headers:{'Content-Type':'application/json','X-Serena-Workspace-Token':token},
+        body:JSON.stringify({request_id:crypto.randomUUID(),action:'shell_command',
+          payload:{command:'echo SERENA_BACKGROUND_ATTENTION',confirmed:true}})});
+      return response.json();
+    },{sid,token:JSON.parse(boot).token});
+    assert.ok(background.ok,JSON.stringify(background));
+    await pane.locator('summary').filter({hasText:'SERENA_BACKGROUND_ATTENTION'}).first().waitFor({state:'attached'});
+    await page.waitForFunction(id=>termSessions.get(id)?.state==='completed',sid);
+    assert.equal(attentionClears,0);
+    assert.equal(await page.evaluate(id=>_attentionSids.has(id),sid),true);
+    const acknowledgement=page.waitForRequest(request=>request.url().endsWith('/api/chat-attention/clear'));
+    await page.locator(`.session-row[data-sid="${sid}"]`).first().click();
+    await acknowledgement;
+    await page.waitForFunction(id=>!_attentionSids.has(id),sid);
+    assert.equal(attentionClears,1);
+    await page.unroute('**/api/chat-attention',attentionRoute);
+    page.off('request',cleared);
+    await page.locator('#viewLiveBtn').click();
+    await waitForOwnedPane(pane);
     const input = pane.getByRole('textbox', {name: 'Message Codex', exact: true});
     await app.evaluate(({clipboard}) => clipboard.writeText('first line\nsecond line'));
     await input.focus();
@@ -241,9 +271,10 @@ async function main() {
     await waitForOwnedPane(page.frameLocator(`iframe[src="/workspace/${linkedIds[0]}"]`));
     assert.equal(creations,4);
     assert.deepEqual(errors, []);
-    console.log('PASS: real Electron main/preload, isolated frozen backend, native session input/output and skill catalog; sandbox/context isolation configured, Node integration off');
+    console.log(`PASS: real Electron main/preload, isolated ${process.env.SERENA_PROOF_BACKEND_MODE || 'frozen'} backend, native session input/output and skill catalog; sandbox/context isolation configured, Node integration off`);
+    console.log('PASS: real native background output preserved a controlled attention flag; explicit row focus acknowledged it once');
     console.log('PASS: real Electron clipboard copied native output and pasted multiline text without sending or losing the session');
-    console.log('PASS: packaged native browser-login start, reopen and cancellation preserved the draft; no browser opened or credentials replaced');
+    console.log('PASS: native browser-login start, reopen and cancellation preserved the draft; no browser opened or credentials replaced');
     console.log('PASS: actual Electron New Chat button preserved its chosen title through exact native creation, iframe handoff and native input');
     console.log('PASS: actual Electron Claude New Chat used the selected provider, retained title through indexing, and rendered native local-command output');
     console.log('PASS: corrupt saved creation record disabled submission without replacing the record or launching another session');
