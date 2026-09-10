@@ -432,14 +432,16 @@ def prepare_phase(
         hard_blocked = [unit_id for unit_id in unit_ids if unit_id in blocked_units]
         waiting = [unit_id for unit_id in unit_ids if unit_id in waiting_units]
         stored_leg_state = str(leg_records[0]["leg_state"] or "")
-        # A terminal leg is the durable source of truth for the phase it ran.
+        # The durable leg is the source of truth for completion and parked waits.
+        # Older runtimes parked an input leg after projecting a hard failure;
+        # heal that projection too, without changing the failed attempt receipt.
         # A stale dependency reconciliation used to be able to overwrite the
         # work-unit projection back to waiting after finish_attempt() had
         # completed the leg. The scheduler would then see no runnable leg (the
         # leg was already completed) and eventually fail the whole run with
         # "phase did not complete". Heal that projection before considering
         # dependency state, and never regress completed work.
-        if stored_leg_state == "completed":
+        if stored_leg_state in {"completed", "waiting_for_resources", "waiting_for_input"}:
             attempt = connection.execute(
                 "SELECT attempt_id, error FROM fleet_attempts "
                 "WHERE leg_id = ? ORDER BY attempt_number DESC LIMIT 1",
@@ -449,12 +451,10 @@ def prepare_phase(
                 connection,
                 leg_id=leg_id,
                 attempt_id=str(attempt["attempt_id"] if attempt is not None else ""),
-                state="completed",
+                state=stored_leg_state,
                 error=str(attempt["error"] or "") if attempt is not None else None,
                 now=at,
             )
-            continue
-        if stored_leg_state in {"waiting_for_resources", "waiting_for_input"}:
             continue
         dependency_block_only = all(
             str(record["state"])

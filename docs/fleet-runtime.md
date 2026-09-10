@@ -101,6 +101,14 @@ active or queued turns are never bypassed, unknown/overlapping assignments fail 
 and the target's DAG dependencies and one-live-turn-per-worker rule remain mandatory.
 Neither exception marks the parked assignment complete or retries its unchanged blocker.
 
+The resident service also checks durable input waits on its recovery poll. If an older
+scheduler parked a run despite a now-ready independent peer Review, Fleet atomically
+reconciles the DAG and requeues the run with `run.ready_work_resumed`. The blocked Code
+attempt is not retried, reset or marked complete. A run with no eligible review stays
+unchanged; cancellation wins under the same writer transaction. One malformed run cannot
+prevent another run's readiness probe. This restores eligible peer work after a service
+upgrade without requiring the chat orchestrator to babysit or retry authority blockers.
+
 ## Activating repairs without cancelling parked runs
 
 The ordinary acceptance gate still refuses active runs. For durable input/resource/capacity
