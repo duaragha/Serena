@@ -871,6 +871,13 @@ quiet hours, limits, deduplication, retry, and the voice-to-Telegram fallback sh
 
 ## Deployment and checks
 
+POSIX terminal reads use `poll()` rather than descriptor-limited `select()`.
+Acceptance includes a real PTY duplicated to descriptor1024: output remains
+readable, detached reserved work stays alive, and releasing the reservation lets
+cleanup finish. Invalid/closed descriptors return the terminal-gone result;
+the Windows ConPTY read path is unchanged. Timeout conversion follows the
+[Python poll contract](https://docs.python.org/3/library/select.html#polling-objects).
+
 ### Visual resilience lab
 
 From the repository root, run:

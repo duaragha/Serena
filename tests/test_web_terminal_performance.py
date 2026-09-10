@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import sys
 import time
 from pathlib import Path
 
@@ -583,6 +584,42 @@ def test_reserved_runtime_outlives_the_grace_period_until_work_finishes():
 
 
 # ── the websocket route ─────────────────────────────────────────────────────
+
+
+@_POSIX_ONLY
+def test_high_numbered_pty_remains_readable_and_detach_cleanup_finishes():
+    import fcntl
+    import resource
+    soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft != resource.RLIM_INFINITY and soft <= 1024:
+        pytest.skip("process descriptor limit cannot allocate above select's ceiling")
+    tid = _spawn([sys.executable, "-c", "import time; print('high-fd-read', flush=True); time.sleep(30)"],
+                 session_id="high-fd-session", agent="codex")
+    term = pty_terminal.get(tid)
+    original = term.proc.fd
+    high_fd = fcntl.fcntl(original, fcntl.F_DUPFD, 1024)
+    os.set_inheritable(high_fd, False)
+    term.proc.fd = high_fd
+    received = bytearray()
+    try:
+        def readable():
+            received.extend(pty_terminal.read_available(tid, timeout=0.05) or b"")
+            return b"high-fd-read" in received
+
+        assert _wait_until(readable)
+        assert pty_terminal.reserve_work(tid, "high-fd-job") == (True, "reserved")
+        token, _ = pty_terminal.attach(tid)
+        assert pty_terminal.detach(tid, token, grace=0.05)
+        time.sleep(0.2)
+        assert pty_terminal.is_alive(tid)
+        assert term.drain_thread.is_alive()
+        assert pty_terminal.release_work(tid, "high-fd-job")
+        assert _wait_until(lambda: pty_terminal.get(tid) is None)
+    finally:
+        term.proc.fd = original
+        os.close(high_fd)
+        pty_terminal.kill(tid)
+        term.proc.close(force=True)
 
 
 class _ScriptedSocket:
