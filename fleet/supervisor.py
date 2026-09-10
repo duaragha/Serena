@@ -1183,13 +1183,15 @@ def _run_work_unit_scheduler(
                 phase_index = int(leg["phase_index"])
                 worker_key = _worker_key(leg)
                 # Rotated Review advances the target unit, but it is still the
-                # reviewer's next turn. Keep each durable worker in phase order
-                # and never let two turns for the same worker run concurrently.
+                # reviewer's next turn. Keep live turns in phase order and
+                # never run two turns for the same worker concurrently.
+                # A parked, unrelated assignment is not an active turn: the
+                # DAG still owns target readiness, not worker phase order.
                 # Without both checks a fast target could launch Agent A's
                 # Review before Agent A had finished Research or Code.
                 if worker_key in running_worker_keys or any(
                     _worker_key(prior_leg) == worker_key
-                    and str(prior_leg.get("state") or "") != "completed"
+                    and _prior_turn_blocks_dispatch(leg, prior_leg)
                     for prior_phase in snapshot["phases"]
                     if int(prior_phase["index"]) < phase_index
                     for prior_leg in prior_phase["legs"]
@@ -1258,7 +1260,7 @@ def _run_work_unit_scheduler(
             errors = [
                 leg.get("current_attempt", {}).get("error")
                 for leg in unresolved["legs"]
-                if leg.get("current_attempt") and leg["state"] == "failed"
+                if leg.get("current_attempt") and leg["state"] in {"failed", "waiting_for_input"}
             ]
             detail = next((str(error) for error in errors if error), "phase did not complete")
             resolution = store.resolve_phase_failure(
@@ -2401,7 +2403,6 @@ def _skip_finalize_leg(
         state="completed",
         output_text=output_text,
         session_id=attempt.get("resume_session_id"),
-        actual_model=str(leg.get("model") or ""),
         exit_code=0,
     )
     return WorkerResult(True, output_text, attempt.get("resume_session_id"), None, None, 0)
@@ -2751,6 +2752,12 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
             actual_model=result.actual_model,
             actual_effort=result.actual_effort,
             exit_code=result.exit_code,
+            completion_repair_reason=(
+                verdict.summary()
+                if evidence_blocked and verdict is not None and _should_auto_repair_completion(verdict)
+                else None
+            ),
+            input_blocker_reason=verdict.summary() if verdict is not None and verdict.terminal_stop else None,
         )
         _wake_pending_integrations_after_terminal(store, snapshot, leg)
     finally:
@@ -2808,40 +2815,6 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
                     run_id, "leg.difficult_retry_failed", {"error": str(exc)[:1_000]},
                     leg_id=str(leg["leg_id"]), attempt_id=str(attempt["attempt_id"]),
                 )
-    if (
-        evidence_blocked
-        and verdict is not None
-        and _should_auto_repair_completion(verdict)
-        and not store.has_event(
-            run_id,
-            "leg.completion_repair_requested",
-            leg_id=str(leg["leg_id"]),
-        )
-    ):
-        try:
-            store.request_leg_retry(run_id, str(leg["leg_id"]))
-            store.append_event(
-                run_id,
-                "leg.completion_repair_requested",
-                {
-                    "reason": (
-                        redact_text(verdict.summary())[0][:400]
-                        or "completion evidence rejected"
-                    ),
-                    "attempt_number": int(attempt.get("attempt_number") or 0),
-                    "resume_session_id": str(result.session_id or "") or None,
-                },
-                leg_id=str(leg["leg_id"]),
-                attempt_id=str(attempt["attempt_id"]),
-            )
-        except Exception as exc:
-            store.append_event(
-                run_id,
-                "leg.completion_repair_failed",
-                {"error": str(exc)[:1_000]},
-                leg_id=str(leg["leg_id"]),
-                attempt_id=str(attempt["attempt_id"]),
-            )
     # A rejected contract is not provider exhaustion, so it must never be read
     # as a reason to hand this slot to the other provider.
     if state == "failed" and not evidence_blocked and not integration_blocked:
@@ -2864,8 +2837,8 @@ def _should_auto_repair_completion(verdict: CompletionVerdict) -> bool:
     The retried attempt resumes the same durable session and its prompt now
     carries the rejection reasons, so a worker can fix a reporting defect (bad
     envelope shape, missing exit codes, an unverifiable command) instead of the
-    run dying on it. The once-per-leg event guard at the call site prevents
-    repair loops; a second rejection stays failed.
+    run dying on it. The store atomically enforces the once-per-leg budget;
+    a second rejection remains failed evidence and becomes a resumable blocker.
     """
 
     return verdict.enforced and not verdict.accepted
@@ -3034,6 +3007,28 @@ def _assignment_text(value: object) -> str:
         parts = [_assignment_text(item) for item in value]
         return "; ".join(part for part in parts if part)
     return _clean_inline(value, limit=800)
+
+
+def _prior_turn_blocks_dispatch(candidate: dict[str, Any], prior: dict[str, Any]) -> bool:
+    """Only bypass a quiescent, disjoint assignment; never bypass target DAG gates."""
+    state = str(prior.get("state") or "")
+    if state == "completed":
+        return False
+    if candidate.get("access_mode") == "review" and prior.get("access_mode") == "write":
+        targets = set(candidate.get("review_target_ids") or ())
+        prior_targets = set(prior.get("assignment_ids") or ())
+        return not (
+            state == "waiting_for_input" and targets and prior_targets
+            and targets.isdisjoint(prior_targets)
+        )
+    if candidate.get("access_mode") == "write" and prior.get("access_mode") == "review":
+        targets = set(candidate.get("assignment_ids") or ())
+        prior_targets = set(prior.get("review_target_ids") or ())
+        return not (
+            state in {"waiting_for_input", "waiting_for_dependencies"}
+            and targets and prior_targets and targets.isdisjoint(prior_targets)
+        )
+    return True
 
 
 def _worker_key(leg: dict[str, Any]) -> str:
