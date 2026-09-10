@@ -4,6 +4,16 @@ Status: implementation in progress. Not a delivered replacement.
 
 ## Native Windows Codex Ownership
 
+The proof now persists 51 print-only turns and checks actual native pagination:
+resume returns the newest 50 turns without the oldest marker; explicit history
+loading returns exactly the oldest turn and exhausts the cursor. The owning PID
+stays unchanged, and a subsequent native command completes with exit 0. The live
+command below was rerun and exited 0 with `recent_turns: 50`, `older_turns: 1`,
+`history_kept_owner: true`, `cleanup: true`, and `inference: false`.
+`/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -k 'history or pagination' -q --tb=short`
+exited 0 (4 passed, 45 deselected). Ruff also exited 0. This is native adapter
+pagination evidence, not a Windows Electron UI proof.
+
 Verified the installed npm Codex launcher through the actual Windows gated RPC
 path. An isolated profile starts with an empty catalog, persists a print-only
 shell command, closes the original runtime, resumes that exact session through
