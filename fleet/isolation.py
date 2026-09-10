@@ -16,7 +16,6 @@ reports the conflict instead of resolving it.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -31,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from fleet.integration_journal import IntegrationJournal, JournalError
+from fleet.file_lock import exclusive_lock
 
 from core.coding_job_contract import (
     GitSnapshotError,
@@ -1737,14 +1737,25 @@ def repository_integration_lock(cwd: str | Path):
         or (Path(state_root) / "integration-locks" if state_root else DEFAULT_INTEGRATION_LOCK_ROOT)
     ).expanduser()
     lock_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()
     lock_path = lock_root / f"{digest}.lock"
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with lock_path.open("a+b") as handle, exclusive_lock(handle):
+        yield
+
+
+def _git_apply_patch(root: Path, patch: str, *options: str) -> subprocess.CompletedProcess[str]:
+    """Patch bytes are a data contract, never a platform text stream."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "apply", *options, "-"],
+        input=patch.encode("utf-8", errors="surrogateescape"),
+        capture_output=True,
+        check=False,
+    )
+    return subprocess.CompletedProcess(
+        result.args, result.returncode,
+        result.stdout.decode("utf-8", errors="replace"),
+        result.stderr.decode("utf-8", errors="replace"),
+    )
 
 
 def integrate_workspace(
@@ -1993,13 +2004,7 @@ def _integrate_workspace_locked(
     # Plain apply, never --3way. A three-way apply can leave conflict markers
     # in the working tree, which is a corrupted checkout rather than a refused
     # merge. Plain apply is all-or-nothing and fails without touching a file.
-    check = None if already_applied else subprocess.run(
-        ["git", "-C", str(root), "apply", "--check", "-"],
-        input=patch,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    check = None if already_applied else _git_apply_patch(root, patch, "--check")
     if check is not None and check.returncode != 0:
         result = IntegrationResult(
             ok=False,
@@ -2040,13 +2045,7 @@ def _integrate_workspace_locked(
         journal.prepare(workspace.path, changed, rollback_ref=rollback_ref)
     # The immutable pre/post intent is durable before the first checkout write.
     # An exact surviving postimage is verified again, never double-applied.
-    applied = None if already_applied else subprocess.run(
-        ["git", "-C", str(root), "apply", "-"],
-        input=patch,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    applied = None if already_applied else _git_apply_patch(root, patch)
     if applied is not None and applied.returncode != 0:
         journal.restore_pre()
         result = IntegrationResult(
@@ -2312,14 +2311,8 @@ def rollback_integration(
         root = validate_repository_root(cwd)
     except RepositoryResolutionError as error:
         return {"ok": False, "reason": str(error)}
-    patch = patch_path.read_text(encoding="utf-8", errors="surrogateescape")
-    reverted = subprocess.run(
-        ["git", "-C", str(root), "apply", "-R", "-"],
-        input=patch,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    patch = patch_path.read_bytes().decode("utf-8", errors="surrogateescape")
+    reverted = _git_apply_patch(root, patch, "-R")
     if reverted.returncode != 0:
         return {
             "ok": False,
