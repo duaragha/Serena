@@ -334,6 +334,9 @@ def delete_run(run_id: str) -> dict[str, Any]:
                 f"Fleet deletion stopped because worktree cleanup failed: {workspace.path}"
             )
     isolation.delete_run_records(clean_id)
+    from fleet.checkout import cleanup_run_checkout
+
+    cleanup_run_checkout(run)
     deleted = store.delete_run(clean_id)
 
     state_root = Path(
@@ -366,6 +369,9 @@ def preflight_delete_run(
         raise KeyError(f"unknown Fleet run {clean_id}")
     if run["state"] not in TERMINAL_RUN_STATES:
         raise RuntimeError("stop this Fleet and wait for it to finish before deleting it")
+    from fleet.checkout import check_checkout_deletable
+
+    check_checkout_deletable(run)
     from fleet.isolation import FleetIsolationStore, unrecovered_workspaces
 
     blockers = unrecovered_workspaces(FleetIsolationStore(), clean_id)
@@ -815,6 +821,10 @@ def resume_ready_capacity_waits(
     current = time.time() if now is None else float(now)
     resumed: list[str] = []
     for wait in waits:
+        # Resuming the first lane queues the run. Its remaining capacity waits
+        # survive for the next parked pass; do not resume a stale run snapshot.
+        if str(wait["run_id"]) in resumed:
+            continue
         if wait.get("run_state") != "waiting_for_capacity":
             continue
         if current < float(wait.get("not_before") or 0.0):
@@ -949,6 +959,9 @@ def run_supervisor(run_id: str) -> dict[str, Any]:
     policy = policy_from_snapshot(run["policy"])
     try:
         with _coding_run_lock(run):
+            from fleet.checkout import ensure_run_checkout
+
+            ensure_run_checkout(store, clean_id)
             interrupted = _run_work_unit_scheduler(store, clean_id, policy)
             if interrupted is not None:
                 return interrupted
@@ -1255,7 +1268,8 @@ def _run_work_unit_scheduler(
             )
             if resolution.pop("retry_activated", False):
                 continue
-            if resolution.pop("capacity_waiting", False):
+            if (resolution.pop("capacity_waiting", False) or resolution.pop("resource_waiting", False)
+                    or resolution.pop("input_waiting", False)):
                 return resolution
             return _terminal_outcome(store, resolution)
 
@@ -1685,6 +1699,10 @@ def serve_forever(
                 store.flush_control_outbox()
             next_control_flush = monotonic_now + CONTROL_PLANE_FLUSH_SECONDS
         if monotonic_now >= next_capacity_probe:
+            from fleet.resources import resume_ready_resource_waits
+
+            with suppress(Exception):
+                resume_ready_resource_waits(store)
             with suppress(Exception):
                 resume_ready_capacity_waits(store)
             next_capacity_probe = monotonic_now + CAPACITY_POLL_SECONDS
@@ -1907,6 +1925,9 @@ def _leg_working_directory(
     if not assessment.safe:
         raise IsolationError(assessment.reason)
     isolation = FleetIsolationStore()
+    from fleet.checkout import requested_worker_branch
+
+    task_branch = requested_worker_branch(run["task"], _worker_key(leg), int(run["agent_count"]))
     if attempt is not None and int(attempt.get("attempt_number") or 0) > 1:
         workspace, recovery = refresh_workspace_for_retry(
             isolation,
@@ -1914,6 +1935,7 @@ def _leg_working_directory(
             worker_key=_worker_key(leg),
             cwd=base,
             assessment=assessment,
+            requested_branch=task_branch,
         )
         attempt["workspace_recovery"] = recovery
     else:
@@ -1923,7 +1945,10 @@ def _leg_working_directory(
             worker_key=_worker_key(leg),
             cwd=base,
             assessment=assessment,
+            requested_branch=task_branch,
         )
+    if attempt is not None:
+        attempt["workspace_branch"] = workspace.branch
     claims = _effective_write_paths(run, leg)
     decision = isolation.claim_paths(
         run_id=str(run["run_id"]),
@@ -3585,6 +3610,12 @@ def _worker_prompt(
         resume = "This is a native retry of your interrupted phase turn. Continue from its durable session."
     else:
         resume = "This is a fresh independent worker session."
+    if attempt.get("workspace_branch"):
+        resume += (
+            f"\nFleet already provisioned your task branch `{attempt['workspace_branch']}` "
+            "in this worker checkout. Use that existing branch; do not recreate or force-reset it. "
+            "Local completion does not require a push or PR, and the task's external-write limits still apply."
+        )
     workspace_recovery = attempt.get("workspace_recovery")
     if isinstance(workspace_recovery, dict):
         recovery_action = str(workspace_recovery.get("action") or "")

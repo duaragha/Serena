@@ -25,9 +25,9 @@ def changed(previous, current, old_image, new_image):
     if previous["rect"] != current["rect"]:
         return True
     old_context, new_context = previous["context"], current["context"]
-    if old_context.get("id") == new_context.get("id") and old_context.get(
-        "title"
-    ) != new_context.get("title"):
+    if (old_context.get("id"), old_context.get("title")) != (
+        new_context.get("id"), new_context.get("title")
+    ):
         return True  # A browser tab/title transition can change very few pixels.
     difference = ImageChops.difference(old_image, new_image).convert("L")
     try:
@@ -49,7 +49,7 @@ def changed(previous, current, old_image, new_image):
                 )
         histogram = difference.histogram()
         # Ignore JPEG noise, a blinking caret and tiny clock/spinner changes.
-        return sum(histogram[20:]) >= difference.width * difference.height * 0.0015
+        return sum(histogram[20:]) >= difference.width * difference.height * 0.005
     finally:
         difference.close()
 
@@ -92,6 +92,7 @@ class WatchFrames:
                     self.revision += 1
                     self.changed_at = time.monotonic()
                     self.session.observation = ""
+                    self.session.observation_preview = ""
                     self.session.observation_state = "screen_changed"
                     self.controller.event(
                         "screen_changed",

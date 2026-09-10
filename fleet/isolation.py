@@ -771,6 +771,7 @@ class FleetIsolationStore:
                     ON fleet_integrations(run_id, created_at);
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
             columns = {
                 str(row["name"])
                 for row in connection.execute(
@@ -801,6 +802,7 @@ def ensure_workspace(
     worker_key: str,
     cwd: str | Path,
     assessment: IsolationAssessment | None = None,
+    requested_branch: str | None = None,
 ) -> Workspace:
     """Create or reuse this logical worker's isolated worktree.
 
@@ -814,12 +816,20 @@ def ensure_workspace(
         raise IsolationError(check.reason)
     root = Path(check.repo_root)
     existing = store.get_workspace(run_id, worker_key)
+    branch = requested_branch or (existing.branch if existing else branch_name(run_id, worker_key))
+    if branch in {"main", "master"} or _git(root, "check-ref-format", "--branch", branch, check=False).returncode:
+        raise IsolationError("invalid or protected Fleet task branch")
+    branch_exists = _git(root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode == 0
+    if branch_exists and (existing is None or existing.branch != branch):
+        raise IsolationError("requested task branch already exists outside this worker's ownership")
     existing_usable = existing is not None and _workspace_is_usable(existing)
     if (
         existing is not None
         and existing.state in {"active", "delivered"}
         and existing_usable
     ):
+        if branch != existing.branch:
+            raise IsolationError("changing an active worker branch requires preserved retry refork")
         _share_base_venv(root, Path(existing.path))
         return existing
     if existing is not None and existing.state == "blocked" and existing_usable:
@@ -836,7 +846,6 @@ def ensure_workspace(
                 f"blocked workspace for {worker_key} has unrecovered changes and cannot be reforked"
             )
 
-    branch = branch_name(run_id, worker_key)
     target = store.workspace_root / _BRANCH_TOKEN.sub("-", str(run_id)).strip("-") / (
         _BRANCH_TOKEN.sub("-", str(worker_key)).strip("-") or "worker"
     )
@@ -901,6 +910,7 @@ def refresh_workspace_for_retry(
     worker_key: str,
     cwd: str | Path,
     assessment: IsolationAssessment | None = None,
+    requested_branch: str | None = None,
 ) -> tuple[Workspace, dict[str, Any]]:
     """Resume a retry on the latest combined base without losing its patch.
 
@@ -925,6 +935,7 @@ def refresh_workspace_for_retry(
             worker_key=worker_key,
             cwd=root,
             assessment=check,
+            requested_branch=requested_branch,
         )
         return workspace, {"action": "created", "changed_paths": []}
 
@@ -935,11 +946,12 @@ def refresh_workspace_for_retry(
             worker_key=worker_key,
             cwd=root,
             assessment=check,
+            requested_branch=requested_branch,
         )
         return workspace, {"action": "refreshed", "changed_paths": []}
 
     changed = workspace_changed_paths(existing)
-    if not changed:
+    if not changed and existing.state == "delivered" and requested_branch in {None, existing.branch}:
         return existing, {"action": "reused", "changed_paths": []}
     protected = [path for path in changed if is_protected_path(path)]
     if protected:
@@ -962,9 +974,25 @@ def refresh_workspace_for_retry(
         previous_tree.returncode == 0
         and current_tree.returncode == 0
         and previous_tree.stdout.strip() == current_tree.stdout.strip()
+        and _git(root, "merge-base", "--is-ancestor", check.head, existing.base_head,
+                 check=False).returncode == 0
         and existing.state == "active"
+        and requested_branch in {None, existing.branch}
     ):
         return existing, {"action": "reused", "changed_paths": changed}
+
+    if not changed:
+        # A failed worker can be perfectly clean and still have the wrong
+        # baseline. Clean is not evidence that its checkout is current.
+        store.mark_workspace(
+            run_id=run_id, worker_key=worker_key, state="blocked",
+            reason="clean retry workspace needs the current integration baseline",
+        )
+        workspace = ensure_workspace(
+            store, run_id=run_id, worker_key=worker_key, cwd=root, assessment=check,
+            requested_branch=requested_branch,
+        )
+        return workspace, {"action": "refreshed", "changed_paths": []}
 
     patch = _workspace_patch(existing, changed)
     if patch is None:
@@ -999,6 +1027,7 @@ def refresh_workspace_for_retry(
         worker_key=worker_key,
         cwd=root,
         assessment=check,
+        requested_branch=requested_branch,
     )
 
     checked = subprocess.run(
