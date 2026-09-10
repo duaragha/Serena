@@ -102,6 +102,15 @@ def test_notification_connection_is_closed_after_scope(tmp_path):
         connection.execute("SELECT 1")
 
 
+def test_owned_body_timeout_is_not_misreported_as_lock_contention(tmp_path, monkeypatch):
+    authority, notice_id = _queued(tmp_path)
+    def fail(*args, **kwargs):
+        raise TimeoutError("receipt storage timeout")
+    monkeypatch.setattr(authority, "_deliver_owned", fail)
+    with pytest.raises(TimeoutError, match="receipt storage timeout"):
+        authority.redeliver(notice_id)
+
+
 @pytest.mark.skipif(not os.path.isdir('/proc/self/fd'), reason='Linux descriptor accounting')
 def test_notification_reads_do_not_retain_descriptors_until_gc(tmp_path):
     authority, _ = _queued(tmp_path)

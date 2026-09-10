@@ -25,7 +25,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -387,19 +387,9 @@ class NotificationAuthority:
         locks = self.path.resolve().with_name(self.path.name + ".delivery-locks")
         locks.mkdir(parents=True, exist_ok=True, mode=0o700)
         name = hashlib.sha256(notification_id.encode()).hexdigest() + ".lock"
-        with (locks / name).open("a+b") as handle:
+        with (locks / name).open("a+b") as handle, ExitStack() as ownership:
             try:
-                with exclusive_lock(handle, timeout=0):
-                    with self._connect() as db:
-                        row = db.execute("SELECT * FROM notifications WHERE notification_id=?",
-                                         (notification_id,)).fetchone()
-                    if row is None:
-                        raise KeyError(f"unknown notification {notification_id}")
-                    if (row["decision"] not in {"deferred", "failed"}
-                            or row["deliver_after"] is None or row["deliver_after"] > moment
-                            or row["attempts"] >= self.policy.max_attempts):
-                        return _result_from_row(row)
-                    return self._deliver_owned(notification_id, _request_from_row(row), moment=moment)
+                ownership.enter_context(exclusive_lock(handle, timeout=0))
             except TimeoutError:
                 # Contention is not transport failure: don't trigger fallback.
                 with self._connect() as db:
@@ -411,6 +401,16 @@ class NotificationAuthority:
                     return _result_from_row(row)
                 return NotificationResult(notification_id, "deferred", "delivery already owned",
                                           row["channel"], row["attempts"], row["deliver_after"])
+            with self._connect() as db:
+                row = db.execute("SELECT * FROM notifications WHERE notification_id=?",
+                                 (notification_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"unknown notification {notification_id}")
+            if (row["decision"] not in {"deferred", "failed"}
+                    or row["deliver_after"] is None or row["deliver_after"] > moment
+                    or row["attempts"] >= self.policy.max_attempts):
+                return _result_from_row(row)
+            return self._deliver_owned(notification_id, _request_from_row(row), moment=moment)
 
     def _deliver_owned(self, notification_id: str, request: NotificationRequest,
                        *, moment: float) -> NotificationResult:
