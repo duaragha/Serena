@@ -989,10 +989,25 @@ export class WorkspacePane {
       }else if(item.tool==='Write' && typeof input.content==='string'){
         detail.append(node('div','aw-author','Requested file content'),node('pre','',input.content));
       }else if(Object.keys(input).length)detail.append(node('pre','',JSON.stringify(input,null,2)));
-      if(item.output!==undefined && item.output!==null){
+      const output=item.type==='acpToolCall' && Array.isArray(item.displayContent) && item.displayContent.length?item.displayContent:item.output;
+      if(output!==undefined && output!==null){
         detail.append(node('div','aw-author','Output'));
-        const blocks=Array.isArray(item.output)?item.output:[item.output];
+        const blocks=Array.isArray(output)?output:[output];
         for(const block of blocks){
+          if(item.type==='acpToolCall' && block?.type==='diff' && typeof block.path==='string' && (block.oldText===null || typeof block.oldText==='string') && typeof block.newText==='string'){
+            detail.append(node('div','aw-file-name',block.path));
+            const diff=node('pre','aw-diff');
+            for(const [text,marker,style] of [[block.oldText,'-','aw-remove'],[block.newText,'+','aw-add']]){
+              if(text===null || text==='')continue;
+              for(const line of text.split('\n'))diff.append(node('span',style,marker+line+'\n'));
+            }
+            detail.append(diff);
+            continue;
+          }
+          if(item.type==='acpToolCall' && block?.type==='content' && block.content?.type==='text' && typeof block.content.text==='string'){
+            detail.append(node('pre','aw-tool-output',block.content.text));
+            continue;
+          }
           const text=typeof block==='string'?block:block?.type==='text' && typeof block.text==='string'?block.text:JSON.stringify(block,null,2);
           detail.append(node('pre','aw-tool-output',text));
         }

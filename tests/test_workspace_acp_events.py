@@ -36,6 +36,18 @@ def test_explicit_message_ids_and_unrecognized_data_are_retained():
     assert raw["providerOriginal"]["metadata"] == {"value": 2}
 
 
+def test_tool_display_content_survives_partial_updates_alongside_raw_output():
+    events = AcpEvents("exact")
+    events.begin("turn")
+    content = [{"type": "content", "content": {"type": "text", "text": "readable"}}]
+    first = update(events, "tool_call", toolCallId="tool", content=content, rawOutput={"raw": True})
+    content.clear()
+    final = update(events, "tool_call_update", toolCallId="tool", status="completed")
+    assert final["displayContent"] == first["displayContent"]
+    assert final["displayContent"][0]["content"]["text"] == "readable"
+    assert final["output"] == {"raw": True}
+
+
 def test_idle_metadata_never_creates_a_turn():
     events = AcpEvents("exact")
     metadata = events.update({"sessionId": "exact", "update": {

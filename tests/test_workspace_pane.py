@@ -61,6 +61,36 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_acp_tool_content_is_readable_and_diff_markup_is_inert(pane, width, tmp_path):
+    from core.workspace_acp_events import AcpEvents
+
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    events = AcpEvents("exact")
+    events.begin("t")
+    event = events.update({"sessionId": "exact", "update": {
+        "sessionUpdate": "tool_call", "toolCallId": "edit", "title": "Update settings",
+        "rawOutput": {"internal": "raw result"}, "status": "completed", "content": [
+            {"type": "content", "content": {"type": "text", "text": "Configuration updated."}},
+            {"type": "diff", "path": "/project/settings.txt", "oldText": "old setting",
+             "newText": "<img src=x onerror=alert(1)>"},
+            {"type": "diff", "path": "/project/new.txt", "oldText": None, "newText": "new file"}]}})
+    page.evaluate("event => emit(event)", event)
+    detail = page.locator('[data-item-id="t:tool:edit"] > details')
+    detail.locator(":scope > summary").click()
+    assert detail.locator(".aw-tool-output").inner_text() == "Configuration updated."
+    assert detail.locator(".aw-remove").inner_text().strip() == "-old setting"
+    assert detail.locator(".aw-add").all_inner_texts() == ["+<img src=x onerror=alert(1)>\n", "+new file\n"]
+    assert detail.locator("img").count() == 0
+    assert "raw result" not in detail.inner_text()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / f"acp-tool-{width}.png"))
+    detail.get_by_text("Native details", exact=True).click()
+    assert "raw result" in detail.inner_text()
+    assert not errors and page.evaluate("calls") == []
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 @pytest.mark.parametrize("choice", ["Allow once", "Cancel"])
 def test_acp_permission_options_are_explicit_and_exact(pane, width, choice):
     page, errors = pane

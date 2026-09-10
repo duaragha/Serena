@@ -198,6 +198,19 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Tool presentation (2026-09-09): ACP display content is retained separately from
+raw output, including through partial updates. The pane prioritizes display
+content, renders nested text and before/after diffs, and preserves raw output in
+collapsed Native details. Unknown blocks remain inspectable, not executed.
+Official schema: https://agentclientprotocol.com/protocol/v1/tool-calls
+(accessed 2026-09-09). This is a display change, not proof a file edit occurred.
+
+Command: `.venv/bin/python -m pytest tests/test_workspace_acp_events.py tests/test_workspace_pane.py::test_acp_tool_content_is_readable_and_diff_markup_is_inert tests/test_workspace_pane.py::test_claude_tools_show_readable_native_output_and_requested_edits -q --tb=short`
+(using the shared Serena virtualenv): exit 0, 10 passed. Desktop/mobile checks
+cover literal malicious markup, new-file diffs, no automatic actions, raw-detail
+access and existing Claude presentation. Mobile screenshot inspected. Scoped Ruff
+and `node --check ui/static/workspace-pane.mjs`: exit 0.
+
 ACP user-image history now translates to the existing safe image renderer,
 preserving the original content and separating surrounding text chunks. Browser
 checks cover decoded images, hidden base64 text, blob URL cleanup, and no

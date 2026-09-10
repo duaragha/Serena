@@ -75,6 +75,7 @@ class AcpEvents:
             item["tool"] = original.get("title", native_id)
             item["input"] = original.get("rawInput")
             item["output"] = original.get("rawOutput", original.get("content"))
+            item["displayContent"] = deepcopy(original.get("content"))
             item["status"] = {"in_progress": "inProgress"}.get(original.get("status"), original.get("status", "pending"))
         else:
             self.last_message = None
