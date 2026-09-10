@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Lost Native Receipt Recovery (2026-09-10)
+
+After native acceptance, the host journals an exact `workspace/workSubmitted`
+checkpoint before saving the dispatch receipt. If the receipt write fails,
+recovery requires exactly one matching checkpoint (session, dispatch, original
+payload, prompt digest, turn ID and transcript offset) plus terminal native
+completion for that turn. It repairs the receipt transactionally, never submits
+input, and preserves failed/interrupted completion for the bridge's status check.
+Retry, reservation admission and reattachment consult recovery. Duplicate or
+mismatched evidence remains pending. An RPC acknowledgement lost before this
+checkpoint is still uncertain; automatic recovery of that case is not implemented.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_work_recovery.py tests/test_workspace_host.py::test_reserved_submission_is_durable_and_interrupt_is_turn_bound tests/test_workspace_host.py::test_pending_work_receipt_blocks_restart_and_new_dispatch tests/test_workspace_work_bridge.py -q --tb=short
+# exit 0: 22 passed in 9.77s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_work_recovery.py -q --tb=short
+# exit 0: 93 passed in 39.33s
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-work.py --allow-inference --lose-receipt
+# exit 0: real native job with injected receipt-write failure; retry recovered
+# without another job turn; exact result/bounds retained, reservation released,
+# unchanged project and all disposable provider/HTTP processes reaped
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-work-recovery.py
+# exit 0: fresh process refused missing acceptance evidence before provider
+# creation; another fresh process recovered a synthetic exact completed receipt
+```
+
 ## Native Routing Admission (2026-09-10)
 
 Focused and recent native Codex owners now participate in existing-job routing

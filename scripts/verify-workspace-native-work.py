@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def child(root, expect_auth_failure=False):
+def child(root, expect_auth_failure=False, lose_receipt=False):
     from werkzeug.serving import make_server
 
     from core.coding_job_contract import CodingJobBrief, capture_git_snapshot
@@ -106,14 +106,28 @@ def child(root, expect_auth_failure=False):
                         'bridge_port': server.server_port})
         store.enqueue_accepted(brief.to_dict(), call_id='isolated-native-work', turn_id=item)
         body = {'target_sid': sid, 'item_id': item, 'dispatch_id': dispatch, 'prompt': prompt, 'timeout': 120}
+        if lose_receipt:
+            finish = host.journal.finish_command
+            def fail_once(session_id, request_id, result):
+                host.journal.finish_command = finish
+                raise OSError('Injected lost receipt after native acceptance')
+            host.journal.finish_command = fail_once
         outcomes = []
-        for sequence in (1, 2):
+        for sequence in ((1, 2, 3) if lose_receipt else (1, 2)):
             host.note_view_context(sid, {'view_id': view, 'sequence': sequence,
                                         'visible': True, 'focused': True, 'draft': False})
             request = Request(f'http://127.0.0.1:{server.server_port}/api/codex-work-bridge',
                 method='POST', headers={'Content-Type': 'application/json'}, data=json.dumps(body).encode())
             with urlopen(request, timeout=150) as response:
                 result = json.load(response)
+            if lose_receipt and sequence == 1:
+                assert not result['ok'] and result['committed'] and result['reserved'], result
+                async def wait_completed():
+                    async with asyncio.timeout(90):
+                        while owner.active_turn or owner.state != 'ready':
+                            await asyncio.sleep(0.05)
+                host._dispatch(wait_completed(), 100)
+                continue
             if expect_auth_failure:
                 assert not result['ok'] and 'refresh token' in result['message'].lower(), result
             else:
@@ -132,6 +146,8 @@ def child(root, expect_auth_failure=False):
         assert subprocess.check_output(['git', '-C', str(project), 'status', '--porcelain'], text=True) == ''
         if not expect_auth_failure:
             print('PASS: after one user model-selection turn, actual native runtime inventory selected the exact existing owner and HTTP bridge')
+        if lose_receipt:
+            print('PASS: injected receipt failure recovered from durable exact-turn evidence without resubmission')
         print('PASS: real native authentication failure reported honestly, not as job success; one submitted turn, retry reused original bounds; reservation released; project unchanged'
               if expect_auth_failure else 'PASS: one real ChatGPT-subscription job turn through HTTP/native owner; repeated dispatch reused its original reply and bounds; reservation released; project unchanged')
     finally:
@@ -149,9 +165,10 @@ def main():
     parser.add_argument('--allow-inference', action='store_true', required=True)
     parser.add_argument('--child', type=Path)
     parser.add_argument('--expect-auth-failure', action='store_true')
+    parser.add_argument('--lose-receipt', action='store_true')
     args = parser.parse_args()
     if args.child:
-        child(args.child, args.expect_auth_failure)
+        child(args.child, args.expect_auth_failure, args.lose_receipt)
         return
     from core.billing import strip_metered_auth_env
     from core.work_session_router import SOL_MODEL
@@ -178,7 +195,8 @@ def main():
         for key in ('CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'):
             env.pop(key, None)
         process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--allow-inference', '--child', str(root),
-                                    *(['--expect-auth-failure'] if args.expect_auth_failure else [])],
+                                    *(['--expect-auth-failure'] if args.expect_auth_failure else []),
+                                    *(['--lose-receipt'] if args.lose_receipt else [])],
                                    cwd=ROOT, env=env)
         try:
             raise SystemExit(process.wait(timeout=240))

@@ -272,6 +272,50 @@ class WorkspaceJournal:
                 "AND request_id LIKE 'work:%' AND result IS NULL LIMIT 1", (session_id,)
             ).fetchone() is not None
 
+    def recover_completed_work(self, session_id: str) -> int:
+        """Repair lost receipts only from exact acceptance and terminal evidence."""
+        recovered = 0
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            commands = conn.execute(
+                "SELECT request_id, payload FROM workspace_commands WHERE session_id=? "
+                "AND request_id LIKE 'work:%' AND result IS NULL", (session_id,)).fetchall()
+            for key, encoded in commands:
+                payload = json.loads(encoded)
+                if payload.get("action") != "work_submit":
+                    continue
+                checkpoints = conn.execute(
+                    "SELECT event FROM workspace_events WHERE session_id=? "
+                    "AND json_extract(event, '$.method')='workspace/workSubmitted' "
+                    "AND json_extract(event, '$.params.requestId')=? LIMIT 2", (session_id, key)).fetchall()
+                if len(checkpoints) != 1:
+                    continue
+                checkpoint = json.loads(checkpoints[0][0])["params"]
+                receipt = checkpoint.get("receipt", {})
+                turn_id = receipt.get("turn_id")
+                if (checkpoint.get("threadId") != session_id or checkpoint.get("payload") != payload
+                        or receipt.get("ok") is not True or receipt.get("committed") is not True
+                        or receipt.get("session_id") != session_id
+                        or type(receipt.get("start_offset")) is not int or receipt["start_offset"] < 0
+                        or receipt["start_offset"] != payload.get("start_offset")
+                        or not isinstance(turn_id, str) or not turn_id):
+                    continue
+                completion = conn.execute(
+                    "SELECT event FROM workspace_events WHERE session_id=? "
+                    "AND json_extract(event, '$.method')='turn/completed' "
+                    "AND json_extract(event, '$.params.turn.id')=? ORDER BY sequence DESC LIMIT 1",
+                    (session_id, turn_id)).fetchone()
+                if not completion:
+                    continue
+                params = json.loads(completion[0])["params"]
+                if (params.get("threadId") != session_id
+                        or params["turn"].get("status") not in {"completed", "failed", "interrupted"}):
+                    continue
+                recovered += conn.execute(
+                    "UPDATE workspace_commands SET result=? WHERE session_id=? AND request_id=? AND result IS NULL",
+                    (json.dumps(receipt, allow_nan=False), session_id, key)).rowcount
+        return recovered
+
     def turn_completion(self, session_id: str, turn_id: str):
         with closing(self._connect()) as conn:
             row = conn.execute(

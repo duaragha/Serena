@@ -268,6 +268,7 @@ class WorkspaceHost:
             digest = hashlib.sha256(prompt.encode()).hexdigest()
             key = "work:" + item_id + ":" + dispatch_id
             payload = {"action": "work_submit", "item_id": item_id, "prompt_sha256": digest}
+            await asyncio.to_thread(self.journal.recover_completed_work, sid)
             record = await asyncio.to_thread(self.journal.command_record, sid, key)
             if record is not None:
                 stored = dict(record["payload"])
@@ -277,6 +278,8 @@ class WorkspaceHost:
                 prior = record["result"]
                 if prior is None:
                     self._work_turns[sid] = {"uncertain": True}
+                elif prior.get("ok") and prior.get("turn_id"):
+                    self._work_turns[sid] = {"uncertain": False, "turn_id": prior["turn_id"]}
                 return prior or {"ok": False, "committed": True, "uncertain": True,
                                  "start_offset": original_offset,
                                  "message": "Prior native work submission is unconfirmed; it will not be repeated"}
@@ -315,6 +318,9 @@ class WorkspaceHost:
                     raise RuntimeError("Native submission returned no exact turn identity")
                 receipt = {"ok": True, "committed": True, "session_id": sid, "turn_id": turn_id,
                            "start_offset": start_offset}
+                await asyncio.to_thread(self.journal.append, sid, {
+                    "method": "workspace/workSubmitted", "params": {
+                        "threadId": sid, "requestId": key, "payload": payload, "receipt": receipt}})
                 await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
                 self._work_turns[sid] = {"uncertain": False, "turn_id": turn_id}
                 return receipt
@@ -344,6 +350,7 @@ class WorkspaceHost:
             existing = self._work_reservations.get(sid)
             if existing:
                 return {"ok": existing == item_id, "message": "Native session is reserved"}
+            await asyncio.to_thread(self.journal.recover_completed_work, sid)
             if await asyncio.to_thread(self.journal.has_pending_work, sid):
                 return {"ok": False, "message": "A prior native work dispatch is unconfirmed"}
             error = self._work_admission_error(sid)
@@ -422,6 +429,7 @@ class WorkspaceHost:
                     return self._status(sid)
             if await asyncio.to_thread(self.journal.has_pending_clear, sid):
                 raise ValueError("A native clear handoff is unconfirmed; this source cannot be resumed automatically")
+            await asyncio.to_thread(self.journal.recover_completed_work, sid)
             if await asyncio.to_thread(self.journal.has_pending_work, sid):
                 raise ValueError("A native work dispatch is unconfirmed; this session cannot be resumed automatically")
             target = await asyncio.to_thread(self.resolve, sid)
