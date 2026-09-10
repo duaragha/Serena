@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -94,6 +95,27 @@ def test_registry_read_failure_does_not_assume_unowned(session, monkeypatch):
     monkeypatch.setattr(metadata, "get_meta", broken)
     with pytest.raises(OSError):
         admission.resolve_workspace_session("exact")
+
+
+@pytest.mark.parametrize("name,argv", [("localharness_ex", ["worker"]),
+    ("worker", ["/opt/google/localharness_external"]), ("agy_acp_server", ["agy_acp_server.par"])])
+def test_surviving_google_harness_blocks_ambiguous_session_attachment(session, monkeypatch, name, argv):
+    process = SimpleNamespace(pid=12345, info={"name": name}, cmdline=lambda: argv,
+                              cwd=lambda: session["cwd"], open_files=lambda: [])
+    monkeypatch.setattr(admission.psutil, "process_iter", lambda attrs: [process])
+    cwd, transcript = Path(session["cwd"]), Path(session["file_path"])
+    with pytest.raises(RuntimeError, match="unregistered"):
+        admission.reject_unregistered_provider("exact", cwd, transcript, "agy")
+    process.cwd = lambda: str(cwd / "another-project")
+    admission.reject_unregistered_provider("exact", cwd, transcript, "agy")
+    process.open_files = lambda: [SimpleNamespace(path=str(transcript))]
+    with pytest.raises(RuntimeError, match="transcript"):
+        admission.reject_unregistered_provider("exact", cwd, transcript, "agy")
+    def denied():
+        raise admission.psutil.AccessDenied(process.pid)
+    process.open_files = denied
+    with pytest.raises(RuntimeError, match="Cannot verify"):
+        admission.reject_unregistered_provider("exact", cwd, transcript, "agy")
 
 
 def test_gemini_fidelity_rejection_precedes_runtime_side_effects(session, monkeypatch):

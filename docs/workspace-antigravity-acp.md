@@ -198,6 +198,20 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Orphan ownership check (2026-09-09): admission now recognizes Google's
+`localharness_external` process and its truncated Linux name alongside `agy`.
+A matching open transcript, ambiguous same-project worker or inaccessible
+ownership data blocks attachment. A worker in another project without the target
+transcript does not block it. This supplements leases; it does not constrain a
+manual process launched after admission or solve Windows process containment.
+
+`PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_admission.py tests/test_workspace_gemini.py -q --tb=short`:
+exit 0, 28 passed. Ruff: initial import-order finding, fixed; final exit 0.
+A `SERENA_EVIDENCE_KIND=live` Python command launched a harmless Python child
+with harness argv in an isolated temporary project, observed actual process-table
+rejection, terminated/reaped it, and confirmed the check then cleared: exit 0.
+No native provider, user session or credentials were used in that proof.
+
 Context usage (2026-09-09): native `usage_update` used/size token counts now
 reach the pane as explicitly labeled context usage, not account quota. Valid
 zero is retained; invalid/unsafe counts clear stale values. Native cost metadata

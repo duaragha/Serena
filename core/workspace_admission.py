@@ -19,14 +19,17 @@ def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider
     Codex runtime in this project is ambiguous and blocks migration. This check
     complements leases; it cannot constrain manually launched future processes.
     """
+    # Google's native harness may outlive the agy parent. Linux may truncate
+    # its process name, so match the stable prefix as well as its argv.
+    names = ("agy", "localharness") if provider == "agy" else (provider,)
     for process in psutil.process_iter(["pid", "name"]):
         if process.pid == os.getpid():
             continue
-        candidate = provider in (process.info.get("name") or "").lower()
+        candidate = any(name in (process.info.get("name") or "").lower() for name in names)
         label = provider.capitalize()
         try:
             argv = process.cmdline()
-            candidate = candidate or any(provider in Path(value).name.lower() for value in argv[:3])
+            candidate = candidate or any(name in Path(value).name.lower() for value in argv[:3] for name in names)
             if not candidate:
                 continue
             if sid in argv or f"--resume={sid}" in argv:
