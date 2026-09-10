@@ -1087,6 +1087,20 @@ def test_local_command_result_is_visible_without_duplicating_model_response(num_
     assert converter.turn is None
 
 
+@pytest.mark.parametrize('suffix, expected', [('', 0), ('\n\n', 0), ('\r\n', 0), (' ', 1), ('\nChanged', 1)])
+def test_local_command_terminal_newlines_do_not_duplicate_output(suffix, expected):
+    converter = ClaudeEvents('exact')
+    converter.begin_input('turn')
+    converter.receive({'type': 'assistant', 'session_id': 'exact', 'uuid': 'message',
+                       'message': {'content': [{'type': 'text', 'text': '## Context Usage'}]}})
+    result = {'type': 'result', 'session_id': 'exact', 'is_error': False,
+              'num_turns': 0, 'result': '## Context Usage' + suffix}
+    events = converter.receive(result)
+    assert sum(event['method'] == 'item/completed' for event in events) == expected
+    assert events[0]['params']['record'] == result
+    assert any(event['method'] == 'turn/completed' for event in events)
+
+
 def test_history_merges_tool_result_without_losing_tool_input():
     converter = ClaudeEvents("exact")
     records = [

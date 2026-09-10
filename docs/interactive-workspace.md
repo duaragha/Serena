@@ -2,6 +2,39 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Local Command Output (2026-09-10)
+
+The repeatable Claude command proof now exercises nine local commands through
+one real SDK process and the production `ClaudeEvents` adapter: `/effort low`,
+`/context`, `/usage`, `/agents`, `/list-agents`, `/model`, `/config --help`,
+`/rename command-proof`, and `/autocompact auto`. Each completes without inference
+and produces one display output tied to the exact submitted turn. Profile writes
+are confined to its disposable home and project.
+
+The stronger proof exposed duplicate `/context` output: the native assistant
+message omits the final newlines that appear in the final result. Display
+deduplication now ignores only terminal CR/LF differences on the same turn.
+Spaces and changed text remain distinct; original records are retained verbatim.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py::test_local_command_terminal_newlines_do_not_duplicate_output tests/test_workspace_claude.py::test_local_command_result_is_visible_without_duplicating_model_response -q --tb=short
+# exit 0: 7 passed in 0.69s.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-commands.py
+# final exit 0: nine local commands, one output and matching turn per command,
+# same native process/session, zero billed inference, doctor expected auth error,
+# process and temporary profile cleaned up.
+# Earlier exits 1: first the proof assumed only commandOutput (native commands
+# may also emit agentMessage); then it exposed the genuine newline duplicate.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py -q --tb=short
+# exit 0: 56 passed in 0.72s.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_events.py tests/test_workspace_claude.py scripts/verify-workspace-claude-commands.py
+# exit 0: All checks passed!
+```
+
+This verifies the listed invocation forms and their native output, not every
+argument, authenticated account usage, or rename synchronization with the chat
+sidebar. Those broader integration checks remain open.
+
 ## Claude Doctor Skill Routing (2026-09-10)
 
 The installed 2.1.267 native SDK catalog exposes `/doctor` as a skill, with

@@ -37,6 +37,18 @@ The terminal-command and skill sets can overlap. A skill entry must not be
 silently replaced with a similarly named local command. Diagnostics remains a
 separate installation tool, not the doctor skill.
 
+### Verified Local Invocation Forms
+
+On 2026-09-10 the expanded native proof exited 0 for `/effort low`, `/context`,
+`/usage`, `/agents`, `/list-agents`, `/model`, `/config --help`,
+`/rename command-proof`, and `/autocompact auto`. It verifies zero inference,
+one output row through the production event adapter, exact turn identity and
+same native process/session. `/agents` correctly reports that the native wizard
+was removed, not a fabricated management UI. `/model` here is inspection only.
+`/usage` is the unsigned session report, not proof of subscription-limit fetching.
+Rename succeeds natively; sidebar synchronization is a separate remaining gate.
+All writes and command execution were confined to a disposable profile/project.
+
 ## Codex Pane Command Routes
 
 | Names | Current route | Remaining gap |

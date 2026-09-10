@@ -286,13 +286,20 @@ class ClaudeEvents:
                         raise ValueError("Claude result acknowledgement is out of input order")
             elif len(self.pending_inputs) > 1:
                 raise ValueError("Queued Claude inputs require exact result acknowledgements")
+            duplicate_result = (
+                self.last_root_text is not None
+                and self.last_root_text[0] == self.turn
+                and isinstance(data.get("result"), str)
+                and self.last_root_text[1].rstrip("\r\n") == data["result"].rstrip("\r\n")
+            )
             if (
                 data.get("num_turns") == 0
                 and isinstance(data.get("result"), str)
                 and data["result"]
                 # Some local commands emit both an assistant message and an
-                # identical final result. Keep the raw result, not a second row.
-                and (data.get("is_error") or self.last_root_text != (self.turn, data["result"]))
+                # identical final result, sometimes with extra terminal newlines.
+                # Keep the raw result in the journal, not a second display row.
+                and (data.get("is_error") or not duplicate_result)
             ):
                 events.append(
                     self.event(

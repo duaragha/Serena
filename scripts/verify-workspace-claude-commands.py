@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 async def prove(root):
+    from core.workspace_claude_events import ClaudeEvents
     from core.workspace_claude_runtime import runtime_paths
     from core.workspace_claude_transport import ClaudeSdkTransport
 
@@ -20,13 +21,16 @@ async def prove(root):
     cli = shutil.which("claude")
     assert cli, "Claude CLI is required"
     sid = str(uuid4())
-    done = asyncio.get_running_loop().create_future()
+    done = asyncio.Queue()
     messages = []
+    adapter = ClaudeEvents(sid)
+    translated = []
 
     async def publish(message):
         messages.append(message)
-        if message.get("type") == "result" and not done.done():
-            done.set_result(message)
+        translated.extend(adapter.receive(message))
+        if message.get("type") == "result":
+            await done.put(message)
 
     async def deny(*args):
         raise AssertionError("No repair tools authorized")
@@ -39,10 +43,44 @@ async def prove(root):
         catalog = await transport.control("supportedCommands")
         doctor = next(command for command in catalog if command["name"] == "doctor")
         assert "checkup" in doctor.get("aliases", [])
-        await transport.send({"type": "user", "uuid": str(uuid4()), "session_id": sid,
-                              "parent_tool_use_id": None,
-                              "message": {"role": "user", "content": "/doctor"}})
-        result = await asyncio.wait_for(done, 25)
+
+        async def command(text):
+            input_id = str(uuid4())
+            adapter.begin_input(input_id)
+            translated.clear()
+            await transport.send({"type": "user", "uuid": input_id, "session_id": sid,
+                                  "parent_tool_use_id": None,
+                                  "message": {"role": "user", "content": text}})
+            result = await asyncio.wait_for(done.get(), 25)
+            assert result["session_id"] == sid and transport.rpc.process is process
+            assert result["total_cost_usd"] == 0
+            outputs = [event["params"]["item"] for event in translated
+                       if event["method"] == "item/completed"
+                       and event["params"].get("turnId") == input_id
+                       and event["params"]["item"]["type"] in {"commandOutput", "agentMessage"}]
+            assert len(outputs) == 1 and outputs[0]["text"].rstrip("\r\n") == result["result"].rstrip("\r\n"), (text, outputs)
+            completions = [event["params"]["turn"] for event in translated
+                           if event["method"] == "turn/completed"]
+            assert len(completions) == 1 and completions[0]["id"] == input_id
+            assert completions[0]["status"] == ("failed" if result["is_error"] else "completed")
+            return result
+
+        local_commands = {
+            "/effort low": "Set effort level to low",
+            "/context": "Context Usage",
+            "/usage": "Total cost:",
+            "/agents": "wizard has been removed",
+            "/list-agents": "This session:",
+            "/model": "Current model:",
+            "/config --help": "Usage: /config",
+            "/rename command-proof": "Session renamed to: command-proof",
+            "/autocompact auto": "Auto-compact window set to auto",
+        }
+        for text, expected in local_commands.items():
+            result = await command(text)
+            assert not result["is_error"] and result["num_turns"] == 0
+            assert expected in result["result"], text
+        result = await command("/doctor")
         init = next(message for message in messages if message.get("subtype") == "init")
         assert "doctor" in init["skills"]
         assert result["session_id"] == sid and transport.rpc.process is process
@@ -51,6 +89,8 @@ async def prove(root):
         assert not result.get("permission_denials")
         print(json.dumps({"commandNames": [command["name"] for command in catalog],
                           "catalogCount": len(catalog), "doctorIsNativeSkill": True,
+                          "localCommandsVerified": list(local_commands),
+                          "exactCommandOutputAndTurnIdentity": True,
                           "exactSession": True, "expectedAuthenticationFailure": True,
                           "inference": False, "repairExecuted": False}))
     finally:
