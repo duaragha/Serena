@@ -42,6 +42,7 @@ class SessionMeta:
     cache_read_tokens: int = 0
     cache_create_tokens: int = 0
     devices_used: list[str] = field(default_factory=list)
+    native_title: str | None = None
 
 
 def _extract_text(content) -> str:
@@ -118,6 +119,11 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
 
                 rec_type = record.get("type")
                 timestamp_str = record.get("timestamp")
+
+                if rec_type == "custom-title" and record.get("sessionId") == session_id:
+                    title = record.get("customTitle")
+                    if isinstance(title, str) and title.strip() and len(title) <= 1000 and not any(ord(c) < 32 for c in title):
+                        meta.native_title = title.strip()
 
                 if rec_type in ("user", "assistant"):
                     raw_count += 1

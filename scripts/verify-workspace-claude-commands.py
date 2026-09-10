@@ -88,6 +88,24 @@ async def prove(root):
                     title_records.append(record)
         assert title_records and title_records[-1].get("customTitle") == "command-proof", title_records
         assert title_records[-1].get("sessionId") == sid
+        from core import indexer, metadata
+        from core.parser import parse_metadata
+        from core.workspace_catalog import list_saved_sessions
+
+        metadata.METADATA_DIR = root / "metadata"
+        metadata.METADATA_PATH = root / "legacy-metadata.json"
+        assert indexer.DB_PATH.resolve().is_relative_to(root.resolve())
+        transcript = next((root / "config").rglob(f"{sid}.jsonl"))
+        meta = parse_metadata(transcript, transcript.parent.name)
+        assert meta.native_title == "command-proof"
+        conn = indexer._get_db()
+        try:
+            indexer._upsert_session(conn, meta, all_meta={}, agent="claude")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = list_saved_sessions("claude")["data"]
+        assert len(rows) == 1 and rows[0]["session_id"] == sid and rows[0]["title"] == "command-proof"
         result = await command("/doctor")
         init = next(message for message in messages if message.get("subtype") == "init")
         assert "doctor" in init["skills"]
@@ -100,6 +118,7 @@ async def prove(root):
                           "localCommandsVerified": list(local_commands),
                           "exactCommandOutputAndTurnIdentity": True,
                           "nativeRenamePersistedForExactSession": True,
+                          "nativeRenameIndexedInCatalog": True,
                           "exactSession": True, "expectedAuthenticationFailure": True,
                           "inference": False, "repairExecuted": False}))
     finally:
@@ -112,7 +131,8 @@ def main():
 
     original = dict(os.environ)
     try:
-        with tempfile.TemporaryDirectory(prefix="serena-command-proof-") as directory:
+        # The catalog deliberately hides -tmp-serena-* machinery projects.
+        with tempfile.TemporaryDirectory(prefix="workspace-command-proof-") as directory:
             root = Path(directory)
             env = strip_metered_auth_env(original)
             for key in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE"):

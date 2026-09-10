@@ -531,7 +531,9 @@ def _apply_synced_meta(conn: sqlite3.Connection, session_id: str, synced: dict):
 
 
 def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict | None = None, agent: str = "claude"):
-    title = "Serena" if agent == "serena-voice" else generate_title(meta.first_message)
+    title = "Serena" if agent == "serena-voice" else (
+        getattr(meta, "native_title", None) if agent == "claude" else None
+    ) or generate_title(meta.first_message)
 
     # Get synced metadata (stars, tags, custom_title) from the shared JSON
     if all_meta is not None:

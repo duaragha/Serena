@@ -48,12 +48,13 @@ was removed, not a fabricated management UI. `/model` here is inspection only.
 `/usage` is the unsigned session report, not proof of subscription-limit fetching.
 Rename persists a `custom-title` JSONL record containing `customTitle` and the
 exact `sessionId`; the native proof now asserts both against the disposable
-session file rather than trusting the success message. Sidebar synchronization
-remains missing: `parse_metadata` ignores this record and `_upsert_session`
-derives the title from the first message, with synced custom metadata taking
-precedence. Integration must preserve explicit existing custom names while
-recognizing a newer intentional native rename; blindly replaying old transcript
-titles into synced metadata would be unsafe.
+session file rather than trusting the success message. `parse_metadata` now
+retains the latest valid exact-session title and `_upsert_session` uses it for
+Claude's catalog title. Synced custom metadata still takes precedence. Native
+rename through real persistence, parsing, SQLite indexing and catalog search is
+proved. Immediate refresh and intentionally replacing an existing Serena custom
+title remain separate work; blindly replaying old transcript titles into synced
+metadata would be unsafe.
 All writes and command execution were confined to a disposable profile/project.
 
 ```sh
@@ -63,6 +64,25 @@ env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/p
 /home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-claude-commands.py
 # exit 0: All checks passed!
 ```
+
+Persisted-title integration receipts (2026-09-10):
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py -q --tb=short
+# exit 0: 21 passed in 0.37s; includes native name, newer rename, foreign SID,
+# malformed/empty/control-character/oversized names and explicit custom precedence.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-commands.py
+# exit 0: nativeRenameIndexedInCatalog=true. Initial exit 1: temporary project's
+# -tmp-serena-* name correctly triggered internal-project hiding; changed fixture
+# prefix, not production visibility rules.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_catalog.py scripts/verify-workspace-claude-commands.py
+# exit 0: All checks passed!
+```
+
+Shared parser/indexer lint remains at 15 pre-existing findings (exit 1),
+confirmed against `git show HEAD:core/parser.py` and `git show HEAD:core/indexer.py`
+piped separately to Ruff `check --stdin-filename <path> --output-format concise -`
+(exit 1 each: 5 and 10 findings). Unrelated cleanup was not included.
 
 ## Codex Pane Command Routes
 

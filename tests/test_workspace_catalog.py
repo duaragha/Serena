@@ -8,6 +8,41 @@ import pytest
 from core.workspace_catalog import register_fork
 
 
+def test_claude_native_title_reindexes_without_overwriting_custom_title(tmp_path, monkeypatch):
+    from core import indexer
+    from core.parser import parse_metadata
+    from core.workspace_catalog import list_saved_sessions
+
+    monkeypatch.setattr(indexer, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(indexer, "DB_PATH", tmp_path / "index.db")
+    monkeypatch.setattr(indexer, "_schema_ready", False)
+    sid = str(uuid4())
+    path = tmp_path / f"{sid}.jsonl"
+    records = [
+        {"type": "user", "cwd": str(tmp_path), "timestamp": "2026-09-10T12:00:00Z",
+         "message": {"role": "user", "content": "Original request"}},
+        {"type": "custom-title", "sessionId": sid, "customTitle": "First rename"},
+        {"type": "custom-title", "sessionId": sid, "customTitle": "Native rename"},
+        {"type": "custom-title", "sessionId": str(uuid4()), "customTitle": "Wrong session"},
+    ]
+    for invalid in (None, {}, "", "  ", "bad\nname", "x" * 1001):
+        records.append({"type": "custom-title", "sessionId": sid, "customTitle": invalid})
+    path.write_text("\n".join(map(json.dumps, records)) + "\n{partial\n")
+    meta = parse_metadata(path, "project")
+    assert meta.native_title == "Native rename"
+    assert meta.message_count == 1
+    conn = indexer._get_db()
+    try:
+        indexer._upsert_session(conn, meta, all_meta={}, agent="claude")
+        conn.commit()
+        assert list_saved_sessions("claude")["data"][0]["title"] == "Native rename"
+        indexer._upsert_session(conn, meta, all_meta={sid: {"custom_title": "My explicit title"}}, agent="claude")
+        conn.commit()
+        assert list_saved_sessions("claude")["data"][0]["title"] == "My explicit title"
+    finally:
+        conn.close()
+
+
 def test_saved_session_search_uses_full_provider_catalog_and_literal_query(tmp_path, monkeypatch):
     from core import indexer
     from core.workspace_catalog import list_saved_sessions
