@@ -409,6 +409,30 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
     assert time.monotonic() - started < 3
 
 
+def test_slow_event_callback_cannot_discard_queued_final_answer(tmp_path, monkeypatch):
+    codex_bin = _executable(
+        tmp_path / "quick-codex",
+        """#!/usr/bin/env python3
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type":"thread.started","thread_id":"queued-final-fixture"}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"final answer preserved"}}), flush=True)
+""",
+    )
+    monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", str(codex_bin))
+    monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SERENA_FLEET_EXIT_DRAIN_SECONDS", "0.1")
+    def slow(event, payload):
+        if event == "process.started":
+            time.sleep(0.2)  # Child has exited before the exit timer starts.
+        if event == "worker.event":
+            time.sleep(0.2)  # Metadata delivery outlasts the drain grace period.
+    result = run_worker(_request(tmp_path, "codex"), cancel_requested=lambda: False, on_event=slow)
+    assert result.ok, result.error
+    assert result.output_text == "final answer preserved"
+
+
 def test_codex_rollout_identity_reads_actual_effort_field(tmp_path, monkeypatch):
     rollout = tmp_path / "rollout.jsonl"
     rollout.write_text(

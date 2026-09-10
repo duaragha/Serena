@@ -152,6 +152,12 @@ published stacked-PR delivery gate below.
 
 ## Continuous orphan recovery and progress budgets
 
+After a native process exits, the pipe-drain grace period bounds inherited output
+handles, not metadata callback latency. On expiry Fleet terminates the owned process
+group and parses the finite event backlog already received before returning. A slow
+session/event callback therefore cannot discard queued model identity or the final answer;
+new output from a descendant cannot extend that captured backlog indefinitely.
+
 The resident service reconciles dead process owners every 30 seconds, not only on boot. Its own
 thread registry also identifies a per-run supervisor thread that exited while the service PID stayed
 alive. Quiet output, age, or a missing heartbeat alone never proves that thread dead. Before requeue,
