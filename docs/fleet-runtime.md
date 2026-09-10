@@ -91,6 +91,13 @@ or removing the sibling's resource wait. Other unclassified failures still fail 
 recovery guarantee. Autonomy shows scheduled retries, resource wakeups, ignored late callbacks and
 actionable stops separately from successful completion.
 
+A worker whose Code is durably waiting for input may still perform a rotated Review
+of a disjoint, ready peer unit. Likewise, a ready Fix is not held behind that worker's
+unrelated Review waiting on dependencies or input. Research must still complete;
+active or queued turns are never bypassed, unknown/overlapping assignments fail closed,
+and the target's DAG dependencies and one-live-turn-per-worker rule remain mandatory.
+Neither exception marks the parked assignment complete or retries its unchanged blocker.
+
 ## Explicit run baseline and local task branches
 
 `Fleet baseline: <local-ref>` or the task directive `MANDATORY start point: branch ... at commit

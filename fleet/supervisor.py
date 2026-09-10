@@ -1183,13 +1183,15 @@ def _run_work_unit_scheduler(
                 phase_index = int(leg["phase_index"])
                 worker_key = _worker_key(leg)
                 # Rotated Review advances the target unit, but it is still the
-                # reviewer's next turn. Keep each durable worker in phase order
-                # and never let two turns for the same worker run concurrently.
+                # reviewer's next turn. Keep live turns in phase order and
+                # never run two turns for the same worker concurrently.
+                # A parked, unrelated assignment is not an active turn: the
+                # DAG still owns target readiness, not worker phase order.
                 # Without both checks a fast target could launch Agent A's
                 # Review before Agent A had finished Research or Code.
                 if worker_key in running_worker_keys or any(
                     _worker_key(prior_leg) == worker_key
-                    and str(prior_leg.get("state") or "") != "completed"
+                    and _prior_turn_blocks_dispatch(leg, prior_leg)
                     for prior_phase in snapshot["phases"]
                     if int(prior_phase["index"]) < phase_index
                     for prior_leg in prior_phase["legs"]
@@ -3005,6 +3007,28 @@ def _assignment_text(value: object) -> str:
         parts = [_assignment_text(item) for item in value]
         return "; ".join(part for part in parts if part)
     return _clean_inline(value, limit=800)
+
+
+def _prior_turn_blocks_dispatch(candidate: dict[str, Any], prior: dict[str, Any]) -> bool:
+    """Only bypass a quiescent, disjoint assignment; never bypass target DAG gates."""
+    state = str(prior.get("state") or "")
+    if state == "completed":
+        return False
+    if candidate.get("access_mode") == "review" and prior.get("access_mode") == "write":
+        targets = set(candidate.get("review_target_ids") or ())
+        prior_targets = set(prior.get("assignment_ids") or ())
+        return not (
+            state == "waiting_for_input" and targets and prior_targets
+            and targets.isdisjoint(prior_targets)
+        )
+    if candidate.get("access_mode") == "write" and prior.get("access_mode") == "review":
+        targets = set(candidate.get("assignment_ids") or ())
+        prior_targets = set(prior.get("review_target_ids") or ())
+        return not (
+            state in {"waiting_for_input", "waiting_for_dependencies"}
+            and targets and prior_targets and targets.isdisjoint(prior_targets)
+        )
+    return True
 
 
 def _worker_key(leg: dict[str, Any]) -> str:
