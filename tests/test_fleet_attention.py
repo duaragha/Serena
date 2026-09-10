@@ -171,3 +171,23 @@ def test_voice_bridge_accepts_blocked_notice_and_preserves_delivery_identity(tmp
     assert store.terminal_notice_delivered(rid, notice["token"], channel="voice")
     notice["state"] = "running"
     assert brain_bridge.parse_local_event(json.dumps(notice).encode()) is None
+
+
+def test_voice_bridge_fallback_respects_approval_and_cancel(tmp_path, monkeypatch):
+    from voice import brain_bridge
+    from fleet import supervisor
+    store, rid = _park(tmp_path)
+    monkeypatch.setattr("core.fleet_store.FleetStore", lambda: store)
+    sent = []
+    authority = _authority(tmp_path, sent, approval_required_kinds=("fleet.run.waiting_for_input",))
+    authority._senders = {"telegram": lambda request: sent.append(request) or True}
+    monkeypatch.setattr(supervisor, "_terminal_notification_authority", lambda *_: authority)
+    notice = {"run_id": rid, "state": "waiting_for_input", "token": "attention:bridge-fallback",
+              "text": "Worker reported blocked work."}
+    brain_bridge._fallback_fleet_notice(notice)
+    assert sent == []
+    assert len(authority.pending_approvals()) == 1
+    store.request_cancel(rid)
+    count = len(authority.history())
+    brain_bridge._fallback_fleet_notice(notice)
+    assert len(authority.history()) == count
