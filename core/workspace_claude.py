@@ -62,6 +62,7 @@ class ClaudeWorkspace:
         self._clear_target = None
         self._creation_attempted = False
         self._uncertain_input = None
+        self._pending_renames = {}
 
     async def create(self, *, checkpoint):
         async with self._control:
@@ -190,6 +191,11 @@ class ClaudeWorkspace:
                             self._uncertain_input = None
                             self.state = "running" if self.active_turn else "ready"
                     await self.publish(event)
+                    if event["method"] == "turn/completed":
+                        turn = event["params"]["turn"]
+                        title = self._pending_renames.pop(turn["id"], None)
+                        if title is not None and turn.get("status") == "completed":
+                            await self.publish(self.events.event("workspace/renameCompleted", {"title": title}))
             raise RuntimeError("Claude output stream ended")
         except asyncio.CancelledError:
             raise
@@ -517,6 +523,11 @@ class ClaudeWorkspace:
                     await self.client.set_effort(options["effort"])
                     await self.publish(self.events.event("workspace/settings", {"reasoningEffort": options["effort"]}))
             turn_id = str(uuid4())
+            command = text.strip().split(maxsplit=1)
+            if len(command) == 2 and command[0] == "/rename" and all(part.get("type") == "text" for part in inputs):
+                title = command[1].strip()
+                if title and len(title) <= 1000 and not any(ord(c) < 32 for c in title):
+                    self._pending_renames[turn_id] = title
             self.events.begin_input(turn_id)
             self.active_turn = self.events.turn
             self.state = "submitting"

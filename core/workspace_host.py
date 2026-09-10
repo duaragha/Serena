@@ -1133,6 +1133,20 @@ class WorkspaceHost:
     async def _publish(self, sid, event):
         decorated = await asyncio.to_thread(self.uploads.decorate_event, sid, event)
         await asyncio.to_thread(self.journal.append, sid, decorated)
+        if event.get("method") == "workspace/renameCompleted" and self.register_fork is not None:
+            entry = self._sessions.get(sid)
+            title = event.get("params", {}).get("title")
+            if entry and entry[1] == "claude" and isinstance(title, str) and title:
+                registration = {"session_id": sid, "provider": "claude", "cwd": str(entry[0].cwd),
+                                "expected_native_title": title}
+                for attempt in range(5):
+                    result = await self._register_created_fork(registration)
+                    if not result.get("retryable"):
+                        break
+                    if attempt < 4:
+                        await asyncio.sleep(0.05 * (2 ** attempt))
+                await asyncio.to_thread(self.journal.append, sid, {"method": "workspace/catalog", "params": result})
+            return
         if event.get("method") != "turn/completed" or self.register_fork is None:
             return
         target = await asyncio.to_thread(self.journal.pending_target, sid)

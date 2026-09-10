@@ -80,6 +80,8 @@ def register_fork(target):
         meta = parse_codex_metadata(path)
     if meta is None or meta.session_id != sid or not isinstance(meta.cwd, str) or Path(meta.cwd).resolve() != Path(target["cwd"]).resolve():
         raise ValueError("Native fork metadata does not match its project and identity")
+    if "expected_native_title" in target and (provider != "claude" or meta.native_title != target["expected_native_title"]):
+        raise NativeTranscriptPending("Confirmed native rename is not persisted yet")
     with _index_update_lock():
         if provider == "codex":
             from core.metadata import set_resident_work

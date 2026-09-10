@@ -92,6 +92,30 @@ def make(tmp_path):
     return owner, events
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_rename_catalog_signal_requires_exact_successful_turn(tmp_path, failed):
+    async def run():
+        owner, events = make(tmp_path)
+        await owner.open()
+        try:
+            await owner.submit([{"type": "text", "text": "/rename New name"}])
+            await owner.client.messages.put(ResultMessage(
+                subtype="error" if failed else "success", duration_ms=1, duration_api_ms=0,
+                is_error=failed, num_turns=0, session_id="exact"))
+            for _ in range(50):
+                if not owner._pending_renames:
+                    break
+                await asyncio.sleep(.01)
+            assert not owner._pending_renames
+            renamed = [event for event in events if event["method"] == "workspace/renameCompleted"]
+            assert len(renamed) == (0 if failed else 1)
+            if renamed:
+                assert renamed[0]["params"]["title"] == "New name"
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 def test_queued_input_uses_same_client_and_preserves_running_turn(tmp_path):
     async def run():
         owner, events = make(tmp_path)

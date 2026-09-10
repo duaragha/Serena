@@ -1897,3 +1897,25 @@ def test_host_routes_real_bidirectional_pipes_into_replay(tmp_path, monkeypatch)
     finally:
         host.shutdown()
     assert process.returncode is not None
+@pytest.mark.parametrize("pending", [False, True])
+def test_confirmed_claude_rename_indexes_exact_owner_without_attach(tmp_path, pending):
+    import asyncio
+    from types import SimpleNamespace
+
+    from core.workspace_catalog import NativeTranscriptPending
+    from core.workspace_host import WorkspaceHost
+    from core.workspace_journal import WorkspaceJournal
+
+    calls = []
+    def register(target):
+        calls.append(target)
+        if pending:
+            raise NativeTranscriptPending("not flushed")
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "rename.db"),
+                         resolve=lambda sid: pytest.fail("must not attach"),
+                         register_fork=register)
+    host._sessions["exact"] = (SimpleNamespace(cwd=tmp_path), "claude")
+    asyncio.run(host._publish("exact", {"method": "workspace/renameCompleted", "params": {"title": "New name"}}))
+    assert calls == [{"session_id": "exact", "provider": "claude", "cwd": str(tmp_path), "expected_native_title": "New name"}] * (5 if pending else 1)
+    assert host._loop is None

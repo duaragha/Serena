@@ -88,9 +88,13 @@ async def prove(root):
                     title_records.append(record)
         assert title_records and title_records[-1].get("customTitle") == "command-proof", title_records
         assert title_records[-1].get("sessionId") == sid
+        from types import SimpleNamespace
+
         from core import indexer, metadata
         from core.parser import parse_metadata
-        from core.workspace_catalog import list_saved_sessions
+        from core.workspace_catalog import list_saved_sessions, register_fork
+        from core.workspace_host import WorkspaceHost
+        from core.workspace_journal import WorkspaceJournal
 
         metadata.METADATA_DIR = root / "metadata"
         metadata.METADATA_PATH = root / "legacy-metadata.json"
@@ -98,12 +102,11 @@ async def prove(root):
         transcript = next((root / "config").rglob(f"{sid}.jsonl"))
         meta = parse_metadata(transcript, transcript.parent.name)
         assert meta.native_title == "command-proof"
-        conn = indexer._get_db()
-        try:
-            indexer._upsert_session(conn, meta, all_meta={}, agent="claude")
-            conn.commit()
-        finally:
-            conn.close()
+        observer = WorkspaceHost(journal=WorkspaceJournal(root / "observer.db"), resolve=None,
+                                 register_fork=register_fork)
+        observer._sessions[sid] = (SimpleNamespace(cwd=root), "claude")
+        await observer._publish(sid, {"method": "workspace/renameCompleted", "params": {"title": "command-proof"}})
+        assert observer._loop is None
         rows = list_saved_sessions("claude")["data"]
         assert len(rows) == 1 and rows[0]["session_id"] == sid and rows[0]["title"] == "command-proof"
         result = await command("/doctor")

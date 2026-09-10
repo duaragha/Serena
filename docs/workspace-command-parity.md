@@ -55,6 +55,27 @@ rename through real persistence, parsing, SQLite indexing and catalog search is
 proved. Immediate refresh and intentionally replacing an existing Serena custom
 title remain separate work; blindly replaying old transcript titles into synced
 metadata would be unsafe.
+
+The live Claude owner now tracks explicit text-only `/rename <name>` by input
+turn ID. Only a successful matching completion emits a catalog signal; failed
+turns clear it without updating the title. The host indexes that same owner and
+project without attachment or a new session, verifies the expected title against
+native persistence, and bounds flush retries to five attempts. Indexing errors
+are journaled separately without interrupting the owner. The open parent sidebar
+still needs to consume the catalog notification; existing custom-title precedence
+is unchanged.
+
+```sh
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_catalog.py -q --tb=short
+# exit 0: 205 passed in 24.24s before extending the host test with pending-flush coverage.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_confirmed_claude_rename_indexes_exact_owner_without_attach -q --tb=short
+# exit 0: 2 passed in 1.23s, including bounded pending-flush retries.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-commands.py
+# exit 0: real native rename persistence -> host publication -> production catalog
+# registration -> exact-session saved title. No inference or extra owner launch.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_host.py core/workspace_catalog.py tests/test_workspace_claude.py tests/test_workspace_host.py scripts/verify-workspace-claude-commands.py --fix
+# exit 0: one test-local import ordering issue fixed.
+```
 All writes and command execution were confined to a disposable profile/project.
 
 ```sh
