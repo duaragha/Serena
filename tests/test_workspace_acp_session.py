@@ -275,6 +275,10 @@ assert sys.stdin.read()==''
             await owner.prompt([{"type": "text", "text": "hello"}])
             assert output[-1]["method"] == "turn/completed"
             assert output[-1]["params"]["turn"]["items"][1]["text"] == expected
+            deltas = [event for event in output if event["method"] == "item/agentMessage/delta"]
+            assert len(deltas) == 19
+            assert "".join(event["params"]["delta"] for event in deltas) == expected[2:]
+            assert all(event["params"]["threadId"] == "exact" for event in deltas)
             await owner.stop_event_reader()
             assert rpc.process.returncode is None
         finally:

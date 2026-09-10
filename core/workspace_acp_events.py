@@ -55,10 +55,16 @@ class AcpEvents:
             if key not in self.messages:
                 self.messages[key] = f"{self.turn}:message:{len(self.messages)}"
             item_id = self.messages[key]
+            continuing = item_id in self.items
             item = deepcopy(self.items.get(item_id, {"id": item_id, "type": "agentMessage", "text": ""}))
             item["text"] += text
             if kind == "user_message_chunk":
                 item.update(type="userMessage", content=[{"type": "text", "text": item["text"]}])
+            elif continuing:
+                # Journal only the new text; completion/history retain the full item.
+                self.items[item_id] = item
+                return self.event("item/agentMessage/delta", {
+                    "turnId": self.turn, "itemId": item_id, "delta": text})
         elif kind == "user_message_chunk" and update["content"].get("type") == "image":
             content = update["content"]
             if not isinstance(content.get("data"), str) or not isinstance(content.get("mimeType"), str):

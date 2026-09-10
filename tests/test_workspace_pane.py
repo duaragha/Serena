@@ -1621,6 +1621,25 @@ def test_composer_upload_failure_retains_draft_and_closing_does_not_cancel(pane)
     assert not errors
 
 
+def test_acp_stream_deltas_render_exactly_before_and_after_completion(pane):
+    from core.workspace_acp_events import AcpEvents
+
+    page, errors = pane
+    events = AcpEvents("exact")
+    page.evaluate("event => emit(event)", events.begin("acp-stream"))
+    chunks = [f"chunk {index} " for index in range(200)]
+    for chunk in chunks:
+        event = events.update({"sessionId": "exact", "update": {
+            "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": chunk}}})
+        page.evaluate("event => emit(event)", event)
+    item = page.locator('#left [data-item-id="acp-stream:message:0"] .aw-message')
+    playwright.expect(item).to_have_text("".join(chunks).strip())
+    page.evaluate("event => emit(event)", events.complete("end_turn"))
+    playwright.expect(item).to_have_text("".join(chunks).strip())
+    assert page.locator('#left [data-item-id="acp-stream:message:0"]').count() == 1
+    assert not errors
+
+
 def test_questions_resolve_only_from_provider_and_stream_does_not_collapse_tools(pane):
     page, errors = pane
     page.locator("#left .aw-tool summary").click()

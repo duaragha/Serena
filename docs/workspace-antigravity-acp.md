@@ -6,6 +6,29 @@ assumption that Antigravity has no suitable interactive interface. The installed
 
 ## Primary Evidence
 
+### Incremental Assistant Streaming
+
+Assistant text starts with one full item, followed by session-bound
+`item/agentMessage/delta` events. The final item and loaded history still contain
+the complete text. User history chunks retain their existing behavior.
+
+Verification (2026-09-09), run separately from the isolated worktree:
+
+```sh
+env PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_events.py tests/test_workspace_acp_session.py tests/test_workspace_gemini.py -q --tb=short
+env PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_acp_stream_deltas_render_exactly_before_and_after_completion tests/test_workspace_pane.py::test_questions_resolve_only_from_provider_and_stream_does_not_collapse_tools -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_acp_events.py tests/test_workspace_acp_events.py tests/test_workspace_acp_session.py tests/test_workspace_pane.py
+```
+
+Results: 55 passed (exit 0), 2 browser tests passed (exit 0), lint passed
+(exit 0). The real-pipe test confirms queued deltas drain before completion;
+Chromium renders all 200 chunks exactly once before and after completion.
+A separately recorded `SERENA_EVIDENCE_KIND=live` production-translator probe
+(exit 0, no provider launch) measured 80,218 serialized streaming bytes versus
+5,178,200 for cumulative full items, a 98.45% reduction for 200 256-byte chunks.
+This measures event payload size, not end-to-end model latency or total journal
+storage. No installed app or default Gemini admission was changed.
+
 All URLs accessed 2026-09-09:
 
 - https://antigravity.google/docs/ide/extensions/zed/ directs users to install

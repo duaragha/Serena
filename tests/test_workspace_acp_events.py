@@ -1,10 +1,32 @@
+import json
+
 import pytest
 
 from core.workspace_acp_events import AcpEvents
 
 
 def update(events, kind, **kwargs):
-    return events.update({"sessionId": "exact", "update": {"sessionUpdate": kind, **kwargs}})["params"]["item"]
+    params = events.update({"sessionId": "exact", "update": {"sessionUpdate": kind, **kwargs}})["params"]
+    return params["item"] if "item" in params else events.items[params["itemId"]]
+
+
+def test_assistant_chunks_emit_bounded_deltas_with_complete_history():
+    events = AcpEvents("exact")
+    events.begin("turn")
+    chunk = "x" * 256
+    emitted = [events.update({"sessionId": "exact", "update": {
+        "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": chunk}}})
+        for _ in range(200)]
+    first = emitted[0]
+    assert first["method"] == "item/started"
+    assert first["params"]["item"]["text"] == chunk
+    for event in emitted[1:]:
+        assert event == {"method": "item/agentMessage/delta", "params": {
+            "threadId": "exact", "turnId": "turn",
+            "itemId": first["params"]["item"]["id"], "delta": chunk}}
+    assert sum(len(json.dumps(event)) for event in emitted) < 2 * len(chunk) * 200
+    final = events.complete("end_turn")["params"]["turn"]
+    assert final["items"][0]["text"] == chunk * 200
 
 
 def test_stream_tool_updates_and_identity_boundaries():
