@@ -14,7 +14,7 @@ from test_fleet_isolation import _git, _repo
 from test_fleet_policy_store import _create
 
 
-def _failed(tmp_path, monkeypatch, phase_index=3):
+def _failed(tmp_path, monkeypatch, phase_index=3, failure_exit=2):
     root = _repo(tmp_path)
     monkeypatch.chdir(root)
     monkeypatch.setenv("SERENA_FLEET_DB_PATH", str(tmp_path / "fleet.sqlite3"))
@@ -47,7 +47,7 @@ def _failed(tmp_path, monkeypatch, phase_index=3):
                                  test_gate=[sys.executable, "-c", "raise SystemExit(2)"])
     payload = result.to_dict()
     assert result.patch_path, result.reason
-    payload["test_gate"] = {"ran": True, "ok": False, "exit_code": 2,
+    payload["test_gate"] = {"ran": True, "ok": False, "exit_code": failure_exit,
                             "command": ["npm", "run", "typecheck"],
                             "output_tail": "error TS2307: Cannot find module 'storefrontapi.generated'"}
     store.append_event(rid, "leg.completion_evidence_accepted", {"completion_allowed": True},
@@ -72,8 +72,9 @@ def _failed(tmp_path, monkeypatch, phase_index=3):
     return store, rid, leg, sibling, workspace, payload
 
 
-def test_queue_is_once_only_and_preserves_sibling_and_original_attempt(tmp_path, monkeypatch):
-    store, rid, leg, sibling, _, _ = _failed(tmp_path, monkeypatch)
+@pytest.mark.parametrize("failure_exit", [1, 2])
+def test_queue_is_once_only_and_preserves_sibling_and_original_attempt(tmp_path, monkeypatch, failure_exit):
+    store, rid, leg, sibling, _, _ = _failed(tmp_path, monkeypatch, failure_exit=failure_exit)
     before = store.get_run(rid)
     assert recovery.resume_saved_integrations(store) == [rid]
     assert recovery.resume_saved_integrations(store) == []

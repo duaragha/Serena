@@ -9,7 +9,8 @@ import pytest
 from fleet.isolation import _generated_types_preparation, run_test_gates
 
 
-def test_generated_types_are_rebuilt_and_original_failure_is_retained(tmp_path):
+@pytest.mark.parametrize("failure_exit", [1, 2])
+def test_generated_types_are_rebuilt_and_original_failure_is_retained(tmp_path, failure_exit):
     npm = tmp_path / "npm"
     npm.write_text(
         f"#!{sys.executable}\n"
@@ -20,7 +21,7 @@ def test_generated_types_are_rebuilt_and_original_failure_is_retained(tmp_path):
         "    sys.exit(0)\n"
         "if not p.exists():\n"
         "    print(\"app.ts: error TS2307: Cannot find module 'storefrontapi.generated' or its corresponding type declarations.\")\n"
-        "    sys.exit(2)\n"
+        f"    sys.exit({failure_exit})\n"
     )
     npm.chmod(0o755)
     (tmp_path / "package.json").write_text(json.dumps({"scripts": {"codegen": "local generator"}}))
@@ -29,20 +30,21 @@ def test_generated_types_are_rebuilt_and_original_failure_is_retained(tmp_path):
     gate = run_test_gates(tmp_path, [[str(npm), "run", "typecheck"]])
     assert gate["ok"] is True
     receipt = gate["results"][0]["prerequisite_recovery"]
-    assert receipt["original_failure"]["exit_code"] == 2
+    assert receipt["original_failure"]["exit_code"] == failure_exit
     assert receipt["preparation"]["exit_code"] == 0
     assert receipt["rechecked"] is True
 
 
+@pytest.mark.parametrize("failure_exit", [1, 2])
 @pytest.mark.parametrize("output", [
     "error TS2322: Type 'number' is not assignable to type 'string'.",
     "error TS2307: Cannot find module 'graphql'",
     "error TS2307: Cannot find module 'some-generated-package'",
 ])
-def test_unrelated_failures_do_not_trigger_codegen(tmp_path, output):
+def test_unrelated_failures_do_not_trigger_codegen(tmp_path, output, failure_exit):
     (tmp_path / "package.json").write_text('{"scripts":{"codegen":"anything"}}')
     assert _generated_types_preparation(tmp_path, ["npm", "run", "typecheck"], {
-        "ok": False, "exit_code": 2, "output_tail": output,
+        "ok": False, "exit_code": failure_exit, "output_tail": output,
     }) is None
 
 
@@ -68,5 +70,14 @@ def test_recovery_is_bounded_and_never_hides_persistent_failure(tmp_path, monkey
 def test_missing_codegen_script_does_not_invent_preparation(tmp_path):
     assert _generated_types_preparation(tmp_path, ["npm", "run", "typecheck"], {
         "ok": False, "exit_code": 2,
+        "output_tail": "error TS2307: Cannot find module 'storefrontapi.generated'",
+    }) is None
+
+
+@pytest.mark.parametrize("exit_code", [None, 0, -9, 124, 127])
+def test_process_failures_do_not_trigger_codegen(tmp_path, exit_code):
+    (tmp_path / "package.json").write_text('{"scripts":{"codegen":"generator"}}')
+    assert _generated_types_preparation(tmp_path, ["npm", "run", "typecheck"], {
+        "ok": False, "exit_code": exit_code,
         "output_tail": "error TS2307: Cannot find module 'storefrontapi.generated'",
     }) is None

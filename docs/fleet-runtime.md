@@ -74,7 +74,7 @@ Exhaustion and non-lock errors remain visible; disk-full and corruption are not 
 ## Durable resource recovery and actionable stops
 
 Declared integration test sequences have one narrow generated-type preparation
-pass: when `npm run typecheck` exits 2 with TS2307 naming a `.generated` or
+pass: when `npm run typecheck` exits 1 or 2 with TS2307 naming a `.generated` or
 `/generated` module, and the combined checkout declares a `codegen` script,
 Fleet invokes that script with npm lifecycle hooks disabled and rechecks the
 same typecheck once. The gate retains the original failure, preparation result
