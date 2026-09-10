@@ -43,6 +43,8 @@ DEFAULT_FLEET_DB_PATH = Path.home() / ".local" / "state" / "serena" / "fleet.sql
 DEFAULT_TESTS = (
     "tests/test_fleet_activation.py",
     "tests/test_fleet_service_runtime.py",
+    "tests/test_fleet_file_lock.py",
+    "tests/test_fleet_patch_transport.py",
     "tests/test_fleet_ready_resume.py",
     "tests/test_fleet_dag.py",
     "tests/test_fleet_isolation.py",

@@ -40,7 +40,7 @@ def _failed(tmp_path, monkeypatch, phase_index=3, failure_exit=2):
     isolation = FleetIsolationStore()
     isolation.claim_paths(run_id=rid, worker_key="agent:a", paths=["*"])
     workspace = ensure_workspace(isolation, run_id=rid, worker_key="agent:a", cwd=root)
-    (Path(workspace.path) / "core/alpha.py").write_text("alpha = 2\n")
+    (Path(workspace.path) / "core/alpha.py").write_bytes(b"alpha = 2\n")
     # Record a real rejected integration and its durable recovery patch.
     import sys
     result = integrate_workspace(isolation, run_id=rid, worker_key="agent:a", cwd=root,
@@ -131,12 +131,13 @@ def test_patch_fingerprint_guard_prevents_integration(tmp_path, monkeypatch):
     assert "fingerprint changed" in result.reason
 
 
-@pytest.mark.parametrize("entrypoint", ["module", "sidecar"])
+@pytest.mark.parametrize("entrypoint", ["module", "sidecar", "windows_sidecar"])
 def test_replay_uses_real_completion_validator_and_git_gate(tmp_path, monkeypatch, entrypoint):
     from fleet import supervisor
-    if entrypoint == "sidecar":
+    if entrypoint in {"sidecar", "windows_sidecar"}:
         import sys
-        sidecar = Path(recovery.__file__).resolve().parent.parent / "apps/desktop/sidecar.py"
+        relative = "apps/desktop/windows/sidecar-win.py" if entrypoint == "windows_sidecar" else "apps/desktop/sidecar.py"
+        sidecar = Path(recovery.__file__).resolve().parent.parent / relative
         monkeypatch.setattr(recovery, "helper_command", lambda: [sys.executable, str(sidecar), "--fleet-integration-replay"])
     store, rid, _, _, _, _ = _failed(tmp_path, monkeypatch)
     assert recovery.resume_saved_integrations(store) == [rid]

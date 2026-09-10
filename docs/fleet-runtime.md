@@ -138,6 +138,24 @@ leader PID. Tests cover normal exit and SIGKILL with a SIGTERM-ignoring gate.
 Windows process-tree cleanup and descendants that escape the owned process group
 are separate coverage gaps; this helper-only rule does not claim those solved.
 
+The Windows sidecar dispatches `--fleet-integration-replay` before GUI startup
+and restores inherited standard pipes for the windowed executable. Repository
+integration uses a portable process lock: POSIX flock or Windows byte-range
+locking at offset zero. The Windows lock retries contention explicitly rather
+than relying on the CRT's ten-attempt blocking mode; see the
+[Python locking contract](https://docs.python.org/3/library/msvcrt.html#msvcrt.locking).
+Canonical Windows lock identities are case-normalized. Tests prove cross-process
+exclusion and release on owner death on actual Windows, not just mocked imports.
+
+Git patch application and explicit rollback use byte-mode stdin and lossless
+patch-file reads. No platform text-mode conversion may rewrite LF, CRLF or
+binary patch payloads. The Windows installer build runs native lock/patch tests
+and a saved-integration replay against its actual frozen executable, with real
+completion validation and Git gates. Native Windows source replay has been
+verified; the build smoke is required evidence for each packaged candidate.
+Windows process-tree cleanup and Windows crash-code classification remain
+separate work; successful ordinary replay does not prove those failure cases.
+
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
 attempt as evidence. Independent ready work continues; a run with only parked work releases its
