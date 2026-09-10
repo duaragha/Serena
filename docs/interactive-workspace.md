@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Windows Provider Project Identity
+
+The first actual Windows Codex/Claude owner run found 18 failures (107 passed).
+Most fixtures assumed their temporary path retained exact casing after resolve;
+Codex also used raw string equality on returned project roots, rejecting native
+responses with equivalent Windows casing. Fixtures now use resolved input paths.
+Codex creation, fork, skill catalogs and file-search roots verify matching admitted
+path spelling plus filesystem identity. Unrelated paths are rejected before any
+filesystem lookup; relative, missing and malformed paths remain rejected.
+
+Verification commands:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_claude.py tests/test_workspace_claude_wire.py -q --tb=short
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys; os.chdir(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); sys.path.insert(0,os.getcwd()); sys.dont_write_bytecode=True; import pytest; sys.exit(pytest.main(['tests/test_workspace_codex.py','tests/test_workspace_claude.py','tests/test_workspace_claude_wire.py','-q','-p','no:cacheprovider','--tb=short']))\""
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-windows.py"
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py tests/test_workspace_codex.py tests/test_workspace_claude.py scripts/verify-workspace-windows.py
+```
+
+Linux final tests: exit 0, 127 passed in 0.56s. Windows final tests: exit 0,
+127 passed. Runtime/test hashes matched both machines before the run. Live proof
+exit 0: directory_identity true, bidirectional true, owned_processes 3, closed
+true, provider_started false. Ruff final exit 0 (an initial import-order failure
+was corrected). The proof verifies real Windows directory identity with swapped
+casing and rejects a different directory without opening the Codex owner. No AI
+provider or user session starts. The previously frozen binary predates this fix.
+
 ## Frozen Windows Gate Verification
 
 Built the actual `console=False` onedir sidecar on Windows 11 / Python 3.13.7 /

@@ -22,6 +22,12 @@ from core.workspace_claude import ClaudeWorkspace
 from core.workspace_claude_events import ClaudeEvents
 
 
+@pytest.fixture
+def tmp_path(tmp_path):
+    # Match the resolved project directory sent by the owner on every platform.
+    return tmp_path.resolve()
+
+
 @pytest.fixture(autouse=True)
 def installed_binary(monkeypatch):
     from shutil import which

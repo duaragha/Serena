@@ -1,4 +1,5 @@
 import asyncio
+import os
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -6,6 +7,42 @@ import pytest
 
 from core.workspace_codex import CodexWorkspace
 from core.workspace_rpc import WorkspaceRpcError
+
+
+@pytest.fixture
+def tmp_path(tmp_path):
+    # Owners canonicalize their project path before sending native requests.
+    return tmp_path.resolve()
+
+
+def test_project_identity_accepts_alias_spelling_not_other_directory(tmp_path):
+    async def run():
+        client, _, _ = await make(tmp_path)
+        assert client._same_project(str(tmp_path / "."))
+        assert client._same_project(str(tmp_path) + os.sep)
+        if os.name == "nt":
+            assert client._same_project(str(tmp_path).swapcase())
+        other = tmp_path / "other"
+        other.mkdir()
+        for value in (str(other), str(tmp_path / "missing"), ".", None, {}, "\0"):
+            assert not client._same_project(value)
+    asyncio.run(run())
+
+
+def test_native_skills_accept_same_directory_with_alternate_spelling(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        async def request(method, params):
+            assert method == "skills/list"
+            alternate = str(tmp_path).swapcase() if os.name == "nt" else str(tmp_path) + os.sep
+            return {"data": [{"cwd": alternate, "skills": [], "errors": []}]}
+        rpc.request = request
+        try:
+            assert (await client.list_commands())["data"] == []
+        finally:
+            await client.close()
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("url", ["https://auth.example/authorize?state=one", "javascript:alert(1)"])

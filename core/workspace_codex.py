@@ -60,6 +60,18 @@ class CodexWorkspace:
         self._mcp_logins: dict[str, dict] = {}
         self._create_attempted = False
 
+    def _same_project(self, value):
+        if not isinstance(value, str) or not value or not Path(value).is_absolute():
+            return False
+        # Do not probe arbitrary provider-supplied paths (including UNC shares).
+        # Accept spelling differences only within the already admitted path.
+        if os.path.normcase(os.path.normpath(value)) != os.path.normcase(str(self.cwd)):
+            return False
+        try:
+            return Path(value).samefile(self.cwd)
+        except (OSError, ValueError):
+            return False
+
     async def _history_page(self, cursor=None):
         params = {"threadId": self.session_id, "limit": 50, "sortDirection": "desc", "itemsView": "full"}
         if cursor is not None:
@@ -100,7 +112,7 @@ class CodexWorkspace:
                     valid = isinstance(sid, str) and str(UUID(sid)) == sid
                 except ValueError:
                     valid = False
-                if not valid or sid == self.session_id or thread.get("cwd") != str(self.cwd):
+                if not valid or sid == self.session_id or not self._same_project(thread.get("cwd")):
                     raise WorkspaceRpcError("Native fork returned an invalid identity or project")
                 self._fork_ids.add(sid)
                 return {"session_id": sid, "provider": "codex", "cwd": str(self.cwd)}
@@ -170,7 +182,7 @@ class CodexWorkspace:
                         valid = isinstance(sid, str) and str(UUID(sid)) == sid
                     except ValueError:
                         valid = False
-                    if (not valid or thread.get("cwd") != str(self.cwd)
+                    if (not valid or not self._same_project(thread.get("cwd"))
                             or thread.get("ephemeral") is not False or thread.get("turns") != []):
                         raise WorkspaceRpcError("Codex returned an invalid new thread")
                     await checkpoint({"session_id": sid, "provider": "codex", "cwd": str(self.cwd)})
@@ -239,7 +251,7 @@ class CodexWorkspace:
             raise WorkspaceRpcError("Codex returned invalid file search results")
         paths = []
         for item in result["files"]:
-            if not isinstance(item, dict) or item.get("root") != str(self.cwd) or not isinstance(item.get("path"), str):
+            if not isinstance(item, dict) or not self._same_project(item.get("root")) or not isinstance(item.get("path"), str):
                 raise WorkspaceRpcError("Codex returned files outside the session project")
             relative = Path(item["path"])
             if relative.is_absolute() or ".." in relative.parts:
@@ -299,7 +311,7 @@ class CodexWorkspace:
             raise WorkspaceRpcError("Session is not connected")
         result = await self.rpc.request("skills/list", {"cwds": [str(self.cwd)], "forceReload": True})
         pages = result.get("data") if isinstance(result, dict) else None
-        if not isinstance(pages, list) or len(pages) != 1 or not isinstance(pages[0], dict) or pages[0].get("cwd") != str(self.cwd):
+        if not isinstance(pages, list) or len(pages) != 1 or not isinstance(pages[0], dict) or not self._same_project(pages[0].get("cwd")):
             raise WorkspaceRpcError("Codex returned skills for a different project")
         page = pages[0]
         if page.get("errors"):

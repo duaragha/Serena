@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.workspace_codex import CodexWorkspace  # noqa: E402
 from core.workspace_rpc import WorkspaceRpc  # noqa: E402
 
 
@@ -22,6 +23,14 @@ async def main():
     )
     rpc = WorkspaceRpc()
     with tempfile.TemporaryDirectory(prefix="serena-workspace-proof-") as directory:
+        async def publish(event):
+            raise AssertionError("Directory validation must not publish or start a session")
+        owner = CodexWorkspace(session_id="local-directory-proof", cwd=Path(directory), publish=publish)
+        other = Path(directory) / "other"
+        other.mkdir()
+        assert owner._same_project(directory.swapcase())
+        assert not owner._same_project(str(other))
+        assert owner.state == "closed" and owner.rpc.process is None
         try:
             await rpc.start([sys.executable, "-u", "-c", peer], cwd=Path(directory), env=dict(os.environ))
             pid = rpc.process.pid
@@ -35,7 +44,7 @@ async def main():
         assert rpc.process is None and rpc._windows_job is None
         print(json.dumps({"platform": sys.platform, "bidirectional": True,
                           "owned_processes": active, "closed": True,
-                          "provider_started": False}))
+                          "provider_started": False, "directory_identity": True}))
 
 
 if __name__ == "__main__":
