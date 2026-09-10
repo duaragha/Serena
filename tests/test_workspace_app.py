@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 
 import pytest
-from flask import Flask
+from flask import Flask, jsonify, request
 from PIL import Image
 from werkzeug.serving import make_server
 
@@ -211,6 +211,7 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
             """<!doctype html><html><body style="margin:0;background:#000">
 <main id="termMounts" style="height:100vh"></main><script>
 const termSessions=new Map();let activeTermSid=null;
+const _pseudoSessions=[{session_id:'new-proof',pending_rename_title:'My named conversation'}];
 const currentProject=null;window.openedForks=[];
 async function loadSessions(){}
 function _findClientSession(sid){return {session_id:sid};}
@@ -225,6 +226,12 @@ function setTermStatus(status){window.lastStatus=status;}
             + mount_source
             + """</script></body></html>"""
         )
+
+    renames = []
+    @app.post("/api/rename/<sid>")
+    def rename_created(sid):
+        renames.append((sid, request.get_json()["title"]))
+        return jsonify(ok=True)
 
     with app.test_client() as client:
         denied = client.get("/workspace/exact", base_url="http://evil.test")
@@ -378,11 +385,13 @@ function setTermStatus(status){window.lastStatus=status;}
             page.evaluate("(cwd) => _startStructuredPane('new-proof', {isNew:true,agent:'codex',cwd})", str(tmp_path))
             created_frame = page.frames[-1]
             created_frame.get_by_role("button", name="Create Codex chat", exact=True).wait_for()
+            assert page.evaluate("_pseudoSessions[0].structured_pending")
             assert len(owners) == 1
             created_frame.evaluate("""() => parent.postMessage({type:'serena-workspace-open-created',sid:'new-proof',target:'33333333-3333-4333-8333-333333333333'},location.origin)""")
             page.wait_for_function("() => openedForks.length === 3")
             assert page.evaluate("openedForks[2]") == "33333333-3333-4333-8333-333333333333"
             assert page.evaluate("retiredPseudo") == "new-proof"
+            assert renames == [("33333333-3333-4333-8333-333333333333", "My named conversation")]
             assert not page.evaluate("termSessions.has('new-proof')")
             assert len(owners) == 1 and not owners[0].closed
             browser.close()

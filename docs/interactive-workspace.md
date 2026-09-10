@@ -2,6 +2,27 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Exact New Chat identity/name and packaged Electron path (2026-09-09): structured
+pseudos are now excluded from legacy cwd/time reconciliation. Their native
+returned identity alone controls handoff. The user's pending title is applied
+to that exact session before opening and retiring the pseudo; rename/open
+failure retains the creation pane. Rebuilt the frozen backend with these changes
+and the complete preceding Codex creation stack. Electron proof now uses the
+real New Chat button and naming/provider dialog, creates explicitly, opens the
+embedded pane, runs a native print-only command and waits for a non-pending
+indexed row retaining the exact title. Existing native owners remain alive;
+exactly one new owner is added and survives window closure.
+Verification:
+- `node --test tests/workspace-creation-reconcile.test.mjs`: exit 0, 1 passed; newer same-directory sessions and expiry cannot steal the structured pseudo.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --tb=short`: exit 0, 7 passed, including parent exact-target rename and pseudo retirement.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_app.py scripts/verify-workspace-codex-history.py`: exit 0.
+- `node --check scripts/verify-workspace-electron.cjs`: exit 0.
+- `env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar` in `apps/desktop`: exit 0, build and capability-refusal smoke passed with existing optional-library warnings.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: exit 0, including the final strengthened indexed-row check. Existing frozen desktop/mobile history, fork, reconnect, clipboard and skills checks also passed. Screenshot inspected: `apps/desktop/build/workspace-proof/electron-native-created.png`. No credentials/inference; isolated homes and virtual display; proof children reaped.
+This verifies real Electron main/preload plus the frozen backend, not installed
+AppImage/Windows distribution. Other-provider creation, seeded flows and complete
+parity/recovery/rollout remain incomplete. The user's installed app is unchanged.
+
 Codex New Chat UI (2026-09-09): opt-in structured new-chat panes now load a
 neon-black creation screen for an explicit Codex/project choice. No native
 creation occurs on GET or mount. A sessionStorage request record must persist

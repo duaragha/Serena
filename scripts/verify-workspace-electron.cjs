@@ -81,9 +81,48 @@ async function main() {
     assert.match(await pane.locator('.aw-state').innerText(), /^(ready|completed)$/);
     assert.equal(page.url(), base + '/');
     await page.screenshot({path: path.join(artifacts, 'electron-native-workspace.png')});
+    let creations = 0;
+    page.on('request', request => {
+      if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/workspace/create') creations++;
+    });
+    await page.getByRole('button', {name:'New chat',exact:true}).click();
+    await page.locator('#modalInput').fill('Electron native new chat');
+    await page.locator('#modalAgentPicker [data-agent="codex"]').click();
+    await page.locator('#modalConfirmBtn').click();
+    const creation = page.frameLocator('iframe[src^="/workspace/new?"]');
+    await creation.getByRole('button',{name:'Create Codex chat',exact:true}).waitFor();
+    assert.equal(creations,0);
+    await creation.getByRole('button',{name:'Create Codex chat',exact:true}).click();
+    await creation.getByRole('button',{name:'Open conversation',exact:true}).waitFor();
+    const newSid = (await creation.getByRole('status').innerText()).replace('Session ','');
+    assert.match(newSid,/^[a-f0-9-]{36}$/);
+    await creation.getByRole('button',{name:'Open conversation',exact:true}).click();
+    const newPane = page.frameLocator(`iframe[src="/workspace/${newSid}"]`);
+    await newPane.getByRole('button',{name:'Resume session',exact:true}).click();
+    assert.equal(await page.locator('#convTitle').innerText(),'Electron native new chat');
+    assert.equal(await page.locator('iframe[src^="/workspace/new?"]').count(),0);
+    await newPane.getByRole('button',{name:'Run shell command',exact:true}).click();
+    const newShell = newPane.getByRole('dialog',{name:'Run shell command'});
+    await newShell.getByRole('textbox',{name:'Shell command'}).fill('printf SERENA_ELECTRON_CREATED');
+    await newShell.getByRole('checkbox').check();
+    await newShell.getByRole('button',{name:'Run command',exact:true}).click();
+    await newPane.locator('summary').filter({hasText:'SERENA_ELECTRON_CREATED'}).first().click();
+    await newPane.getByText('SERENA_ELECTRON_CREATED',{exact:true}).waitFor();
+    await newPane.locator('.aw-state').filter({hasText:/^(ready|completed)$/}).waitFor();
+    await page.waitForFunction(async sid => {
+      const rows = await (await fetch('/api/sessions')).json();
+      return rows.some(row => row.session_id === sid && !row.native_persistence_pending);
+    }, newSid);
+    const rows = await page.evaluate(async()=> (await fetch('/api/sessions')).json());
+    const matching = rows.filter(row=>row.session_id===newSid);
+    assert.equal(matching.length,1);
+    assert.equal(matching[0].display_title,'Electron native new chat');
+    assert.equal(creations,1);
+    await page.screenshot({path:path.join(artifacts,'electron-native-created.png')});
     assert.deepEqual(errors, []);
     console.log('PASS: real Electron main/preload, isolated frozen backend, native session input/output and skill catalog; sandbox/context isolation configured, Node integration off');
     console.log('PASS: real virtual-display clipboard copied native output and pasted multiline text without sending or losing the session');
+    console.log('PASS: actual Electron New Chat button preserved its chosen title through exact native creation, iframe handoff and native input');
   } finally {
     try {await app?.close();}
     finally {

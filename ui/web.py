@@ -6003,6 +6003,8 @@ async function _reconcilePseudos(fresh, opts) {
   opts = opts || {};
   let changed = false;
   for (const pseudo of [..._pseudoSessions]) {
+    // Structured creation returns an authoritative ID through its own iframe.
+    if (pseudo.structured_pending) continue;
     // Front-door pseudos expire: if the pane never wrote a session file,
     // drop the pseudo (and its pair bucket) instead of letting it claim an
     // unrelated session later.
@@ -7037,6 +7039,10 @@ function _revealSurvivingLinkedTerminals(sid) {
 }
 
 function _startStructuredPane(sid, opts) {
+  if (opts.isNew) {
+    const pseudo = _pseudoSessions.find(session => session.session_id === sid);
+    if (pseudo) pseudo.structured_pending = true;
+  }
   if (opts.isNew && opts.seed) {
     setTermStatus('Seeded structured creation is not available yet; context has not been sent.', 'error');
     return null;
@@ -7066,6 +7072,15 @@ function _startStructuredPane(sid, opts) {
       const target=event.data.target;
       if(typeof target !== 'string' || !/^[a-f0-9-]{36}$/.test(target) || target===sid)return;
       try{
+        if (event.data.type === 'serena-workspace-open-created' && opts.isNew) {
+          const title = _pseudoSessions.find(session => session.session_id === sid)?.pending_rename_title;
+          if (title) {
+            const response = await fetch('/api/rename/' + encodeURIComponent(target), {method:'POST',
+              headers:{'Content-Type':'application/json'}, body:JSON.stringify({title})});
+            const result = await response.json();
+            if (!response.ok) throw Error(result.error || 'Could not preserve the new chat name');
+          }
+        }
         await loadSessions(currentProject);
         if(!_findClientSession(target))document.getElementById('convTitle').textContent='Conversation ' + target.slice(0,8);
         await openConv(target);

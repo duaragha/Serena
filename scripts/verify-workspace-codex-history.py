@@ -239,8 +239,9 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                     proof.wait(timeout=5)
                 print(out)
                 assert proof.returncode == 0, err
-                assert owners() == before, "Closing Electron changed the native owner"
-                print("PASS: closing the real Electron shell preserved the shared isolated native owner")
+                after = owners()
+                assert set(before).issubset(after) and len(after) == len(before) + 1, "Expected exactly one additional New Chat owner"
+                print("PASS: closing the real Electron shell preserved existing native owners and its one newly created owner")
         except BaseException:
             log.seek(0)
             print(log.read()[-5000:], file=sys.stderr)
