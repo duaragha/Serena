@@ -969,6 +969,18 @@ export class WorkspacePane {
         block.append(copy);
       }
       entry.append(message);
+    } else if (item.type === 'acpPlan') {
+      entry.append(node('div','aw-author','Plan'));
+      const list=node('ol','aw-plan');list.setAttribute('aria-label','Agent plan');
+      for(const step of item.entries || []){
+        const row=node('li','aw-plan-step');row.dataset.status=step.status;
+        const status={pending:'Pending',in_progress:'In progress',completed:'Completed'}[step.status] || 'Unknown';
+        const mark=node('span','aw-plan-status');mark.title=status;mark.setAttribute('aria-label',status);
+        mark.append(icon({pending:'circle',in_progress:'circle-dot',completed:'circle-check'}[step.status] || 'circle-help'));
+        row.append(mark,node('span','aw-plan-content',step.content),node('small','aw-plan-priority',`${step.priority} priority`));
+        list.append(row);
+      }
+      entry.append(list);
     } else if (['claudeToolCall','acpToolCall'].includes(item.type)) {
       const detail=node('details','aw-tool');
       const summary=node('summary');summary.append(node('span','',item.input?.description || item.tool || 'Tool'));

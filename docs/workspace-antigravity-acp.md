@@ -198,6 +198,20 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Plan presentation (2026-09-09): ACP plan notifications replace one stable
+per-turn plan item instead of appending opaque blocks. The pane renders a
+read-only list with native status icons and priorities; removed entries disappear,
+empty plans clear, and no completion is inferred from the turn ending. Content
+is literal text, including markup, with responsive wrapping.
+Official replacement contract (accessed 2026-09-09):
+https://agentclientprotocol.com/protocol/v1/agent-plan
+
+`PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_events.py tests/test_workspace_pane.py::test_acp_plan_updates_in_place_without_inventing_completion -q --tb=short`:
+exit 0, 9 passed. Scoped Ruff and JS syntax: exit 0. Desktop/mobile browser
+coverage includes update/removal, malformed-plan refusal, literal markup and
+overflow checks. Mobile screenshot inspected. Controlled events only; native
+authenticated planning remains unverified.
+
 Native command catalog (2026-09-09): session `available_commands_update`
 notifications now replace a validated catalog, exposed by the host's commands
 action and the Gemini picker. Selecting only prefixes the existing draft;

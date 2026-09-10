@@ -61,6 +61,34 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_acp_plan_updates_in_place_without_inventing_completion(pane, width, tmp_path):
+    from core.workspace_acp_events import AcpEvents
+
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    events = AcpEvents("exact")
+    events.begin("t")
+    def plan(entries):
+        event = events.update({"sessionId": "exact", "update": {"sessionUpdate": "plan", "entries": entries}})
+        page.evaluate("event => emit(event)", event)
+    plan([{"content": "Old step", "status": "pending", "priority": "high"}])
+    page.get_by_text("Old step", exact=True).wait_for()
+    plan([{"content": "Inspect <script>unsafe()</script>", "status": "completed", "priority": "high"},
+          {"content": "Verify " + "longfilename" * 20, "status": "in_progress", "priority": "medium"}])
+    page.get_by_text("Inspect <script>unsafe()</script>", exact=True).wait_for()
+    assert page.get_by_text("Old step", exact=True).count() == 0
+    assert page.get_by_role("list", name="Agent plan").count() == 1
+    assert page.locator('.aw-plan-step[data-status="completed"]').count() == 1
+    assert page.locator('.aw-plan-step[data-status="in_progress"]').count() == 1
+    assert page.locator(".aw-plan script").count() == 0
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / f"acp-plan-{width}.png"))
+    plan([])
+    page.wait_for_function("document.querySelectorAll('.aw-plan-step').length === 0")
+    assert not errors and page.evaluate("calls") == []
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_gemini_command_picker_preserves_draft_until_send(pane, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 1000})

@@ -14,6 +14,12 @@
 .aw-state{margin-left:auto;color:#87cda8;font:9px monospace}
 .aw-transcript{flex:1;min-height:0;overflow:auto;padding:24px 30px 12px;scrollbar-width:thin;scrollbar-color:#463748 transparent;overflow-wrap:anywhere}
 .aw-item{margin:0 0 22px}.aw-author{font-size:9px;color:#a89bad;margin:0 0 10px}
+.aw-plan{list-style:none;margin:0;padding:0;border-top:1px solid #302730}
+.aw-plan-step{display:grid;grid-template-columns:16px minmax(0,1fr);column-gap:9px;row-gap:3px;padding:9px 0;border-bottom:1px solid #302730}
+.aw-plan-status{grid-row:span 2;color:#a89bad}.aw-plan-status svg{width:14px;height:14px}
+.aw-plan-step[data-status="completed"] .aw-plan-status{color:#7dd9ae}
+.aw-plan-step[data-status="in_progress"] .aw-plan-status{color:#ee8ac1}
+.aw-plan-content{overflow-wrap:anywhere;font-size:11px}.aw-plan-priority{grid-column:2;color:#a89bad;font-size:9px}
 .aw-message{white-space:pre-wrap;line-height:1.85}
 .aw-user-message{white-space:pre-wrap;padding:10px 13px;border-left:2px solid #ff80bf;background:#19111a}
 .aw-tool{border-top:1px solid #302730;border-bottom:1px solid #302730;font-size:10px}

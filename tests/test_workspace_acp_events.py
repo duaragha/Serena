@@ -29,11 +29,25 @@ def test_explicit_message_ids_and_unrecognized_data_are_retained():
     events = AcpEvents("exact")
     events.begin("turn")
     first = update(events, "agent_message_chunk", messageId="a", content={"type": "text", "text": "one"})
-    update(events, "plan", entries=[{"content": "step", "status": "pending"}])
+    update(events, "plan", entries=[{"content": "step", "status": "pending", "priority": "high"}])
     second = update(events, "agent_message_chunk", messageId="a", content={"type": "text", "text": "two"})
     assert first["id"] == second["id"] and second["text"] == "onetwo"
     raw = update(events, "future_kind", metadata={"value": 2})
     assert raw["providerOriginal"]["metadata"] == {"value": 2}
+
+
+def test_plan_updates_replace_the_list_and_preserve_native_status():
+    events = AcpEvents("exact")
+    events.begin("turn")
+    first = update(events, "plan", entries=[{"content": "old", "status": "pending", "priority": "high"}])
+    second = update(events, "plan", entries=[{"content": "new", "status": "in_progress", "priority": "low"}])
+    assert first["id"] == second["id"]
+    assert len(events.items) == 1 and second["entries"][0]["content"] == "new"
+    assert second["entries"][0]["status"] == "in_progress"
+    with pytest.raises(ValueError, match="Invalid ACP plan"):
+        update(events, "plan", entries=[{"content": "fake", "status": "done", "priority": "high"}])
+    cleared = update(events, "plan", entries=[])
+    assert cleared["id"] == first["id"] and cleared["entries"] == []
 
 
 def test_tool_display_content_survives_partial_updates_alongside_raw_output():

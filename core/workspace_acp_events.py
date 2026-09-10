@@ -63,6 +63,19 @@ class AcpEvents:
             item = {"id": item_id, "type": "userMessage", "content": [{"type": "image", "source": {
                 "type": "base64", "media_type": content["mimeType"], "data": content["data"]}}],
                 "providerOriginal": deepcopy(update)}
+        elif kind == "plan":
+            entries = update.get("entries")
+            if not isinstance(entries, list) or any(
+                not isinstance(entry, dict) or not isinstance(entry.get("content"), str)
+                or entry.get("priority") not in {"high", "medium", "low"}
+                or entry.get("status") not in {"pending", "in_progress", "completed"}
+                for entry in entries
+            ):
+                raise ValueError("Invalid ACP plan")
+            self.last_message = None
+            item_id = f"{self.turn}:plan"
+            item = {"id": item_id, "type": "acpPlan", "entries": deepcopy(entries),
+                    "providerOriginal": deepcopy(update)}
         elif kind in {"tool_call", "tool_call_update"}:
             self.last_message = None
             native_id = update.get("toolCallId")
