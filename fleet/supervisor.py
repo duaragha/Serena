@@ -334,6 +334,9 @@ def delete_run(run_id: str) -> dict[str, Any]:
                 f"Fleet deletion stopped because worktree cleanup failed: {workspace.path}"
             )
     isolation.delete_run_records(clean_id)
+    from fleet.checkout import cleanup_run_checkout
+
+    cleanup_run_checkout(run)
     deleted = store.delete_run(clean_id)
 
     state_root = Path(
@@ -366,6 +369,9 @@ def preflight_delete_run(
         raise KeyError(f"unknown Fleet run {clean_id}")
     if run["state"] not in TERMINAL_RUN_STATES:
         raise RuntimeError("stop this Fleet and wait for it to finish before deleting it")
+    from fleet.checkout import check_checkout_deletable
+
+    check_checkout_deletable(run)
     from fleet.isolation import FleetIsolationStore, unrecovered_workspaces
 
     blockers = unrecovered_workspaces(FleetIsolationStore(), clean_id)
@@ -949,6 +955,9 @@ def run_supervisor(run_id: str) -> dict[str, Any]:
     policy = policy_from_snapshot(run["policy"])
     try:
         with _coding_run_lock(run):
+            from fleet.checkout import ensure_run_checkout
+
+            ensure_run_checkout(store, clean_id)
             interrupted = _run_work_unit_scheduler(store, clean_id, policy)
             if interrupted is not None:
                 return interrupted

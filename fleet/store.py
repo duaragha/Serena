@@ -84,6 +84,9 @@ class FleetStore:
         safe_policy, _policy_redactions = redact_value(policy)
         if not isinstance(safe_policy, dict):
             raise ValueError("Fleet policy must be an object")
+        from fleet.checkout import requested_baseline
+
+        baseline = requested_baseline(safe_task, Path(cwd))
         clean_key = str(idempotency_key or "").strip() or None
         initial_state = "planned" if dry_run else "queued"
         with self._connect() as connection:
@@ -119,6 +122,13 @@ class FleetStore:
                     now,
                 ),
             )
+            if baseline:
+                connection.execute(
+                    "INSERT INTO fleet_run_checkouts(run_id, source_cwd, baseline, path, state) "
+                    "VALUES (?, ?, ?, ?, 'pending')",
+                    (run_id, str(Path(cwd).resolve()), baseline,
+                     str(self.path.parent / "fleet-checkouts" / run_id)),
+                )
             leg_state = "planned" if dry_run else "queued"
             for phase in safe_policy["phases"]:
                 for ordinal, worker in enumerate(phase["workers"]):
@@ -2882,11 +2892,16 @@ class FleetStore:
         work_units = project_work_unit_run(connection, run_id)
         if not work_units:
             work_units = derive_work_unit_views(policy, phases, str(run["state"]))
+        checkout = connection.execute(
+            "SELECT * FROM fleet_run_checkouts WHERE run_id = ?", (run_id,),
+        ).fetchone()
         return {
             "run_id": str(run["run_id"]),
             "task": str(run["task"]),
             "activity": str(run["activity"]),
-            "cwd": str(run["cwd"]),
+            "cwd": str(checkout["path"] if checkout and checkout["state"] == "ready" else run["cwd"]),
+            "source_cwd": str(run["cwd"]),
+            "checkout": dict(checkout) if checkout else None,
             "origin_session_id": run["origin_session_id"],
             "origin_agent": run["origin_agent"],
             "worker_group_id": run["worker_group_id"],
@@ -3193,6 +3208,14 @@ class FleetStore:
                 );
                 CREATE INDEX IF NOT EXISTS fleet_capacity_waits_run_idx
                     ON fleet_capacity_waits(run_id, not_before);
+
+                CREATE TABLE IF NOT EXISTS fleet_run_checkouts (
+                    run_id TEXT PRIMARY KEY REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
+                    source_cwd TEXT NOT NULL,
+                    baseline TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    state TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS fleet_resource_waits (
                     leg_id TEXT PRIMARY KEY REFERENCES fleet_legs(leg_id) ON DELETE CASCADE,

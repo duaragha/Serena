@@ -17,6 +17,27 @@ Verified locally: 8 disk tests (including the real scheduler with a scripted
 provider) and 77 combined resource/DAG/supervision/supervisor tests. Not deployed;
 no real-model acceptance or production run repair has been performed.
 
+### Explicit baseline implementation checkpoint
+
+New runs recognize `Fleet baseline: <local-ref>` and the exact production task's
+`MANDATORY start point: branch ... at commit <40-character SHA>` directive.
+The ref resolves to a commit before dispatch and is persisted separately from the
+model policy. Arbitrary commit citations do not select a baseline; conflicting
+directives or unresolvable explicit refs refuse dispatch rather than using HEAD.
+
+The supervisor provisions a detached, run-owned integration worktree before
+Research. Every phase and worker worktree uses that integration root; the original
+project checkout stays untouched. Retry reuses the integration root and preserves
+its changes, checking repository identity and baseline ancestry. Deletion refuses
+to discard committed or uncommitted delivered work in that root. Status retains
+`source_cwd`, the effective `cwd`, and the checkout receipt.
+
+Real-Git tests cover all four scheduled phases, dirty source/index preservation,
+retry preservation and deletion protection. Remaining: three-worker integration
+acceptance, explicit branch-name delivery, migration/repair of existing runs,
+source-project learning identity, user-facing checkout delivery and live acceptance.
+This remains an implementation checkpoint, not a completed reliability claim.
+
 ## Production evidence, 2026-09-10
 
 Run `bc257933-5fa8-4c77-ba2d-da4c2e11e80e` requested mandatory commit
