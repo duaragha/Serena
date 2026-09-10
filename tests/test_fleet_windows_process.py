@@ -128,15 +128,34 @@ def test_owner_death_reaps_atomically_owned_worker(tmp_path):
 
 def test_repeated_creation_does_not_retain_process_or_pipe_handles(tmp_path):
     from fleet.windows_process import WindowsProcess
-    baseline = psutil.Process().num_handles()
-    for _ in range(20):
+    import gc
+    def create_closed():
         process = WindowsProcess([sys.executable, "-c", "pass"], cwd=str(tmp_path), env=dict(os.environ))
         try:
             process.stdin.close()
             assert process.wait(timeout=10) == 0
         finally:
             process.close()
-    assert psutil.Process().num_handles() <= baseline + 2
+        assert process._handle is None and process._job._handle is None
+        assert all(pipe.closed for pipe in (process.stdin, process.stdout, process.stderr))
+        return process
+    # Native diagnostics showed first CreatePipe/CreateProcess initialization
+    # adds 1/2 handles, then 40 launches stay flat. Measure steady state, not
+    # that one-time initialization; retain closed objects and disable cyclic GC
+    # so collection cannot conceal per-launch resource retention.
+    closed = [create_closed()]
+    baseline = psutil.Process().num_handles()
+    counts = []
+    gc_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(20):
+            closed.append(create_closed())
+            counts.append(psutil.Process().num_handles())
+        assert max(counts) <= baseline + 2, (baseline, counts)
+    finally:
+        if gc_enabled:
+            gc.enable()
 
 
 def test_creation_failure_releases_every_allocated_handle(tmp_path):
