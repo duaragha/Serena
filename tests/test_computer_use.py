@@ -638,8 +638,9 @@ def test_explicit_sharing_and_legacy_single_capture_do_not_start_worker(
         server.server_close()
 
 
+@pytest.mark.parametrize("failed_interrupt", [False, True])
 def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
-    controller, monkeypatch
+    controller, monkeypatch, failed_interrupt
 ):
     from core import computer_agent
     from core.computer_service import ComputerServer
@@ -651,6 +652,7 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
     interrupted = threading.Event()
     preview_started = threading.Event()
     release_preview = threading.Event()
+    resets = []
 
     class Model:
         active_turn_id = None
@@ -688,10 +690,16 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
 
         async def interrupt(self):
             interrupted.set()
+            if failed_interrupt:
+                raise RuntimeError("interrupt transport failed")
             self.release.set()
 
+        async def reset_thread(self):
+            assert self.active_turn_id is None
+            resets.append(True)
+
         async def close(self):
-            pass
+            assert controller.session.cancelled.is_set(), "warm process closed during recovery"
 
     monkeypatch.setattr(
         computer_agent,
@@ -733,6 +741,7 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
         until(lambda: controller.session.observation == "blue-page advice")
         assert not any("obsolete" in e.get("text", "") for e in controller.events)
         assert any(e["type"] == "superseded" for e in controller.events)
+        assert bool(resets) == failed_interrupt
         page[0] = "gold"
         until(
             lambda: any(

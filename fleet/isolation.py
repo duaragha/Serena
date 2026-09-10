@@ -23,11 +23,14 @@ import os
 import re
 import sqlite3
 import subprocess
+import tempfile
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from fleet.integration_journal import IntegrationJournal, JournalError
 
 from core.coding_job_contract import (
     GitSnapshotError,
@@ -689,6 +692,7 @@ class FleetIsolationStore:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("DELETE FROM fleet_path_claims WHERE run_id = ?", (clean_id,))
             connection.execute("DELETE FROM fleet_integrations WHERE run_id = ?", (clean_id,))
+            connection.execute("DELETE FROM fleet_integration_intents WHERE run_id = ?", (clean_id,))
             connection.execute("DELETE FROM fleet_workspaces WHERE run_id = ?", (clean_id,))
 
     @staticmethod
@@ -771,6 +775,12 @@ class FleetIsolationStore:
                 );
                 CREATE INDEX IF NOT EXISTS fleet_integrations_run_idx
                     ON fleet_integrations(run_id, created_at);
+                CREATE TABLE IF NOT EXISTS fleet_integration_intents (
+                    intent_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    document TEXT NOT NULL,
+                    digest TEXT NOT NULL
+                );
                 """
             )
             connection.execute("BEGIN IMMEDIATE")
@@ -1764,7 +1774,7 @@ def integrate_workspace(
                 apply_changes=apply_changes,
                 expected_patch_sha256=expected_patch_sha256,
             )
-    except RepositoryResolutionError as error:
+    except (RepositoryResolutionError, JournalError) as error:
         return IntegrationResult(
             ok=False, run_id=run_id, worker_key=worker_key, reason=str(error)
         )
@@ -1950,7 +1960,17 @@ def _integrate_workspace_locked(
         )
         return result
 
-    drift = base_drift_paths(root, workspace, changed)
+    journal = IntegrationJournal(store, root, workspace, patch)
+    journal_exists = journal.load()
+    recovery_state = journal.state() if journal_exists else "pre"
+    if journal_exists and set(journal.document["pre"]) != set(changed):
+        raise JournalError("integration journal path set no longer matches the patch")
+    if recovery_state != "pre" and not apply_changes:
+        raise JournalError("integration preview requires pending crash recovery; nothing changed")
+    if recovery_state == "mixed":
+        journal.restore_pre()
+    already_applied = recovery_state == "post"
+    drift = [] if already_applied else base_drift_paths(root, workspace, changed)
     if drift:
         result = IntegrationResult(
             ok=False,
@@ -1973,14 +1993,14 @@ def _integrate_workspace_locked(
     # Plain apply, never --3way. A three-way apply can leave conflict markers
     # in the working tree, which is a corrupted checkout rather than a refused
     # merge. Plain apply is all-or-nothing and fails without touching a file.
-    check = subprocess.run(
+    check = None if already_applied else subprocess.run(
         ["git", "-C", str(root), "apply", "--check", "-"],
         input=patch,
         capture_output=True,
         text=True,
         check=False,
     )
-    if check.returncode != 0:
+    if check is not None and check.returncode != 0:
         result = IntegrationResult(
             ok=False,
             run_id=run_id,
@@ -2008,26 +2028,27 @@ def _integrate_workspace_locked(
         return result
 
     # Rollback evidence is captured before the tree moves, never after.
-    rollback_ref = ""
-    with suppress(GitSnapshotError, RepositoryResolutionError, OSError):
-        snapshot = capture_git_snapshot(
-            root,
-            item_id=f"fleet-{run_id}-{worker_key}",
-            label="pre-integration",
-        )
-        rollback_ref = snapshot.ref
-    # Byte-exact safety net. Even an atomic apply gets verified, because a
-    # half-written checkout is the one outcome this module may never produce.
-    captured = _capture_paths(root, changed)
-    applied = subprocess.run(
+    rollback_ref = journal.document.get("rollback_ref", "") if journal_exists else ""
+    if not journal_exists:
+        with suppress(GitSnapshotError, RepositoryResolutionError, OSError):
+            snapshot = capture_git_snapshot(
+                root,
+                item_id=f"fleet-{run_id}-{worker_key}",
+                label="pre-integration",
+            )
+            rollback_ref = snapshot.ref
+        journal.prepare(workspace.path, changed, rollback_ref=rollback_ref)
+    # The immutable pre/post intent is durable before the first checkout write.
+    # An exact surviving postimage is verified again, never double-applied.
+    applied = None if already_applied else subprocess.run(
         ["git", "-C", str(root), "apply", "-"],
         input=patch,
         capture_output=True,
         text=True,
         check=False,
     )
-    if applied.returncode != 0:
-        _restore_paths(root, captured)
+    if applied is not None and applied.returncode != 0:
+        journal.restore_pre()
         result = IntegrationResult(
             ok=False,
             run_id=run_id,
@@ -2042,6 +2063,9 @@ def _integrate_workspace_locked(
             run_id=run_id, worker_key=worker_key, state="blocked", reason=result.reason
         )
         return result
+
+    if journal.state() != "post":
+        raise JournalError("applied patch did not match its journal postimage; files preserved")
 
     dependency_sync = run_dependency_sync(root, changed)
     # An explicitly configured repository gate outranks everything. Otherwise
@@ -2065,15 +2089,7 @@ def _integrate_workspace_locked(
         gate = run_test_gate(root, ["git", "diff", "--check", "--", *changed])
     gate["dependency_sync"] = dependency_sync
     if not gate.get("ok", False):
-        reverted = subprocess.run(
-            ["git", "-C", str(root), "apply", "-R", "-"],
-            input=patch,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if reverted.returncode != 0:
-            _restore_paths(root, captured)
+        journal.restore_pre()
         # The install may have replaced node_modules before a later check
         # failed. Restore the dependency tree to the now-restored manifest and
         # lockfile so the combined checkout cannot poison the next worker.
@@ -2082,11 +2098,7 @@ def _integrate_workspace_locked(
             ok=False,
             run_id=run_id,
             worker_key=worker_key,
-            reason=(
-                "test gate failed after integration; changes were rolled back"
-                if reverted.returncode == 0
-                else "test gate failed; changes were restored from the pre-integration capture"
-            ),
+            reason="test gate failed after integration; changes were rolled back",
             changed_paths=changed,
             rollback_ref=rollback_ref,
             patch_path=patch_path,
@@ -2098,6 +2110,11 @@ def _integrate_workspace_locked(
         )
         return result
 
+    if journal.state() != "post":
+        raise JournalError("integration gates changed owned files; completion refused")
+    gate["integration_journal"] = {"intent_id": journal.key,
+                                   "recovered_postimage": already_applied,
+                                   "restored_mixed_preimage": recovery_state == "mixed"}
     result = IntegrationResult(
         ok=True,
         run_id=run_id,
@@ -2394,14 +2411,27 @@ def _persist_patch(
     directory = store.workspace_root / "patches" / (
         _BRANCH_TOKEN.sub("-", str(run_id)).strip("-") or "run"
     )
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    target = directory / f"{_BRANCH_TOKEN.sub('-', str(worker_key)).strip('-')}-{int(time.time())}.patch"
+    target = None
     try:
-        target.write_text(patch, encoding="utf-8", errors="surrogateescape")
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, filename = tempfile.mkstemp(
+            prefix=f"{_BRANCH_TOKEN.sub('-', str(worker_key)).strip('-')}-", suffix=".patch", dir=directory,
+        )
+        target = Path(filename)
+        with os.fdopen(descriptor, "w", encoding="utf-8", errors="surrogateescape", newline="") as handle:
+            handle.write(patch)
+            handle.flush()
+            os.fsync(handle.fileno())
         if os.name != "nt":
-            with suppress(OSError):
-                target.chmod(0o600)
+            descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     except OSError:
+        if target is not None:
+            with suppress(OSError):
+                target.unlink()
         return ""
     return str(target)
 

@@ -149,6 +149,7 @@ def execute_saved_integration(store, run_id, leg):
             helper_command(), request=request,
             parse_stdout=lambda _: None, cancel_requested=lambda: store.run_cancel_requested(run_id),
             on_event=observe,
+            cleanup_exited_group=True,
         )
         exit_code = process.exit_code
         error = process.stderr or f"saved integration helper exited {process.exit_code} before recording an outcome"
