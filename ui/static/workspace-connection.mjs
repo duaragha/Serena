@@ -149,6 +149,8 @@ export class WorkspaceConnection {
       clearForkReceipt: () => this.storage.setItem(this.forkKey,'null'),
       contextUsage: () => this.command('context_usage', {}),
       permissions: () => this.command('permissions', {}),
+      sessionModes: () => this.command('session_modes', {}),
+      setSessionMode: mode => this.command('set_session_mode', {mode}),
       setPermissions: (mode, confirmed) => this.command('set_permissions', {mode, confirmed}),
       mcpServers: () => this.command('mcp_servers', {}),
       mcpLogin: name => this.command('mcp_login', {name}),

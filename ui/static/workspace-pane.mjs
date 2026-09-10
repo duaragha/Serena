@@ -130,6 +130,9 @@ export class WorkspacePane {
     footer.insertBefore(this.mcpButton, this.stop);
     const permissions=this.button('Permission mode','shield',()=>this.openPermissions());
     permissions.hidden=!['Codex','Claude'].includes(provider) || !controls.permissions;footer.insertBefore(permissions,this.stop);
+    this.sessionModeButton=this.button('Session mode','sliders-horizontal',()=>this.openSessionMode());
+    this.sessionModeButton.hidden=provider!=='Gemini' || !controls.sessionModes || !controls.setSessionMode;
+    footer.insertBefore(this.sessionModeButton,this.stop);
     this.claudeEffortButton=this.button('Claude reasoning effort','gauge',()=>this.openClaudeEffort());
     this.claudeEffortButton.hidden=provider!=='Claude' || !controls.models || !controls.commands;
     footer.insertBefore(this.claudeEffortButton,this.stop);
@@ -554,6 +557,36 @@ export class WorkspacePane {
       select.addEventListener('change',()=>{apply.disabled=!levels.includes(select.value);});
       status.textContent='';select.focus();
     }catch(error){if(dialog.open)status.textContent=error.message;}
+  }
+
+  async openSessionMode() {
+    if(this.sessionModeDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Session mode');
+    const status=node('p','','Loading modes...');status.setAttribute('role','status');
+    const description=node('p');let choices=[];
+    const select=node('select');select.setAttribute('aria-label','Session mode');select.disabled=true;
+    select.addEventListener('change',()=>{description.textContent=choices.find(choice=>choice.value===select.value)?.description || '';});
+    const apply=node('button','','Apply');apply.type='button';apply.disabled=true;
+    const close=this.button('Close session mode','x',()=>dialog.close());
+    const render=result=>{
+      choices=result.options;
+      select.replaceChildren();
+      for(const choice of result.options){const option=node('option','',choice.name);option.value=choice.value;option.title=choice.description || '';select.append(option);}
+      select.value=result.currentValue;select.disabled=false;
+      description.textContent=choices.find(choice=>choice.value===select.value)?.description || '';
+      status.textContent=`Last confirmed: ${result.options.find(choice=>choice.value===result.currentValue)?.name || result.currentValue}`;
+      apply.disabled=!['ready','completed','interrupted','failed'].includes(this.conversation.status);
+    };
+    apply.addEventListener('click',async()=>{
+      apply.disabled=true;select.disabled=true;
+      try{const result=await this.controls.setSessionMode(select.value);if(dialog.open)render(result);}
+      catch(error){if(dialog.open)status.textContent=error.message;}
+    });
+    dialog.append(node('h3','','Session mode'),close,status,select,description,apply);
+    dialog.addEventListener('close',()=>dialog.remove());this.sessionModeDialog=dialog;
+    this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();
+    try{const result=await this.controls.sessionModes();if(dialog.open && !this.disposed)render(result);}
+    catch(error){if(dialog.open)status.textContent=error.message;}
   }
 
   async openPermissions() {
@@ -1326,6 +1359,7 @@ export class WorkspacePane {
     this.commandsDialog?.close();
     this.clearDialog?.close();
     this.disconnectDialog?.close();
+    this.sessionModeDialog?.close();
     this.fileSearchDialog?.close();
     this.mcpDialog?.close();
     this.contextDialog?.close();

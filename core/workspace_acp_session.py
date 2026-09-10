@@ -191,12 +191,15 @@ class AcpSession:
             await self.publish(self.events.resolved(request_id))
 
     def model_option(self):
+        return self.select_option("model")
+
+    def select_option(self, category):
         if not isinstance(self.config_options, list):
             raise ValueError("Invalid ACP configuration catalog")
         candidates = [option for option in self.config_options if isinstance(option, dict)
-                      and option.get("category") == "model" and option.get("type") == "select"]
+                      and option.get("category") == category and option.get("type") == "select"]
         if not candidates:
-            raise ValueError("ACP model selection is not advertised")
+            raise ValueError(f"ACP {category} selection is not advertised")
         option = candidates[0]
         choices = option.get("options")
         if (not isinstance(option.get("id"), str) or not option["id"]
@@ -205,7 +208,7 @@ class AcpSession:
                    or not choice["value"] or not isinstance(choice.get("name"), str) for choice in choices)
             or len({choice["value"] for choice in choices}) != len(choices)
             or option.get("currentValue") not in {choice["value"] for choice in choices}):
-            raise ValueError("Invalid ACP model options")
+            raise ValueError(f"Invalid ACP {category} options")
         return deepcopy(option)
 
     async def publish_model_state(self):
@@ -222,27 +225,32 @@ class AcpSession:
         return result
 
     async def set_model(self, model):
+        await self.set_selection("model", model)
+
+    async def set_selection(self, category, value):
+        if category not in {"model", "mode"}:
+            raise ValueError("Unsupported ACP selection")
         async with self._lock:
             if self.state != "ready":
                 raise ValueError("ACP session is not ready for configuration")
-            option = self.model_option()
-            if not isinstance(model, str) or model not in {choice["value"] for choice in option["options"]}:
-                raise ValueError("ACP model was not offered")
-            if model == option["currentValue"]:
+            option = self.select_option(category)
+            if not isinstance(value, str) or value not in {choice["value"] for choice in option["options"]}:
+                raise ValueError(f"ACP {category} was not offered")
+            if value == option["currentValue"]:
                 return
             self.state = "configuring"
             try:
                 result = await self.rpc.request("session/set_config_option", {
-                    "sessionId": self.session_id, "configId": option["id"], "value": model})
+                    "sessionId": self.session_id, "configId": option["id"], "value": value})
                 await self._drain_events()
                 if self.state == "unavailable" or not isinstance(result, dict) or "configOptions" not in result:
-                    raise ValueError("ACP model change is unconfirmed")
+                    raise ValueError(f"ACP {category} change is unconfirmed")
                 self.config_options = deepcopy(result["configOptions"])
-                confirmed = self.model_option()
-                if confirmed["id"] != option["id"] or confirmed["currentValue"] != model:
-                    raise ValueError("ACP model change is unconfirmed")
+                confirmed = self.select_option(category)
+                if confirmed["id"] != option["id"] or confirmed["currentValue"] != value:
+                    raise ValueError(f"ACP {category} change is unconfirmed")
                 await self.publish_model_state()
-                await self.publish(self.events.event("workspace/settings", {"model": model}))
+                await self.publish(self.events.event("workspace/settings", {category: value}))
                 self.state = "ready"
             except BaseException:
                 self.state = "unavailable"

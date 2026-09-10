@@ -128,6 +128,42 @@ def test_acp_plan_updates_in_place_without_inventing_completion(pane, width, tmp
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+@pytest.mark.parametrize("failure", [False, True])
+def test_gemini_native_mode_requires_explicit_apply_and_confirmation(pane, width, failure, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    page.evaluate("""async failure => {
+      pane.dispose();
+      window.seq=0;
+      const {WorkspacePane}=await import('/workspace-pane.mjs');
+      const modes={currentValue:'plan',options:[{value:'plan',name:'Plan'},{value:'execute',name:'Execute',description:'Native mode description'}]};
+      controls.sessionModes=async()=>structuredClone(modes);
+      controls.setSessionMode=async mode=>{calls.push(['mode',mode]);if(failure)throw Error('Native mode change unconfirmed');return {...modes,currentValue:mode};};
+      window.pane=new WorkspacePane(document.querySelector('#left'),{sessionId:'exact',provider:'Gemini',controls});
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+    }""", failure)
+    page.get_by_role("textbox", name="Message Gemini").fill("preserve draft")
+    page.get_by_role("button", name="Session mode", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Session mode")
+    dialog.get_by_role("combobox", name="Session mode").select_option("execute")
+    assert dialog.get_by_text("Native mode description").is_visible()
+    assert page.evaluate("calls") == []
+    dialog.get_by_role("button", name="Apply", exact=True).click()
+    expected = "Native mode change unconfirmed" if failure else "Last confirmed: Execute"
+    playwright.expect(dialog.get_by_role("status")).to_have_text(expected)
+    assert page.evaluate("calls") == [["mode", "execute"]]
+    assert page.get_by_role("textbox", name="Message Gemini").input_value() == "preserve draft"
+    if failure:
+        assert dialog.get_by_role("button", name="Apply", exact=True).is_disabled()
+    assert dialog.bounding_box()["width"] <= width
+    if not failure:
+        page.screenshot(path=str(tmp_path / f"gemini-mode-{width}.png"))
+    dialog.get_by_role("button", name="Close session mode").click()
+    assert not page.get_by_role("dialog", name="Session mode").count()
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_gemini_command_picker_preserves_draft_until_send(pane, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 1000})

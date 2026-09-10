@@ -6,6 +6,46 @@ assumption that Antigravity has no suitable interactive interface. The installed
 
 ## Primary Evidence
 
+### Native Session Mode Control
+
+The Gemini pane now has a Session mode selector backed by the advertised
+`category: mode` select option. It displays provider names/descriptions and
+requires explicit Apply. The controller validates offered values and sends
+`session/set_config_option` with the exact persisted session and native config
+ID. Only a matching native acknowledgement confirms the change. Active turns,
+unknown values and unconfirmed responses cannot silently change the UI state.
+Stable host command receipts prevent repeated delivery. Model and mode changes
+share the same validated selector path; mode is not sent as a fabricated prompt.
+
+Rechecked https://agentclientprotocol.com/protocol/v1/session-config-options on
+2026-09-09. Inspected Google's downloaded 1.1.1 server.py and config_options.py:
+the native server dispatches model/mode IDs through this method and advertises
+Default, Auto Edit and YOLO, with descriptions of permission behavior. The UI
+does not invent these values or choose a more permissive default.
+
+Exact verification commands (repository root), each exit 0:
+
+```sh
+env PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_gemini_native_mode_requires_explicit_apply_and_confirmation tests/test_workspace_acp_session.py tests/test_workspace_gemini.py -q --tb=short
+env PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_acp_session.py core/workspace_gemini.py core/workspace_host.py tests/test_workspace_acp_session.py tests/test_workspace_gemini.py tests/test_workspace_pane.py
+node --check ui/static/workspace-pane.mjs
+```
+
+Results: 40 passed in 3.74s, 58 passed in 7.25s, lint clean, JS syntax clean.
+The real subprocess JSON-RPC peer exercises host/owner/controller mode routing,
+duplicate receipts, unoffered values and busy-turn refusal. Browser coverage at
+390px/1600px checks explicit Apply, confirmed/error states, native descriptions,
+unchanged drafts and dialog close. Inspected the 390px screenshot.
+An initial browser fixture forgot to reset its event sequence when replacing
+the pane, leaving it connecting; the isolated reproduction exited 1. Fixed the
+fixture. The initial combined run was interrupted during browser cleanup
+(exit 130); the separate final scoped runs above completed successfully.
+
+This proves local protocol routing and rendering, not an authenticated Google
+model turn. Default Gemini admission remains closed and the installed app has
+not been updated.
+
 ### Incremental Assistant Streaming
 
 Assistant text starts with one full item, followed by session-bound

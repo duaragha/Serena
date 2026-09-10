@@ -358,6 +358,8 @@ class WorkspaceHost:
             "interrupt",
             "answer",
             "models",
+            "session_modes",
+            "set_session_mode",
             "review",
             "compact",
             "background_tasks",
@@ -598,6 +600,14 @@ class WorkspaceHost:
                     if provider != "codex" or set(payload) != {"target"}:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])
+                elif action == "session_modes":
+                    if provider != "gemini" or payload:
+                        raise ValueError("Native session modes are unavailable")
+                    result = await owner.list_session_modes()
+                elif action == "set_session_mode":
+                    if provider != "gemini" or set(payload) != {"mode"} or not isinstance(payload["mode"], str):
+                        raise ValueError("Invalid native session mode")
+                    result = await owner.set_session_mode(payload["mode"])
                 elif action == "models":
                     if payload or provider not in {"codex", "claude", "gemini"}:
                         raise ValueError("Model discovery is unavailable for this request")

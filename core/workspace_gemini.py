@@ -81,6 +81,18 @@ class GeminiWorkspace:
             raise ValueError("Gemini is not attached")
         return {"data": deepcopy(self.session.commands)}
 
+    async def list_session_modes(self):
+        if self.state not in {"ready", "running", "cancelling"}:
+            raise ValueError("Gemini is not attached")
+        return self.session.select_option("mode")
+
+    async def set_session_mode(self, mode):
+        async with self._lifecycle:
+            if self._turn_task and not self._turn_task.done():
+                raise ValueError("Finish the active turn before changing mode")
+            await self.session.set_selection("mode", mode)
+            return self.session.select_option("mode")
+
     async def answer(self, request_id, answer):
         if not isinstance(answer, dict) or set(answer) != {"outcome"}:
             raise ValueError("Invalid ACP permission answer")

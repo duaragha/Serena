@@ -25,14 +25,15 @@ class Rpc:
 
 
 @pytest.mark.parametrize("confirmed", [True, False])
-def test_native_model_change_requires_offered_value_and_confirmed_response(tmp_path, confirmed):
+@pytest.mark.parametrize("category", ["model", "mode"])
+def test_native_model_change_requires_offered_value_and_confirmed_response(tmp_path, confirmed, category):
     async def run():
         rpc, output = Rpc(), []
         async def publish(event):
             output.append(event)
         owner = AcpSession(session_id="exact", cwd=tmp_path, rpc=rpc, publish=publish)
         def config(current):
-            return [{"id": "native-model", "category": "model", "type": "select",
+            return [{"id": "native-model", "category": category, "type": "select",
                      "currentValue": current, "options": [{"value": "a", "name": "Model A"},
                                                           {"value": "b", "name": "Model B"}]}]
         async def handler(method, params):
@@ -46,16 +47,16 @@ def test_native_model_change_requires_offered_value_and_confirmed_response(tmp_p
         await owner.load({"agentCapabilities": {"loadSession": True}}, mcp_servers=[])
         assert len(rpc.calls) == 1
         with pytest.raises(ValueError, match="not offered"):
-            await owner.set_model("invented")
-        await owner.set_model("a")
+            await owner.set_selection(category, "invented")
+        await owner.set_selection(category, "a")
         assert len(rpc.calls) == 1
         if confirmed:
-            await owner.set_model("b")
+            await owner.set_selection(category, "b")
             assert owner.state == "ready"
-            assert output[-1]["params"]["model"] == "b"
+            assert output[-1]["params"][category] == "b"
         else:
             with pytest.raises(ValueError, match="unconfirmed"):
-                await owner.set_model("b")
+                await owner.set_selection(category, "b")
             assert owner.state == "unavailable"
             assert not any(event["method"] == "workspace/settings" for event in output)
         assert len(rpc.calls) == 2

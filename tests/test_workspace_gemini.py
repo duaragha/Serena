@@ -36,13 +36,19 @@ send({"id": message["id"], "result": {"protocolVersion": 1,
       "agentInfo": {"name": "antigravity-acp"}}})
 message = read()
 assert message["method"] == "session/load" and message["params"]["sessionId"] == sid
-def config(current):
+def config(current, mode="plan"):
     return [{"id": "model", "category": "model", "type": "select", "currentValue": current,
-             "options": [{"value": "first", "name": "First"}, {"value": "second", "name": "Second"}]}]
+             "options": [{"value": "first", "name": "First"}, {"value": "second", "name": "Second"}]},
+            {"id": "native-mode", "category": "mode", "type": "select", "currentValue": mode,
+             "options": [{"value": "plan", "name": "Plan"}, {"value": "execute", "name": "Execute"}]}]
 send({"id": message["id"], "result": {"configOptions": config("first")}})
 send({"method": "session/update", "params": {"sessionId": sid, "update": {
     "sessionUpdate": "available_commands_update", "availableCommands": [
         {"name": "plan", "description": "Plan work"}]}}})
+message = read()
+assert message["method"] == "session/set_config_option"
+assert message["params"] == {"sessionId": sid, "configId": "native-mode", "value": "execute"}
+send({"id": message["id"], "result": {"configOptions": config("first", "execute")}})
 message = read()
 assert message["method"] == "session/set_config_option"
 assert message["params"] == {"sessionId": sid, "configId": "model", "value": "second"}
@@ -92,11 +98,19 @@ assert sys.stdin.read() == "", "Unexpected duplicate delivery"
         wait_event("workspace/commands")
         commands = host.command(SID, "commands", "commands", {})
         assert commands["ok"] and commands["result"]["data"][0]["name"] == "plan"
+        modes = host.command(SID, "modes", "session_modes", {})
+        assert modes["ok"] and modes["result"]["currentValue"] == "plan"
+        invalid = host.command(SID, "invalid-mode", "set_session_mode", {"mode": "invented"})
+        assert not invalid["ok"]
+        mode = host.command(SID, "change-mode", "set_session_mode", {"mode": "execute"})
+        assert mode["ok"] and mode["result"]["currentValue"] == "execute"
+        assert host.command(SID, "change-mode", "set_session_mode", {"mode": "execute"}) == mode
         payload = {"inputs": [{"type": "text", "text": "/plan inspect"}], "options": {"model": "second"}}
         sent = host.command(SID, "send", "submit", payload)
         assert sent["ok"]
         assert host.command(SID, "send", "submit", payload) == sent
         question = wait_event("session/request_permission")
+        assert not host.command(SID, "busy-mode", "set_session_mode", {"mode": "plan"})["ok"]
         assert question["id"] == "permission" and question["params"]["threadId"] == SID
         bad = host.command(SID, "bad", "answer", {"request_id": "permission", "answer": {
             "outcome": {"outcome": "selected", "optionId": "not-offered"}}})
