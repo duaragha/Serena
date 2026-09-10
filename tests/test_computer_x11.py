@@ -95,3 +95,63 @@ def test_unicode_input_and_key_release_on_isolated_x11(tmp_path, monkeypatch, ty
             fixture.wait(timeout=3)
         server.terminate()
         server.wait(timeout=3)
+
+
+def _stub_desktop():
+    desktop = object.__new__(X11Desktop)
+    desktop.monitor_cache = None
+    desktop.monitor_cached_at = 0.0
+    return desktop
+
+
+LISTING = (
+    "Monitors: 2\n"
+    " 0: +*HDMI-A-0 2560/597x1440/336+0+0  HDMI-A-0\n"
+    " 1: +DisplayPort-1 2560/597x1440/336+2560+0  DisplayPort-1\n"
+)
+
+
+def test_monitors_reuses_last_layout_when_xrandr_times_out(monkeypatch):
+    desktop = _stub_desktop()
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            return LISTING
+        raise subprocess.TimeoutExpired(args, 3)
+
+    monkeypatch.setattr(desktop, "_run", run, raising=False)
+    first = desktop.monitors()
+    assert [m["name"] for m in first] == ["HDMI-A-0", "DisplayPort-1"]
+    assert first[0]["primary"] is True
+
+    # Expire the cache so the next call really shells out and hits the timeout.
+    desktop.monitor_cached_at = 0.0
+    assert desktop.monitors() == first
+    assert len(calls) == 2
+
+
+def test_monitors_raises_when_xrandr_times_out_with_no_known_layout(monkeypatch):
+    desktop = _stub_desktop()
+
+    def run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args, 3)
+
+    monkeypatch.setattr(desktop, "_run", run, raising=False)
+    with pytest.raises(subprocess.TimeoutExpired):
+        desktop.monitors()
+
+
+def test_monitors_caches_between_frames(monkeypatch):
+    desktop = _stub_desktop()
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return LISTING
+
+    monkeypatch.setattr(desktop, "_run", run, raising=False)
+    for _ in range(5):
+        desktop.monitors()
+    assert len(calls) == 1

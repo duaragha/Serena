@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import subprocess
 import time
 
 from PIL import Image, ImageChops, ImageDraw
@@ -73,7 +74,8 @@ class WatchFrames:
                 started = time.monotonic()
                 try:
                     frame = await asyncio.to_thread(self.controller.observe, self.session.id)
-                except ComputerTransientError:
+                except (ComputerTransientError, subprocess.TimeoutExpired):
+                    # A busy X server can overrun a probe timeout; that is not a dead session.
                     transient_since = transient_since or time.monotonic()
                     if time.monotonic() - transient_since > 5:
                         raise
