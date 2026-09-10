@@ -151,7 +151,8 @@ class ComputerServer(ThreadingHTTPServer):
         raise ComputerError("unknown computer operation")
 
     def start_indicator(self):
-        self.controller.indicator_rect = Rect(20, 20, 430, 112)
+        # Match the compact HUD's initial footprint before its first heartbeat.
+        self.controller.indicator_rect = Rect(20, 20, 500, 118)
         self.indicator_process = subprocess.Popen(
             child_command("indicator"),
             cwd=Path(__file__).resolve().parents[1],
