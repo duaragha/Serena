@@ -102,6 +102,14 @@ produces a visible error instead of silently dropping earlier messages. Native
 parent-chat compaction still applies to very long chats. Stored text remains
 available for retrieval; this is not an unlimited model context window.
 
+Before the first screenshot turn, the worker warms the local Codex app-server
+connection and builds a small read-only task pack from Serena's knowledge store
+plus shallow project `it/` and `docs/` folders. It ranks files against the task,
+strips HTML noise, caps the pack at 18 KB, and redacts obvious credentials. A
+matching AWS runbook therefore reaches Astra with the linked chat and current
+screenshot; the worker does not need to rediscover that saved setup research.
+The pack is sent once per visual thread and is reloaded after history rotation.
+
 Use `background=false` only for deliberate interactive MCP sessions handled
 by the connected chat's own model. This shares the screen but does not start
 automatic coaching. The indicator calls this sharing and says automatic
@@ -167,7 +175,9 @@ There is no API-key requirement. Each visual thread is ephemeral and rotates
 after eight watch turns. Model choice does not silently fall back to another
 model. Missing access or an unaccepted fast tier is returned as a visible error.
 Fast mode is scoped to computer workers and does not change the parent chat's
-model or effort. [Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
+model or effort. The worker keeps its app-server process warm when it rotates
+the visual thread, so the next screenshot does not pay initialization again.
+[Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
 uses 2.5 times standard Codex credits where available. It does not remove
 model inference latency.
 
