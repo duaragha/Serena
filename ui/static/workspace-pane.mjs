@@ -839,7 +839,7 @@ export class WorkspacePane {
   async interrupt() {
     if(this.disposed || this.interrupting || this.conversation.status!=='running')return;
     const turns=[...this.conversation.turns.values()].filter(turn=>turn.status==='inProgress');
-    if(turns.length!==1){this.error(Error('Running turn identity is unavailable'));return;}
+    if(!turns.length || (this.provider!=='Claude' && turns.length!==1)){this.error(Error('Running turn identity is unavailable'));return;}
     this.interrupting=true;this.render();
     try{await this.controls.interrupt(turns[0].id);}
     catch(error){this.error(error);}
@@ -876,6 +876,8 @@ export class WorkspacePane {
         await this.controls.compact();
       }
       else if (this.canSteer()) await this.controls.steer({text, files, ...(skills.length?{options:{skills:options.skills}}:{}), expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
+      else if (this.canQueue()) await this.controls.queueInput({text, files,
+        expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else await this.controls.submit({text, files, options});
       if (this.input.value === text) { this.input.value = ''; this.persistDraft(); }
       this.files = this.files.filter(file => !files.includes(file));
@@ -887,6 +889,10 @@ export class WorkspacePane {
 
   canSteer() {
     return this.provider === 'Codex' && this.conversation.status === 'running' && typeof this.controls.steer === 'function';
+  }
+
+  canQueue() {
+    return this.provider === 'Claude' && this.conversation.status === 'running' && typeof this.controls.queueInput === 'function';
   }
 
   persistSkills() {
@@ -1340,9 +1346,11 @@ export class WorkspacePane {
     this.reviewButton.disabled = !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.compactButton.disabled = this.reviewButton.disabled;
     const steering = this.canSteer();
-    this.send.title = steering ? 'Steer running turn' : 'Send message';
+    const queueing = this.canQueue();
+    this.modelSelect.disabled=queueing;
+    this.send.title = steering ? 'Steer running turn' : queueing ? 'Queue message' : 'Send message';
     this.send.setAttribute('aria-label', this.send.title);
-    this.send.disabled = this.sending || this.clearing || Boolean(this.clearedSession) || (!steering && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
+    this.send.disabled = this.sending || this.clearing || Boolean(this.clearedSession) || (!steering && !queueing && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.forkButton.disabled=this.forkCreating || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.clearButton.disabled=this.clearing || this.sending || (!this.clearedSession && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.disconnectButton.disabled=this.clearing || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);

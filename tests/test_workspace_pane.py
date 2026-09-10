@@ -1657,6 +1657,39 @@ def test_composer_upload_failure_retains_draft_and_closing_does_not_cancel(pane)
     assert not errors
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+@pytest.mark.parametrize("failure", [False, True])
+def test_claude_busy_composer_queues_exact_turn_and_preserves_failed_draft(pane, width, failure):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    page.evaluate("""failure => {
+      controls.queueInput=async message=>{calls.push(['queue',{...message,files:message.files.map(file=>file.name)}]);if(failure)throw Error('Queue receipt unconfirmed');};
+      emit({method:'turn/started',params:{turn:{id:'active',status:'inProgress'}}});
+    }""", failure)
+    page.get_by_role("textbox", name="Message Claude").fill("follow-up")
+    page.get_by_role("button", name="Queue message", exact=True).click()
+    page.wait_for_function("!pane.sending")
+    assert page.evaluate("calls") == [["queue", {"text": "follow-up", "files": [], "expectedTurnId": "active"}]]
+    assert page.get_by_role("textbox", name="Message Claude").input_value() == ("follow-up" if failure else "")
+    assert page.evaluate("pane.modelSelect.disabled")
+    if failure:
+        assert page.get_by_text("Queue receipt unconfirmed", exact=True).is_visible()
+    assert not errors
+
+
+def test_stop_with_queued_claude_inputs_targets_oldest_active_turn(pane):
+    page, errors = pane
+    page.evaluate("""() => {
+      controls.interrupt=async id=>calls.push(['interrupt',id]);
+      emit({method:'turn/started',params:{turn:{id:'first',status:'inProgress'}}});
+      emit({method:'turn/started',params:{turn:{id:'second',status:'inProgress'}}});
+    }""")
+    page.wait_for_function("!pane.stop.hidden")
+    page.evaluate("pane.interrupt()")
+    assert page.evaluate("calls") == [["interrupt", "first"]]
+    assert not errors
+
+
 def test_pending_turn_keeps_claude_busy_after_another_turn_completes(pane):
     page, errors = pane
     page.evaluate("""() => {

@@ -16,6 +16,38 @@ from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
 
 
+def test_claude_queued_input_is_session_bound_and_deduplicated(tmp_path):
+    calls = []
+
+    class QueueOwner(Owner):
+        async def open(self):
+            await super().open()
+            self.state, self.active_turn = "running", "active"
+
+        async def queue_input(self, inputs, *, expected_turn_id):
+            calls.append((self.sid, inputs, expected_turn_id))
+            return {"turn": {"id": "queued"}}
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "queue.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+        factories={"claude": QueueOwner})
+    payload = {"inputs": [{"type": "text", "text": "follow-up"}], "expectedTurnId": "active"}
+    try:
+        host.events("exact")
+        assert not calls
+        host.attach("exact")
+        result = host.command("exact", "queue-request", "queue_input", payload)
+        assert result["ok"] and result["result"]["turn"]["id"] == "queued"
+        assert host.command("exact", "queue-request", "queue_input", payload) == result
+        assert calls == [("exact", payload["inputs"], "active")]
+        stale = host.command("exact", "stale", "queue_input", {**payload, "expectedTurnId": "old"})
+        assert not stale["ok"] and stale["retryable"]
+        assert not host.command("exact", "invalid", "queue_input", {**payload, "options": {"model": "other"}})["ok"]
+        assert len(calls) == 1
+    finally:
+        host.shutdown()
+
+
 class Owner:
     instances = []
 

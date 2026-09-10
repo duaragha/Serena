@@ -86,6 +86,62 @@ def make(tmp_path):
     return owner, events
 
 
+def test_queued_input_uses_same_client_and_preserves_running_turn(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        await owner.open()
+        try:
+            first = (await owner.submit([{"type": "text", "text": "first"}]))["turn"]["id"]
+            with pytest.raises(RuntimeError, match="changed"):
+                await owner.queue_input([{"type": "text", "text": "wrong"}], expected_turn_id="old")
+            content = [{"type": "text", "text": "follow-up"},
+                       {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "bytes"}}]
+            second = (await owner.queue_input(content, expected_turn_id=first))["turn"]["id"]
+            assert first != second and owner.active_turn == first and owner.state == "running"
+            assert len(owner.client.sent) == 2
+            assert owner.client.sent[1][1]["message"]["content"] == content
+            assert owner.client.models_set == []
+            for input_id in [first, second]:
+                await owner.client.messages.put({"type": "result", "session_id": "exact",
+                                                  "user_message_uuid": input_id, "is_error": False})
+                await asyncio.sleep(0)
+                assert owner.active_turn == (second if input_id == first else None)
+            assert owner.state == "ready"
+            with pytest.raises(RuntimeError, match="changed"):
+                await owner.queue_input(content, expected_turn_id=first)
+            assert len(owner.client.sent) == 2
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+def test_uncertain_queued_delivery_cannot_be_retried_or_started_as_new(tmp_path):
+    async def run():
+        owner, events = make(tmp_path)
+        await owner.open()
+        try:
+            first = (await owner.submit([{"type": "text", "text": "first"}]))["turn"]["id"]
+            owner.client.fail_send = True
+            with pytest.raises(TimeoutError):
+                await owner.queue_input([{"type": "text", "text": "follow-up"}], expected_turn_id=first)
+            assert owner.state == "uncertain" and len(owner.events.pending_inputs) == 2
+            with pytest.raises(RuntimeError):
+                await owner.queue_input([{"type": "text", "text": "follow-up"}], expected_turn_id=first)
+            assert len(owner.client.sent) == 2
+            await owner.client.messages.put({"type": "result", "session_id": "exact",
+                                              "user_message_uuid": first, "is_error": False})
+            await asyncio.sleep(0)
+            assert owner.state == "uncertain"
+            queued = owner.events.pending_inputs[0]
+            await owner.client.messages.put({"type": "result", "session_id": "exact",
+                                              "user_message_uuid": queued, "is_error": False})
+            await asyncio.sleep(0)
+            assert owner.state == "ready" and owner._uncertain_input is None
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("failure", [None, "checkpoint", "native"])
 def test_creation_checkpoints_leased_identity_before_single_native_launch(tmp_path, failure):
     async def run():

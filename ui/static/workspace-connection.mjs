@@ -99,7 +99,7 @@ export class WorkspaceConnection {
   }
 
   async sendMessage(action, {text, files = [], options = {}, expectedTurnId}) {
-        if (action === 'steer' && !expectedTurnId) throw Error('Running turn identity is unavailable');
+        if (['steer','queue_input'].includes(action) && !expectedTurnId) throw Error('Running turn identity is unavailable');
         if (files.length > 16) throw Error('Attach up to 16 files per message');
         const inputs = text || options.skills?.length ? [{type: 'text', text: text || ''}] : [];
         for (const file of files) {
@@ -115,7 +115,15 @@ export class WorkspaceConnection {
           }
           inputs.push({type: 'upload', token: this.uploads[key]});
         }
-        return this.command(action, {inputs, ...(action === 'steer' ? {expectedTurnId, ...(options.skills?.length ? {skills:options.skills} : {})} : {}), ...(action === 'submit' && Object.keys(options).length ? {options} : {})});
+        if(['queue_input','submit'].includes(action)){
+          const queued=Object.keys(this.pending).filter(key=>key.startsWith('{')).map(key=>JSON.parse(key)).filter(value=>value.action==='queue_input');
+          if(queued.length){
+            const prior=queued.find(value=>JSON.stringify(value.payload.inputs)===JSON.stringify(inputs));
+            if(!prior)throw Error('Resolve the unconfirmed queued message before sending different input');
+            return this.command('queue_input',prior.payload);
+          }
+        }
+        return this.command(action, {inputs, ...(['steer','queue_input'].includes(action) ? {expectedTurnId, ...(action === 'steer' && options.skills?.length ? {skills:options.skills} : {})} : {}), ...(action === 'submit' && Object.keys(options).length ? {options} : {})});
   }
 
   controls() {
@@ -165,6 +173,7 @@ export class WorkspaceConnection {
       compact: () => this.command('compact', {}),
       submit: message => this.sendMessage('submit', message),
       steer: message => this.sendMessage('steer', message),
+      queueInput: message => this.sendMessage('queue_input', message),
       interrupt: expectedTurnId => this.command('interrupt', expectedTurnId === undefined ? {} : {expectedTurnId}),
       answer: (request_id, answer) => this.command('answer', {request_id, answer}),
     };

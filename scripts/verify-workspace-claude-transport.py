@@ -81,8 +81,15 @@ async def main():
         (root / ".claude" / "settings.local.json").write_text(
             json.dumps({"enabledMcpjsonServers": ["form_proof"]}), encoding="utf-8")
 
+    queued_boundary = asyncio.Event()
+    release_boundary = asyncio.Event()
+    hold_result = False
+
     async def publish_pane(event):
         events.append(event)
+        if hold_result and event.get("method") == "workspace/claude" and event["params"].get("recordType") == "ResultMessage":
+            queued_boundary.set()
+            await release_boundary.wait()
         if event.get("method") == "mcpServer/elicitation/request":
             assert event["params"]["serverName"] == "form_proof"
             assert event["params"]["message"] == "Choose proof count"
@@ -115,7 +122,23 @@ async def main():
         assert owner.client.transport.command[2] == str(Path(sdk).resolve())
         if os.environ.get("SERENA_WORKSPACE_NODE_MODE") == "electron":
             assert owner.client.transport.command[0] == str(Path(os.environ["SERENA_WORKSPACE_NODE"]).resolve())
-        await owner.submit([{"type": "text", "text": "/effort low"}])
+        hold_result = True
+        first_input = (await owner.submit([{"type": "text", "text": "/effort low"}]))["turn"]["id"]
+        await asyncio.wait_for(queued_boundary.wait(), 15)
+        try:
+            queued_input = (await owner.queue_input([{"type": "text", "text": "/effort medium"}],
+                                                    expected_turn_id=first_input))["turn"]["id"]
+            assert queued_input != first_input and owner.client.owned_pid == original_pid
+        finally:
+            hold_result = False
+            release_boundary.set()
+        async with asyncio.timeout(15):
+            while owner.state != "ready":
+                await asyncio.sleep(0.01)
+        completions = [event["params"]["turn"] for event in events if event["method"] == "turn/completed"]
+        assert [turn["id"] for turn in completions[-2:]] == [first_input, queued_input]
+        assert all(turn["providerOriginal"]["num_turns"] == 0 for turn in completions[-2:])
+        print("PASS: Python owner queued a follow-up at a delayed native completion boundary, same PID, exact input completions, zero inference")
         if discovery_form:
             async with asyncio.timeout(15):
                 while not form_receipt.exists():

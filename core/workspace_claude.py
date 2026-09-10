@@ -61,6 +61,7 @@ class ClaudeWorkspace:
         self._lease = None
         self._clear_target = None
         self._creation_attempted = False
+        self._uncertain_input = None
 
     async def create(self, *, checkpoint):
         async with self._control:
@@ -185,7 +186,9 @@ class ClaudeWorkspace:
                 for event in self.events.receive(message):
                     if event["method"] == "turn/completed" and self.state not in {"clearing", "awaiting-handoff", "committing-handoff", "unavailable", "closed"}:
                         self.active_turn = self.events.turn
-                        self.state = "running" if self.active_turn else "ready"
+                        if self.state != "uncertain" or event["params"]["turn"]["id"] == self._uncertain_input:
+                            self._uncertain_input = None
+                            self.state = "running" if self.active_turn else "ready"
                     await self.publish(event)
             raise RuntimeError("Claude output stream ended")
         except asyncio.CancelledError:
@@ -450,8 +453,19 @@ class ClaudeWorkspace:
         return result
 
     async def submit(self, inputs, *, options=None):
+        return await self._submit(inputs, options=options)
+
+    async def queue_input(self, inputs, *, expected_turn_id):
+        if not isinstance(expected_turn_id, str) or not expected_turn_id:
+            raise ValueError("Queued input requires the displayed active turn")
+        return await self._submit(inputs, expected_turn_id=expected_turn_id)
+
+    async def _submit(self, inputs, *, options=None, expected_turn_id=None):
         async with self._control:
-            if self.state != "ready":
+            if expected_turn_id is not None:
+                if self.state != "running" or self.active_turn != expected_turn_id:
+                    raise RuntimeError("Claude active turn changed; queued input was not sent")
+            elif self.state != "ready":
                 raise RuntimeError("Claude is not ready for a new turn")
             options = options or {}
             if not isinstance(options, dict) or options.keys() - {"model"}:
@@ -525,10 +539,11 @@ class ClaudeWorkspace:
                         },
                     )
                 )
-                if self.active_turn == turn_id:
-                    self.state = "running"
+                if self.state == "submitting":
+                    self.state = "running" if self.active_turn else "ready"
                 return {"turn": {"id": turn_id}}
             except BaseException:
+                self._uncertain_input = turn_id
                 self.state = "uncertain"
                 raise
 

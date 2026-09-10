@@ -11,6 +11,26 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('queued follow-up carries active identity and reuses lost receipt after reload',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    if(calls.length===1)throw Error('lost queue receipt');
+    return response({ok:true,result:{turn:{id:'queued'}}});
+  }};
+  let connection=new WorkspaceConnection(options);
+  const message={text:'follow-up',files:[],expectedTurnId:'running'};
+  await assert.rejects(connection.controls().queueInput(message),/lost queue receipt/);
+  connection.dispose();connection=new WorkspaceConnection(options);
+  await assert.rejects(connection.controls().submit({text:'different'}),/unconfirmed queued message/);
+  assert.equal(calls.length,1);
+  assert.equal((await connection.controls().submit({text:message.text})).turn.id,'queued');
+  assert.deepEqual(calls[0],calls[1]);
+  assert.equal(calls[0].action,'queue_input');
+  assert.deepEqual(calls[0].payload,{inputs:[{type:'text',text:'follow-up'}],expectedTurnId:'running'});
+  connection.dispose();
+});
+
 test('disconnect is explicit and lost response reuses exact receipt after reload',async()=>{
   const saved=storage(),calls=[];
   const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
@@ -187,7 +207,7 @@ test('lost send response retains request ID across view reload, confirmed next s
   assert.notEqual(ids[1],ids[2]);
 });
 
-test('files upload once and stable attachment IDs survive a lost send response',async()=>{
+for(const method of ['submit','queueInput'])test(`${method} files upload once and stable attachment IDs survive a lost send response`,async()=>{
   const calls=[];
   let lose=true;
   const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
@@ -201,8 +221,8 @@ test('files upload once and stable attachment IDs survive a lost send response',
     return response({ok:true,result:{}});
   }});
   const files=[new File(['contents'],'notes.txt',{type:'text/plain'})];
-  await assert.rejects(conn.controls().submit({text:'read',files}),/lost/);
-  await conn.controls().submit({text:'read',files});
+  await assert.rejects(conn.controls()[method]({text:'read',files,expectedTurnId:'active'}),/lost/);
+  await conn.controls()[method]({text:'read',files,expectedTurnId:'active'});
   conn.dispose();
   assert.equal(calls.filter(([url])=>url.endsWith('/uploads')).length,1);
   const sends=calls.filter(([url])=>url.endsWith('/commands')).map(([,options])=>JSON.parse(options.body));

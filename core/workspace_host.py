@@ -355,6 +355,7 @@ class WorkspaceHost:
         if action not in {
             "submit",
             "steer",
+            "queue_input",
             "interrupt",
             "answer",
             "models",
@@ -624,6 +625,16 @@ class WorkspaceHost:
                         raise ValueError("Provider input mapping is not implemented")
                     inputs = await asyncio.to_thread(mapper, sid, payload["inputs"])
                     result = await owner.submit(inputs, options=payload.get("options"))
+                elif action == "queue_input":
+                    retryable = True
+                    if (provider != "claude" or set(payload) != {"inputs", "expectedTurnId"}
+                            or not isinstance(payload["expectedTurnId"], str) or not payload["expectedTurnId"]):
+                        raise ValueError("Claude queued input requires inputs and the expected active turn")
+                    inputs = await asyncio.to_thread(self.uploads.claude_inputs, sid, payload["inputs"])
+                    if owner.state != "running" or owner.active_turn != payload["expectedTurnId"]:
+                        raise ValueError("Claude active turn changed; queued input was not sent")
+                    retryable = False
+                    result = await owner.queue_input(inputs, expected_turn_id=payload["expectedTurnId"])
                 elif action == "steer":
                     if (
                         set(payload) - {"inputs", "expectedTurnId", "skills"}

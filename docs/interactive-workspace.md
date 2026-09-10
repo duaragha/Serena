@@ -2,6 +2,48 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Claude Busy Composer Queue
+
+The Claude pane now offers Queue message while running. Text and session-bound
+uploads go through the existing owner to the native SDK input stream with a
+separate UUID, without another process or changing the running model. The
+displayed oldest active turn is required at admission; a stale turn is rejected
+without falling back to new submission. Stop targets that same oldest active
+turn even when later inputs are accepted. Native cancellation semantics for
+multiple model turns remain to be verified; no cancellation outcome is invented.
+
+Host receipts deduplicate queued delivery. Browser retries after response loss
+retain the original queue receipt even if the pane has become idle or the active
+turn has advanced. Different input cannot bypass an unresolved queue receipt.
+Confirmed pre-admission stale rejection is retryable; ambiguous native delivery
+is not. Completing an older input does not clear uncertainty for a later input.
+Drafts/files remain after failure and uploads are reused, not repeated.
+
+Verification commands, each exit 0:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_claude_wire.py tests/test_workspace_host.py tests/test_workspace_pane.py -q --tb=short
+node --test tests/workspace-connection.test.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_claude_wire.py -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_stop_with_queued_claude_inputs_targets_oldest_active_turn -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude.py core/workspace_host.py tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-claude-transport.py
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+```
+
+Results: combined regression run 261 passed in 86.87s; connection 24 passed;
+final uncertainty guard rerun 78 passed; Stop browser test 1 passed; lint clean.
+Mobile/desktop queue controls, preserved failed drafts, image input, exact host
+receipt routing, uploads and mode-crossing lost-response recovery are covered.
+The native proof queued a local follow-up through the Python owner while an
+earlier native completion was deliberately held at the publication boundary;
+both exact UUIDs completed in the same PID with zero inference. Existing native
+history, skills/plugins, fork and cleanup checks also passed.
+
+This enables the source feature within the opt-in workspace, not the installed
+app. True mid-inference behavior, multi-input cancellation, queued-session crash
+reconciliation and user-facing recovery of edited ambiguous drafts remain open.
+The frozen backend predates this change. Full delivery is not complete.
+
 ## Queued Turn Accounting Foundation
 
 Claude submission now registers its input with the event translator rather than
