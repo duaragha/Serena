@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Windows Transport Verification
+
+Ran the synced source tests on RaghavsGamingPC through SSH, without editing
+source files on Windows. The Claude fork test incorrectly expected `/project`
+instead of the platform-resolved path; its assertion now uses `path.resolve`.
+Production routing already resolves the directory and did not need changing.
+
+Commands and observed results:
+
+```sh
+node --test --test-reporter=dot tests/workspace-connection.test.mjs tests/workspace-events.test.mjs tests/workspace-claude-sdk.test.mjs
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "node --test --test-reporter=dot C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\workspace-connection.test.mjs C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\workspace-events.test.mjs C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\workspace-claude-sdk.test.mjs"
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys; os.chdir(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); sys.path.insert(0,os.getcwd()); sys.dont_write_bytecode=True; import pytest; sys.exit(pytest.main(['tests/test_workspace_rpc.py','tests/test_workspace_lease.py','-q','-p','no:cacheprovider','--tb=short']))\""
+```
+
+Both final JavaScript runs exited 0 (57 tests each). Windows Python exited 0:
+15 passed, 6 skipped in 6.20s. The skipped tests require POSIX process groups.
+The initial Windows JavaScript run exited 1 on the path assertion; an initial
+Python invocation from the remote home directory exited 2 on module imports,
+corrected by explicitly selecting the synced worktree and import path above.
+
+This verifies actual Windows pipe I/O, approval routing, receipt handling and
+file locks, not native provider inference or packaged desktop behavior. Windows
+descendant containment remains unimplemented: transport shutdown currently
+terminates only the leader on Windows. Do not treat the POSIX skips as coverage
+of that gap or enable the replacement by default on this evidence.
+
 ## Explicit Queued Receipt Recovery
 
 Unconfirmed queued messages now have a recovery control in the Claude pane.

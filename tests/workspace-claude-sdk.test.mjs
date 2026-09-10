@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {resolve} from 'node:path';
 import test from 'node:test';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
@@ -183,7 +184,7 @@ test('fork is bound to owned identity and cannot spawn or redirect the driver',a
   await f.session.open();
   await assert.rejects(f.session.control('forkSession',{dir:'/other'}),/owned session/);
   assert.deepEqual(await f.session.control('forkSession'),{sessionId:'fork'});
-  assert.deepEqual(seen,[['exact',{dir:'/project'}]]);
+  assert.deepEqual(seen,[['exact',{dir:resolve('/project')}]]);
   assert.equal(f.session.sessionId,'exact');
   assert.deepEqual(f.calls,['spawn']);
   await f.session.close();
