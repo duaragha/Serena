@@ -49,6 +49,20 @@ def requested_baseline(task: str, root: Path) -> str | None:
     return resolved.pop()
 
 
+def requested_worker_branch(task: str, worker_key: str, worker_count: int) -> str | None:
+    templates = set(re.findall(r"(?i)own task branch named\s+`([^`]+)`", task))
+    if not templates:
+        return None
+    if len(templates) != 1:
+        raise ValueError("conflicting task branch directives")
+    template = templates.pop()
+    if template.endswith("0N") and re.fullmatch(r"agent:[a-d]", worker_key):
+        return template[:-2] + f"{ord(worker_key[-1]) - ord('a') + 1:02d}"
+    if worker_count == 1:
+        return template
+    raise ValueError("multiple workers require a distinct task branch template ending in 0N")
+
+
 def ensure_run_checkout(store, run_id: str) -> None:
     """Provision once under the run lock; retries preserve integrated dirty files."""
     with store._connect() as connection:

@@ -19,7 +19,7 @@ from fleet.store import FleetStore
 # ruff: noqa: F811
 
 
-def setup_run(tmp_path, worker_count=1):
+def setup_run(tmp_path, worker_count=1, branch_template=None):
     root = _repo(tmp_path)
     _git(root, "checkout", "-b", "team-baseline")
     (root / "required.txt").write_text("required baseline\n")
@@ -31,7 +31,9 @@ def setup_run(tmp_path, worker_count=1):
     (root / "private-note.txt").write_text("user untracked file\n")
     store = FleetStore(tmp_path / "fleet.sqlite3")
     run = store.create_run(
-        task=f"- MANDATORY start point: branch `team-baseline` at commit {baseline}. DO NOT start from main.",
+        task=(f"- MANDATORY start point: branch `team-baseline` at commit {baseline}. DO NOT start from main."
+              + (f"\nEach worker creates its own task branch named `{branch_template}` off the baseline."
+                 if branch_template else "")),
         activity="coding", cwd=str(root), origin_session_id=None, origin_agent="codex",
         dry_run=False, policy=build_policy("coding", config=builtin_config(),
                                          provider_mode="codex", worker_count=worker_count).to_dict(),
@@ -67,14 +69,15 @@ def test_baseline_directive_not_arbitrary_citation(tmp_path):
         requested_baseline("Fleet baseline: missing", root)
 
 
-@pytest.mark.parametrize("worker_count", [1, 3])
-def test_real_scheduler_uses_baseline_for_every_phase(fleet_env, monkeypatch, worker_count):
+@pytest.mark.parametrize("worker_count,branch_template", [(1, None), (3, None), (3, "codex/team-raghav-hyd-0N")])
+def test_real_scheduler_uses_baseline_for_every_phase(fleet_env, monkeypatch, worker_count, branch_template):
     from fleet import supervisor
     from fleet.workers import WorkerResult
 
-    root, baseline, store, run = setup_run(fleet_env, worker_count=worker_count)
+    root, baseline, store, run = setup_run(fleet_env, worker_count=worker_count, branch_template=branch_template)
     monkeypatch.setenv("SERENA_FLEET_ISOLATION", "on")
     seen = []
+    branches = set()
 
     def worker(request, **kwargs):
         seen.append(request.phase)
@@ -84,6 +87,8 @@ def test_real_scheduler_uses_baseline_for_every_phase(fleet_env, monkeypatch, wo
         assert (Path(request.cwd) / "required.txt").is_file()
         assert Path(request.cwd) != root
         if request.phase in {"execute", "finalize"}:
+            assert "Fleet already provisioned your task branch" in request.prompt
+            branches.add(_git(Path(request.cwd), "branch", "--show-current").strip())
             owned = Path(request.cwd) / (request.worker_key.replace(":", "-") + ".txt")
             owned.write_text((owned.read_text() if owned.exists() else "") + request.phase + "\n")
         return WorkerResult(True, "baseline verified", "baseline-session", request.model,
@@ -98,6 +103,9 @@ def test_real_scheduler_uses_baseline_for_every_phase(fleet_env, monkeypatch, wo
     assert len(delivered) == worker_count
     assert all(path.read_text() == "execute\nfinalize\n" for path in delivered)
     assert not list(root.glob("agent-*.txt"))
+    if branch_template:
+        assert branches == {"codex/team-raghav-hyd-01", "codex/team-raghav-hyd-02", "codex/team-raghav-hyd-03"}
+        assert _git(root, "remote") == ""
     assert _git(root, "branch", "--show-current").strip() == "main"
     assert (root / "README.md").read_text() == "user dirty file\n"
 
@@ -191,3 +199,17 @@ def test_project_checkout_delivery_uses_synced_artifacts(tmp_path, monkeypatch):
     assert checkout_path(database, source, "run-id") == projects / "_artifacts" / "fleet-checkouts" / "run-id"
     other = tmp_path / "disposable"
     assert checkout_path(database, other, "run-id") == database.parent / "fleet-checkouts" / "run-id"
+
+
+def test_requested_branch_never_overwrites_an_existing_user_branch(tmp_path):
+    from fleet.isolation import FleetIsolationStore, IsolationError, ensure_workspace
+
+    root = _repo(tmp_path)
+    _git(root, "branch", "codex/already-owned")
+    old = _git(root, "rev-parse", "codex/already-owned")
+    isolation = FleetIsolationStore(tmp_path / "isolation.sqlite3", workspace_root=tmp_path / "workers")
+    with pytest.raises(IsolationError, match="outside this worker's ownership"):
+        ensure_workspace(isolation, run_id="fixture", worker_key="agent:a", cwd=root,
+                         requested_branch="codex/already-owned")
+    assert _git(root, "rev-parse", "codex/already-owned") == old
+    assert isolation.get_workspace("fixture", "agent:a") is None

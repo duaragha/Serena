@@ -1921,6 +1921,9 @@ def _leg_working_directory(
     if not assessment.safe:
         raise IsolationError(assessment.reason)
     isolation = FleetIsolationStore()
+    from fleet.checkout import requested_worker_branch
+
+    task_branch = requested_worker_branch(run["task"], _worker_key(leg), int(run["agent_count"]))
     if attempt is not None and int(attempt.get("attempt_number") or 0) > 1:
         workspace, recovery = refresh_workspace_for_retry(
             isolation,
@@ -1928,6 +1931,7 @@ def _leg_working_directory(
             worker_key=_worker_key(leg),
             cwd=base,
             assessment=assessment,
+            requested_branch=task_branch,
         )
         attempt["workspace_recovery"] = recovery
     else:
@@ -1937,7 +1941,10 @@ def _leg_working_directory(
             worker_key=_worker_key(leg),
             cwd=base,
             assessment=assessment,
+            requested_branch=task_branch,
         )
+    if attempt is not None:
+        attempt["workspace_branch"] = workspace.branch
     claims = _effective_write_paths(run, leg)
     decision = isolation.claim_paths(
         run_id=str(run["run_id"]),
@@ -3599,6 +3606,12 @@ def _worker_prompt(
         resume = "This is a native retry of your interrupted phase turn. Continue from its durable session."
     else:
         resume = "This is a fresh independent worker session."
+    if attempt.get("workspace_branch"):
+        resume += (
+            f"\nFleet already provisioned your task branch `{attempt['workspace_branch']}` "
+            "in this worker checkout. Use that existing branch; do not recreate or force-reset it. "
+            "Local completion does not require a push or PR, and the task's external-write limits still apply."
+        )
     workspace_recovery = attempt.get("workspace_recovery")
     if isinstance(workspace_recovery, dict):
         recovery_action = str(workspace_recovery.get("action") or "")

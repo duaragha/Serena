@@ -35,9 +35,17 @@ to discard committed or uncommitted delivered work in that root. Status retains
 Real-Git tests cover all four scheduled phases, dirty source/index preservation,
 retry preservation and deletion protection. Three-worker scheduler coverage now
 includes real Code/Fix file edits integrated only into the run checkout.
-Remaining: explicit branch-name delivery, production repair of the affected run,
-and live acceptance.
+Remaining: production repair of the affected run and live acceptance.
 This remains an implementation checkpoint, not a completed reliability claim.
+
+The explicit `own task branch named ...0N` directive now provisions each worker's
+two-digit ordinal branch directly (or a literal branch for a single worker).
+Fleet records that branch as its owned workspace branch and retains the name
+through later refreshes. Existing branches outside this worker's ownership are
+never force-moved. Workers are told the branch is already provisioned; normal
+local integration does not require a remote, push or PR. Tests run three real-Git
+writers through Code/Fix on the requested names without any remote configured.
+74 checkout/isolation/process tests and 62 checkout/supervisor tests pass.
 
 Older runs without a checkout receipt now adopt their explicit baseline before
 dispatch, provided no worker is running and no write result or integration has
