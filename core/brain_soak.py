@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from core.brain_lifetime import append_json_line, secure_directory, write_json_atomic
+from core.process_probe import probe_process
 
 DEFAULT_DISCOVERY = Path.home() / ".config" / "serena" / "brain.json"
 DEFAULT_OUTPUT_DIR = Path.home() / ".local" / "state" / "serena" / "soaks"
@@ -97,7 +98,7 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
         return True
     except ProcessLookupError:
         return False

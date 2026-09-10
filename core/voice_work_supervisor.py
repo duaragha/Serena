@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from core.process_probe import probe_process
 import re
 import shutil
 import signal
@@ -153,7 +154,7 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
         return True
     except (OSError, ProcessLookupError):
         return False
