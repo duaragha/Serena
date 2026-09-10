@@ -692,7 +692,7 @@ def test_sessions_http_lists_native_owner_without_a_mounted_pane(tmp_path, monke
         host.shutdown()
 
 
-@pytest.mark.parametrize('action', ['account_status', 'account_rate_limits'])
+@pytest.mark.parametrize('action', ['account_status', 'account_rate_limits', 'hooks'])
 def test_account_status_requires_explicit_owner_and_rejects_mutations(tmp_path, action):
     calls = []
     class AccountOwner(Owner):
@@ -700,6 +700,7 @@ def test_account_status_requires_explicit_owner_and_rejects_mutations(tmp_path, 
             calls.append(self.sid)
             return {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False}
         account_rate_limits = account_status
+        list_hooks = account_status
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "account.db"),
                          resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
                          factories={"codex": AccountOwner})

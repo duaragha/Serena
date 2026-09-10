@@ -59,6 +59,8 @@ export class WorkspacePane {
     this.sessionStatusButton.hidden=provider!=='Codex';head.append(this.sessionStatusButton);
     this.copyOutputButton=this.button('Copy latest completed output','copy',()=>this.copyLatestOutput());
     this.copyOutputButton.hidden=provider!=='Codex';head.append(this.copyOutputButton);
+    this.hooksButton=this.button('Lifecycle hooks','webhook',()=>this.openHooks());
+    this.hooksButton.hidden=provider!=='Codex' || !controls.hooks;head.append(this.hooksButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
@@ -997,6 +999,38 @@ export class WorkspacePane {
     this.root.append(dialog);dialog.showModal();close.focus();load();
   }
 
+  openHooks() {
+    if(this.hooksDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Lifecycle hooks');
+    const status=node('p');status.setAttribute('role','status');const list=node('div');
+    const load=async()=>{
+      refresh.disabled=true;status.textContent='Loading...';
+      try{
+        const result=await this.controls.hooks();
+        if(!dialog.open || this.disposed)return;
+        list.replaceChildren();
+        for(const hook of result.data){
+          const row=node('div','aw-background-task');
+          row.style.overflowWrap='anywhere';row.style.display='block';
+          row.append(node('strong','',hook.eventName),node('p','',`${hook.enabled?'Enabled':'Disabled'} · ${hook.trustStatus}${hook.isManaged?' · Managed':''}`));
+          const detail=node('pre','',hook.command || [hook.server,hook.tool].filter(Boolean).join(' / ') || hook.handlerType);
+          detail.style.whiteSpace='pre-wrap';detail.style.overflowWrap='anywhere';row.append(detail);
+          const source=node('p','',`${hook.source}: ${hook.sourcePath}`);source.style.overflowWrap='anywhere';row.append(source);
+          for(const key of ['matcher','pluginId','statusMessage'])if(hook[key])row.append(node('p','',`${key}: ${hook[key]}`));
+          list.append(row);
+        }
+        status.textContent=[`${result.data.length} hook${result.data.length===1?'':'s'}`,...result.warnings,...result.errors.map(e=>`${e.path}: ${e.message}`)].join('\n');
+        status.style.whiteSpace='pre-wrap';status.style.overflowWrap='anywhere';
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{refresh.disabled=false;}
+    };
+    const refresh=this.button('Refresh hooks','refresh-cw',load);
+    const close=this.button('Close hooks','x',()=>dialog.close());
+    dialog.append(node('h3','','Lifecycle hooks'),close,refresh,status,list);
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.hooksDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();load();
+  }
+
   openBackgroundTasks() {
     if (this.tasksDialog?.open) return;
     const dialog = node('dialog', 'aw-review-dialog aw-tasks-dialog');
@@ -1122,7 +1156,7 @@ export class WorkspacePane {
 
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
-      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,mention:this.mentionButton,
+      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,
       model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton};
   }
 
@@ -1155,7 +1189,7 @@ export class WorkspacePane {
       if(text.trim()!=='/copy' || this.files.length || this.selectedSkills.length){this.error(Error('Copy does not accept arguments or attachments'));return;}
       await this.copyLatestOutput();return;
     }
-    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|mention)(?:\s|$)/.test(text.trim());
+    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|mention|hooks)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){

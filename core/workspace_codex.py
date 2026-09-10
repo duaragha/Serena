@@ -474,6 +474,40 @@ class CodexWorkspace:
             await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
             return {**catalog, "currentValue": mode}
 
+    async def list_hooks(self) -> dict:
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        result = await self.rpc.request("hooks/list", {"cwds": [str(self.cwd)]})
+        pages = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(pages, list) or len(pages) != 1 or not isinstance(pages[0], dict) or not self._same_project(pages[0].get("cwd")):
+            raise WorkspaceRpcError("Codex returned hooks for a different project")
+        page = pages[0]
+        hooks, errors, warnings = page.get("hooks"), page.get("errors"), page.get("warnings")
+        if not isinstance(hooks, list) or len(hooks) > 1000 or not isinstance(errors, list) or not isinstance(warnings, list):
+            raise WorkspaceRpcError("Codex returned an invalid hook catalog")
+        safe = []
+        for hook in hooks:
+            if not isinstance(hook, dict) or type(hook.get("enabled")) is not bool or type(hook.get("isManaged")) is not bool:
+                raise WorkspaceRpcError("Codex returned invalid hook state")
+            item = {"enabled": hook["enabled"], "isManaged": hook["isManaged"]}
+            for key in ("key", "eventName", "handlerType", "source", "sourcePath", "trustStatus"):
+                value = hook.get(key)
+                if not isinstance(value, str) or not value or len(value) > 8192:
+                    raise WorkspaceRpcError("Codex returned invalid hook metadata")
+                item[key] = value
+            for key in ("command", "server", "tool", "matcher", "pluginId", "statusMessage"):
+                value = hook.get(key)
+                if value is not None:
+                    if not isinstance(value, str) or len(value) > 8192:
+                        raise WorkspaceRpcError("Codex returned invalid hook details")
+                    item[key] = value
+            safe.append(item)
+        if len(errors) > 1000 or len(warnings) > 1000 or any(not isinstance(w, str) for w in warnings):
+            raise WorkspaceRpcError("Codex returned invalid hook diagnostics")
+        if any(not isinstance(e, dict) or not isinstance(e.get("message"), str) or not isinstance(e.get("path"), str) for e in errors):
+            raise WorkspaceRpcError("Codex returned invalid hook errors")
+        return {"data": safe, "errors": [{"path": e["path"], "message": e["message"]} for e in errors], "warnings": warnings}
+
     async def list_commands(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")
@@ -683,7 +717,7 @@ class CodexWorkspace:
             )
             if not isinstance(result, dict) or not isinstance(result.get("terminated"), bool):
                 raise WorkspaceRpcError("Background task termination is unconfirmed")
-            return result
+        return result
 
     async def list_models(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:

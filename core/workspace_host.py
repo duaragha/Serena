@@ -792,6 +792,7 @@ class WorkspaceHost:
             "compact",
             "background_tasks",
             "commands",
+            "hooks",
             "reload_skills",
             "set_skill_enabled",
             "reload_plugins",
@@ -834,7 +835,7 @@ class WorkspaceHost:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "models", "permissions", "context_usage", "background_tasks",
-                "commands", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes",
+                "commands", "hooks", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1039,6 +1040,11 @@ class WorkspaceHost:
                     if provider != "claude" or payload:
                         raise ValueError("Skill reload requires a Claude session and no payload")
                     result = await owner.reload_skills()
+                elif action == "hooks":
+                    if provider != "codex" or payload:
+                        raise ValueError("Hook discovery requires a Codex session and no payload")
+                    retryable = True
+                    result = await owner.list_hooks()
                 elif action == "commands":
                     if provider not in {"claude", "codex", "gemini"} or payload:
                         raise ValueError(

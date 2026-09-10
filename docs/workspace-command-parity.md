@@ -138,6 +138,7 @@ piped separately to Ruff `check --stdin-filename <path> --output-format concise 
 | `copy` | Copy button, slash action and Ctrl+O | Completed response/plan only; drafts retained, native browser clipboard verified. Rollback-specific suppression still needs coverage. |
 | `ps` | Existing native background-task dialog | Explicit refresh and task controls; slash routing tested without submitting a prompt |
 | `mention` | Existing project file picker, including inline search | Selection replaces the slash command with a quoted file mention; cancellation preserves draft; desktop/mobile verified |
+| `hooks` | Native project-scoped `hooks/list` inspector | Read-only enabled/trust/source/handler state and diagnostics; trust/enable mutations remain unimplemented |
 
 ### Codex Documentation Inventory (2026-09-10)
 
@@ -146,7 +147,7 @@ accessed 2026-09-10. Documentation inventory is not proof of installed-version
 support. These documented names are not yet fully covered by the rows above:
 
 `ide`, `keymap`, `vim`, `setup-default-sandbox`, `sandbox-add-read-dir`, `agent`,
-`subagents`, `apps`, `plugins`, `hooks`, `clear`, `rename`, `archive`, `delete`,
+`subagents`, `apps`, `plugins`, `clear`, `rename`, `archive`, `delete`,
 `diff`, `exit`, `experimental`, `approve`, `memories`, `import`, `feedback`, `init`,
 `logout`, `fast`, `goal`, `personality`, `stop`, `app`, `side`,
 `btw`, `raw`, `new`, `quit`, `usage`, `debug-config`, `statusline`, `title`, `theme`,
@@ -160,6 +161,43 @@ and confirmation flows; auditing them does not authorize executing them here.
 No full-parity release claim follows from this inventory. Installation, account authentication,
 permissions, background tasks and other non-command controls also retain their
 provider-specific delivery gates in the main contract.
+
+### Native Hook Inspection and Plugin Constraint
+
+[Official App Server documentation](https://learn.chatgpt.com/docs/app-server),
+accessed 2026-09-10, lists `hooks/list` but explicitly warns against calling
+`plugin/list`, `plugin/read`, `plugin/install` and `plugin/uninstall` from production
+clients while those endpoints are under development. Full production plugin
+management cannot be claimed using those endpoints without resolving that
+constraint. No plugin installation, removal or configuration mutation was run.
+
+`/hooks` now opens a read-only native inspector. Reads are bound to the exact
+owner's project; malformed/cross-project results fail rather than guessing trust
+or enabled status. Hook commands are displayed as text, never executed. Opening
+the app does not fetch hooks; opening/refreshing the inspector does. Empty native
+inventory is verified; nonempty state and malformed results use controlled tests.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_hook_catalog_is_project_scoped_read_only_and_validated tests/test_workspace_pane.py::test_hook_inspector_reads_only_and_preserves_draft tests/test_workspace_host.py::test_account_status_requires_explicit_owner_and_rejects_mutations -q --tb=short
+# exit 0: 9 passed in 10.76s; initial exit 1 was a test assignment returning an
+# async function to Playwright evaluate, causing immediate invocation.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_hook_inspector_reads_only_and_preserves_draft -q --tb=short
+# final exit 0: 2 passed in 4.26s, after screenshot-driven row layout repair.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --hooks
+# exit 0: nativeEmptyHookCatalogRead=true, same owner, no inference/login/browser,
+# child reaped and temporary profile removed.
+node --test tests/workspace-connection.test.mjs
+# exit 0: 46 passed, 253.300931ms.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-account.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+```
+
+Inspected final `apps/desktop/build/workspace-proof/hooks-390.png` and
+`hooks-1600.png`. Both use a real Codex pane with controlled hook data. Status is
+readable on one line; the earlier shared task-row grid squeezed it into a narrow
+column, now corrected and guarded by a browser height assertion.
 
 Copy verification:
 

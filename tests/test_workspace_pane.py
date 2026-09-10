@@ -10,6 +10,37 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_hook_inspector_reads_only_and_preserves_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.hooks=async()=>{calls.push('hooks');return {data:[{eventName:'preToolUse',enabled:false,isManaged:false,trustStatus:'modified',command:'<b>do not execute</b>',source:'project',sourcePath:'/project/hooks.json'}],warnings:['Needs review'],errors:[]};};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      pane.input.value='/hooks';pane.render();
+    }""")
+    assert page.evaluate('calls') == []
+    page.get_by_role('button',name='Send message',exact=True).first.click()
+    dialog=page.get_by_role('dialog',name='Lifecycle hooks')
+    dialog.get_by_text('Disabled · modified',exact=True).wait_for()
+    assert dialog.get_by_text('Disabled · modified',exact=True).evaluate('el=>el.getBoundingClientRect().height<50')
+    assert dialog.locator('pre').inner_text() == '<b>do not execute</b>'
+    assert dialog.locator('pre b').count() == 0
+    assert page.evaluate('calls') == ['hooks']
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth+1')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'hooks-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    page.evaluate("()=>{controls.hooks=async()=>{throw Error('Hook catalog unavailable');};}")
+    dialog.get_by_role('button',name='Refresh hooks').click()
+    dialog.get_by_text('Hook catalog unavailable',exact=True).wait_for()
+    dialog.get_by_role('button',name='Close hooks').click()
+    assert page.evaluate('pane.input.value') == '/hooks'
+    assert not errors
+
+
 @pytest.mark.parametrize("action", ["button", "slash", "shortcut"])
 def test_copy_completed_output_ignores_running_turn_and_preserves_draft(pane, action):
     page, errors = pane

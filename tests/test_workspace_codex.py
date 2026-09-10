@@ -15,6 +15,42 @@ def tmp_path(tmp_path):
     return tmp_path.resolve()
 
 
+@pytest.mark.parametrize('invalid', [None, 'cwd', 'state', 'warnings'])
+def test_hook_catalog_is_project_scoped_read_only_and_validated(tmp_path, invalid):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        hook = dict(key='h', eventName='preToolUse', handlerType='command', source='project',
+                    sourcePath='/project/hooks.json', trustStatus='untrusted', enabled=False,
+                    isManaged=False, command='echo hello', privateField='omit')
+        page = {'cwd': str(tmp_path), 'hooks': [hook], 'warnings': [], 'errors': []}
+        if invalid == 'cwd':
+            page['cwd'] = '/wrong'
+        if invalid == 'state':
+            hook['enabled'] = 'true'
+        if invalid == 'warnings':
+            page['warnings'] = [{}]
+        async def request(method, params):
+            calls.append((method, params))
+            return {'data': [page]}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'preserved'
+            if invalid:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.list_hooks()
+            else:
+                result = await owner.list_hooks()
+                assert result['data'][0]['trustStatus'] == 'untrusted'
+                assert 'privateField' not in result['data'][0]
+            assert calls == [('hooks/list', {'cwds': [str(tmp_path)]})]
+            assert owner.state == 'running' and owner.active_turn == 'preserved'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("account", [None, {"type": "chatgpt", "email": "person@example.test", "planType": "pro", "accessToken": "never-forward"}])
 def test_account_status_uses_exact_owner_without_refresh_or_inference(tmp_path, account):
     async def run():
