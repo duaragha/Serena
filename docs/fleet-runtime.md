@@ -162,8 +162,16 @@ it does not enable breakaway. Native tests cover helper return, cancellation,
 owner death and assignment refusal. The Windows build requires those tests.
 This is helper-specific: ordinary provider programs are not stdin-gated and
 cannot safely use this post-launch assignment without a separate launch design.
-Windows crash-code classification remains separate work; cleanup does not
-itself schedule retries for unrecorded helper outcomes.
+If a launched replay helper exits while its current attempt is still running,
+the parent records an unrecorded-helper outcome and uses the existing process
+retry budget. Admission requires that exact attempt's durable helper dispatch
+marker and observed process, inside the attempt-finalization transaction.
+Zero, ordinary nonzero and Windows NTSTATUS exits preserve their actual codes;
+none are fabricated into POSIX signals. Native model failures cannot opt into
+this class without helper provenance. Cancellation, superseded attempts and
+already-recorded verifier rejections do not schedule this recovery. These tests
+exercise real helper subprocess exits and ordinary completion/Git gates on retry;
+they do not claim that Windows model-worker crash classification is solved.
 
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed

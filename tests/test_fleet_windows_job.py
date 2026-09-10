@@ -73,7 +73,8 @@ def test_owner_kill_closes_noninherited_job_handle(tmp_path):
         "stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
         "job=HelperJob(child)\n"
         "child.stdin.close()\n"
-        f"Path({str(marker)!r}).write_text(str(child.pid))\n"
+        f"marker=Path({str(marker)!r}); pending=marker.with_suffix('.tmp')\n"
+        "pending.write_text(str(child.pid)); pending.replace(marker)\n"
         "time.sleep(60)\n"
     )
     owner = subprocess.Popen([sys.executable, "-c", source], cwd=Path(__file__).resolve().parents[1],

@@ -162,6 +162,7 @@ def execute_saved_integration(store, run_id, leg):
         cancelled = store.run_cancel_requested(run_id)
         store.finish_attempt(attempt["attempt_id"], state="cancelled" if cancelled else "failed",
                              output_text=source["output_text"], error=error, exit_code=exit_code,
+                             helper_outcome_missing=True,
                              input_blocker_reason=None if cancelled or exit_code in {-6, -9, -11, -13, -15} else error)
         return WorkerResult(False, source["output_text"], None, None, None, exit_code, error, cancelled)
     return WorkerResult(current["state"] == "completed", current["output_text"], None, None, None,

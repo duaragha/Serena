@@ -19,6 +19,23 @@ from fleet.store import FleetStore
 # ruff: noqa: F811
 
 
+@pytest.mark.parametrize("exit_code", [0, 1, 0xC0000005])
+def test_native_attempt_cannot_claim_missing_helper_recovery(tmp_path, exit_code):
+    store = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _run(store)
+    store.claim_run(run["run_id"])
+    leg = run["phases"][0]["legs"][0]
+    attempt = store.begin_attempt(leg["leg_id"])
+    store.mark_attempt_process(attempt["attempt_id"], os.getpid(), "")
+    store.finish_attempt(attempt["attempt_id"], state="failed", exit_code=exit_code,
+                         error="unrecorded result", input_blocker_reason="unrecorded result",
+                         helper_outcome_missing=True)
+    current = store.get_run(run["run_id"])
+    assert current["resource_waits"] == []
+    assert current["phases"][0]["legs"][0]["state"] == "waiting_for_input"
+    assert not any(e["type"] == "worker.integration_replay_outcome_missing" for e in store.events(run["run_id"]))
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal exit semantics")
 def test_killed_writer_resumes_with_its_patch_and_completed_research(fleet_env, monkeypatch):
     root, _, store, run = setup_run(fleet_env)

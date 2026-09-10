@@ -157,8 +157,25 @@ def test_frozen_runtime_uses_sidecar_dispatch_not_python_module_flags(monkeypatc
     assert recovery.helper_command() == [sys.executable, "--fleet-integration-replay"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX signal fault injection")
-def test_killed_helper_retries_verification_without_a_model_turn(tmp_path, monkeypatch):
+_HELPER_EXIT_CODES = [
+    pytest.param(-9, marks=pytest.mark.skipif(os.name == "nt", reason="POSIX signal")),
+    0, 1,
+    pytest.param(0xC0000005, marks=pytest.mark.skipif(os.name != "nt", reason="Windows NTSTATUS")),
+]
+
+
+def _unrecorded_exit_command(exit_code):
+    import sys
+    prefix = "import sys,os; sys.stdin.read(); "
+    if exit_code == -9:
+        return [sys.executable, "-c", prefix + "import signal; os.kill(os.getpid(), signal.SIGKILL)"]
+    if exit_code > 255:
+        return [sys.executable, "-c", prefix + f"import ctypes; ctypes.windll.kernel32.ExitProcess({exit_code})"]
+    return [sys.executable, "-c", prefix + f"os._exit({exit_code})"]
+
+
+@pytest.mark.parametrize("exit_code", _HELPER_EXIT_CODES)
+def test_killed_helper_retries_verification_without_a_model_turn(tmp_path, monkeypatch, exit_code):
     import sys
     import time
     from fleet import supervisor
@@ -168,13 +185,11 @@ def test_killed_helper_retries_verification_without_a_model_turn(tmp_path, monke
     assert recovery.resume_saved_integrations(store) == [rid]
     real_command = recovery.helper_command()
     monkeypatch.setattr(supervisor, "run_worker", lambda *a, **kw: pytest.fail("native model turn was dispatched"))
-    monkeypatch.setattr(recovery, "helper_command", lambda: [
-        sys.executable, "-c", "import os,signal; os.kill(os.getpid(), signal.SIGKILL)",
-    ])
+    monkeypatch.setattr(recovery, "helper_command", lambda: _unrecorded_exit_command(exit_code))
     leg = store.get_run(rid)["phases"][3]["legs"][0]
     killed = supervisor._execute_leg(store, rid, leg)
     assert not killed.ok
-    assert killed.exit_code == -9
+    assert killed.exit_code == exit_code
     parked = store.get_run(rid)["phases"][3]["legs"][0]
     assert parked["state"] == "waiting_for_resources"
     assert resume_ready_resource_waits(store, now=time.time() + 31) == [leg["leg_id"]]
@@ -187,8 +202,8 @@ def test_killed_helper_retries_verification_without_a_model_turn(tmp_path, monke
     assert final["current_attempt"]["actual_model"] is None
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX signal fault injection")
-def test_repeated_helper_deaths_have_a_durable_retry_limit(tmp_path, monkeypatch):
+@pytest.mark.parametrize("exit_code", _HELPER_EXIT_CODES)
+def test_repeated_helper_deaths_have_a_durable_retry_limit(tmp_path, monkeypatch, exit_code):
     import sys
     import time
     from fleet import supervisor
@@ -197,14 +212,12 @@ def test_repeated_helper_deaths_have_a_durable_retry_limit(tmp_path, monkeypatch
     store, rid, *_ = _failed(tmp_path, monkeypatch)
     assert recovery.resume_saved_integrations(store) == [rid]
     monkeypatch.setattr(supervisor, "run_worker", lambda *a, **kw: pytest.fail("native model turn was dispatched"))
-    monkeypatch.setattr(recovery, "helper_command", lambda: [
-        sys.executable, "-c", "import os,signal; os.kill(os.getpid(), signal.SIGKILL)",
-    ])
+    monkeypatch.setattr(recovery, "helper_command", lambda: _unrecorded_exit_command(exit_code))
     for index in range(3):
         # Reopen the store to prove retry accounting does not live in memory.
         store = FleetStore(store.path)
         leg = store.get_run(rid)["phases"][3]["legs"][0]
-        assert supervisor._execute_leg(store, rid, leg).exit_code == -9
+        assert supervisor._execute_leg(store, rid, leg).exit_code == exit_code
         current = store.get_run(rid)["phases"][3]["legs"][0]
         assert current["state"] == ("waiting_for_resources" if index < 2 else "waiting_for_input")
         assert resume_ready_resource_waits(store, now=time.time() + 121) == ([leg["leg_id"]] if index < 2 else [])
@@ -233,6 +246,24 @@ def test_replay_dispatch_marker_and_attempt_commit_atomically(tmp_path, monkeypa
         store.begin_attempt(leg["leg_id"], integration_replay_source=source, expected_attempt_id=source)
     with store._connect() as db:
         assert list(db.iterdump()) == before
+
+
+@pytest.mark.parametrize("cancelled,launched", [(True, True), (False, False)])
+def test_unrecorded_helper_requires_launch_and_respects_cancellation(tmp_path, monkeypatch, cancelled, launched):
+    store, rid, *_ = _failed(tmp_path, monkeypatch)
+    recovery.resume_saved_integrations(store)
+    leg = store.get_run(rid)["phases"][3]["legs"][0]
+    source = leg["current_attempt"]["attempt_id"]
+    attempt = store.begin_attempt(leg["leg_id"], integration_replay_source=source, expected_attempt_id=source)
+    if launched:
+        store.mark_attempt_process(attempt["attempt_id"], os.getpid(), "")
+    if cancelled:
+        store.request_cancel(rid)
+    store.finish_attempt(attempt["attempt_id"], state="cancelled" if cancelled else "failed",
+                         exit_code=1, error="helper stopped", input_blocker_reason="helper stopped",
+                         helper_outcome_missing=True)
+    assert store.get_run(rid)["resource_waits"] == []
+    assert not any(e["type"] == "worker.integration_replay_outcome_missing" for e in store.events(rid))
 
 
 def test_replay_dispatch_refuses_a_stale_attempt_generation(tmp_path, monkeypatch):

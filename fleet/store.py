@@ -871,6 +871,7 @@ class FleetStore:
         exit_code: int | None = None,
         completion_repair_reason: str | None = None,
         input_blocker_reason: str | None = None,
+        helper_outcome_missing: bool = False,
     ) -> None:
         if state not in {"completed", "failed", "cancelled", "interrupted"}:
             raise ValueError("invalid Fleet attempt terminal state")
@@ -934,13 +935,31 @@ class FleetStore:
                 state == "failed" and not run["cancel_requested"]
                 and run["state"] not in TERMINAL_RUN_STATES
             )
+            missing_helper = False
+            if helper_outcome_missing and recovery_allowed and attempt["pid"]:
+                dispatched = connection.execute(
+                    "SELECT payload_json FROM fleet_events WHERE attempt_id=? AND leg_id=? AND run_id=? "
+                    "AND type='worker.integration_replay_dispatched' ORDER BY event_seq DESC LIMIT 1",
+                    (attempt_id, attempt["leg_id"], attempt["run_id"]),
+                ).fetchone()
+                if dispatched:
+                    provenance = json.loads(dispatched[0])
+                    missing_helper = provenance.get("native_turn") is False and bool(provenance.get("source_attempt_id"))
+                if missing_helper:
+                    self._insert_event(
+                        connection, run_id=str(attempt["run_id"]), leg_id=str(attempt["leg_id"]),
+                        attempt_id=attempt_id, event_type="worker.integration_replay_outcome_missing",
+                        payload={"exit_code": exit_code, "source_attempt_id": provenance["source_attempt_id"],
+                                 "native_turn": False, "reason": clean_error},
+                    )
             input_action = (
                 "resolve the recorded authority/evidence blocker, then resume the affected worker"
-                if recovery_allowed and input_blocker_reason else ""
+                if recovery_allowed and input_blocker_reason and not missing_helper else ""
             )
             resource = "disk" if not input_action and is_disk_exhaustion(clean_error or "") else ""
             retries = 0
             retry_kind = (
+                "process" if missing_helper else
                 "transport" if is_transient_transport_error(clean_error or "") else
                 "process" if exit_code in {-6, -9, -11, -13, -15} and attempt["pid"] else ""
             )
