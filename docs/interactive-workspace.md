@@ -2,6 +2,19 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Recoverable deletion failure handling (2026-09-09): deletion now serializes with
+index scans, refreshes the exact row under that lock, writes its recovery manifest
+before moving the transcript, and only then removes database rows transactionally.
+Manifest/move failures do not remove the index row. Database failure rolls back
+and restores the transcript when its original path is free; an unexpected new
+file is never overwritten. The recovery archive remains the fallback if restoring
+the file itself fails. Crash-time filesystem/database reconciliation and pending
+unindexed chat deletion still require further work.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_session_recovery.py -q --tb=short`: exit 0, 7 passed, including manifest, move and database failures.
+- `SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-delete.py`: exit 0. A real SQLite abort trigger rejected deletion; the original transcript, catalog row and custom title survived. Removing the trigger allowed recoverable deletion. The cross-process lease rejection also passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_session_recovery.py scripts/verify-workspace-delete.py`: exit 0, all checks passed.
+
 Deletion ownership and Codex disconnect verification (2026-09-09): indexed chat
 deletion now holds the shared exact-session lease through catalog removal,
 recoverable transcript archival and metadata cleanup. Active or ambiguous lease

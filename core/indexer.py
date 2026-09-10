@@ -1511,7 +1511,11 @@ def delete_session(session_id_prefix: str, *, source: str = "unknown") -> str:
         raise PermissionError("Serena's permanent conversation cannot be deleted")
     lease = SessionLease(sid)
     try:
-        return _delete_unowned_session(session, source=source)
+        with _index_update_lock():
+            current = get_session(sid)
+            if current is None:
+                raise ValueError(f"No session found with ID '{sid}'")
+            return _delete_unowned_session(current, source=source)
     finally:
         lease.release()
 
@@ -1520,23 +1524,15 @@ def _delete_unowned_session(session: dict, *, source: str) -> str:
     sid = session["session_id"]
     file_path = Path(session["file_path"])
 
-    # Remove from DB
-    conn = _get_db()
-    conn.execute("DELETE FROM tags WHERE session_id = ?", (sid,))
-    conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
-    conn.execute("DELETE FROM messages_fts WHERE session_id = ?", (sid,))
-    conn.commit()
-    conn.close()
-
     # Keep the source transcript recoverable. Syncthing's trashcan only
     # protects remote deletions, so a local unlink can otherwise be permanent.
+    archived_path = None
     if file_path.exists():
         recovery_dir = DATA_DIR / "deleted-sessions" / sid
         if recovery_dir.exists():
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             recovery_dir = recovery_dir.with_name(f"{sid}-{stamp}")
         recovery_dir.mkdir(parents=True, exist_ok=False)
-        shutil.move(str(file_path), str(recovery_dir / file_path.name))
         manifest = {
             "session_id": sid,
             "original_path": str(file_path),
@@ -1548,6 +1544,29 @@ def _delete_unowned_session(session: dict, *, source: str) -> str:
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        archived_path = recovery_dir / file_path.name
+        shutil.move(str(file_path), str(archived_path))
+
+    conn = None
+    try:
+        conn = _get_db()
+        conn.execute("DELETE FROM tags WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM messages_fts WHERE session_id = ?", (sid,))
+        conn.commit()
+    except Exception:
+        try:
+            if conn is not None:
+                conn.rollback()
+        finally:
+            # The scanner is excluded by the caller. Restore the original path
+            # after a database failure, never overwrite an unexpected new file.
+            if archived_path is not None and archived_path.exists() and not file_path.exists():
+                shutil.move(str(archived_path), str(file_path))
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
 
     # Remove from synced metadata
     meta_sync.delete_meta(sid)

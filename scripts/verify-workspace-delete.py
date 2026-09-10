@@ -2,6 +2,7 @@
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -52,9 +53,32 @@ def main():
             assert metadata.get_meta(sid)["custom_title"] == "Recoverable proof"
             child.communicate("release\n", timeout=5)
             assert child.returncode == 0
+            conn = indexer._get_db()
+            try:
+                conn.execute("CREATE TRIGGER refuse_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'proof rollback'); END")
+                conn.commit()
+            finally:
+                conn.close()
+            try:
+                indexer.delete_session(sid, source="isolated-proof")
+            except sqlite3.DatabaseError as error:
+                assert "proof rollback" in str(error)
+            else:
+                raise AssertionError("Database rejection was ignored")
+            assert transcript.read_text() == contents and indexer.get_session(sid)
+            assert metadata.get_meta(sid)["custom_title"] == "Recoverable proof"
+            conn = indexer._get_db()
+            try:
+                conn.execute("DROP TRIGGER refuse_delete")
+                conn.commit()
+            finally:
+                conn.close()
+            print("PASS: actual SQLite rejection rolled back deletion and restored original transcript/title")
             indexer.delete_session(sid, source="isolated-proof")
             assert not transcript.exists() and indexer.get_session(sid) is None
-            recovery = indexer.DATA_DIR / "deleted-sessions" / sid
+            copies = list((indexer.DATA_DIR / "deleted-sessions").glob(f"{sid}*/{transcript.name}"))
+            assert len(copies) == 1
+            recovery = copies[0].parent
             assert (recovery / transcript.name).read_text() == contents
             assert json.loads((recovery / "recovery.json").read_text())["metadata"]["custom_title"] == "Recoverable proof"
             print("PASS: real cross-process owner blocked deletion without mutation; released owner allowed recoverable deletion from real SQLite catalog")
