@@ -2,14 +2,102 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 import pytest
 
 from core.workspace_acp import WorkspaceAcpRpc
 from core.workspace_gemini import GeminiWorkspace
+from core.workspace_host import WorkspaceHost
+from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease, SessionOwnedError
 
 SID = "11111111-2222-4333-8444-555555555555"
+
+
+def test_host_routes_real_pipe_prompt_permission_output_and_receipt(tmp_path):
+    prepare(tmp_path)
+
+    class InteractiveRpc(WorkspaceAcpRpc):
+        async def start(self, command, *, cwd, env):
+            code = '''
+import json, sys
+sid = "11111111-2222-4333-8444-555555555555"
+def read():
+    message = json.loads(sys.stdin.readline())
+    assert message["jsonrpc"] == "2.0"
+    return message
+def send(message):
+    print(json.dumps({"jsonrpc": "2.0", **message}), flush=True)
+message = read()
+assert message["method"] == "initialize"
+send({"id": message["id"], "result": {"protocolVersion": 1,
+      "agentCapabilities": {"loadSession": True}, "authMethods": [],
+      "agentInfo": {"name": "antigravity-acp"}}})
+message = read()
+assert message["method"] == "session/load" and message["params"]["sessionId"] == sid
+send({"id": message["id"], "result": {}})
+prompt = read()
+assert prompt["method"] == "session/prompt" and prompt["params"]["sessionId"] == sid
+assert prompt["params"]["prompt"] == [{"type": "text", "text": "inspect"}]
+send({"id": "permission", "method": "session/request_permission", "params": {
+    "sessionId": sid, "toolCall": {"toolCallId": "read", "title": "Inspect"},
+    "options": [{"optionId": "once", "name": "Allow once", "kind": "allow_once"}]}})
+answer = read()
+assert answer == {"jsonrpc": "2.0", "id": "permission", "result": {
+    "outcome": {"outcome": "selected", "optionId": "once"}}}
+send({"method": "session/update", "params": {"sessionId": sid,
+      "update": {"sessionUpdate": "agent_message_chunk", "content": {
+          "type": "text", "text": "pipe result"}}}})
+send({"id": prompt["id"], "result": {"stopReason": "end_turn"}})
+assert sys.stdin.read() == "", "Unexpected duplicate delivery"
+'''
+            await super().start([sys.executable, "-c", code], cwd=cwd, env=env)
+
+    rpc = InteractiveRpc()
+    def factory(**kwargs):
+        return GeminiWorkspace(**kwargs, gemini_home=tmp_path, binary=sys.executable, rpc=rpc,
+            lease_factory=lambda sid: SessionLease(sid, directory=tmp_path / "leases"))
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "host.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "gemini", "cwd": str(tmp_path)},
+        factories={"gemini": factory})
+    process = None
+    def wait_event(method):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            events = [entry["event"] for entry in host.events(SID)["events"]]
+            found = next((event for event in events if event["method"] == method), None)
+            if found:
+                return found
+            time.sleep(0.01)
+        pytest.fail(f"Missing event: {method}")
+    try:
+        host.events(SID)
+        assert rpc.process is None
+        assert host.attach(SID)["state"] == "ready"
+        process = rpc.process
+        payload = {"inputs": [{"type": "text", "text": "inspect"}]}
+        sent = host.command(SID, "send", "submit", payload)
+        assert sent["ok"]
+        assert host.command(SID, "send", "submit", payload) == sent
+        question = wait_event("session/request_permission")
+        assert question["id"] == "permission" and question["params"]["threadId"] == SID
+        bad = host.command(SID, "bad", "answer", {"request_id": "permission", "answer": {
+            "outcome": {"outcome": "selected", "optionId": "not-offered"}}})
+        assert not bad["ok"]
+        answer = {"request_id": "permission", "answer": {"outcome": {
+            "outcome": "selected", "optionId": "once"}}}
+        receipt = host.command(SID, "answer", "answer", answer)
+        assert receipt["ok"] and host.command(SID, "answer", "answer", answer) == receipt
+        final = wait_event("turn/completed")["params"]["turn"]
+        assert final["id"] == sent["result"]["turn"]["id"]
+        assert final["items"][0]["text"] == "pipe result"
+        assert host.attach(SID)["state"] == "ready" and rpc.process is process
+        assert process.returncode is None
+    finally:
+        host.shutdown()
+    assert process is not None and process.returncode == 0
 
 
 def prepare(tmp_path):

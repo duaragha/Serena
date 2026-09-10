@@ -198,6 +198,18 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Integrated owner/host proof (2026-09-09): a real Python subprocess exchanges
+ACP frames through production RPC, Gemini owner, shared lease, persistent host
+and journal. The test verifies no launch on reads, exact-ID load/prompt,
+nonblocking permission delivery, rejection of an unoffered answer, exact valid
+reply, streamed result with matching turn ID, duplicate command receipt reuse,
+same-process reattachment and clean explicit shutdown (child exit 0).
+
+`/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_gemini.py -q --tb=short`:
+exit 0, 10 passed. Scoped Ruff: exit 0. The child is a controlled protocol peer,
+not Google's authenticated runtime; this verifies the integrated transport path
+without claiming subscription/model execution or enabling default admission.
+
 Tool presentation (2026-09-09): ACP display content is retained separately from
 raw output, including through partial updates. The pane prioritizes display
 content, renders nested text and before/after diffs, and preserves raw output in
