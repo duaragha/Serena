@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import tkinter as tk
 from contextlib import suppress
 from tkinter import font
@@ -98,14 +99,21 @@ class ComputerIndicator:
             else "sharing"
         )
         if automated:
+            started = session.get("inspection_started_at")
+            elapsed = max(0, int(time.time() - started)) if started else 0
             waiting = {
                 "starting": "starting gpt-6 astra · medium · fast",
-                "thinking": "astra is reading your screen…",
+                "thinking": f"astra is reading your screen… {elapsed}s",
                 "screen_changed": "page changed · checking the new screen…",
-            }.get(session.get("observation_state"), "watching for relevant screen changes")
+            }.get(
+                session.get("observation_state"),
+                "screen checked · no new guidance; watching for changes",
+            )
         else:
             waiting = "screen shared with your chat; automatic coaching is off"
         observation = session.get("observation") or waiting
+        if session.get("observation_preview"):
+            observation = "draft · " + session["observation_preview"]
         focus = focus_label(session)
         shown = (session["id"], mode, focus, observation)
         if shown == self.shown:

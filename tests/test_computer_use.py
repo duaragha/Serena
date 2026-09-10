@@ -615,6 +615,8 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
     controller.desktop.capture = lambda rect: Image.new("RGB", (rect.width, rect.height), page[0])
     second_started = threading.Event()
     interrupted = threading.Event()
+    preview_started = threading.Event()
+    release_preview = threading.Event()
 
     class Model:
         active_turn_id = None
@@ -628,6 +630,13 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
             turn = self.turns
             self.active_turn_id = str(turn)
             try:
+                if turn == 1:
+                    assert "Do not reply UNCHANGED for this initial check" in message
+                    on_delta("red-page ")
+                    on_delta("advice")
+                    preview_started.set()
+                    while not release_preview.is_set():
+                        await asyncio.sleep(0.01)
                 if turn == 2:
                     self.release = asyncio.Event()
                     second_started.set()
@@ -669,7 +678,13 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
             },
             operator=True,
         )
+        until(lambda: preview_started.is_set())
+        assert controller.status()["session"]["observation_preview"] == "red-page advice"
+        assert controller.session.observation == ""  # Preview precedes completed advice.
+        release_preview.set()
         until(lambda: controller.session.observation == "red-page advice")
+        assert controller.session.observation_preview == ""
+        assert any(e["type"] == "inspection_completed" for e in controller.events)
         page[0] = "green"
         until(lambda: second_started.is_set())
         assert controller.session.observation == ""
@@ -681,6 +696,7 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
         assert not any("obsolete" in e.get("text", "") for e in controller.events)
         assert any(e["type"] == "superseded" for e in controller.events)
     finally:
+        release_preview.set()
         controller.stop()
         if controller.agent:
             controller.agent.thread.join(timeout=3)
@@ -725,12 +741,16 @@ def test_watch_changes_ignore_overlay_resize_and_caret_but_detect_page_content()
             draw.rectangle((5, 5, 135, 50), fill="white")  # Popup resized.
             draw.line((250, 100, 250, 110), fill="white")  # Blinking caret.
             assert not changed(previous, current, old, new)
+            draw.rectangle((240, 110, 252, 122), fill="white")  # Small animated badge.
+            assert not changed(previous, current, old, new)
             draw.rectangle((160, 90, 180, 110), fill="white")  # Page content.
             assert changed(previous, current, old, new)
         with Image.new("RGB", (320, 180), (3, 3, 3)) as noise:
             assert not changed(previous, previous, old, noise)
         title_change = {**previous, "context": {"id": "browser", "title": "next step"}}
         assert changed(previous, title_change, old, old)
+        focus_change = {**previous, "context": {"id": "another-browser", "title": "setup"}}
+        assert changed(previous, focus_change, old, old)
 
 
 def test_supervisor_allows_first_indicator_handshake_but_stops_lost_heartbeat(controller):

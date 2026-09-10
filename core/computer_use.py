@@ -40,6 +40,9 @@ class Session:
     last_signature: str = ""
     last_inspected_at: float | None = None
     observation: str = ""
+    observation_preview: str = ""
+    inspection_started_at: float | None = None
+    last_model_ms: int | None = None
     driver: str = "connected_chat"
     observation_state: str = "ready"
     source_session_id: str = ""
@@ -117,6 +120,9 @@ class ComputerController:
                     "expires_at": s.expires_at,
                     "last_inspected_at": s.last_inspected_at,
                     "observation": s.observation,
+                    "observation_preview": s.observation_preview,
+                    "inspection_started_at": s.inspection_started_at,
+                    "last_model_ms": s.last_model_ms,
                     "driver": s.driver,
                     "observation_state": s.observation_state,
                     "source_session_id": s.source_session_id or None,

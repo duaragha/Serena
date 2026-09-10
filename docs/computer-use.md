@@ -36,6 +36,14 @@ grows to fit. Long updates scroll within the popup while the stop button stays
 visible. The screenshot mask follows the popup's size so advice is not fed back
 into the next visual observation.
 
+Watch replies stream into the popup as a labelled draft before completion. A
+changed page clears the draft, and only completed advice enters conversation
+history. The initial check asks for a useful step or visible blocker even when
+the parent chat already contains related advice. Later `UNCHANGED` replies show
+that the screen was checked rather than leaving a reading message. Active checks
+display elapsed seconds; `inspection_completed` events expose model and first
+token timings, including checks that produce no new advice.
+
 Sessions default to five minutes and allow at most thirty minutes using
 `--seconds`. The resident brain can start five-minute sessions from a matching
 real user turn using `computer_session`. It passes the user's actual words as
@@ -224,6 +232,12 @@ animation can repeatedly interrupt reasoning. Fresh medium-effort guidance
 still takes model inference time. This is not continuous video or 120 Hz
 perception. `screen_changed`, `superseded` and timestamped `observation` events
 separate local detection from model latency.
+
+To reduce restarts from animated badges and small desktop updates, pixel-only
+changes must cover 0.5% of the sampled image (previously 0.15%). Window identity
+and tab/title transitions still trigger a fresh check regardless of pixel area.
+This does not remove inference latency or make continuously changing pages
+instantaneous.
 
 The updated loop was verified with real X11 fixture screenshots and Astra at
 medium on an isolated 1600×1000 display: three page changes were detected in
