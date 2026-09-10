@@ -2,6 +2,36 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Visible Claude clear and pending catalog (2026-09-09): the pane now exposes an
+explicit Clear context confirmation. Opening/dismissing the dialog does not clear
+anything. In-flight input is blocked; success preserves the source draft/history
+and offers Open new conversation for the exact returned ID. A saved clear receipt
+survives renderer reloads without requiring another clear or source attachment.
+The embedded pane uses the existing origin/frame/source-checked navigation path.
+The sessions route overlays committed clear targets until native indexing catches
+up, honoring project filters and the real indexed row/title. Once observed in the
+index, an overlay is durably retired so deleting that indexed chat cannot revive
+its old placeholder. Existing clear journals migrate their timestamp/catalog state
+without dropping identities. No native transcript is fabricated for pending rows.
+Remaining: full metadata operations on not-yet-indexed placeholders (including
+deletion, renaming and file/read side panels), installed-app/Windows integration,
+and the broader provider-parity gates remain unfinished. Original cleared views
+are non-writable until an explicit Resume original conversation succeeds; that
+retires the saved navigation receipt and restores input to the exact old session,
+without changing the independently retained new session.
+Verification:
+- `node --test tests/workspace-connection.test.mjs`: exit 0, 21 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q -k clear --tb=short`: exit 0, 3 passed, 76 deselected; confirmation, duplicate prevention, preserved draft and mobile/desktop layout.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_journal.py tests/test_workspace_app.py -q --tb=short`: exit 0, 56 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --tb=short`: exit 0, 5 passed after adding embedded clear-navigation coverage.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pending_catalog_api.py -q`: exit 0, 1 passed against the production sessions route extracted with AST; verifies filtering, indexed title precedence, retirement and no launch.
+- The first enhanced clear proof exited 1 because isolated HOME hid the user-installed Playwright package. The proof now explicitly receives its Python package/browser-cache locations without restoring credentials.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0 twice. Actual 1440px/390px browsers confirmed native clear, reloaded the source, recovered the saved target, explicitly opened/attached it and sent a local command on the same PID. Final proof waited for rendered completion and checked console/HTTP errors and horizontal overflow. Zero model turns/cost, source history unchanged, children reaped; screenshots inspected at `apps/desktop/build/workspace-proof/native-clear-{1440,390}.png`.
+- The same live proof then exited 0 with an additional explicit original-session resume in both browsers: original input re-enabled under its exact old ID, the saved clear receipt retired, and the new session's PID remained unchanged. No prompt was sent into the original history.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest 'tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch[claude]' -q --tb=short`: exit 0, 1 passed after original-resume UI coverage. A prior observation handle was missing after continuation, so this exact scoped test was rerun, not a native runtime restarted.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_journal.py tests/test_workspace_pending_catalog_api.py tests/test_workspace_host.py -q -k 'clear or pending'`: exit 0, 12 passed, 41 deselected, including existing-schema migration.
+- Scoped Ruff and `git diff --check`: exit 0.
+
 Host clear checkpoint/routing (2026-09-09): added an explicit confirmed
 clear_session host command and private durable workspace_clears records. Native
 begin is recorded before lease transfer. The host reserves the target and removes

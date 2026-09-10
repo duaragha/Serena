@@ -11,6 +11,24 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('clear is explicit, response loss reuses its receipt, and reload preserves target',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'source',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    if(calls.length===1)throw Error('response lost');
+    return response({ok:true,result:{session_id:'11111111-1111-4111-8111-111111111111',provider:'claude'}});
+  }};
+  let conn=new WorkspaceConnection(options);
+  assert.equal(conn.controls().lastClear(),null);assert.equal(calls.length,0);
+  await assert.rejects(conn.controls().clearSession(),/response lost/);conn.dispose();
+  conn=new WorkspaceConnection(options);
+  const target=await conn.controls().clearSession();
+  assert.deepEqual(calls[0],calls[1]);assert.equal(calls[0].action,'clear_session');
+  assert.deepEqual(calls[0].payload,{confirmed:true});conn.dispose();
+  conn=new WorkspaceConnection(options);
+  assert.deepEqual(conn.controls().lastClear(),target);assert.equal(calls.length,2);conn.dispose();
+});
+
 test('plugin reload is explicit and retains its receipt after response loss',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

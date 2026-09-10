@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {mkdtemp,rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {homedir,tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
@@ -12,6 +12,8 @@ const [sdkPath,cliPath,pythonPath]=process.argv.slice(2);
 assert(sdkPath && cliPath);
 const root=await mkdtemp(join(tmpdir(),'serena-clear-proof-'));
 const path=process.env.PATH;
+const proofPythonPath=process.env.SERENA_PROOF_PYTHONPATH;
+const browsers=process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(),'.cache','ms-playwright');
 for(const key of Object.keys(process.env))delete process.env[key];
 Object.assign(process.env,{PATH:path,HOME:root,CLAUDE_CONFIG_DIR:join(root,'config'),XDG_CONFIG_HOME:join(root,'xdg'),ANTHROPIC_BASE_URL:'http://127.0.0.1:9'});
 const sdk=await import(pathToFileURL(resolve(sdkPath)).href);
@@ -82,7 +84,7 @@ try{
   console.log('PASS: production SDK driver paused at the new identity until exact acknowledgement; same native process accepted subsequent input; original history preserved');
   if(pythonPath){
     const proof=spawn(resolve(pythonPath),[resolve('scripts/verify-workspace-claude-clear-transport.py'),resolve(sdkPath),resolve(cliPath),process.execPath,root,original],
-      {env:process.env,stdio:'inherit'});
+      {env:{...process.env,PLAYWRIGHT_BROWSERS_PATH:browsers,...(proofPythonPath?{PYTHONPATH:proofPythonPath}:{})},stdio:'inherit'});
     const code=await new Promise((done,reject)=>{proof.once('exit',done);proof.once('error',reject);});
     assert.equal(code,0,'Real worker transport clear proof failed');
     assert.deepEqual(await sdk.getSessionMessages(original,{dir:root}),before);

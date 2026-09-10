@@ -611,6 +611,25 @@ class WorkspaceHost:
         return {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],
                 "title": "New Claude conversation", "native_persistence_pending": True}
 
+    def include_pending_sessions(self, sessions, *, projects=()):
+        from core.config import claude_project_dir_for
+
+        result = list(sessions)
+        seen = {session["session_id"] for session in sessions}
+        for target in reversed(self.journal.uncataloged_clears()):
+            sid = target["session_id"]
+            if sid in seen:
+                self.journal.mark_clear_cataloged(sid)
+                continue
+            project = claude_project_dir_for(target["cwd"])
+            if projects and not any(value in project for value in projects):
+                continue
+            result.insert(0, {"session_id": sid, "agent": "claude", "cwd": target["cwd"],
+                              "project_dir": project, "display_title": "New Claude conversation",
+                              "title": "New Claude conversation", "created_at": target["created_at"],
+                              "last_timestamp": target["created_at"], "native_persistence_pending": True})
+        return result
+
     @staticmethod
     def _validate_session(sid):
         if not isinstance(sid, str) or not sid or len(sid) > 200:

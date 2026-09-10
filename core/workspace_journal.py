@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -27,6 +28,7 @@ class WorkspaceJournal:
             os.close(fd)
         with closing(self._connect()) as conn, conn:
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""CREATE TABLE IF NOT EXISTS workspace_events (
                 session_id TEXT NOT NULL,
                 sequence INTEGER NOT NULL,
@@ -44,6 +46,11 @@ class WorkspaceJournal:
                 committed INTEGER NOT NULL DEFAULT 0 CHECK (committed IN (0, 1)),
                 PRIMARY KEY (source_id, request_id)
             )""")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_clears)")}
+            if "created_at" not in columns:
+                conn.execute("ALTER TABLE workspace_clears ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
+            if "cataloged" not in columns:
+                conn.execute("ALTER TABLE workspace_clears ADD COLUMN cataloged INTEGER NOT NULL DEFAULT 0")
 
     def prepare_clear(self, source_id: str, request_id: str, target: dict) -> None:
         sid = target.get("session_id")
@@ -65,8 +72,17 @@ class WorkspaceJournal:
                 if row[0] != encoded:
                     raise ValueError("Clear already recorded a different identity")
                 return
-            conn.execute("INSERT INTO workspace_clears (source_id, request_id, target_id, target) VALUES (?, ?, ?, ?)",
-                         (source_id, request_id, sid, encoded))
+            conn.execute("INSERT INTO workspace_clears (source_id, request_id, target_id, target, created_at) VALUES (?, ?, ?, ?, ?)",
+                         (source_id, request_id, sid, encoded, datetime.now(timezone.utc).isoformat()))
+
+    def uncataloged_clears(self) -> list[dict]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT target, created_at FROM workspace_clears WHERE committed=1 AND cataloged=0 ORDER BY rowid DESC").fetchall()
+        return [{**json.loads(target), "created_at": created} for target, created in rows]
+
+    def mark_clear_cataloged(self, session_id: str) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE workspace_clears SET cataloged=1 WHERE target_id=? AND committed=1", (session_id,))
 
     def complete_clear(self, source_id: str, request_id: str) -> dict:
         with closing(self._connect()) as conn, conn:

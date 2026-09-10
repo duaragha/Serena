@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -117,6 +119,95 @@ async def main():
     finally:
         await owner.close()
     assert not psutil.pid_exists(native_pid)
+
+    def browser_clear(width):
+        from flask import Flask
+        from playwright.sync_api import sync_playwright
+        from werkzeug.serving import make_server
+
+        from ui.workspace_app import install_workspace
+
+        repo = Path(__file__).resolve().parents[1]
+        app = Flask(__name__, static_folder=str(repo / "ui/static"))
+        browser_host = install_workspace(app, Path(root) / f"browser-{width}.db", resolve=resolve,
+                                         factories={"claude": create_owner},
+                                         describe=lambda sid: {"session_id": sid, "agent": "claude"} if sid == source else None)
+        server = make_server("127.0.0.1", 0, app, threaded=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        pid = None
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={"width": width, "height": 900})
+                    errors = []
+                    failures = []
+                    page.on("pageerror", lambda error: errors.append(str(error)))
+                    page.on("response", lambda response: failures.append((response.status, response.url))
+                            if response.status >= 400 and not response.url.endswith("favicon.ico") else None)
+                    page.goto(f"http://127.0.0.1:{server.server_port}/workspace/{source}")
+                    page.get_by_role("textbox", name="Message Claude").wait_for()
+                    assert not browser_host._sessions
+                    page.get_by_role("button", name="Resume session").click()
+                    page.get_by_role("button", name="Resume session").wait_for(state="hidden")
+                    pid = browser_host._sessions[source][0].client.owned_pid
+                    page.get_by_role("button", name="Clear context", exact=True).click()
+                    dialog = page.get_by_role("dialog", name="Clear context", exact=True)
+                    dialog.get_by_role("button", name="Confirm clear context", exact=True).click()
+                    dialog.get_by_text("Context cleared", exact=True).wait_for()
+                    target = dialog.locator("code").inner_text()
+                    assert target != source and browser_host._sessions[target][0].client.owned_pid == pid
+                    assert browser_host.include_pending_sessions([])[0]["session_id"] == target
+                    page.reload()
+                    page.get_by_role("button", name="Clear context", exact=True).click()
+                    dialog = page.get_by_role("dialog", name="Clear context", exact=True)
+                    dialog.get_by_text("Context cleared", exact=True).wait_for()
+                    dialog.get_by_role("button", name="Open new conversation", exact=True).click()
+                    page.wait_for_url(f"**/workspace/{target}")
+                    page.get_by_role("button", name="Resume session").click()
+                    page.get_by_role("button", name="Resume session").wait_for(state="hidden")
+                    assert browser_host._sessions[target][0].client.owned_pid == pid
+                    page.get_by_role("textbox", name="Message Claude").fill("/effort low")
+                    page.get_by_role("button", name="Send message", exact=True).click()
+                    deadline = time.monotonic() + 25
+                    while time.monotonic() < deadline:
+                        complete = [entry["event"]["params"]["turn"] for entry in browser_host.events(target)["events"]
+                                    if entry["event"]["method"] == "turn/completed"]
+                        if any(turn["providerOriginal"].get("result", "").lower().find("low") >= 0 for turn in complete):
+                            break
+                        page.wait_for_timeout(50)
+                    else:
+                        raise AssertionError("Browser local command did not complete")
+                    assert all(turn["providerOriginal"]["total_cost_usd"] == 0 for turn in complete)
+                    assert all(turn["providerOriginal"]["num_turns"] == 0 for turn in complete)
+                    page.wait_for_function("() => document.querySelector('.aw-state').textContent === 'completed'")
+                    assert not errors, errors
+                    assert not failures, failures
+                    assert page.locator("body").evaluate("el=>el.scrollWidth<=innerWidth")
+                    directory = repo / "apps/desktop/build/workspace-proof"
+                    directory.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(directory / f"native-clear-{width}.png"))
+                    page.goto(f"http://127.0.0.1:{server.server_port}/workspace/{source}")
+                    page.get_by_role("button", name="Resume original conversation", exact=True).click()
+                    page.get_by_role("button", name="Resume original conversation", exact=True).wait_for(state="hidden")
+                    assert not page.get_by_role("button", name="Send message", exact=True).is_disabled()
+                    assert browser_host._sessions[source][0].session_id == source
+                    assert browser_host._sessions[source][0].client.owned_pid != pid
+                    assert browser_host._sessions[target][0].client.owned_pid == pid
+                    assert page.evaluate("sid=>sessionStorage.getItem('serena-workspace-clear:'+sid)", source) == "null"
+                    assert not errors and not failures
+                finally:
+                    browser.close()
+            assert psutil.pid_exists(pid), "Closing the page must preserve native ownership"
+            print(f"PASS: {width}px browser confirmed native clear, recovered receipt on reload, opened exact target, sent local command; one retained PID")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(5)
+            browser_host.shutdown()
+        assert pid is not None and not psutil.pid_exists(pid)
+
     print("PASS: real owner/client lease and event routing handoff; new input completed; original events untouched")
 
     def create_owner(**kwargs):
@@ -163,6 +254,8 @@ async def main():
     finally:
         await asyncio.to_thread(host.shutdown)
     assert not psutil.pid_exists(native_pid)
+    for width in (1440, 390):
+        await asyncio.to_thread(browser_clear, width)
 
 
 asyncio.run(main())

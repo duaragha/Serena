@@ -1,8 +1,25 @@
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from core.workspace_journal import WorkspaceJournal
+
+
+def test_existing_clear_journal_migrates_without_losing_target(tmp_path):
+    path = tmp_path / "legacy.db"
+    target = {"session_id": "11111111-2222-4333-8444-555555555555", "provider": "claude", "cwd": str(tmp_path)}
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE workspace_clears (source_id TEXT, request_id TEXT, target_id TEXT UNIQUE, target TEXT, committed INTEGER, PRIMARY KEY(source_id,request_id))")
+    conn.execute("INSERT INTO workspace_clears VALUES (?, ?, ?, ?, 1)", ("source", "clear", target["session_id"], json.dumps(target)))
+    conn.commit()
+    conn.close()
+    journal = WorkspaceJournal(path)
+    assert journal.uncataloged_clears() == [{**target, "created_at": ""}]
+    assert journal.clear_target(target["session_id"]) == {**target, "committed": True}
+    journal.mark_clear_cataloged(target["session_id"])
+    assert WorkspaceJournal(path).uncataloged_clears() == []
 
 
 def test_clear_checkpoint_requires_claim_and_preserves_exact_identity(tmp_path):

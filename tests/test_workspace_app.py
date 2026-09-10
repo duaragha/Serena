@@ -212,10 +212,22 @@ function setTermStatus(status){window.lastStatus=status;}
             page.unroute("**/workspace-page.mjs*", delay_boot)
             page.get_by_role("textbox", name=f"Message {provider.capitalize()}").wait_for()
             assert not owners
+            if provider == "claude":
+                page.evaluate("sessionStorage.setItem('serena-workspace-clear:exact',JSON.stringify({session_id:'11111111-1111-4111-8111-111111111111'}))")
+                page.reload()
+                page.get_by_role("button", name="Resume original conversation", exact=True).click()
+                page.get_by_role("button", name="Resume original conversation", exact=True).wait_for(state="hidden")
+                assert page.evaluate("sessionStorage.getItem('serena-workspace-clear:exact')") == "null"
+                assert not page.get_by_role("button", name="Send message", exact=True).is_disabled()
+                page.reload()
             page.get_by_role("button", name="Session events", exact=True).click()
             inspector = page.get_by_role("dialog", name="Session events")
-            inspector.get_by_text("No events", exact=True).wait_for()
-            assert not owners and host._loop is None
+            if provider == "claude":
+                inspector.get_by_text("1 workspace/history", exact=True).wait_for()
+                assert len(owners) == 1
+            else:
+                inspector.get_by_text("No events", exact=True).wait_for()
+                assert not owners and host._loop is None
             inspector.get_by_role("button", name="Close session events").click()
             page.get_by_role("button", name="Resume session").click()
             page.get_by_role("button", name="Resume session").wait_for(state="hidden")
@@ -295,6 +307,9 @@ function setTermStatus(status){window.lastStatus=status;}
             page.frames[1].evaluate("""() => parent.postMessage({type:'serena-workspace-open-fork',sid:'exact',target:'11111111-1111-4111-8111-111111111111'},location.origin)""")
             page.wait_for_function("() => openedForks.length === 1")
             assert page.evaluate("openedForks") == ["11111111-1111-4111-8111-111111111111"]
+            page.frames[1].evaluate("""() => parent.postMessage({type:'serena-workspace-open-cleared',sid:'exact',target:'22222222-2222-4222-8222-222222222222'},location.origin)""")
+            page.wait_for_function("() => openedForks.length === 2")
+            assert page.evaluate("openedForks[1]") == "22222222-2222-4222-8222-222222222222"
             assert len(owners) == 1 and not owners[0].closed
             page.evaluate(
                 "termSessions.get('exact').cancelOutput(); termSessions.get('exact').mount.remove()"

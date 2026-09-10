@@ -7053,14 +7053,14 @@ function _startStructuredPane(sid, opts) {
     focus:() => frame.contentWindow?.postMessage({type:'serena-workspace-focus'}, location.origin)};
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
-    if(event.data?.type === 'serena-workspace-open-fork'){
+    if(['serena-workspace-open-fork','serena-workspace-open-cleared'].includes(event.data?.type)){
       const target=event.data.target;
       if(typeof target !== 'string' || !/^[a-f0-9-]{36}$/.test(target) || target===sid)return;
       try{
         await loadSessions(currentProject);
-        if(!_findClientSession(target))document.getElementById('convTitle').textContent='Fork ' + target.slice(0,8);
+        if(!_findClientSession(target))document.getElementById('convTitle').textContent='Conversation ' + target.slice(0,8);
         await openConv(target);
-      }catch(error){showToast('Could not open fork: '+error.message,{variant:'error'});}
+      }catch(error){showToast('Could not open conversation: '+error.message,{variant:'error'});}
       return;
     }
     if(event.data?.type !== 'serena-workspace-state')return;
@@ -11257,6 +11257,9 @@ def api_sessions():
     else:
         sessions = list_sessions(limit=100_000)
 
+    workspace = app.extensions.get("workspace_host")
+    if workspace is not None:
+        sessions = workspace.include_pending_sessions(sessions, projects=dirs)
     return jsonify(_decorate_sessions(_include_permanent_serena_session(sessions)))
 
 

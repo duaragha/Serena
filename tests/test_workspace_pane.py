@@ -769,6 +769,36 @@ def test_command_picker_reload_is_explicit_and_keeps_draft(pane):
     assert not errors
 
 
+@pytest.mark.parametrize("width", [390, 1600])
+def test_clear_requires_confirmation_and_recovers_exact_target_without_repeating(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      controls.clearSession=()=>{calls.push('clear');return new Promise(resolve=>window.finishClear=()=>resolve({session_id:'11111111-1111-4111-8111-111111111111'}));};
+      controls.openCleared=async sid=>calls.push(['open',sid]);pane.clearButton.hidden=false;
+      pane.input.value='keep original draft';pane.render();
+    }""")
+    page.get_by_role("button", name="Clear context", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Clear context", exact=True)
+    assert page.evaluate("calls") == []
+    dialog.get_by_role("button", name="Confirm clear context", exact=True).click()
+    assert page.get_by_role("button", name="Send message", exact=True).first.is_disabled()
+    dialog.get_by_role("button", name="Close clear context", exact=True).click()
+    assert page.get_by_role("button", name="Clear context", exact=True).is_disabled()
+    page.evaluate("finishClear()")
+    page.get_by_role("button", name="Clear context", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Clear context", exact=True)
+    dialog.get_by_text("Context cleared", exact=True).wait_for()
+    assert page.evaluate("calls") == ["clear"]
+    assert page.evaluate("pane.input.value") == "keep original draft"
+    assert page.get_by_role("button", name="Send message", exact=True).first.is_disabled()
+    assert page.locator("body").evaluate("el=>el.scrollWidth<=innerWidth")
+    page.screenshot(path=str(tmp_path / f"clear-{width}.png"))
+    dialog.get_by_role("button", name="Open new conversation", exact=True).click()
+    assert page.evaluate("calls") == ["clear", ["open", "11111111-1111-4111-8111-111111111111"]]
+    assert not errors
+
+
 @pytest.mark.parametrize("indexed", [True, False])
 @pytest.mark.parametrize("provider", ["Claude", "Codex"])
 def test_fork_dialog_never_creates_or_opens_automatically(pane, tmp_path, indexed, provider):

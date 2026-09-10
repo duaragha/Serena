@@ -31,6 +31,7 @@ export class WorkspacePane {
     this.interrupting = false;
     this.disposed = false;
     this.frame = 0;
+    try{this.clearedSession=controls.lastClear?.();}catch{this.clearedSession=null;}
     root.classList.add('agent-workspace-pane');
     root.setAttribute('aria-label', `${provider} conversation`);
     const head = node('header', 'aw-head');
@@ -47,6 +48,9 @@ export class WorkspacePane {
     this.forkButton.hidden=!['Claude','Codex'].includes(provider) || !controls.forkSession || !controls.openFork;
     this.forkButton.disabled=true;
     head.append(this.forkButton);
+    this.clearButton=this.button('Clear context','eraser',()=>this.openClear());
+    this.clearButton.hidden=provider!=='Claude' || !controls.clearSession || !controls.openCleared;
+    this.clearButton.disabled=true;head.append(this.clearButton);
     this.shellButton=this.button('Run shell command','terminal',()=>this.openShell());
     this.shellButton.hidden=provider!=='Codex' || !controls.shellCommand;
     head.append(this.shellButton);
@@ -236,6 +240,38 @@ export class WorkspacePane {
       finally{save.disabled=false;text.disabled=false;}
     });
     dialog.addEventListener('close',()=>dialog.remove());this.queueEditDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();text.focus();
+  }
+
+  openClear() {
+    if(this.clearDialog?.open || this.clearing)return;
+    try{this.clearedSession ??= this.controls.lastClear?.();}
+    catch(error){this.error(error);return;}
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Clear context');
+    const status=node('p','','Start a new Claude conversation? Current history will be kept.');status.setAttribute('role','status');
+    const identity=node('code');identity.style.overflowWrap='anywhere';
+    const close=this.button('Close clear context','x',()=>dialog.close());
+    const open=this.button('Open new conversation','arrow-up-right',async()=>{
+      try{await this.controls.openCleared(this.clearedSession.session_id);dialog.close();}
+      catch(error){status.textContent=error.message;}
+    });
+    const render=()=>{
+      open.hidden=!this.clearedSession;confirm.hidden=Boolean(this.clearedSession);
+      if(this.clearedSession){status.textContent='Context cleared';identity.textContent=this.clearedSession.session_id;}
+    };
+    const confirm=this.button('Confirm clear context','eraser',async()=>{
+      this.clearing=true;confirm.disabled=true;status.textContent='Clearing context...';this.render();
+      try{
+        const result=await this.controls.clearSession();
+        if(typeof result?.session_id!=='string' || !/^[a-f0-9-]{36}$/.test(result.session_id) || result.session_id===this.conversation.sessionId)throw Error('Clear identity is unavailable');
+        this.clearedSession=result;
+        this.conversation.status='unavailable';
+        if(dialog.open && !this.disposed)render();
+      }catch(error){if(dialog.open){status.textContent=error.message;confirm.disabled=false;}}
+      finally{this.clearing=false;if(!this.disposed)this.render();}
+    });
+    dialog.append(node('h3','','Clear context'),close,status,identity,confirm,open);
+    dialog.addEventListener('close',()=>dialog.remove());
+    this.clearDialog=dialog;this.root.append(dialog);render();dialog.showModal();this.refreshIcons();
   }
 
   openFork() {
@@ -1193,8 +1229,9 @@ export class WorkspacePane {
     const steering = this.canSteer();
     this.send.title = steering ? 'Steer running turn' : 'Send message';
     this.send.setAttribute('aria-label', this.send.title);
-    this.send.disabled = this.sending || (!steering && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
+    this.send.disabled = this.sending || this.clearing || Boolean(this.clearedSession) || (!steering && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.forkButton.disabled=this.forkCreating || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
+    this.clearButton.disabled=this.clearing || this.sending || (!this.clearedSession && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.shellButton.disabled=this.shellSubmitting || !['ready','running','completed','interrupted'].includes(this.conversation.status);
     if (this.conversation.error) this.error(this.conversation.error);
     this.renderQuestions(); this.refreshIcons();
@@ -1206,6 +1243,7 @@ export class WorkspacePane {
     this.reviewDialog?.close();
     this.tasksDialog?.close();
     this.commandsDialog?.close();
+    this.clearDialog?.close();
     this.fileSearchDialog?.close();
     this.mcpDialog?.close();
     this.contextDialog?.close();

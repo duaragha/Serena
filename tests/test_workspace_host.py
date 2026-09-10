@@ -137,6 +137,29 @@ def test_unfinished_clear_checkpoint_blocks_source_resume_without_launch(tmp_pat
         value.shutdown()
 
 
+def test_pending_clear_catalog_filters_deduplicates_and_retires_after_indexing(tmp_path):
+    from core.config import claude_project_dir_for
+
+    journal = WorkspaceJournal(tmp_path / "clear.db")
+    target = {"session_id": "11111111-2222-4333-8444-555555555555", "provider": "claude", "cwd": str(tmp_path)}
+    journal.claim_command("source", "clear", {"action": "clear_session", "payload": {"confirmed": True}})
+    journal.prepare_clear("source", "clear", target)
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: pytest.fail("catalog must not attach"))
+    try:
+        assert host.include_pending_sessions([]) == []
+        journal.complete_clear("source", "clear")
+        rows = host.include_pending_sessions([], projects=[claude_project_dir_for(str(tmp_path))])
+        assert len(rows) == 1 and rows[0]["session_id"] == target["session_id"]
+        assert rows[0]["native_persistence_pending"] and rows[0]["created_at"]
+        assert host.include_pending_sessions([], projects=["another-project"]) == []
+        actual = {"session_id": target["session_id"], "display_title": "Actual title"}
+        assert host.include_pending_sessions([actual]) == [actual]
+        assert host.include_pending_sessions([]) == []  # Deleted indexed chat cannot reappear.
+        assert not host._sessions and host._loop is None
+    finally:
+        host.shutdown()
+
+
 def test_clear_preflight_failure_does_not_disable_unchanged_owner(tmp_path):
     class BusyOwner(Owner):
         async def begin_clear(self):

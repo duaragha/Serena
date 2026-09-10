@@ -12,6 +12,11 @@ const connection = new WorkspaceConnection({
   error: error => connectionFailed(error),
 });
 const controls = connection.controls();
+controls.openCleared = sid => {
+  if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid) || sid===boot.sessionId)throw Error('Invalid cleared session identity');
+  if(parent!==window)parent.postMessage({type:'serena-workspace-open-cleared',sid:boot.sessionId,target:sid},location.origin);
+  else location.assign('/workspace/'+encodeURIComponent(sid));
+};
 controls.openFork = sid => {
   if (typeof sid !== 'string' || !/^[a-f0-9-]{36}$/.test(sid) || sid === boot.sessionId) throw Error('Invalid fork identity');
   if (parent !== window) parent.postMessage({type:'serena-workspace-open-fork',sid:boot.sessionId,target:sid},location.origin);
@@ -28,6 +33,7 @@ window.addEventListener('message', e => {
   if (e.origin === location.origin && e.source === parent && e.data?.type === 'serena-workspace-focus') pane.input.focus();
 });
 const button = document.querySelector('#workspace-connect');
+if(pane.clearedSession)button.textContent='Resume original conversation';
 function showRetry() {
   button.hidden = false;
   button.disabled = false;
@@ -46,6 +52,11 @@ button.addEventListener('click', async () => {
       return;
     }
     button.hidden = true;
+    if(pane.clearedSession){
+      controls.forgetClear();
+      pane.clearedSession=null;
+      pane.render();
+    }
     pane.input.focus();
     if (['Codex', 'Claude'].includes(boot.provider)) connection.controls().models().catch(error => pane.error(error));
   } catch (error) {
