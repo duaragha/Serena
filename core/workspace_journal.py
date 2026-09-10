@@ -272,6 +272,16 @@ class WorkspaceJournal:
                 "AND request_id LIKE 'work:%' AND result IS NULL LIMIT 1", (session_id,)
             ).fetchone() is not None
 
+    def turn_completion(self, session_id: str, turn_id: str):
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT event FROM workspace_events WHERE session_id=? "
+                "AND json_extract(event, '$.method')='turn/completed' "
+                "AND json_extract(event, '$.params.turn.id')=? ORDER BY sequence DESC LIMIT 1",
+                (session_id, turn_id),
+            ).fetchone()
+        return None if row is None else json.loads(row[0])["params"]["turn"]
+
     def finish_command(self, session_id: str, request_id: str, result: dict) -> None:
         with closing(self._connect()) as conn, conn:
             changed = conn.execute(

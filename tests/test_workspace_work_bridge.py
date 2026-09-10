@@ -10,7 +10,8 @@ from core.workspace_journal import WorkspaceJournal
 
 
 @pytest.mark.parametrize('uncertain', [False, True])
-def test_native_http_dispatch_never_falls_back_or_repeats(tmp_path, monkeypatch, uncertain):
+@pytest.mark.parametrize('status', ['completed', 'failed', 'missing'])
+def test_native_http_dispatch_never_falls_back_or_repeats(tmp_path, monkeypatch, uncertain, status):
     from ui import web
 
     path = tmp_path / 'rollout.jsonl'
@@ -21,6 +22,7 @@ def test_native_http_dispatch_never_falls_back_or_repeats(tmp_path, monkeypatch,
     class Owner:
         def __init__(self, *, session_id, cwd, publish):
             self.session_id, self.cwd = session_id, cwd
+            self.publish = publish
             self.state, self.active_turn = 'closed', None
         async def open(self):
             self.state = 'ready'
@@ -40,6 +42,9 @@ def test_native_http_dispatch_never_falls_back_or_repeats(tmp_path, monkeypatch,
             with path.open('a') as output:
                 for payload in records:
                     output.write(json.dumps({'type': 'event_msg', 'payload': payload}) + '\n')
+            await self.publish({'method': 'turn/completed', 'params': {'threadId': self.session_id,
+                'turn': {'id': 'another-turn' if status == 'missing' else 'native-turn',
+                         'status': status, 'error': {'message': 'native failure'} if status == 'failed' else None}}})
             return {'turn': {'id': 'native-turn'}}
 
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'journal.db'),
@@ -73,11 +78,16 @@ def test_native_http_dispatch_never_falls_back_or_repeats(tmp_path, monkeypatch,
             assert not repeated['ok'] and repeated['reserved']
             assert all(state == 'uncertain' for state, _ in states)
         else:
-            assert result['ok'] and repeated['ok']
+            assert result['ok'] is (status == 'completed') and repeated['ok'] is (status == 'completed')
             assert result['response'] == repeated['response'] == 'finished native work'
             assert result['end_offset'] == repeated['end_offset'] == 3
-            assert not result['reserved'] and not host._work_reservations
-            assert [state for state, _ in states] == ['committed', 'completed'] * 2
+            assert result['reserved'] is (status == 'missing')
+            assert bool(host._work_reservations) is (status == 'missing')
+            assert [state for state, _ in states] == ['committed', 'completed' if status == 'completed' else 'uncertain'] * 2
+            if status == 'failed':
+                assert result['message'] == 'native failure'
+            elif status == 'missing':
+                assert 'not yet confirmed' in result['message']
         interrupted = client.post('/api/codex-work-interrupt', json={'target_sid': 'exact', 'item_id': dispatch})
         assert interrupted.status_code == 409
     finally:

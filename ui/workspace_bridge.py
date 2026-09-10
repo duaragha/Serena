@@ -1,6 +1,7 @@
 """Prefer an existing structured owner without creating or focusing a pane."""
 
 import hashlib
+import time
 from uuid import UUID, uuid4
 
 from flask import current_app, request
@@ -79,6 +80,19 @@ def structured_work_bridge(sid, prompt, item_id, dispatch_id, timeout):
         bridge._mark_route_dispatch(item_id, "committed", start_offset=start, end_offset=None, prompt_sha256=digest)
         result = bridge._collect_work_response(path, start, digest, timeout,
                                               {"kind": "workspace", "host": host, "sid": sid})
+        if result.get("finished"):
+            deadline = time.monotonic() + 2
+            completion = host.journal.turn_completion(sid, submission["turn_id"])
+            while completion is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+                completion = host.journal.turn_completion(sid, submission["turn_id"])
+            if completion is None:
+                result = {**result, "ok": False, "finished": False,
+                          "message": "Exact native completion is not yet confirmed"}
+            elif completion.get("status") != "completed":
+                error = completion.get("error") or {}
+                result = {**result, "ok": False,
+                          "message": error.get("message") or f"Native turn {completion.get('status', 'unconfirmed')}"}
         end = bridge._line_count(path)
         bridge._mark_route_dispatch(item_id, "completed" if result.get("ok") else "uncertain",
                                     start_offset=start, end_offset=end, prompt_sha256=digest)

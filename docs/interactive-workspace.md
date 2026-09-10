@@ -2,6 +2,41 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Completion Truth (2026-09-10)
+
+A real no-tool subscription proof exposed a false-success bug: the installed
+Codex writes rollout `task_complete` even when its native `turn/completed` status
+is `failed`. The isolated auth copy was rejected with an already-used refresh
+token, yet the old bridge returned `ok:true` with an empty response.
+
+The bridge now checks the journaled native completion for the exact submitted
+turn ID before marking the route completed. Failed status returns the native
+error; missing completion remains unconfirmed and retains the reservation. A
+different turn's completion cannot satisfy it. The journal lookup is read-only.
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_work_bridge.py -q --tb=short
+# exit 0: 6 passed in 6.77s; success, failure, unrelated/missing completion,
+# uncertain submission and replay without duplicate native input
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_journal.py ui/workspace_bridge.py tests/test_workspace_work_bridge.py scripts/verify-workspace-native-work.py
+# exit 0
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-work.py --allow-inference
+# exit 1 on four diagnostic runs: authentication failed natively, but the old
+# bridge falsely returned success. All isolated HTTP hosts/providers were closed.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-work.py --allow-inference --expect-auth-failure
+# exit 0 after fix: real failed turn reported honestly, same dispatch retried
+# without another turn, original bounds retained, reservation released,
+# project unchanged and disposable processes reaped
+```
+
+The failure-mode flag is an explicit negative proof, not a replacement for the
+still-required successful live job proof. The script uses an isolated copy of
+existing ChatGPT auth with API credentials stripped, a temporary accepted brief,
+and an empty-view report supplied by the proof. No user chat or installed service
+is modified. Rejected copied credentials do not establish that the user's active
+app session is unauthenticated; that remains a separate diagnosis.
+
 ## Accepted-Job Bridge Wiring (2026-09-10)
 
 The local work bridge now detects an existing native owner (or its pending
