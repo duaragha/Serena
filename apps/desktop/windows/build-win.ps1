@@ -61,12 +61,16 @@ Write-Host "[windows] testing Fleet database connection lifetime"
 Assert-LastExitCode "Fleet database lifetime tests"
 
 Write-Host "[windows] testing native Fleet helper process ownership"
-& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_job.py") (Join-Path $RepoRoot "tests\test_fleet_helper_crash.py") -q
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_job.py") (Join-Path $RepoRoot "tests\test_fleet_helper_crash.py") (Join-Path $RepoRoot "tests\test_fleet_resident_timer.py") -q
 Assert-LastExitCode "Native Fleet helper job tests"
 
 Write-Host "[windows] testing unrecorded Fleet helper exit recovery"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_integration_recovery.py") -k "killed_helper or repeated_helper or unrecorded_helper" -q
 Assert-LastExitCode "Native Fleet helper exit recovery tests"
+
+Write-Host "[windows] testing native worker crash status recovery"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_process_recovery.py") (Join-Path $RepoRoot "tests\test_fleet_windows_status.py") -q
+Assert-LastExitCode "Native Fleet worker crash status recovery"
 
 if (Test-Path -LiteralPath $SidecarDist) {
     Remove-Item -LiteralPath $SidecarDist -Recurse -Force

@@ -2,13 +2,41 @@
 
 ## Read-only process liveness
 
+Native process retry recognizes explicit Windows crash statuses (access
+violation, illegal/privileged instruction, integer divide-by-zero, stack/heap
+failure, control-C termination, fail-fast and fatal application exit), in both
+unsigned DWORD and signed int32 form, alongside the existing POSIX signals.
+The [Microsoft NTSTATUS reference](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55)
+defines these codes. Ordinary exit1, unknown codes, launch failures and missing
+DLL/configuration statuses are not treated as proven process crashes. A recorded
+worker PID remains required. Cancellation and authority/evidence blockers still
+win, and the same two process retries (30/60-second cooldowns) remain bounded.
+Scheduled/exhausted receipts retain the actual exit code. The native Windows
+writer test terminates only its own disposable process with an access-violation
+status, then verifies the saved patch and completed Research survive retry;
+it simulates the OS exit, not an actual illegal-memory-access fault.
+
 Fleet, work jobs, external-session leases and shared process owners use
 `core.process_probe.probe_process` for existence checks. On Windows it uses
 psutil's read-only PID query; `os.kill(pid, 0)` sends `CTRL_C_EVENT` there and
 is not a safe existence query. POSIX retains signal-zero semantics. Existing
 birth-token fencing and each caller's permission-denial policy remain intact.
 `tests/test_process_probe.py` checks both no-signal routing and a real private
-child's continued survival, then confirms its absence after owned cleanup.
+child’s continued survival, then confirms its absence after owned cleanup.
+
+## Resident helper crash regression
+
+`tests/test_fleet_resident_timer.py` boots the real resident service loop against
+private databases and a disposable Git fixture. It kills only a helper verified
+by its lease, birth token and process ancestry after its patch was applied, then
+observes the normal 30-second timer and persisted cooldown recover that patch.
+No parent retry/resume call or clock adjustment is permitted. The test asserts
+exactly one process retry after its deadline, retained sibling attempts, passing
+integration/evidence gates, and no native model calls. It cancels the disposable
+run only after Code recovers, before unrelated Review; this is helper-recovery
+proof, not a claim of whole-run or business-task completion. Catalog, session
+projection and notification adapters are disabled; scheduling and recovery are
+real. Source acceptance and native Windows packaging both run this regression.
 
 ## Opt-in Gemini research pilot
 
