@@ -413,6 +413,19 @@ async def main():
             assert owner.history_cursor
             host = WorkspaceHost(journal=WorkspaceJournal(root / "receipts.db"), resolve=None)
             host._sessions[sid] = (owner, "codex")
+            work_id = "11111111-1111-4111-8111-111111111111"
+            await host._note_view_context(sid, {"view_id": work_id, "sequence": 1,
+                "focused": True, "visible": True, "draft": False})
+            native_pid = owner.rpc.process.pid
+            reserved = await host._reserve_work(sid, work_id)
+            assert reserved["ok"], reserved
+            rejected = await host._command(sid, "reserved-shell", "shell_command", {"command": "echo MUST_NOT_RUN"})
+            assert not rejected["ok"] and rejected["retryable"]
+            assert not await host._release_work(sid, "another-job")
+            assert await host._release_work(sid, work_id)
+            assert owner.rpc.process.pid == native_pid and owner.active_turn is None
+            assert not any("MUST_NOT_RUN" in json.dumps(event) for event in events)
+            print("PASS: real native background check admitted one exact job reservation; competing shell rejected, wrong-job release refused, same idle owner retained")
             refusal = await host._command(sid, "stale-read", "load_earlier", {"cursor": "not-the-current-cursor"})
             assert not refusal["ok"] and refusal["retryable"]
             receipt = await host._command(sid, "valid-read", "load_earlier", {"cursor": owner.history_cursor})

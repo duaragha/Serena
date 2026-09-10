@@ -57,6 +57,7 @@ class WorkspaceHost:
         self._bridge_messages = {}
         self._bridge_cancelled = set()
         self._views = {}
+        self._work_reservations = {}
 
     async def _run(self, coroutine):
         task = asyncio.current_task()
@@ -182,7 +183,7 @@ class WorkspaceHost:
                 "state": owner.state,
                 "busy": pending_interactions or background_busy or bool(owner.active_turn) or owner.state not in {
                     "ready", "completed", "failed", "interrupted", "closed", "unavailable"},
-                "reserved": bool(self._bridge_queues.get(sid)),
+                "reserved": bool(self._bridge_queues.get(sid) or self._work_reservations.get(sid)),
                 "owner": "workspace",
                 "draft": any(view["draft"] for view in views),
                 "draft_known": bool(views) and len(fresh) == len(views),
@@ -196,6 +197,73 @@ class WorkspaceHost:
         return {"runtimes": runtimes, "focused_sid": focused_sid,
                 "focused_at": focused_at, "window_active": bool(focused_sid),
                 "split_pair": split if len(split) > 1 else []}
+
+    def reserve_work(self, sid, item_id):
+        """Reserve an existing Codex owner; never attach or start a provider."""
+        self._validate_session(sid)
+        if not isinstance(item_id, str) or str(UUID(item_id)) != item_id:
+            raise ValueError("An exact work item UUID is required")
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"ok": False, "message": "No native owner is available"}
+            future = asyncio.run_coroutine_threadsafe(self._reserve_work(sid, item_id), self._loop)
+        return future.result(timeout=35)
+
+    def _work_admission_error(self, sid):
+        entry = self._sessions.get(sid)
+        if entry is None or entry[1] != "codex":
+            return "No existing native Codex owner"
+        owner = entry[0]
+        if owner.state != "ready" or owner.active_turn or getattr(owner, "questions", None):
+            return "Native session has active work or pending questions"
+        if self._bridge_queues.get(sid):
+            return "Native session has queued bridge work"
+        views = list(self._views.get(sid, {}).values())
+        if not views or any(monotonic() - view["seen"] >= 6 for view in views):
+            return "Native composer state is not freshly confirmed"
+        if any(view["draft"] for view in views):
+            return "Native session has an unsent draft"
+        return ""
+
+    def release_work(self, sid, item_id):
+        self._validate_session(sid)
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return False
+            future = asyncio.run_coroutine_threadsafe(self._release_work(sid, item_id), self._loop)
+        return future.result(timeout=5)
+
+    async def _release_work(self, sid, item_id):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            if not item_id or self._work_reservations.get(sid) != item_id:
+                return False
+            owner = self._sessions[sid][0]
+            if owner.active_turn or owner.state != "ready" or getattr(owner, "questions", None):
+                return False
+            self._work_reservations.pop(sid)
+            return True
+
+    async def _reserve_work(self, sid, item_id):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            existing = self._work_reservations.get(sid)
+            if existing:
+                return {"ok": existing == item_id, "message": "Native session is reserved"}
+            error = self._work_admission_error(sid)
+            if error:
+                return {"ok": False, "message": error}
+            owner = self._sessions[sid][0]
+            try:
+                tasks = await owner.list_background_tasks()
+                if not isinstance(tasks, dict) or tasks.get("data") != []:
+                    return {"ok": False, "message": "Native background work is active or unconfirmed"}
+            except Exception as error:
+                return {"ok": False, "message": f"Native background work could not be checked: {error}"}
+            # Notifications and view reports can arrive during the native RPC.
+            error = self._work_admission_error(sid)
+            if error or self._sessions[sid][0] is not owner or self._stopped:
+                return {"ok": False, "message": error or "Native owner changed during admission"}
+            self._work_reservations[sid] = item_id
+            return {"ok": True, "message": "Native owner reserved", "session_id": sid}
 
     def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
@@ -247,6 +315,8 @@ class WorkspaceHost:
 
     async def _attach(self, sid):
         async with self._locks.setdefault(sid, asyncio.Lock()):
+            if self._work_reservations.get(sid):
+                return self._status(sid)
             if sid in self._sessions:
                 owner = self._sessions[sid][0]
                 retry = getattr(owner, "can_retry_attachment", None)
@@ -344,6 +414,8 @@ class WorkspaceHost:
             if sid not in self._sessions:
                 return None
             owner, actual_provider = self._sessions[sid]
+            if self._work_reservations.get(sid):
+                return {"ok": False, "message": "Native session is reserved by a coding job"}
             if provider != actual_provider:
                 return {
                     "ok": False,
@@ -515,6 +587,11 @@ class WorkspaceHost:
                                      "error": "Clear outcome is unconfirmed; it will not be repeated"}
             if sid not in self._sessions:
                 raise ValueError("Explicitly attach this session before sending controls")
+            if self._work_reservations.get(sid) and action not in {
+                "answer", "interrupt", "models", "permissions", "context_usage", "background_tasks",
+                "commands", "search_files", "load_earlier", "account_status", "mcp_servers",
+            }:
+                return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
             if action == "answer":
                 recorded_payload = {

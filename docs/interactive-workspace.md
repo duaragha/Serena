@@ -2,6 +2,43 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Job Reservation (2026-09-10)
+
+The host now has exact-item native Codex reservation/release operations. They
+never attach a missing session or create an owner loop. Admission holds the
+session control lock, requires fresh empty-composer reports, a ready owner with
+no turn/questions/queued bridge, queries the native background-terminal list,
+then rechecks state and drafts after that awaited RPC before reserving.
+
+Repeated acquisition by the same item is idempotent; another item is rejected.
+Reserved owners reject competing command mutations and sibling bridge messages,
+but retain permission-answer, interrupt and inspection controls. Reattachment
+cannot replace a reserved unavailable owner. Release requires the exact item and
+a ready owner without an active turn or pending question. Closing a view does
+not release a reservation or stop work.
+
+These host operations are not yet connected to accepted-job dispatch: durable
+reserved submission, exact-turn interrupt/completion and the local work-bridge
+integration remain required before enabling native job reuse. Reservations are
+process-local like owner lifetime; durable job/dispatch records remain separate.
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 77 passed in 27.54s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_native_work_reservation_is_exact_and_blocks_competing_input -q --tb=short
+# exit 0: 1 passed in 0.58s, after adding reserved-owner retry and pending-answer release guards
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py
+# exit 0
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: real Codex background RPC, exact reservation, competing shell refusal,
+# wrong-item release refusal, same owner PID and no submitted turn; source
+# desktop/mobile regression flows also passed; isolated children reaped
+```
+
+The reservation proof supplies an empty view report directly to the real host;
+it does not claim an accepted production job was dispatched or completed.
+
 ## Native Activity Reporting (2026-09-10)
 
 Runtime `busy` now includes pending provider questions/elicitations and active or

@@ -270,6 +270,106 @@ def test_runtime_busy_includes_native_questions_and_claude_background_work(tmp_p
         host.shutdown()
 
 
+def test_native_work_reservation_is_exact_and_blocks_competing_input(tmp_path):
+    class WorkOwner(Owner):
+        async def list_background_tasks(self):
+            return {'data': []}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'work.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+        factories={'codex': WorkOwner})
+    item = '11111111-1111-4111-8111-111111111111'
+    other = '22222222-2222-4222-8222-222222222222'
+    view = {'view_id': item, 'sequence': 1, 'focused': True, 'visible': True, 'draft': False}
+    try:
+        assert not host.reserve_work('exact', item)['ok'] and host._loop is None
+        host.attach('exact')
+        assert not host.reserve_work('exact', item)['ok']
+        host.note_view_context('exact', view)
+        assert host.reserve_work('exact', item)['ok']
+        assert host.reserve_work('exact', item)['ok']
+        assert not host.reserve_work('exact', other)['ok']
+        assert host.runtime_context_snapshot()['runtimes'][0]['reserved']
+        for action in ['submit', 'shell_command', 'clear_session', 'disconnect_session', 'set_permissions']:
+            result = host.command('exact', 'blocked-' + action, action, {})
+            assert not result['ok'] and result['retryable']
+        assert not host.bridge('exact', 'codex', 'competing message', 'competing')['ok']
+        assert not host.release_work('exact', other)
+        owner = host._sessions['exact'][0]
+        owner.active_turn = 'running'
+        assert not host.release_work('exact', item)
+        owner.active_turn = None
+        owner.questions = {'pending': {}}
+        assert not host.release_work('exact', item)
+        owner.questions = {}
+        owner.state = 'unavailable'
+        owner.can_retry_attachment = lambda: True
+        assert not host.attach('exact')['ok']
+        assert host._sessions['exact'][0] is owner
+        owner.state = 'ready'
+        assert host.release_work('exact', item)
+        assert not host.runtime_context_snapshot()['runtimes'][0]['reserved']
+        assert not owner.sent and not owner.closed
+    finally:
+        host.shutdown()
+
+
+def test_work_admission_rechecks_draft_after_native_background_rpc(tmp_path):
+    entered, finish = threading.Event(), threading.Event()
+    class WorkOwner(Owner):
+        async def list_background_tasks(self):
+            entered.set()
+            await asyncio.to_thread(finish.wait, 5)
+            return {'data': []}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'race.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+        factories={'codex': WorkOwner})
+    item = '11111111-1111-4111-8111-111111111111'
+    view = {'view_id': item, 'sequence': 1, 'focused': True, 'visible': True, 'draft': False}
+    try:
+        host.attach('exact')
+        host.note_view_context('exact', view)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            result = pool.submit(host.reserve_work, 'exact', item)
+            assert entered.wait(5)
+            host.note_view_context('exact', {**view, 'sequence': 2, 'draft': True})
+            finish.set()
+            assert not result.result(5)['ok']
+        assert not host._work_reservations
+    finally:
+        finish.set()
+        host.shutdown()
+
+
+@pytest.mark.parametrize('blocker', ['question', 'turn', 'draft', 'stale', 'queue', 'background', 'rpc-error'])
+def test_native_work_reservation_refuses_unsafe_admission(tmp_path, blocker):
+    class WorkOwner(Owner):
+        async def list_background_tasks(self):
+            if blocker == 'rpc-error':
+                raise RuntimeError('not available')
+            return {'data': [{}] if blocker == 'background' else []}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'blocked.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+        factories={'codex': WorkOwner})
+    item = '11111111-1111-4111-8111-111111111111'
+    try:
+        host.attach('exact')
+        host.note_view_context('exact', {'view_id': item, 'sequence': 1, 'focused': True,
+                                        'visible': True, 'draft': blocker == 'draft'})
+        owner = host._sessions['exact'][0]
+        if blocker == 'question':
+            owner.questions = {'approval': {}}
+        elif blocker == 'turn':
+            owner.active_turn = 'ongoing'
+        elif blocker == 'stale':
+            host._views['exact'][item]['seen'] -= 10
+        elif blocker == 'queue':
+            host._bridge_queues['exact'] = ['pending']
+        assert not host.reserve_work('exact', item)['ok']
+        assert not host._work_reservations and not owner.sent
+    finally:
+        host.shutdown()
+
+
 def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
     calls = []
     class AccountOwner(Owner):
