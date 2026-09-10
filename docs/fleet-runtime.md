@@ -156,6 +156,15 @@ the observed blocker and direct the operator to current state, since a deferred
 notice can outlive that observation. This does not authorize an unsafe retry or
 resolve the blocker itself.
 
+Notification delivery owns a portable per-notice process lock across the sender
+and committed result. Competing resident/generic delivery loops recheck durable
+status under that lock; contention defers rather than triggering another channel.
+Notification transaction scopes release SQLite handles immediately. Tests use
+fake transports across real threads/processes and retain closed connections with
+GC disabled. A sender accepted externally just before owner death is still an
+ambiguous delivery outcome without transport-level idempotency; this is not an
+exactly-once external-delivery guarantee.
+
 Declared integration test sequences have one narrow generated-type preparation
 pass: when `npm run typecheck` exits 1 or 2 with TS2307 naming a `.generated` or
 `/generated` module, and the combined checkout declares a `codegen` script,

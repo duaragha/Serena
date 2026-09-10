@@ -19,6 +19,7 @@ config file a plugin can extend.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 import time
@@ -29,6 +30,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from core.file_lock import exclusive_lock
+from core.sqlite_connection import connect_database
 
 SCHEMA_VERSION = 1
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "notifications.sqlite3"
@@ -378,6 +382,38 @@ class NotificationAuthority:
         *,
         moment: float,
     ) -> NotificationResult:
+        # Fleet and the generic notice queue can both select this row. Own
+        # the external send and final receipt, not just the selection query.
+        locks = self.path.resolve().with_name(self.path.name + ".delivery-locks")
+        locks.mkdir(parents=True, exist_ok=True, mode=0o700)
+        name = hashlib.sha256(notification_id.encode()).hexdigest() + ".lock"
+        with (locks / name).open("a+b") as handle:
+            try:
+                with exclusive_lock(handle, timeout=0):
+                    with self._connect() as db:
+                        row = db.execute("SELECT * FROM notifications WHERE notification_id=?",
+                                         (notification_id,)).fetchone()
+                    if row is None:
+                        raise KeyError(f"unknown notification {notification_id}")
+                    if (row["decision"] not in {"deferred", "failed"}
+                            or row["deliver_after"] is None or row["deliver_after"] > moment
+                            or row["attempts"] >= self.policy.max_attempts):
+                        return _result_from_row(row)
+                    return self._deliver_owned(notification_id, _request_from_row(row), moment=moment)
+            except TimeoutError:
+                # Contention is not transport failure: don't trigger fallback.
+                with self._connect() as db:
+                    row = db.execute("SELECT * FROM notifications WHERE notification_id=?",
+                                     (notification_id,)).fetchone()
+                if row is None:
+                    raise KeyError(f"unknown notification {notification_id}")
+                if row["decision"] == "sent":
+                    return _result_from_row(row)
+                return NotificationResult(notification_id, "deferred", "delivery already owned",
+                                          row["channel"], row["attempts"], row["deliver_after"])
+
+    def _deliver_owned(self, notification_id: str, request: NotificationRequest,
+                       *, moment: float) -> NotificationResult:
         sender = self._senders.get(request.channel)
         if sender is None:
             return self._finish(
@@ -563,10 +599,7 @@ class NotificationAuthority:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_database(self.path, timeout=10)
 
     def _initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
