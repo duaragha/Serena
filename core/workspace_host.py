@@ -240,6 +240,8 @@ class WorkspaceHost:
                 return False
             if self._work_turns.get(sid, {}).get("uncertain"):
                 return False
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                return False
             owner = self._sessions[sid][0]
             if owner.active_turn or owner.state != "ready" or getattr(owner, "questions", None):
                 return False
@@ -272,6 +274,8 @@ class WorkspaceHost:
                                  "message": "Prior native work submission is unconfirmed; it will not be repeated"}
             if self._work_turns.get(sid, {}).get("uncertain"):
                 return {"ok": False, "committed": False, "message": "Prior native work dispatch is uncertain"}
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                return {"ok": False, "committed": False, "message": "A prior native work dispatch is unconfirmed"}
             error = self._work_admission_error(sid)
             if error:
                 return {"ok": False, "committed": False, "message": error}
@@ -328,6 +332,8 @@ class WorkspaceHost:
             existing = self._work_reservations.get(sid)
             if existing:
                 return {"ok": existing == item_id, "message": "Native session is reserved"}
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                return {"ok": False, "message": "A prior native work dispatch is unconfirmed"}
             error = self._work_admission_error(sid)
             if error:
                 return {"ok": False, "message": error}
@@ -404,6 +410,8 @@ class WorkspaceHost:
                     return self._status(sid)
             if await asyncio.to_thread(self.journal.has_pending_clear, sid):
                 raise ValueError("A native clear handoff is unconfirmed; this source cannot be resumed automatically")
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                raise ValueError("A native work dispatch is unconfirmed; this session cannot be resumed automatically")
             target = await asyncio.to_thread(self.resolve, sid)
             if target.get("session_id") != sid:
                 raise ValueError("Resolver returned a different session")

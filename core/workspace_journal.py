@@ -253,6 +253,14 @@ class WorkspaceJournal:
             raise ValueError("Request ID was already used with different content")
         return True, json.loads(row[1]) if row[1] is not None else None
 
+    def has_pending_work(self, session_id: str) -> bool:
+        """A pending reserved-dispatch claim is not permission to resend."""
+        with closing(self._connect()) as conn:
+            return conn.execute(
+                "SELECT 1 FROM workspace_commands WHERE session_id=? "
+                "AND request_id LIKE 'work:%' AND result IS NULL LIMIT 1", (session_id,)
+            ).fetchone() is not None
+
     def finish_command(self, session_id: str, request_id: str, result: dict) -> None:
         with closing(self._connect()) as conn, conn:
             changed = conn.execute(

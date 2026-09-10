@@ -2,6 +2,31 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Pending Dispatch Restart Guard (2026-09-10)
+
+Pending `work:` receipts now block replacement attachment, new reservation,
+different dispatch and reservation release, even when the host's in-memory turn
+map is gone. Existing-owner observation remains available without replacement.
+This fixes the gap between process-local uncertainty and the durable journal.
+Confirmed receipts do not trigger the guard. An unconfirmed receipt requires
+reconciliation; it is never automatically dropped or resent.
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_pending_work_receipt_blocks_restart_and_new_dispatch tests/test_workspace_host.py::test_reserved_submission_is_durable_and_interrupt_is_turn_bound -q --tb=short
+# exit 0: 4 passed in 0.67s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py tests/test_workspace_host.py scripts/verify-workspace-work-recovery.py
+# exit 0
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-work-recovery.py
+# exit 0: fresh process read real temporary SQLite receipt, rejected attachment
+# before resolver/provider creation, preserved claim, and exited cleanly
+```
+
+The first scoped run exited 1 because its new-dispatch fixture reused a previously
+recorded dispatch key with different content; that existing mismatch guard
+correctly rejected it. The fixture now uses a distinct dispatch UUID. This proof
+does not launch a coding job or establish successful interrupted-job recovery.
+
 ## Reserved Dispatch Controls (2026-09-10)
 
 Host-level `submit_work` requires the exact reserved item and a stable dispatch

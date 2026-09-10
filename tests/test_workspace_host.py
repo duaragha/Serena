@@ -426,6 +426,38 @@ def test_reserved_submission_is_durable_and_interrupt_is_turn_bound(tmp_path, un
         host.shutdown()
 
 
+def test_pending_work_receipt_blocks_restart_and_new_dispatch(tmp_path):
+    journal = WorkspaceJournal(tmp_path / 'restart-work.db')
+    item = '11111111-1111-4111-8111-111111111111'
+    key = 'work:' + item + ':' + item
+    journal.claim_command('exact', key, {'action': 'work_submit'})
+    assert journal.has_pending_work('exact') and not journal.has_pending_work('other')
+    host = WorkspaceHost(journal=WorkspaceJournal(journal.path),
+                         resolve=lambda sid: pytest.fail('Unconfirmed work must not resolve or attach'))
+    try:
+        with pytest.raises(ValueError, match='work dispatch is unconfirmed'):
+            host.attach('exact')
+        assert not host._sessions
+    finally:
+        host.shutdown()
+    journal.finish_command('exact', key, {'ok': False, 'committed': False})
+    assert not journal.has_pending_work('exact')
+    host = WorkspaceHost(journal=journal,
+        resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+        factories={'codex': Owner})
+    try:
+        host.attach('exact')
+        journal.claim_command('exact', key + ':next', {'action': 'work_submit'})
+        assert not host.reserve_work('exact', item)['ok']
+        host._work_reservations['exact'] = item
+        assert not host.release_work('exact', item)
+        assert not host.submit_work('exact', item, 'must not submit',
+                                    '22222222-2222-4222-8222-222222222222')['ok']
+        assert not host._sessions['exact'][0].sent
+    finally:
+        host.shutdown()
+
+
 def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
     calls = []
     class AccountOwner(Owner):
