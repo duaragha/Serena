@@ -6,6 +6,35 @@ assumption that Antigravity has no suitable interactive interface. The installed
 
 ## Primary Evidence
 
+### Isolated Real CLI Conversation Copy
+
+2026-09-10: the user approved testing an isolated session copy. The offline
+probe copied an inactive CLI SQLite database into a temporary ACP store using
+SQLite backup and Google's packaged `session_store` implementation. It decoded
+**778 populated steps**, removed **768 thought signatures from the copy**, and
+confirmed that every remaining serialized step matched the expected cleanup.
+A second cleanup was idempotent. The source hash, size and modification time
+were unchanged, no source sidecars appeared, and the temporary store was removed.
+No provider process, credentials, authentication or prompt was involved.
+
+This establishes storage compatibility for this one conversation, **not** a
+supported migration or authenticated resume. Native `_restore_session` also
+resolves authentication, model availability and agent configuration. Automatic
+migration and default Gemini admission remain disabled until those are proven.
+
+Commands executed separately, final exit codes all **0**:
+
+```sh
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-gemini-copy.py apps/desktop/build/proof-tools/antigravity-acp/agy_acp_server.par /home/raghav/.gemini/antigravity-cli/conversations/a780b23f-06ed-435b-af40-d9dea8e1f441.db
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_gemini_copy.py -q
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-gemini-copy.py tests/test_workspace_gemini_copy.py
+```
+
+Tests: **4 passed** (WAL, SHM, journal and symlink refusal before vendor import).
+Initial Ruff checks exited **1** for import ordering and a nested context manager;
+these were corrected before the clean final check. The probe rejects databases
+with SQLite sidecars; it is an offline diagnostic, not a production migration API.
+
 ### Assistant And Tool Images
 
 ACP assistant image chunks now become image-bearing assistant messages instead
