@@ -4,7 +4,44 @@
 Full Claude/Codex delivery remains incomplete and unreleased; this is an
 integration checkpoint, not a claim that every CLI capability is finished.
 
-## Current Source Checkpoint: e07b5ce
+## Current Source and Linux Package: 3725a32
+
+2026-09-10. This checkpoint includes persisted session speed, explicit account
+connection checks, isolated proof authentication, and confirmed failed-preference
+recovery. Source remained clean and unchanged throughout the build/proofs.
+The feature-specific test receipts remain in `workspace-command-parity.md`;
+this checkpoint adds integration evidence, not another full-suite claim.
+
+```sh
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: 51 native print-only turns, exact 50+1 history pagination, native
+# job reservation exclusion, same-session resume, one-time shell output,
+# project mentions and skill settings. Desktop/mobile visibility refresh
+# 45ms/38ms. Actual Electron clipboard, native provider creation, login
+# start/cancel, linked focus/drafts, and view-close owner preservation passed.
+# Native owners reaped; isolated project untouched; no credentials/inference.
+
+env PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m PyInstaller --noconfirm --distpath apps/desktop/build/sidecar --workpath apps/desktop/build/pyinstaller-work apps/desktop/build/pyinstaller-work/serena-web-sidecar.spec
+# exit 0: build complete at approximately 211 seconds. Existing optional
+# TensorBoard, pycparser table, HIP and Windows-library warnings remain.
+
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: the same native and actual Electron scenarios passed against the
+# frozen backend. Desktop/mobile visibility refresh 60ms/37ms. Native owners
+# reaped; isolated project untouched; no credentials/inference.
+
+sha256sum apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: 4751f6aa6c239584fcde1cc181eb348fd91c12b2f930cecc9a0ea03746cf7699
+```
+
+Both actual Electron linked-pane screenshots were inspected. They show the real
+shell and native owners with retained drafts; empty conversation panes are not
+evidence of full mockup parity with model output. No installed app was changed,
+no release published, and no default enabled. Windows remains at the `e07b5ce`
+checkpoint below. Fresh dedicated authentication, positive model/child workflows,
+remaining command parity, final visual parity, and final delivery remain open.
+
+## Earlier Source Checkpoint: e07b5ce
 
 2026-09-10. Integrated agent inspection, steering, attachments, receipt recovery
 and explicit idle continuation are included. No runtime source changed during
@@ -28,7 +65,7 @@ The actual Electron linked-pane screenshot was inspected. It proves real shell
 integration and layout with empty sessions/drafts, not full mockup parity with
 model prose or authenticated child-agent work. Those gates remain separate.
 
-### Current Linux Package
+### Earlier Linux Package
 
 The package was rebuilt from the same `e07b5ce` runtime source and exercised
 through the actual Electron shell, without installing it:
