@@ -2,6 +2,50 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Packaged Windows Browser Pass
+
+Rebuilt the Windows onedir sidecar from 5cadd13 plus the favicon fix below. The
+runtime was tested with an isolated Electron 43.1.1 Node-mode worker, installed
+Claude 2.1.260, and headless Edge. No installed Serena instance was replaced.
+
+The verifier now uses a Windows Job for server teardown, explicit browser
+discovery, and the lease's PID/birth identity plus parent chain for persistence
+checks. Short-lived helper processes are not mistaken for lost owners. Earlier
+attempts exited 1 at transient-helper checks and isolated Edge discovery; those
+were verifier defects. The next attempt exercised the desktop workflow but
+exited 1 on a browser 404. Workspace pages now reference the existing Serena
+favicon instead of causing Edge's missing `/favicon.ico` fallback request.
+
+Build (both initial and favicon rebuild exited 0, about 56 seconds):
+
+```sh
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B -m PyInstaller --noconfirm --distpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\dist --workpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\work C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\windows\sidecar-win.spec"
+SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-frozen-windows.py C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\dist\serena-web-sidecar\serena-web-sidecar.exe"
+```
+
+The initial frozen gate proof exited 0: no gate refused launch (child exit 2),
+echo returned exact bytes (child exit 0), descendant test observed two remaining
+processes then reaped all (child exit 0). Provider started: false.
+
+`/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -k app_route_bootstrap -q --tb=short`
+exited 0 (2 passed, 11 deselected). Initial assertions were inserted before Flask
+route registration and failed both cases; moving them into the existing response
+checks fixed the fixture. Ruff exited 0 for the verifier, page module and test.
+
+Final packaged browser command, exit 0:
+
+```sh
+SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys,subprocess; from pathlib import Path; r=Path(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); env=dict(os.environ,SERENA_PROOF_PYTHONPATH=str(r/'apps/desktop/build/proof-tools/windows-python'),SERENA_PROOF_BROWSER_CHANNEL='msedge',SERENA_PROOF_BROWSER_EXECUTABLE=r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'); args=['node',str(r/'scripts/verify-workspace-claude-driver.mjs'),str(r/'runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'),r'C:\Users\ragha\.local\bin\claude.exe',sys.executable,'',str(r/'apps/desktop/build/proof-tools/windows-electron/node_modules/electron/dist/electron.exe'),str(r/'apps/desktop/build/windows-proof-5cadd13/dist/serena-web-sidecar/serena-web-sidecar.exe')]; sys.exit(subprocess.run(args,env=env).returncode)\""
+```
+
+Observed at 1440x1000 and 390x844: exact native attach and command completion,
+explicit skill/plugin reload, project file picker and inline mentions, reload and
+view-close owner retention, zero console/page/HTTP errors, no horizontal overflow.
+Windows screenshots under `apps/desktop/build/workspace-proof/frozen-*.png` were
+inspected: readable wrapping and no overlapping controls. Process/profile cleanup
+also passed. This proves the packaged backend and real browser pane, not the
+installed Electron window, model inference, or full provider parity.
+
 ## Receiptless Native Clear Handoff
 
 The single-in-flight compatibility path now includes `/clear`. It attributes a

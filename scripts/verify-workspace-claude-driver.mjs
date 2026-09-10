@@ -18,6 +18,8 @@ const root=await mkdtemp(join(tmpdir(),'serena-claude-driver-'));
 const cleanEnv=isolatedProofEnv(process.env,root);
 const browsers=process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(),'.cache','ms-playwright');
 const proofPythonPath=process.env.SERENA_PROOF_PYTHONPATH;
+const proofBrowserChannel=process.env.SERENA_PROOF_BROWSER_CHANNEL;
+const proofBrowserExecutable=process.env.SERENA_PROOF_BROWSER_EXECUTABLE;
 for(const key of Object.keys(process.env)) delete process.env[key];
 Object.assign(process.env,cleanEnv,{PLAYWRIGHT_BROWSERS_PATH:browsers});
 const sdk=await import(pathToFileURL(resolve(sdkPath)).href);
@@ -153,7 +155,9 @@ try {
     assert(pythonPath && electronPath,'Frozen proof requires Python and Electron');
     const frozen=spawn(resolve(pythonPath),[fileURLToPath(new URL('./verify-workspace-frozen.py',import.meta.url)),
       resolve(frozenPath),resolve(sdkPath),resolve(electronPath),sid,root],{
-      env:{...process.env,SERENA_EVIDENCE_KIND:'live',...(proofPythonPath?{SERENA_PROOF_PYTHONPATH:proofPythonPath}:{})},stdio:['ignore','inherit','inherit']});
+      env:{...process.env,SERENA_EVIDENCE_KIND:'live',...(proofPythonPath?{SERENA_PROOF_PYTHONPATH:proofPythonPath}:{}),
+        ...(proofBrowserChannel?{SERENA_PROOF_BROWSER_CHANNEL:proofBrowserChannel}:{}),
+        ...(proofBrowserExecutable?{SERENA_PROOF_BROWSER_EXECUTABLE:proofBrowserExecutable}:{})},stdio:['ignore','inherit','inherit']});
     children.push(frozen);
     const frozenExit=new Promise((done,reject)=>{frozen.once('exit',(code,signal)=>done({code,signal}));frozen.once('error',reject);});
     exits.push(frozenExit);frozenExit.catch(()=>{});

@@ -42,6 +42,7 @@ def install_workspace(
         boot = json.dumps({"source": source, "cwd": str(Path(cwd).resolve()), "provider": provider, "seeded": seeded == "1", "token": token}).replace("<", "\\u003c")
         response = Response("""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>New """ + label + """ chat</title>
+<link rel="icon" href="/static/icons/serena-icon.ico">
 <link rel="stylesheet" href="/static/workspace-page.css"></head><body>
 <main class="workspace-create"><h1>New """ + label + """ chat</h1><label for="creation-project">Project</label>
 <input id="creation-project" readonly><p id="creation-status" role="status"></p>
@@ -70,6 +71,7 @@ def install_workspace(
         response = Response(
             """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Serena</title>
+<link rel="icon" href="/static/icons/serena-icon.ico">
 <link rel="stylesheet" href="/static/workspace-pane.css">
 <link rel="stylesheet" href="/static/workspace-page.css"></head><body>
 <button id="workspace-connect" type="button" disabled>Resume session</button><main id="workspace-pane"></main>

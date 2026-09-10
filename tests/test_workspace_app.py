@@ -340,6 +340,8 @@ function setTermStatus(status){window.lastStatus=status;}
         )
         page = client.get("/workspace/exact", base_url="http://127.0.0.1")
         assert page.status_code == 200
+        assert b'<link rel="icon" href="/static/icons/serena-icon.ico">' in page.data
+        assert client.get('/static/icons/serena-icon.ico').status_code == 200
         assert page.headers["Cache-Control"] == "no-store"
         assert "frame-ancestors 'self'" in page.headers["Content-Security-Policy"]
         assert owners == [] and host._loop is None

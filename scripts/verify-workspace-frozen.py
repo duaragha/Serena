@@ -1,4 +1,5 @@
 """Exercise the source or frozen HTTP workspace using an isolated seeded session."""
+import hashlib
 import json
 import os
 import signal
@@ -82,7 +83,12 @@ def main():
         process = subprocess.Popen(command,
                                    env=env, cwd=root, stdout=output, stderr=output, start_new_session=True)
         children = []
+        windows_job = None
         try:
+            if os.name == "nt":
+                from core.workspace_windows_job import WindowsJob
+                windows_job = WindowsJob()
+                windows_job.assign(process.pid)
             deadline = time.monotonic() + 20
             while True:
                 if process.poll() is not None:
@@ -105,8 +111,16 @@ def main():
             assert json.loads(request(f"/api/workspace/{sid}/events"))["events"] == []
             attached = json.loads(request(f"/api/workspace/{sid}/attach", {}))
             assert attached["ok"], attached
-            children = psutil.Process(process.pid).children(recursive=True)
-            assert children, "No native session process started"
+            lease_path = Path(env["SERENA_RUNTIME_LEASE_DIR"]) / (hashlib.sha256(sid.encode()).hexdigest() + ".json")
+            lease = json.loads(lease_path.read_text())
+            native = psutil.Process(lease["child"]["pid"])
+            assert native.create_time() == lease["child"]["born"]
+            children = [native]
+            parent = native.parent()
+            while parent is not None and parent.pid != process.pid:
+                children.append(parent)
+                parent = parent.parent()
+            assert parent is not None, "Native lease is not owned by this server"
             sent = json.loads(request(f"/api/workspace/{sid}/commands", {
                 "request_id": "frozen-local-command", "action": "submit",
                 "payload": {"inputs": [{"type": "text", "text": "/effort low"}]}}))
@@ -128,13 +142,15 @@ def main():
             screenshots = Path(__file__).resolve().parents[1] / "apps/desktop/build/workspace-proof"
             screenshots.mkdir(parents=True, exist_ok=True)
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch()
+                browser = playwright.chromium.launch(
+                    channel=os.environ.get("SERENA_PROOF_BROWSER_CHANNEL") or None,
+                    executable_path=os.environ.get("SERENA_PROOF_BROWSER_EXECUTABLE") or None)
                 try:
                     for label, width, height in (("desktop", 1440, 1000), ("mobile", 390, 844)):
                         page = browser.new_page(viewport={"width": width, "height": height})
                         errors = []
                         page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
-                        page.on("console", lambda message, errors=errors: errors.append(message.text) if message.type == "error" else None)
+                        page.on("console", lambda message, errors=errors: errors.append(f"{message.text} {message.location}") if message.type == "error" else None)
                         page.on("response", lambda response, errors=errors: errors.append(f"HTTP {response.status} {response.url}") if response.status >= 400 else None)
                         page.goto(f"{base}/workspace/{sid}")
                         page.get_by_role("button", name="Resume session", exact=True).click()
@@ -251,12 +267,22 @@ def main():
             raise AssertionError(f"HTTP {error.code}: {error.read().decode()}\n{log.read_text()}") from error
         finally:
             if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+                if windows_job is not None:
+                    windows_job.terminate()
+                elif os.name == "nt":
+                    process.terminate()
+                else:
+                    os.killpg(process.pid, signal.SIGTERM)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
+                if os.name == "nt":
+                    process.kill()
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
+            if windows_job is not None:
+                windows_job.close()
             _, alive = psutil.wait_procs(children, timeout=3)
             for child in alive:
                 child.kill()
