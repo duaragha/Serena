@@ -178,6 +178,13 @@ test('linux sidecar packaging resolves the repository above apps/desktop', () =>
   assert.match(script, /repo_root="\$\(cd "\$desktop_dir\/\.\.\/\.\." && pwd\)"/);
 });
 
+test('linux sidecar bundles the opt-in Gemini adapter and checks its dependency', () => {
+  const script = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-sidecar.sh'), 'utf8');
+  assert.match(script, /--hidden-import core\.workspace_gemini/);
+  assert.match(script, /"\$python_bin" -c 'import hjson'/);
+  assert.ok(script.indexOf("import hjson") < script.indexOf('rm -rf'));
+});
+
 test('the AppImage smoke run is isolated from the installed app', () => {
   const smoke = fs.readFileSync(path.join(desktopDir, 'tests', 'smoke-appimage.js'), 'utf8');
   assert.match(smoke, /SERENA_DESKTOP_SHARE_BACKEND:\s*'0'/);

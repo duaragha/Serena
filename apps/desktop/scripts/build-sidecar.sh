@@ -20,6 +20,10 @@ if ! "$python_bin" -c 'import PyInstaller' 2>/dev/null; then
   echo "PyInstaller is not installed in the repo venv: $python_bin -m pip install pyinstaller" >&2
   exit 1
 fi
+if ! "$python_bin" -c 'import hjson' 2>/dev/null; then
+  echo "Missing runtime dependency hjson; install this checkout's project dependencies before building" >&2
+  exit 1
+fi
 
 npm --prefix "$repo_root/runtimes/claude-sdk" ci --ignore-scripts --omit=optional --no-audit --no-fund
 rm -rf "$pyinstaller_work" "$sidecar_dist"
@@ -37,6 +41,7 @@ mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
   --workpath "$pyinstaller_work" \
   --specpath "$pyinstaller_work" \
   --paths "$repo_root" \
+  --hidden-import core.workspace_gemini \
   --collect-all numpy \
   --collect-submodules Xlib \
   --add-data "$repo_root/ui/static:ui/static" \

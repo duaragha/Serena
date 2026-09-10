@@ -2,6 +2,29 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Frozen Backend Refresh After Gemini Controls
+
+Source through `849092c`, plus the Linux packaging fix below, was rebuilt and
+verified with the isolated Electron shell. Linux now explicitly includes
+`core.workspace_gemini` even though default admission is disabled, and checks
+that `hjson` imports before replacing build output. Windows already installs
+the project dependencies and collects core submodules; Windows execution was
+not performed in this pass.
+
+Commands and results:
+
+- Repository root: `node --test apps/desktop/tests/shell.test.js`: exit 0,
+  10 passed, including the new hidden-import/dependency preflight regression.
+- From `apps/desktop`: `env PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar`: exit 0. Build completed in approximately 87s, followed by the bundled peer capability-refusal smoke. No Fleet workers were launched. Optional-library warnings remain.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: exit 0. Native 51-turn history/paging, desktop/mobile file mentions and skills, exact disconnect/resume, fork indexing, actual Electron clipboard copy/multiline paste, Codex/Claude new-chat titles and corrupt-creation refusal all passed. Shell close preserved owners; final isolated cleanup reaped them. No credentials or inference used.
+
+Static inspection of the executable's embedded PYZ confirmed presence of
+`core.workspace_gemini`, `core.workspace_acp`, `core.workspace_acp_session`,
+`core.workspace_acp_events`, `hjson`, `hjson.decoder` and `hjson.scanner`.
+Inspected regenerated `apps/desktop/build/workspace-proof/electron-native-workspace.png`.
+These are packaged-backend checks, not an installed AppImage/Windows test,
+authenticated Gemini proof or rollout. The full delivery contract stays open.
+
 ## Integrated Verification, 2026-09-09
 
 Verified source through `a17ba35`, then rebuilt the frozen Linux backend. No
