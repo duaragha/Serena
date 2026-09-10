@@ -115,3 +115,14 @@ def test_empty_baseline_checkout_cleanup_preserves_source(tmp_path):
     cleanup_run_checkout(run)
     assert not Path(run["cwd"]).exists()
     assert (root / "README.md").read_text() == "user dirty file\n"
+
+
+def test_learning_identity_requires_matching_checkout_receipt(tmp_path):
+    from fleet.learning import project_identity
+
+    root, _, store, run = setup_run(tmp_path)
+    ensure_run_checkout(store, run["run_id"])
+    run = store.get_run(run["run_id"])
+    assert project_identity(run) == str(root.resolve())
+    foreign = tmp_path / "other-project"
+    assert project_identity({**run, "cwd": str(foreign)}) == str(foreign.resolve())

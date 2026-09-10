@@ -345,7 +345,7 @@ button { font: inherit; }
   background: var(--dim); }
 .dot.running, .dot.queued, .dot.pending { background: var(--green);
   box-shadow: 0 0 7px rgba(63,185,80,.72); animation: pulse 1.6s ease-in-out infinite; }
-.dot.waiting_for_capacity { background: var(--amber);
+.dot.waiting_for_capacity, .dot.waiting_for_resources { background: var(--amber);
   box-shadow: 0 0 7px rgba(210,153,34,.55); animation: pulse 2.4s ease-in-out infinite; }
 .dot.complete, .dot.completed, .dot.succeeded, .dot.done { background: var(--green); }
 .dot.failed, .dot.error { background: var(--red); }
@@ -375,7 +375,7 @@ button { font: inherit; }
   text-transform: uppercase; letter-spacing: .45px; }
 .status.running, .status.queued, .status.pending { color: var(--green);
   border-color: rgba(63,185,80,.35); background: var(--green-dim); }
-.status.waiting_for_capacity { color: var(--amber);
+.status.waiting_for_capacity, .status.waiting_for_resources { color: var(--amber);
   border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.1); }
 .status.waiting_for_dependencies { color: var(--amber);
   border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.1); }
@@ -477,7 +477,7 @@ button { font: inherit; }
   </main>
 </div>
 <script>
-const ACTIVE_STATES = new Set(['created','pending','queued','running','stopping','waiting_for_capacity']);
+const ACTIVE_STATES = new Set(['created','pending','queued','running','stopping','waiting_for_capacity','waiting_for_resources']);
 const DELETABLE_STATES = new Set(['completed','failed','cancelled','planned']);
 const RETRY_STATES = new Set(['failed','error','stopped','cancelled','canceled']);
 const LEG_RETRY_RUN_STATES = new Set(['queued','running','failed','waiting_for_capacity']);
@@ -729,7 +729,7 @@ function legState(leg) {
   if (leg && leg.retry_requested) return 'retry-queued';
   const stored = norm(leg && leg.state);
   const attempted = norm(attempt.state);
-  if (stored === 'waiting_for_capacity') return stored;
+  if (['waiting_for_capacity','waiting_for_resources'].includes(stored)) return stored;
   if (stored === 'queued' && ['failed','error','cancelled','interrupted'].includes(attempted)) {
     return 'queued';
   }
@@ -1180,9 +1180,19 @@ function renderDetail() {
   root.append(head);
   if (run.error) root.append(el(
     'div',
-    status === 'waiting_for_capacity' ? 'capacity-banner' : 'error-banner',
+    ['waiting_for_capacity','waiting_for_resources'].includes(status) ? 'capacity-banner' : 'error-banner',
     run.error,
   ));
+  for (const wait of (run.resource_waits || [])) {
+    const next = new Date(Number(wait.not_before) * 1000).toLocaleTimeString();
+    root.append(el('div', 'capacity-banner',
+      `resource recovery: ${wait.resource} · next check ${next} · ` +
+      `requires ${(Number(wait.required_bytes) / 1024 ** 3).toFixed(1)} GiB free · ` +
+      `worker ${wait.leg_id} · completed work is preserved`));
+  }
+  if (run.checkout) root.append(el('div', 'capacity-banner',
+    `baseline ${run.checkout.baseline} · ${run.checkout.state} · ` +
+    `work is retained at ${run.checkout.path} · original checkout: ${run.source_cwd}`));
   const workPlan = renderWorkUnits(
     run,
     panelState.has('work-units') ? panelState.get('work-units') : true,

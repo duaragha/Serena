@@ -35,8 +35,22 @@ to discard committed or uncommitted delivered work in that root. Status retains
 Real-Git tests cover all four scheduled phases, dirty source/index preservation,
 retry preservation and deletion protection. Remaining: three-worker integration
 acceptance, explicit branch-name delivery, migration/repair of existing runs,
-source-project learning identity, user-facing checkout delivery and live acceptance.
+user-facing checkout delivery and live acceptance.
 This remains an implementation checkpoint, not a completed reliability claim.
+
+### State/UI hardening checkpoint
+
+Resource waits now render as active amber states rather than inheriting a failed
+attempt's red badge. The UI shows readiness requirements, next check and retained
+baseline checkout paths. The activation gate treats resource waits as active work.
+Late or duplicate terminal callbacks cannot overwrite an attempt or its replacement.
+Learning uses the source project only for a matching ready checkout receipt, while
+fingerprint checks read the actual current integration tree.
+
+The full Fleet pass initially recorded 484 passes and two failures: an absent
+worktree `.venv` executable link and a real learning project-scope regression.
+Both were corrected; 63 targeted tests and six checkout tests pass afterward,
+alongside 69 desktop tests. A fresh full-suite pass is still required before delivery.
 
 ## Production evidence, 2026-09-10
 

@@ -100,6 +100,22 @@ def test_cancelled_wait_never_resumes(tmp_path, monkeypatch):
     assert resume_ready_resource_waits(store, now=time.time() + 60) == []
 
 
+def test_late_old_attempt_cannot_overwrite_replacement(tmp_path, monkeypatch):
+    store, rid, _, leg, old = parked(tmp_path)
+    monkeypatch.setattr("fleet.resources.shutil.disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
+    assert resume_ready_resource_waits(store, now=time.time() + 60)
+    replacement = store.begin_attempt(leg["leg_id"])
+    store.finish_attempt(old["attempt_id"], state="completed", output_text="late old result")
+    current = store.get_run(rid)["phases"][1]["legs"][0]
+    assert current["state"] == "running"
+    assert current["current_attempt"]["attempt_id"] == replacement["attempt_id"]
+    store.finish_attempt(replacement["attempt_id"], state="completed", output_text="accepted")
+    store.finish_attempt(replacement["attempt_id"], state="failed", error="late duplicate")
+    current = store.get_run(rid)["phases"][1]["legs"][0]
+    assert current["state"] == "completed"
+    assert current["current_attempt"]["output_text"] == "accepted"
+
+
 @pytest.mark.parametrize("message", ["permission denied", "network unreachable", "quota exhausted"])
 def test_unrelated_failures_are_not_disk_waits(message):
     assert not is_disk_exhaustion(message)

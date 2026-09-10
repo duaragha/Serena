@@ -31,6 +31,7 @@ WORK_UNIT_STATES = frozenset(
         "in_progress",
         "running",
         "waiting_for_capacity",
+        "waiting_for_resources",
         "waiting_for_dependencies",
         "completed",
         "failed",
@@ -462,6 +463,8 @@ def _base_state(run_state: str, leg_states: list[str]) -> str:
         return "completed"
     if "waiting_for_capacity" in leg_states:
         return "waiting_for_capacity"
+    if "waiting_for_resources" in leg_states:
+        return "waiting_for_resources"
     if "running" in leg_states or "completed" in leg_states:
         return "in_progress"
     if run_state == "failed" or "failed" in leg_states:

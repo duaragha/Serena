@@ -34,7 +34,7 @@ from fleet.store import FleetStore
 SCHEMA_VERSION = 1
 DEFAULT_MAX_RECEIPT_AGE_SECONDS = 24 * 60 * 60
 ACTIVE_RUN_STATES = frozenset(
-    {"queued", "running", "stopping", "waiting_for_capacity"}
+    {"queued", "running", "stopping", "waiting_for_capacity", "waiting_for_resources"}
 )
 DEFAULT_RECEIPT_PATH = (
     Path.home() / ".local" / "state" / "serena" / "fleet-acceptance.json"
@@ -507,7 +507,7 @@ def active_fleet_runs(database: str | Path) -> list[dict[str, str]]:
     try:
         connection.execute("PRAGMA query_only = ON")
         rows = connection.execute(
-            "SELECT run_id, state FROM fleet_runs WHERE state IN (?, ?, ?, ?) "
+            "SELECT run_id, state FROM fleet_runs WHERE state IN (?, ?, ?, ?, ?) "
             "ORDER BY created_at",
             tuple(sorted(ACTIVE_RUN_STATES)),
         ).fetchall()

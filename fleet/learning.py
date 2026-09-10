@@ -17,6 +17,15 @@ from fleet.context import redact_text
 from fleet.store import FleetStore
 
 
+def project_identity(run: dict) -> str:
+    checkout = run.get("checkout") or {}
+    current = Path(run["cwd"]).resolve()
+    if (checkout.get("state") == "ready" and checkout.get("path")
+            and Path(checkout["path"]).resolve() == current):
+        return str(Path(checkout["source_cwd"]).resolve())
+    return str(current)
+
+
 def fingerprints(cwd: str, paths: list[str]) -> dict[str, str]:
     root = Path(cwd).resolve()
     if not 1 <= len(paths) <= 8:
@@ -99,7 +108,7 @@ class FleetLearning:
                 VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
                     lesson_id,
-                    str(Path(run["cwd"]).resolve()),
+                    project_identity(run),
                     who["run_id"],
                     who["attempt_id"],
                     who["worker_key"],
@@ -157,7 +166,7 @@ class FleetLearning:
         if os.environ.get("SERENA_FLEET_LESSONS", "on") == "off":
             self.store.append_event(run["run_id"], "learning.reuse.disabled", {"attempt_id": attempt_id})
             return []
-        project = str(Path(run["cwd"]).resolve())
+        project = project_identity(run)
         selected = []
         with self.store._connect() as db:
             rows = db.execute(
@@ -168,7 +177,7 @@ class FleetLearning:
             for row in rows:
                 evidence = json.loads(row["evidence"])
                 try:
-                    current = fingerprints(project, list(evidence))
+                    current = fingerprints(run["cwd"], list(evidence))
                 except (ValueError, OSError):
                     continue
                 if current != evidence:
@@ -226,7 +235,7 @@ class FleetLearning:
                 "INSERT OR REPLACE INTO fleet_learning_outcomes VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     run_id,
-                    str(Path(run["cwd"]).resolve()),
+                    project_identity(run),
                     run["state"],
                     duration,
                     attempts,

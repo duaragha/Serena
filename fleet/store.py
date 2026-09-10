@@ -834,6 +834,21 @@ class FleetStore:
             if attempt is None:
                 raise KeyError(f"unknown Fleet attempt {attempt_id}")
             run = self._require_run(connection, str(attempt["run_id"]))
+            latest = connection.execute(
+                "SELECT attempt_id FROM fleet_attempts WHERE leg_id = ? "
+                "ORDER BY attempt_number DESC LIMIT 1", (attempt["leg_id"],),
+            ).fetchone()
+            if (attempt["state"] in TERMINAL_ATTEMPT_STATES
+                    or latest["attempt_id"] != attempt_id):
+                # A duplicate callback or old process generation has no authority
+                # over a replacement attempt's leg/DAG state.
+                self._insert_event(
+                    connection, run_id=str(attempt["run_id"]),
+                    leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                    event_type="attempt.late_result_ignored",
+                    payload={"reported_state": state, "preserved_state": attempt["state"]},
+                )
+                return
             if state == "completed" and bool(run["cancel_requested"]):
                 state = "cancelled"
                 clean_error = clean_error or "cancelled by user"
