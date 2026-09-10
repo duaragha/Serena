@@ -1702,11 +1702,14 @@ def serve_forever(
             next_control_flush = monotonic_now + CONTROL_PLANE_FLUSH_SECONDS
         if monotonic_now >= next_capacity_probe:
             from fleet.resources import resume_ready_resource_waits
+            from fleet.ready_resume import resume_ready_input_runs
 
             with suppress(Exception):
                 resume_ready_resource_waits(store)
             with suppress(Exception):
                 resume_ready_capacity_waits(store)
+            with suppress(Exception):
+                resume_ready_input_runs(store)
             next_capacity_probe = monotonic_now + CAPACITY_POLL_SECONDS
         launched = False
         while not stopper.is_set():

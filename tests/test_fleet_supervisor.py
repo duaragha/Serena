@@ -1023,7 +1023,8 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
 
 
 @pytest.mark.parametrize("worker_count", [2, 3])
-def test_input_blocked_writer_can_review_peer_and_peer_can_finish(fleet_env, monkeypatch, worker_count):
+@pytest.mark.parametrize("legacy_park", [False, True])
+def test_input_blocked_writer_can_review_peer_and_peer_can_finish(fleet_env, monkeypatch, worker_count, legacy_park):
     calls = []
     successful = _successful_fake([])
     blocker = "authenticated checkout evidence is unavailable"
@@ -1046,12 +1047,37 @@ def test_input_blocked_writer_can_review_peer_and_peer_can_finish(fleet_env, mon
 
     monkeypatch.setattr(supervisor, "run_worker", worker)
     monkeypatch.setattr(supervisor, "_completion_verdict", verdict)
+    current_ordering = supervisor._prior_turn_blocks_dispatch
+    if legacy_park:
+        monkeypatch.setattr(supervisor, "_prior_turn_blocks_dispatch", lambda candidate, prior: prior["state"] != "completed")
     run = supervisor.start_run(
         "Implement independent workstreams:\n1. Alpha feature\n2. Beta feature"
         + ("\n3. Gamma feature" if worker_count == 3 else ""), activity="coding",
         provider_mode="codex", worker_count=worker_count, cwd=str(fleet_env),
     )
     parked = supervisor.run_supervisor(run["run_id"])
+    if legacy_park:
+        from fleet.ready_resume import resume_ready_input_runs
+        from fleet.store import FleetStore
+
+        assert (reviewer, "verify") not in calls
+        before = parked["phases"][1]["legs"][0]["current_attempt"]
+        # v0.2.31 parked the logical input leg only after marking its DAG
+        # execution failed; reproduce that older persisted projection too.
+        legacy = supervisor._store()
+        with legacy._connect() as db:
+            db.execute("UPDATE fleet_work_unit_phases SET state='failed' WHERE leg_id IN (SELECT leg_id FROM fleet_legs WHERE run_id=? AND state='waiting_for_input')", (run["run_id"],))
+        legacy.prepare_phase_runnable(run["run_id"], 2)
+        legacy.prepare_phase_runnable(run["run_id"], 3)
+        monkeypatch.setattr(supervisor, "_prior_turn_blocks_dispatch", current_ordering)
+        restarted = FleetStore(supervisor._store().path)
+        assert resume_ready_input_runs(restarted) == [run["run_id"]]
+        assert resume_ready_input_runs(restarted) == []
+        assert restarted.get_run(run["run_id"])["phases"][1]["legs"][0]["current_attempt"] == before
+        parked = supervisor.run_supervisor(run["run_id"])
+        assert resume_ready_input_runs(restarted) == []
+        assert calls.count(("agent:a", "execute")) == 1
+        assert restarted.has_event(run["run_id"], "run.ready_work_resumed")
     assert (reviewer, "verify") in calls
     assert (healthy, "finalize") in calls
     assert (healthy, "verify") not in calls
