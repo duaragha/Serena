@@ -84,7 +84,7 @@ class FleetStore:
         safe_policy, _policy_redactions = redact_value(policy)
         if not isinstance(safe_policy, dict):
             raise ValueError("Fleet policy must be an object")
-        from fleet.checkout import requested_baseline
+        from fleet.checkout import checkout_path, requested_baseline
 
         baseline = requested_baseline(safe_task, Path(cwd))
         clean_key = str(idempotency_key or "").strip() or None
@@ -127,7 +127,7 @@ class FleetStore:
                     "INSERT INTO fleet_run_checkouts(run_id, source_cwd, baseline, path, state) "
                     "VALUES (?, ?, ?, ?, 'pending')",
                     (run_id, str(Path(cwd).resolve()), baseline,
-                     str(self.path.parent / "fleet-checkouts" / run_id)),
+                     str(checkout_path(self.path, Path(cwd), run_id))),
                 )
             leg_state = "planned" if dry_run else "queued"
             for phase in safe_policy["phases"]:

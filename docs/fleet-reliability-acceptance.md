@@ -36,7 +36,7 @@ Real-Git tests cover all four scheduled phases, dirty source/index preservation,
 retry preservation and deletion protection. Three-worker scheduler coverage now
 includes real Code/Fix file edits integrated only into the run checkout.
 Remaining: explicit branch-name delivery, production repair of the affected run,
-user-facing checkout delivery and live acceptance.
+and live acceptance.
 This remains an implementation checkpoint, not a completed reliability claim.
 
 Older runs without a checkout receipt now adopt their explicit baseline before
@@ -98,6 +98,12 @@ a real disposable Python subprocess speaking native-protocol fixture events: it
 writes a file, kills itself with SIGKILL, then resumes with the preserved patch and
 completed Research attempt. This is not a live-model test. 108 process/resource/
 worker/supervisor/UI tests pass. Other platform exit codes remain unclassified.
+
+New baseline checkout receipts now place Projects-based deliverables under the
+synced `_artifacts/fleet-checkouts/<run-id>/` tree. Standalone test repositories
+retain colocated private state, and existing receipts are not relocated or erased.
+The status/UI checkout path identifies the retained deliverables. 35 baseline,
+process and resource tests pass after the storage-path change.
 
 Run `bc257933-5fa8-4c77-ba2d-da4c2e11e80e` requested mandatory commit
 `e364331db71c399b948f1a4d87c14dff43c2ec78`, explicitly not main.

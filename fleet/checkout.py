@@ -7,6 +7,20 @@ import subprocess
 from pathlib import Path
 
 
+def checkout_path(database: Path, source: Path, run_id: str) -> Path:
+    """Keep deliverables in the synced Projects tree when the project lives there."""
+    from core.machine_context import projects_root
+
+    source = source.resolve()
+    projects = projects_root()
+    if projects is None or not source.is_relative_to(projects.resolve()):
+        projects = next((parent for parent in source.parents if parent.name.lower() == "projects"), None)
+    if projects is not None and source.is_relative_to(projects.resolve()):
+        return projects.resolve() / "_artifacts" / "fleet-checkouts" / run_id
+    # Standalone/disposable repositories still use their colocated state store.
+    return database.parent / "fleet-checkouts" / run_id
+
+
 def _git(root: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(root), *args], capture_output=True, text=True, timeout=30,
@@ -67,7 +81,7 @@ def ensure_run_checkout(store, run_id: str) -> None:
             connection.execute(
                 "INSERT OR IGNORE INTO fleet_run_checkouts(run_id, source_cwd, baseline, path, state) "
                 "VALUES (?, ?, ?, ?, 'pending')",
-                (run_id, run["cwd"], baseline, str(store.path.parent / "fleet-checkouts" / run_id)),
+                (run_id, run["cwd"], baseline, str(checkout_path(store.path, Path(run["cwd"]), run_id))),
             )
             row = connection.execute(
                 "SELECT * FROM fleet_run_checkouts WHERE run_id = ?", (run_id,),

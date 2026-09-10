@@ -179,3 +179,15 @@ def test_legacy_baseline_adoption_refuses_live_or_accepted_write_work(tmp_path, 
     with pytest.raises(RuntimeError, match="running or accepted"):
         ensure_run_checkout(store, run["run_id"])
     assert store.get_run(run["run_id"])["checkout"] is None
+
+
+def test_project_checkout_delivery_uses_synced_artifacts(tmp_path, monkeypatch):
+    from fleet.checkout import checkout_path
+
+    projects = tmp_path / "Projects"
+    source = projects / "company" / "storefront"
+    monkeypatch.setattr("core.machine_context.projects_root", lambda: projects)
+    database = tmp_path / "private-state" / "fleet.sqlite3"
+    assert checkout_path(database, source, "run-id") == projects / "_artifacts" / "fleet-checkouts" / "run-id"
+    other = tmp_path / "disposable"
+    assert checkout_path(database, other, "run-id") == database.parent / "fleet-checkouts" / "run-id"
