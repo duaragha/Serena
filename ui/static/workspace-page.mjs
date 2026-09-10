@@ -37,6 +37,23 @@ function reportState() {
 }
 window.addEventListener('message', e => {
   if (e.origin === location.origin && e.source === parent && e.data?.type === 'serena-workspace-focus') pane.input.focus();
+  if(e.origin!==location.origin || e.source!==parent || e.data?.type!=='serena-workspace-handoff' || e.data.sid!==boot.sessionId)return;
+  const {requestId,text}=e.data;
+  if(typeof requestId!=='string' || !requestId || typeof text!=='string')return;
+  try{connection.requireReceipts();}catch(error){
+    pane.error(error);
+    parent.postMessage({type:'serena-workspace-handoff-result',sid:boot.sessionId,requestId,result:{ok:false,error:error.message}},location.origin);
+    return;
+  }
+  connection.request('/handoff',{provider:boot.provider.toLowerCase(),prompt:text,request_id:requestId}).then(async result=>{
+    parent.postMessage({type:'serena-workspace-handoff-result',sid:boot.sessionId,requestId,result},location.origin);
+    // Observe the existing owner; do not submit the draft or reattach again.
+    await connection.poll();
+    if(result.ok || result.pending)button.hidden=true;
+  }).catch(error=>{
+    pane.error(error);
+    parent.postMessage({type:'serena-workspace-handoff-result',sid:boot.sessionId,requestId,result:{ok:false,error:error.message}},location.origin);
+  });
 });
 const button = document.querySelector('#workspace-connect');
 if(pane.clearedSession)button.textContent='Resume original conversation';

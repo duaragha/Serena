@@ -2,6 +2,39 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Handoff Routing (2026-09-10)
+
+The main app's Handoff action previously waited for a terminal WebSocket even
+when the destination was a structured pane. Existing-session handoffs now travel
+through an origin/source-checked iframe request and authenticated HTTP route,
+then the exact owner's existing bridge queue. Explicit handoff uses ordinary
+admission/lease checks to attach the destination; no session creation fallback
+exists. Composer drafts are untouched. View removal only stops observing the
+acknowledgement, not background delivery. Pending acknowledgements are reported
+as pending, never as completed delivery. A new destination instead uses the
+existing explicit Create and send flow with its briefing as seed context, keeping
+the source title and pending linked-group metadata.
+
+Verification:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q
+# exit 0: 22 passed (both providers, authenticated route, rejection, exact target,
+# unchanged draft/owner, no automatic launch)
+node --test tests/workspace-handoff.test.mjs
+# exit 0: 2 passed; actual app handoff function takes seeded creation, not paste
+env SERENA_EVIDENCE_KIND=live CODEX_HOME=/tmp/serena-codex-browser-login-mltgygq4 /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --bridge
+# exit 0: real authenticated HTTP handoff returned exact native session output;
+# repeated request reused the same receipt; queue edit/cancel checks passed;
+# isolated owned processes and temporary auth/history were cleaned up
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check ui/workspace_web.py tests/test_workspace_catalog.py tests/test_workspace_app.py scripts/verify-workspace-codex-roundtrip.py
+# exit 0: All checks passed
+node --check ui/static/workspace-page.mjs
+# exit 0
+```
+
+This is source-branch verification, not installed-app delivery or complete parity.
+
 Current user scope (2026-09-10): finish **Claude and Codex**; Gemini is deferred
 at the user's explicit request. Historical three-provider requirements below
 are retained as history, not a reason to block this two-provider delivery.

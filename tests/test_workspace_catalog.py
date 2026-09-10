@@ -58,6 +58,33 @@ def test_saved_session_route_requires_auth_without_calling_owner(monkeypatch):
     assert calls == [("codex", "custom", 50)]
 
 
+def test_explicit_handoff_uses_exact_owner_and_refuses_failed_attachment():
+    from flask import Flask
+
+    from ui.workspace_web import workspace_blueprint
+
+    calls = []
+    host = SimpleNamespace(
+        attach=lambda sid: calls.append(("attach", sid)) or {"ok": True},
+        bridge=lambda *args, **kwargs: calls.append(("bridge", args, kwargs)) or {"ok": True, "queued": True},
+    )
+    app = Flask(__name__)
+    app.register_blueprint(workspace_blueprint(host, token="s" * 40))
+    client = app.test_client()
+    payload = {"provider": "codex", "prompt": "Briefing", "request_id": "stable"}
+    url = "/api/workspace/exact/handoff"
+    headers = {"X-Serena-Workspace-Token": "s" * 40}
+    assert client.post(url, json=payload).status_code == 403
+    assert client.post(url, json={**payload, "prompt": ""}, headers=headers).status_code == 400
+    assert not calls
+    assert client.post(url, json=payload, headers=headers).json == {"ok": True, "queued": True}
+    assert calls == [("attach", "exact"), ("bridge", ("exact", "codex", "Briefing", "stable"), {"timeout": 1})]
+    calls.clear()
+    host.attach = lambda sid: {"ok": False, "error": "Already owned elsewhere"}
+    assert client.post(url, json=payload, headers=headers).json["ok"] is False
+    assert not calls
+
+
 @pytest.mark.parametrize("field", ["uuid", "promptId"])
 def test_claude_registration_waits_for_exact_completed_prompt(tmp_path, monkeypatch, field):
     from core.workspace_catalog import NativeTranscriptPending

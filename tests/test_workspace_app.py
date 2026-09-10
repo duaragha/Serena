@@ -500,6 +500,18 @@ function setTermStatus(status){window.lastStatus=status;}
             assert page.locator("iframe").count() == 1
             assert nested.locator(".xterm").count() == 0
             assert page.evaluate("termSessions.get('exact').state") == "ready"
+            handoffs = []
+            original_bridge = host.bridge
+            host.bridge = lambda sid, agent, prompt, request_id, **kwargs: handoffs.append((sid, agent, prompt, request_id)) or {"ok": True, "queued": True, "pending": True}
+            nested.get_by_role("textbox", name=f"Message {provider.capitalize()}").fill("Keep the unsent draft")
+            result = page.evaluate("termSessions.get('exact').handoff('Exact linked briefing')")
+            assert result == {"ok": True, "queued": True, "pending": True}
+            assert handoffs[0][:3] == ("exact", provider, "Exact linked briefing")
+            assert len(handoffs[0][3]) == 36
+            assert len(owners) == 1 and len(owners[0].sent) == 2
+            assert nested.get_by_role("textbox", name=f"Message {provider.capitalize()}").input_value() == "Keep the unsent draft"
+            assert not owners[0].closed
+            host.bridge = original_bridge
             page.evaluate("""() => window.postMessage({type:'serena-workspace-open-fork',sid:'exact',target:'11111111-1111-4111-8111-111111111111'},location.origin)""")
             page.wait_for_timeout(50)
             assert page.evaluate("openedForks") == []

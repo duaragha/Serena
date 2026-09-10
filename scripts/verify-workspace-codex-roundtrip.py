@@ -146,6 +146,10 @@ async def main(review=False, compact=False, permissions=False, bridge=False, ski
                 assert any(event.get("method") == "item/completed" and event.get("params", {}).get("item", {}).get("type") == "agentMessage" and "SERENA_NATIVE_SKILL_PROOF" in event["params"]["item"].get("text", "") for event in published[before:])
                 print("PASS: native skill steering completed on the original active turn, without a second turn")
             if bridge:
+                from flask import Flask
+
+                from ui.workspace_web import workspace_blueprint
+
                 await owner.close()
                 owner = None
 
@@ -169,6 +173,16 @@ async def main(review=False, compact=False, permissions=False, bridge=False, ski
                         )
                     },
                 )
+                app = Flask(__name__)
+                app.register_blueprint(workspace_blueprint(host, token="proof-handoff-token-" * 3))
+
+                def handoff():
+                    with app.test_client() as client:
+                        result = client.post(f"/api/workspace/{sid}/handoff",
+                                             headers={"X-Serena-Workspace-Token": "proof-handoff-token-" * 3},
+                                             json={"provider": "codex", "prompt": "Reply exactly SERENA_BRIDGE_PROOF", "request_id": "proof-bridge"})
+                        assert result.status_code == 200
+                        return result.json
                 try:
                     assert (await asyncio.to_thread(host.attach, sid))["ok"]
                     warm = await asyncio.to_thread(
@@ -191,13 +205,7 @@ async def main(review=False, compact=False, permissions=False, bridge=False, ski
                         {"request_id": "cancel-bridge"},
                     )
                     assert cancellation["result"]["cancelled"]
-                    response = await asyncio.to_thread(
-                        host.bridge,
-                        sid,
-                        "codex",
-                        "Reply exactly SERENA_BRIDGE_PROOF",
-                        "proof-bridge",
-                    )
+                    response = await asyncio.to_thread(handoff)
                     assert response.get("queued"), "Proof did not encounter the running native turn"
                     edited = await asyncio.to_thread(
                         host.command, sid, "edit-control", "edit_queued_bridge",
@@ -237,16 +245,10 @@ async def main(review=False, compact=False, permissions=False, bridge=False, ski
                     print(
                         "PASS: queued cancellation stayed out of native user turns; running turn preserved"
                     )
-                    same = await asyncio.to_thread(
-                        host.bridge,
-                        sid,
-                        "codex",
-                        "Reply exactly SERENA_BRIDGE_PROOF",
-                        "proof-bridge",
-                    )
+                    same = await asyncio.to_thread(handoff)
                     assert same == response
                     print(
-                        "PASS: native host bridge returns exact-session output; repeated request reuses receipt"
+                        "PASS: authenticated HTTP handoff returns exact-session output; repeated request reuses receipt"
                     )
                 finally:
                     await asyncio.to_thread(host.shutdown)

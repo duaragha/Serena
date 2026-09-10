@@ -7065,8 +7065,23 @@ function _startStructuredPane(sid, opts) {
   mount.appendChild(frame); container.appendChild(mount);
   const runtime = {sid, mount, structured:true, state:'Ready to resume.', busy:false,
     focus:() => frame.contentWindow?.postMessage({type:'serena-workspace-focus'}, location.origin)};
+  const handoffs = new Map();
+  let frameLoaded=false;
+  frame.addEventListener('load',()=>{frameLoaded=true;});
+  runtime.handoff = text => new Promise(resolve => {
+    const requestId=crypto.randomUUID();
+    const timer=setTimeout(()=>{handoffs.delete(requestId);resolve({ok:false,pending:true,error:'Handoff acknowledgement is pending; do not resend.'});},40000);
+    handoffs.set(requestId,{resolve,timer});
+    const send=()=>{if(handoffs.has(requestId))frame.contentWindow?.postMessage({type:'serena-workspace-handoff',sid,requestId,text},location.origin);};
+    if(frameLoaded)send();else frame.addEventListener('load',send,{once:true});
+  });
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
+    if(event.data?.type==='serena-workspace-handoff-result'){
+      const pending=handoffs.get(event.data.requestId);
+      if(pending){clearTimeout(pending.timer);handoffs.delete(event.data.requestId);pending.resolve(event.data.result);}
+      return;
+    }
     if(['serena-workspace-open-fork','serena-workspace-open-cleared','serena-workspace-open-created','serena-workspace-open-session'].includes(event.data?.type)){
       const target=event.data.target;
       if(typeof target !== 'string' || !/^[a-f0-9-]{36}$/.test(target) || target===sid)return;
@@ -7100,7 +7115,11 @@ function _startStructuredPane(sid, opts) {
     if (activeTermSid === sid) setTermStatus(state, state === 'unavailable' ? 'error' : '');
   };
   window.addEventListener('message', receive);
-  runtime.cancelOutput = () => window.removeEventListener('message', receive);
+  runtime.cancelOutput = () => {
+    window.removeEventListener('message', receive);
+    for(const pending of handoffs.values()){clearTimeout(pending.timer);pending.resolve({ok:false,pending:true,error:'View closed before handoff acknowledgement; do not resend.'});}
+    handoffs.clear();
+  };
   termSessions.set(sid, runtime);
   if (opts.background) {
     mount.classList.add('hidden');
@@ -8613,6 +8632,13 @@ async function _feedTerminalWhenReady(sid, text, submit, opts) {
     }
     if (!window.__nativeTerminalBridge) {
       const runtime = termSessions.get(sid);
+      if(runtime?.structured){
+        if(!submit)return false;
+        const result=await runtime.handoff(text);
+        if(result?.ok)return true;
+        if(result?.pending)return 'pending';
+        return false;
+      }
       if (runtime && runtime.ws && runtime.ws.readyState === 1) {
         if (settleMs) await _sleep(settleMs);
         runtime.ws.send('\x1b[200~' + text + '\x1b[201~');
@@ -8753,8 +8779,8 @@ async function handoffSession(srcSid, targetAgent) {
           timeoutMs: 5000,
           settleMs: 0,
         });
-        toast.update(ok ? 'Handed off to ' + targetLabel : 'Handoff did not reach ' + targetLabel,
-          ok ? 'success' : 'error');
+        toast.update(ok === 'pending' ? 'Handoff pending for ' + targetLabel + '; do not resend.' : ok ? 'Handed off to ' + targetLabel : 'Handoff did not reach ' + targetLabel,
+          ok === 'pending' ? 'warning' : ok ? 'success' : 'error');
       }
     } else {
       openConv(targetSid);
@@ -8762,8 +8788,8 @@ async function handoffSession(srcSid, targetAgent) {
         timeoutMs: 15000,
         settleMs: 1200,
       });
-      toast.update(ok ? 'Handed off to ' + targetLabel : 'Opened ' + targetLabel + ', but handoff may not have landed',
-        ok ? 'success' : 'error');
+      toast.update(ok === 'pending' ? 'Handoff pending for ' + targetLabel + '; do not resend.' : ok ? 'Handed off to ' + targetLabel : 'Opened ' + targetLabel + ', but handoff may not have landed',
+        ok === 'pending' ? 'warning' : ok ? 'success' : 'error');
     }
     return;
   }
@@ -8826,8 +8852,14 @@ async function handoffSession(srcSid, targetAgent) {
 
   setTermStatus('Starting ' + targetAgent + '…', 'live');
   if (window.__nativeTerminalBridge) await startGtkCode(tempId);
-  else await startLiveTerminal(tempId, { cwd, agent: targetAgent, isNew: true });
+  else await startLiveTerminal(tempId, { cwd, agent: targetAgent, isNew: true,
+    ...(window.SERENA?.structuredWorkspace ? {seed:resp.prompt} : {}) });
   _startPseudoReconciler();
+
+  if(termSessions.get(tempId)?.structured){
+    toast.update('Ready to create ' + _agentLabel(targetAgent) + ' with handoff context', 'success');
+    return;
+  }
 
   const ok = await _feedTerminalWhenReady(tempId, resp.prompt, true, {
     timeoutMs: 18000,

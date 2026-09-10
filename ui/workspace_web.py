@@ -49,6 +49,25 @@ def workspace_blueprint(host, *, token: str):
     def attach(sid):
         return jsonify(host.attach(sid))
 
+    @bp.post("/<sid>/handoff")
+    def handoff(sid):
+        data = request.get_json(silent=True)
+        if (not isinstance(data, dict) or set(data) != {"provider", "prompt", "request_id"}
+                or data["provider"] not in {"claude", "codex"}
+                or not isinstance(data["prompt"], str) or not data["prompt"].strip()
+                or len(data["prompt"].encode("utf-8")) > 1024 * 1024
+                or not isinstance(data["request_id"], str) or not 1 <= len(data["request_id"]) <= 100):
+            raise ValueError("An exact handoff provider, prompt and request ID are required")
+        # Explicit user handoff may attach the exact target, through the same
+        # admission/lease checks as Resume. It never creates a session.
+        attached = host.attach(sid)
+        if not attached.get("ok"):
+            return jsonify(attached)
+        result = host.bridge(sid, data["provider"], data["prompt"], data["request_id"], timeout=1)
+        if result is None:
+            raise RuntimeError("Handoff target has no attached owner")
+        return jsonify(result)
+
     @bp.get("/<sid>/sessions")
     def sessions(sid):
         from core.workspace_catalog import list_saved_sessions
