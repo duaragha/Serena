@@ -15,6 +15,7 @@ from core.billing import strip_metered_auth_env
 from core.workspace_codex import CodexWorkspace
 from core.workspace_elicitation import validate_reply
 from core.workspace_rpc import WorkspaceRpc
+from scripts.workspace_proof_auth import read_test_auth
 
 
 def serve():
@@ -40,16 +41,13 @@ def serve():
     server.run()
 
 
-async def main(inventory_only=False):
+async def main(inventory_only=False, auth_home=None):
     binary = shutil.which("codex")
     if not binary:
         raise RuntimeError("Codex is unavailable")
     auth = None
     if not inventory_only:
-        auth_path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
-        auth = json.loads(auth_path.read_text())
-        if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
-            raise RuntimeError("Proof requires existing ChatGPT subscription authentication")
+        auth = read_test_auth(auth_home)
     with tempfile.TemporaryDirectory(prefix="serena-mcp-proof-") as directory:
         root = Path(directory)
         home = root / "codex"
@@ -160,5 +158,8 @@ if __name__ == "__main__":
         mode = parser.add_mutually_exclusive_group(required=True)
         mode.add_argument("--allow-inference", action="store_true")
         mode.add_argument("--inventory-only", action="store_true")
+        parser.add_argument("--auth-home", type=Path)
         args = parser.parse_args()
-        asyncio.run(main(inventory_only=args.inventory_only))
+        if bool(args.auth_home) != args.allow_inference:
+            parser.error("--auth-home is required only with --allow-inference")
+        asyncio.run(main(inventory_only=args.inventory_only, auth_home=args.auth_home))

@@ -192,6 +192,7 @@ def main():
     import psutil
     parser = argparse.ArgumentParser()
     parser.add_argument('--allow-inference', action='store_true', required=True)
+    parser.add_argument('--auth-home', type=Path)
     parser.add_argument('--child', type=Path)
     parser.add_argument('--expect-auth-failure', action='store_true')
     failure = parser.add_mutually_exclusive_group()
@@ -204,11 +205,11 @@ def main():
         return
     from core.billing import strip_metered_auth_env
     from core.work_session_router import SOL_MODEL
+    from scripts.workspace_proof_auth import read_test_auth
 
-    source = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'auth.json'
-    auth = json.loads(source.read_text())
-    if auth.get('auth_mode') != 'chatgpt' or not auth.get('tokens'):
-        raise RuntimeError('Existing ChatGPT subscription authentication is required')
+    if not args.auth_home:
+        parser.error('--auth-home is required for the parent proof')
+    auth = read_test_auth(args.auth_home)
     with tempfile.TemporaryDirectory(prefix='serena-native-work-proof-') as temporary:
         root = Path(temporary)
         home = root / 'home'

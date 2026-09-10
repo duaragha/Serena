@@ -14,9 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.billing import strip_metered_auth_env
 from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
+from scripts.workspace_proof_auth import read_test_auth
 
 
-async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False, signed_apps=False):
+async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False, signed_apps=False, auth_home=None):
+    auth = read_test_auth(auth_home) if signed_limits or signed_apps else None
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
     with tempfile.TemporaryDirectory(prefix="serena-account-proof-") as directory:
@@ -28,10 +30,6 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
         if signed_apps:
             (home / '.codex' / 'config.toml').write_text('[features]\napps = true\n')
         if signed_limits or signed_apps:
-            source = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
-            auth = json.loads(source.read_text())
-            if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
-                raise RuntimeError("Existing ChatGPT subscription authentication is required")
             with open(home / ".codex" / "auth.json", "x",
                       opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
                 json.dump({"auth_mode": "chatgpt", "tokens": auth["tokens"],
@@ -184,9 +182,12 @@ if __name__ == "__main__":
     parser.add_argument("--hooks", action="store_true", help="Read native empty hook inventory without running hooks")
     parser.add_argument("--command-guard", action="store_true", help="Reject unsupported slash input on a disposable native owner")
     parser.add_argument("--signed-apps", action="store_true", help="Read apps with an isolated subscription login copy; no tool calls or inference")
+    parser.add_argument("--auth-home", type=Path, help="Separate disposable ChatGPT test profile; never the normal or active login")
     args = parser.parse_args()
     if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks or args.command_guard):
         parser.error("--signed-limits must run alone")
-    if args.signed_apps and any(value for key, value in vars(args).items() if key != 'signed_apps'):
+    if args.signed_apps and any(value for key, value in vars(args).items() if key not in {'signed_apps', 'auth_home'}):
         parser.error("--signed-apps must run alone")
-    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard, args.signed_apps))
+    if bool(args.auth_home) != bool(args.signed_limits or args.signed_apps):
+        parser.error("--auth-home is required only with --signed-limits or --signed-apps")
+    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard, args.signed_apps, args.auth_home))

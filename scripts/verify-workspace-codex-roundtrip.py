@@ -17,16 +17,14 @@ from core.workspace_host import WorkspaceHost
 from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
+from scripts.workspace_proof_auth import read_test_auth
 
 
-async def main(review=False, compact=False, permissions=False, bridge=False, skills=False):
+async def main(review=False, compact=False, permissions=False, bridge=False, skills=False, auth_home=None):
     binary = shutil.which("codex")
     if not binary:
         raise RuntimeError("Installed Codex unavailable")
-    auth_path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
-    auth = json.loads(auth_path.read_text())
-    if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
-        raise RuntimeError("Proof requires existing ChatGPT subscription authentication")
+    auth = read_test_auth(auth_home)
     with tempfile.TemporaryDirectory(prefix="serena-codex-roundtrip-") as temporary:
         root = Path(temporary)
         home, project = root / "codex", root / "project"
@@ -315,6 +313,7 @@ async def main(review=False, compact=False, permissions=False, bridge=False, ski
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--allow-inference", action="store_true", required=True)
+    parser.add_argument("--auth-home", type=Path, required=True)
     parser.add_argument("--review", action="store_true")
     parser.add_argument("--compact", action="store_true")
     parser.add_argument("--permissions", action="store_true")
@@ -330,5 +329,6 @@ if __name__ == "__main__":
             permissions=args.permissions,
             bridge=args.bridge,
             skills=args.skills,
+            auth_home=args.auth_home,
         )
     )

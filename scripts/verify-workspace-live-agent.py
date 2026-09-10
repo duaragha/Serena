@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.billing import strip_metered_auth_env
 from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
+from scripts.workspace_proof_auth import read_test_auth
 
 
 def reject_finished_parent(events, turn_id):
@@ -28,23 +29,6 @@ def reject_finished_parent(events, turn_id):
         error = turn.get("error") or {}
         message = error.get("message", "") if isinstance(error, dict) else str(error)
         raise RuntimeError(f"Parent finished without a child ({turn.get('status', 'unknown')}): {message[:400]}")
-
-
-def read_test_auth(auth_home):
-    if not auth_home:
-        raise ValueError("An explicit separate --auth-home test profile is required")
-    source = Path(auth_home).expanduser().resolve() / "auth.json"
-    protected = {Path.home() / ".codex"}
-    if os.environ.get("CODEX_HOME"):
-        protected.add(Path(os.environ["CODEX_HOME"]).expanduser())
-    for home in protected:
-        auth_file = home.resolve() / "auth.json"
-        if source == auth_file or (source.exists() and auth_file.exists() and source.samefile(auth_file)):
-            raise ValueError("The proof cannot use the normal or active Codex login; use a separate test profile")
-    auth = json.loads(source.read_text())
-    if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
-        raise RuntimeError("An existing ChatGPT subscription login is required")
-    return auth
 
 
 async def main(model, auth_home):

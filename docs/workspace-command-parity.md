@@ -3,6 +3,30 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Proof Login Isolation Follow-up (2026-09-10)
+
+All five authenticated Codex proof entrypoints now require an explicit separate
+`--auth-home` test profile. Account, MCP, roundtrip, and durable native-work proofs
+previously still copied the normal/active login implicitly. They now share the
+live-agent proof's guard against default, active, symlinked, and hardlinked login
+files. Missing credentials fail before native launch. Unsigned account checks,
+MCP inventory, and the isolated native-work child retain their existing paths.
+Only verification tooling changed; no user authentication, installed app, or
+provider settings were changed. Historical signed proof commands below now need
+the additional `--auth-home /path/to/separate-test-profile` argument.
+
+This does not repair expired authentication. Real authenticated model and child
+workflows remain unverified until the dedicated test login is renewed. Copying
+a disposable test login may still rotate that test profile's refresh token;
+never supply a working personal profile.
+
+Verification from the isolated workspace checkout:
+
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_live_agent_proof.py -q --tb=short`: exit 0, 23 passed in 1.14s. Earlier account-only checkpoint: 20 passed in 0.64s, exit 0.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/workspace_proof_auth.py scripts/verify-workspace-account.py scripts/verify-workspace-live-agent.py scripts/verify-workspace-mcp.py scripts/verify-workspace-codex-roundtrip.py scripts/verify-workspace-native-work.py tests/test_workspace_live_agent_proof.py`: exit 0, all checks passed.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --browser-login --limits --command-guard`: exit 0. Real native login start/cancel, unsigned limits rejection, unsupported command rejection, same owner, child reaped, temporary profile removed. No browser opened or inference performed.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-mcp.py --inventory-only`: exit 0. Exact-thread native MCP inventory and connection status, idle-thread permission-profile selection, owned process reaped. No inference, tool invocation, or copied authentication.
+
 ## Session Speed (2026-09-10)
 
 `/fast` now opens an explicit session-speed control. Native model service tiers
