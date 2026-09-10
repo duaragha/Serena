@@ -67,6 +67,8 @@ export class WorkspacePane {
     this.appsButton.hidden=provider!=='Codex' || !controls.apps;head.append(this.appsButton);
     this.renameButton=this.button('Rename conversation','pencil',()=>this.openRename());
     this.renameButton.hidden=provider!=='Codex' || !controls.renameSession;head.append(this.renameButton);
+    this.rewindButton=this.button('Rewind conversation','undo-2',()=>this.openRewind());
+    this.rewindButton.hidden=provider!=='Codex' || !controls.revertHistory;head.append(this.rewindButton);
     this.diffButton=this.button('Project diff','file-diff',()=>this.openProjectDiff());
     this.diffButton.hidden=provider!=='Codex' || !controls.projectDiff;head.append(this.diffButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
@@ -1040,6 +1042,39 @@ export class WorkspacePane {
     this.diffDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();load();
   }
 
+  openRewind() {
+    if(this.rewindDialog?.open)return;
+    const turns=[...this.conversation.turns.values()];
+    const latest=turns.at(-1)?.id;
+    if(!latest || this.conversation.status==='running'){this.error(Error('Finish the active turn before rewinding history'));return;}
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog aw-rewind-dialog');dialog.setAttribute('aria-label','Rewind conversation');
+    const form=node('form');const select=node('select');select.setAttribute('aria-label','Rewind before turn');
+    for(const turn of turns){
+      const message=[...turn.items.values()].find(item=>item.type==='userMessage');
+      const text=(message?.content || []).filter(part=>part.type==='text').map(part=>part.text).join(' ');
+      const option=node('option','',`${turn.id} - ${(text || 'Turn').slice(0,100)}`);option.value=turn.id;select.append(option);
+    }
+    select.value=latest;
+    const confirm=node('input');confirm.type='checkbox';confirm.required=true;
+    const label=node('label');label.append(confirm,document.createTextNode(' Remove this turn and all later conversation history. Project files stay unchanged.'));
+    const status=node('p');status.setAttribute('role','alert');
+    const save=node('button','','Rewind');save.type='submit';
+    const close=this.button('Cancel rewind','x',()=>dialog.close());
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(save.disabled || !confirm.checked)return;
+      save.disabled=true;close.disabled=true;select.disabled=true;confirm.disabled=true;status.textContent='';
+      try{
+        await this.controls.revertHistory({before_turn_id:select.value,expected_latest_turn_id:latest,confirmed:true});
+        if(!this.disposed)dialog.close();
+      }catch(error){status.textContent=error.message;}
+      finally{save.disabled=false;close.disabled=false;select.disabled=false;confirm.disabled=false;}
+    });
+    dialog.addEventListener('cancel',event=>{if(save.disabled)event.preventDefault();});
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    form.append(select,label,status,save);dialog.append(node('h3','','Rewind conversation'),close,form);
+    this.rewindDialog=dialog;this.root.append(dialog);dialog.showModal();select.focus();this.refreshIcons();
+  }
+
   openRename() {
     if(this.renameDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Rename conversation');
@@ -1811,6 +1846,7 @@ export class WorkspacePane {
 
   render() {
     this.copyOutputButton.disabled = this.conversation.copyUnavailableAfterRevert;
+    this.rewindButton.disabled = !['ready','completed','interrupted','failed'].includes(this.conversation.status) || !this.conversation.turns.size;
     if (this.disposed) return;
     this.renderModelControls();
     const follow = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 60;
@@ -1898,6 +1934,7 @@ export class WorkspacePane {
   }
 
   dispose() {
+    this.rewindDialog?.close();
     this.disposeActions?.();
     this.sessionStatusDialog?.close();
     this.imageDialog?.close();

@@ -266,6 +266,46 @@ def test_copy_after_revert_waits_for_new_completed_output(pane):
     assert not errors
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_rewind_confirmation_routes_exact_turn_and_preserves_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.revertHistory=async payload=>{calls.push(payload);throw Error('History changed; reopen the rewind dialog');};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'selected',status:'completed',items:[
+        {id:'user',type:'userMessage',content:[{type:'text',text:'A previous request'}]}]}]}}});
+      pane.input.value='Keep my draft';
+    }""")
+    left=page.locator('#left')
+    left.get_by_role('button',name='Session actions',exact=True).click()
+    left.get_by_role('button',name='Rewind conversation',exact=True).click()
+    dialog=page.get_by_role('dialog',name='Rewind conversation',exact=True)
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('button',name='Rewind',exact=True).click()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('checkbox').check()
+    dialog.get_by_role('button',name='Rewind',exact=True).click()
+    dialog.get_by_text('History changed; reopen the rewind dialog',exact=True).wait_for()
+    assert page.evaluate('calls') == [{'before_turn_id':'selected','expected_latest_turn_id':'selected','confirmed':True}]
+    assert page.evaluate('pane.input.value') == 'Keep my draft'
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot=STATIC.parents[1]/'apps/desktop/build/workspace-proof'/f'rewind-{width}.png'
+    shot.parent.mkdir(parents=True,exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button',name='Cancel rewind',exact=True).click()
+    assert len(page.evaluate('calls')) == 1
+    page.evaluate("()=>{controls.revertHistory=async payload=>{calls.push(payload);return {files_changed:false};};}")
+    left.get_by_role('button',name='Session actions',exact=True).click()
+    left.get_by_role('button',name='Rewind conversation',exact=True).click()
+    dialog.get_by_role('checkbox').check()
+    dialog.get_by_role('button',name='Rewind',exact=True).click()
+    dialog.wait_for(state='hidden')
+    assert page.evaluate('pane.input.value') == 'Keep my draft'
+    assert not errors
+
+
 @pytest.fixture(scope="module")
 def pane_browser():
     with playwright.sync_playwright() as p:

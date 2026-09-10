@@ -3,6 +3,34 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Explicit Codex Rewind Control (2026-09-10)
+
+Session actions now exposes Rewind conversation for Codex. It requires a chosen
+turn and explicit confirmation, verifies the latest turn has not changed, and
+uses the existing owner's native `thread/revert` request. It does not undo files,
+create a session, or clear the composer draft. Reserved background jobs and queued
+messages prevent rewind. Ambiguous native failures make the owner uncertain;
+command receipts prevent replaying the same mutation. No slash alias is claimed.
+
+Verification receipts (all exit 0):
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py::test_rewind_is_explicit_deduplicated_and_refuses_background_work tests/test_workspace_pane.py::test_rewind_confirmation_routes_exact_turn_and_preserves_draft -q --tb=short
+# 111 passed in 6.18s; desktop/mobile screenshots inspected at 1600 and 390px.
+node --test tests/workspace-connection.test.mjs
+# 49 passed, 0 failed; 168.472684ms.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-revert.py
+# Exact disposable session, same native owner, stale selection rejected,
+# one turn retained and one removed; no inference. Child and profile cleaned up.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py scripts/verify-workspace-revert.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py
+# All checks passed.
+node --check ui/static/workspace-pane.mjs
+# No syntax errors.
+```
+
+Not released or default enabled. This receipt is not a fresh packaged Windows
+proof or a claim that all CLI capabilities are complete.
+
 ## Evidence Sources
 
 - Installed Claude CLI 2.1.267 / pinned SDK: `scripts/verify-workspace-claude-commands.py`,

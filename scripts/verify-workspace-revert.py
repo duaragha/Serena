@@ -37,7 +37,13 @@ async def main():
                         await asyncio.sleep(.02)
             completed = [e['params']['turn']['id'] for e in events if e['method'] == 'turn/completed']
             assert len(completed) == 2
-            await owner.rpc.request('thread/revert', {'threadId': owner.session_id, 'beforeTurnId': completed[-1]})
+            try:
+                await owner.revert_history(completed[-1], completed[0], True)
+                raise AssertionError('Stale selection was accepted')
+            except Exception as error:
+                assert 'History changed' in str(error)
+            result = await owner.revert_history(completed[-1], completed[-1], True)
+            assert result['session_id'] == owner.session_id and result['files_changed'] is False
             async with asyncio.timeout(15):
                 while not any(e['method'] == 'workspace/history' and e['params'].get('copyUnavailableAfterRevert') for e in events):
                     await asyncio.sleep(.02)

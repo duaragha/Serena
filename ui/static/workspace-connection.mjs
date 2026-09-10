@@ -218,6 +218,7 @@ export class WorkspaceConnection {
       hooks: () => this.command('hooks', {}),
       apps: () => this.command('apps', {}),
       renameSession: name => this.command('rename_session', {name}),
+      revertHistory: payload => this.command('revert_history', payload),
       projectDiff: () => this.command('project_diff', {}),
       reloadSkills: () => this.command('reload_skills', {}),
       reloadPlugins: () => this.command('reload_plugins', {}),

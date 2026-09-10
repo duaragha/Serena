@@ -432,6 +432,20 @@ test('apps are explicit and selections reach exact submit and steer routes',asyn
   assert.equal(calls.length,3);
 });
 
+test('rewind sends an explicit exact-session history command only on invocation',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push([url,JSON.parse(options.body)]);return response({ok:true,result:{files_changed:false}});
+  }});
+  const payload={before_turn_id:'chosen',expected_latest_turn_id:'last',confirmed:true};
+  assert.equal(calls.length,0);
+  assert.deepEqual(await conn.controls().revertHistory(payload),{files_changed:false});
+  assert.equal(calls[0][0],'/api/workspace/exact/commands');
+  assert.equal(calls[0][1].action,'revert_history');
+  assert.deepEqual(calls[0][1].payload,payload);
+  conn.dispose();assert.equal(calls.length,1);
+});
+
 test('native rename uses the exact session command rather than prompt input',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

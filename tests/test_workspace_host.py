@@ -18,6 +18,36 @@ from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
 
 
+def test_rewind_is_explicit_deduplicated_and_refuses_background_work(tmp_path):
+    calls = []
+    class RewindOwner(Owner):
+        async def revert_history(self, **payload):
+            calls.append(payload)
+            return {'session_id': self.sid, 'files_changed': False}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'rewind.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': RewindOwner})
+    payload = {'before_turn_id': 'turn', 'expected_latest_turn_id': 'last', 'confirmed': True}
+    try:
+        with pytest.raises(ValueError, match='attach'):
+            host.command('exact', 'before', 'revert_history', payload)
+        assert not calls
+        host.attach('exact')
+        host._work_reservations['exact'] = 'job'
+        assert not host.command('exact', 'reserved', 'revert_history', payload)['ok']
+        host._work_reservations.clear()
+        host._bridge_queues['exact'] = ['queued']
+        assert not host.command('exact', 'queued', 'revert_history', payload)['ok']
+        host._bridge_queues.clear()
+        assert not host.command('exact', 'bad', 'revert_history', {**payload, 'threadId': 'foreign'})['ok']
+        first = host.command('exact', 'once', 'revert_history', payload)
+        assert first['ok']
+        assert host.command('exact', 'once', 'revert_history', payload) == first
+        assert calls == [payload]
+    finally:
+        host.shutdown()
+
+
 def test_rename_requires_owner_and_preserves_receipt_without_duplicate_native_write(tmp_path):
     calls = []
     class RenameOwner(Owner):

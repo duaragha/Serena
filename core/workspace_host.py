@@ -795,6 +795,7 @@ class WorkspaceHost:
             "hooks",
             "apps",
             "rename_session",
+            "revert_history",
             "project_diff",
             "reload_skills",
             "set_skill_enabled",
@@ -1043,6 +1044,12 @@ class WorkspaceHost:
                     if provider != "claude" or payload:
                         raise ValueError("Skill reload requires a Claude session and no payload")
                     result = await owner.reload_skills()
+                elif action == 'revert_history':
+                    if provider != 'codex' or set(payload) != {'before_turn_id', 'expected_latest_turn_id', 'confirmed'}:
+                        raise ValueError('Rewind requires an exact Codex history selection')
+                    if self._bridge_queues.get(sid):
+                        raise ValueError('Resolve queued messages before rewinding history')
+                    result = await owner.revert_history(**payload)
                 elif action == "rename_session":
                     if provider != 'codex' or set(payload) != {'name'} or self.register_fork is None:
                         raise ValueError('Native rename is unavailable for this session')

@@ -390,6 +390,34 @@ class CodexWorkspace:
                 self.state = "uncertain"
                 raise
 
+    async def revert_history(self, before_turn_id, expected_latest_turn_id, confirmed):
+        if confirmed is not True or any(not isinstance(value, str) or not value or len(value) > 256
+                                        for value in (before_turn_id, expected_latest_turn_id)):
+            raise ValueError('An exact turn and explicit rewind confirmation are required')
+        async with self._control_lock:
+            if self.state != 'ready' or self.questions:
+                raise WorkspaceRpcError('Finish the active turn before rewinding history')
+            revision = self._history_revision
+            page = await self._history_page()
+            if (self.state != 'ready' or revision != self._history_revision or not page['turns']
+                    or page['turns'][-1]['id'] != expected_latest_turn_id):
+                raise WorkspaceRpcError('History changed; reopen the rewind dialog')
+            self.state = 'reverting'
+            try:
+                result = await self.rpc.request('thread/revert', {
+                    'threadId': self.session_id, 'beforeTurnId': before_turn_id})
+                if not isinstance(result, dict) or result.get('thread', {}).get('id') != self.session_id:
+                    raise WorkspaceRpcError('Native rewind was not confirmed; do not repeat it')
+                async with asyncio.timeout(15):
+                    while self._history_revision == revision or self.state == 'reconciling':
+                        await asyncio.sleep(.01)
+                if self.state != 'ready':
+                    raise WorkspaceRpcError('Rewound history could not be loaded')
+                return {'session_id': self.session_id, 'before_turn_id': before_turn_id, 'files_changed': False}
+            except BaseException:
+                self.state = 'uncertain'
+                raise
+
     async def search_files(self, query):
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Codex session is unavailable")

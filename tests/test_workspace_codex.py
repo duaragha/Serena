@@ -1051,6 +1051,41 @@ def test_revert_rejects_inflight_old_history_page(tmp_path):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('case', ['ok', 'unconfirmed', 'busy', 'stale', 'rejected'])
+def test_rewind_requires_confirmation_current_history_and_same_owner(tmp_path, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/turns/list':
+                return {'data': [{'id': 'latest', 'status': 'completed', 'items': []}], 'nextCursor': None}
+            assert method == 'thread/revert'
+            if case == 'rejected':
+                raise WorkspaceRpcError('Native refusal')
+            owner._history_revision += 1
+            owner.state = 'ready'
+            return {'thread': {'id': owner.session_id}}
+        rpc.request = request
+        try:
+            if case == 'busy':
+                owner.state = 'running'
+            if case == 'ok':
+                assert await owner.revert_history('latest', 'latest', True) == {
+                    'session_id': owner.session_id, 'before_turn_id': 'latest', 'files_changed': False}
+                assert calls[-1] == ('thread/revert', {'threadId': owner.session_id, 'beforeTurnId': 'latest'})
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.revert_history('latest', 'old' if case == 'stale' else 'latest', case != 'unconfirmed')
+                assert any(m == 'thread/revert' for m, _ in calls) is (case == 'rejected')
+                if case == 'rejected':
+                    assert owner.state == 'uncertain'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 async def make(tmp_path):
     events = []
 
