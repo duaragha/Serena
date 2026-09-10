@@ -2,6 +2,29 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Combined Reply Visibility
+
+The pane now marks a completed queued input as `Included in combined reply` when
+the provider's completion links it to another known turn. It does not fabricate a
+second reply or duration. Self/missing turn references do not create the marker.
+
+Final commands, exit 0:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_grouped_reply_marks_queued_input_without_duplicate_duration -q --tb=short
+node --test --test-reporter=dot tests/workspace-events.test.mjs
+node --check ui/static/workspace-pane.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys; os.chdir(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); sys.path.insert(0,os.getcwd()); sys.dont_write_bytecode=True; import pytest; sys.exit(pytest.main(['tests/test_workspace_host.py','-q','-p','no:cacheprovider','--tb=short']))\""
+```
+
+Browser: 2 passed in 1.25s, 390px and 1600px screenshots inspected, no page errors,
+overflow, duplicate input or automatic controls. Initial browser assertions raced
+the scheduled render (exit 1); changed to Playwright's waiting text assertion.
+Event reducer: 12 passed. Windows host contracts: 58 passed, 1 skipped in 10.71s.
+These are controlled browser/session contracts, not authenticated inference or
+installed desktop activation. Full replacement remains in progress.
+
 ## Claude SDK Windows Casing
 
 Claude's JS resume boundary now accepts alternate Windows casing only when both

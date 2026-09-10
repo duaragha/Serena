@@ -61,6 +61,24 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_grouped_reply_marks_queued_input_without_duplicate_duration(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    page.evaluate("""() => {
+      emit({method:'turn/started',params:{turn:{id:'queued'}}});
+      emit({method:'item/completed',params:{turnId:'queued',item:{id:'q',type:'userMessage',content:[{type:'text',text:'Also check the tests.'}]}}});
+      emit({method:'turn/completed',params:{turn:{id:'t',status:'completed',durationMs:12000}}});
+      emit({method:'turn/completed',params:{turn:{id:'queued',status:'completed',combinedWithTurnId:'t'}}});
+    }""")
+    playwright.expect(page.locator("#left .aw-turn-summary")).to_have_text([
+        "Worked for 12s", "Included in combined reply"])
+    assert page.get_by_text("Also check the tests.", exact=True).count() == 1
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    assert not errors and page.evaluate("calls") == []
+    page.screenshot(path=str(tmp_path / f"combined-reply-{width}.png"))
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_acp_context_usage_is_labeled_and_invalid_updates_clear_it(pane, width):
     from core.workspace_acp_events import AcpEvents
 
