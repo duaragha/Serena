@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import suppress
+from contextlib import closing, suppress
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -214,7 +214,12 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
         process = subprocess.Popen([str(Path(frozen).resolve()), "--host", "127.0.0.1", "--port", str(port)],
                                    cwd=project, env=env, stdout=log, stderr=log, start_new_session=True)
         children = []
+        windows_job = None
         try:
+            if os.name == "nt":
+                from core.workspace_windows_job import WindowsJob
+                windows_job = WindowsJob()
+                windows_job.assign(process.pid)
             deadline = time.monotonic() + 30
             while True:
                 assert process.poll() is None, "Frozen sidecar exited before readiness"
@@ -228,7 +233,7 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                     time.sleep(0.1)
             def owners():
                 return [child.pid for child in psutil.Process(process.pid).children(recursive=True)
-                        if child.name() == "codex" and "app-server" in child.cmdline()]
+                        if child.name().lower() in {"codex", "codex.exe"} and "app-server" in child.cmdline()]
             forks = browser_roundtrip(base, sid, owners, "codex-frozen", verify_forks=True, verify_disconnect=True)
             for fork_id in forks:
                 metadata_path = Path(env["HOME"]) / ".claude" / "projects" / ".chats-meta" / f"{fork_id}.json"
@@ -242,7 +247,7 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                     import sqlite3
                     live = []
                     descendants = {child.pid for child in psutil.Process(process.pid).children(recursive=True)}
-                    with sqlite3.connect(f"file:{Path(env['CHATS_DATA_DIR']) / 'workspace-events.db'}?mode=ro", uri=True) as conn:
+                    with closing(sqlite3.connect(f"file:{Path(env['CHATS_DATA_DIR']) / 'workspace-events.db'}?mode=ro", uri=True)) as conn:
                         targets = [json.loads(row[0]) for row in conn.execute("SELECT target FROM workspace_creations WHERE committed=1")]
                     for target in targets:
                         if target["provider"] != "claude":
@@ -259,13 +264,18 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                 proof = subprocess.Popen(["node", str(repo / "scripts" / "verify-workspace-electron.cjs"),
                     os.environ["SERENA_PROOF_ELECTRON"], os.environ["SERENA_PROOF_PLAYWRIGHT"],
                     str(repo / "apps" / "desktop"), base, sid, str(repo / "apps" / "desktop" / "build" / "workspace-proof"),
-                    os.environ["SERENA_PROOF_XVFB"]], env=env, cwd=repo, text=True,
+                    os.environ.get("SERENA_PROOF_XVFB", "")], env=env, cwd=repo, text=True,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                if windows_job is not None:
+                    windows_job.assign(proof.pid)
                 try:
                     out, err = proof.communicate(timeout=90)
                 finally:
                     with suppress(ProcessLookupError):
-                        os.killpg(proof.pid, signal.SIGKILL)
+                        if os.name != "nt":
+                            os.killpg(proof.pid, signal.SIGKILL)
+                        elif proof.poll() is None:
+                            windows_job.terminate()
                     proof.wait(timeout=5)
                 print(out)
                 assert proof.returncode == 0, err
@@ -281,12 +291,22 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
         finally:
             if process.poll() is None:
                 children = psutil.Process(process.pid).children(recursive=True)
-                os.killpg(process.pid, signal.SIGTERM)
+                if windows_job is not None:
+                    windows_job.terminate()
+                elif os.name == "nt":
+                    process.terminate()
+                else:
+                    os.killpg(process.pid, signal.SIGTERM)
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
+                if os.name == "nt":
+                    process.kill()
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=5)
+            if windows_job is not None:
+                windows_job.close()
             _, alive = psutil.wait_procs(children, timeout=5)
             for child in alive:
                 child.kill()

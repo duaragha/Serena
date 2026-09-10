@@ -16,6 +16,7 @@ agents through a single pipeline.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,7 +27,7 @@ from core import codex_records
 from core import metadata as meta_sync
 from core.parser import SessionMeta
 
-CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
+CODEX_SESSIONS_ROOT = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
 
 # rollout-2026-04-28T13-47-04-019dd533-a211-7e32-8040-e53e98d3a9b7.jsonl
 _FILENAME_RE = re.compile(

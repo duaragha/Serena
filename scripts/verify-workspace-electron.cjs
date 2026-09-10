@@ -11,11 +11,14 @@ async function main() {
   const env = {...process.env, SERENA_DESKTOP_SHARED_PORT: new URL(base).port,
     SERENA_DESKTOP_SHARE_BACKEND: '1'};
   delete env.ELECTRON_RUN_AS_NODE;
-  assert.ok(xvfbPath, 'An isolated Xvfb executable is required');
-  const display = spawn(xvfbPath, ['-displayfd','3','-screen','0','1440x900x24','-nolisten','tcp','-ac'],
+  const windows=process.platform==='win32';
+  if(!windows)assert.ok(xvfbPath, 'An isolated Xvfb executable is required');
+  const display = windows?null:spawn(xvfbPath, ['-displayfd','3','-screen','0','1440x900x24','-nolisten','tcp','-ac'],
     {env,stdio:['ignore','ignore','pipe','pipe']});
   let app;
+  let clipboardSnapshot;
   try {
+    if(display){
     const number = await new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>reject(Error('Virtual display did not start')),10000);
       let value='',errors='';
@@ -29,8 +32,16 @@ async function main() {
     });
     env.DISPLAY=`:${number}`;
     delete env.XAUTHORITY;
+    }
     app = await electron.launch({executablePath: electronPath,
-      args: [appDir, '--dev', '--ozone-platform=x11', '--disable-gpu'], env, timeout: 30000});
+      args: [appDir, '--dev', ...(!windows?['--ozone-platform=x11']:[]), '--disable-gpu'], env, timeout: 30000});
+    if(windows)clipboardSnapshot=await app.evaluate(({clipboard})=>{
+      const formats=clipboard.availableFormats();
+      const allowed=['text/plain','text/html','text/rtf','image/png'];
+      if(formats.some(format=>!allowed.includes(format)))throw Error('Clipboard has unsupported formats; refusing to overwrite it');
+      return {text:clipboard.readText(),html:clipboard.readHTML(),rtf:clipboard.readRTF(),
+        image:formats.includes('image/png')?clipboard.readImage().toDataURL():null};
+    });
     const page = await app.firstWindow();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
@@ -59,7 +70,7 @@ async function main() {
     await dialog.getByRole('button', {name: 'Close commands'}).click();
     await pane.getByRole('button', {name: 'Run shell command', exact: true}).click();
     const shell = pane.getByRole('dialog', {name: 'Run shell command'});
-    await shell.getByRole('textbox', {name: 'Shell command'}).fill('printf SERENA_ELECTRON_NATIVE');
+    await shell.getByRole('textbox', {name: 'Shell command'}).fill('echo SERENA_ELECTRON_NATIVE');
     await shell.getByRole('checkbox').check();
     await shell.getByRole('button', {name: 'Run command', exact: true}).click();
     await pane.locator('summary').filter({hasText: 'SERENA_ELECTRON_NATIVE'}).first().click();
@@ -103,7 +114,7 @@ async function main() {
     assert.equal(await page.locator('iframe[src^="/workspace/new?"]').count(),0);
     await newPane.getByRole('button',{name:'Run shell command',exact:true}).click();
     const newShell = newPane.getByRole('dialog',{name:'Run shell command'});
-    await newShell.getByRole('textbox',{name:'Shell command'}).fill('printf SERENA_ELECTRON_CREATED');
+    await newShell.getByRole('textbox',{name:'Shell command'}).fill('echo SERENA_ELECTRON_CREATED');
     await newShell.getByRole('checkbox').check();
     await newShell.getByRole('button',{name:'Run command',exact:true}).click();
     await newPane.locator('summary').filter({hasText:'SERENA_ELECTRON_CREATED'}).first().click();
@@ -163,7 +174,7 @@ async function main() {
     await page.screenshot({path:path.join(artifacts,'electron-native-claude-created.png')});
     assert.deepEqual(errors, []);
     console.log('PASS: real Electron main/preload, isolated frozen backend, native session input/output and skill catalog; sandbox/context isolation configured, Node integration off');
-    console.log('PASS: real virtual-display clipboard copied native output and pasted multiline text without sending or losing the session');
+    console.log('PASS: real Electron clipboard copied native output and pasted multiline text without sending or losing the session');
     console.log('PASS: actual Electron New Chat button preserved its chosen title through exact native creation, iframe handoff and native input');
     console.log('PASS: actual Electron Claude New Chat used the selected provider, retained title through indexing, and rendered native local-command output');
     console.log('PASS: corrupt saved creation record disabled submission without replacing the record or launching another session');
@@ -177,11 +188,18 @@ async function main() {
     }
     throw error;
   } finally {
-    try {await app?.close();}
+    try {
+      if(clipboardSnapshot)await app.evaluate(({clipboard,nativeImage},snapshot)=>{
+        clipboard.clear();
+        const {image,...data}=snapshot;
+        if(image)data.image=nativeImage.createFromDataURL(image);
+        clipboard.write(data);
+      },clipboardSnapshot);
+    }
     finally {
-      if(display.pid && display.exitCode===null && display.signalCode===null){
+      try{await app?.close();}finally{if(display?.pid && display.exitCode===null && display.signalCode===null){
         await new Promise(resolve=>{display.once('exit',resolve);display.kill('SIGTERM');});
-      }
+      }}
     }
   }
 }

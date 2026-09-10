@@ -89,18 +89,22 @@ async def main():
         finally:
             await owner.close()
         assert owner.rpc.process is None
-        if "--browser" in sys.argv[1:]:
+        if "--browser" in sys.argv[1:] or "--frozen" in sys.argv[1:]:
             packages = os.environ.get("SERENA_PROOF_PYTHONPATH")
             if packages:
                 sys.path.append(packages)
             spec = importlib.util.spec_from_file_location("codex_history_proof", Path(__file__).with_name("verify-workspace-codex-history.py"))
             proof = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(proof)
-            await asyncio.to_thread(proof.browser_proof, sid, root, root, env, binary)
-        print(json.dumps({"gated_startup": True, "isolated_empty_catalog": True,
-                          "exact_resume": True, "native_command_exit_code": 0,
-                          "recent_turns": 50, "older_turns": 1, "history_kept_owner": True,
-                          "cleanup": True, "inference": False}))
+            if "--frozen" in sys.argv[1:]:
+                frozen = sys.argv[sys.argv.index("--frozen") + 1]
+                await asyncio.to_thread(proof.frozen_browser_proof, sid, root, root, env, frozen)
+            else:
+                await asyncio.to_thread(proof.browser_proof, sid, root, root, env, binary)
+    print(json.dumps({"gated_startup": True, "isolated_empty_catalog": True,
+                      "exact_resume": True, "native_command_exit_code": 0,
+                      "recent_turns": 50, "older_turns": 1, "history_kept_owner": True,
+                      "cleanup": True, "inference": False}))
 
 
 if __name__ == "__main__":

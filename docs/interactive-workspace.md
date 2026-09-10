@@ -2,6 +2,57 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Windows Electron Native Workflow
+
+The full app proof found and fixed a real catalog mismatch: the Codex scanner
+ignored `CODEX_HOME`, although the native runtime and fork registration honor it.
+The scanner now uses that configured home, retaining the default for an empty or
+unset variable. Regression tests import the scanner in a fresh process from the
+tested checkout so installed editable packages cannot shadow it.
+
+The existing Electron proof now runs on Windows without Xvfb, uses portable local
+commands, and preserves supported clipboard contents (refusing unsupported
+formats before writing). Its backend and proof descendants are job-owned for
+cleanup. A read-only SQLite inspection connection is explicitly closed: a
+transaction context alone left the database open on Windows. Cleanup success is
+reported only after temporary profile deletion.
+
+Verification commands, each executed separately:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_codex_scanner_resident.py tests/test_codex_scanner_skips_copies.py -q --tb=short
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -m pytest C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\test_codex_scanner_resident.py C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\test_codex_scanner_skips_copies.py -q --tb=short"
+node --test apps/desktop/tests/shared-backend.test.js apps/desktop/tests/shell.test.js
+node --check scripts/verify-workspace-electron.cjs
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_codex_scanner_resident.py scripts/verify-workspace-codex-windows.py scripts/verify-workspace-codex-history.py
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B -m PyInstaller --noconfirm --distpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\dist --workpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\work C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\windows\sidecar-win.spec"
+SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys; from pathlib import Path; r=Path(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); __file__=str(r/'scripts/verify-workspace-codex-windows.py'); os.environ['SERENA_PROOF_PYTHONPATH']=str(r/'apps/desktop/build/proof-tools/windows-python'); os.environ['SERENA_PROOF_BROWSER_EXECUTABLE']=r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'; os.environ['SERENA_PROOF_ELECTRON']=str(r/'apps/desktop/build/proof-tools/windows-electron/node_modules/electron/dist/electron.exe'); os.environ['SERENA_PROOF_PLAYWRIGHT']=str(r/'apps/desktop/build/proof-tools/windows-python/playwright/driver/package'); sys.argv.extend(['--frozen',str(r/'apps/desktop/build/windows-proof-5cadd13/dist/serena-web-sidecar/serena-web-sidecar.exe')]); exec(compile(sys.stdin.read(),__file__,'exec'))\"" < scripts/verify-workspace-codex-windows.py
+```
+
+Final results: all commands above exited **0**. Scanner tests: **10 passed** on
+Linux and **10 passed** on Windows. Shell tests: **18 passed**. Syntax and scoped
+Ruff checks passed. PyInstaller rebuilt the isolated executable, retaining its
+existing pycparser/OpenConsole dependency warnings. Scanner Ruff itself has three
+pre-existing findings (F401, UP035, SIM108); checking the HEAD version separately
+also exited 1 with the same three findings, so this is not a clean-file lint claim.
+
+The live run verified 51 native local-command history turns, pagination, exact
+resume, desktop/mobile browser flows, forks, real Electron main/preload,
+sandbox/context isolation, native shell input/output, skill discovery, multiline
+clipboard paste and native-output copy, and new Codex/Claude chats with preserved
+titles and indexing. Corrupt creation receipts refused submission. Closing the
+shell retained all existing owners plus exactly one new owner for each provider.
+Temporary profile deletion completed. No credentials or inference were used.
+The Windows Electron screenshot `apps/desktop/build/workspace-proof/electron-native-workspace.png`
+was inspected: native output and composer render inside the app shell.
+
+Earlier attempts exited 1: catalog readiness failed before the scanner fix;
+then all UI assertions passed but the proof's SQLite handle blocked cleanup.
+The first Windows scanner-test invocation also exposed test import shadowing,
+fixed by setting the child process cwd. These failures were not counted as passes.
+This is an isolated development Electron shell with a frozen backend, not an
+installed-app release or evidence of authenticated model-turn/Gemini parity.
+
 ## Windows Codex Browser Workflow
 
 Extended the Windows native proof with the existing browser workflow, using
