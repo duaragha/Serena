@@ -1267,6 +1267,7 @@ export class WorkspacePane {
 
   async copyLatestOutput() {
     if(this.disposed)return;
+    if(this.conversation.copyUnavailableAfterRevert){this.error(Error('Copy is unavailable after a history revert until new output completes'));return;}
     for(const turn of [...this.conversation.turns.values()].reverse()){
       if(turn.status!=='completed')continue;
       const item=[...turn.items.values()].reverse().find(item=>
@@ -1809,6 +1810,7 @@ export class WorkspacePane {
   }
 
   render() {
+    this.copyOutputButton.disabled = this.conversation.copyUnavailableAfterRevert;
     if (this.disposed) return;
     this.renderModelControls();
     const follow = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 60;

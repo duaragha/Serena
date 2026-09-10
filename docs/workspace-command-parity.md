@@ -197,6 +197,59 @@ Both commands exited 0; Ruff reported all checks passed, Node no output.
 The earlier packaged proofs cover source `748573e`, not this subsequent rename
 change. Full parity and release/default enablement remain incomplete.
 
+## Codex Reverted-History Reconciliation (2026-09-10)
+
+The [official CLI command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
+accessed 2026-09-10, says `/copy` is unavailable immediately after a rollback.
+Installed 0.153.4 generated schemas expose `thread/reverted` with an exact
+`threadId` and `thread/revert` with `beforeTurnId`; the older `thread/rollback`
+schema is deprecated. Revert changes durable conversation history, not files.
+The fetched public App Server page did not describe the newer endpoint, so its
+wire shape was verified against the installed schema and native runtime.
+
+The owned adapter now handles the real revert notification: invalidate the old
+history cursor/completion cache, publish invalidation, read full native remaining
+turns for the same session, then publish authoritative replacement history.
+Errors fail unavailable. Pending old-page reads are rejected; revision-tagged
+pages cannot reintroduce discarded turns even if their publication races the
+notification. The owner/process and project are not replaced or reset.
+
+The renderer clears discarded history and suppresses latest-output copy until
+new completed main-agent text/plan output arrives. Running, empty and subagent
+output does not lift suppression. The copy action is disabled while suppressed;
+the shortcut reports why without changing clipboard contents or the draft.
+Journal replay preserves the flag. This is event handling, not a completed
+user-facing rewind picker or authorization to revert real user chats.
+
+Commands ran separately in the isolated worktree:
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_pane.py::test_copy_after_revert_waits_for_new_completed_output tests/test_workspace_pane.py::test_copy_completed_output_ignores_running_turn_and_preserves_draft -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_revert_rejects_inflight_old_history_page -q --tb=short
+node --test tests/workspace-events.test.mjs
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-revert.py
+```
+
+Exits: 0 (106 passed, 9.00s), 0 (1 passed, 0.44s), 0 (13 passed,
+115.320519ms), 0 respectively. Initial adapter run exited 1 with 100 passed and
+two new tests observing the initial history rather than waiting for revert;
+clearing the fixture's initial event list corrected the test synchronization.
+
+The live proof used two print-only shell turns in a disposable native session,
+then reverted before the second turn. The same owner reloaded exactly one
+remaining turn, no stale cursor, and the copy-suppression flag. Child reaped and
+profile removed; no inference, credentials, user history or project file changes.
+Browser copy tests use controlled output/clipboard; no native model answer is
+claimed by this print-only proof.
+
+`/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py tests/test_workspace_codex.py tests/test_workspace_pane.py scripts/verify-workspace-revert.py`
+exited 0, all checks passed. `node --check ui/static/workspace-pane.mjs` exited 0.
+Full command parity, rewind UI, and final release remain unfinished.
+
+After adding the disabled-button state, the final command
+`env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_copy_after_revert_waits_for_new_completed_output -q --tb=short`
+exited 0: 1 passed in 9.07s. `git diff --check` exited 0 with no output.
+
 ## Claude Native Catalog
 
 Every name in the observed 45-entry catalog is included below. Forwarding means

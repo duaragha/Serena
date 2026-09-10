@@ -979,6 +979,78 @@ def test_session_modes_preserve_model_and_use_exact_native_owner(tmp_path, failu
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('failure', [False, True])
+def test_native_revert_reconciles_exact_history_without_another_owner(tmp_path, failure):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        events.clear()
+        owner.history_cursor = 'stale'
+        owner._completed.append('discarded')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            assert owner.state == 'reconciling'
+            assert events[-1]['method'] == 'thread/reverted'
+            if failure:
+                raise WorkspaceRpcError('History unavailable')
+            return {'data': [{'id': 'retained', 'status': 'completed', 'items': []}], 'nextCursor': None}
+        rpc.request = request
+        try:
+            await rpc.events.put({'method': 'thread/reverted', 'params': {'threadId': owner.session_id}})
+            async with asyncio.timeout(2):
+                while not any(e['method'] in {'workspace/history', 'workspace/error'} for e in events):
+                    await asyncio.sleep(.01)
+            assert calls == [('thread/turns/list', {'threadId': owner.session_id, 'limit': 50, 'sortDirection': 'desc', 'itemsView': 'full'})]
+            assert owner.history_cursor is None and not owner._completed
+            if failure:
+                assert owner.state == 'unavailable'
+                assert events[-1]['method'] == 'workspace/error'
+            else:
+                assert owner.state == 'ready'
+                assert events[-1]['params']['copyUnavailableAfterRevert'] is True
+                assert [t['id'] for t in owner.thread['turns']] == ['retained']
+            with pytest.raises(WorkspaceRpcError, match='stale'):
+                await owner.load_earlier('stale')
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+def test_revert_rejects_inflight_old_history_page(tmp_path):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        events.clear()
+        owner.history_cursor = 'old'
+        requested, release = asyncio.Event(), asyncio.Event()
+        async def request(method, params):
+            assert method == 'thread/turns/list'
+            if params.get('cursor') == 'old':
+                requested.set()
+                await release.wait()
+                return {'data': [{'id': 'discarded', 'items': []}], 'nextCursor': 'stale-next'}
+            return {'data': [{'id': 'retained', 'items': [], 'status': 'completed'}], 'nextCursor': None}
+        rpc.request = request
+        pending = asyncio.create_task(owner.load_earlier('old'))
+        try:
+            await asyncio.wait_for(requested.wait(), 2)
+            await rpc.events.put({'method': 'thread/reverted', 'params': {'threadId': owner.session_id}})
+            async with asyncio.timeout(2):
+                while not any(e['method'] == 'workspace/history' for e in events):
+                    await asyncio.sleep(.01)
+            release.set()
+            with pytest.raises(WorkspaceRpcError, match='History changed'):
+                await pending
+            assert not any(e['method'] == 'workspace/historyPage' for e in events)
+            assert owner.history_cursor is None
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await owner.close()
+    asyncio.run(run())
+
+
 async def make(tmp_path):
     events = []
 

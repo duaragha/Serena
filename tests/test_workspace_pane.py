@@ -242,6 +242,30 @@ def test_copy_completed_output_ignores_running_turn_and_preserves_draft(pane, ac
     assert not errors
 
 
+def test_copy_after_revert_waits_for_new_completed_output(pane):
+    page, errors = pane
+    page.evaluate("""()=>{
+      pane.provider='Codex';
+      Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copied=text;}}});
+      window.copied=null;pane.input.value='Keep draft';
+      emit({method:'thread/reverted',params:{threadId:'exact'}});
+      emit({method:'workspace/history',params:{historyRevision:1,copyUnavailableAfterRevert:true,thread:{id:'exact',turns:[
+        {id:'retained',status:'completed',items:[{id:'old',type:'agentMessage',text:'Old retained answer'}]}]}}});
+    }""")
+    page.locator('#left textarea').press('Control+o')
+    assert page.evaluate('copied') is None
+    assert page.evaluate('pane.copyOutputButton.disabled')
+    assert 'Copy is unavailable after a history revert' in page.locator('#left [role=alert]').inner_text()
+    page.evaluate("""()=>emit({method:'turn/completed',params:{turn:{id:'fresh',status:'completed',items:[
+      {id:'new',type:'agentMessage',text:'New completed answer'}]}}})""")
+    page.locator('#left textarea').press('Control+o')
+    page.wait_for_function("copied==='New completed answer'")
+    assert not page.evaluate('pane.copyOutputButton.disabled')
+    assert page.evaluate('pane.input.value') == 'Keep draft'
+    assert page.evaluate('calls') == []
+    assert not errors
+
+
 @pytest.fixture(scope="module")
 def pane_browser():
     with playwright.sync_playwright() as p:

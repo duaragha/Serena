@@ -7,6 +7,8 @@ export class WorkspaceConversation {
     this.sequence = 0;
     this.status = 'connecting';
     this.error = null;
+    this.copyUnavailableAfterRevert = false;
+    this.historyRevision = 0;
     this.metadata = {};
     this.models = [];
     this.commands = [];
@@ -54,6 +56,8 @@ export class WorkspaceConversation {
       if (!p.thread || p.thread.id !== this.sessionId) throw new Error('History identity mismatch');
       this.error = null;
       this.metadata = p;
+      this.copyUnavailableAfterRevert = p.copyUnavailableAfterRevert === true;
+      this.historyRevision = p.historyRevision ?? 0;
       if (!this.metadata.model && typeof p.thread.model === 'string') this.metadata.model = p.thread.model;
       this.turns.clear();
       for (const source of p.thread.turns || []) {
@@ -61,7 +65,15 @@ export class WorkspaceConversation {
         Object.assign(turn, source, {items: new Map((source.items || []).map(i => [i.id, i]))});
       }
       this.status = [...this.turns.values()].some(t => t.status === 'inProgress') ? 'running' : 'ready';
+    } else if (method === 'thread/reverted') {
+      if (p.threadId !== this.sessionId) throw new Error('Revert identity mismatch');
+      this.copyUnavailableAfterRevert = true;
+      this.historyRevision++;
+      this.turns.clear();
+      this.metadata.historyCursor = null;
+      this.status = 'reconciling';
     } else if (method === 'workspace/historyPage') {
+      if ((p.historyRevision ?? 0) !== this.historyRevision) { this.sequence=sequence; return true; }
       const older = new Map();
       for (const source of p.turns || []) {
         older.set(source.id, {...source,items:new Map((source.items || []).map(i=>[i.id,i]))});
@@ -93,6 +105,10 @@ export class WorkspaceConversation {
       const items = turn.items;
       Object.assign(turn, p.turn, {items, status: p.turn.status || (method === 'turn/started' ? 'inProgress' : 'completed')});
       for (const item of p.turn.items || []) items.set(item.id, item);
+      if (method === 'turn/completed' && turn.status === 'completed' && [...items.values()].some(item =>
+        ['agentMessage','plan'].includes(item.type) && !item.parentToolUseId && typeof item.text === 'string' && item.text.length)) {
+        this.copyUnavailableAfterRevert = false;
+      }
       this.status = method === 'turn/started' || [...this.turns.values()].some(item => item.status === 'inProgress')
         ? 'running' : (p.turn.status || 'completed');
     } else if (method === 'item/started' || method === 'item/completed') {

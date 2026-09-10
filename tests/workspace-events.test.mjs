@@ -5,6 +5,25 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('reverted history suppresses copy until a new completed main output',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,history));
+  model.apply(wrap(2,{method:'thread/reverted',params:{threadId:'exact'}}));
+  assert.equal(model.status,'reconciling');
+  assert.equal(model.copyUnavailableAfterRevert,true);
+  model.apply(wrap(3,{method:'workspace/history',params:{historyRevision:1,copyUnavailableAfterRevert:true,thread:{id:'exact',turns:[
+    {id:'old',status:'completed',items:[{id:'a',type:'agentMessage',text:'old answer'}]}]}}}));
+  assert.equal(model.copyUnavailableAfterRevert,true);
+  model.apply(wrap(4,{method:'turn/completed',params:{turn:{id:'shell',status:'completed',items:[]}}}));
+  assert.equal(model.copyUnavailableAfterRevert,true);
+  model.apply(wrap(5,{method:'turn/completed',params:{turn:{id:'new',status:'completed',items:[{id:'b',type:'agentMessage',text:'new answer'}]}}}));
+  assert.equal(model.copyUnavailableAfterRevert,false);
+  assert.throws(()=>model.apply(wrap(6,{method:'thread/reverted',params:{threadId:'foreign'}})),/another session/);
+  assert.equal(model.sequence,5);
+  model.apply(wrap(6,{method:'workspace/historyPage',params:{historyRevision:0,turns:[{id:'discarded',items:[]}],historyCursor:'stale'}}));
+  assert.equal(model.turns.has('discarded'),false);
+});
+
 test('completion of one input does not mark another accepted turn ready',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,history));

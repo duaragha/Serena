@@ -59,6 +59,7 @@ class CodexWorkspace:
         self._fork_ready.set()
         self._fork_ids: set[str] = set()
         self.history_cursor: str | None = None
+        self._history_revision = 0
         self._history_cursors: set[str] = set()
         self._mcp_logins: dict[str, dict] = {}
         self._create_attempted = False
@@ -217,10 +218,15 @@ class CodexWorkspace:
 
     async def load_earlier(self, cursor):
         async with self._control_lock:
-            if self.state in {"closed", "opening", "unavailable"} or not cursor or cursor != self.history_cursor:
+            if self.state in {"closed", "opening", "unavailable", "reconciling"} or not cursor or cursor != self.history_cursor:
                 raise WorkspaceRpcError("History cursor is stale or session unavailable")
+            revision = self._history_revision
             page = await self._history_page(cursor)
-            await self.publish({"method": "workspace/historyPage", "params": {"threadId": self.session_id, **deepcopy(page)}})
+            if revision != self._history_revision:
+                raise WorkspaceRpcError("History changed while loading earlier turns")
+            await self.publish({"method": "workspace/historyPage", "params": {"threadId": self.session_id, 'historyRevision': revision, **deepcopy(page)}})
+            if revision != self._history_revision:
+                raise WorkspaceRpcError("History changed while publishing earlier turns")
             self._history_cursors.add(cursor)
             self.history_cursor = page["historyCursor"]
             return page
@@ -1071,6 +1077,28 @@ class CodexWorkspace:
                     raise WorkspaceRpcError("Received an event for a different coding session")
                 if "id" in event:
                     self.questions[event["id"]] = deepcopy(event)
+                if method == "thread/reverted":
+                    if thread_id != self.session_id:
+                        raise WorkspaceRpcError('Reverted history is missing its exact session identity')
+                    self.state = 'reconciling'
+                    self._history_revision += 1
+                    self.history_cursor = None
+                    self._history_cursors.clear()
+                    self._completed.clear()
+                    await self.publish(deepcopy(event))
+                    page = await self._history_page()
+                    self.thread = {**self.thread, 'turns': page['turns']}
+                    running = [turn['id'] for turn in page['turns'] if turn.get('status') == 'inProgress']
+                    if len(running) > 1:
+                        raise WorkspaceRpcError('Reverted history has ambiguous active turns')
+                    self.active_turn = next(iter(running), None)
+                    self.history_cursor = page['historyCursor']
+                    await self.publish({'method': 'workspace/history', 'params': {
+                        **deepcopy(self.settings), 'thread': deepcopy(self.thread),
+                        'historyCursor': self.history_cursor, 'historyRevision': self._history_revision,
+                        'copyUnavailableAfterRevert': True}})
+                    self.state = 'running' if self.active_turn else 'ready'
+                    continue
                 if method == "account/login/completed":
                     self._finish_account_login(params)
                 elif method == "thread/settings/updated":
@@ -1144,6 +1172,7 @@ class CodexWorkspace:
         self._completed.clear()
         self.history_cursor = None
         self._history_cursors.clear()
+        self._history_revision = 0
         self._fork_ids.clear()
 
     def can_retry_attachment(self) -> bool:
