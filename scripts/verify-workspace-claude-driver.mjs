@@ -9,16 +9,17 @@ import {pathToFileURL} from 'node:url';
 import {fileURLToPath} from 'node:url';
 import {createInterface} from 'node:readline';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
+import {isolatedProofEnv} from './workspace-proof-env.mjs';
 
 const [sdkPath,cliPath,pythonPath,formMode,electronPath,frozenPath]=process.argv.slice(2);
 assert(!formMode || formMode==='--discovery-form','Unknown proof mode');
 assert(sdkPath && cliPath,'SDK module and installed CLI paths required');
 const root=await mkdtemp(join(tmpdir(),'serena-claude-driver-'));
-const path=process.env.PATH;
+const cleanEnv=isolatedProofEnv(process.env,root);
 const browsers=process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(),'.cache','ms-playwright');
 const proofPythonPath=process.env.SERENA_PROOF_PYTHONPATH;
 for(const key of Object.keys(process.env)) delete process.env[key];
-Object.assign(process.env,{PATH:path,HOME:root,CLAUDE_CONFIG_DIR:join(root,'config'),XDG_CONFIG_HOME:join(root,'xdg'),PLAYWRIGHT_BROWSERS_PATH:browsers});
+Object.assign(process.env,cleanEnv,{PLAYWRIGHT_BROWSERS_PATH:browsers});
 const sdk=await import(pathToFileURL(resolve(sdkPath)).href);
 const children=[],exits=[];
 let driver,seed;
@@ -69,10 +70,19 @@ try {
   assert.equal(completed.total_cost_usd,0);
   assert.equal(completed.num_turns,0);
   collectingQueued=true;
+  console.log('Native completion receipt fields:',JSON.stringify({
+    keys:Object.keys(completed),outstanding:driver.outstanding.size,
+  }));
   const queuedIds=[randomUUID(),randomUUID()];
   for(const [index,id] of queuedIds.entries())driver.send({type:'user',session_id:sid,uuid:id,parent_tool_use_id:null,
     message:{role:'user',content:index?'/effort medium':'/effort high'}});
+  const queueDeadline=Date.now()+10000;
   while(driver.outstanding.size){
+    assert(Date.now()<queueDeadline,`Queued acknowledgements missing: ${JSON.stringify({
+      outstanding:driver.outstanding.size,results:queuedResults.map(message=>({
+        keys:Object.keys(message),uuid:message.user_message_uuid,uuids:message.user_message_uuids,
+      })),
+    })}`);
     await Promise.race([new Promise(done=>setTimeout(done,10)),driver.done.then(()=>{throw new Error('Stream ended before queued replies');})]);
   }
   const acknowledged=queuedResults.flatMap(message=>message.user_message_uuids || [message.user_message_uuid]);
@@ -82,7 +92,7 @@ try {
     assert.equal(message.total_cost_usd,0);
     assert.equal(message.num_turns,0);
   }
-  console.log(`PASS: two queued native local inputs acknowledged their exact UUIDs in ${queuedResults.length} result records, same session/PID, zero inference`);
+  console.log(`PASS: two queued native local inputs correlated to their exact UUIDs in ${queuedResults.length} result records, same session/PID, zero inference`);
   await driver.close();
   assert.equal(children.length,2,'One seed owner, then one exact resumed owner');
   assert.equal((await exits[1]).code,0);
@@ -181,5 +191,5 @@ try {
   for(const child of children)if(child.exitCode===null)child.kill('SIGTERM');
   await Promise.allSettled(exits);
   clearTimeout(deadline);
-  await rm(root,{recursive:true,force:true});
+  await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
 }

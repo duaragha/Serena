@@ -23,6 +23,8 @@ export class ClaudeSdkSession {
     this.started=false;
     this.spawned=false;
     this.outstanding=new Set();
+    this.inFlight=new Set();
+    this.receiptMode='unknown';
   }
 
   async open() {
@@ -81,14 +83,18 @@ export class ClaudeSdkSession {
 
   async *input() {
     while (!this.stopped) {
-      if (this.pending.length) yield this.pending.shift();
+      if (this.pending.length && (this.receiptMode==='exact' || !this.inFlight.size)) {
+        const message=this.pending.shift();
+        if(this.outstanding.has(message.uuid))this.inFlight.add(message.uuid);
+        yield message;
+      }
       else await new Promise(done=>{this.wake=done;});
     }
   }
 
   async read() {
     try {
-      for await (const message of this.stream) {
+      for await (let message of this.stream) {
         if(this.transition){
           const transition=this.transition;
           if(transition.events.length>=256)throw new Error('Session transition emitted excessive output');
@@ -114,9 +120,20 @@ export class ClaudeSdkSession {
           throw new Error('Native output belongs to a different session');
         }
         if(message.type==='result'){
-          for(const id of [message.user_message_uuid,...(message.user_message_uuids||[])])this.outstanding.delete(id);
+          let ids=[message.user_message_uuid,...(message.user_message_uuids||[])].filter(Boolean);
+          if(!ids.length && this.inFlight.size===1){
+            // Older CLIs omit receipts. Only one delivered input can be attributed safely.
+            ids=[...this.inFlight];
+            this.receiptMode='serial';
+            message={...message,user_message_uuid:ids[0],workspaceReceiptSource:'single-inflight'};
+          }else if(ids.some(id=>this.inFlight.has(id)))this.receiptMode='exact';
+          else if(!ids.length && this.inFlight.size>1)throw new Error('Native completion omitted concurrent input identities');
+          for(const id of ids){
+            if(this.inFlight.delete(id))this.outstanding.delete(id);
+          }
         }
         await this.publish(message);
+        if(message.type==='result'){this.wake?.();this.wake=null;}
       }
       if (!this.stopped) throw new Error('Native session stream ended unexpectedly');
     } catch(error) {
@@ -210,6 +227,6 @@ export class ClaudeSdkSession {
     this.stopInput();
     this.stream?.close();
     try { await this.done; }
-    finally { this.state='closed';this.transition=null;this.outstanding.clear(); }
+    finally { this.state='closed';this.transition=null;this.outstanding.clear();this.inFlight.clear(); }
   }
 }

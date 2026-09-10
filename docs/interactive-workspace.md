@@ -2,6 +2,50 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Older Claude Completion Compatibility
+
+An actual isolated Windows Claude 2.1.260 run exposed a missing receipt contract:
+its local-command results omit `user_message_uuid` and `user_message_uuids`.
+The first native Windows proof exited 1 at its 90-second deadline; a bounded
+diagnostic reproduced three uncleared inputs despite three received results.
+
+The SDK boundary now holds queued messages until the first delivered input
+completes. A matching explicit receipt enables concurrent delivery. Without
+native receipts, only one input is delivered at a time through the same process;
+the result is correlated to that unique in-flight input, marked
+`workspaceReceiptSource: single-inflight`. This is adapter correlation, not a
+claim that the CLI supplied a receipt. A receiptless result for multiple in-flight
+inputs fails closed. Queued messages remain ordered and no second owner is
+spawned. Native clear still requires its exact handoff acknowledgement.
+
+The proof environment preserves Windows system executables but isolates profile,
+AppData and temporary paths, excluding inherited credentials and Node injection
+settings. Windows profile cleanup hit EBUSY after CLI reaping, including when
+attempted from a parent after the SDK process exited. A later standalone Node
+cleanup succeeded (exit 0), so the unhelpful parent wrapper was removed. Cleanup
+now allows 20 bounded retries with 250ms linear backoff. This changes the verifier,
+not application cleanup policy; the external lock holder is not identified.
+
+Scoped commands and results:
+
+```sh
+node --test tests/workspace-claude-sdk.test.mjs tests/workspace-proof-env.test.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py tests/test_workspace_claude_transport.py -q --tb=short
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "node --test C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\workspace-claude-sdk.test.mjs C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\workspace-proof-env.test.mjs"
+env SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "node C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-claude-driver.mjs C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\runtimes\claude-sdk\node_modules\@anthropic-ai\claude-agent-sdk\sdk.mjs C:\Users\ragha\.local\bin\claude.exe C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe"
+```
+
+Linux Node tests exited 0 (24 passed, 1 Windows skip); Python exited 0
+(67 passed, 1 Windows skip). Windows Node tests exited 0 (25 passed).
+The final Linux and Windows native proofs both exited 0. Windows exercised the
+receiptless compatibility path with the installed Claude 2.1.260: exact session
+resume, two queued inputs, actual worker and CLI PID, Python transport and lease
+duplicate rejection, skill/plugin reload, fork checkpoint recovery, history/model
+catalogs, and final profile removal. Earlier post-fix Windows runs exited 1 solely
+at profile cleanup; the final bounded-cleanup run passed. No model inference or
+user credentials were used. This is not an installed Electron end-to-end check.
+
 ## Claude Gated Windows Process Identity
 
 The Windows bootstrap adds one process level above the Node worker. Claude's

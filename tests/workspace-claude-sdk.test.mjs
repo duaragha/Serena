@@ -96,6 +96,7 @@ test('clear blocks input until exact handoff acknowledgement and retains the run
 
 for(const grouped of [false,true])test(`queued inputs retain order and exact ${grouped?'grouped':'individual'} acknowledgements`,async()=>{
   const f=transitionFixture();await f.session.open();
+  f.session.receiptMode='exact';
   try{
     for(const uuid of ['first','second'])f.session.send({type:'user',session_id:'exact',uuid,
       message:{role:'user',content:uuid}});
@@ -118,6 +119,46 @@ for(const grouped of [false,true])test(`queued inputs retain order and exact ${g
     assert.equal(f.session.outstanding.size,0);
     assert.deepEqual(f.calls,['spawn']);
   }finally{await f.session.close();}
+});
+
+test('receiptless CLI queues one delivered input at a time without guessing queued identities',async()=>{
+  const f=transitionFixture();await f.session.open();
+  try{
+    for(const uuid of ['first','second'])f.session.send({type:'user',session_id:'exact',uuid,message:{role:'user',content:uuid}});
+    assert.equal((await f.setup.prompt.next()).value.uuid,'first');
+    let delivered=false;
+    const next=f.setup.prompt.next().then(value=>{delivered=true;return value;});
+    await new Promise(done=>setTimeout(done,0));
+    assert.equal(delivered,false);
+    f.emit({type:'result',session_id:'exact'});
+    assert.equal((await next).value.uuid,'second');
+    assert.equal(f.outputs.at(-1).user_message_uuid,'first');
+    assert.equal(f.outputs.at(-1).workspaceReceiptSource,'single-inflight');
+    assert.deepEqual([...f.session.outstanding],['second']);
+    assert.equal(f.session.receiptMode,'serial');
+    f.emit({type:'result',session_id:'exact'});
+    await new Promise(done=>setTimeout(done,0));
+    assert.equal(f.outputs.at(-1).user_message_uuid,'second');
+    assert.equal(f.session.outstanding.size,0);
+    assert.deepEqual(f.calls,['spawn']);
+  }finally{await f.session.close();}
+});
+
+test('matching native receipt enables concurrent delivery, missing concurrent identities fail closed',async()=>{
+  const f=transitionFixture();await f.session.open();
+  try{
+    f.session.send({type:'user',session_id:'exact',uuid:'probe'});
+    await f.setup.prompt.next();
+    f.emit({type:'result',session_id:'exact',user_message_uuid:'probe'});
+    await new Promise(done=>setTimeout(done,0));
+    assert.equal(f.session.receiptMode,'exact');
+    for(const uuid of ['a','b'])f.session.send({type:'user',session_id:'exact',uuid});
+    await f.setup.prompt.next();await f.setup.prompt.next();
+    f.emit({type:'result',session_id:'exact'});
+    await assert.rejects(f.session.done,/omitted concurrent input identities/);
+    assert.equal(f.session.state,'unavailable');
+    assert.deepEqual([...f.session.outstanding],['a','b']);
+  }finally{await f.session.close().catch(()=>{});}
 });
 
 test('clear refuses consumed but unfinished input',async()=>{
