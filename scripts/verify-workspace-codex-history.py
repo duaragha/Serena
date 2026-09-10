@@ -142,14 +142,24 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                     if pid is None:
                         pid = actual[0]
                     assert actual == [pid]
+                    if prefix != 'codex-native':
+                        composer.click()
+                        page.wait_for_function("""async sid => {
+                          const context=await (await fetch('/api/runtime-context')).json();
+                          const owner=context.runtimes.find(row=>row.sid===sid);
+                          return context.focused_sid===sid && context.window_active
+                            && owner?.draft && owner.draft_known;
+                        }""", arg=sid)
+                        assert composer.input_value() == draft and owners() == [pid]
+                        print(f"PASS: {prefix} {label} real composer focus and unsent draft reached local runtime context without submission")
                     observations = []
                     page.on('request', lambda request, observations=observations: observations.append(request.method)
-                            if '/api/workspace/' in request.url else None)
+                            if '/api/workspace/' in request.url and not request.url.endswith('/view-context') else None)
                     page.reload()
                     expect(page.locator('#workspace-connect')).to_be_hidden()
                     page.locator('summary').filter(has_text=token).first.wait_for()
                     assert owners() == [pid] and observations and set(observations) == {'GET'}, observations
-                    print(f"PASS: {prefix} {label} reload replayed real output using reads only; no resume, command or replacement owner")
+                    print(f"PASS: {prefix} {label} reload replayed real output using reads plus view telemetry; no resume, command or replacement owner")
                     assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
                     page.screenshot(path=str(artifacts / f"{prefix}-{label}.png"))
                     if label == "desktop":

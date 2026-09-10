@@ -53,6 +53,10 @@ def workspace_blueprint(host, *, token: str):
     def observe(sid):
         return jsonify(host.observe(sid))
 
+    @bp.post("/<sid>/view-context")
+    def view_context(sid):
+        return jsonify(host.note_view_context(sid, request.get_json(silent=True)))
+
     @bp.post("/<sid>/handoff")
     def handoff(sid):
         data = request.get_json(silent=True)

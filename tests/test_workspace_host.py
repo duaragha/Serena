@@ -158,7 +158,7 @@ def test_native_runtime_context_is_read_only_and_local(tmp_path, monkeypatch):
             assert context['runtimes'] == [{
                 'sid': 'exact', 'agent': 'codex', 'cwd': str(tmp_path),
                 'alive': alive, 'state': state, 'busy': busy,
-                'reserved': False, 'owner': 'workspace'}]
+                'reserved': False, 'owner': 'workspace', 'draft': False, 'draft_known': False}]
             assert context['sessions'] == context['runtimes']
             assert not context['focused_sid'] and not context['window_active']
         host._bridge_queues['exact'] = ['pending']
@@ -169,6 +169,46 @@ def test_native_runtime_context_is_read_only_and_local(tmp_path, monkeypatch):
     finally:
         host.shutdown()
     assert host.runtime_context_snapshot() == {'runtimes': []}
+
+
+def test_view_context_auth_order_expiry_and_draft_retention(tmp_path, monkeypatch):
+    import core.workspace_host as module
+    clock = [100.0]
+    monkeypatch.setattr(module, 'monotonic', lambda: clock[0])
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'views.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+        factories={'codex': Owner})
+    app = Flask(__name__)
+    app.register_blueprint(workspace_blueprint(host, token='s' * 40))
+    client = app.test_client()
+    headers = {'X-Serena-Workspace-Token': 's' * 40}
+    data = {'view_id': '11111111-1111-4111-8111-111111111111', 'sequence': 1,
+            'focused': True, 'visible': True, 'draft': True}
+    try:
+        assert client.post('/api/workspace/exact/view-context', json=data).status_code == 403
+        assert not client.post('/api/workspace/exact/view-context', json=data, headers=headers).json['ok']
+        assert host._loop is None
+        host.attach('exact')
+        assert client.post('/api/workspace/exact/view-context', json=data, headers=headers).json['ok']
+        context = host.runtime_context_snapshot()
+        assert context['focused_sid'] == 'exact' and context['window_active']
+        assert context['runtimes'][0]['draft'] and context['runtimes'][0]['draft_known']
+        stale = {**data, 'sequence': 0, 'draft': False}
+        assert host.note_view_context('exact', stale)['stale']
+        assert host.runtime_context_snapshot()['runtimes'][0]['draft']
+        for invalid in [{**data, 'focused': 'yes'}, {**data, 'visible': False},
+                        {**data, 'sequence': True}, {**data, 'text': 'private draft'},
+                        {**data, 'view_id': 'invalid'}]:
+            assert client.post('/api/workspace/exact/view-context', json=invalid, headers=headers).status_code == 400
+        clock[0] += 7
+        context = host.runtime_context_snapshot()
+        assert not context['focused_sid'] and not context['window_active']
+        assert context['runtimes'][0]['draft'] and not context['runtimes'][0]['draft_known']
+        host.note_view_context('exact', {**data, 'sequence': 2, 'draft': False, 'focused': False})
+        assert not host.runtime_context_snapshot()['runtimes'][0]['draft']
+        assert len(host._sessions) == 1 and not host._sessions['exact'][0].sent
+    finally:
+        host.shutdown()
 
 
 def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):

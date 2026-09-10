@@ -2,6 +2,46 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native View Context (2026-09-10)
+
+Native panes now publish boolean focus, visibility and draft presence through an
+authenticated local endpoint. Draft presence includes attachments and selected
+skills; no draft content crosses this endpoint. Reports are session/view-bound,
+monotonically sequenced across reload, and deduplicated within the two-second
+heartbeat. Reads and reports never start an owner or owner loop.
+
+Focus expires after six seconds without a fresh report. Closing the page clears
+focus using a keepalive report, not a provider command; draft flags remain until
+updated by that view. Runtime rows expose `draft_known` separately from `draft`
+so missing/stale reports cannot be interpreted as proof of an empty composer.
+Delayed reports cannot overwrite newer sequences. The aggregate local context
+prefers the most recently focused surface rather than always preferring GTK.
+
+This is context publication, not complete reusable-session admission: linked
+split context, all native activity/reservation checks and native router admission
+still need integration. Idle process sleeping and packaged rollout remain open.
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_view_context_auth_order_expiry_and_draft_retention tests/test_workspace_host.py::test_native_runtime_context_is_read_only_and_local tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short
+# exit 0: 4 passed in 18.26s; both provider browser panes, no automatic owner,
+# exact draft/focus reporting, authentication, malformed reports, expiry/order
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 66 passed in 28.48s
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py ui/workspace_web.py tests/test_workspace_host.py tests/test_workspace_app.py
+# exit 0: All checks passed
+node --check ui/static/workspace-page.mjs
+# exit 0
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: real Codex desktop/mobile composer focus and unsent draft reported;
+# no input submission/replacement owner; native history, commands, reload,
+# disconnect/resume and fork verified; isolated children reaped; no inference
+```
+
+The first browser regression run exited 1 because it counted view telemetry as
+a provider mutation. Its no-resume/no-command GET assertion now excludes only
+the dedicated view-context endpoint, whose behavior is independently tested.
+
 ## Native Owner Inventory (2026-09-10)
 
 The local-only runtime-context endpoint now includes existing structured owners,

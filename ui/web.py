@@ -11844,6 +11844,7 @@ def api_runtime_context():
     workspace = app.extensions.get("workspace_host")
     structured = workspace.runtime_context_snapshot() if workspace is not None else None
     contexts = [context for context in (native, browser, structured) if context]
+    contexts.sort(key=lambda context: float(context.get("focused_at") or 0), reverse=True)
     runtimes = [
         _decorate_runtime_entry(entry)
         for context in contexts

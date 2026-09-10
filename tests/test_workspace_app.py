@@ -293,6 +293,7 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
 
         def __init__(self, *, session_id, cwd, publish):
             self.sid, self.publish = session_id, publish
+            self.cwd = cwd
             self.sent, self.closed = [], False
             owners.append(self)
 
@@ -446,9 +447,15 @@ function setTermStatus(status){window.lastStatus=status;}
             if provider != "claude":
                 page.get_by_role("button", name="Resume session").click()
             page.get_by_role("button", name="Resume session").wait_for(state="hidden")
-            page.get_by_role("textbox", name=f"Message {provider.capitalize()}").fill(
-                "real mounted page control"
-            )
+            with page.expect_response(lambda response: response.url.endswith('/view-context')
+                                      and response.request.post_data_json.get('draft') is True):
+                page.get_by_role("textbox", name=f"Message {provider.capitalize()}").fill(
+                    "real mounted page control"
+                )
+            context = host.runtime_context_snapshot()
+            assert context['focused_sid'] == 'exact'
+            assert context['runtimes'][0]['draft'] and context['runtimes'][0]['draft_known']
+            assert not owners[0].sent
             page.get_by_role("button", name="Send message", exact=True).click()
             page.get_by_text("controlled provider output", exact=True).wait_for()
             assert owners[0].sent == [[{"type": "text", "text": "real mounted page control"}]]
@@ -502,7 +509,7 @@ function setTermStatus(status){window.lastStatus=status;}
             page.screenshot(path=str(tmp_path / "mounted-workspace.png"))
             observations = []
             page.on("request", lambda request: observations.append(request.method)
-                    if "/api/workspace/" in request.url else None)
+                    if "/api/workspace/" in request.url and not request.url.endswith('/view-context') else None)
             page.reload()
             page.get_by_role("button", name="Resume session").wait_for(state="hidden")
             page.get_by_text("controlled provider output", exact=True).wait_for()

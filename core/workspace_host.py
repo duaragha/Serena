@@ -12,9 +12,11 @@ import concurrent.futures
 import hashlib
 import json
 import threading
+import time
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
+from time import monotonic
 from uuid import UUID
 
 from core.workspace_codex import CodexWorkspace
@@ -54,6 +56,7 @@ class WorkspaceHost:
         self._bridge_queues = {}
         self._bridge_messages = {}
         self._bridge_cancelled = set()
+        self._views = {}
 
     async def _run(self, coroutine):
         task = asyncio.current_task()
@@ -122,25 +125,60 @@ class WorkspaceHost:
             future = asyncio.run_coroutine_threadsafe(self._runtime_context_snapshot(), self._loop)
         return future.result(timeout=5)
 
+    def note_view_context(self, sid, data):
+        self._validate_session(sid)
+        if (not isinstance(data, dict) or set(data) != {"view_id", "sequence", "focused", "visible", "draft"}
+                or not isinstance(data["view_id"], str) or str(UUID(data["view_id"])) != data["view_id"]
+                or type(data["sequence"]) is not int or not 0 <= data["sequence"] <= 2 ** 53 - 1
+                or any(type(data[key]) is not bool for key in ("focused", "visible", "draft"))
+                or (data["focused"] and not data["visible"])):
+            raise ValueError("Expected an exact view identity, sequence and boolean context")
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"ok": False, "observing": False}
+            future = asyncio.run_coroutine_threadsafe(self._note_view_context(sid, dict(data)), self._loop)
+        return future.result(timeout=5)
+
+    async def _note_view_context(self, sid, data):
+        if sid not in self._sessions:
+            return {"ok": False, "observing": False}
+        views = self._views.setdefault(sid, {})
+        previous = views.get(data["view_id"])
+        if previous is not None and data["sequence"] <= previous["sequence"]:
+            return {"ok": True, "stale": True}
+        if previous is None and len(views) >= 32:
+            raise ValueError("Too many views for this session")
+        views[data["view_id"]] = {**data, "seen": monotonic(), "focused_at": time.time()}
+        return {"ok": True}
+
     async def _runtime_context_snapshot(self):
         runtimes = []
+        focus = []
+        now = monotonic()
         for sid, (owner, provider) in self._sessions.items():
             if sid.startswith("new:"):
                 continue
+            views = list(self._views.get(sid, {}).values())
+            fresh = [view for view in views if now - view["seen"] < 6]
+            alive = owner.state not in {"closed", "unavailable"}
+            if alive:
+                focus.extend((view["focused_at"], sid) for view in fresh if view["focused"])
             runtimes.append({
                 "sid": sid,
                 "agent": provider,
                 "cwd": str(owner.cwd),
-                "alive": owner.state not in {"closed", "unavailable"},
+                "alive": alive,
                 "state": owner.state,
                 "busy": bool(owner.active_turn) or owner.state not in {
                     "ready", "completed", "failed", "interrupted", "closed", "unavailable"},
                 "reserved": bool(self._bridge_queues.get(sid)),
                 "owner": "workspace",
+                "draft": any(view["draft"] for view in views),
+                "draft_known": bool(views) and len(fresh) == len(views),
             })
-        # View focus/drafts must be supplied separately. Owner existence is not
-        # evidence that a user is viewing it or that its composer is empty.
-        return {"runtimes": runtimes}
+        focused_at, focused_sid = max(focus, default=(0, None))
+        return {"runtimes": runtimes, "focused_sid": focused_sid,
+                "focused_at": focused_at, "window_active": bool(focused_sid)}
 
     def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:

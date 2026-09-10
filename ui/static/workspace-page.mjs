@@ -36,7 +36,38 @@ const pane = new WorkspacePane(document.querySelector('#workspace-pane'), {
   sessionId: boot.sessionId, provider: boot.provider, controls,
 });
 let intersects=true;
-const updateVisibility=()=>connection.setVisible(intersects && document.visibilityState==='visible');
+let viewContext=null;
+let lastContextSignature='',lastContextAt=0;
+const contextKey=`serena-workspace-view:${boot.sessionId}`;
+try {
+  const saved=JSON.parse(sessionStorage.getItem(contextKey) || 'null');
+  viewContext=saved && typeof saved.view_id==='string' && Number.isSafeInteger(saved.sequence)
+    ? saved : {view_id:crypto.randomUUID(),sequence:0};
+} catch { /* Context telemetry must not interfere with the session. */ }
+function reportContext(closing=false) {
+  closing=closing===true;
+  if(!viewContext)return;
+  const visible=!closing && intersects && document.visibilityState==='visible';
+  const state={visible,focused:visible && document.hasFocus(),
+    draft:!!(pane.input.value.trim() || pane.files.length || pane.selectedSkills.length)};
+  const signature=JSON.stringify(state),now=performance.now();
+  if(!closing && signature===lastContextSignature && now-lastContextAt<1800)return;
+  const data={view_id:viewContext.view_id,sequence:++viewContext.sequence,...state};
+  try {sessionStorage.setItem(contextKey,JSON.stringify(viewContext));} catch {return;}
+  lastContextSignature=signature;lastContextAt=now;
+  fetch(connection.base+'/view-context', {
+    method:'POST',credentials:'same-origin',keepalive:closing,
+    headers:{'Content-Type':'application/json','X-Serena-Workspace-Token':boot.token},
+    body:JSON.stringify(data),
+  }).catch(()=>{});
+}
+const contextTimer=setInterval(reportContext,2000);
+document.addEventListener('input',reportContext);
+window.addEventListener('blur',reportContext);
+const updateVisibility=()=>{
+  connection.setVisible(intersects && document.visibilityState==='visible');
+  reportContext();
+};
 const visibilityObserver=new IntersectionObserver(entries=>{
   intersects=entries.some(entry=>entry.isIntersecting);
   updateVisibility();
@@ -44,6 +75,7 @@ const visibilityObserver=new IntersectionObserver(entries=>{
 visibilityObserver.observe(pane.root);
 document.addEventListener('visibilitychange',updateVisibility);
 function reportFocus() {
+  reportContext();
   if(parent!==window && intersects && document.visibilityState==='visible' && document.hasFocus())
     parent.postMessage({type:'serena-workspace-focused',sid:boot.sessionId},location.origin);
 }
@@ -114,6 +146,9 @@ else connection.observe().then(observing=>{
   button.disabled=false;
 }).catch(connectionFailed);
 window.addEventListener('pagehide', () => {
+  clearInterval(contextTimer);document.removeEventListener('input',reportContext);
+  window.removeEventListener('blur',reportContext);
+  reportContext(true);
   document.removeEventListener('focusin',reportFocus);document.removeEventListener('pointerdown',reportFocus);
   window.removeEventListener('focus',reportFocus);
   visibilityObserver.disconnect();document.removeEventListener('visibilitychange',updateVisibility);
