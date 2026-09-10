@@ -577,7 +577,7 @@ class WorkspaceHost:
                         raise ValueError("Skill reload requires a Claude session and no payload")
                     result = await owner.reload_skills()
                 elif action == "commands":
-                    if provider not in {"claude", "codex"} or payload:
+                    if provider not in {"claude", "codex", "gemini"} or payload:
                         raise ValueError(
                             "Command discovery requires a supported session and no payload"
                         )

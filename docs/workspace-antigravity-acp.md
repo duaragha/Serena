@@ -198,6 +198,22 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Native command catalog (2026-09-09): session `available_commands_update`
+notifications now replace a validated catalog, exposed by the host's commands
+action and the Gemini picker. Selecting only prefixes the existing draft;
+execution is an explicit ordinary prompt. No authentication/sign-out command
+was executed during verification. The installed server advertises the SDK's
+`plan` command and its separate `logout` command. No invented CLI catalog.
+Official contract: https://agentclientprotocol.com/protocol/v1/slash-commands
+(accessed 2026-09-09).
+
+`PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_session.py tests/test_workspace_gemini.py tests/test_workspace_pane.py::test_gemini_command_picker_preserves_draft_until_send -q --tb=short`:
+exit 0, 29 passed. Scoped Ruff and JS syntax: exit 0. Tests cover live catalog
+replacement/removal, invalid-name rejection, desktop/mobile draft preservation
+and production host/owner exact command delivery through a controlled subprocess.
+Authenticated command execution, account lifecycle UX and default Gemini admission
+remain unfinished; this is not an installed-app update.
+
 Native settings compatibility (2026-09-09): the shipped Google settings parser
 uses Hjson. Serena now uses pinned `hjson==3.1.0`, accepting comments, unquoted
 keys and trailing commas without rewriting settings. Explicit personal OAuth

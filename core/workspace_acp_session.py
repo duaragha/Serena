@@ -26,6 +26,7 @@ class AcpSession:
         self._reader = None
         self.last_turn_id = None
         self.config_options = []
+        self.commands = []
 
     def start_event_reader(self):
         if self._reader is not None:
@@ -104,6 +105,20 @@ class AcpSession:
             if params["update"]["sessionUpdate"] == "config_option_update":
                 self.config_options = deepcopy(params["update"].get("configOptions", []))
                 await self.publish_model_state()
+            if params["update"]["sessionUpdate"] == "available_commands_update":
+                commands = params["update"].get("availableCommands")
+                if not isinstance(commands, list) or any(
+                    not isinstance(command, dict) or not isinstance(command.get("name"), str)
+                    or not command["name"] or any(c.isspace() or c == "/" for c in command["name"])
+                    or not isinstance(command.get("description"), str)
+                    or (command.get("input") is not None and (not isinstance(command["input"], dict)
+                        or not isinstance(command["input"].get("hint"), str))) for command in commands
+                ):
+                    raise ValueError("Invalid ACP command catalog")
+                self.commands = [{"name": command["name"], "description": command["description"],
+                                  "argumentHint": (command.get("input") or {}).get("hint", ""),
+                                  "kind": "command"} for command in commands]
+                await self.publish(self.events.event("workspace/commands", {"data": self.commands}))
             if self.state != "loading" or event["method"] == "workspace/acpMetadata":
                 await self.publish(event)
         elif method == "session/request_permission":

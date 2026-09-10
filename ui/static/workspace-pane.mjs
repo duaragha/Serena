@@ -123,7 +123,7 @@ export class WorkspacePane {
     this.tasksButton.hidden = !['Codex','Claude'].includes(provider) || !controls.backgroundTasks;
     footer.insertBefore(this.tasksButton, this.stop);
     this.commandsButton = this.button('Commands and skills', 'slash', () => this.openCommands());
-    this.commandsButton.hidden = !['Claude','Codex'].includes(provider) || !controls.commands;
+    this.commandsButton.hidden = !['Claude','Codex','Gemini'].includes(provider) || !controls.commands;
     footer.insertBefore(this.commandsButton, this.stop);
     this.mcpButton = this.button('MCP connections', 'plug', () => this.openMcpServers());
     this.mcpButton.hidden = !['Claude','Codex'].includes(provider) || !controls.mcpServers;

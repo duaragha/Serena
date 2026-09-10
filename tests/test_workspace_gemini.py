@@ -40,13 +40,16 @@ def config(current):
     return [{"id": "model", "category": "model", "type": "select", "currentValue": current,
              "options": [{"value": "first", "name": "First"}, {"value": "second", "name": "Second"}]}]
 send({"id": message["id"], "result": {"configOptions": config("first")}})
+send({"method": "session/update", "params": {"sessionId": sid, "update": {
+    "sessionUpdate": "available_commands_update", "availableCommands": [
+        {"name": "plan", "description": "Plan work"}]}}})
 message = read()
 assert message["method"] == "session/set_config_option"
 assert message["params"] == {"sessionId": sid, "configId": "model", "value": "second"}
 send({"id": message["id"], "result": {"configOptions": config("second")}})
 prompt = read()
 assert prompt["method"] == "session/prompt" and prompt["params"]["sessionId"] == sid
-assert prompt["params"]["prompt"] == [{"type": "text", "text": "inspect"}]
+assert prompt["params"]["prompt"] == [{"type": "text", "text": "/plan inspect"}]
 send({"id": "permission", "method": "session/request_permission", "params": {
     "sessionId": sid, "toolCall": {"toolCallId": "read", "title": "Inspect"},
     "options": [{"optionId": "once", "name": "Allow once", "kind": "allow_once"}]}})
@@ -86,7 +89,10 @@ assert sys.stdin.read() == "", "Unexpected duplicate delivery"
         process = rpc.process
         models = host.command(SID, "models", "models", {})
         assert models["ok"] and [model["model"] for model in models["result"]["data"]] == ["first", "second"]
-        payload = {"inputs": [{"type": "text", "text": "inspect"}], "options": {"model": "second"}}
+        wait_event("workspace/commands")
+        commands = host.command(SID, "commands", "commands", {})
+        assert commands["ok"] and commands["result"]["data"][0]["name"] == "plan"
+        payload = {"inputs": [{"type": "text", "text": "/plan inspect"}], "options": {"model": "second"}}
         sent = host.command(SID, "send", "submit", payload)
         assert sent["ok"]
         assert host.command(SID, "send", "submit", payload) == sent

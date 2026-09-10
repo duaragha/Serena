@@ -61,6 +61,25 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_gemini_command_picker_preserves_draft_until_send(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    page.evaluate("""async () => {
+      pane.dispose();
+      const {WorkspacePane}=await import('/workspace-pane.mjs');
+      controls.commands=async()=>({data:[{name:'plan',description:'Plan work',argumentHint:'task',kind:'command'}]});
+      window.pane=new WorkspacePane(document.querySelector('#left'),{sessionId:'exact',provider:'Gemini',controls});
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+    }""")
+    page.get_by_role("textbox", name="Message Gemini").fill("keep this task")
+    page.get_by_role("button", name="Commands and skills", exact=True).click()
+    page.get_by_role("button", name="/plan task Plan work").click()
+    assert page.get_by_role("textbox", name="Message Gemini").input_value() == "/plan keep this task"
+    assert page.evaluate("calls") == []
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_model_catalog_update_clears_unavailable_header_without_submission(pane, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 1000})

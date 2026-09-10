@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 from uuid import UUID
 
@@ -71,6 +72,11 @@ class GeminiWorkspace:
         if self.state not in {"ready", "running", "cancelling"}:
             raise ValueError("Gemini is not attached")
         return await self.session.publish_model_state()
+
+    async def list_commands(self):
+        if self.state not in {"ready", "running", "cancelling"}:
+            raise ValueError("Gemini is not attached")
+        return {"data": deepcopy(self.session.commands)}
 
     async def answer(self, request_id, answer):
         if not isinstance(answer, dict) or set(answer) != {"outcome"}:

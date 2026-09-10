@@ -88,6 +88,26 @@ def test_native_config_update_replaces_stale_model_options(tmp_path):
     asyncio.run(run())
 
 
+def test_command_notifications_replace_catalog_without_execution(tmp_path):
+    async def run():
+        rpc, output = Rpc(), []
+        async def publish(event):
+            output.append(event)
+        owner = AcpSession(session_id="exact", cwd=tmp_path, rpc=rpc, publish=publish)
+        await owner.load({"agentCapabilities": {"loadSession": True}}, mcp_servers=[])
+        async def commands(data):
+            await owner.receive({"method": "session/update", "params": {"sessionId": "exact", "update": {
+                "sessionUpdate": "available_commands_update", "availableCommands": data}}})
+        await commands([{"name": "plan", "description": "Plan work", "input": {"hint": "task"}}])
+        assert owner.commands == [{"name": "plan", "description": "Plan work", "argumentHint": "task", "kind": "command"}]
+        await commands([])
+        assert owner.commands == []
+        assert len(rpc.calls) == 1
+        with pytest.raises(ValueError, match="Invalid ACP command"):
+            await commands([{"name": "plan\nlogout", "description": "invalid"}])
+    asyncio.run(run())
+
+
 def test_exact_load_failure_never_creates_or_retries(tmp_path):
     async def run():
         rpc, output = Rpc(), []
