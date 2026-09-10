@@ -569,7 +569,16 @@ class WorkspaceHost:
             self._sessions[sid] = (owner, target["provider"])
             try:
                 queued = await asyncio.to_thread(self.journal.recoverable_bridge_queue, sid, target["provider"])
+                mode = (await asyncio.to_thread(self.journal.saved_codex_mode, sid)
+                        if target["provider"] == "codex" else None)
                 await owner.open()
+                if mode is not None:
+                    try:
+                        await owner.set_session_mode(mode)
+                    except Exception:
+                        # Do not expose a resumed writer under the wrong mode.
+                        await owner.close()
+                        raise
                 await self._restore_bridge_queue(sid, owner, queued)
             except Exception as error:
                 await publish({"method": "workspace/error", "params": {"reason": str(error)}})

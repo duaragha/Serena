@@ -715,6 +715,44 @@ def test_account_status_requires_explicit_owner_and_rejects_mutations(tmp_path):
         host.shutdown()
 
 
+@pytest.mark.parametrize('mode', ['plan', 'default', None, 'invalid'])
+@pytest.mark.parametrize('failure', [False, True])
+def test_explicit_resume_restores_saved_mode_before_admission(tmp_path, mode, failure):
+    calls = []
+    class ModeOwner(Owner):
+        async def open(self):
+            calls.append('open')
+            await super().open()
+        async def set_session_mode(self, value):
+            calls.append(value)
+            if failure:
+                raise ValueError('Native mode restoration rejected')
+            self.settings = {'collaborationMode': value}
+    journal = WorkspaceJournal(tmp_path / 'resume-mode.db')
+    if mode is not None:
+        journal.append('exact', {'method': 'workspace/settings', 'params': {'collaborationMode': mode}})
+    host = WorkspaceHost(journal=journal,
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': ModeOwner})
+    try:
+        host.events('exact')
+        assert calls == []
+        result = host.attach('exact')
+        if mode == 'invalid':
+            assert not result['ok'] and calls == []
+        elif failure and mode is not None:
+            assert not result['ok'] and host._sessions['exact'][0].closed
+        else:
+            assert result['ok']
+            assert calls == (['open'] if mode is None else ['open', mode])
+            host.attach('exact')
+            assert calls.count('open') == 1
+            if mode == 'plan':
+                assert host._work_admission_error('exact') == 'Native session is in Plan mode'
+    finally:
+        host.shutdown()
+
+
 def test_codex_mode_controls_are_explicit_receipted_and_job_guarded(tmp_path):
     calls = []
     class ModeOwner(Owner):

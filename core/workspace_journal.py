@@ -61,6 +61,19 @@ class WorkspaceJournal:
             if "cataloged" not in columns:
                 conn.execute("ALTER TABLE workspace_creations ADD COLUMN cataloged INTEGER NOT NULL DEFAULT 0")
 
+    def saved_codex_mode(self, session_id: str) -> str | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute("""SELECT event FROM workspace_events
+                WHERE session_id=? AND json_extract(event, '$.method')='workspace/settings'
+                AND json_type(event, '$.params.collaborationMode') IS NOT NULL
+                ORDER BY sequence DESC LIMIT 1""", (session_id,)).fetchone()
+        if row is None:
+            return None
+        mode = json.loads(row[0])["params"]["collaborationMode"]
+        if not isinstance(mode, str) or mode not in {"plan", "default"}:
+            raise ValueError("Saved Codex mode is invalid")
+        return mode
+
     def pending_target(self, session_id: str) -> dict | None:
         target = self.clear_target(session_id, uncataloged_only=True)
         if target:

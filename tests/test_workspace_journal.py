@@ -7,6 +7,21 @@ import pytest
 from core.workspace_journal import WorkspaceJournal
 
 
+def test_saved_mode_is_exact_session_and_survives_unrelated_events(tmp_path):
+    journal = WorkspaceJournal(tmp_path / 'modes.db')
+    assert journal.saved_codex_mode('exact') is None
+    journal.append('other', {'method': 'workspace/settings', 'params': {'collaborationMode': 'default'}})
+    journal.append('exact', {'method': 'workspace/settings', 'params': {'collaborationMode': 'plan'}})
+    journal.append('exact', {'method': 'workspace/history', 'params': {}})
+    journal.append('exact', {'method': 'workspace/settings', 'params': {'model': 'chosen'}})
+    assert journal.saved_codex_mode('exact') == 'plan'
+    journal.append('exact', {'method': 'workspace/settings', 'params': {'collaborationMode': 'default'}})
+    assert journal.saved_codex_mode('exact') == 'default'
+    journal.append('exact', {'method': 'workspace/settings', 'params': {'collaborationMode': 'invalid'}})
+    with pytest.raises(ValueError, match='Saved Codex mode'):
+        journal.saved_codex_mode('exact')
+
+
 def test_existing_clear_journal_migrates_without_losing_target(tmp_path):
     path = tmp_path / "legacy.db"
     target = {"session_id": "11111111-2222-4333-8444-555555555555", "provider": "claude", "cwd": str(tmp_path)}

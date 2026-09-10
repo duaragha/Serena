@@ -57,7 +57,7 @@ All writes and command execution were confined to a disposable profile/project.
 | `mcp`, `permissions`, `skills` | Native catalogs/control dialogs | Audit full CLI option coverage separately |
 | `model`, `reasoning` | Focus native-catalog-backed selectors | Selection applies to next turn; not a claim of persistent TUI configuration |
 | `status` | Read-only existing event snapshot | No account-rate-limit display or fresh provider configuration read yet |
-| `plan` | Explicit native mode picker and `thread/settings/update` | Native Plan/Default confirmed with unchanged model/effort, no inference; cross-process mode restoration still needs audit |
+| `plan` | Explicit native mode picker and `thread/settings/update` | Native Plan/Default confirmed with unchanged model/effort; workspace-confirmed mode restored across two real process replacements, no inference |
 
 Other documented CLI commands are not yet accounted for by this matrix. The
 current command menu is not the complete Codex CLI catalog. Do not release or

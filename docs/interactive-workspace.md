@@ -2,6 +2,37 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Codex Mode Restoration (2026-09-10)
+
+Native `thread/resume` does not return a collaboration-mode field. Serena now
+reads the last confirmed mode from that exact session's settings journal before
+opening a replacement owner. After resume, it restores that mode through the
+native API, preserving the resumed model/effort, before restoring queued bridge
+work or reporting attachment ready. No remembered mode means no extra control.
+Merely reading the journal cannot launch a provider. Reattaching an existing
+owner does not reapply anything. If native restoration fails, the new owner is
+closed rather than exposed under the wrong mode. Corrupt saved modes fail before
+launch. This restores Serena's last confirmed selection, not hypothetical
+changes made by an unrelated client while Serena was closed.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_journal.py::test_saved_mode_is_exact_session_and_survives_unrelated_events tests/test_workspace_host.py::test_explicit_resume_restores_saved_mode_before_admission -q --tb=short
+# exit 0: 9 passed in 1.88s; exact scope, default/plan/no preference/corruption,
+# rejected restoration, no-auto-launch, existing owner reuse and Plan job guard.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-mode-resume.py
+# exit 0: Plan and Default restored across two real process replacements;
+# old processes reaped before resume, same persisted session/model/effort,
+# read did not launch, no inference, disposable profile removed.
+# One explicit `echo mode-proof` native shell turn creates persisted history.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_journal.py -q --tb=short
+# exit 0: 131 passed in 29.06s.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py tests/test_workspace_host.py tests/test_workspace_journal.py scripts/verify-workspace-mode-resume.py
+# exit 0: All checks passed!
+```
+
+The exploratory native resume command also exited 0 and established the missing
+mode field; it was diagnostic evidence, not proof of preservation by itself.
+
 ## Native Codex Planning Mode (2026-09-10)
 
 The existing session-mode picker now supports Codex. `/plan` opens that picker;
@@ -15,7 +46,8 @@ Busy sessions, pending questions, unavailable modes and reserved coding jobs
 refuse mode changes. An observed Plan-mode owner cannot accept background coding
 jobs. Native thread-settings events now update the pane's model, effort, mode,
 approval and sandbox snapshot. Unknown initial mode is displayed as unavailable,
-not guessed. Cross-process resume mode restoration remains a separate audit.
+not guessed. Cross-process restoration of the last workspace-confirmed mode is
+covered by the later receipt above.
 
 Sources: [official App Server reference](https://learn.chatgpt.com/docs/app-server),
 accessed 2026-09-10; installed native generated schemas for
