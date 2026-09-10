@@ -1,7 +1,8 @@
-"""Own a stdin-gated helper tree using a non-inheritable Windows Job Object.
+"""Create a non-inheritable kill-on-close Windows Job Object.
 
-Assignment must precede releasing the helper's request. This is not safe for
-arbitrary programs that can create children before reading stdin.
+WindowsProcess uses an empty job for atomic JOB_LIST creation. The legacy
+optional process argument is safe only for stdin-gated helpers, with assignment
+before releasing their request; never use it to admit arbitrary running workers.
 """
 
 import ctypes
@@ -34,7 +35,7 @@ class _ExtendedLimits(ctypes.Structure):
 
 
 class HelperJob:
-    def __init__(self, process):
+    def __init__(self, process=None):
         self._handle = None
         api = self._api = ctypes.WinDLL("kernel32", use_last_error=True)
         for name, args, result in (
@@ -57,7 +58,7 @@ class HelperJob:
                 raise ctypes.WinError(ctypes.get_last_error())
             # Popen's existing process handle binds the actual instance, not a
             # reopened PID which could already have been recycled.
-            if not api.AssignProcessToJobObject(self._handle, int(process._handle)):
+            if process is not None and not api.AssignProcessToJobObject(self._handle, int(process._handle)):
                 raise ctypes.WinError(ctypes.get_last_error())
         except BaseException:
             self.close()

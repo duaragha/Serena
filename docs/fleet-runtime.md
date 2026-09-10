@@ -1,5 +1,29 @@
 # Fleet runtime and recovery
 
+## Atomic Windows worker ownership
+
+`fleet.windows_process.WindowsProcess` creates every Windows Fleet worker,
+including integration helpers, directly inside a noninheritable, parent-owned
+kill-on-close Job Object. `STARTUPINFOEX` supplies `JOB_LIST` and an explicit
+three-handle stdio `HANDLE_LIST` to `CreateProcessW`. The worker cannot execute
+or spawn venv/frozen/native children before ownership takes effect. There is no
+suspended-unowned interval, post-launch assignment or global API monkeypatch.
+Microsoft documents the [job-at-creation guarantee](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812).
+
+The adapter exposes only Fleet's required text-pipe, poll, wait and terminate
+operations. It retains the exact process handle and unsigned Windows exit code;
+tree cancellation uses the owned job, never a broad PID/name search. Final
+cleanup closes the job even when the primary process exited normally and a
+private-pipe descendant is still alive. Parent death closes its noninherited
+job handle. Job admission failure refuses launch and closes allocated handles.
+The previous `HelperJob(process)` remains for legacy stdin-gated test helpers,
+but production transport uses atomic creation for helpers and native workers.
+
+Native tests cover immediate pre-stdin spawning, normal/nonzero exit, timeout,
+cancellation, exact job membership, owner death, command/environment quoting,
+repeated handle lifetimes and rejected startup. Source tests alone do not prove
+these Windows-only behaviors; native and packaged acceptance are required.
+
 ## Read-only process liveness
 
 Native process retry recognizes explicit Windows crash statuses (access
@@ -179,10 +203,11 @@ Cancellation remains cancelled; exhausted budgets park for input. Newer unrelate
 attempts cannot be mistaken for a replay. Real SIGKILL tests cover death after
 application, after the successful integration receipt but before attempt completion,
 and during rollback; exact-file journal recovery retains normal verification gates.
-Verification helpers also clean up their POSIX process group after direct-process
-exit, even when a gate uses private pipes and does not keep the helper's output
+All workers also clean up their POSIX process group after direct-process
+exit, even when a descendant uses private pipes and does not keep the worker's output
 open. A captured process birth identity protects against signalling a reused
-leader PID. Tests cover normal exit and SIGKILL with a SIGTERM-ignoring gate.
+leader PID. Tests cover native workers and helpers on normal exit and SIGKILL
+with a SIGTERM-ignoring descendant.
 Descendants that escape the owned POSIX process group remain a coverage gap.
 The separate Windows helper ownership contract is described below.
 
