@@ -155,6 +155,94 @@ def test_frozen_runtime_uses_sidecar_dispatch_not_python_module_flags(monkeypatc
     assert recovery.helper_command() == [sys.executable, "--fleet-integration-replay"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal fault injection")
+def test_killed_helper_retries_verification_without_a_model_turn(tmp_path, monkeypatch):
+    import sys
+    import time
+    from fleet import supervisor
+    from fleet.resources import resume_ready_resource_waits
+
+    store, rid, *_ = _failed(tmp_path, monkeypatch)
+    assert recovery.resume_saved_integrations(store) == [rid]
+    real_command = recovery.helper_command()
+    monkeypatch.setattr(supervisor, "run_worker", lambda *a, **kw: pytest.fail("native model turn was dispatched"))
+    monkeypatch.setattr(recovery, "helper_command", lambda: [
+        sys.executable, "-c", "import os,signal; os.kill(os.getpid(), signal.SIGKILL)",
+    ])
+    leg = store.get_run(rid)["phases"][3]["legs"][0]
+    killed = supervisor._execute_leg(store, rid, leg)
+    assert not killed.ok
+    assert killed.exit_code == -9
+    parked = store.get_run(rid)["phases"][3]["legs"][0]
+    assert parked["state"] == "waiting_for_resources"
+    assert resume_ready_resource_waits(store, now=time.time() + 31) == [leg["leg_id"]]
+    monkeypatch.setattr(recovery, "helper_command", lambda: real_command)
+    retried = supervisor._execute_leg(store, rid, store.get_run(rid)["phases"][3]["legs"][0])
+    assert retried.ok, retried.error
+    final = store.get_run(rid)["phases"][3]["legs"][0]
+    assert final["state"] == "completed"
+    assert final["attempt_count"] == 3
+    assert final["current_attempt"]["actual_model"] is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal fault injection")
+def test_repeated_helper_deaths_have_a_durable_retry_limit(tmp_path, monkeypatch):
+    import sys
+    import time
+    from fleet import supervisor
+    from fleet.resources import resume_ready_resource_waits
+
+    store, rid, *_ = _failed(tmp_path, monkeypatch)
+    assert recovery.resume_saved_integrations(store) == [rid]
+    monkeypatch.setattr(supervisor, "run_worker", lambda *a, **kw: pytest.fail("native model turn was dispatched"))
+    monkeypatch.setattr(recovery, "helper_command", lambda: [
+        sys.executable, "-c", "import os,signal; os.kill(os.getpid(), signal.SIGKILL)",
+    ])
+    for index in range(3):
+        # Reopen the store to prove retry accounting does not live in memory.
+        store = FleetStore(store.path)
+        leg = store.get_run(rid)["phases"][3]["legs"][0]
+        assert supervisor._execute_leg(store, rid, leg).exit_code == -9
+        current = store.get_run(rid)["phases"][3]["legs"][0]
+        assert current["state"] == ("waiting_for_resources" if index < 2 else "waiting_for_input")
+        assert resume_ready_resource_waits(store, now=time.time() + 121) == ([leg["leg_id"]] if index < 2 else [])
+    assert current["attempt_count"] == 4
+    scheduled = [e for e in store.events(rid) if e["type"] == "leg.process_retry_scheduled"]
+    assert len(scheduled) == 2
+
+
+def test_replay_dispatch_marker_and_attempt_commit_atomically(tmp_path, monkeypatch):
+    import sqlite3
+    store, rid, *_ = _failed(tmp_path, monkeypatch)
+    recovery.resume_saved_integrations(store)
+    leg = store.get_run(rid)["phases"][3]["legs"][0]
+    source = leg["current_attempt"]["attempt_id"]
+    with store._connect() as db:
+        before = list(db.iterdump())
+    original = store._insert_event
+
+    def fail_marker(connection, **kwargs):
+        if kwargs.get("event_type") == "worker.integration_replay_dispatched":
+            raise sqlite3.OperationalError("injected receipt write failure")
+        return original(connection, **kwargs)
+
+    monkeypatch.setattr(store, "_insert_event", fail_marker)
+    with pytest.raises(sqlite3.OperationalError, match="injected receipt"):
+        store.begin_attempt(leg["leg_id"], integration_replay_source=source, expected_attempt_id=source)
+    with store._connect() as db:
+        assert list(db.iterdump()) == before
+
+
+def test_replay_dispatch_refuses_a_stale_attempt_generation(tmp_path, monkeypatch):
+    store, rid, *_ = _failed(tmp_path, monkeypatch)
+    recovery.resume_saved_integrations(store)
+    leg = store.get_run(rid)["phases"][3]["legs"][0]
+    with pytest.raises(RuntimeError, match="generation changed"):
+        store.begin_attempt(leg["leg_id"], integration_replay_source=leg["current_attempt"]["attempt_id"],
+                            expected_attempt_id="superseded-attempt")
+    assert store.get_run(rid)["phases"][3]["legs"][0]["attempt_count"] == 1
+
+
 def test_cancellation_after_queue_does_not_launch_replay(tmp_path, monkeypatch):
     store, rid, _, _, _, _ = _failed(tmp_path, monkeypatch)
     assert recovery.resume_saved_integrations(store) == [rid]

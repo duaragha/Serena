@@ -90,6 +90,15 @@ original failed attempt retains provider provenance. A refused replay parks for
 input rather than repeatedly spending attempts. This bounded replay is not yet
 a general integration journal with crash-safe commit reconciliation.
 
+Replay attempt creation and its verification-only dispatch marker commit in one
+transaction. If the helper dies by a supported POSIX signal before recording its
+outcome, the parent retains the real signal exit status and uses the existing
+two-retry process budget and 30/60-second delays. The next attempt remains a
+verification helper tied to the original saved result, not a native model turn.
+Cancellation remains cancelled; exhausted budgets park for input. Newer unrelated
+attempts cannot be mistaken for a replay. Death after applying a patch but before completion
+still requires integration-journal reconciliation and is not claimed solved here.
+
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
 attempt as evidence. Independent ready work continues; a run with only parked work releases its
