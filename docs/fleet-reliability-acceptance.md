@@ -90,6 +90,15 @@ Blocked-work verification: 85 completion/recovery/UI/activation tests and 147
 retry/store/scheduler/UI tests pass, including persistent blockers, no automatic
 resume, explicit steering/targeted resume and cancellation. Not deployed.
 
+Native-process checkpoint: a recorded worker terminated by POSIX signal
+6/9/11/13/15 now gets up to two durable same-provider process retries. Cancellation
+and stalled/fenced generations are excluded by the existing ownership/lifecycle
+checks. Repeated process death becomes a resumable blocker. The process test uses
+a real disposable Python subprocess speaking native-protocol fixture events: it
+writes a file, kills itself with SIGKILL, then resumes with the preserved patch and
+completed Research attempt. This is not a live-model test. 108 process/resource/
+worker/supervisor/UI tests pass. Other platform exit codes remain unclassified.
+
 Run `bc257933-5fa8-4c77-ba2d-da4c2e11e80e` requested mandatory commit
 `e364331db71c399b948f1a4d87c14dff43c2ec78`, explicitly not main.
 All three Research attempts completed. All three Code legs subsequently failed.

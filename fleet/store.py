@@ -883,20 +883,24 @@ class FleetStore:
             )
             resource = "disk" if is_disk_exhaustion(clean_error or "") else ""
             retries = 0
-            if not resource and is_transient_transport_error(clean_error or ""):
+            retry_kind = (
+                "transport" if is_transient_transport_error(clean_error or "") else
+                "process" if exit_code in {-6, -9, -11, -13, -15} and attempt["pid"] else ""
+            )
+            if not resource and retry_kind:
                 retries = connection.execute(
                     "SELECT COUNT(*) FROM fleet_events WHERE leg_id = ? "
-                    "AND type = 'leg.transport_retry_scheduled'", (attempt["leg_id"],),
+                    "AND type = ?", (attempt["leg_id"], f"leg.{retry_kind}_retry_scheduled"),
                 ).fetchone()[0]
                 if retries < 2:
-                    resource = "transport"
+                    resource = retry_kind
                 elif recovery_allowed:
                     self._insert_event(
                         connection, run_id=str(attempt["run_id"]),
                         leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
-                        event_type="leg.transport_retry_exhausted",
+                        event_type=f"leg.{retry_kind}_retry_exhausted",
                         payload={"retries": retries, "reason": clean_error,
-                                 "next_action": "verify provider connectivity before resuming this worker"},
+                                 "next_action": "verify provider/runtime health before resuming this worker"},
                     )
             resource_wait = recovery_allowed and bool(resource)
             if resource_wait:
@@ -913,10 +917,10 @@ class FleetStore:
                 self._insert_event(
                     connection, run_id=str(attempt["run_id"]),
                     leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
-                    event_type="leg.transport_retry_scheduled" if resource == "transport" else "leg.waiting_for_resources",
+                    event_type=f"leg.{resource}_retry_scheduled" if resource != "disk" else "leg.waiting_for_resources",
                     payload={"resource": resource, "reason": clean_error,
                              "not_before": not_before, "required_bytes": required_bytes,
-                             "retry_number": retries + 1 if resource == "transport" else None},
+                             "retry_number": retries + 1 if resource != "disk" else None},
                 )
             connection.execute(
                 "UPDATE fleet_legs SET state = ?, updated_at = ? WHERE leg_id = ?",
@@ -2151,13 +2155,13 @@ class FleetStore:
             honest_stop = "work stopped before completion" in clean_error.lower()
             exhausted_transport = connection.execute(
                 "SELECT 1 FROM fleet_events e JOIN fleet_legs l ON l.leg_id = e.leg_id "
-                "WHERE e.run_id = ? AND e.type = 'leg.transport_retry_exhausted' "
+                "WHERE e.run_id = ? AND e.type IN ('leg.transport_retry_exhausted','leg.process_retry_exhausted') "
                 "AND l.state = 'failed' LIMIT 1", (run_id,),
             ).fetchone()
             if honest_stop or exhausted_transport:
                 next_action = (
                     "resolve the recorded authority/evidence blocker, add steering, then resume the affected worker"
-                    if honest_stop else "verify provider connectivity, then resume the affected worker"
+                    if honest_stop else "verify provider/runtime health, then resume the affected worker"
                 )
                 connection.execute(
                     "UPDATE fleet_runs SET state = 'waiting_for_input', error = ?, owner_pid = NULL, "

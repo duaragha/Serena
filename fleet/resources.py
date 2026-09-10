@@ -49,7 +49,7 @@ def resume_ready_resource_waits(store, *, now: float | None = None) -> list[str]
         ).fetchall()
     for row in rows:
         try:
-            ready = row["resource"] == "transport" or (row["resource"] == "disk" and all(
+            ready = row["resource"] in {"transport", "process"} or (row["resource"] == "disk" and all(
                 shutil.disk_usage(path).free >= row["required_bytes"]
                 for path in (Path(row["cwd"]), store.path.parent)
             ))
@@ -89,7 +89,7 @@ def resume_ready_resource_waits(store, *, now: float | None = None) -> list[str]
             store._insert_event(
                 connection, run_id=row["run_id"], leg_id=row["leg_id"],
                 attempt_id=row["attempt_id"],
-                event_type="leg.transport_retry_started" if row["resource"] == "transport" else "leg.resource_resumed",
+                event_type=f"leg.{row['resource']}_retry_started" if row["resource"] != "disk" else "leg.resource_resumed",
                 payload={"resource": row["resource"], "required_bytes": row["required_bytes"]},
             )
             resumed.append(row["leg_id"])
