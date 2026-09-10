@@ -137,7 +137,9 @@ def main():
         codex = home / '.codex'
         codex.mkdir(parents=True, mode=0o700)
         with open(codex / 'auth.json', 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
-            json.dump({'auth_mode': 'chatgpt', 'tokens': auth['tokens']}, output)
+            # Preserve refresh age so isolation does not force an unnecessary refresh.
+            json.dump({'auth_mode': 'chatgpt', 'tokens': auth['tokens'],
+                       'last_refresh': auth.get('last_refresh')}, output)
         env = strip_metered_auth_env(dict(os.environ))
         env.update(HOME=str(home), CODEX_HOME=str(codex), CHATS_DATA_DIR=str(root / 'data'),
                    SERENA_VOICE_INBOX_PATH=str(root / 'voice.db'), SERENA_RUNTIME_LEASE_DIR=str(root / 'leases'),

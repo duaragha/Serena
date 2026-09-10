@@ -2,6 +2,29 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Successful Native Job Proof (2026-09-10)
+
+The isolated credential copy omitted `last_refresh`. Preserving that metadata
+made the same real subscription proof succeed without changing the user's login.
+The prior rejection was a proof-fixture defect, not evidence that the user's
+current login was broken. The completion-status guard below remains necessary.
+OpenAI documents copying the cached auth file, not reconstructing only its tokens:
+https://learn.chatgpt.com/docs/auth (accessed 2026-09-10).
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_work_bridge.py -q --tb=short
+# exit 0: 6 passed in 6.22s
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-work.py --allow-inference
+# exit 0: one real subscription turn through HTTP/native owner; repeated dispatch
+# reused the original reply and bounds; reservation released; project unchanged;
+# isolated host and provider reaped, no user session or installed service changed
+```
+
+This satisfies positive bridge proof, not default enablement or release. The
+proof supplies composer telemetry directly; router admission, recovery, idle
+sleeping, and final cross-platform delivery gates remain separate.
+
 ## Native Completion Truth (2026-09-10)
 
 A real no-tool subscription proof exposed a false-success bug: the installed
