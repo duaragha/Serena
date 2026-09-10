@@ -2,6 +2,39 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Windows Job Ownership Primitive
+
+`core/workspace_windows_job.py` wraps unnamed, non-inheritable Windows jobs with
+kill-on-close and no breakaway flags. It validates child PID input, propagates
+Win32 errors, exposes active process accounting, and supports explicit tree
+termination and idempotent handle closure. It is not yet wired into WorkspaceRpc:
+the launcher must first gate provider execution until assignment succeeds. A
+post-spawn assignment alone would let tools escape before ownership is established.
+
+Primary evidence accessed 2026-09-10:
+- https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
+- https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject
+- https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_extended_limit_information
+- https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812
+
+Verification commands:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_windows_job.py -q
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_windows_job.py tests/test_workspace_windows_job.py
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys; os.chdir(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); sys.path.insert(0,os.getcwd()); sys.dont_write_bytecode=True; import pytest; sys.exit(pytest.main(['tests/test_workspace_windows_job.py','-q','-p','no:cacheprovider','--tb=short']))\""
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys,json; os.chdir(r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'); sys.path.insert(0,os.getcwd()); sys.dont_write_bytecode=True; from core.workspace_windows_job import WindowsJob; job=WindowsJob(); active=job.active_processes(); job.terminate(); job.close(); print(json.dumps({'platform':sys.platform,'active_processes':active,'closed':job.handle is None})); assert active==0 and job.handle is None\""
+```
+
+Linux: exit 0, 1 passed / 3 Windows skips. Ruff: exit 0. Windows final tests:
+exit 0, 3 passed / 1 Linux skip in 2.96s. Tests use a gated base Python process,
+not the venv redirector; they verify a live descendant survives leader exit and
+then dies on either terminate or close. Final source hashes matched on both
+machines before the Windows run. Initial remote attempts exited 4 before sync,
+then 1 using the older venv-launcher fixture; neither counted as passing evidence.
+Live proof: exit 0, win32, active_processes 0, closed true. No provider launched,
+user session modified, runtime activated, or installed app changed.
+
 ## Windows Transport Verification
 
 Ran the synced source tests on RaghavsGamingPC through SSH, without editing
