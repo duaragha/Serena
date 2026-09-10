@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fleet.acceptance import activation_gate
 from core.work_jobs import process_start_token
+from core.sqlite_connection import connect_database
 
 SERVICE = "serena-fleet.service"
 PARKED = {"waiting_for_input", "waiting_for_resources", "waiting_for_capacity"}
@@ -90,7 +91,7 @@ def restart_parked_fleet(repo_root: str | Path, receipt: str | Path, database: s
     result = {"passed": False, "restarted": False, "service": SERVICE, "reasons": []}
     try:
         # mode=rw refuses to create or migrate a missing production database.
-        with sqlite3.connect(f"file:{path}?mode=rw", uri=True, timeout=2) as db:
+        with connect_database(f"file:{path}?mode=rw", uri=True, timeout=2) as db:
             db.execute("BEGIN IMMEDIATE")
             gate = activation_gate(root, receipt, path)
             reasons = [r for r in gate["reasons"] if r != "one or more Fleet runs are still active"]
