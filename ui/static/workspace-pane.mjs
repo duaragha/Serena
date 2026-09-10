@@ -244,7 +244,43 @@ export class WorkspacePane {
   }
 
   refreshIcons() { window.lucide?.createIcons({root: this.root}); }
-  error(error) { this.alert.hidden = false; this.alert.textContent = error.message || String(error); }
+  error(error) {
+    this.alert.hidden = false; this.alert.textContent = error.message || String(error);
+    const recovery=error.settingRecovery;
+    if(this.provider==='Codex' && this.controls.resetSavedSetting && ['personality','speed'].includes(recovery?.setting)
+      && typeof recovery.failure_id==='string' && recovery.failure_id){
+      const recover=this.button('Recover saved setting','settings-2',()=>this.openSettingRecovery(recovery));
+      this.alert.append(recover);this.refreshIcons();
+    }
+  }
+
+  openSettingRecovery(recovery) {
+    if(this.settingRecoveryDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Recover saved setting');
+    const confirm=node('input');confirm.type='checkbox';confirm.setAttribute('aria-label','Confirm saved preference reset');
+    const label=node('label');label.append(confirm,document.createTextNode(` Clear the saved ${recovery.setting} preference for this chat.`));
+    const status=node('p');status.setAttribute('role','status');
+    let busy=false;
+    const close=this.button('Close setting recovery','x',()=>{if(!busy)dialog.close();});
+    const apply=this.button('Reset saved preference','rotate-ccw',async()=>{
+      if(busy || !confirm.checked)return;
+      busy=true;apply.disabled=true;confirm.disabled=true;close.disabled=true;
+      try{
+        const result=await this.controls.resetSavedSetting(recovery.failure_id);
+        if(this.disposed || !dialog.open)return;
+        if(result?.reset!==true || result.setting!==recovery.setting)throw Error('Saved preference reset was not confirmed');
+        status.textContent='Saved preference cleared. Retry connection to resume this chat.';
+        confirm.checked=false;
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;close.disabled=false;confirm.disabled=false;apply.disabled=!confirm.checked;}
+    });
+    apply.disabled=true;confirm.addEventListener('change',()=>{apply.disabled=busy || !confirm.checked;});
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    dialog.append(node('h3','','Recover saved setting'),close,label,
+      node('p','','History, drafts and Plan mode stay unchanged. Reconnection uses the native setting instead of this saved override.'),status,apply);
+    this.settingRecoveryDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
+  }
 
   persistDraft() {
     try {
@@ -2340,6 +2376,7 @@ export class WorkspacePane {
     this.colorDialog?.close();
     this.diagnosticsDialog?.close();
     this.accountDialog?.close();
+    this.settingRecoveryDialog?.close();
     this.sessionsDialog?.close();
     this.clearDialog?.close();
     this.disconnectDialog?.close();

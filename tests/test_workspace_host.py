@@ -928,6 +928,58 @@ def test_saved_speed_restores_before_admission_and_refuses_failed_restore(tmp_pa
         host.shutdown()
 
 
+@pytest.mark.parametrize('setting', ['speed', 'personality'])
+def test_failed_saved_setting_recovery_is_exact_confirmed_and_does_not_launch(tmp_path, setting):
+    opened = []
+    class RecoveryOwner(Owner):
+        async def open(self):
+            opened.append(self.sid)
+            await super().open()
+            self.settings = {'model': 'resumed'}
+        async def set_speed_tier(self, *args):
+            raise ValueError('Unsupported speed')
+        async def set_personality(self, *args):
+            raise ValueError('Unsupported personality')
+        async def set_session_mode(self, mode):
+            assert mode == 'plan'
+        async def close(self):
+            await super().close()
+            self.state = 'closed'
+        def can_retry_attachment(self):
+            return self.state == 'closed' and self.closed
+    journal = WorkspaceJournal(tmp_path / 'recovery.db')
+    event = ({'method': 'workspace/speed', 'params': {'model': 'old', 'value': 'priority'}} if setting == 'speed'
+             else {'method': 'workspace/settings', 'params': {'personality': 'friendly'}})
+    journal.append('exact', event)
+    journal.append('other', event)
+    journal.append('exact', {'method': 'workspace/settings', 'params': {'collaborationMode': 'plan'}})
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)}, factories={'codex': RecoveryOwner})
+    try:
+        failed = host.attach('exact')
+        assert not failed['ok']
+        recovery = failed['setting_recovery']
+        assert recovery['setting'] == setting
+        assert host._sessions['exact'][0].state == 'closed'
+        payload = {'failure_id': recovery['failure_id'], 'confirmed': True}
+        for index, bad in enumerate([{**payload, 'confirmed': False}, {**payload, 'failure_id': 'stale'}, {**payload, 'setting': 'mode'}]):
+            assert not host.command('exact', f'bad-{index}', 'reset_saved_setting', bad)['ok']
+        host._work_reservations['exact'] = 'job'
+        assert not host.command('exact', 'reserved', 'reset_saved_setting', payload)['ok']
+        host._work_reservations.clear()
+        result = host.command('exact', 'reset-once', 'reset_saved_setting', payload)
+        assert result['ok'] and result['result']['reconnectRequired']
+        assert host.command('exact', 'reset-once', 'reset_saved_setting', payload) == result
+        assert opened == ['exact']
+        reader = journal.saved_codex_speed if setting == 'speed' else journal.saved_codex_personality
+        assert reader('exact') is None and reader('other') is not None
+        assert journal.saved_codex_mode('exact') == 'plan'
+        assert host.attach('exact')['ok']
+        assert opened == ['exact', 'exact']
+        assert not host._sessions['exact'][0].sent
+    finally:
+        host.shutdown()
+
+
 def test_agent_attachments_validate_parent_scope_and_deduplicate(tmp_path):
     calls = []
     class AgentOwner(Owner):

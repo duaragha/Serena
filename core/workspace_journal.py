@@ -78,7 +78,10 @@ class WorkspaceJournal:
         with closing(self._connect()) as conn:
             row = conn.execute("""SELECT event FROM workspace_events
                 WHERE session_id=? AND json_extract(event, '$.method')='workspace/speed'
-                ORDER BY sequence DESC LIMIT 1""", (session_id,)).fetchone()
+                AND sequence > COALESCE((SELECT MAX(sequence) FROM workspace_events
+                    WHERE session_id=? AND json_extract(event, '$.method')='workspace/settingReset'
+                    AND json_extract(event, '$.params.setting')='speed'), 0)
+                ORDER BY sequence DESC LIMIT 1""", (session_id, session_id)).fetchone()
         if row is None:
             return None
         value = json.loads(row[0])["params"]
@@ -94,13 +97,45 @@ class WorkspaceJournal:
                 WHERE session_id=? AND json_extract(event, '$.method')='workspace/settings'
                 AND json_type(event, '$.params.personality') IS NOT NULL
                 AND COALESCE(json_extract(event, '$.params.personalityConfirmed'), 1) != 0
-                ORDER BY sequence DESC LIMIT 1""", (session_id,)).fetchone()
+                AND sequence > COALESCE((SELECT MAX(sequence) FROM workspace_events
+                    WHERE session_id=? AND json_extract(event, '$.method')='workspace/settingReset'
+                    AND json_extract(event, '$.params.setting')='personality'), 0)
+                ORDER BY sequence DESC LIMIT 1""", (session_id, session_id)).fetchone()
         if row is None:
             return None
         value = json.loads(row[0])["params"]["personality"]
         if not isinstance(value, str) or value not in {"none", "friendly", "pragmatic"}:
             raise ValueError("Saved Codex personality is invalid")
         return value
+
+    def saved_codex_setting_revision(self, session_id, setting):
+        if setting not in {"personality", "speed"}:
+            raise ValueError("Unknown recoverable preference")
+        with closing(self._connect()) as conn:
+            return conn.execute("""SELECT COALESCE(MAX(sequence), 0) FROM workspace_events WHERE session_id=? AND (
+                (json_extract(event, '$.method')='workspace/settingReset' AND json_extract(event, '$.params.setting')=?)
+                OR (?='speed' AND json_extract(event, '$.method')='workspace/speed')
+                OR (?='personality' AND json_extract(event, '$.method')='workspace/settings'
+                    AND json_type(event, '$.params.personality') IS NOT NULL
+                    AND COALESCE(json_extract(event, '$.params.personalityConfirmed'), 1) != 0))""",
+                                (session_id, setting, setting, setting)).fetchone()[0]
+
+    def reset_saved_codex_setting(self, session_id, setting, expected, failure_id, expected_revision):
+        if setting not in {"personality", "speed"} or not isinstance(failure_id, str) or not failure_id:
+            raise ValueError("An exact recoverable setting and failure identity are required")
+        reader = self.saved_codex_personality if setting == "personality" else self.saved_codex_speed
+        with closing(self._connect()) as conn, conn:
+            # Reserve the writer before reading so concurrent journal updates
+            # cannot change the preference between comparison and reset.
+            conn.execute("BEGIN IMMEDIATE")
+            if (self.saved_codex_setting_revision(session_id, setting) != expected_revision
+                    or reader(session_id) != expected):
+                raise ValueError("The saved setting changed; retry connection before recovery")
+            sequence = (conn.execute("SELECT MAX(sequence) FROM workspace_events WHERE session_id=?",
+                                     (session_id,)).fetchone()[0] or 0) + 1
+            event = {"method": "workspace/settingReset", "params": {"setting": setting, "failure_id": failure_id}}
+            conn.execute("INSERT INTO workspace_events VALUES (?, ?, ?)",
+                         (session_id, sequence, json.dumps(event)))
 
     def pending_target(self, session_id: str) -> dict | None:
         target = self.clear_target(session_id, uncataloged_only=True)

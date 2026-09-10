@@ -11,6 +11,20 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('failed attach exposes recovery only for the exact requested session',async()=>{
+  for(const sid of ['exact','foreign']){
+    const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},
+      fetcher:async()=>response({ok:false,session_id:sid,error:'Unsupported personality',setting_recovery:{failure_id:'one',setting:'personality'}})});
+    try{
+      await assert.rejects(conn.connect(),error=>{
+        assert.equal(error.message,'Unsupported personality');
+        assert.equal(error.settingRecovery?.failure_id,sid==='exact'?'one':undefined);
+        return true;
+      });
+    }finally{conn.dispose();}
+  }
+});
+
 test('idle continuation retry preserves original expected history and command receipt',async()=>{
   const saved=storage(),calls=[];
   const options={sessionId:'parent',token:'token',storage:saved,receive:()=>{},error:()=>{},

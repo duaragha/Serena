@@ -116,3 +116,26 @@ def test_invalid_event_does_not_consume_sequence(tmp_path):
     with pytest.raises(ValueError):
         journal.read("s", limit=1000000)
     assert journal.append("s", {"method": "event"})["sequence"] == 1
+
+
+@pytest.mark.parametrize('setting', ['personality', 'speed'])
+def test_saved_setting_reset_preserves_history_and_newer_preferences(tmp_path, setting):
+    journal = WorkspaceJournal(tmp_path / 'reset.db')
+    value = 'friendly' if setting == 'personality' else {'model': 'old', 'value': 'priority'}
+    event = ({'method': 'workspace/settings', 'params': {'personality': value}} if setting == 'personality'
+             else {'method': 'workspace/speed', 'params': value})
+    reader = journal.saved_codex_personality if setting == 'personality' else journal.saved_codex_speed
+    journal.append('exact', event)
+    revision = journal.saved_codex_setting_revision('exact', setting)
+    with pytest.raises(ValueError, match='changed'):
+        journal.reset_saved_codex_setting('exact', setting, 'stale', 'failure', revision)
+    assert reader('exact') == value
+    journal.append('exact', event)
+    with pytest.raises(ValueError, match='changed'):
+        journal.reset_saved_codex_setting('exact', setting, value, 'failure', revision)
+    revision = journal.saved_codex_setting_revision('exact', setting)
+    journal.reset_saved_codex_setting('exact', setting, value, 'failure', revision)
+    assert reader('exact') is None
+    assert journal.read('exact')['events'][0]['event'] == event
+    journal.append('exact', event)
+    assert reader('exact') == value

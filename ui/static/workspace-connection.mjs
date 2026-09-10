@@ -66,7 +66,11 @@ export class WorkspaceConnection {
 
   async connect() {
     const result = await this.request('/attach', {});
-    if (!result.ok) throw Error(result.error || 'Session attachment is not confirmed');
+    if (!result.ok) {
+      const error=Error(result.error || 'Session attachment is not confirmed');
+      if(result.session_id===this.sessionId && result.setting_recovery)error.settingRecovery=result.setting_recovery;
+      throw error;
+    }
     await this.poll({required: true});
     if(this.storageFailure)this.error(this.storageFailure);
     return result;

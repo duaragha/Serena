@@ -227,6 +227,68 @@ def test_pending_native_clear_page_uses_durable_identity_without_launch(tmp_path
 
 
 @pytest.mark.parametrize("width", [1440, 390])
+def test_saved_preference_recovery_flows_through_real_page_and_host(tmp_path, width):
+    playwright = pytest.importorskip("playwright.sync_api")
+    owners = []
+    class Owner:
+        active_turn = None
+        def __init__(self, *, session_id, cwd, publish):
+            self.sid, self.publish = session_id, publish
+            self.state = 'closed'
+            self.settings = {'model': 'current'}
+            owners.append(self)
+        async def open(self):
+            self.state = 'ready'
+            await self.publish({'method': 'workspace/history', 'params': {'thread': {'id': self.sid, 'turns': []}}})
+        async def set_speed_tier(self, *args):
+            raise ValueError('Speed is no longer available')
+        async def close(self):
+            self.state = 'closed'
+        def can_retry_attachment(self):
+            return self.state == 'closed'
+        async def list_models(self):
+            return {'data': []}
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / 'ui/static'))
+    host = install_workspace(app, tmp_path / 'recovery.db',
+        resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+        factories={'codex': Owner}, describe=lambda sid: {'session_id': sid, 'agent': 'codex'})
+    host.journal.append('exact', {'method': 'workspace/speed', 'params': {'model': 'old', 'value': 'priority'}})
+    server = make_server('127.0.0.1', 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=os.environ.get('SERENA_PROOF_BROWSER'))
+            try:
+                page = browser.new_page(viewport={'width': width, 'height': 900})
+                errors = []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.goto(f'http://127.0.0.1:{server.server_port}/workspace/exact')
+                assert not owners
+                page.get_by_role('button', name='Resume session', exact=True).click()
+                page.get_by_role('button', name='Recover saved setting', exact=True).click()
+                assert len(owners) == 1 and owners[0].state == 'closed'
+                dialog = page.get_by_role('dialog', name='Recover saved setting')
+                dialog.get_by_role('checkbox', name='Confirm saved preference reset').check()
+                dialog.get_by_role('button', name='Reset saved preference', exact=True).click()
+                dialog.get_by_text('Saved preference cleared. Retry connection to resume this chat.', exact=True).wait_for()
+                assert host.journal.saved_codex_speed('exact') is None and len(owners) == 1
+                dialog.get_by_role('button', name='Close setting recovery', exact=True).click()
+                retry = page.get_by_role('button', name='Retry connection', exact=True)
+                retry.click()
+                retry.wait_for(state='hidden')
+                assert len(owners) == 2 and owners[1].sid == 'exact' and owners[1].state == 'ready'
+                assert not errors
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+        host.shutdown()
+
+
+@pytest.mark.parametrize("width", [1440, 390])
 def test_failed_attachment_retry_is_explicit_and_does_not_stop_uncertain_owner(tmp_path, width):
     playwright = pytest.importorskip("playwright.sync_api")
     owners = []

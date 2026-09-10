@@ -36,6 +36,7 @@ controls.accountStatus = () => connection.command('account_status',{});
 controls.accountRateLimits = () => connection.command('account_rate_limits',{});
 controls.accountLogin = () => connection.command('account_login',{});
 controls.cancelAccountLogin = loginId => connection.command('account_login_cancel',{loginId});
+controls.resetSavedSetting = failureId => connection.command('reset_saved_setting',{failure_id:failureId,confirmed:true});
 controls.listSessions = (query, offset=0) => connection.request('/sessions?' + new URLSearchParams({provider:boot.provider.toLowerCase(),q:query,offset}));
 controls.openSession = sid => {
   if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid))throw Error('Invalid session identity');

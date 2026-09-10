@@ -3,6 +3,38 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Failed Preference Recovery (2026-09-10)
+
+Failed Codex personality/speed restoration now exposes an exact failure identity
+only after the failed owner is fully closed and safely retryable. The connection
+passes that recovery metadata only for its own session. The pane offers an
+explicit confirmation dialog to clear just that saved override; it does not
+connect, submit, alter Plan mode, erase history, or discard drafts.
+
+The host rejects stale failure identities, unconfirmed/extra payloads, coding-job
+reservations, pending work, and owners without confirmed cleanup. A journal writer
+transaction compares the expected preference and its exact journal revision and records a setting-specific
+reset marker. Historical events remain intact; other sessions/settings and any
+newer explicit preference still apply. Command receipts deduplicate delivery.
+The user separately clicks Retry connection to resume the same native session.
+
+This is not a general corrupted-journal repair or an automatic bypass of failed
+Plan-mode restoration. Those failures remain closed. No installed runtime was
+restarted, and no authentication or model inference was needed for this slice.
+
+Verification:
+
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_failed_saved_setting_recovery_is_exact_confirmed_and_does_not_launch tests/test_workspace_host.py::test_saved_speed_restores_before_admission_and_refuses_failed_restore tests/test_workspace_journal.py tests/test_workspace_pane.py::test_saved_setting_recovery_requires_confirmation_without_reconnect -q --tb=short`: exit 0, 17 passed in 6.61s. Recovery screenshots inspected at 390px and 1600px.
+- `node --test tests/workspace-connection.test.mjs`: exit 0, 55 passed in 194.609087ms; exact-session attach-error metadata and existing receipt/transport regression coverage.
+- `env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_saved_preference_recovery_flows_through_real_page_and_host -q --tb=short`: final exit 0, 2 passed in 5.54s. Full page, HTTP, host and journal at 1440px/390px, controlled provider only. Initial exit 1, 2 failed in 3.10s because the test did not pass the configured browser executable; fixed the new test to honor it.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-setting-recovery.py`: exit 0, real native invalid-speed restoration fails closed, confirmed reset launches nothing, explicit retry resumes exact history and Plan mode; three processes reaped and temporary profile removed. No authentication/inference.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-speed.py`: exit 0, native priority restoration and explicit default clear still survive replacement; four processes reaped, no authentication/inference.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py tests/test_workspace_host.py tests/test_workspace_journal.py tests/test_workspace_pane.py tests/test_workspace_app.py scripts/verify-workspace-setting-recovery.py`: exit 0, all checks passed.
+- `node --check ui/static/workspace-page.mjs`: exit 0, no output.
+- `node --check ui/static/workspace-pane.mjs`: exit 0, no output.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_journal.py -q --tb=short`: exit 1, 156 passed/1 failed in 25.89s; the browser composer test lacked the installed Edge executable override. No code failure was observed; rerun below includes the corrected environment.
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_failed_saved_setting_recovery_is_exact_confirmed_and_does_not_launch tests/test_workspace_host.py::test_saved_speed_restores_before_admission_and_refuses_failed_restore tests/test_workspace_host.py::test_browser_composer_reaches_host_and_reloads_same_owner tests/test_workspace_journal.py tests/test_workspace_pane.py::test_saved_setting_recovery_requires_confirmation_without_reconnect tests/test_workspace_app.py::test_saved_preference_recovery_flows_through_real_page_and_host -q --tb=short`: exit 0, 20 passed in 14.58s after adding the journal revision guard. Includes rejection of a newer preference with the same value. The native setting-recovery proof was rerun after that guard, exit 0, three processes reaped and Plan mode preserved.
+
 ## Account Connection Check (2026-09-10)
 
 The Codex account dialog now has an explicit Check account connection control.

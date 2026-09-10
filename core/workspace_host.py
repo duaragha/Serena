@@ -17,7 +17,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from time import monotonic
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from core.workspace_codex import CodexWorkspace
 from core.workspace_journal import WorkspaceJournal
@@ -59,6 +59,7 @@ class WorkspaceHost:
         self._views = {}
         self._work_reservations = {}
         self._work_turns = {}
+        self._restore_failures = {}
 
     async def _run(self, coroutine):
         task = asyncio.current_task()
@@ -571,10 +572,13 @@ class WorkspaceHost:
             # Reserve before the first awaited provider operation. Repeated
             # requests reuse this owner even if attachment fails ambiguously.
             self._sessions[sid] = (owner, target["provider"])
+            self._restore_failures.pop(sid, None)
             try:
                 queued = await asyncio.to_thread(self.journal.recoverable_bridge_queue, sid, target["provider"])
                 mode = (await asyncio.to_thread(self.journal.saved_codex_mode, sid)
                         if target["provider"] == "codex" else None)
+                revisions = ({setting: await asyncio.to_thread(self.journal.saved_codex_setting_revision, sid, setting)
+                              for setting in ("personality", "speed")} if target["provider"] == "codex" else {})
                 personality = (await asyncio.to_thread(self.journal.saved_codex_personality, sid)
                                if target["provider"] == "codex" else None)
                 speed = (await asyncio.to_thread(self.journal.saved_codex_speed, sid)
@@ -590,19 +594,26 @@ class WorkspaceHost:
                 if personality is not None:
                     try:
                         await owner.set_personality(personality)
-                    except Exception:
+                    except Exception as error:
                         await owner.close()
+                        if getattr(owner, "can_retry_attachment", lambda: False)():
+                            self._restore_failures[sid] = {"failure_id": str(uuid4()), "setting": "personality",
+                                                          "expected": personality, "revision": revisions["personality"], "reason": str(error)}
                         raise
                 if speed is not None:
                     try:
                         await owner.set_speed_tier(speed["value"], owner.settings["model"])
-                    except Exception:
+                    except Exception as error:
                         await owner.close()
+                        if getattr(owner, "can_retry_attachment", lambda: False)():
+                            self._restore_failures[sid] = {"failure_id": str(uuid4()), "setting": "speed",
+                                                          "expected": speed, "revision": revisions["speed"], "reason": str(error)}
                         raise
                 await self._restore_bridge_queue(sid, owner, queued)
             except Exception as error:
                 await publish({"method": "workspace/error", "params": {"reason": str(error)}})
-                return {"ok": False, "session_id": sid, "error": str(error), "state": "unavailable"}
+                return {"ok": False, "session_id": sid, "error": str(error), "state": "unavailable",
+                        **({"setting_recovery": deepcopy(self._restore_failures[sid])} if sid in self._restore_failures else {})}
             return self._status(sid)
 
     async def _restore_bridge_queue(self, sid, owner, requests):
@@ -627,6 +638,7 @@ class WorkspaceHost:
             "state": owner.state,
             "turn_id": owner.active_turn,
             "sleeping": bool(getattr(self._owner_transport(owner, provider), "suspended", False)),
+            **({"setting_recovery": deepcopy(self._restore_failures[sid])} if sid in self._restore_failures else {}),
             **({"error": "Session runtime is unavailable; retry is refused until its cleanup and ownership are confirmed"}
                if owner.state in {"closed", "unavailable"} else {}),
         }
@@ -812,6 +824,7 @@ class WorkspaceHost:
             "set_personality",
             "speed_tiers",
             "set_speed_tier",
+            "reset_saved_setting",
             "goal",
             "update_goal",
             "clear_goal",
@@ -906,7 +919,21 @@ class WorkspaceHost:
             owner, provider = self._sessions[sid]
             retryable = False
             try:
-                if action == "edit_queued_bridge":
+                if action == "reset_saved_setting":
+                    failure = self._restore_failures.get(sid)
+                    if (provider != "codex" or set(payload) != {"failure_id", "confirmed"}
+                            or payload["confirmed"] is not True or failure is None
+                            or payload["failure_id"] != failure["failure_id"]):
+                        raise ValueError("Confirm the exact failed saved setting before resetting it")
+                    if owner.state != "closed" or not owner.can_retry_attachment():
+                        raise ValueError("The prior native owner must be fully closed before recovery")
+                    if self._bridge_queues.get(sid) or await asyncio.to_thread(self.journal.has_pending_work, sid):
+                        raise ValueError("Resolve pending background work before resetting a saved setting")
+                    await asyncio.to_thread(self.journal.reset_saved_codex_setting, sid, failure["setting"],
+                                            failure["expected"], failure["failure_id"], failure["revision"])
+                    self._restore_failures.pop(sid, None)
+                    result = {"setting": failure["setting"], "reset": True, "reconnectRequired": True}
+                elif action == "edit_queued_bridge":
                     if set(payload) != {"request_id", "prompt", "expected_prompt"} or any(not isinstance(payload[field], str) for field in payload) or not payload["prompt"].strip():
                         raise ValueError("An exact queued message, original text and non-empty replacement are required")
                     key = f"bridge:{payload['request_id']}"
