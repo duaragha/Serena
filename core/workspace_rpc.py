@@ -37,18 +37,25 @@ class WorkspaceRpc:
         self.suspended = False
 
     async def pause_idle(self) -> bool:
-        """Pause a caller-verified idle POSIX owner, never a pending RPC.
+        """Pause a caller-verified idle owner, never a pending RPC.
 
         The host must additionally exclude active turns, background tasks,
-        drafts and reservations. Windows requires a separate job-tree freezer.
+        drafts and reservations. Windows uses the owned, non-breakaway job tree.
         """
         async with self._lifecycle_lock, self._write_lock:
             process = self.process
-            if (os.name == "nt" or process is None or process.returncode is not None
+            if (process is None or process.returncode is not None
                     or self._failure or self._pending or self._questions or not self.events.empty()):
                 return False
             if self.suspended:
                 return True
+            if os.name == "nt":
+                if self._windows_job is None:
+                    return False
+                try:
+                    return self._windows_job.suspend()
+                finally:
+                    self.suspended = self._windows_job.suspended
             # start() creates this dedicated session. Never signal our own group.
             try:
                 if os.getpgid(process.pid) != process.pid or process.pid == os.getpgrp():
@@ -64,7 +71,9 @@ class WorkspaceRpc:
         if not self.suspended:
             return
         process = self.process
-        if process is not None and process.returncode is None:
+        if os.name == "nt" and self._windows_job is not None:
+            self._windows_job.resume()
+        elif process is not None and process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 if os.getpgid(process.pid) != process.pid or process.pid == os.getpgrp():
                     raise WorkspaceRpcError("Provider process group changed while suspended")

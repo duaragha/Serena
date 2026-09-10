@@ -2,6 +2,37 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Windows Native Sleep (2026-09-10)
+
+Windows now suspends the provider's non-breakaway Job Object members using
+psutil's identity-checked process controls. Job membership is queried through
+`JobObjectBasicProcessIdList` and rechecked before suspension; enumeration is
+bounded and repeated until all members are covered. Partial failures resume
+already suspended members. Wake resumes only recorded members, preserving the
+same process/session. Transport state retains a partial suspension if rollback
+fails so subsequent input attempts still try to wake it. No app was installed
+or restarted. Four changed runtime/test files had matching SHA-256 hashes on
+laptop and PC before accepting the Windows results.
+
+Primary references, accessed 2026-09-10:
+- https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_process_id_list
+- https://psutil.io/api/ (Process suspend/resume and identity checks)
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_windows_job.py tests/test_workspace_rpc.py -q --tb=short
+# exit 0: 14 passed, 5 Windows-only skips in 2.52s on Linux
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B -m pytest -o pythonpath=C:/Users/ragha/Projects/_artifacts/serena-interactive-workspace C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\test_workspace_windows_job.py C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\test_workspace_rpc.py -q --tb=short"
+# exit 0: 14 passed, 5 non-Windows/POSIX-only skips in 3.64s on PC.
+# Earlier attempts without pythonpath, then with backslashes in the pythonpath
+# option, each exited 2 on collection: the worktree's core was not importable.
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-account.py --pause"
+# exit 0: real Windows Codex app-server stopped, same-owner wake and account
+# round trip 4.52ms; no inference/login, child reaped, disposable home removed.
+```
+
+Windows native Claude and final built-package/browser delivery still require
+verification; these results are not a claim of release readiness.
+
 ## Linked-Pane Click Sleep Policy (2026-09-10)
 
 Trusted pointer clicks inside a native pane now publish explicit peer-sleep

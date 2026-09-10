@@ -11,6 +11,33 @@ import pytest
 from core.workspace_windows_job import WindowsJob
 
 
+def test_partial_suspension_is_rolled_back(monkeypatch):
+    job = object.__new__(WindowsJob)
+    job._suspended = []
+    processes = {}
+    class Process:
+        def __init__(self, pid):
+            self.pid = pid
+            self.paused = False
+            processes[pid] = self
+        def is_running(self):
+            return True
+        def status(self):
+            return psutil.STATUS_RUNNING
+        def suspend(self):
+            if self.pid == 2:
+                raise psutil.AccessDenied(self.pid)
+            self.paused = True
+        def resume(self):
+            self.paused = False
+    monkeypatch.setattr(psutil, "Process", Process)
+    monkeypatch.setattr(job, "process_ids", lambda: {1, 2})
+    monkeypatch.setattr(job, "_contains", lambda pid: True)
+    with pytest.raises(psutil.AccessDenied):
+        job.suspend()
+    assert not job.suspended and not processes[1].paused
+
+
 def test_non_windows_refuses():
     if os.name == "nt":
         pytest.skip("Windows has job objects")
@@ -19,7 +46,7 @@ def test_non_windows_refuses():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Real Windows kernel required")
-@pytest.mark.parametrize("operation", ["terminate", "close"])
+@pytest.mark.parametrize("operation", ["terminate", "close", "suspend"])
 def test_job_owns_descendant_after_leader_exit(tmp_path, operation):
     marker = tmp_path / "child.pid"
     peer = """
@@ -45,7 +72,17 @@ Path(sys.argv[1]).write_text(str(child.pid))
         child = psutil.Process(int(marker.read_text()))
         assert child.is_running()
         assert job.active_processes() == 1
-        getattr(job, operation)()
+        if operation == "suspend":
+            assert job.process_ids() == {child.pid}
+            assert job.suspend() and job.suspended
+            assert child.status() == psutil.STATUS_STOPPED
+            assert psutil.Process(os.getpid()).status() != psutil.STATUS_STOPPED
+            assert job.suspend()  # No additional suspension count on repeat.
+            job.resume()
+            assert not job.suspended and child.status() != psutil.STATUS_STOPPED
+            job.terminate()
+        else:
+            getattr(job, operation)()
         child.wait(timeout=10)
         if operation == "terminate":
             deadline = time.monotonic() + 5

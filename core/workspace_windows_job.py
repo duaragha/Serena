@@ -8,6 +8,8 @@ import ctypes
 import os
 from ctypes import wintypes
 
+import psutil
+
 
 class _BasicLimits(ctypes.Structure):
     _fields_ = [
@@ -41,6 +43,7 @@ class WindowsJob:
         if os.name != "nt":
             raise OSError("Windows job objects require Windows")
         self._api = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._suspended = []
         signatures = {
             "CreateJobObjectW": ([ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
             "SetInformationJobObject": ([wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
@@ -49,6 +52,7 @@ class WindowsJob:
             "AssignProcessToJobObject": ([wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
             "TerminateJobObject": ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
             "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
+            "IsProcessInJob": ([wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)], wintypes.BOOL),
         }
         for name, (args, result) in signatures.items():
             function = getattr(self._api, name)
@@ -94,6 +98,78 @@ class WindowsJob:
             self._open(), 1, ctypes.byref(info), ctypes.sizeof(info), None))
         return info.active
 
+    def process_ids(self):
+        capacity = 16
+        while capacity <= 65536:
+            class ProcessIds(ctypes.Structure):
+                _fields_ = [("assigned", wintypes.DWORD), ("count", wintypes.DWORD),
+                            ("pids", ctypes.c_size_t * capacity)]
+            info = ProcessIds()
+            ok = self._api.QueryInformationJobObject(self._open(), 3, ctypes.byref(info), ctypes.sizeof(info), None)
+            if ok and info.count == info.assigned:
+                return set(info.pids[:info.count])
+            if not ok and ctypes.get_last_error() != 234:  # ERROR_MORE_DATA
+                self._check(ok)
+            capacity = max(capacity * 2, info.assigned)
+        raise OSError("Provider job process list exceeded the safety bound")
+
+    def _contains(self, pid):
+        process = self._api.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not process:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            result = wintypes.BOOL()
+            self._check(self._api.IsProcessInJob(process, self._open(), ctypes.byref(result)))
+            return bool(result.value)
+        finally:
+            self._check(self._api.CloseHandle(process))
+
+    def suspend(self):
+        """Suspend only job members; bound enumeration and undo partial failure."""
+        if self._suspended:
+            return True
+        try:
+            for _ in range(8):
+                members = self.process_ids()
+                if not members:
+                    self.resume()
+                    return False
+                covered = {process.pid for process in self._suspended if process.is_running()}
+                if members <= covered:
+                    return True
+                for pid in sorted(members - covered):
+                    if pid == os.getpid():
+                        raise OSError("Refusing to suspend the host")
+                    process = psutil.Process(pid)
+                    if not self._contains(pid) or not process.is_running():
+                        raise OSError("Provider job membership changed")
+                    if process.status() == psutil.STATUS_STOPPED:
+                        raise OSError("Provider member is suspended by another owner")
+                    process.suspend()
+                    self._suspended.append(process)
+            raise OSError("Provider job did not settle for suspension")
+        except BaseException:
+            self.resume()
+            raise
+
+    @property
+    def suspended(self):
+        return bool(self._suspended)
+
+    def resume(self):
+        remaining, failure = [], None
+        for process in reversed(self._suspended):
+            try:
+                process.resume()
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.Error as error:
+                remaining.append(process)
+                failure = error
+        self._suspended = remaining
+        if failure:
+            raise OSError("Provider job could not fully resume") from failure
+
     def terminate(self):
         self._check(self._api.TerminateJobObject(self._open(), 1))
 
@@ -101,3 +177,4 @@ class WindowsJob:
         if self.handle:
             self._check(self._api.CloseHandle(self.handle))
             self.handle = None
+            self._suspended.clear()

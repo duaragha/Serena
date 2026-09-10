@@ -39,7 +39,6 @@ for line in sys.stdin:
 """
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX group suspension")
 def test_idle_pause_wakes_same_child_before_rpc_and_close(tmp_path):
     async def run():
         rpc = WorkspaceRpc()
