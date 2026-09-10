@@ -606,7 +606,7 @@ export class WorkspacePane {
         button.append(node('strong','',`${command.kind==='skill'?'$':'/'}${command.name}`),node('small','',command.kind==='skill'?command.path:command.argumentHint || ''),node('span','',command.description || ''));
         button.disabled=busy;
         if(command.paneControl)button.disabled=busy || command.paneControl.hidden || command.paneControl.disabled;
-        const actionControls={clear:this.clearButton,fork:this.forkButton,resume:this.resumeButton,color:this.colorButton,doctor:this.diagnosticsButton,'reload-plugins':plugins,'reload-skills':reload};
+        const actionControls={clear:this.clearButton,fork:this.forkButton,resume:this.resumeButton,color:this.colorButton,'reload-plugins':plugins,'reload-skills':reload};
         const localAction=this.provider==='Claude' && Object.hasOwn(actionControls,command.workspaceAction) ? command.workspaceAction : null;
         if(localAction){
           const control=actionControls[localAction];
@@ -1101,11 +1101,6 @@ export class WorkspacePane {
   async submit() {
     const text = this.input.value;
     if (this.sending || this.send.disabled || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
-    if(this.provider==='Claude' && /^\/doctor(?:\s|$)/.test(text.trim())){
-      if(text.trim()!=='/doctor' || this.files.length || this.selectedSkills.length){this.error(Error('Installation diagnostics does not accept arguments, attachments or skills'));return;}
-      if(this.diagnosticsButton.hidden){this.error(Error('Installation diagnostics is unavailable'));return;}
-      this.openDiagnostics();return;
-    }
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
       if(this.files.length || this.selectedSkills.length){this.error(Error('Prompt color does not accept attachments or skills'));return;}

@@ -2,6 +2,42 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Claude Doctor Skill Routing (2026-09-10)
+
+The installed 2.1.267 native SDK catalog exposes `/doctor` as a skill, with
+`/checkup` as an alias. The init event also lists it in `terminal_slash_commands`:
+that list is not exclusive of SDK skills. The old unconditional pane interception
+replaced this workflow with `claude doctor` installation diagnostics. It is now
+removed. Typed commands, arguments and the catalog entry use the regular exact
+session input path. Installation diagnostics remains an explicit separate header
+button. A terminal-only command without an advertised skill is still marked
+unavailable in the catalog.
+
+The [official command reference](https://code.claude.com/docs/en/commands), accessed
+2026-09-10, describes bundled skills as prompts and doctor as a setup diagnosis
+and repair workflow. Native catalog evidence takes precedence over assuming that
+the similarly named installation subcommand has equivalent behavior.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py::test_command_catalog_and_session_switch_guard tests/test_workspace_pane.py::test_claude_doctor_skill_is_not_replaced_with_installation_diagnostics tests/test_workspace_pane.py::test_installation_diagnostics_are_explicit_and_show_native_exit_without_sending -q --tb=short
+# exit 0: 6 passed in 6.90s.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude.py -q --tb=short
+# exit 0: 51 passed in 1.03s.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-commands.py
+# exit 0: 45 native catalog commands; doctor advertised as skill; same session;
+# expected authentication failure in an unsigned profile, zero billed inference,
+# no repair executed, owned process and temporary profile cleaned up.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-claude-commands.py core/workspace_claude.py tests/test_workspace_claude.py tests/test_workspace_pane.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+```
+
+The native proof demonstrates command acceptance and honest authentication
+failure, not a successful authenticated doctor repair. That broader workflow is
+not claimed verified. The catalog inventory is recorded separately in
+[workspace-command-parity.md](workspace-command-parity.md).
+
 ## Read-only Codex Status (2026-09-10)
 
 `/status`, its command-picker entry and the header info button now open a

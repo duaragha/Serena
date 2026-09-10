@@ -457,9 +457,8 @@ class ClaudeWorkspace:
                 item["workspaceAction"] = item["name"]
             elif item["name"] == "color":
                 item["workspaceAction"] = "color"
-            elif item["name"] == "doctor":
-                item["workspaceAction"] = "doctor"
-            elif item["name"] in self.events.capabilities.get("terminal_slash_commands", []):
+            elif (item["name"] in self.events.capabilities.get("terminal_slash_commands", [])
+                  and item["name"] not in self.events.capabilities.get("skills", [])):
                 item["unavailableReason"] = "Claude reports this command requires a terminal"
             result["data"].append(item)
         await self.publish(self.events.event("workspace/commands", result))

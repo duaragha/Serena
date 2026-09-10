@@ -131,7 +131,7 @@ def test_installation_diagnostics_are_explicit_and_show_native_exit_without_send
     page.set_viewport_size({"width": width, "height": 900})
     page.evaluate(r"""() => {
       controls.diagnostics=async()=>{calls.push('doctor');return {command:'claude doctor',exitCode:4,output:'Native diagnostic warning\nNo changes applied'};};
-      pane.diagnosticsButton.hidden=false;pane.input.value='/doctor';pane.submit();
+      pane.diagnosticsButton.hidden=false;pane.input.value='keep draft';pane.diagnosticsButton.click();
     }""")
     dialog = page.get_by_role('dialog', name='Installation diagnostics')
     dialog.wait_for()
@@ -141,8 +141,22 @@ def test_installation_diagnostics_are_explicit_and_show_native_exit_without_send
     assert dialog.get_by_role('status').inner_text() == 'claude doctor exited 4'
     assert 'Native diagnostic warning' in dialog.locator('pre').inner_text()
     assert page.evaluate('calls') == ['doctor']
-    assert page.evaluate('pane.input.value') == '/doctor'
+    assert page.evaluate('pane.input.value') == 'keep draft'
     assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert not errors
+
+
+@pytest.mark.parametrize('command', ['/doctor', '/doctor check configuration', '/checkup'])
+def test_claude_doctor_skill_is_not_replaced_with_installation_diagnostics(pane, command):
+    page, errors = pane
+    page.evaluate("""command=>{
+      controls.diagnostics=async()=>{throw Error('Wrong diagnostics path');};
+      pane.input.value=command;pane.render();
+    }""", command)
+    page.locator('#left').get_by_role('button', name='Send message', exact=True).click()
+    page.wait_for_function('calls.length===1')
+    assert page.evaluate('calls') == [['submit', {'text': command, 'files': []}]]
+    assert page.get_by_role('dialog', name='Installation diagnostics').count() == 0
     assert not errors
 
 

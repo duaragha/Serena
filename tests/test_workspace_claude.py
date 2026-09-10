@@ -755,6 +755,7 @@ def test_command_catalog_and_session_switch_guard(tmp_path):
             owner.events.capabilities = {
                 "slash_commands": ["context", "extra", "color", "reload-plugins", "reload-skills", "doctor"],
                 "terminal_slash_commands": ["color", "reload-plugins", "doctor"],
+                "skills": ["doctor"],
             }
             result = await owner.list_commands()
             assert [c["name"] for c in result["data"]] == ["context", "clear", "extra", "color", "reload-plugins", "reload-skills", "doctor"]
@@ -762,10 +763,15 @@ def test_command_catalog_and_session_switch_guard(tmp_path):
             assert "unavailableReason" not in result["data"][1]
             assert result["data"][3]["workspaceAction"] == "color"
             assert "unavailableReason" not in result["data"][3]
-            for command in result["data"][-3:]:
+            for command in result["data"][-3:-1]:
                 assert command["workspaceAction"] == command["name"]
                 assert "unavailableReason" not in command
+            assert "workspaceAction" not in result["data"][-1]
+            assert "unavailableReason" not in result["data"][-1]
             assert events[-1]["method"] == "workspace/commands"
+            owner.events.capabilities["skills"] = []
+            terminal_catalog = await owner.list_commands()
+            assert "unavailableReason" in terminal_catalog["data"][-1]
             for name in ("clear", "new", "reset", "resume", "fork"):
                 with pytest.raises(ValueError, match="Session switching"):
                     await owner.submit([{"type": "text", "text": f"/{name} target"}])
