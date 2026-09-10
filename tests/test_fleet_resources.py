@@ -1,6 +1,8 @@
 """Resource failure receipts survive restart without silently abandoning a leg."""
 
 import time
+import os
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +10,7 @@ from test_fleet_supervision import _run
 from test_fleet_supervisor import fleet_env  # noqa: F401
 
 from fleet.resources import (
+    _disk_path_readiness,
     is_disk_exhaustion,
     is_transient_transport_error,
     resume_ready_resource_waits,
@@ -189,6 +192,93 @@ def test_disk_probe_survives_restart_preserves_completed_attempts(tmp_path, monk
     assert snapshot["phases"][0]["legs"][0]["current_attempt"]["attempt_id"] == research["attempt_id"]
     assert snapshot["phases"][0]["legs"][0]["state"] == "completed"
     assert snapshot["phases"][1]["legs"][0]["state"] == "queued"
+
+
+def test_inode_exhaustion_stays_parked_until_positive_probe(tmp_path, monkeypatch):
+    store, rid, _, leg, failed = parked(tmp_path)
+    store.resolve_phase_failure(rid, "execute", "disk full")
+    monkeypatch.setattr("fleet.resources.shutil.disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
+    monkeypatch.setattr("fleet.resources.os.statvfs", lambda _: SimpleNamespace(f_files=100, f_favail=0, f_flag=0), raising=False)
+    now = time.time() + 60
+    assert resume_ready_resource_waits(store, now=now) == []
+    current = store.get_run(rid)
+    assert current["state"] == "waiting_for_resources"
+    assert "no available inodes" in current["resource_waits"][0]["reason"]
+    assert current["phases"][1]["legs"][0]["current_attempt"]["attempt_id"] == failed["attempt_id"]
+    monkeypatch.setattr("fleet.resources.os.statvfs", lambda _: SimpleNamespace(f_files=100, f_favail=50, f_flag=0))
+    assert resume_ready_resource_waits(store, now=now + 31) == [leg["leg_id"]]
+    resumed = next(event for event in store.events(rid, limit=100) if event["type"] == "leg.resource_resumed")
+    assert all(check["available_inodes"] == 50 for check in resumed["payload"]["checks"])
+
+
+@pytest.mark.parametrize("kind", ["integration", "worker", "event-log"])
+def test_probe_checks_actual_checkout_filesystems(tmp_path, monkeypatch, kind):
+    store, rid, _, leg, _ = parked(tmp_path)
+    target = tmp_path / kind
+    target.mkdir()
+    if kind == "integration":
+        with store._connect() as db:
+            db.execute("INSERT INTO fleet_run_checkouts VALUES (?,?,?,?,?)", (rid, str(tmp_path), "test-baseline", str(target), "ready"))
+    elif kind == "worker":
+        with sqlite3.connect(tmp_path / "fleet-isolation.sqlite3") as db:
+            db.execute("CREATE TABLE fleet_workspaces(run_id TEXT,worker_key TEXT,path TEXT)")
+            db.execute("INSERT INTO fleet_workspaces VALUES (?,?,?)", (rid, leg["worker_key"], str(target)))
+    else:
+        with store._connect() as db:
+            db.execute("UPDATE fleet_attempts SET event_log_path=? WHERE leg_id=?", (str(target / "events.jsonl"), leg["leg_id"]))
+    monkeypatch.setattr("fleet.resources.shutil.disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
+    monkeypatch.setattr("fleet.resources.os.statvfs", lambda path: SimpleNamespace(f_files=100, f_favail=0 if path == target else 50, f_flag=0), raising=False)
+    assert resume_ready_resource_waits(store, now=time.time() + 60) == []
+    assert str(target) in store.get_run(rid)["resource_waits"][0]["reason"]
+
+
+@pytest.mark.parametrize("files,available,flag,ready", [(0, 0, 0, True), (100, 1, 0, True), (100, 0, 0, False), (100, 10, 1, False)])
+def test_inode_and_readonly_probe_semantics(tmp_path, monkeypatch, files, available, flag, ready):
+    monkeypatch.setattr("fleet.resources.shutil.disk_usage", lambda _: SimpleNamespace(free=4096))
+    monkeypatch.setattr("fleet.resources.os.ST_RDONLY", 1, raising=False)
+    monkeypatch.setattr("fleet.resources.os.statvfs", lambda _: SimpleNamespace(f_files=files, f_favail=available, f_flag=flag), raising=False)
+    assert _disk_path_readiness(tmp_path, 1024)["ready"] == ready
+
+
+def test_platform_without_statvfs_keeps_byte_probe(tmp_path, monkeypatch):
+    monkeypatch.setattr("fleet.resources.shutil.disk_usage", lambda _: SimpleNamespace(free=4096))
+    monkeypatch.delattr(os, "statvfs", raising=False)
+    result = _disk_path_readiness(tmp_path, 1024)
+    assert result["ready"] and not result["inode_accounting"]
+
+
+def test_missing_recorded_path_cannot_pass_using_parent_space(tmp_path):
+    result = _disk_path_readiness(tmp_path / "missing-worker", 1)
+    assert not result["ready"]
+    assert "probe failed" in result["reason"]
+
+
+def test_one_full_worker_filesystem_does_not_hold_a_healthy_run(tmp_path, monkeypatch):
+    store = FleetStore(tmp_path / "fleet.sqlite3")
+    blocked_path = tmp_path / "blocked-worker"
+    healthy_path = tmp_path / "healthy-worker"
+    blocked_path.mkdir()
+    healthy_path.mkdir()
+    legs = []
+    with sqlite3.connect(tmp_path / "fleet-isolation.sqlite3") as db:
+        db.execute("CREATE TABLE fleet_workspaces(run_id TEXT,worker_key TEXT,path TEXT)")
+        for path in (blocked_path, healthy_path):
+            run = _run(store)
+            store.claim_run(run["run_id"])
+            leg = run["phases"][0]["legs"][0]
+            attempt = store.begin_attempt(leg["leg_id"])
+            store.finish_attempt(attempt["attempt_id"], state="failed", error="[Errno 28] No space left on device")
+            db.execute("INSERT INTO fleet_workspaces VALUES (?,?,?)", (run["run_id"], leg["worker_key"], str(path)))
+            legs.append(leg)
+    monkeypatch.setattr("fleet.resources.shutil.disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
+    monkeypatch.setattr("fleet.resources.os.statvfs", lambda path: SimpleNamespace(f_files=100, f_favail=0 if path == blocked_path else 50, f_flag=0), raising=False)
+    now = time.time() + 60
+    assert resume_ready_resource_waits(store, now=now) == [legs[1]["leg_id"]]
+    with store._connect() as db:
+        first_reason = db.execute("SELECT reason FROM fleet_resource_waits WHERE leg_id=?", (legs[0]["leg_id"],)).fetchone()[0]
+    assert resume_ready_resource_waits(store, now=now + 31) == []
+    with store._connect() as db:
+        assert db.execute("SELECT reason FROM fleet_resource_waits WHERE leg_id=?", (legs[0]["leg_id"],)).fetchone()[0] == first_reason
 
 
 def test_recovery_does_not_release_live_run_owner(tmp_path, monkeypatch):

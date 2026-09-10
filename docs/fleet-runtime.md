@@ -66,10 +66,15 @@ Exhaustion and non-lock errors remain visible; disk-full and corruption are not 
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
 attempt as evidence. Independent ready work continues; a run with only parked work releases its
-owner and waits durably. Every 30 seconds the resident service checks both the source checkout and
-database filesystems. Only positive free-space checks of at least 2 GiB on both requeue a disk wait.
-An unreadable filesystem stays parked. This does not solve inode exhaustion or a database too full
-to commit the initial receipt.
+owner and waits durably. Every 30 seconds the resident service checks the source and database
+filesystems plus recorded integration, worker checkout and event-log locations. A disk wait resumes
+only when every checked location has the required free bytes (normally at least 2 GiB), positive
+unprivileged inode availability where fixed inode accounting exists, and no read-only filesystem flag.
+Dynamic-inode filesystems and platforms without statvfs retain byte checks without inventing inode
+measurements. Unreadable locations remain parked. The wait reason exposes the failed check and
+the resume event retains observed filesystem checks. These read-only, point-in-time measurements
+do not reserve capacity or prove quota/write permission; a database too full to commit the initial
+receipt is still a separate failure class.
 
 Mixed failures do not delete a sibling's recovery receipt. A remaining capacity wait takes
 run-state precedence over a resource wait, but resource probes support both states so disk recovery
