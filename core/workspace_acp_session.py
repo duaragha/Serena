@@ -135,21 +135,36 @@ class AcpSession:
         else:
             raise ValueError("Unsupported ACP server request or notification")
 
+    def validate_content(self, content):
+        if not isinstance(content, list) or not content:
+            raise ValueError("ACP prompt content is required")
+        content = deepcopy(content)
+        supported = self.capabilities.get("promptCapabilities", {})
+        if not isinstance(supported, dict):
+            raise ValueError("Invalid ACP prompt capabilities")
+        for block in content:
+            kind = block.get("type") if isinstance(block, dict) else None
+            fields = {"text": ("text",), "resource_link": ("uri", "name"),
+                      "image": ("data", "mimeType"), "audio": ("data", "mimeType"), "resource": ()}
+            if not isinstance(kind, str) or kind not in fields:
+                raise ValueError("Unsupported ACP prompt block")
+            if any(not isinstance(block.get(field), str) for field in fields[kind]):
+                raise ValueError("Invalid ACP prompt content")
+            if kind == "resource":
+                resource = block.get("resource")
+                if (not isinstance(resource, dict) or not isinstance(resource.get("uri"), str)
+                    or not any(isinstance(resource.get(field), str) for field in ("text", "blob"))):
+                    raise ValueError("Invalid ACP embedded resource")
+            capability = {"image": "image", "audio": "audio", "resource": "embeddedContext"}.get(kind)
+            if capability and supported.get(capability) is not True:
+                raise ValueError("ACP server did not advertise this prompt capability")
+        return content
+
     async def prompt(self, content):
         async with self._lock:
             if self.state != "ready":
                 raise ValueError("ACP session is not ready for input")
-            if not isinstance(content, list) or not content:
-                raise ValueError("ACP prompt content is required")
-            content = deepcopy(content)
-            supported = self.capabilities.get("promptCapabilities", {})
-            for block in content:
-                kind = block.get("type") if isinstance(block, dict) else None
-                if kind not in {"text", "resource_link", "image", "audio", "resource"}:
-                    raise ValueError("Unsupported ACP prompt block")
-                capability = {"image": "image", "audio": "audio", "resource": "embeddedContext"}.get(kind)
-                if capability and supported.get(capability) is not True:
-                    raise ValueError("ACP server did not advertise this prompt capability")
+            content = self.validate_content(content)
             self.state = "running"
             start = self.events.begin(str(uuid4()))
             self.last_turn_id = self.events.turn

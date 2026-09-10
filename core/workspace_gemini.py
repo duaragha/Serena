@@ -47,6 +47,7 @@ class GeminiWorkspace:
                 raise ValueError("Unsupported Gemini per-turn settings")
             if self.state != "ready" or (self._turn_task and not self._turn_task.done()):
                 raise ValueError("Gemini is not ready for input")
+            inputs = self.session.validate_content(inputs)
             if options and "model" in options:
                 await self.session.set_model(options["model"])
             previous_turn = self.session.last_turn_id
@@ -61,6 +62,8 @@ class GeminiWorkspace:
         try:
             return await self.session.prompt(inputs)
         except Exception as error:
+            if self.session.state == "ready":
+                raise
             self.session.state = "unavailable"
             await self.publish(self.session.events.event("workspace/transportClosed", {"reason": str(error)}))
 

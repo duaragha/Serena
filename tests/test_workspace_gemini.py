@@ -301,3 +301,31 @@ def test_owner_acknowledges_turn_that_completes_before_submit_returns(tmp_path):
         assert owner.active_turn is None
         assert owner._turn_task.done()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("inputs", [[], [{"type": "text", "text": None}],
+    [{"type": "image", "data": "AA==", "mimeType": "image/png"}],
+    [{"type": "image", "data": "AA=="}], [{"type": "resource_link", "uri": "file:///x"}],
+    [{"type": "resource", "resource": {"uri": "file:///x"}}]])
+def test_invalid_submission_preserves_owner_and_never_changes_model(tmp_path, inputs):
+    async def run():
+        owner = make(tmp_path, ProbeRpc())
+        owner.session.state = "ready"
+        output, requests = [], []
+        async def publish(event):
+            output.append(event)
+        async def request(method, params, **kwargs):
+            requests.append((method, params))
+            return {"stopReason": "end_turn"}
+        owner.session.publish = publish
+        owner.rpc.request = request
+        with pytest.raises(ValueError):
+            await owner.submit(inputs, options={"model": "must-not-change"})
+        assert owner.state == "ready" and owner.active_turn is None
+        assert requests == [] and output == []
+        result = await owner.submit([{"type": "text", "text": "valid next input"}])
+        await owner._turn_task
+        assert result["turn"]["id"] == output[-1]["params"]["turn"]["id"]
+        assert len(requests) == 1 and requests[0][0] == "session/prompt"
+        assert owner.state == "ready"
+    asyncio.run(run())

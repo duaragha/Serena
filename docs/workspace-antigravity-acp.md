@@ -198,6 +198,18 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Submission validation (2026-09-09): content shape and advertised capabilities
+are checked before model configuration or prompt admission. Invalid text,
+unsupported images and malformed resources leave the owner ready, emit no
+synthetic transport-close event and make no native request. A corrected message
+can use the same owner immediately. Actual post-admission transport failures
+still make the session unavailable and are not automatically retried.
+
+`PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_session.py tests/test_workspace_gemini.py -q --tb=short`:
+exit 0, 34 passed. Scoped Ruff: exit 0. Includes invalid-input/no-model-change
+cases followed by successful corrected input, plus existing real-pipe ownership
+and command/permission tests. No authenticated model execution in this run.
+
 Orphan ownership check (2026-09-09): admission now recognizes Google's
 `localharness_external` process and its truncated Linux name alongside `agy`.
 A matching open transcript, ambiguous same-project worker or inaccessible
