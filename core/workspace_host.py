@@ -798,6 +798,9 @@ class WorkspaceHost:
             "set_session_mode",
             "personality",
             "set_personality",
+            "goal",
+            "update_goal",
+            "clear_goal",
             "review",
             "compact",
             "background_tasks",
@@ -849,7 +852,7 @@ class WorkspaceHost:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "models", "permissions", "context_usage", "background_tasks",
-                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes", "personality",
+                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes", "personality", "goal",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1107,6 +1110,17 @@ class WorkspaceHost:
                     if provider != "codex" or set(payload) != {"target"}:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])
+                elif action == "goal":
+                    if provider != "codex" or payload:
+                        raise ValueError("Goal inspection requires an attached Codex session")
+                    result = await owner.get_goal()
+                elif action in {"update_goal", "clear_goal"}:
+                    keys = {"expected", "confirmed"} | ({"changes"} if action == "update_goal" else set())
+                    if provider != "codex" or set(payload) != keys:
+                        raise ValueError("An exact confirmed Codex goal change is required")
+                    if self._bridge_queues.get(sid):
+                        raise ValueError("Resolve queued messages before changing the goal")
+                    result = await getattr(owner, action)(**payload)
                 elif action == "personality":
                     if provider != "codex" or payload:
                         raise ValueError("Personality requires an attached Codex session")

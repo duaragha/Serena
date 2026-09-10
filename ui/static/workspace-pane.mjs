@@ -87,6 +87,8 @@ export class WorkspacePane {
     this.newConversationButton.hidden=!controls.newConversation;head.append(this.newConversationButton);
     this.personalityButton=this.button('Codex personality','smile',()=>this.openPersonality());
     this.personalityButton.hidden=provider!=='Codex' || !controls.personality || !controls.setPersonality;head.append(this.personalityButton);
+    this.goalButton=this.button('Session goal','flag',()=>this.openGoal());
+    this.goalButton.hidden=provider!=='Codex' || !controls.goal || !controls.updateGoal || !controls.clearGoal;head.append(this.goalButton);
     this.disconnectButton=this.button('Disconnect session','unplug',()=>this.openDisconnect());
     this.disconnectButton.hidden=!controls.disconnectSession;
     this.disconnectButton.disabled=true;head.append(this.disconnectButton);
@@ -843,6 +845,60 @@ export class WorkspacePane {
     }catch(error){if(dialog.open)status.textContent=error.message;}
   }
 
+  async openGoal() {
+    if(this.goalDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-goal-dialog');dialog.setAttribute('aria-label','Session goal');
+    const status=node('p','','Loading...');status.setAttribute('role','status');
+    const objective=node('textarea');objective.setAttribute('aria-label','Goal objective');objective.maxLength=4000;
+    const mode=node('select');mode.setAttribute('aria-label','Goal status');
+    for(const value of ['active','paused','complete']){const option=node('option','',value);option.value=value;mode.append(option);}
+    const budget=node('input');budget.type='number';budget.min='1';budget.step='1';budget.placeholder='Unlimited';budget.setAttribute('aria-label','Goal token budget');
+    const confirm=node('input');confirm.type='checkbox';
+    const label=node('label');label.append(confirm,document.createTextNode(' Confirm goal changes. A different objective resets usage accounting.'));
+    const apply=node('button','','Apply');apply.type='button';
+    const clear=this.button('Clear goal','trash-2',()=>save(true));
+    const refresh=this.button('Refresh goal','refresh-cw',()=>load());
+    const close=this.button('Close goal','x',()=>dialog.close());
+    let expected=null,loaded=false,busy=false;
+    const enable=()=>{apply.disabled=clear.disabled=!loaded || busy || !confirm.checked;refresh.disabled=busy;close.disabled=busy;};
+    confirm.addEventListener('change',enable);
+    const render=result=>{
+      expected=result.goal;loaded=true;confirm.checked=false;
+      objective.value=expected?.objective || '';mode.value=expected?.status || 'paused';
+      budget.value=expected?.tokenBudget ?? '';
+      status.textContent=expected?`${expected.status} / ${expected.tokensUsed} tokens / ${expected.timeUsedSeconds}s`:'No goal';
+      enable();
+    };
+    const load=async()=>{
+      if(busy)return;busy=true;loaded=false;enable();
+      try{const result=await this.controls.goal();if(dialog.open)render(result);}
+      catch(error){status.textContent=error.message;}
+      finally{busy=false;enable();}
+    };
+    const save=async remove=>{
+      if(busy || !loaded || !confirm.checked)return;
+      const changes={};
+      if(!remove){
+        if(!objective.value.trim() || !mode.value || !budget.checkValidity()){status.textContent='Enter a goal, status and valid token budget';return;}
+        if(objective.value!==expected?.objective)changes.objective=objective.value;
+        if(mode.value!==expected?.status)changes.status=mode.value;
+        const value=budget.value===''?null:Number(budget.value);
+        if(value!==expected?.tokenBudget)changes.tokenBudget=value;
+        if(!Object.keys(changes).length){status.textContent='No changes';return;}
+      }
+      busy=true;enable();objective.disabled=mode.disabled=budget.disabled=true;
+      try{const result=remove?await this.controls.clearGoal(expected):await this.controls.updateGoal(changes,expected);if(dialog.open)render(result);}
+      catch(error){status.textContent=error.message;}
+      finally{busy=false;objective.disabled=mode.disabled=budget.disabled=false;confirm.checked=false;enable();}
+    };
+    apply.addEventListener('click',()=>save(false));
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    const field=(name,input)=>{const label=node('label','',name);label.append(input);return label;};
+    dialog.append(node('h3','','Session goal'),close,refresh,status,field('Objective',objective),field('Status',mode),field('Token budget',budget),label,apply,clear);
+    this.goalDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();enable();await load();
+  }
+
   async openPersonality() {
     if(this.personalityDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Codex personality');
@@ -1369,7 +1425,7 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
-      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
+      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }
 
   async copyLatestOutput() {
@@ -1403,7 +1459,7 @@ export class WorkspacePane {
       await this.copyLatestOutput();return;
     }
     if(this.provider==='Codex' && /^\/[A-Za-z]/.test(text.trim()) && this.selectedApps.length){this.error(Error('Remove selected apps before running a session command'));return;}
-    const readOnlyCommand=this.provider==='Codex' && /^\/(new|ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
+    const readOnlyCommand=this.provider==='Codex' && /^\/(goal|new|ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
@@ -2010,6 +2066,7 @@ export class WorkspacePane {
   }
 
   dispose() {
+    this.goalDialog?.close();
     this.personalityDialog?.close();
     this.rewindDialog?.close();
     this.disposeActions?.();

@@ -156,6 +156,57 @@ def test_personality_is_explicit_native_selection_and_keeps_failed_draft(pane, w
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_goal_requires_confirmation_preserves_draft_and_recovers_failure(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      window.goal={threadId:'exact',objective:'Existing objective',status:'active',tokenBudget:1000,tokensUsed:10,timeUsedSeconds:3};
+      controls.goal=async()=>({goal});
+      controls.updateGoal=async(changes,expected)=>{calls.push(['update',changes,expected]);throw Error('Goal changed; refresh before applying changes');};
+      controls.clearGoal=async expected=>{calls.push(['clear',expected]);return {goal:null};};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/goal';pane.render();
+    }""")
+    assert page.evaluate('calls') == []
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role('dialog', name='Session goal', exact=True)
+    mode = dialog.get_by_role('combobox', name='Goal status')
+    playwright.expect(mode).to_have_value('active')
+    mode.select_option('paused')
+    apply = dialog.get_by_role('button', name='Apply', exact=True)
+    assert apply.is_disabled()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('checkbox').check()
+    apply.click()
+    dialog.get_by_text('Goal changed; refresh before applying changes', exact=True).wait_for()
+    assert page.evaluate('calls[0][1]') == {'status': 'paused'}
+    assert mode.input_value() == 'paused'
+    assert page.evaluate('pane.input.value') == '/goal'
+    assert apply.is_disabled()
+    dialog.get_by_role('button', name='Refresh goal', exact=True).click()
+    playwright.expect(mode).to_have_value('active')
+    page.evaluate("()=>{controls.updateGoal=async changes=>({goal:{...goal,...changes}});}")
+    mode.select_option('paused')
+    dialog.get_by_role('checkbox').check()
+    apply.click()
+    dialog.get_by_text('paused / 10 tokens / 3s', exact=True).wait_for()
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'goal-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    clear = dialog.get_by_role('button', name='Clear goal', exact=True)
+    assert clear.is_disabled()
+    dialog.get_by_role('checkbox').check()
+    clear.click()
+    dialog.get_by_text('No goal', exact=True).wait_for()
+    assert page.evaluate('calls.at(-1)[1].status') == 'paused'
+    dialog.get_by_role('button', name='Close goal', exact=True).click()
+    assert page.evaluate('pane.input.value') == '/goal'
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

@@ -50,6 +50,47 @@ def test_personality_uses_native_capability_and_exact_session(tmp_path, case):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('case', ['ok', 'stale', 'unconfirmed', 'foreign', 'invalid_budget', 'running'])
+def test_goal_controls_preserve_exact_session_and_reject_stale_state(tmp_path, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        current = {'threadId':owner.session_id,'objective':'Original','status':'paused','tokenBudget':1000,
+                   'tokensUsed':0,'timeUsedSeconds':0,'createdAt':1,'updatedAt':1}
+        calls = []
+        async def request(method, params):
+            nonlocal current
+            calls.append((method, params))
+            assert params['threadId'] == owner.session_id
+            if method == 'thread/goal/get':
+                return {'goal':{**current,'threadId':'foreign'} if case == 'foreign' else current}
+            if method == 'thread/goal/set':
+                current = {**current, **{k:v for k,v in params.items() if k!='threadId'}}
+                return {'goal':current}
+            assert method == 'thread/goal/clear'
+            current = None
+            return {'cleared':True}
+        rpc.request = request
+        if case == 'running':
+            owner.state='running'
+            owner.active_turn='active'
+        try:
+            expected = None if case == 'stale' else dict(current)
+            changes = {'tokenBudget':True} if case == 'invalid_budget' else {'status':'active'}
+            if case in {'ok','running'}:
+                result = await owner.update_goal(changes, expected, True)
+                assert result['goal']['status'] == 'active'
+                assert await owner.clear_goal(result['goal'], True) == {'goal':None}
+                assert owner.active_turn == ('active' if case == 'running' else None)
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.update_goal(changes, expected, case != 'unconfirmed')
+                assert not any(method in {'thread/goal/set','thread/goal/clear'} for method,_ in calls)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('state', ['ready', 'running'])
 def test_native_rename_targets_and_verifies_exact_thread_without_new_turn(tmp_path, state):
     async def run():

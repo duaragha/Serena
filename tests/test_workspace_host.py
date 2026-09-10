@@ -865,6 +865,41 @@ def test_personality_restores_only_saved_exact_session_and_closes_on_failure(tmp
         host.shutdown()
 
 
+def test_goal_controls_are_exact_receipted_and_job_guarded(tmp_path):
+    calls = []
+    class GoalOwner(Owner):
+        async def get_goal(self):
+            return {'goal': None}
+        async def update_goal(self, **payload):
+            calls.append((self.sid, payload))
+            return {'goal': None}
+        async def clear_goal(self, **payload):
+            calls.append((self.sid, payload))
+            return {'goal': None}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'goals.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': GoalOwner})
+    payload = {'expected': None, 'confirmed': True, 'changes': {'status': 'paused'}}
+    try:
+        host.attach('exact')
+        assert not calls
+        assert host.command('exact', 'read', 'goal', {})['ok']
+        assert host.command('exact', 'update', 'update_goal', payload)['ok']
+        assert host.command('exact', 'update', 'update_goal', payload)['ok']
+        assert calls == [('exact', payload)]
+        assert not host.command('exact', 'bad', 'goal', {'threadId': 'other'})['ok']
+        host._work_reservations['exact'] = {'item_id': 'job'}
+        assert not host.command('exact', 'blocked', 'update_goal', payload)['ok']
+        assert host.command('exact', 'read-reserved', 'goal', {})['ok']
+        host._work_reservations.clear()
+        host._bridge_queues['exact'] = ['pending']
+        assert not host.command('exact', 'queued', 'clear_goal', {'expected': None, 'confirmed': True})['ok']
+        assert calls == [('exact', payload)]
+        host._bridge_queues.clear()
+    finally:
+        host.shutdown()
+
+
 def test_codex_mode_controls_are_explicit_receipted_and_job_guarded(tmp_path):
     calls = []
     class ModeOwner(Owner):

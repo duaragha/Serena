@@ -3,6 +3,32 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Codex Goals (2026-09-10)
+
+`/goal` and Session actions inspect the exact persisted native goal. Explicit
+confirmation is required to change objective, status or token budget, or clear
+the goal. Opening or closing the dialog does not mutate it. Changes are blocked
+for reserved jobs and queued bridge work, use durable command receipts, and
+compare a fresh native snapshot before mutation. This is not a provider-side CAS:
+the native API has no atomic expected-version parameter. The dialog is an
+explicitly refreshed snapshot, not a claim of continuously current counters.
+Pausing/clearing a goal does not interrupt the currently executing turn.
+
+Contract: https://learn.chatgpt.com/docs/app-server (accessed 2026-09-10),
+`thread/goal/get`, `thread/goal/set`, `thread/goal/clear`; verified against the
+installed native runtime. Changing the objective resets native usage accounting.
+
+Commands run from this worktree; Python/Ruff binaries are under
+`/home/raghav/Documents/Projects/serena/.venv/bin/`:
+
+- `python -m pytest tests/test_workspace_host.py tests/test_workspace_codex.py -k goal -q --tb=short`: exit 0; 7 passed, 256 deselected, 1.28s.
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge python -m pytest tests/test_workspace_pane.py -k goal -q --tb=short`: exit 0; 2 passed, 235 deselected, 4.00s. Desktop 1600px and mobile 390px; screenshot inspected, numeric input contrast repaired.
+- `env SERENA_EVIDENCE_KIND=live python scripts/verify-workspace-goal.py`: exit 0; real native paused goal survived process replacement with identical session ID, removed budget, rejected stale clear, then cleared. One print-only shell turn; no inference, user credentials or profile changes. Both native processes reaped and disposable profile removed.
+- `ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-goal.py`: exit 0; all checks passed. Initial run exited 1 for a test semicolon, corrected before rerun.
+- `node --check ui/static/workspace-pane.mjs`: exit 0.
+
+This capability is not a release or completion of all workspace parity gates.
+
 ## Codex Personality (2026-09-10)
 
 `/personality` and Session actions open an explicit native selector. The owner

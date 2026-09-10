@@ -512,6 +512,65 @@ class CodexWorkspace:
         return {"currentValue": self.settings.get("personality"),
                 "options": ["none", "friendly", "pragmatic"] if supported else []}
 
+    def _validated_goal(self, result):
+        if not isinstance(result, dict) or "goal" not in result:
+            raise WorkspaceRpcError("Codex returned no goal state")
+        goal = result["goal"]
+        if goal is None:
+            return {"goal": None}
+        if (not isinstance(goal, dict) or goal.get("threadId") != self.session_id
+                or not isinstance(goal.get("objective"), str) or not 1 <= len(goal["objective"]) <= 4000
+                or goal.get("status") not in ("active", "paused", "blocked", "usageLimited", "budgetLimited", "complete")
+                or any(type(goal.get(key)) is not int or goal[key] < 0
+                       for key in ("createdAt", "updatedAt", "tokensUsed", "timeUsedSeconds"))
+                or (goal.get("tokenBudget") is not None and
+                    (type(goal["tokenBudget"]) is not int or not 1 <= goal["tokenBudget"] <= 2**53 - 1))):
+            raise WorkspaceRpcError("Codex returned invalid or foreign goal state")
+        return {"goal": deepcopy(goal)}
+
+    async def get_goal(self):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Attach Codex before reading its goal")
+        return self._validated_goal(await self.rpc.request("thread/goal/get", {"threadId": self.session_id}))
+
+    async def update_goal(self, changes, expected, confirmed):
+        if confirmed is not True or not isinstance(changes, dict) or not changes or changes.keys() - {"objective", "status", "tokenBudget"}:
+            raise ValueError("Explicit goal changes and confirmation are required")
+        if "objective" in changes and (not isinstance(changes["objective"], str)
+                                       or not changes["objective"].strip() or len(changes["objective"]) > 4000):
+            raise ValueError("Goal objective must contain 1 to 4000 characters")
+        if "status" in changes and changes["status"] not in ("active", "paused", "complete"):
+            raise ValueError("Choose active, paused or complete")
+        budget = changes.get("tokenBudget")
+        if budget is not None and (type(budget) is not int or not 1 <= budget <= 2**53 - 1):
+            raise ValueError("Goal budget must be a positive integer or unlimited")
+        async with self._control_lock:
+            if self.state not in {"ready", "running"}:
+                raise WorkspaceRpcError("Session is not available for goal changes")
+            current = (await self.get_goal())["goal"]
+            if current != expected or self.state not in {"ready", "running"}:
+                raise WorkspaceRpcError("Goal changed; refresh before applying changes")
+            result = self._validated_goal(await self.rpc.request("thread/goal/set", {"threadId": self.session_id, **changes}))
+            if result["goal"] is None or any(result["goal"].get(key) != value for key, value in changes.items()):
+                raise WorkspaceRpcError("Native goal change was not confirmed")
+            return result
+
+    async def clear_goal(self, expected, confirmed):
+        if confirmed is not True:
+            raise ValueError("Clearing a goal requires explicit confirmation")
+        async with self._control_lock:
+            if self.state not in {"ready", "running"}:
+                raise WorkspaceRpcError("Session is not available for goal changes")
+            if (await self.get_goal())["goal"] != expected or self.state not in {"ready", "running"}:
+                raise WorkspaceRpcError("Goal changed; refresh before clearing")
+            result = await self.rpc.request("thread/goal/clear", {"threadId": self.session_id})
+            if not isinstance(result, dict) or type(result.get("cleared")) is not bool:
+                raise WorkspaceRpcError("Native goal clearing was not confirmed")
+            state = await self.get_goal()
+            if state["goal"] is not None:
+                raise WorkspaceRpcError("Goal is still present; refresh before retrying")
+            return state
+
     async def set_personality(self, value):
         async with self._control_lock:
             if self.state != "ready" or self.questions:
