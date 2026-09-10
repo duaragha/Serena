@@ -2,6 +2,38 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Codex Selection Command Routing (2026-09-10)
+
+The composer and command picker now route `/model` and `/reasoning` to the
+existing native-catalog-backed selectors. They do not send these commands as
+model prompts or change the selected value automatically. Keyboard focus is
+retained when the browser cannot open a select popup. Hidden/disabled controls,
+arguments and attached input are refused without provider submission.
+
+Evidence: [official command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
+accessed 2026-09-10, identifies model and reasoning selection commands. Product
+decision: reuse the pane's existing selectors and next-turn option handling,
+not a second command execution path or a claim of persisted TUI configuration.
+This is not full command parity: `/status` and the remaining command inventory
+still need auditing, and Claude's installation diagnostics is not its agentic
+doctor workflow.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_selection_commands_focus_native_control_without_sending tests/test_workspace_pane.py::test_codex_unavailable_or_argument_commands_do_not_submit tests/test_workspace_pane.py::test_codex_local_commands_use_controls_not_model_prompts -q --tb=short
+# exit 0: 22 passed in 15.41s; desktop/mobile, composer/picker, unavailable,
+# argument rejection and existing command routing.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0: no syntax errors.
+```
+
+An additional recorded `SERENA_EVIDENCE_KIND=live` Python/Playwright command
+served the actual static module on loopback and ran both commands in Edge:
+exit 0, `focused:["model","reasoning"]`, `submissions:0`,
+`providerLaunched:false`. This proves renderer routing only, not inference or
+provider model mutation. The temporary server and browser were closed.
+
 ## Closed View Retirement (2026-09-10)
 
 `pagehide` now sends an explicit, sequenced `closed:true` context report. The host

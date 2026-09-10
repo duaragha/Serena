@@ -612,7 +612,7 @@ export class WorkspacePane {
         }
         if(command.unavailableReason){button.disabled=true;button.title=command.unavailableReason;button.append(node('small','',command.unavailableReason));}
         button.addEventListener('click',()=>{
-          if(command.paneControl){dialog.close();command.paneControl.click();return;}
+          if(command.paneControl){dialog.close();this.activateCommandControl(command.paneControl);return;}
           if(localAction){if(!localAction.startsWith('reload-'))dialog.close();actionControls[localAction].click();return;}
           if(command.kind==='skill'){
             if(!this.selectedSkills.some(s=>s.path===command.path))this.selectedSkills.push({name:command.name,path:command.path});
@@ -1054,7 +1054,17 @@ export class WorkspacePane {
 
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
-      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton};
+      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,
+      model:this.modelSelect,reasoning:this.effortSelect};
+  }
+
+  activateCommandControl(control) {
+    if(control.hidden || control.disabled){this.error(Error('Session action is not available right now'));return;}
+    if(control.tagName==='SELECT'){
+      control.focus();
+      // Browser support and transient user activation vary; keyboard focus still works.
+      try{control.showPicker?.();}catch{}
+    }else control.click();
   }
 
   async submit() {
@@ -1085,7 +1095,7 @@ export class WorkspacePane {
         this.error(Error('Session commands do not accept arguments, attachments or skills'));return;
       }
       if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
-      if(codexCommand[1]!=='compact'){codexControl.click();return;}
+      if(codexCommand[1]!=='compact'){this.activateCommandControl(codexControl);return;}
     }
     const localCommand=this.provider==='Claude' && /^\/(clear|reset|new|fork|resume)(?:\s|$)/.exec(text.trim());
     if(localCommand){

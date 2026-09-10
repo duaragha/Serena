@@ -1193,7 +1193,7 @@ def test_codex_local_commands_use_controls_not_model_prompts(pane, command):
     assert not errors
 
 
-@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills"])
+@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills", "model", "reasoning"])
 def test_codex_unavailable_or_argument_commands_do_not_submit(pane, command):
     page, errors = pane
     page.evaluate("""command=>{pane.provider='Codex';pane.input.value='/'+command+' extra';pane.render();}""", command)
@@ -1203,6 +1203,31 @@ def test_codex_unavailable_or_argument_commands_do_not_submit(pane, command):
     page.get_by_role("button", name="Send message", exact=True).first.click()
     page.get_by_text("Session action is not available right now", exact=True).wait_for()
     assert page.evaluate("calls") == []
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
+@pytest.mark.parametrize("command", ["model", "reasoning"])
+@pytest.mark.parametrize("from_picker", [False, True])
+def test_codex_selection_commands_focus_native_control_without_sending(pane, width, command, from_picker):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""command=>{
+      pane.provider='Codex';
+      controls.commands=async()=>({data:[]});pane.commandsButton.hidden=false;
+      pane.input.value='/'+command;pane.render();
+      const control=pane.codexCommandControls()[command];
+      control.hidden=false;control.disabled=false;
+      control.showPicker=()=>{throw Error('No transient activation');};
+    }""", command)
+    if from_picker:
+        page.locator('#left').get_by_role('button', name='Commands and skills', exact=True).click()
+        page.get_by_role('dialog', name='Commands and skills').get_by_role('button', name=f'/{command} ', exact=False).click()
+    else:
+        page.locator('#left').get_by_role('button', name='Send message', exact=True).click()
+    assert page.evaluate("command=>document.activeElement===pane.codexCommandControls()[command]", command)
+    assert page.evaluate('calls') == []
+    assert page.evaluate('pane.input.value') == '/' + command
     assert not errors
 
 
