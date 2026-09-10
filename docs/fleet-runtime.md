@@ -131,6 +131,12 @@ Cancellation remains cancelled; exhausted budgets park for input. Newer unrelate
 attempts cannot be mistaken for a replay. Real SIGKILL tests cover death after
 application, after the successful integration receipt but before attempt completion,
 and during rollback; exact-file journal recovery retains normal verification gates.
+Verification helpers also clean up their POSIX process group after direct-process
+exit, even when a gate uses private pipes and does not keep the helper's output
+open. A captured process birth identity protects against signalling a reused
+leader PID. Tests cover normal exit and SIGKILL with a SIGTERM-ignoring gate.
+Windows process-tree cleanup and descendants that escape the owned process group
+are separate coverage gaps; this helper-only rule does not claim those solved.
 
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed

@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -252,3 +253,56 @@ def test_target_branch_switch_cannot_create_a_new_intent(tmp_path):
     assert not result.ok and "target branch changed" in result.reason
     assert (root / "core/alpha.py").read_text() == "alpha = 1\n"
     assert not (root / "new.bin").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+@pytest.mark.parametrize("original,observed,cleans", [
+    ("linux:1", "linux:1", True), ("linux:1", None, True),
+    ("linux:1", "linux:2", False), (None, None, False),
+])
+def test_helper_cleanup_checks_pid_birth_identity(monkeypatch, original, observed, cleans):
+    from fleet import workers
+    monkeypatch.setattr("core.work_jobs.process_start_token", lambda pid: observed)
+    calls = []
+    monkeypatch.setattr(workers, "_terminate_process_group", lambda process: calls.append(process.pid))
+    workers._cleanup_exited_group(SimpleNamespace(pid=987654), original)
+    assert calls == ([987654] if cleans else [])
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux process-state verification")
+@pytest.mark.parametrize("crash", [False, True])
+def test_helper_exit_cleans_gates_with_private_pipes(tmp_path, monkeypatch, crash):
+    from fleet.workers import _stream_process
+    from test_fleet_workers import _request
+    child_code = (
+        "import os,signal,time; from pathlib import Path; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "Path('gate-ready').write_text('ready'); time.sleep(12)"
+    )
+    script = (
+        "import os,signal,subprocess,sys,time; from pathlib import Path\n"
+        "sys.stdin.read()\n"
+        f"child=subprocess.Popen([sys.executable,'-c',{child_code!r}], "
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "while not Path('gate-ready').exists(): time.sleep(0.01)\n"
+        "print(child.pid,flush=True)\n"
+        + ("os.kill(os.getpid(),signal.SIGKILL)\n" if crash else "")
+    )
+    monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "events"))
+    seen = []
+    result = _stream_process([sys.executable, "-c", script], request=_request(tmp_path, "codex"),
+                             parse_stdout=lambda line: seen.append(int(line)),
+                             cancel_requested=lambda: False, on_event=lambda *a: None,
+                             cleanup_exited_group=True)
+    assert result.exit_code == (-9 if crash else 0)
+    assert len(seen) == 1
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            status = Path(f"/proc/{seen[0]}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except FileNotFoundError:
+            status = "gone"
+        if status in {"Z", "gone"}:
+            break
+        time.sleep(0.02)
+    assert status in {"Z", "gone"}, "private-pipe gate outlived its helper"
