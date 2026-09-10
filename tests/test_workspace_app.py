@@ -13,6 +13,62 @@ from ui.workspace_app import install_workspace
 
 
 @pytest.mark.parametrize("width", [1440, 390])
+def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_path, width):
+    from urllib.parse import urlencode
+    playwright = pytest.importorskip("playwright.sync_api")
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
+    host = install_workspace(app, tmp_path / "seed-ui.db", describe=lambda sid: None)
+    calls = []
+    target = "11111111-2222-4333-8444-555555555555"
+    seed = "Required linked context\n<script>not markup</script>"
+    def create(request, provider, cwd, *, confirmed, seed):
+        calls.append((request, provider, cwd, confirmed, seed))
+        return {"ok": True, "result": {"session_id": target, "provider": provider, "cwd": cwd},
+                "initial_message": {"ok": False, "error": "Native delivery unconfirmed"}}
+    host.create = create
+    @app.get("/parent")
+    def parent():
+        return '<iframe style="width:100%;height:700px;border:0" src="/workspace/new?' + urlencode({"source": "seed-ui", "provider": "claude", "cwd": str(tmp_path), "seeded": "1"}) + '"></iframe>'
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": width, "height": 900})
+                page.goto(f"http://127.0.0.1:{server.server_port}/parent")
+                frame = page.frame_locator("iframe")
+                button = frame.get_by_role("button", name="Create and send", exact=True)
+                button.wait_for()
+                assert button.is_disabled() and not calls
+                page.frames[1].evaluate("seed => window.postMessage({type:'serena-workspace-seed',sid:'seed-ui',seed},location.origin)", seed)
+                page.wait_for_timeout(30)
+                assert button.is_disabled()
+                page.evaluate("seed => document.querySelector('iframe').contentWindow.postMessage({type:'serena-workspace-seed',sid:'seed-ui',seed},location.origin)", seed)
+                page.frames[1].wait_for_function("() => !document.querySelector('#creation-submit').disabled")
+                assert frame.get_by_role("textbox", name="Initial context").input_value() == seed
+                assert not calls and host._loop is None
+                button.click()
+                frame.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                assert len(calls) == 1 and calls[0][1:] == ("claude", str(tmp_path), True, seed)
+                assert frame.get_by_role("alert").inner_text() == "Native delivery unconfirmed"
+                page.reload()
+                frame.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                assert frame.get_by_role("alert").inner_text() == "Native delivery unconfirmed"
+                assert frame.get_by_role("textbox", name="Initial context").input_value() == seed
+                assert len(calls) == 1 and host._loop is None
+                assert page.frames[1].evaluate("document.documentElement.scrollWidth <= innerWidth")
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+        host.shutdown()
+
+
+@pytest.mark.parametrize("width", [1440, 390])
 @pytest.mark.parametrize("provider", ["codex", "claude"])
 def test_new_chat_ui_is_explicit_retains_request_on_reload_and_opens_exact_target(tmp_path, width, provider):
     playwright = pytest.importorskip("playwright.sync_api")
@@ -381,8 +437,12 @@ function setTermStatus(status){window.lastStatus=status;}
             assert not owners[0].closed
             assert not errors
             page.evaluate("(cwd) => _startStructuredPane('seeded-proof', {isNew:true,agent:'codex',cwd,seed:'Required context'})", str(tmp_path))
-            assert not page.evaluate("termSessions.has('seeded-proof')")
-            assert "context has not been sent" in page.evaluate("lastStatus")
+            seeded_frame = page.frames[-1]
+            seeded_frame.get_by_role("button", name="Create and send", exact=True).wait_for()
+            assert seeded_frame.get_by_role("textbox", name="Initial context").input_value() == "Required context"
+            assert "Required" not in seeded_frame.url
+            assert len(owners) == 1
+            page.evaluate("termSessions.get('seeded-proof').cancelOutput(); termSessions.get('seeded-proof').mount.remove(); termSessions.delete('seeded-proof')")
             page.evaluate("(cwd) => _startStructuredPane('new-proof', {isNew:true,agent:'codex',cwd})", str(tmp_path))
             created_frame = page.frames[-1]
             created_frame.get_by_role("button", name="Create Codex chat", exact=True).wait_for()

@@ -86,18 +86,22 @@ class WorkspaceHost:
         self._validate_session(session_id)
         return self._dispatch(self._attach(session_id), timeout)
 
-    def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, timeout=35):
+    def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
             raise ValueError("Creation requires an exact request UUID")
         if confirmed is not True or provider not in {"codex", "claude"} or provider not in self.factories:
             raise ValueError("Explicit supported-provider creation is required")
         if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
             raise ValueError("An existing absolute project directory is required")
-        return self._dispatch(self._create(request_id, provider, str(Path(cwd).resolve())), timeout)
+        if not isinstance(seed, str) or "\0" in seed or len(seed.encode("utf-8")) > 1024 * 1024:
+            raise ValueError("Initial context must be text of at most 1 MiB without NUL")
+        return self._dispatch(self._create(request_id, provider, str(Path(cwd).resolve()), seed), timeout)
 
-    async def _create(self, request_id, provider, cwd):
+    async def _create(self, request_id, provider, cwd, seed=""):
         reservation = "new:" + request_id
         payload = {"action": "create_session", "payload": {"provider": provider, "cwd": cwd, "confirmed": True}}
+        if seed:
+            payload["payload"]["seed"] = seed
         async with self._locks.setdefault(reservation, asyncio.Lock()):
             claimed, receipt = await asyncio.to_thread(self.journal.claim_command, reservation, request_id, payload)
             if not claimed:
@@ -115,7 +119,14 @@ class WorkspaceHost:
                     self._sessions[target["session_id"]] = (owner, provider)
                     self._sessions.pop(reservation, None)
                 await owner.create(checkpoint=checkpoint)
-                receipt = await asyncio.to_thread(self.journal.complete_creation, request_id)
+                initial = None
+                if seed:
+                    # Native completion may arrive during submit. Admit its
+                    # transcript for indexing before delivering the first turn.
+                    await asyncio.to_thread(self.journal.mark_creation_ready, request_id)
+                    initial = await self._command(owner.session_id, "creation-seed:" + request_id, "submit",
+                                                  {"inputs": [{"type": "text", "text": seed}]})
+                receipt = await asyncio.to_thread(self.journal.complete_creation, request_id, initial)
                 self._sessions.pop(reservation, None)
                 return receipt
             except Exception as error:

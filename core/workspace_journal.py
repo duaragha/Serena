@@ -91,6 +91,13 @@ class WorkspaceJournal:
             command = conn.execute("SELECT payload, result FROM workspace_commands WHERE session_id=? AND request_id=?",
                                    ("new:" + request_id, request_id)).fetchone()
             expected = {"action": "create_session", "payload": {"provider": target["provider"], "cwd": target["cwd"], "confirmed": True}}
+            if command:
+                supplied = json.loads(command[0]).get("payload", {})
+                if "seed" in supplied:
+                    seed = supplied["seed"]
+                    if not isinstance(seed, str) or not seed or "\0" in seed or len(seed.encode("utf-8")) > 1024 * 1024:
+                        raise ValueError("Invalid initial context")
+                    expected["payload"]["seed"] = seed
             if not command or json.loads(command[0]) != expected or command[1] is not None:
                 raise ValueError("An unfinished explicit creation request is required")
             row = conn.execute("SELECT target FROM workspace_creations WHERE request_id=?", (request_id,)).fetchone()
@@ -101,13 +108,21 @@ class WorkspaceJournal:
             conn.execute("INSERT INTO workspace_creations (request_id, target_id, target, created_at) VALUES (?, ?, ?, ?)",
                          (request_id, sid, encoded, datetime.now(timezone.utc).isoformat()))
 
-    def complete_creation(self, request_id: str) -> dict:
+    def mark_creation_ready(self, request_id: str) -> None:
+        with closing(self._connect()) as conn, conn:
+            changed = conn.execute("UPDATE workspace_creations SET committed=1 WHERE request_id=?", (request_id,)).rowcount
+            if changed != 1:
+                raise ValueError("Native creation checkpoint is missing")
+
+    def complete_creation(self, request_id: str, initial: dict | None = None) -> dict:
         with closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT target FROM workspace_creations WHERE request_id=?", (request_id,)).fetchone()
             if not row:
                 raise ValueError("Native creation checkpoint is missing")
             receipt = {"ok": True, "result": json.loads(row[0])}
+            if initial is not None:
+                receipt["initial_message"] = initial
             changed = conn.execute("UPDATE workspace_commands SET result=? WHERE session_id=? AND request_id=? AND result IS NULL",
                                    (json.dumps(receipt), "new:" + request_id, request_id)).rowcount
             if changed != 1:

@@ -131,6 +131,14 @@ async def main():
                  "_resolve_project_cwd": lambda project, cwd: cwd,
                  "_shorten_project": lambda project, cwd: project, "_external_runtime_active": lambda sid: False}
     exec(compile(ast.Module(body=definitions, type_ignores=[]), str(web_source), "exec"), namespace)
+    @app.get("/seed-parent/<int:width>")
+    def seed_parent(width):
+        from html import escape
+        from urllib.parse import urlencode
+        url = "/workspace/new?" + urlencode({"source": f"seed-{width}", "provider": "claude", "cwd": cwd, "seeded": "1"})
+        return '<iframe style="width:100%;height:800px;border:0" src="' + escape(url, quote=True) + '"></iframe><script>' + \
+            "const frame=document.querySelector('iframe');frame.addEventListener('load',()=>frame.contentWindow.postMessage({type:'serena-workspace-seed',sid:" + json.dumps(f"seed-{width}") + \
+            ",seed:'/effort low'},location.origin));addEventListener('message',e=>{if(e.source===frame.contentWindow&&e.origin===location.origin&&e.data.type==='serena-workspace-open-created')location.assign('/workspace/'+e.data.target)});</script>"
     server = make_server("127.0.0.1", 0, app, threaded=True)
     serving = threading.Thread(target=server.serve_forever, daemon=True)
     serving.start()
@@ -192,6 +200,30 @@ async def main():
                     page.close()
                     assert psutil.pid_exists(pid) and native.state == "ready"
                     print(f"PASS: {width}px real Claude New Chat, reload, exact open, local input and named single-row indexing; one owner survives page close")
+                for width in (1440, 390):
+                    page = browser.new_page(viewport={"width": width, "height": 900})
+                    before = len(created)
+                    page.goto(base + f"/seed-parent/{width}")
+                    frame = page.frame_locator("iframe")
+                    frame.get_by_role("button", name="Create and send", exact=True).wait_for()
+                    assert len(created) == before
+                    frame.get_by_role("button", name="Create and send", exact=True).click()
+                    frame.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                    native = created[-1]
+                    sid, pid = native.session_id, native.client.owned_pid
+                    page.reload()
+                    frame.get_by_role("button", name="Open conversation", exact=True).click()
+                    page.wait_for_url(base + "/workspace/" + sid)
+                    page.get_by_role("button", name="Resume session", exact=True).click()
+                    page.get_by_text("/effort low", exact=True).wait_for()
+                    page.get_by_text("Set effort level to low", exact=False).wait_for()
+                    complete = [entry["event"] for entry in host.journal.read(sid)["events"] if entry["event"]["method"] == "turn/completed"]
+                    assert len(complete) == 1 and complete[0]["params"]["turn"]["providerOriginal"]["total_cost_usd"] == 0
+                    assert len(created) == before + 1 and native.client.owned_pid == pid
+                    page.screenshot(path=str(artifacts / f"seeded-claude-{width}.png"))
+                    page.close()
+                    assert psutil.pid_exists(pid)
+                    print(f"PASS: {width}px explicit seeded creation sent one native local turn; reload/open did not resend or spawn")
             finally:
                 browser.close()
     try:

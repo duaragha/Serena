@@ -7043,10 +7043,6 @@ function _startStructuredPane(sid, opts) {
     const pseudo = _pseudoSessions.find(session => session.session_id === sid);
     if (pseudo) pseudo.structured_pending = true;
   }
-  if (opts.isNew && opts.seed) {
-    setTermStatus('Seeded structured creation is not available yet; context has not been sent.', 'error');
-    return null;
-  }
   if (opts.isNew && !['codex', 'claude'].includes(opts.agent)) {
     setTermStatus('New structured sessions are not available for this provider yet.', 'error');
     return null;
@@ -7059,8 +7055,11 @@ function _startStructuredPane(sid, opts) {
   const mount = document.createElement('div');
   mount.className = 'term-pane'; mount.dataset.sid = sid;
   const frame = document.createElement('iframe');
-  frame.src = opts.isNew ? '/workspace/new?' + new URLSearchParams({source:sid, provider:opts.agent, cwd:opts.cwd || _defaultCwd()})
+  frame.src = opts.isNew ? '/workspace/new?' + new URLSearchParams({source:sid, provider:opts.agent, cwd:opts.cwd || _defaultCwd(), seeded:opts.seed ? '1' : '0'})
     : '/workspace/' + encodeURIComponent(sid);
+  if (opts.isNew && opts.seed) frame.addEventListener('load', () => {
+    frame.contentWindow?.postMessage({type:'serena-workspace-seed', sid, seed:opts.seed}, location.origin);
+  });
   frame.title = 'Session ' + sid.slice(0, 8);
   frame.style.cssText = 'display:block;width:100%;height:100%;border:0;background:#000';
   mount.appendChild(frame); container.appendChild(mount);
@@ -8902,6 +8901,7 @@ async function forkLinkedContext(srcSid, targetAgent) {
   document.getElementById('convMeta').textContent = cwd || '~';
 
   setTermStatus('Starting ' + targetAgent + '…', 'live');
+  let structured = false;
   if (window.__nativeTerminalBridge) {
     const rect = await _prepareGtkTermMount();
     window.gtkSend({
@@ -8915,15 +8915,16 @@ async function forkLinkedContext(srcSid, targetAgent) {
     });
     _gtkCodeSid = tempId;
   } else {
-    await startLiveTerminal(tempId, {
+    const runtime = await startLiveTerminal(tempId, {
       cwd,
       agent: targetAgent,
       isNew: true,
       seed: resp.prompt,
     });
+    structured = !!runtime?.structured;
   }
   _startPseudoReconciler();
-  toast.update('Started standalone ' + _agentLabel(targetAgent) + ' context fork', 'success');
+  toast.update((structured ? 'Ready to create standalone ' : 'Started standalone ') + _agentLabel(targetAgent) + ' context fork', 'success');
 }
 
 // Voice coding jobs are executed only by the resident work supervisor. The

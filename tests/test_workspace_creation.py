@@ -10,6 +10,62 @@ from core.workspace_journal import WorkspaceJournal
 from ui.workspace_web import workspace_blueprint
 
 
+@pytest.mark.parametrize("seed", [None, 1, {}, "a\0b", "x" * (1024 * 1024 + 1)])
+def test_initial_context_validation_precedes_launch_and_claim(tmp_path, seed):
+    journal = WorkspaceJournal(tmp_path / "invalid.db")
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: None, factories={"claude": lambda **kwargs: pytest.fail("No spawn")})
+    request = str(uuid4())
+    try:
+        with pytest.raises(ValueError, match="Initial context"):
+            host.create(request, "claude", str(tmp_path), confirmed=True, seed=seed)
+        assert host._loop is None and journal.creation_target(request) is None
+    finally:
+        host.shutdown()
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("rejected", [False, True])
+def test_seeded_creation_records_context_and_delivers_once_after_checkpoint(tmp_path, provider, rejected):
+    request, sid = str(uuid4()), str(uuid4())
+    journal = WorkspaceJournal(tmp_path / "seed.db")
+    sent, owners = [], []
+    seed = "Full linked context\n<untrusted>verbatim</untrusted>"
+    class Owner:
+        def __init__(self, **kwargs):
+            self.session_id, self.state, self.active_turn = kwargs["session_id"], "opening", None
+            owners.append(self)
+        async def create(self, *, checkpoint):
+            await checkpoint({"session_id": sid, "provider": provider, "cwd": str(tmp_path)})
+            self.session_id, self.state = sid, "ready"
+        async def submit(self, inputs, *, options=None):
+            assert journal.creation_target(request)["committed"]
+            sent.append(inputs)
+            if rejected:
+                raise RuntimeError("Native delivery unconfirmed")
+            return {"turn": {"id": "initial"}}
+        async def close(self):
+            self.state = "closed"
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: None, factories={provider: Owner})
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            receipts = list(pool.map(lambda _: host.create(request, provider, str(tmp_path), confirmed=True, seed=seed), range(4)))
+        assert len(owners) == 1 and len(sent) == 1
+        assert sent[0] == [{"type": "text", "text": seed}]
+        assert all(receipt == receipts[0] for receipt in receipts)
+        assert receipts[0]["ok"] and receipts[0]["result"]["session_id"] == sid
+        assert receipts[0]["initial_message"]["ok"] is not rejected
+        with pytest.raises(ValueError, match="different content"):
+            host.create(request, provider, str(tmp_path), confirmed=True, seed=seed + "changed")
+    finally:
+        host.shutdown()
+    restored = WorkspaceHost(journal=WorkspaceJournal(journal.path), resolve=lambda sid: None, factories={provider: Owner})
+    try:
+        assert restored.create(request, provider, str(tmp_path), confirmed=True, seed=seed) == receipts[0]
+        assert len(owners) == len(sent) == 1
+    finally:
+        restored.shutdown()
+
+
 @pytest.mark.parametrize("failure", [None, "before_checkpoint", "after_checkpoint"])
 @pytest.mark.parametrize("provider", ["codex", "claude"])
 def test_creation_request_survives_repeats_and_restart_without_second_owner(tmp_path, failure, provider):

@@ -52,9 +52,10 @@ def workspace_blueprint(host, *, token: str):
     @bp.post("/create")
     def create():
         data = request.get_json(silent=True)
-        if not isinstance(data, dict) or set(data) != {"request_id", "provider", "cwd", "confirmed"}:
+        if not isinstance(data, dict) or set(data) - {"seed"} != {"request_id", "provider", "cwd", "confirmed"}:
             raise ValueError("Expected request_id, provider, cwd and confirmed")
-        return jsonify(host.create(data["request_id"], data["provider"], data["cwd"], confirmed=data["confirmed"]))
+        return jsonify(host.create(data["request_id"], data["provider"], data["cwd"], confirmed=data["confirmed"],
+                                   **({"seed": data["seed"]} if "seed" in data else {})))
 
     @bp.post("/<sid>/uploads")
     def upload(sid):

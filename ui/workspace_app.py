@@ -33,16 +33,20 @@ def install_workspace(
         cwd = request.args.get("cwd", "")
         source = request.args.get("source", "")
         provider = request.args.get("provider", "codex")
+        seeded = request.args.get("seeded", "0")
         if (provider not in {"codex", "claude"} or not source or len(source) > 200
+                or seeded not in {"0", "1"}
                 or "\0" in source or not Path(cwd).is_absolute() or not Path(cwd).is_dir()):
             abort(400)
         label = {"codex": "Codex", "claude": "Claude"}[provider]
-        boot = json.dumps({"source": source, "cwd": str(Path(cwd).resolve()), "provider": provider, "token": token}).replace("<", "\\u003c")
+        boot = json.dumps({"source": source, "cwd": str(Path(cwd).resolve()), "provider": provider, "seeded": seeded == "1", "token": token}).replace("<", "\\u003c")
         response = Response("""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>New """ + label + """ chat</title>
 <link rel="stylesheet" href="/static/workspace-page.css"></head><body>
 <main class="workspace-create"><h1>New """ + label + """ chat</h1><label for="creation-project">Project</label>
 <input id="creation-project" readonly><p id="creation-status" role="status"></p>
+<label id="creation-context-label" for="creation-context" hidden>Initial context</label>
+<textarea id="creation-context" readonly hidden></textarea><p id="creation-warning" role="alert"></p>
 <button id="creation-submit" type="button" disabled>Create """ + label + """ chat</button>
 <button id="creation-open" type="button" hidden>Open conversation</button></main>
 <script id="workspace-creation-boot" type="application/json">""" + boot + """</script>

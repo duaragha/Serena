@@ -2,6 +2,32 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Explicit seeded creation (2026-09-09): structured Claude/Codex handoff panes no
+longer discard/refuse supplied context. The owning parent transfers it through
+an origin/source/session-checked message, never the URL. The pane displays the
+exact read-only context, persists it with its request ID before POST, and requires
+an explicit Create and send click. The host validates a 1 MiB text bound, stores
+the immutable context in the creation command, checkpoints native identity,
+then delivers one receipted submit through that same owner. It admits first-turn
+indexing before submission because completion can precede the creation response.
+Repeated requests/reloads/restarts never repeat the seed. An unconfirmed native
+delivery is retained and shown separately from successful session creation;
+the UI still permits opening that exact session. A crash with no creation receipt
+remains explicitly unconfirmed rather than being automatically replayed.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_creation.py -q --tb=short`: exit 0, 20 passed, including both providers, context validation before launch, immutable payload, concurrent requests, rejected delivery and restart receipt reuse.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --tb=short`: final exit 0, 11 passed; desktop/mobile context display, owning-frame enforcement, no auto-launch, explicit send, reload preservation and visible unconfirmed-delivery warning.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_journal.py -q --tb=short`: exit 0, 63 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py ui/workspace_app.py ui/workspace_web.py tests/test_workspace_creation.py tests/test_workspace_app.py scripts/verify-workspace-claude-create-transport.py`: exit 0.
+- `node --check ui/static/workspace-create.mjs`: exit 0.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-create.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0; seeded creation at 1440/390px produced exactly one native local `/effort low` turn, retained the owner through reload/open, and reaped all proof children. Existing unseeded/name/index checks also passed. Screenshot inspected: `apps/desktop/build/workspace-proof/seeded-claude-390.png`. No credentials/model inference.
+
+The frozen backend predates this slice. Native Codex model-turn seed execution,
+the packaged linked-context action end to end, cross-chat/background routing,
+empty-session/crash recovery and overall CLI parity/rollout remain unverified or
+unfinished. Installed app and default activation unchanged.
+
 Claude creation indexing and frozen Electron proof (2026-09-09): verified the
 pending-to-native transition through production rename/list/read routes. A name
 chosen before the first message survives indexing with exactly one sidebar row;
