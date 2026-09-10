@@ -33,6 +33,16 @@ not use Hermes as a dependency, replace Serena's identity, or route through a ge
 
 ## Run ownership and deletion
 
+The Linux service starts through `scripts/serena-fleet-service.sh`. When NVM is
+installed, it selects the operator's already-installed `default` alias rather
+than pinning a versioned Node directory in the unit. It does not source login
+profiles or install runtimes. An unavailable configured default refuses startup
+with an explicit error instead of silently using another Node. Without NVM,
+the inherited service PATH is preserved. `--check` reports runtime resolution
+without starting Fleet. This honours the operator default; per-project engine
+compatibility still requires separate validation. Unit changes require a
+systemd daemon reload and a safe Fleet-only restart, never an active-worker kill.
+
 `serena-fleet.service` claims every queued run and supervises each in its own thread. There is no
 numeric cap on simultaneous Fleet runs. Provider availability still controls whether a native turn
 can start, and coding runs targeting the same repository retain the per-checkout lock so integration
@@ -64,7 +74,7 @@ Exhaustion and non-lock errors remain visible; disk-full and corruption are not 
 ## Durable resource recovery and actionable stops
 
 Declared integration test sequences have one narrow generated-type preparation
-pass: when `npm run typecheck` exits 2 with TS2307 naming a `.generated` or
+pass: when `npm run typecheck` exits 1 or 2 with TS2307 naming a `.generated` or
 `/generated` module, and the combined checkout declares a `codegen` script,
 Fleet invokes that script with npm lifecycle hooks disabled and rechecks the
 same typecheck once. The gate retains the original failure, preparation result

@@ -1578,7 +1578,7 @@ def _generated_types_preparation(
     files from another worker. Lifecycle hooks are deliberately disabled.
     """
 
-    if failure.get("ok") or failure.get("exit_code") != 2:
+    if failure.get("ok") or failure.get("exit_code") not in (1, 2):
         return None
     if len(command) != 3 or command[1:] != ["run", "typecheck"]:
         return None
