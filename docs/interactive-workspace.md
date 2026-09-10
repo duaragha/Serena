@@ -2,6 +2,42 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Claude Queued Input Identity
+
+Rechecked https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
+on 2026-09-09: persistent streaming input supports sequential queued messages.
+The production TypeScript driver accepts multiple inputs, but the Python owner
+still admits one active turn, so this is not yet enabled in the composer.
+
+Extended the native driver proof to send two local `/effort` commands before
+awaiting either response. The installed CLI returned two results acknowledging
+their exact UUIDs in the same process/session, with zero model turns and zero
+cost. This proves native queue transport for local commands, not mid-inference
+steering or model-turn grouping. Driver regressions also cover grouped
+acknowledgements and ensure unrelated results cannot clear pending inputs.
+
+The shared Claude event translator now refuses a result whose provided input
+acknowledgements do not include the active turn. A delayed old result therefore
+cannot silently complete a newer input. Legacy records without these fields
+retain their existing path. The owner handles this protocol error as unavailable.
+
+Commands, each exit 0:
+
+```sh
+node --test tests/workspace-claude-sdk.test.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_claude_wire.py tests/test_workspace_claude.py -q --tb=short
+node --check scripts/verify-workspace-claude-driver.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_claude_events.py tests/test_workspace_claude_wire.py
+SERENA_EVIDENCE_KIND=live node scripts/verify-workspace-claude-driver.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python
+```
+
+Results: 20 JavaScript tests passed; 71 Python tests passed; syntax/lint clean.
+Native proof also passed Python owner conversion, exact resume, lease exclusion,
+plugin/skill controls, fork recovery and cleanup. No user credentials or sessions
+were used. Full queued-turn state/rendering and mid-inference verification remain
+required before enabling Claude follow-up input while running. No installed app
+change; the frozen backend predates this latest result-identity guard.
+
 ## Frozen Backend Refresh After Gemini Controls
 
 Source through `849092c`, plus the Linux packaging fix below, was rebuilt and

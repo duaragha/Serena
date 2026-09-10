@@ -9,6 +9,29 @@ def event(events, method):
     return next(item["params"] for item in events if item["method"] == method)
 
 
+@pytest.mark.parametrize("acknowledgement", [
+    {"user_message_uuid": "older"}, {"user_message_uuids": ["older"]},
+    {"user_message_uuids": "active"}, {"user_message_uuids": [None]},
+])
+def test_native_result_cannot_complete_an_unacknowledged_input(acknowledgement):
+    events = ClaudeEvents("exact")
+    events.turn = "active"
+    with pytest.raises(ValueError, match="acknowledge"):
+        events.receive({"type": "result", "session_id": "exact", "is_error": False,
+                        **acknowledgement})
+    assert events.turn == "active"
+
+
+@pytest.mark.parametrize("acknowledgement", [{}, {"user_message_uuid": "active"},
+    {"user_message_uuids": ["active"]}])
+def test_native_result_accepts_matching_or_legacy_input_identity(acknowledgement):
+    events = ClaudeEvents("exact")
+    events.turn = "active"
+    completed = event(events.receive({"type": "result", "session_id": "exact", "is_error": False,
+                                     **acknowledgement}), "turn/completed")
+    assert completed["turn"]["id"] == "active" and events.turn is None
+
+
 @pytest.mark.parametrize("array", [False, True])
 def test_history_command_is_readable_without_losing_original(array):
     raw = "<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args>low</command-args>"

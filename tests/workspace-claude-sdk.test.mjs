@@ -78,6 +78,32 @@ test('clear blocks input until exact handoff acknowledgement and retains the run
   await f.session.close();
 });
 
+for(const grouped of [false,true])test(`queued inputs retain order and exact ${grouped?'grouped':'individual'} acknowledgements`,async()=>{
+  const f=transitionFixture();await f.session.open();
+  try{
+    for(const uuid of ['first','second'])f.session.send({type:'user',session_id:'exact',uuid,
+      message:{role:'user',content:uuid}});
+    assert.throws(()=>f.session.send({type:'user',session_id:'exact',uuid:'first'}),/Unique input/);
+    assert.equal((await f.setup.prompt.next()).value.uuid,'first');
+    assert.equal((await f.setup.prompt.next()).value.uuid,'second');
+    assert.deepEqual([...f.session.outstanding],['first','second']);
+    f.emit({type:'result',session_id:'exact',user_message_uuid:'foreign'});
+    await new Promise(done=>setTimeout(done,0));
+    assert.deepEqual([...f.session.outstanding],['first','second']);
+    if(grouped)f.emit({type:'result',session_id:'exact',user_message_uuids:['first','second']});
+    else{
+      f.emit({type:'result',session_id:'exact',user_message_uuid:'first'});
+      await new Promise(done=>setTimeout(done,0));
+      assert.deepEqual([...f.session.outstanding],['second']);
+      await assert.rejects(f.session.beginClear(),/pending inputs/);
+      f.emit({type:'result',session_id:'exact',user_message_uuid:'second'});
+    }
+    await new Promise(done=>setTimeout(done,0));
+    assert.equal(f.session.outstanding.size,0);
+    assert.deepEqual(f.calls,['spawn']);
+  }finally{await f.session.close();}
+});
+
 test('clear refuses consumed but unfinished input',async()=>{
   const f=transitionFixture();await f.session.open();
   f.session.send({type:'user',session_id:'exact',message:{role:'user',content:'running'}});

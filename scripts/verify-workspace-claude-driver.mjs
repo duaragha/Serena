@@ -53,9 +53,11 @@ try {
   assert.equal((await exits[0]).code,0);
   assert(sid,'Local command must persist a native session');
   let finishTurn;
+  const queuedResults=[];
+  let collectingQueued=false;
   const result=new Promise(done=>{finishTurn=done;});
   driver=new ClaudeSdkSession({sdk,sessionId:sid,cwd:root,options,spawnOwned,
-    publish:message=>{if(message.type==='result')finishTurn(message);},
+    publish:message=>{if(message.type==='result'){if(collectingQueued)queuedResults.push(message);else finishTurn(message);}},
     request:async()=>{throw new Error('Unexpected interactive request');}});
   await driver.open();
   await driver.control('applyFlagSettings',{effortLevel:'high'});
@@ -66,6 +68,21 @@ try {
   assert.equal(completed.session_id,sid);
   assert.equal(completed.total_cost_usd,0);
   assert.equal(completed.num_turns,0);
+  collectingQueued=true;
+  const queuedIds=[randomUUID(),randomUUID()];
+  for(const [index,id] of queuedIds.entries())driver.send({type:'user',session_id:sid,uuid:id,parent_tool_use_id:null,
+    message:{role:'user',content:index?'/effort medium':'/effort high'}});
+  while(driver.outstanding.size){
+    await Promise.race([new Promise(done=>setTimeout(done,10)),driver.done.then(()=>{throw new Error('Stream ended before queued replies');})]);
+  }
+  const acknowledged=queuedResults.flatMap(message=>message.user_message_uuids || [message.user_message_uuid]);
+  assert.deepEqual([...new Set(acknowledged)].sort(),[...queuedIds].sort());
+  for(const message of queuedResults){
+    assert.equal(message.session_id,sid);
+    assert.equal(message.total_cost_usd,0);
+    assert.equal(message.num_turns,0);
+  }
+  console.log(`PASS: two queued native local inputs acknowledged their exact UUIDs in ${queuedResults.length} result records, same session/PID, zero inference`);
   await driver.close();
   assert.equal(children.length,2,'One seed owner, then one exact resumed owner');
   assert.equal((await exits[1]).code,0);

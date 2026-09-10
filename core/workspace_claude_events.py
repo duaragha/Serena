@@ -259,6 +259,15 @@ class ClaudeEvents:
             if parent == "root" and data.get("model") and data["model"] != "<synthetic>":
                 events.append(self.event("workspace/settings", {"model": data["model"]}))
         elif kind == "ResultMessage" and self.turn:
+            # A delayed result must not complete a newer input. Older SDK
+            # records without acknowledgement fields keep their legacy path.
+            if "user_message_uuid" in data or "user_message_uuids" in data:
+                acknowledged = data.get("user_message_uuids", [])
+                if not isinstance(acknowledged, list) or any(not isinstance(value, str) for value in acknowledged):
+                    raise ValueError("Invalid Claude input acknowledgement")
+                acknowledged = [*acknowledged, data.get("user_message_uuid")]
+                if self.turn not in acknowledged:
+                    raise ValueError("Claude result does not acknowledge the active input")
             if (
                 data.get("num_turns") == 0
                 and isinstance(data.get("result"), str)
