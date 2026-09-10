@@ -370,6 +370,62 @@ def test_native_work_reservation_refuses_unsafe_admission(tmp_path, blocker):
         host.shutdown()
 
 
+@pytest.mark.parametrize('uncertain', ['', 'submit', 'receipt'])
+def test_reserved_submission_is_durable_and_interrupt_is_turn_bound(tmp_path, uncertain, monkeypatch):
+    class WorkOwner(Owner):
+        interrupts = 0
+        async def list_background_tasks(self):
+            return {'data': []}
+        async def submit(self, inputs, options=None):
+            self.sent.append(inputs)
+            if uncertain == 'submit':
+                raise TimeoutError('native acknowledgement lost')
+            self.active_turn, self.state = 'exact-turn', 'running'
+            return {'turn': {'id': self.active_turn}}
+        async def interrupt(self):
+            self.interrupts += 1
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'submit.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+        factories={'codex': WorkOwner})
+    item = '11111111-1111-4111-8111-111111111111'
+    dispatch = '22222222-2222-4222-8222-222222222222'
+    try:
+        host.attach('exact')
+        host.note_view_context('exact', {'view_id': item, 'sequence': 1, 'focused': True,
+                                        'visible': True, 'draft': False})
+        assert host.reserve_work('exact', item)['ok']
+        if uncertain == 'receipt':
+            def lost_receipt(*args):
+                raise OSError('receipt write failed')
+            monkeypatch.setattr(host.journal, 'finish_command', lost_receipt)
+        assert not host.submit_work('exact', dispatch, 'wrong owner', dispatch)['ok']
+        result = host.submit_work('exact', item, 'accepted job', dispatch)
+        repeated = host.submit_work('exact', item, 'accepted job', dispatch)
+        owner = host._sessions['exact'][0]
+        assert owner.sent == [[{'type': 'text', 'text': 'accepted job'}]]
+        assert not host.interrupt_work('exact', dispatch)['ok']
+        with pytest.raises(ValueError):
+            host.submit_work('exact', item, 'changed prompt', dispatch)
+        if uncertain:
+            assert result['uncertain'] and repeated['uncertain']
+            assert not host.release_work('exact', item)
+            assert not host.submit_work('exact', item, 'accepted job', item)['ok']
+            assert not host.interrupt_work('exact', item)['ok']
+            # Re-reading an orphan durable claim must restore the uncertainty guard.
+            host._work_turns.clear()
+            assert host.submit_work('exact', item, 'accepted job', dispatch)['uncertain']
+            assert not host.release_work('exact', item)
+        else:
+            assert result == repeated and result['turn_id'] == 'exact-turn'
+            assert host.interrupt_work('exact', item)['ok'] and owner.interrupts == 1
+            owner.active_turn = 'different-turn'
+            assert not host.interrupt_work('exact', item)['ok'] and owner.interrupts == 1
+            owner.active_turn, owner.state = None, 'ready'
+            assert host.release_work('exact', item)
+    finally:
+        host.shutdown()
+
+
 def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
     calls = []
     class AccountOwner(Owner):

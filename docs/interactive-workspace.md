@@ -2,6 +2,39 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Reserved Dispatch Controls (2026-09-10)
+
+Host-level `submit_work` requires the exact reserved item and a stable dispatch
+UUID. Its durable receipt binds session, item, dispatch and prompt digest. A
+repeated dispatch returns its receipt, while changed content under the same ID
+is rejected. Native background work and composer state are rechecked before
+submission, including after the journal claim. Submission/receipt-write failures
+retain uncertainty and the reservation rather than permitting another turn.
+
+`interrupt_work` requires the exact reserved item and confirmed native turn ID
+still matching the owner's active turn. It cannot interrupt an unrelated turn.
+An unconfirmed durable claim restores the uncertainty guard on replay. The
+HTTP accepted-job bridge and supervisor attempt-ID plumbing remain unconnected;
+this does not yet enable native job reuse or constitute end-to-end job proof.
+
+Verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 79 passed in 14.92s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_reserved_submission_is_durable_and_interrupt_is_turn_bound -q --tb=short
+# exit 0: 3 passed in 0.80s, including the subsequently added receipt-write failure
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py
+# exit 0
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0
+```
+
+The live command verified real
+native reservation and wrong-job submission/interrupt rejection, with unchanged
+owner and no model inference, plus desktop/mobile regression flows. Successful
+reserved submission, exact-turn interruption and failure recovery were exercised
+with controlled adapters in the scoped tests, not a live production coding job.
+
 ## Native Job Reservation (2026-09-10)
 
 The host now has exact-item native Codex reservation/release operations. They

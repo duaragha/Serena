@@ -58,6 +58,7 @@ class WorkspaceHost:
         self._bridge_cancelled = set()
         self._views = {}
         self._work_reservations = {}
+        self._work_turns = {}
 
     async def _run(self, coroutine):
         task = asyncio.current_task()
@@ -237,11 +238,90 @@ class WorkspaceHost:
         async with self._locks.setdefault(sid, asyncio.Lock()):
             if not item_id or self._work_reservations.get(sid) != item_id:
                 return False
+            if self._work_turns.get(sid, {}).get("uncertain"):
+                return False
             owner = self._sessions[sid][0]
             if owner.active_turn or owner.state != "ready" or getattr(owner, "questions", None):
                 return False
             self._work_reservations.pop(sid)
+            self._work_turns.pop(sid, None)
             return True
+
+    def submit_work(self, sid, item_id, prompt, dispatch_id):
+        self._validate_session(sid)
+        if not isinstance(item_id, str) or str(UUID(item_id)) != item_id:
+            raise ValueError("An exact work item UUID is required")
+        if not isinstance(dispatch_id, str) or str(UUID(dispatch_id)) != dispatch_id:
+            raise ValueError("An exact dispatch UUID is required")
+        if not isinstance(prompt, str) or not prompt.strip() or "\0" in prompt or len(prompt.encode()) > 1024 * 1024:
+            raise ValueError("A nonempty work prompt of at most 1 MiB without NUL is required")
+        return self._dispatch(self._submit_work(sid, item_id, prompt, dispatch_id), 35)
+
+    async def _submit_work(self, sid, item_id, prompt, dispatch_id):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            if self._work_reservations.get(sid) != item_id:
+                return {"ok": False, "committed": False, "message": "Job does not reserve this native owner"}
+            digest = hashlib.sha256(prompt.encode()).hexdigest()
+            key = "work:" + item_id + ":" + dispatch_id
+            payload = {"action": "work_submit", "item_id": item_id, "prompt_sha256": digest}
+            found, prior = await asyncio.to_thread(self.journal.command_receipt, sid, key, payload)
+            if found:
+                if prior is None:
+                    self._work_turns[sid] = {"uncertain": True}
+                return prior or {"ok": False, "committed": True, "uncertain": True,
+                                 "message": "Prior native work submission is unconfirmed; it will not be repeated"}
+            if self._work_turns.get(sid, {}).get("uncertain"):
+                return {"ok": False, "committed": False, "message": "Prior native work dispatch is uncertain"}
+            error = self._work_admission_error(sid)
+            if error:
+                return {"ok": False, "committed": False, "message": error}
+            owner = self._sessions[sid][0]
+            try:
+                tasks = await owner.list_background_tasks()
+                if not isinstance(tasks, dict) or tasks.get("data") != []:
+                    return {"ok": False, "committed": False, "message": "Native background work is active or unknown"}
+            except Exception as error:
+                return {"ok": False, "committed": False, "message": str(error)}
+            error = self._work_admission_error(sid)
+            if error or self._stopped:
+                return {"ok": False, "committed": False, "message": error or "Host stopped"}
+            claimed, prior = await asyncio.to_thread(self.journal.claim_command, sid, key, payload)
+            if not claimed:
+                return prior or {"ok": False, "committed": True, "uncertain": True}
+            error = self._work_admission_error(sid)
+            if error or self._stopped:
+                receipt = {"ok": False, "committed": False, "message": error or "Host stopped"}
+                await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+                return receipt
+            self._work_turns[sid] = {"uncertain": True}
+            try:
+                result = await owner.submit([{"type": "text", "text": prompt}])
+                turn_id = result.get("turn", {}).get("id") if isinstance(result, dict) else None
+                if not isinstance(turn_id, str) or not turn_id:
+                    raise RuntimeError("Native submission returned no exact turn identity")
+                receipt = {"ok": True, "committed": True, "session_id": sid, "turn_id": turn_id}
+                await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+                self._work_turns[sid] = {"uncertain": False, "turn_id": turn_id}
+                return receipt
+            except Exception as error:
+                # Keep the pending durable claim and reservation after any
+                # ambiguous native result or failure to persist acknowledgement.
+                return {"ok": False, "committed": True, "uncertain": True, "message": str(error)}
+
+    def interrupt_work(self, sid, item_id):
+        self._validate_session(sid)
+        return self._dispatch(self._interrupt_work(sid, item_id), 10)
+
+    async def _interrupt_work(self, sid, item_id):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            if not item_id or self._work_reservations.get(sid) != item_id:
+                return {"ok": False, "message": "Job does not reserve this native owner"}
+            turn = self._work_turns.get(sid, {})
+            owner = self._sessions[sid][0]
+            if turn.get("uncertain") or not turn.get("turn_id") or owner.active_turn != turn["turn_id"]:
+                return {"ok": False, "message": "Exact job turn is not active or confirmed"}
+            await owner.interrupt()
+            return {"ok": True, "message": "Exact native job turn interrupted", "turn_id": turn["turn_id"]}
 
     async def _reserve_work(self, sid, item_id):
         async with self._locks.setdefault(sid, asyncio.Lock()):

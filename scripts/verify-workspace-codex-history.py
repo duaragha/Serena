@@ -421,6 +421,9 @@ async def main():
             assert reserved["ok"], reserved
             rejected = await host._command(sid, "reserved-shell", "shell_command", {"command": "echo MUST_NOT_RUN"})
             assert not rejected["ok"] and rejected["retryable"]
+            rejected_work = await host._submit_work(sid, "another-job", "MUST_NOT_RUN", work_id)
+            assert not rejected_work["ok"] and not rejected_work["committed"]
+            assert not (await host._interrupt_work(sid, "another-job"))["ok"]
             assert not await host._release_work(sid, "another-job")
             assert await host._release_work(sid, work_id)
             assert owner.rpc.process.pid == native_pid and owner.active_turn is None
