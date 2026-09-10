@@ -50,6 +50,34 @@ This refreshes Linux packaging evidence only. Windows packaging, authenticated
 positive subagent workflows, remaining command parity, final visual parity and
 release/default enablement are not established by these checks.
 
+### Current Windows Package
+
+Executed 2026-09-10 against `e07b5ce` runtime source (documentation HEAD
+`f5b27cb`). Read-only SHA-256 comparison of 94 workspace, UI, proof and desktop
+entry/spec files between laptop and PC exited 0 with no mismatches. No PC source
+was edited; only derived build/test artifacts were created.
+
+```sh
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B -m PyInstaller --noconfirm --distpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\dist --workpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\work C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\windows\sidecar-win.spec"
+# exit 0: build completed in approximately 87s. Optional pycparser table and
+# OpenConsole UI automation DLL warnings; no build error.
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc powershell -NoProfile -Command - <<'PS'
+$r='C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'; $env:SERENA_PROOF_PYTHONPATH="$r\apps\desktop\build\proof-tools\windows-python"; $env:SERENA_PROOF_BROWSER_EXECUTABLE='C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'; $env:SERENA_PROOF_ELECTRON="$r\apps\desktop\build\proof-tools\windows-electron\node_modules\electron\dist\electron.exe"; $env:SERENA_PROOF_PLAYWRIGHT="$r\apps\desktop\build\proof-tools\windows-python\playwright\driver\package"; & 'C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe' -B "$r\scripts\verify-workspace-codex-windows.py" --frozen "$r\apps\desktop\build\windows-proof-5cadd13\dist\serena-web-sidecar\serena-web-sidecar.exe"; exit $LASTEXITCODE
+PS
+# exit 0: gated native startup, 50+1 history, exact resume, native command
+# exit 0, same-owner history and cleanup. Desktop/mobile visible refresh
+# 29ms/18ms. Actual Electron clipboard, login cancellation, native Claude/Codex
+# creation, linked identity/focus and view-close owner preservation passed.
+# No inference or credentials used.
+```
+
+Windows executable SHA-256 (read-only remote inspection, exit 0):
+`2fa771f0e6fc355005f65c5d40f348a418fe92330345f1c8bdd0aea32f903f1c`.
+Screenshot copied from PC and inspected at
+`apps/desktop/build/workspace-proof/windows-electron-linked-e07b5ce.png`.
+These are development package receipts, not installer publication, default
+enablement or authenticated feature completeness.
+
 ## Earlier Integration Checkpoint: 064b97e
 
 2026-09-10. No runtime source changed during these checks. Disposable profiles

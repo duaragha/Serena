@@ -30,11 +30,25 @@ def reject_finished_parent(events, turn_id):
         raise RuntimeError(f"Parent finished without a child ({turn.get('status', 'unknown')}): {message[:400]}")
 
 
-async def main(model):
-    source = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
+def read_test_auth(auth_home):
+    if not auth_home:
+        raise ValueError("An explicit separate --auth-home test profile is required")
+    source = Path(auth_home).expanduser().resolve() / "auth.json"
+    protected = {Path.home() / ".codex"}
+    if os.environ.get("CODEX_HOME"):
+        protected.add(Path(os.environ["CODEX_HOME"]).expanduser())
+    for home in protected:
+        auth_file = home.resolve() / "auth.json"
+        if source == auth_file or (source.exists() and auth_file.exists() and source.samefile(auth_file)):
+            raise ValueError("The proof cannot use the normal or active Codex login; use a separate test profile")
     auth = json.loads(source.read_text())
     if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
         raise RuntimeError("An existing ChatGPT subscription login is required")
+    return auth
+
+
+async def main(model, auth_home):
+    auth = read_test_auth(auth_home)
     with tempfile.TemporaryDirectory(prefix="workspace-live-agent-") as temporary:
         root = Path(temporary)
         home, project = root / "codex", root / "project"
@@ -134,7 +148,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-inference", action="store_true")
     parser.add_argument("--model", default="gpt-5.6-luna")
+    parser.add_argument("--auth-home", required=True, help="Separate disposable ChatGPT test profile; never the active CODEX_HOME")
     args = parser.parse_args()
     if not args.allow_inference:
         parser.error("This proof requires explicit --allow-inference")
-    asyncio.run(main(args.model))
+    asyncio.run(main(args.model, args.auth_home))

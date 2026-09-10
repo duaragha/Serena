@@ -5,6 +5,35 @@ that a command's full behavior works. Gemini is deferred.
 
 ## Native Agent Inspection (2026-09-10)
 
+### Dedicated Authentication for Live-Agent Proof
+
+The inference verifier now requires `--auth-home /path/to/separate-test-profile`
+in addition to `--allow-inference`. It no longer falls back to CODEX_HOME or
+`~/.codex`. Normal/active profile paths, aliases and linked auth files are
+rejected before reading credentials or spawning a process. Use a freshly signed
+in disposable profile: copying rotating refresh credentials can render that
+test profile stale after use, so it must not be a personal working profile.
+This repair does not refresh the expired test login or prove model inference.
+
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_live_agent_proof.py -q --tb=short`: exit 0, 9 passed in 0.28s, including missing/default/active/linked profile refusal and unchanged explicit test credentials.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-live-agent.py tests/test_workspace_live_agent_proof.py`: initial exit 1 for import order only; after reordering imports, final exit 0, all checks passed.
+- Safe runtime proof (exit 0, no credentials read, no process started):
+
+```sh
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python - <<'PY'
+import runpy
+from pathlib import Path
+read_auth = runpy.run_path('scripts/verify-workspace-live-agent.py')['read_test_auth']
+try:
+    read_auth(Path.home() / '.codex')
+except ValueError as error:
+    assert 'normal or active' in str(error)
+    print('PASS: installed helper rejects normal Codex profile before reading credentials or starting a process')
+else:
+    raise AssertionError('Normal profile was accepted')
+PY
+```
+
 ### Explicit Idle-Child Continuation
 
 An inspected, loaded idle child can receive a new text turn after checkbox
