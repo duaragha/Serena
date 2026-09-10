@@ -27,12 +27,14 @@ def test_corrupt_receipts_keep_page_viewable_without_sending_commands(tmp_path, 
             browser = p.chromium.launch()
             try:
                 page = browser.new_page(viewport={"width": width, "height": 900})
-                errors, calls = [], []
+                errors, calls, contexts = [], [], []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.add_init_script("sessionStorage.setItem('serena-workspace-pending:exact','{')")
 
                 def api(route):
                     calls.append(route.request.url)
+                    if route.request.url.endswith('/view-context'):
+                        contexts.append(route.request.post_data_json)
                     route.fulfill(json={"session_id": "exact", "observing": False} if route.request.url.endswith("/observe")
                                   else {"ok": True, "events": [], "has_more": False})
 
@@ -40,11 +42,14 @@ def test_corrupt_receipts_keep_page_viewable_without_sending_commands(tmp_path, 
                 page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact")
                 button = page.get_by_role("button", name="Resume session", exact=True)
                 playwright.expect(button).to_be_enabled()
-                assert len(calls) == 1 and calls[0].endswith("/observe")
+                assert sum(call.endswith('/observe') for call in calls) == 1
+                assert all(call.endswith(('/observe', '/view-context')) for call in calls)
                 button.click()
                 playwright.expect(page.get_by_role("alert")).to_contain_text("receipts are unreadable")
                 assert any("/events?" in call for call in calls)
                 assert not any("/commands" in call or "/uploads" in call for call in calls)
+                page.wait_for_timeout(2100)
+                assert contexts and all(context['draft'] is True and not context.get('sleep_peers') for context in contexts)
                 assert page.evaluate("sessionStorage.getItem('serena-workspace-pending:exact')") == "{"
                 assert not errors and host._loop is None
             finally:

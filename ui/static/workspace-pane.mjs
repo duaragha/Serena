@@ -1351,7 +1351,7 @@ export class WorkspacePane {
         if (files.length || skills.length || !this.controls.compact) throw Error('Compaction does not accept attachments or skills');
         await this.controls.compact();
       }
-      else if (this.canSteer()) await this.controls.steer({text, files, options:{...(skills.length?{skills:options.skills}:{}),...(apps.length?{apps:options.apps}:{})}, expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
+      else if (this.canSteer()) await this.controls.steer({text, files, ...(skills.length || apps.length?{options:{...(skills.length?{skills:options.skills}:{}),...(apps.length?{apps:options.apps}:{})}}:{}), expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else if (this.canQueue()) await this.controls.queueInput({text, files,
         expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else await this.controls.submit({text, files, options});
