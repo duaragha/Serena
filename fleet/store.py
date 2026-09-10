@@ -875,28 +875,48 @@ class FleetStore:
                 ),
             )
             leg_state = "completed" if state == "completed" else state
-            from fleet.resources import is_disk_exhaustion
+            from fleet.resources import is_disk_exhaustion, is_transient_transport_error
 
-            resource_wait = (
+            recovery_allowed = (
                 state == "failed" and not run["cancel_requested"]
                 and run["state"] not in TERMINAL_RUN_STATES
-                and is_disk_exhaustion(clean_error or "")
             )
+            resource = "disk" if is_disk_exhaustion(clean_error or "") else ""
+            retries = 0
+            if not resource and is_transient_transport_error(clean_error or ""):
+                retries = connection.execute(
+                    "SELECT COUNT(*) FROM fleet_events WHERE leg_id = ? "
+                    "AND type = 'leg.transport_retry_scheduled'", (attempt["leg_id"],),
+                ).fetchone()[0]
+                if retries < 2:
+                    resource = "transport"
+                elif recovery_allowed:
+                    self._insert_event(
+                        connection, run_id=str(attempt["run_id"]),
+                        leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                        event_type="leg.transport_retry_exhausted",
+                        payload={"retries": retries, "reason": clean_error,
+                                 "next_action": "verify provider connectivity before resuming this worker"},
+                    )
+            resource_wait = recovery_allowed and bool(resource)
             if resource_wait:
                 leg_state = "waiting_for_resources"
+                required_bytes = 2 * 1024**3 if resource == "disk" else 0
+                not_before = now + 30 * (2 ** retries)
                 connection.execute(
                     "INSERT OR REPLACE INTO fleet_resource_waits "
                     "(leg_id, run_id, attempt_id, resource, reason, required_bytes, not_before) "
-                    "VALUES (?, ?, ?, 'disk', ?, ?, ?)",
-                    (attempt["leg_id"], attempt["run_id"], attempt_id, clean_error,
-                     2 * 1024**3, now + 30),
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (attempt["leg_id"], attempt["run_id"], attempt_id, resource, clean_error,
+                     required_bytes, not_before),
                 )
                 self._insert_event(
                     connection, run_id=str(attempt["run_id"]),
                     leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
-                    event_type="leg.waiting_for_resources",
-                    payload={"resource": "disk", "reason": clean_error,
-                             "not_before": now + 30, "required_bytes": 2 * 1024**3},
+                    event_type="leg.transport_retry_scheduled" if resource == "transport" else "leg.waiting_for_resources",
+                    payload={"resource": resource, "reason": clean_error,
+                             "not_before": not_before, "required_bytes": required_bytes,
+                             "retry_number": retries + 1 if resource == "transport" else None},
                 )
             connection.execute(
                 "UPDATE fleet_legs SET state = ?, updated_at = ? WHERE leg_id = ?",

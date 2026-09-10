@@ -33,8 +33,9 @@ to discard committed or uncommitted delivered work in that root. Status retains
 `source_cwd`, the effective `cwd`, and the checkout receipt.
 
 Real-Git tests cover all four scheduled phases, dirty source/index preservation,
-retry preservation and deletion protection. Remaining: three-worker integration
-acceptance, explicit branch-name delivery, migration/repair of existing runs,
+retry preservation and deletion protection. Three-worker scheduler coverage now
+includes real Code/Fix file edits integrated only into the run checkout.
+Remaining: explicit branch-name delivery, migration/repair of existing runs,
 user-facing checkout delivery and live acceptance.
 This remains an implementation checkpoint, not a completed reliability claim.
 
@@ -53,6 +54,17 @@ Both were corrected; 63 targeted tests and six checkout tests pass afterward,
 alongside 69 desktop tests. A fresh full-suite pass is still required before delivery.
 
 ## Production evidence, 2026-09-10
+
+Transport recovery checkpoint: narrow connection-reset/disconnected-stream/DNS
+temporary-failure and 502/503/504 errors now receive two durable same-provider,
+same-model retries with 30/60-second backoff. The budget is per leg and survives
+restart. This is a diagnostic retry, not proof that connectivity recovered.
+Authority, quota, identity, acceptance, integration and cancellation errors are
+excluded. Exhaustion has a durable reason and next-action receipt but still uses
+the existing failed-leg terminal policy; replacing abandonment with actionable
+blocked-work handling remains unfinished. New recovery receipts appear in Autonomy.
+Verification: 102 resource/autonomy/supervisor/UI tests and seven real-Git baseline
+tests passed at this checkpoint. Provider responses are scripted, not live models.
 
 Run `bc257933-5fa8-4c77-ba2d-da4c2e11e80e` requested mandatory commit
 `e364331db71c399b948f1a4d87c14dff43c2ec78`, explicitly not main.

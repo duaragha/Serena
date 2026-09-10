@@ -7,7 +7,11 @@ import pytest
 from test_fleet_supervision import _run
 from test_fleet_supervisor import fleet_env  # noqa: F401
 
-from fleet.resources import is_disk_exhaustion, resume_ready_resource_waits
+from fleet.resources import (
+    is_disk_exhaustion,
+    is_transient_transport_error,
+    resume_ready_resource_waits,
+)
 from fleet.store import FleetStore
 
 # Fixture imported from the real supervisor harness.
@@ -119,3 +123,62 @@ def test_late_old_attempt_cannot_overwrite_replacement(tmp_path, monkeypatch):
 @pytest.mark.parametrize("message", ["permission denied", "network unreachable", "quota exhausted"])
 def test_unrelated_failures_are_not_disk_waits(message):
     assert not is_disk_exhaustion(message)
+
+
+@pytest.mark.parametrize("message", [
+    "permission denied: connection reset", "quota exhausted: connection reset",
+    "work stopped before completion: connection reset", "identity mismatch",
+    "completion evidence rejected: stream disconnected before completion",
+    "integration gate failed: connection reset", "cancelled by user",
+])
+def test_transport_retries_never_override_authority_or_acceptance(message):
+    assert not is_transient_transport_error(message)
+
+
+def test_transport_retry_budget_survives_restart_and_preserves_provider(tmp_path):
+    store = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _run(store)
+    rid = run["run_id"]
+    store.claim_run(rid)
+    leg = run["phases"][0]["legs"][0]
+    for index in range(3):
+        attempt = store.begin_attempt(leg["leg_id"])
+        store.finish_attempt(attempt["attempt_id"], state="failed", error="connection reset by peer")
+        snapshot = store.get_run(rid)
+        current = snapshot["phases"][0]["legs"][0]
+        assert current["runtime"] == leg["runtime"]
+        assert current["model"] == leg["model"]
+        if index == 2:
+            assert current["state"] == "failed"
+            assert snapshot["resource_waits"] == []
+            break
+        wait = snapshot["resource_waits"][0]
+        assert wait["resource"] == "transport"
+        assert resume_ready_resource_waits(store, now=wait["not_before"] - 1) == []
+        store = FleetStore(store.path)
+        assert resume_ready_resource_waits(store, now=wait["not_before"] + 1) == [leg["leg_id"]]
+
+
+def test_scheduler_recovers_transport_without_manual_retry(fleet_env, monkeypatch):
+    from fleet import supervisor
+    from fleet.workers import WorkerResult
+
+    calls = []
+
+    def worker(request, **kwargs):
+        calls.append((request.phase, request.provider, request.model))
+        if len(calls) == 1:
+            return WorkerResult(False, "", None, request.model, request.effort, 1,
+                                "stream disconnected before completion")
+        return WorkerResult(True, "fixture result", "transport-session", request.model,
+                            request.effort, 0)
+
+    monkeypatch.setattr(supervisor, "run_worker", worker)
+    run = supervisor.start_run("research a transient retry fixture", activity="research",
+                               provider_mode="codex", worker_count=1, cwd=str(fleet_env))
+    parked_run = supervisor.run_supervisor(run["run_id"])
+    assert parked_run["state"] == "waiting_for_resources"
+    assert resume_ready_resource_waits(supervisor._store(), now=time.time() + 120)
+    completed = supervisor.run_supervisor(run["run_id"])
+    assert completed["state"] == "completed", completed.get("error")
+    assert calls[0] == calls[1]

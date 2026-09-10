@@ -19,7 +19,7 @@ from fleet.store import FleetStore
 # ruff: noqa: F811
 
 
-def setup_run(tmp_path):
+def setup_run(tmp_path, worker_count=1):
     root = _repo(tmp_path)
     _git(root, "checkout", "-b", "team-baseline")
     (root / "required.txt").write_text("required baseline\n")
@@ -34,7 +34,7 @@ def setup_run(tmp_path):
         task=f"- MANDATORY start point: branch `team-baseline` at commit {baseline}. DO NOT start from main.",
         activity="coding", cwd=str(root), origin_session_id=None, origin_agent="codex",
         dry_run=False, policy=build_policy("coding", config=builtin_config(),
-                                         provider_mode="codex", worker_count=1).to_dict(),
+                                         provider_mode="codex", worker_count=worker_count).to_dict(),
     )
     return root, baseline, store, run
 
@@ -67,11 +67,12 @@ def test_baseline_directive_not_arbitrary_citation(tmp_path):
         requested_baseline("Fleet baseline: missing", root)
 
 
-def test_real_scheduler_uses_baseline_for_every_phase(fleet_env, monkeypatch):
+@pytest.mark.parametrize("worker_count", [1, 3])
+def test_real_scheduler_uses_baseline_for_every_phase(fleet_env, monkeypatch, worker_count):
     from fleet import supervisor
     from fleet.workers import WorkerResult
 
-    root, baseline, store, run = setup_run(fleet_env)
+    root, baseline, store, run = setup_run(fleet_env, worker_count=worker_count)
     monkeypatch.setenv("SERENA_FLEET_ISOLATION", "on")
     seen = []
 
@@ -82,13 +83,21 @@ def test_real_scheduler_uses_baseline_for_every_phase(fleet_env, monkeypatch):
         assert result.returncode == 0
         assert (Path(request.cwd) / "required.txt").is_file()
         assert Path(request.cwd) != root
+        if request.phase in {"execute", "finalize"}:
+            owned = Path(request.cwd) / (request.worker_key.replace(":", "-") + ".txt")
+            owned.write_text((owned.read_text() if owned.exists() else "") + request.phase + "\n")
         return WorkerResult(True, "baseline verified", "baseline-session", request.model,
                             request.effort, 0)
 
     monkeypatch.setattr(supervisor, "run_worker", worker)
     result = supervisor.run_supervisor(run["run_id"])
     assert result["state"] == "completed", result.get("error")
-    assert seen == ["discover", "execute", "verify", "finalize"]
+    for phase in ("discover", "execute", "verify", "finalize"):
+        assert seen.count(phase) == worker_count
+    delivered = list(Path(result["cwd"]).glob("agent-*.txt"))
+    assert len(delivered) == worker_count
+    assert all(path.read_text() == "execute\nfinalize\n" for path in delivered)
+    assert not list(root.glob("agent-*.txt"))
     assert _git(root, "branch", "--show-current").strip() == "main"
     assert (root / "README.md").read_text() == "user dirty file\n"
 

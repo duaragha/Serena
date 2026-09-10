@@ -1187,7 +1187,8 @@ function renderDetail() {
     const next = new Date(Number(wait.not_before) * 1000).toLocaleTimeString();
     root.append(el('div', 'capacity-banner',
       `resource recovery: ${wait.resource} · next check ${next} · ` +
-      `requires ${(Number(wait.required_bytes) / 1024 ** 3).toFixed(1)} GiB free · ` +
+      (wait.resource === 'transport' ? 'bounded same-provider retry; recovery not yet verified · ' :
+        `requires ${(Number(wait.required_bytes) / 1024 ** 3).toFixed(1)} GiB free · `) +
       `worker ${wait.leg_id} · completed work is preserved`));
   }
   if (run.checkout) root.append(el('div', 'capacity-banner',

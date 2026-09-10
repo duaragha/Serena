@@ -16,6 +16,25 @@ def is_disk_exhaustion(error: str) -> bool:
     ))
 
 
+def is_transient_transport_error(error: str) -> bool:
+    """Narrow infrastructure classifier; never turn an authority stop into a retry."""
+    text = error.lower()
+    if any(marker in text for marker in (
+        "permission", "unauthorized", "forbidden", "authentication", "api key", "login",
+        "not logged in", "401", "403", "429", "too many requests",
+        "quota", "rate limit", "rate_limit", "usage limit", "identity", "certificate",
+        "work stopped", "completion evidence", "integration", "cancelled", "canceled",
+    )):
+        return False
+    return any(marker in text for marker in (
+        "connection reset by peer", "connection reset", "econnreset", "econnrefused",
+        "connection refused", "temporary failure in name resolution", "eai_again",
+        "stream disconnected before completion", "websocket connection closed",
+        "server disconnected", "remote protocol error", "502 bad gateway",
+        "503 service unavailable", "504 gateway timeout",
+    ))
+
+
 def resume_ready_resource_waits(store, *, now: float | None = None) -> list[str]:
     """Wake only the parked generation, preserving running owners and siblings."""
     now = time.time() if now is None else now
@@ -30,10 +49,10 @@ def resume_ready_resource_waits(store, *, now: float | None = None) -> list[str]
         ).fetchall()
     for row in rows:
         try:
-            ready = all(
+            ready = row["resource"] == "transport" or (row["resource"] == "disk" and all(
                 shutil.disk_usage(path).free >= row["required_bytes"]
                 for path in (Path(row["cwd"]), store.path.parent)
-            )
+            ))
         except OSError:
             ready = False
         with store._connect() as connection:
@@ -69,8 +88,9 @@ def resume_ready_resource_waits(store, *, now: float | None = None) -> list[str]
                 )
             store._insert_event(
                 connection, run_id=row["run_id"], leg_id=row["leg_id"],
-                attempt_id=row["attempt_id"], event_type="leg.resource_resumed",
-                payload={"resource": "disk", "required_bytes": row["required_bytes"]},
+                attempt_id=row["attempt_id"],
+                event_type="leg.transport_retry_started" if row["resource"] == "transport" else "leg.resource_resumed",
+                payload={"resource": row["resource"], "required_bytes": row["required_bytes"]},
             )
             resumed.append(row["leg_id"])
     return resumed
