@@ -32,6 +32,13 @@ Scheduler fix `024a43e` covers the observed cross-worker scheduling gap; the old
 ordering fails the regression and the corrected ordering passes it. Tests are invoked
 with the worktree Python module entrypoint (`.venv/bin/python -m pytest`) so the
 shared environment's installed checkout cannot silently replace the source under test.
+The first full scheduler-fix run exposed a real concurrent WAL-initialization race
+(537 passed, one failed); its receipt is retained as `full-suite-parked-peer-review.xml`.
+Commit `de6cffd` adds bounded SQLite lock-code-only recovery before schema initialization.
+The subsequent complete Fleet suite passed **552 tests in 111.28 seconds**, receipt
+`_artifacts/fleet-recovery-verification-20260910/full-suite-peer-review-wal-recovery.xml`.
+Desktop v0.2.32 source tests passed 69 tests. Neither result proves installed runtime
+activation: PR #39 remains the delivery path and the production Fleet PID was unchanged.
 The full suite at `d2f127c` passed 526 tests in 190.48 seconds; JUnit is retained as
 `_artifacts/fleet-recovery-verification-20260910/full-suite-immediate-blockers.xml`.
 Remaining work includes delivery of this follow-up, automatic attention delivery
