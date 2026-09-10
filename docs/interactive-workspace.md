@@ -31,17 +31,36 @@ closed its pipe. The proof now resolves/validates it before authentication or
 launch. The focused prerequisite regression test passed (**1 passed**), followed
 by both successful full proof runs above.
 
-The current Codex authenticated command remains blocked:
+## Authenticated Codex Verification
+
+2026-09-10: Raghav completed normal browser OAuth in a separate private profile.
+The prior refresh-token rejection is resolved for this proof profile; existing
+user credentials and sessions were not overwritten. Authentication status alone
+was not used as evidence: the actual workspace transport completed real turns.
+
+Commands, exits **0**:
 
 ```sh
-SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference
+env SERENA_EVIDENCE_KIND=live CODEX_HOME=/tmp/serena-codex-browser-login-mltgygq4 codex login status
+env SERENA_EVIDENCE_KIND=live CODEX_HOME=/tmp/serena-codex-browser-login-mltgygq4 /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference
+env SERENA_EVIDENCE_KIND=live CODEX_HOME=/tmp/serena-codex-browser-login-mltgygq4 /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --permissions --compact --review --skills
+env SERENA_EVIDENCE_KIND=live CODEX_HOME=/tmp/serena-codex-browser-login-mltgygq4 /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference --bridge
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py -q
 ```
 
-Exit **1**: provider returned `unauthorized`, reporting that the refresh token
-had already been used, before the first turn completed. No logout or original
-credential/session modification was performed. Existing local-command packaged
-proofs remain valid but do not establish authenticated Codex responses. A fresh
-authorized sign-in is required before claiming that verification passed.
+Observed: ChatGPT login; first response and exact persisted ID/history resume;
+native background-task discovery; native skill invocation and steering on the
+same active turn; permission request denied through the exact owner and resolved;
+context compaction completed with owner ready; review completed inline on the
+same persisted thread. The bridge proof also verified edited queued text reached
+the exact native session with its original receipt, cancelled queued text never
+became a native turn, the running turn was preserved, and duplicate bridge
+requests reused their receipt. All three inference runs reaped owned processes and removed
+their disposable auth/history copies. Focused tests: **108 passed in 8.38s**.
+
+The profile path above is a historical local proof prerequisite, not packaged
+configuration or a credential to ship. This does not migrate authentication into
+the installed app, enable the feature by default, or establish full CLI parity.
 
 ## Current Windows Packaged Verification
 
