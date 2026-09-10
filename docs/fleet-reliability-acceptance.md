@@ -77,7 +77,12 @@ Supervision, peer, isolation and attempt-column migrations now lock before their
 check-then-ALTER sequence. Eight-way concurrent initialization tests cover all four
 stores; 103 focused tests pass after repair. Full-suite evidence from the failed
 pass is retained at `_artifacts/fleet-recovery-verification-20260910/full-suite.xml`.
-Another full pass is still required; this finding must not be dismissed as flakiness.
+The fresh full pass at `c632e3f` completed with **513 passed in 127.06 seconds**.
+Its JUnit receipt is retained at
+`_artifacts/fleet-recovery-verification-20260910/full-suite-after-branch-fix.xml`.
+All 69 desktop tests also pass, and PR #38's Windows NSIS installer build passed
+(Actions run `34498858647`). These are isolated-branch checks, not deployed or
+live-model acceptance; the original failed-suite receipt remains retained.
 
 ## Production evidence, 2026-09-10
 

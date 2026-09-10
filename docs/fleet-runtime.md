@@ -43,9 +43,9 @@ removes the Fleet database graph, its worker chats, event logs, and private work
 launched the Fleet is origin context rather than Fleet-owned data and is never deleted with the run.
 
 Before a real run is persisted, Fleet checks free space on the checkout and control-database
-filesystems. Coding runs reserve 1 GiB of control-plane headroom plus 1 GiB per selected worker;
-research reserves 1 GiB. This prevents isolated dependency installs from consuming the final bytes
-and leaving a run that cannot record its own failure. `SERENA_FLEET_MIN_FREE_BYTES` is the explicit
+filesystems. Coding runs require 1 GiB of control-plane headroom plus 1 GiB per selected worker;
+research requires 1 GiB. This is a point-in-time admission check, not a reservation: later writes
+can still exhaust storage. `SERENA_FLEET_MIN_FREE_BYTES` is the explicit
 operator override, including `0` to disable the check. A refusal happens before any worker is
 dispatched and tells the operator to reclaim disposable cache or inactive-worktree dependencies.
 
@@ -54,6 +54,55 @@ Concurrent worker startup can briefly collide on SQLite's write lock. Fleet retr
 lease setup. Other SQLite failures are never retried or hidden. A run already interrupted by ENOSPC
 stays on its original run id. Proven orphaned owners are recovered boundedly after storage returns;
 an already terminal failed run still requires explicit `fleet_retry`.
+
+Store initialization serializes check-then-ALTER schema migrations with an immediate SQLite
+transaction. This prevents simultaneous worker startup from adding the same migration column twice.
+
+## Durable resource recovery and actionable stops
+
+When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
+recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
+attempt as evidence. Independent ready work continues; a run with only parked work releases its
+owner and waits durably. Every 30 seconds the resident service checks both the source checkout and
+database filesystems. Only positive free-space checks of at least 2 GiB on both requeue a disk wait.
+An unreadable filesystem stays parked. This does not solve inode exhaustion or a database too full
+to commit the initial receipt.
+
+Narrow transient transport failures and recorded POSIX worker deaths by signals 6, 9, 11, 13 or 15
+have separate per-leg budgets of two same-provider, same-model retries with 30/60-second backoff.
+Transport classification excludes authority, authentication, identity, quota and acceptance errors.
+Cooldown expiry is a diagnostic retry, not evidence that a connection or process has recovered.
+Retry counts survive restart. Cancellation prevents wakeup, and terminal or superseded attempt
+callbacks are fenced before they can overwrite the current leg.
+
+An accepted honest stop or exhausted transport/process budget becomes `waiting_for_input` when
+the scheduler resolves the failed phase. The failed attempt remains failed; the run has no completion
+timestamp and does not automatically redispatch an unchanged blocker. The durable event and UI expose
+the reason and next action. Steering and explicit whole-run or targeted-leg retry preserve valid
+completed work. Other unclassified failures still fail closed; these mechanisms are not a universal
+recovery guarantee. Autonomy shows scheduled retries, resource wakeups, ignored late callbacks and
+actionable stops separately from successful completion.
+
+## Explicit run baseline and local task branches
+
+`Fleet baseline: <local-ref>` or the task directive `MANDATORY start point: branch ... at commit
+<40-character SHA>` selects a frozen, locally resolvable commit before dispatch. Missing or conflicting
+explicit baselines refuse dispatch. Arbitrary commit citations do not change the starting point.
+Before Research, Fleet creates a detached run-owned integration checkout; every phase uses it instead
+of the unrelated source checkout. Status retains the original `source_cwd`, effective `cwd`, and the
+checkout receipt. Projects-based checkout artifacts live in the synced
+`Projects/_artifacts/fleet-checkouts/<run-id>/` tree. The source branch, index and dirty files remain
+untouched. Deleting a run refuses to discard modified or committed delivered work in that checkout.
+
+Legacy runs can adopt an explicit baseline only when no writer is running and no write result or
+integration has been accepted. Completed Research is retained. Clean stale worker checkouts refresh
+when ancestry or the base tree changed; modified ones retain the preserved-patch/reapply path.
+
+An explicit `own task branch named ...0N` directive provisions ordinal branches `...01` through
+`...04`; one worker may name a literal branch. Fleet validates the name and refuses pre-existing
+branches it does not own. The recorded branch survives retries and Fix. Local task-branch integration
+requires neither a push nor a PR; switching away from that reserved branch still uses the separate
+published stacked-PR delivery gate below.
 
 ## Continuous orphan recovery and progress budgets
 
@@ -362,7 +411,8 @@ bisect. A write leg fails closed when isolation cannot be proven. The previous s
 is available only through the explicit emergency override `SERENA_FLEET_ISOLATION=off`.
 
 Only write-access coding legs are isolated. Review and verify legs read the combined result in the
-real checkout, and research legs never write. One logical worker keeps one durable workspace identity
+integration checkout (the source checkout when no explicit baseline was selected), and research legs
+never write. One logical worker keeps one durable workspace identity
 across phases. After each accepted integration the worktree is refreshed from the combined base, so
 later write phases see peer integrations as well as their own earlier work. A provider handoff keeps
 the same worker identity and claims rather than forking a competing workspace.
@@ -550,7 +600,8 @@ contradicts itself. The enforced rules are:
 
 - a unit reported `completed` alongside a triggered stop condition is a contradiction;
 - `blocked` or `stopped` must name the stop condition that actually triggered. The evidence is
-  accepted as truthful, but the leg is recorded failed and no downstream phase is allowed to run;
+  accepted as truthful, but the attempt is recorded failed and no downstream phase is allowed to run;
+  phase failure resolution parks the affected work in `waiting_for_input`;
 - `completed` requires the exact contract acceptance criteria, with no substitutions or duplicates,
   answered `met: true` with concrete evidence, and `constraints_respected: true`;
 - `completed` is refused while a declared dependency is incomplete or its state is unavailable;
