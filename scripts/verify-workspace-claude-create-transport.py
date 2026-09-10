@@ -1,4 +1,5 @@
 """Exercise fresh native creation through the production Python/JSONL bridge."""
+import ast
 import asyncio
 import json
 import os
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import psutil
-from flask import Flask
+from flask import Flask, jsonify, request
 from werkzeug.serving import make_server
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -28,10 +29,10 @@ async def main():
     sid, prompt = str(uuid4()), str(uuid4())
     messages = []
     completed = asyncio.Event()
-    async def request(*args):
+    async def deny_permission(*args):
         raise AssertionError("Local command requested permission")
     client = ClaudeTypeScriptClient(options=SimpleNamespace(resume=sid, cwd=cwd, cli_path=cli,
-                                    env=dict(os.environ), can_use_tool=request), sdk_path=sdk, node_path=node)
+                                    env=dict(os.environ), can_use_tool=deny_permission), sdk_path=sdk, node_path=node)
     transport = client.transport
     async def consume():
         async for message in client.receive_messages():
@@ -107,14 +108,29 @@ async def main():
     released.release()
     print("PASS: real owner reserves exclusive UUID and durable checkpoint before spawn; same-process local turn; close reaps child and releases lease")
     created = []
+    from core import indexer, metadata
+    from core.parser import parse_full
+    assert indexer.DB_PATH.resolve().is_relative_to(Path(cwd).resolve())
+    assert metadata.METADATA_DIR.resolve().is_relative_to(Path(cwd).resolve())
     def owner_factory(**kwargs):
         instance = ClaudeWorkspace(**kwargs, client_factory=factory,
                                    lease_factory=lambda sid: SessionLease(sid, directory=lease_dir))
         created.append(instance)
         return instance
     app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
-    host = install_workspace(app, Path(cwd) / "ui.db", describe=lambda sid: None,
+    host = install_workspace(app, Path(cwd) / "ui.db", describe=indexer.get_session,
                              factories={"claude": owner_factory})
+    web_source = Path(__file__).resolve().parents[1] / "ui/web.py"
+    definitions = [item for item in ast.parse(web_source.read_text()).body
+                   if isinstance(item, ast.FunctionDef) and item.name in {"api_rename", "api_sessions", "_decorate_sessions",
+                                                                        "_pending_workspace_meta", "api_conversation"}]
+    namespace = {"app": app, "jsonify": jsonify, "request": request, "Path": Path, "parse_full": parse_full,
+                 "get_session": indexer.get_session, "list_sessions": indexer.list_sessions,
+                 "set_title": indexer.set_title, "_include_permanent_serena_session": lambda rows: rows,
+                 "_ambiguous_shorts": lambda: set(), "_get_session_cwd": lambda session: session["cwd"],
+                 "_resolve_project_cwd": lambda project, cwd: cwd,
+                 "_shorten_project": lambda project, cwd: project, "_external_runtime_active": lambda sid: False}
+    exec(compile(ast.Module(body=definitions, type_ignores=[]), str(web_source), "exec"), namespace)
     server = make_server("127.0.0.1", 0, app, threaded=True)
     serving = threading.Thread(target=server.serve_forever, daemon=True)
     serving.start()
@@ -140,6 +156,12 @@ async def main():
                     assert len(created) == before + 1
                     native = created[-1]
                     sid, pid = native.session_id, native.client.owned_pid
+                    title = f"Native new Claude {width}"
+                    renamed = page.evaluate("async ({sid,title}) => (await fetch('/api/rename/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})})).json()", {"sid": sid, "title": title})
+                    assert renamed == {"ok": True, "title": title}
+                    assert metadata.get_meta(sid)["custom_title"] == title
+                    pending = page.evaluate("async sid => (await fetch('/api/conversation/'+sid)).json()", sid)
+                    assert pending["native_persistence_pending"] and pending["messages"] == [] and pending["title"] == title
                     page.reload()
                     page.get_by_role("button", name="Open conversation", exact=True).click()
                     page.wait_for_url(base + "/workspace/" + sid)
@@ -152,12 +174,24 @@ async def main():
                         page.wait_for_timeout(50)
                     assert native.state == "ready" and native.client.owned_pid == pid
                     page.get_by_text("/effort low", exact=True).wait_for()
+                    deadline = time.monotonic() + 10
+                    while host.journal.pending_target(sid) and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    assert indexer.get_session(sid) and host.journal.pending_target(sid) is None
+                    rows = page.evaluate("async () => (await fetch('/api/sessions')).json()")
+                    matching = [row for row in rows if row["session_id"] == sid]
+                    assert len(matching) == 1 and matching[0]["display_title"] == title and not matching[0].get("native_persistence_pending")
+                    persisted = page.evaluate("async sid => (await fetch('/api/conversation/'+sid)).json()", sid)
+                    assert persisted["messages"] and persisted["title"] == title and not persisted.get("native_persistence_pending")
+                    complete = [entry["event"]["params"]["turn"]["providerOriginal"] for entry in host.journal.read(sid)["events"]
+                                if entry["event"]["method"] == "turn/completed"]
+                    assert complete and all(turn["total_cost_usd"] == 0 and turn["num_turns"] == 0 for turn in complete)
                     assert len(created) == before + 1 and not errors, errors
                     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                     page.screenshot(path=str(artifacts / f"new-claude-output-{width}.png"))
                     page.close()
                     assert psutil.pid_exists(pid) and native.state == "ready"
-                    print(f"PASS: {width}px real Claude New Chat, reload, exact open and local input; one owner survives page close")
+                    print(f"PASS: {width}px real Claude New Chat, reload, exact open, local input and named single-row indexing; one owner survives page close")
             finally:
                 browser.close()
     try:

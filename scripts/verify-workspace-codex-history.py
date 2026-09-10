@@ -179,8 +179,18 @@ def frozen_browser_proof(sid, root, project, env, frozen):
 
     repo = Path(__file__).resolve().parents[1]
     env = {**env, "CHATS_DATA_DIR": str(root / "frozen-data"), "SERENA_STRUCTURED_WORKSPACE": "1",
+           "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
            "SERENA_CALL_RUNTIME": "lazy", "SERENA_RUNTIME_LEASE_DIR": str(root / "frozen-leases"),
            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={root}/unavailable-bus", "XDG_RUNTIME_DIR": str(root / "xdg")}
+    if os.environ.get("SERENA_PROOF_ELECTRON"):
+        resources = root / "desktop-resources"
+        shutil.copytree(repo / "runtimes" / "claude-sdk", resources / "runtimes" / "claude-sdk")
+        launch = subprocess.run(["node", "-e",
+            "const {backendLaunch}=require(process.argv[1]);console.log(JSON.stringify(backendLaunch({isPackaged:true,resourcesPath:process.argv[2],execPath:process.argv[3],port:12345}).env));",
+            str(repo / "apps/desktop/runtime.js"), str(resources), os.environ["SERENA_PROOF_ELECTRON"]],
+            env=env, text=True, capture_output=True)
+        assert launch.returncode == 0, launch.stderr
+        env.update(json.loads(launch.stdout))
     Path(env["XDG_RUNTIME_DIR"]).mkdir()
     seed = subprocess.run([sys.executable, "-c", """
 import sys
@@ -226,6 +236,25 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
             print("PASS: frozen native fork created/indexed through UI, persisted scanner ownership and opened without a second owner")
             if os.environ.get("SERENA_PROOF_ELECTRON"):
                 before = owners()
+                def claude_owners():
+                    import hashlib
+                    import sqlite3
+                    live = []
+                    descendants = {child.pid for child in psutil.Process(process.pid).children(recursive=True)}
+                    with sqlite3.connect(f"file:{Path(env['CHATS_DATA_DIR']) / 'workspace-events.db'}?mode=ro", uri=True) as conn:
+                        targets = [json.loads(row[0]) for row in conn.execute("SELECT target FROM workspace_creations WHERE committed=1")]
+                    for target in targets:
+                        if target["provider"] != "claude":
+                            continue
+                        key = hashlib.sha256(target["session_id"].encode()).hexdigest()
+                        record = json.loads((Path(env["SERENA_RUNTIME_LEASE_DIR"]) / (key + ".json")).read_text())
+                        assert record["phase"] == "bound"
+                        child = psutil.Process(record["child"]["pid"])
+                        assert child.create_time() == record["child"]["born"] and child.status() != psutil.STATUS_ZOMBIE
+                        assert child.pid in descendants
+                        live.append(child.pid)
+                    return live
+                claude_before = claude_owners()
                 proof = subprocess.Popen(["node", str(repo / "scripts" / "verify-workspace-electron.cjs"),
                     os.environ["SERENA_PROOF_ELECTRON"], os.environ["SERENA_PROOF_PLAYWRIGHT"],
                     str(repo / "apps" / "desktop"), base, sid, str(repo / "apps" / "desktop" / "build" / "workspace-proof"),
@@ -241,7 +270,9 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                 assert proof.returncode == 0, err
                 after = owners()
                 assert set(before).issubset(after) and len(after) == len(before) + 1, "Expected exactly one additional New Chat owner"
-                print("PASS: closing the real Electron shell preserved existing native owners and its one newly created owner")
+                claude_after = claude_owners()
+                assert set(claude_before).issubset(claude_after) and len(claude_after) == len(claude_before) + 1, "Expected exactly one new Claude owner"
+                print("PASS: closing the real Electron shell preserved existing native owners and its one new Codex and one new Claude owner")
         except BaseException:
             log.seek(0)
             print(log.read()[-5000:], file=sys.stderr)

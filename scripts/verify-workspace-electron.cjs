@@ -119,10 +119,52 @@ async function main() {
     assert.equal(matching[0].display_title,'Electron native new chat');
     assert.equal(creations,1);
     await page.screenshot({path:path.join(artifacts,'electron-native-created.png')});
+    await page.getByRole('button',{name:'New chat',exact:true}).click();
+    await page.locator('#modalInput').fill('Electron native Claude chat');
+    await page.locator('#modalAgentPicker [data-agent="claude"]').click();
+    await page.locator('#modalConfirmBtn').click();
+    const claudeCreation = page.frameLocator('iframe[src^="/workspace/new?"]');
+    await claudeCreation.getByRole('button',{name:'Create Claude chat',exact:true}).waitFor();
+    assert.equal(creations,1);
+    await claudeCreation.getByRole('button',{name:'Create Claude chat',exact:true}).click();
+    await claudeCreation.getByRole('button',{name:'Open conversation',exact:true}).waitFor();
+    const claudeSid = (await claudeCreation.getByRole('status').innerText()).replace('Session ','');
+    assert.match(claudeSid,/^[a-f0-9-]{36}$/);
+    assert.notEqual(claudeSid,newSid);
+    await claudeCreation.getByRole('button',{name:'Open conversation',exact:true}).click();
+    const claudePane = page.frameLocator(`iframe[src="/workspace/${claudeSid}"]`);
+    await claudePane.getByRole('button',{name:'Resume session',exact:true}).click();
+    assert.equal(await page.locator('#convTitle').innerText(),'Electron native Claude chat');
+    assert.equal(await page.locator('iframe[src^="/workspace/new?"]').count(),0);
+    await claudePane.getByRole('textbox',{name:'Message Claude',exact:true}).fill('/effort low');
+    await claudePane.getByRole('button',{name:'Send message',exact:true}).click();
+    await claudePane.getByText('/effort low',{exact:true}).waitFor();
+    await claudePane.locator('.aw-state').filter({hasText:'completed'}).waitFor();
+    await claudePane.getByText(/Set effort level to low/).waitFor();
+    await page.waitForFunction(async sid => {
+      const rows = await (await fetch('/api/sessions')).json();
+      return rows.some(row => row.session_id === sid && !row.native_persistence_pending);
+    },claudeSid);
+    const claudeRows = (await page.evaluate(async()=> (await fetch('/api/sessions')).json())).filter(row=>row.session_id===claudeSid);
+    assert.equal(claudeRows.length,1);
+    assert.equal(claudeRows[0].display_title,'Electron native Claude chat');
+    assert.equal(claudeRows[0].agent,'claude');
+    assert.equal(creations,2);
+    await page.screenshot({path:path.join(artifacts,'electron-native-claude-created.png')});
     assert.deepEqual(errors, []);
     console.log('PASS: real Electron main/preload, isolated frozen backend, native session input/output and skill catalog; sandbox/context isolation configured, Node integration off');
     console.log('PASS: real virtual-display clipboard copied native output and pasted multiline text without sending or losing the session');
     console.log('PASS: actual Electron New Chat button preserved its chosen title through exact native creation, iframe handoff and native input');
+    console.log('PASS: actual Electron Claude New Chat used the selected provider, retained title through indexing, and rendered native local-command output');
+  } catch (error) {
+    if (app) {
+      const page = await app.firstWindow();
+      await page.screenshot({path:path.join(artifacts,'electron-native-failure.png')}).catch(()=>{});
+      for (const frame of page.frames()) {
+        if(frame.url().includes('/workspace/new?')) console.error('Creation failure state:',await frame.locator('#creation-status').innerText().catch(()=>''));
+      }
+    }
+    throw error;
   } finally {
     try {await app?.close();}
     finally {

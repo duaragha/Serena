@@ -2,6 +2,36 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Claude creation indexing and frozen Electron proof (2026-09-09): verified the
+pending-to-native transition through production rename/list/read routes. A name
+chosen before the first message survives indexing with exactly one sidebar row;
+Read changes from an honest empty pending state to the real transcript. Extended
+the real Electron main/preload proof to create both providers using the app's
+New Chat dialog, open their exact embedded panes, execute only local native
+commands, and preserve names through indexing. Closing Electron retains both
+new owners. Claude ownership is verified from its durable creation target,
+bound lease PID/birth identity and live backend descendant, not command-line
+flags that the native process may replace.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_creation.py -q --tb=short`: exit 0, 11 passed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-claude-create-transport.py scripts/verify-workspace-codex-history.py`: final exit 0.
+- `node --check scripts/verify-workspace-electron.cjs`: exit 0.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-create.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: final exit 0, including 1440/390px named single-row indexing and real Read output. An initial proof callback shadowed Flask's request object; fixed. A simultaneous SDK reinstall during the backend build interrupted another attempt; subsequent proof ran after dependency installation.
+- `env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar` in `apps/desktop`: exit 0, rebuilt current source, capability-refusal smoke passed; existing optional-library warnings remain.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: final exit 0. Includes native history, desktop/mobile file search, skills, fork, disconnect/resume, actual Electron clipboard, both New Chat flows, retained native owners and complete cleanup. Screenshot inspected: `apps/desktop/build/workspace-proof/electron-native-claude-created.png`.
+
+Earlier frozen attempts exited 1 because the harness omitted Electron's
+SDK runtime location, then because its process enumeration encountered zombies
+and assumed native argv flags persisted. The final harness stages the SDK
+resources and obtains environment values from actual `backendLaunch()` packaged
+configuration; it validates exact live lease identity instead of argv guessing.
+This proves the real Electron shell with a frozen backend and staged resources,
+not an installed AppImage/Windows installer. No credentials/model inference,
+release/default activation, user-host restart or installed-app change occurred.
+Full CLI parity, seeded context, empty-session restart recovery and rollout
+remain unfinished.
+
 Claude New Chat admission (2026-09-09): the persistent host creation request,
 journal target validation and creation screen now admit Claude as well as Codex.
 The parent passes the actual selected provider instead of hardcoding Codex.
