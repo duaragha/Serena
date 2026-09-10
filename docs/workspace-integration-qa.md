@@ -164,7 +164,8 @@ the other checks produced no output.
 ## Remaining Gates
 
 See `interactive-workspace.md` (Required Delivery Gates) and
-`workspace-command-parity.md`. The current QA does not replace fresh packaged
-Windows/Linux proof, final mockup comparison with every production control,
+`workspace-command-parity.md`. Fresh source-748573e frozen Windows/Linux proofs
+are recorded in `workspace-packaged-qa-2026-09-10.md`. These do not replace
+final mockup comparison with every production control,
 remaining command parity, safe existing-session migration, or release/default
 enablement. Gemini remains deferred.
