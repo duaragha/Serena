@@ -11,6 +11,35 @@ STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_native_rename_requires_confirmation_and_preserves_failed_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.renameSession=async name=>{calls.push(['rename',name]);throw Error('Native rename unavailable');};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/rename New title';pane.render();
+    }""")
+    assert page.evaluate('calls') == []
+    page.get_by_role('button', name='Send message', exact=True).first.click()
+    dialog=page.get_by_role('dialog', name='Rename conversation', exact=True)
+    assert dialog.get_by_role('textbox', name='Conversation title').input_value() == 'New title'
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('button', name='Rename', exact=True).click()
+    dialog.get_by_text('Native rename unavailable', exact=True).wait_for()
+    assert page.evaluate('pane.input.value') == '/rename New title'
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth+1')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'rename-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    page.evaluate("()=>{controls.renameSession=async name=>{calls.push(['rename',name]);return {name};};}")
+    dialog.get_by_role('button', name='Rename', exact=True).click()
+    dialog.wait_for(state='hidden')
+    assert page.evaluate('pane.input.value') == ''
+    assert page.evaluate('calls') == [['rename', 'New title'], ['rename', 'New title']]
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

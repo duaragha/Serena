@@ -317,6 +317,10 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
             return {'data': [{'id': 'demo', 'name': 'Demo App', 'description': '',
                               'accessible': True, 'enabled': True, 'callable': True}]}
 
+        async def rename(self, name):
+            self.renamed = name
+            return {'session_id': self.sid, 'name': name}
+
         async def submit(self, inputs, options=None):
             self.sent.append(inputs)
             await asyncio.sleep(0.01)
@@ -653,6 +657,26 @@ function setTermStatus(status){window.lastStatus=status;}
             page.frames[1].evaluate("""()=>parent.postMessage({type:'serena-workspace-catalog',sid:'exact',title:'Older native name'},location.origin)""")
             page.wait_for_function("document.getElementById('convTitle').textContent==='My newer name'")
             assert page.evaluate("_findClientSession('exact').display_title") == 'My newer name'
+            if provider == 'codex':
+                host.register_fork = lambda target: {'display_title': target['confirmed_native_name']}
+                page.evaluate("""()=>{
+                  window.originalLoadSessions=loadSessions;window.titleRefreshes=0;
+                  loadSessions=async(project,options)=>{
+                    if(options.refresh!==true)throw Error('Expected fresh title read');
+                    window.titleRefreshes++;setSessionSource([{session_id:'exact',agent:'codex',custom_title:'Newest saved title',display_title:'Newest saved title'}]);
+                  };
+                }""")
+                page.evaluate("window.postMessage({type:'serena-workspace-title-changed',sid:'exact'},location.origin)")
+                page.wait_for_timeout(50)
+                assert page.evaluate('titleRefreshes') == 0
+                nested.get_by_role('button', name='Rename conversation', exact=True).click()
+                rename = nested.get_by_role('dialog', name='Rename conversation', exact=True)
+                rename.get_by_role('textbox', name='Conversation title').fill('Requested native title')
+                rename.get_by_role('button', name='Rename', exact=True).click()
+                page.wait_for_function("document.getElementById('convTitle').textContent==='Newest saved title'")
+                assert owners[0].renamed == 'Requested native title'
+                assert page.evaluate('titleRefreshes') == 1
+                page.evaluate('loadSessions=window.originalLoadSessions')
             assert nested.get_by_role('textbox', name=f'Message {provider.capitalize()}').input_value() == 'Keep the unsent draft'
             assert len(owners) == 1 and not owners[0].closed
             result = page.evaluate("termSessions.get('exact').handoff('Exact linked briefing')")

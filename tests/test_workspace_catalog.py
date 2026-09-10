@@ -163,6 +163,30 @@ def test_codex_registration_marks_owned_before_upsert(tmp_path, monkeypatch):
     assert calls == [("owned", sid), ("index", sid, "codex"), "commit", "close"]
 
 
+def test_confirmed_native_codex_rename_updates_only_exact_metadata_and_index(tmp_path, monkeypatch):
+    from core import indexer, metadata
+    from core.workspace_catalog import list_saved_sessions
+
+    monkeypatch.setattr(indexer, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(indexer, 'DB_PATH', tmp_path / 'index.db')
+    monkeypatch.setattr(indexer, '_schema_ready', False)
+    monkeypatch.setattr(metadata, 'METADATA_DIR', tmp_path / 'metadata')
+    monkeypatch.setattr(metadata, 'METADATA_PATH', tmp_path / 'legacy.json')
+    sid, other = str(uuid4()), str(uuid4())
+    home = tmp_path / 'codex'
+    path = home / 'sessions' / f'rollout-2026-09-10T00-00-00-{sid}.jsonl'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': sid, 'cwd': str(tmp_path)}}) + '\n')
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    metadata.set_custom_title(sid, 'Previous explicit title')
+    metadata.set_custom_title(other, 'Unrelated title')
+    result = register_fork({'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path), 'confirmed_native_name': 'Native replacement'})
+    assert result == {'display_title': 'Native replacement'}
+    assert metadata.get_meta(sid)['custom_title'] == 'Native replacement'
+    assert metadata.get_meta(other)['custom_title'] == 'Unrelated title'
+    assert list_saved_sessions('codex')['data'][0]['title'] == 'Native replacement'
+
+
 @pytest.mark.parametrize("case", ["missing", "ambiguous", "wrong-project", "wrong-id", "outside", "missing-history"])
 def test_invalid_codex_fork_never_writes_catalog(tmp_path, monkeypatch, case):
     sid = str(uuid4())

@@ -344,6 +344,23 @@ class CodexWorkspace:
                 await self._close()
                 raise
 
+    async def rename(self, name):
+        if not isinstance(name, str) or not name.strip() or len(name) > 1000 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+            raise ValueError("A title of 1 to 1000 characters without control characters is required")
+        name = name.strip()
+        async with self._control_lock:
+            if self.state not in {"ready", "running"}:
+                raise WorkspaceRpcError("Attach Codex before renaming the session")
+            result = await self.rpc.request("thread/name/set", {"threadId": self.session_id, "name": name})
+            if not isinstance(result, dict):
+                raise WorkspaceRpcError("Codex did not confirm the rename")
+            read = await self.rpc.request("thread/read", {"threadId": self.session_id, "includeTurns": False})
+            thread = read.get("thread") if isinstance(read, dict) else None
+            if not isinstance(thread, dict) or thread.get("id") != self.session_id or thread.get("name") != name:
+                raise WorkspaceRpcError("Codex rename could not be verified; the native name may have changed")
+            self.thread["name"] = name
+            return {"session_id": self.session_id, "name": name}
+
     async def shell_command(self, command, confirmed):
         async with self._control_lock:
             if confirmed is not True:

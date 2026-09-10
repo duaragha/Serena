@@ -794,6 +794,7 @@ class WorkspaceHost:
             "commands",
             "hooks",
             "apps",
+            "rename_session",
             "project_diff",
             "reload_skills",
             "set_skill_enabled",
@@ -1042,6 +1043,14 @@ class WorkspaceHost:
                     if provider != "claude" or payload:
                         raise ValueError("Skill reload requires a Claude session and no payload")
                     result = await owner.reload_skills()
+                elif action == "rename_session":
+                    if provider != 'codex' or set(payload) != {'name'} or self.register_fork is None:
+                        raise ValueError('Native rename is unavailable for this session')
+                    renamed = await owner.rename(payload['name'])
+                    catalog = await self._register_created_fork({
+                        'session_id': sid, 'provider': provider, 'cwd': str(owner.cwd),
+                        'confirmed_native_name': renamed['name']})
+                    result = {**renamed, 'catalog': catalog}
                 elif action == "apps":
                     retryable = True
                     if provider != "codex" or payload:

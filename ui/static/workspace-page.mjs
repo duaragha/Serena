@@ -19,6 +19,13 @@ const connection = new WorkspaceConnection({
   runtime: runtime => pane.setSleeping(runtime?.sleeping === true),
 });
 const controls = connection.controls();
+const renameSession=controls.renameSession;
+controls.renameSession=async name=>{
+  const result=await renameSession(name);
+  if(result.catalog?.indexed!==true)throw Error(`Native name saved, but Serena title synchronization failed: ${result.catalog?.error || 'catalog unavailable'}`);
+  if(parent!==window)parent.postMessage({type:'serena-workspace-title-changed',sid:boot.sessionId},location.origin);
+  return result;
+};
 controls.diagnostics = () => connection.command('diagnostics',{});
 controls.accountStatus = () => connection.command('account_status',{});
 controls.accountRateLimits = () => connection.command('account_rate_limits',{});

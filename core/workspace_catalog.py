@@ -82,6 +82,9 @@ def register_fork(target):
         raise ValueError("Native fork metadata does not match its project and identity")
     if "expected_native_title" in target and (provider != "claude" or meta.native_title != target["expected_native_title"]):
         raise NativeTranscriptPending("Confirmed native rename is not persisted yet")
+    native_name = target.get('confirmed_native_name')
+    if native_name is not None and (provider != 'codex' or not isinstance(native_name, str) or not native_name.strip() or len(native_name) > 1000 or any(ord(c) < 32 or ord(c) == 127 for c in native_name)):
+        raise ValueError('Invalid confirmed native name')
     with _index_update_lock():
         if provider == "codex":
             from core.metadata import set_resident_work
@@ -89,11 +92,15 @@ def register_fork(target):
             # Native app-server forks use an extension origin. Persist explicit
             # ownership so the normal scanner does not prune this admitted chat.
             set_resident_work(sid)
+            if native_name is not None:
+                from core.metadata import set_custom_title
+
+                set_custom_title(sid, native_name)
         conn = _get_db()
         try:
             _upsert_session(conn, meta, agent=provider)
             conn.commit()
-            if "expected_native_title" in target:
+            if "expected_native_title" in target or native_name is not None:
                 row = conn.execute("SELECT COALESCE(NULLIF(custom_title,''), title) FROM sessions WHERE session_id = ?", (sid,)).fetchone()
                 return {"display_title": row[0]}
         finally:

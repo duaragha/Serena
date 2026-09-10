@@ -18,6 +18,34 @@ from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
 
 
+def test_rename_requires_owner_and_preserves_receipt_without_duplicate_native_write(tmp_path):
+    calls = []
+    class RenameOwner(Owner):
+        async def rename(self, name):
+            calls.append(('native', self.sid, name))
+            return {'session_id': self.sid, 'name': name}
+    def register(target):
+        calls.append(('catalog', target))
+        return {'display_title': target['confirmed_native_name']}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'rename.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': RenameOwner}, register_fork=register)
+    try:
+        with pytest.raises(ValueError, match='attach'):
+            host.command('exact', 'before', 'rename_session', {'name': 'New title'})
+        assert not calls
+        host.attach('exact')
+        host._sessions['exact'][0].cwd = tmp_path
+        assert not host.command('exact', 'bad', 'rename_session', {'name': 'Title', 'threadId': 'foreign'})['ok']
+        first = host.command('exact', 'once', 'rename_session', {'name': 'New title'})
+        assert first['ok'] and first['result']['catalog']['indexed']
+        assert host.command('exact', 'once', 'rename_session', {'name': 'New title'}) == first
+        assert calls == [('native', 'exact', 'New title'), ('catalog', {'session_id': 'exact', 'provider': 'codex', 'cwd': str(tmp_path), 'confirmed_native_name': 'New title'})]
+        assert not host._sessions['exact'][0].sent
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize("mode", ["click", "heartbeat", "busy", "pinned", "switch_chat", "different_split"])
 def test_only_explicit_linked_pane_click_sleeps_idle_sibling(tmp_path, mode):
     class Transport:

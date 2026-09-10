@@ -64,6 +64,8 @@ export class WorkspacePane {
     this.hooksButton.hidden=provider!=='Codex' || !controls.hooks;head.append(this.hooksButton);
     this.appsButton=this.button('Apps and connectors','blocks',()=>this.openApps());
     this.appsButton.hidden=provider!=='Codex' || !controls.apps;head.append(this.appsButton);
+    this.renameButton=this.button('Rename conversation','pencil',()=>this.openRename());
+    this.renameButton.hidden=provider!=='Codex' || !controls.renameSession;head.append(this.renameButton);
     this.diffButton=this.button('Project diff','file-diff',()=>this.openProjectDiff());
     this.diffButton.hidden=provider!=='Codex' || !controls.projectDiff;head.append(this.diffButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
@@ -1036,6 +1038,33 @@ export class WorkspacePane {
     this.diffDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();load();
   }
 
+  openRename() {
+    if(this.renameDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Rename conversation');
+    const form=node('form');const input=node('input');input.required=true;input.maxLength=1000;input.setAttribute('aria-label','Conversation title');
+    const original=this.input.value;
+    const command=/^\/rename(?:\s+(.+))?$/.exec(original.trim());
+    if(command?.[1])input.value=command[1];
+    const status=node('p');status.setAttribute('role','alert');
+    const save=node('button','','Rename');save.type='submit';
+    const close=this.button('Cancel rename','x',()=>dialog.close());
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(save.disabled)return;
+      save.disabled=true;close.disabled=true;input.disabled=true;status.textContent='';
+      try{
+        await this.controls.renameSession(input.value);
+        if(this.disposed)return;
+        if(command && this.input.value===original){this.input.value='';this.persistDraft();}
+        dialog.close();
+      }catch(error){status.textContent=error.message;}
+      finally{save.disabled=false;close.disabled=false;input.disabled=false;}
+    });
+    dialog.addEventListener('cancel',event=>{if(save.disabled)event.preventDefault();});
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    form.append(input,status,save);dialog.append(node('h3','','Rename conversation'),close,form);
+    this.renameDialog=dialog;this.root.append(dialog);dialog.showModal();input.focus();this.refreshIcons();
+  }
+
   openApps() {
     if(this.appsDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Apps and connectors');
@@ -1231,7 +1260,7 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
-      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton};
+      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton,rename:this.renameButton};
   }
 
   async copyLatestOutput() {
@@ -1283,6 +1312,7 @@ export class WorkspacePane {
     const codexControl=codexCommand && this.codexCommandControls()[codexCommand[1]];
     if(codexCommand && !codexControl){this.error(Error(`/${codexCommand[1]} is not implemented in this pane; nothing was sent`));return;}
     if(codexControl){
+      if(codexCommand[1]==='rename' && !this.files.length && !this.selectedSkills.length){this.activateCommandControl(codexControl);return;}
       if(codexCommand[1]==='mention' && /^\/mention\s+\S/.test(text.trim()) && !this.files.length && !this.selectedSkills.length){
         if(text.trim().slice('/mention'.length).trim().length>200){this.error(Error('File search is limited to 200 characters'));return;}
         this.activateCommandControl(codexControl);return;

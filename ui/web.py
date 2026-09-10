@@ -7141,6 +7141,12 @@ function _startStructuredPane(sid, opts) {
   });
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
+    if(event.data.type==='serena-workspace-title-changed'){
+      await loadSessions(currentProject, {refresh:true});
+      const current=_findClientSession(sid);
+      if(currentSessionId===sid && current)document.getElementById('convTitle').textContent=current.display_title || current.title || '';
+      return;
+    }
     if(event.data.type==='serena-workspace-catalog'){
       const title=event.data.title;
       if(typeof title!=='string' || !title.trim() || title.length>1000)return;

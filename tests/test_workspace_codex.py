@@ -15,6 +15,60 @@ def tmp_path(tmp_path):
     return tmp_path.resolve()
 
 
+@pytest.mark.parametrize('state', ['ready', 'running'])
+def test_native_rename_targets_and_verifies_exact_thread_without_new_turn(tmp_path, state):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/name/set':
+                return {}
+            assert method == 'thread/read'
+            return {'thread': {'id': owner.session_id, 'name': 'New title'}}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = state, 'current' if state == 'running' else None
+            before = owner.active_turn
+            assert await owner.rename(' New title ') == {'session_id': owner.session_id, 'name': 'New title'}
+            assert calls == [('thread/name/set', {'threadId': owner.session_id, 'name': 'New title'}),
+                             ('thread/read', {'threadId': owner.session_id, 'includeTurns': False})]
+            assert owner.state == state and owner.active_turn == before
+            assert owner.thread['name'] == 'New title'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('name', ['', '  ', None, 'x' * 1001, 'two\nlines', 'delete\x7f'])
+def test_native_rename_rejects_invalid_names_before_rpc(tmp_path, name):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        with pytest.raises(ValueError):
+            await owner.rename(name)
+        assert not rpc.calls
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('reply', [None, {'thread': {'id': 'foreign', 'name': 'New'}}, {'thread': {'id': 'wrong', 'name': 'Old'}}])
+def test_native_rename_does_not_claim_unverified_name(tmp_path, reply):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        async def request(method, params):
+            return {} if method == 'thread/name/set' else reply
+        rpc.request = request
+        try:
+            with pytest.raises(WorkspaceRpcError, match='could not be verified'):
+                await owner.rename('New')
+            assert owner.state == 'ready'
+            assert owner.thread.get('name') != 'New'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('command', ['/plugins', '/delete', '/debug-config', '/prompts:custom', '/unknown arg'])
 def test_unrouted_commands_never_reach_submit_or_steer(tmp_path, command):
     async def run():

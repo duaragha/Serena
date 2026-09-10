@@ -432,6 +432,19 @@ test('apps are explicit and selections reach exact submit and steer routes',asyn
   assert.equal(calls.length,3);
 });
 
+test('native rename uses the exact session command rather than prompt input',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push([url,JSON.parse(options.body)]);return response({ok:true,result:{name:'New name'}});
+  }});
+  assert.equal(calls.length,0);
+  assert.deepEqual(await conn.controls().renameSession('New name'),{name:'New name'});
+  assert.equal(calls[0][0],'/api/workspace/exact/commands');
+  assert.equal(calls[0][1].action,'rename_session');
+  assert.deepEqual(calls[0][1].payload,{name:'New name'});
+  conn.dispose();assert.equal(calls.length,1);
+});
+
 test('skill-only sends and steering keep native selections and the expected turn',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

@@ -79,6 +79,63 @@ markup-as-text were visible. Remaining app parity: marketplace browsing/install,
 configuration management, and a real inference using a selected connector.
 The full rich-pane goal remains incomplete and unreleased.
 
+## Codex Native Rename (2026-09-10)
+
+The pane's Rename conversation button and `/rename [name]` open an explicit
+confirmation dialog. The session owner calls `thread/name/set` for its exact
+thread, then verifies `thread/read` returns the same identity and name. It keeps
+the running turn intact and does not submit a prompt, start a thread, or attach
+another owner. Invalid titles and unavailable ownership are refused. A failed
+confirmation does not claim the requested name was persisted.
+
+After native confirmation, the existing catalog registration path validates
+the matching transcript's identity and project, writes the explicit custom
+title, and indexes that exact session. This deliberately replaces an older
+Serena custom title only for the user-requested Codex rename. Unrelated sessions
+and linked siblings are not renamed. Catalog failure is reported separately as
+"Native name saved, but Serena title synchronization failed"; a not-yet-written
+transcript can still cause this condition. Passive Claude native rename behavior
+and its existing-custom-title precedence remain unchanged.
+
+The iframe asks the parent to refresh its sidebar only after the current rename
+command succeeds. The parent checks origin, source window and SID, then fetches
+current saved titles. It does not replay the requested title over newer cached
+metadata, navigate away, or replace the owner. Ordinary composer drafts survive.
+
+Source: [official App Server documentation](https://learn.chatgpt.com/docs/app-server),
+accessed 2026-09-10; `thread/name/set`, `thread/name/updated` and persisted
+`thread.name`. Installed generated schemas were also inspected.
+
+Verification from the isolated worktree:
+
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_catalog.py tests/test_workspace_host.py::test_rename_requires_owner_and_preserves_receipt_without_duplicate_native_write -q --tb=short`
+  exited 0: 123 passed in 24.24s. Exact native routing/readback, ready/running
+  state preservation, invalid names, malformed/foreign readback, exact metadata
+  replacement, sibling preservation and duplicate-receipt protection.
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_native_rename_requires_confirmation_and_preserves_failed_draft -q --tb=short`
+  exited 0: 2 passed in 6.73s after fixing the initially unstyled input. Desktop
+  and mobile confirmation, errors, draft preservation and successful clear.
+- `env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short`
+  exited 0: 2 passed in 45.07s. Mounted Claude/Codex pages, explicit rename via
+  real host route with a controlled provider/catalog, fresh sidebar reload,
+  spoofed parent notification rejected, existing owner and draft preserved.
+- `node --test tests/workspace-connection.test.mjs` exited 0: 48 passed,
+  0 failed, 95.488869ms. Rename is an exact-session control, not prompt input.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-rename.py`
+  exited 0: actual native rename and notification, real exact-session transcript
+  registration, SQLite catalog/custom-title replacement, and same SID/name after
+  process replacement. The old child was reaped before resume; all children and
+  temporary profile removed. One print-only shell command materialized the
+  disposable session; no inference, subscription auth, or user-profile writes.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py core/workspace_catalog.py scripts/verify-workspace-rename.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_catalog.py tests/test_workspace_pane.py tests/test_workspace_app.py`
+  exited 0: all checks passed. `node --check ui/static/workspace-pane.mjs`,
+  `node --check ui/static/workspace-page.mjs` and `git diff --check` each exited
+  0 with no output.
+
+Viewed `apps/desktop/build/workspace-proof/rename-390.png` and `rename-1600.png`:
+black input, compact dialog, visible error and no horizontal overflow. Windows
+packaged verification and release remain outstanding for the overall goal.
+
 ## Claude Native Catalog
 
 Every name in the observed 45-entry catalog is included below. Forwarding means
@@ -224,6 +281,8 @@ node --check ui/static/workspace-pane.mjs
 | `mention` | Existing project file picker, including inline search | Selection replaces the slash command with a quoted file mention; cancellation preserves draft; desktop/mobile verified |
 | `hooks` | Native project-scoped `hooks/list` inspector | Read-only enabled/trust/source/handler state and diagnostics; trust/enable mutations remain unimplemented |
 | `diff` | Bounded Git working-tree snapshot | Staged/unstaged/untracked regular files, explicit omitted-file notices; native Git and desktop/mobile rendering verified |
+| `apps` | Installed connector picker | Exact native IDs/callability, retained drafts and native metadata proof; marketplace management and downstream inference remain |
+| `rename` | Explicit native rename and Serena catalog sync | Same-session persistence through process replacement; sidebar refresh and draft preservation verified |
 
 ### Codex Documentation Inventory (2026-09-10)
 
@@ -232,7 +291,7 @@ accessed 2026-09-10. Documentation inventory is not proof of installed-version
 support. These documented names are not yet fully covered by the rows above:
 
 `ide`, `keymap`, `vim`, `setup-default-sandbox`, `sandbox-add-read-dir`, `agent`,
-`subagents`, `apps`, `plugins`, `clear`, `rename`, `archive`, `delete`,
+`subagents`, `apps`, `plugins`, `clear`, `archive`, `delete`,
 `exit`, `experimental`, `approve`, `memories`, `import`, `feedback`, `init`,
 `logout`, `fast`, `goal`, `personality`, `stop`, `app`, `side`,
 `btw`, `raw`, `new`, `quit`, `usage`, `debug-config`, `statusline`, `title`, `theme`,
