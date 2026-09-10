@@ -45,6 +45,24 @@ def test_idle_metadata_never_creates_a_turn():
         update(events, "agent_message_chunk", content={"type": "text", "text": "late"})
 
 
+def test_user_image_keeps_text_boundaries_and_original_content():
+    events = AcpEvents("exact")
+    events.begin("history")
+    before = update(events, "user_message_chunk", content={"type": "text", "text": "before"})
+    content = {"type": "image", "mimeType": "image/png", "data": "encoded", "annotations": {"audience": ["assistant"]}}
+    image = update(events, "user_message_chunk", content=content)
+    after = update(events, "user_message_chunk", content={"type": "text", "text": "after"})
+    assert len({before["id"], image["id"], after["id"]}) == 3
+    assert image["type"] == "userMessage"
+    assert image["content"] == [{"type": "image", "source": {
+        "type": "base64", "media_type": "image/png", "data": "encoded"}}]
+    assert image["providerOriginal"]["content"] == content
+    content["data"] = "changed"
+    assert image["providerOriginal"]["content"]["data"] == "encoded"
+    with pytest.raises(ValueError, match="Invalid ACP image"):
+        update(events, "user_message_chunk", content={"type": "image", "data": None})
+
+
 def test_permission_requires_exact_offered_option_and_explicit_resolution():
     events = AcpEvents("exact")
     events.begin("turn")

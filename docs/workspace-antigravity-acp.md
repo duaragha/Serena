@@ -198,6 +198,14 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+ACP user-image history now translates to the existing safe image renderer,
+preserving the original content and separating surrounding text chunks. Browser
+checks cover decoded images, hidden base64 text, blob URL cleanup, and no
+horizontal overflow at 390px and 1600px for all three providers. Adapter plus
+image browser checks: 11 passed, exit 0; scoped Ruff: exit 0. These exercise
+production translation and rendering with controlled events, not an authenticated
+Gemini history replay.
+
 The shared host now maps Gemini submissions through session-bound upload tokens:
 images become ACP base64 image blocks; documents become file resource links.
 Arbitrary renderer paths and another session's tokens remain rejected. Exact

@@ -54,6 +54,15 @@ class AcpEvents:
             item["text"] += text
             if kind == "user_message_chunk":
                 item.update(type="userMessage", content=[{"type": "text", "text": item["text"]}])
+        elif kind == "user_message_chunk" and update["content"].get("type") == "image":
+            content = update["content"]
+            if not isinstance(content.get("data"), str) or not isinstance(content.get("mimeType"), str):
+                raise ValueError("Invalid ACP image")
+            self.last_message = None
+            item_id = f"{self.turn}:event:{len(self.items)}"
+            item = {"id": item_id, "type": "userMessage", "content": [{"type": "image", "source": {
+                "type": "base64", "media_type": content["mimeType"], "data": content["data"]}}],
+                "providerOriginal": deepcopy(update)}
         elif kind in {"tool_call", "tool_call_update"}:
             self.last_message = None
             native_id = update.get("toolCallId")

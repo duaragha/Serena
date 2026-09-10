@@ -1347,14 +1347,16 @@ def test_compact_command_is_native_and_waits_for_provider_completion(pane):
     assert not errors
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_history_image_renders_without_base64_text(pane, provider):
+@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
+@pytest.mark.parametrize("width", [390, 1600])
+def test_history_image_renders_without_base64_text(pane, provider, width):
     import base64
     import io
 
     from PIL import Image
 
     page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
     image = io.BytesIO()
     Image.new("RGB", (8, 8), "green").save(image, format="PNG")
     data = base64.b64encode(image.getvalue()).decode()
@@ -1366,6 +1368,16 @@ def test_history_image_renders_without_base64_text(pane, provider):
         page.evaluate(
             "emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'localImage',previewToken:'owned-token',path:'/not-rendered.png'}]}}})"
         )
+    elif provider == "gemini":
+        from core.workspace_acp_events import AcpEvents
+
+        events = AcpEvents("exact")
+        events.begin("t")
+        event = events.update({"sessionId": "exact", "update": {
+            "sessionUpdate": "user_message_chunk", "content": {
+                "type": "image", "mimeType": "image/png", "data": data}}})
+        event["params"]["item"]["id"] = "photo"
+        page.evaluate("event => emit(event)", event)
     else:
         page.evaluate(
             "data => emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'image',source:{type:'base64',media_type:'image/png',data}}]}}})",
@@ -1375,6 +1387,7 @@ def test_history_image_renders_without_base64_text(pane, provider):
     assert data not in page.locator("#left").inner_text()
     assert page.locator(".aw-history-image").get_attribute("src").startswith("blob:")
     assert page.evaluate("pane.historyImageUrls.size") == 1
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     page.evaluate(
         "emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'text',text:'image replaced'}]}}})"
     )
