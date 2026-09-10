@@ -101,6 +101,21 @@ active or queued turns are never bypassed, unknown/overlapping assignments fail 
 and the target's DAG dependencies and one-live-turn-per-worker rule remain mandatory.
 Neither exception marks the parked assignment complete or retries its unchanged blocker.
 
+## Activating repairs without cancelling parked runs
+
+The ordinary acceptance gate still refuses active runs. For durable input/resource/capacity
+waits, `python -m fleet.activation --repo <repo> --receipt <receipt> --fleet-db <database>`
+is an explicit Fleet-only restart operation, not a read-only diagnostic. It requires
+current passing source acceptance, takes SQLite's immediate writer lock, then refuses
+queued/running/stopping/unknown run states and any live or unverified owner, worker,
+helper or lesson-review execution. It holds that lock across the fixed systemd restart,
+so another dispatcher cannot claim work between inspection and restart. Missing schema
+or unverifiable process/service identity fails closed. It requires the service's exact
+repository, active state and Type=simple, which can start without waiting for DB access.
+No run, attempt, wait or saved work is deleted or marked complete; no chat host is restarted.
+After return the lock is released. A restart command failure is reported as unconfirmed,
+not proof the old process survived; inspect service health before any further action.
+
 ## Explicit run baseline and local task branches
 
 `Fleet baseline: <local-ref>` or the task directive `MANDATORY start point: branch ... at commit
