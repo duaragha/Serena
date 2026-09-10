@@ -141,6 +141,7 @@ export class WorkspaceConnection {
       shellCommand: (command,confirmed) => this.command('shell_command', {command,confirmed}),
       forkSession: () => this.command('fork_session', {}),
       clearSession: () => this.command('clear_session', {confirmed:true}),
+      disconnectSession: () => this.command('disconnect_session', {confirmed:true}),
       lastClear: () => JSON.parse(this.storage.getItem(this.clearKey) || 'null'),
       forgetClear: () => this.storage.setItem(this.clearKey,'null'),
       recoverFork: fork_request_id => this.command('register_fork', {fork_request_id}),

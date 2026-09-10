@@ -52,6 +52,47 @@ class Owner:
         self.closed = True
 
 
+@pytest.mark.parametrize("blocked", [None, "running", "background", "queued", "confirmation", "cleanup"])
+def test_explicit_disconnect_preserves_history_and_never_stops_other_owner(tmp_path, blocked):
+    class DisconnectOwner(Owner):
+        closes = 0
+
+        async def list_background_tasks(self):
+            return {"data": [{}] if blocked == "background" else []}
+
+        async def close(self):
+            self.closes += 1
+            self.state = "closed"
+
+        def can_retry_attachment(self):
+            return self.state == "closed" and blocked != "cleanup"
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "close.db"),
+                         resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+                         factories={"claude": DisconnectOwner})
+    try:
+        host.attach("source")
+        host.attach("other")
+        owner = host._sessions["source"][0]
+        if blocked == "running":
+            owner.state = "running"
+        if blocked == "queued":
+            host._bridge_queues["source"] = ["pending"]
+        history = host.events("source")["events"]
+        payload = {"confirmed": blocked != "confirmation"}
+        result = host.command("source", "disconnect", "disconnect_session", payload)
+        assert result["ok"] is (blocked is None)
+        assert host.command("source", "disconnect", "disconnect_session", payload) == result
+        assert owner.closes == (1 if blocked in {None, "cleanup"} else 0)
+        assert host._sessions["other"][0].closes == 0
+        assert host.events("source")["events"][:len(history)] == history
+        if blocked is None:
+            assert host.attach("source")["ok"]
+            assert host._sessions["source"][0] is not owner
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize("failure", [None, "checkpoint", "handoff", "receipt"])
 def test_clear_checkpoint_exact_owner_routing_and_no_replay(tmp_path, monkeypatch, failure):
     target = "11111111-2222-4333-8444-555555555555"

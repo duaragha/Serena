@@ -237,6 +237,14 @@ async def main():
                     assert browser_host._sessions[source][0].client.owned_pid != pid
                     assert browser_host._sessions[target][0].client.owned_pid == pid
                     assert page.evaluate("sid=>sessionStorage.getItem('serena-workspace-clear:'+sid)", source) == "null"
+                    original_pid = browser_host._sessions[source][0].client.owned_pid
+                    page.get_by_role("button", name="Disconnect session", exact=True).click()
+                    disconnect = page.get_by_role("dialog", name="Disconnect session", exact=True)
+                    assert psutil.pid_exists(original_pid)
+                    disconnect.get_by_role("button", name="Disconnect", exact=True).click()
+                    disconnect.wait_for(state="hidden")
+                    assert not psutil.pid_exists(original_pid)
+                    assert psutil.pid_exists(pid), "Disconnecting original must preserve target runtime"
                     assert not errors and not failures
                 finally:
                     browser.close()

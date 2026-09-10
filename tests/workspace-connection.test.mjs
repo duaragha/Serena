@@ -11,6 +11,22 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('disconnect is explicit and lost response reuses exact receipt after reload',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    assert(url.includes('/exact/'));calls.push(JSON.parse(options.body));
+    if(calls.length===1)throw Error('lost');
+    return response({ok:true,result:{disconnected:true,session_id:'exact'}});
+  }};
+  let conn=new WorkspaceConnection(options);conn.dispose();assert.equal(calls.length,0);
+  conn=new WorkspaceConnection(options);
+  await assert.rejects(conn.controls().disconnectSession(),/lost/);conn.dispose();
+  conn=new WorkspaceConnection(options);
+  assert.equal((await conn.controls().disconnectSession()).disconnected,true);
+  assert.deepEqual(calls[0],calls[1]);assert.equal(calls[0].action,'disconnect_session');
+  assert.deepEqual(calls[0].payload,{confirmed:true});conn.dispose();assert.equal(calls.length,2);
+});
+
 test('clear is explicit, response loss reuses its receipt, and reload preserves target',async()=>{
   const saved=storage(),calls=[];
   const options={sessionId:'source',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

@@ -51,6 +51,9 @@ export class WorkspacePane {
     this.clearButton=this.button('Clear context','eraser',()=>this.openClear());
     this.clearButton.hidden=provider!=='Claude' || !controls.clearSession || !controls.openCleared;
     this.clearButton.disabled=true;head.append(this.clearButton);
+    this.disconnectButton=this.button('Disconnect session','unplug',()=>this.openDisconnect());
+    this.disconnectButton.hidden=!controls.disconnectSession;
+    this.disconnectButton.disabled=true;head.append(this.disconnectButton);
     this.shellButton=this.button('Run shell command','terminal',()=>this.openShell());
     this.shellButton.hidden=provider!=='Codex' || !controls.shellCommand;
     head.append(this.shellButton);
@@ -240,6 +243,22 @@ export class WorkspacePane {
       finally{save.disabled=false;text.disabled=false;}
     });
     dialog.addEventListener('close',()=>dialog.remove());this.queueEditDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();text.focus();
+  }
+
+  openDisconnect() {
+    if(this.disconnectDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Disconnect session');
+    const cancel=node('button','','Cancel');cancel.type='button';cancel.addEventListener('click',()=>dialog.close());
+    const status=node('p','','Conversation history will be kept.');
+    const confirm=node('button','','Disconnect');confirm.type='button';
+    confirm.addEventListener('click',async()=>{
+      confirm.disabled=true;
+      try { await this.controls.disconnectSession();dialog.close(); }
+      catch(error){status.textContent=error.message;confirm.disabled=false;}
+    });
+    dialog.append(node('h3','','Disconnect session?'),status,cancel,confirm);
+    dialog.addEventListener('close',()=>dialog.remove());this.disconnectDialog=dialog;
+    this.root.append(dialog);dialog.showModal();cancel.focus();
   }
 
   openClear() {
@@ -1232,6 +1251,7 @@ export class WorkspacePane {
     this.send.disabled = this.sending || this.clearing || Boolean(this.clearedSession) || (!steering && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.forkButton.disabled=this.forkCreating || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.clearButton.disabled=this.clearing || this.sending || (!this.clearedSession && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
+    this.disconnectButton.disabled=this.clearing || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.shellButton.disabled=this.shellSubmitting || !['ready','running','completed','interrupted'].includes(this.conversation.status);
     if (this.conversation.error) this.error(this.conversation.error);
     this.renderQuestions(); this.refreshIcons();
@@ -1244,6 +1264,7 @@ export class WorkspacePane {
     this.tasksDialog?.close();
     this.commandsDialog?.close();
     this.clearDialog?.close();
+    this.disconnectDialog?.close();
     this.fileSearchDialog?.close();
     this.mcpDialog?.close();
     this.contextDialog?.close();

@@ -306,6 +306,7 @@ class WorkspaceHost:
             "shell_command",
             "fork_session",
             "clear_session",
+            "disconnect_session",
             "register_fork",
             "context_usage",
             "permissions",
@@ -446,6 +447,26 @@ class WorkspaceHost:
                     retryable = True  # Registration is idempotent and cannot create a native fork.
                     await asyncio.to_thread(self.register_fork, result)
                     result["indexed"] = True
+                elif action == "disconnect_session":
+                    if payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
+                        raise ValueError("Explicit session disconnect confirmation is required")
+                    retryable = True
+                    if owner.state != "ready" or owner.active_turn or self._bridge_queues.get(sid):
+                        raise ValueError("Finish active and queued work before disconnecting")
+                    tasks = await owner.list_background_tasks()
+                    if not isinstance(tasks, dict) or tasks.get("data") != []:
+                        raise ValueError("Stop background tasks before disconnecting")
+                    native_tasks = getattr(getattr(owner, "events", None), "tasks", {})
+                    if any(task.get("status") not in {"completed", "failed", "stopped"} for task in native_tasks.values()):
+                        raise ValueError("Background task completion is unconfirmed")
+                    if owner.state != "ready" or owner.active_turn or getattr(owner, "questions", {}) or getattr(owner, "elicitations", {}):
+                        raise ValueError("Session became active; disconnect was not performed")
+                    retryable = False
+                    await owner.close()
+                    if not owner.can_retry_attachment():
+                        raise ValueError("Runtime cleanup is unconfirmed")
+                    await self._publish(sid, {"method": "workspace/transportClosed", "params": {"reason": "Session disconnected"}})
+                    result = {"disconnected": True, "session_id": sid}
                 elif action == "clear_session":
                     if provider != "claude" or payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
                         raise ValueError("Explicit confirmation for a Claude session clear is required")

@@ -2,6 +2,20 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Explicit idle disconnect (2026-09-09): added a separate unplug control with a
+confirmation dialog. It never runs on pane disposal. The host serializes the
+action with other controls, rejects active/queued work, background tasks and
+pending interactions, closes the selected owner and verifies cleanup before
+reporting success. History stays in place and explicit reattachment is allowed
+only under the existing ownership checks. Stable receipts prevent a lost response
+from disconnecting a subsequently reattached runtime. This does not implement
+deletion or force-stop running tasks.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short`: exit 0, 54 passed.
+- `node --test tests/workspace-connection.test.mjs`: exit 0, 22 passed, including explicit-only disconnect and exact receipt reuse after response loss/reload.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py scripts/verify-workspace-claude-clear-transport.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: exit 0. At both 1440px and 390px, opening the dialog left the selected native PID alive; explicit confirmation reaped it while the other session PID stayed alive. Source history remained unchanged, browser close did not stop the remaining runtime, and final cleanup reaped all children. Codex-specific native disconnect and installed-app/Windows proof remain open.
+
 Automatic clear catalog materialization (2026-09-09): native turn completion now
 registers a committed clear target through the real catalog callback, for both
 retained and reattached owners. The browser proof no longer manually registers
