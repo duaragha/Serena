@@ -117,6 +117,34 @@ def test_permission_denied_process_probe_fails_closed(monkeypatch):
     assert activation._process_may_live("invalid")
 
 
+@pytest.mark.parametrize("expected,observed,blocked", [
+    ("linux:100", "linux:200", False), ("linux:100", "linux:100", True),
+    (None, "linux:200", True), ("linux:100", None, True),
+    ("pid:100", "linux:200", True), ("linux:100", "psutil:200.0", True),
+])
+def test_pid_reuse_requires_verified_birth_token_disagreement(monkeypatch, expected, observed, blocked):
+    monkeypatch.setattr(activation, "process_start_token", lambda _: observed)
+    assert activation._process_may_live(os.getpid(), expected) == blocked
+
+
+def test_reused_foreign_uid_pid_requires_birth_time_proof(monkeypatch):
+    def denied(*_):
+        raise PermissionError("foreign process")
+    monkeypatch.setattr(activation.os, "kill", denied)
+    monkeypatch.setattr(activation, "process_start_token", lambda _: "linux:200")
+    assert not activation._process_may_live(1234, "linux:100")
+    assert activation._process_may_live(1234, "linux:200")
+
+
+def test_completed_lease_of_reused_pid_does_not_block_restart(activation_env, monkeypatch):
+    root, path, _ = activation_env
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE fleet_worker_leases ADD COLUMN owner_token TEXT")
+        db.execute("INSERT INTO fleet_worker_leases VALUES ('old','completed',?,'linux:100')", (os.getpid(),))
+    monkeypatch.setattr(activation, "process_start_token", lambda _: "linux:200")
+    assert activation.restart_parked_fleet(root, root / "receipt.json", path)["passed"]
+
+
 def test_failed_restart_releases_dispatch_lock_without_changing_work(activation_env, monkeypatch):
     root, path, _ = activation_env
     original = activation.subprocess.run

@@ -5,17 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import subprocess
 from pathlib import Path
 
 from fleet.acceptance import activation_gate
+from core.work_jobs import process_start_token
 
 SERVICE = "serena-fleet.service"
 PARKED = {"waiting_for_input", "waiting_for_resources", "waiting_for_capacity"}
 
 
-def _process_may_live(pid: object) -> bool:
+def _process_may_live(pid: object, token: object = None) -> bool:
     if pid is None:
         return False
     try:
@@ -25,8 +27,21 @@ def _process_may_live(pid: object) -> bool:
         os.kill(number, 0)
     except ProcessLookupError:
         return False
-    except (OSError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return True
+    except OSError:
+        # A reused PID may belong to another uid. A readable birth token can
+        # still disprove ownership; otherwise permission denial stays blocked.
+        pass
+    # A retained completed receipt can reference a PID reused by an unrelated
+    # process. Only verified birth-token disagreement proves it is not ours.
+    expected = str(token or "")
+    observed = process_start_token(number)
+    pattern = r"(?:linux:[0-9]+|psutil:[0-9]+\.[0-9]+)"
+    if (observed and re.fullmatch(pattern, expected) and re.fullmatch(pattern, observed)
+            and expected.split(":", 1)[0] == observed.split(":", 1)[0]
+            and expected != observed):
+        return False
     return True
 
 
@@ -37,10 +52,15 @@ def quiescence_blockers(db: sqlite3.Connection) -> list[str]:
     for table in ("fleet_runs", "fleet_attempts"):
         if table not in tables:
             raise ValueError(f"missing mandatory Fleet table: {table}")
-    for run_id, state, owner in db.execute("SELECT run_id,state,owner_pid FROM fleet_runs"):
+    def token_column(table: str, column: str) -> str:
+        columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        return column if column in columns else "NULL"
+
+    owner_token = token_column("fleet_runs", "owner_token")
+    for run_id, state, owner, token in db.execute(f"SELECT run_id,state,owner_pid,{owner_token} FROM fleet_runs"):
         if state not in PARKED | {"completed", "failed", "cancelled", "planned"}:
             blockers.append(f"run {run_id}: {state}")
-        if _process_may_live(owner):
+        if _process_may_live(owner, token):
             blockers.append(f"run {run_id}: owner process may still be alive")
     for table, key, pid_column in (
         ("fleet_attempts", "attempt_id", "pid"),
@@ -50,8 +70,9 @@ def quiescence_blockers(db: sqlite3.Connection) -> list[str]:
     ):
         if table not in tables:
             continue
-        for row_id, state, pid in db.execute(f"SELECT {key},state,{pid_column} FROM {table}"):
-            if state == "running" or _process_may_live(pid):
+        token = token_column(table, "owner_token" if pid_column == "owner_pid" else "process_token")
+        for row_id, state, pid, birth in db.execute(f"SELECT {key},state,{pid_column},{token} FROM {table}"):
+            if state == "running" or _process_may_live(pid, birth):
                 blockers.append(f"{table} {row_id}: live or unverified execution")
     return blockers
 
