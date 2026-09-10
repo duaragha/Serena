@@ -50,6 +50,16 @@ def test_plan_updates_replace_the_list_and_preserve_native_status():
     assert cleared["id"] == first["id"] and cleared["entries"] == []
 
 
+@pytest.mark.parametrize("reason,status", [("end_turn", "completed"), ("cancelled", "interrupted"),
+    ("max_tokens", "interrupted"), ("max_turn_requests", "interrupted"), ("refusal", "failed")])
+def test_stop_reason_does_not_claim_incomplete_work_succeeded(reason, status):
+    events = AcpEvents("exact")
+    events.begin("turn")
+    result = events.complete(reason)["params"]["turn"]
+    assert result["status"] == status and result["stopReason"] == reason
+    assert events.turn is None
+
+
 def test_tool_display_content_survives_partial_updates_alongside_raw_output():
     events = AcpEvents("exact")
     events.begin("turn")

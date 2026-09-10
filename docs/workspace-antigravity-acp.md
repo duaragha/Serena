@@ -198,6 +198,20 @@ integration impossible. Advertised capability support is also not a substitute
 for the still-missing end-to-end proof.
 # Session-bound input mapping, 2026-09-09
 
+Honest stopped turns (2026-09-09): `max_tokens` and `max_turn_requests`
+now map to interrupted rather than completed; `refusal` maps to failed with
+the original stop reason retained. The pane displays the concrete reason even
+when no duration was supplied, keeps explicit next input available, and never
+auto-continues. Only `end_turn` maps to successful completion. The shared bridge
+therefore no longer reports these incomplete results as successful receipts.
+Protocol reference, accessed 2026-09-09:
+https://agentclientprotocol.com/protocol/v1/prompt-turn#stop-reasons
+
+`PYTHONPATH=apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_events.py tests/test_workspace_pane.py::test_acp_stop_reason_visible_without_duration_or_auto_continuation tests/test_workspace_pane.py::test_native_usage_and_completed_duration_are_not_invented -q --tb=short`:
+exit 0, 19 passed. First run: 16 passed, three desktop test locators matched
+both panes; narrowed to the tested pane. Ruff and JS syntax checks: exit 0.
+Controlled events/browser checks only, not authenticated provider execution.
+
 Plan presentation (2026-09-09): ACP plan notifications replace one stable
 per-turn plan item instead of appending opaque blocks. The pane renders a
 read-only list with native status icons and priorities; removed entries disappear,

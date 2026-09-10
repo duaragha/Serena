@@ -61,6 +61,25 @@ emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',statu
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+@pytest.mark.parametrize("reason,label", [("max_tokens", "Stopped: token limit reached"),
+    ("max_turn_requests", "Stopped: model request limit reached"), ("refusal", "Provider declined to continue")])
+def test_acp_stop_reason_visible_without_duration_or_auto_continuation(pane, width, reason, label):
+    from core.workspace_acp_events import AcpEvents
+
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 1000})
+    events = AcpEvents("exact")
+    events.begin("stopped-turn")
+    events.submitted([{"type": "text", "text": "my request"}])
+    page.evaluate("event => emit(event)", events.complete(reason))
+    page.get_by_text(label, exact=True).wait_for()
+    assert page.locator("#left").get_by_role("button", name="Send message", exact=True).is_enabled()
+    assert page.evaluate("calls") == []
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_acp_plan_updates_in_place_without_inventing_completion(pane, width, tmp_path):
     from core.workspace_acp_events import AcpEvents
 

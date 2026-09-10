@@ -1269,15 +1269,17 @@ export class WorkspacePane {
         this.rendered.set(key, {signature,element});
         ordered.push(element);
       }
-      if (visibleTurn && ['completed','failed','interrupted'].includes(turn.status) && Number.isFinite(turn.durationMs) && turn.durationMs >= 0) {
+      const stopLabel={max_tokens:'Stopped: token limit reached',max_turn_requests:'Stopped: model request limit reached',refusal:'Provider declined to continue',cancelled:'Turn cancelled'}[turn.stopReason];
+      const hasDuration=Number.isFinite(turn.durationMs) && turn.durationMs >= 0;
+      if (visibleTurn && ['completed','failed','interrupted'].includes(turn.status) && (hasDuration || stopLabel)) {
         const key = JSON.stringify([turn.id,null]); keys.add(key);
-        const signature = JSON.stringify([turn.status,turn.durationMs]);
+        const signature = JSON.stringify([turn.status,turn.durationMs,turn.stopReason]);
         let summary = this.rendered.get(key);
         if (summary?.signature !== signature) {
           const seconds = Math.round(turn.durationMs / 1000);
           const elapsed = seconds >= 60 ? `${Math.floor(seconds/60)}m ${seconds%60}s` : `${seconds}s`;
           const label = turn.status === 'completed' ? 'Worked for' : turn.status === 'failed' ? 'Failed after' : 'Interrupted after';
-          const element = node('div', 'aw-turn-summary', `${label} ${elapsed}`);
+          const element = node('div', 'aw-turn-summary', stopLabel ? `${stopLabel}${hasDuration?` (${elapsed})`:''}` : `${label} ${elapsed}`);
           summary?.element.remove();
           summary = {signature,element}; this.rendered.set(key,summary);
         }

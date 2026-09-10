@@ -153,7 +153,7 @@ class AcpEvents:
         if self.questions:
             raise ValueError("ACP permissions remain unresolved")
         result = self.event("turn/completed", {"turn": {"id": self.turn,
-            "status": "interrupted" if stop_reason == "cancelled" else "completed",
+            "status": "completed" if stop_reason == "end_turn" else "failed" if stop_reason == "refusal" else "interrupted",
             "stopReason": stop_reason, "items": list(self.items.values())}})
         self.turn = None
         return result
