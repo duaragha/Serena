@@ -33,7 +33,7 @@ try {
   if (seeded && record?.seed) { context.value = record.seed; seedReady = true; }
   if (seeded && !record) { status.textContent = 'Waiting for initial context'; submit.textContent = 'Create and send'; }
   submit.disabled = !seedReady;
-} catch (error) { invalidRecord = true; status.textContent = error.message; }
+} catch (error) { invalidRecord = true; submit.disabled = true; status.textContent = error.message; }
 window.addEventListener('message', event => {
   if (invalidRecord || !seeded || parent === window || event.source !== parent || event.origin !== location.origin
       || event.data?.type !== 'serena-workspace-seed' || event.data.sid !== boot.source) return;
@@ -50,7 +50,7 @@ window.addEventListener('message', event => {
   } catch (error) { seedReady = false; submit.disabled = true; warning.textContent = error.message; }
 });
 submit.addEventListener('click', async () => {
-  if (busy || submit.disabled || !seedReady) return;
+  if (invalidRecord || busy || submit.disabled || !seedReady) return;
   busy = true;
   submit.disabled = true;
   try {

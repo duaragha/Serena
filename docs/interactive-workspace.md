@@ -2,6 +2,28 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Creation recovery guard and current frozen desktop verification (2026-09-09):
+malformed or mismatched browser creation records now disable submission and are
+guarded inside the click handler, including synthetic events. The invalid record
+is retained for recovery rather than silently replaced with a new request.
+Browser regressions cover malformed JSON and invalid identity; the real Electron
+proof additionally exercises a damaged record before normal native creation.
+
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_creation.py tests/test_workspace_app.py tests/test_workspace_bridge.py -q --tb=short`: exit 0, 57 passed before the new guard tests.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py -q --tb=short`: exit 0, 13 passed with the new guard tests.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_app.py`: exit 0, all checks passed.
+- `node --check scripts/verify-workspace-electron.cjs`: exit 0.
+- `env SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python npm run build:sidecar` in `apps/desktop`: exit 0; rebuilt backend includes seeded creation and queued bridge recovery. Static creation guard included and exercised below. Existing optional-library warnings remain; capability-refusal smoke passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`: exit 0. Native 51-turn history, desktop/mobile input, skills, fork, disconnect/resume, real Electron clipboard and both providers' New Chat flows passed. Corrupt creation record blocked without replacement or launch. Closing Electron retained exact owners; isolated proof cleanup completed without credentials/inference. Screenshot inspected: `apps/desktop/build/workspace-proof/electron-native-claude-created.png`.
+- `git diff --check`: exit 0.
+
+This refreshes the frozen backend, not the installed app. The Electron proof
+does not yet exercise seeded linked-context creation or crash recovery against
+the frozen binary; their earlier source/native proofs remain the evidence for
+those behaviors. Full CLI parity, Gemini, Windows, installed-package QA and
+rollout remain unfinished. No user-host restart, release or default activation.
+
 Queued bridge recovery on explicit resume (2026-09-09): attached owners now
 restore unsent bridge messages from the latest durable queue snapshot, retaining
 FIFO order and edits. Snapshot identity/provider/schema and unfinished command

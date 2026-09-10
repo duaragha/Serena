@@ -126,6 +126,16 @@ async function main() {
     const claudeCreation = page.frameLocator('iframe[src^="/workspace/new?"]');
     await claudeCreation.getByRole('button',{name:'Create Claude chat',exact:true}).waitFor();
     assert.equal(creations,1);
+    const creationFrame = page.frames().find(frame => frame.url().includes('/workspace/new?'));
+    const storageKey = 'serena-workspace-create:' + new URL(creationFrame.url()).searchParams.get('source');
+    await creationFrame.evaluate(key => sessionStorage.setItem(key, '{'), storageKey);
+    await creationFrame.goto(creationFrame.url());
+    await creationFrame.waitForFunction(() => document.querySelector('#creation-submit')?.disabled);
+    await claudeCreation.locator('#creation-submit').dispatchEvent('click');
+    assert.equal(creations,1);
+    assert.equal(await creationFrame.evaluate(key => sessionStorage.getItem(key), storageKey), '{');
+    await creationFrame.evaluate(key => sessionStorage.removeItem(key), storageKey);
+    await creationFrame.goto(creationFrame.url());
     await claudeCreation.getByRole('button',{name:'Create Claude chat',exact:true}).click();
     await claudeCreation.getByRole('button',{name:'Open conversation',exact:true}).waitFor();
     const claudeSid = (await claudeCreation.getByRole('status').innerText()).replace('Session ','');
@@ -156,6 +166,7 @@ async function main() {
     console.log('PASS: real virtual-display clipboard copied native output and pasted multiline text without sending or losing the session');
     console.log('PASS: actual Electron New Chat button preserved its chosen title through exact native creation, iframe handoff and native input');
     console.log('PASS: actual Electron Claude New Chat used the selected provider, retained title through indexing, and rendered native local-command output');
+    console.log('PASS: corrupt saved creation record disabled submission without replacing the record or launching another session');
   } catch (error) {
     if (app) {
       const page = await app.firstWindow();

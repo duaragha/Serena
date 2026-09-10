@@ -12,6 +12,42 @@ from werkzeug.serving import make_server
 from ui.workspace_app import install_workspace
 
 
+@pytest.mark.parametrize("saved", ['{"request_id":"broken"}', '{'])
+def test_corrupt_creation_record_cannot_launch_replacement(tmp_path, saved):
+    from urllib.parse import urlencode
+    playwright = pytest.importorskip("playwright.sync_api")
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
+    host = install_workspace(app, tmp_path / "corrupt.db", describe=lambda sid: None)
+    calls = []
+    host.create = lambda *args, **kwargs: calls.append((args, kwargs))
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                base = f"http://127.0.0.1:{server.server_port}"
+                page.goto(base + "/workspace/new?" + urlencode({"source": "corrupt", "provider": "codex", "cwd": str(tmp_path)}))
+                page.evaluate("saved => sessionStorage.setItem('serena-workspace-create:corrupt', saved)", saved)
+                page.reload()
+                button = page.locator("#creation-submit")
+                playwright.expect(button).to_be_disabled()
+                assert page.get_by_role("status").inner_text()
+                button.dispatch_event("click")
+                page.wait_for_timeout(50)
+                assert not calls and host._loop is None
+                assert page.evaluate("sessionStorage.getItem('serena-workspace-create:corrupt')") == saved
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+        host.shutdown()
+
+
 @pytest.mark.parametrize("width", [1440, 390])
 def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_path, width):
     from urllib.parse import urlencode
