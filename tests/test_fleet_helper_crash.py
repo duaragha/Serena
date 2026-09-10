@@ -44,8 +44,7 @@ def test_external_helper_kill_preserves_applied_patch_and_reaps_gate(tmp_path, m
                 time.sleep(0.02)
             assert marker.exists(), future.result(timeout=5) if future.done() else 'gate never entered'
             current = store.get_run(run_id)['phases'][3]['legs'][0]['current_attempt']
-            helper_pid, gate_pid = map(int, marker.read_text().split(':'))
-            helper = psutil.Process(helper_pid)
+            gate_parent_pid, gate_pid = map(int, marker.read_text().split(':'))
             gate_process = psutil.Process(gate_pid)
             with store._connect() as db:
                 lease = db.execute('SELECT owner_pid,owner_token FROM fleet_worker_leases WHERE attempt_id=? AND state=?',
@@ -53,7 +52,7 @@ def test_external_helper_kill_preserves_applied_patch_and_reaps_gate(tmp_path, m
                 process_token = db.execute('SELECT process_token FROM fleet_attempts WHERE attempt_id=?',
                                            (current['attempt_id'],)).fetchone()[0]
             assert lease is not None
-            assert helper.pid == lease['owner_pid']
+            helper = psutil.Process(lease['owner_pid'])
             launched = psutil.Process(current['pid'])
             # Windows venv python.exe can be a launcher whose child owns the
             # lease. Verify this exact ancestry rather than assuming one PID.
@@ -62,7 +61,10 @@ def test_external_helper_kill_preserves_applied_patch_and_reaps_gate(tmp_path, m
             assert launched.pid not in {os.getpid(), os.getppid()}
             assert process_start_token(launched.pid) == process_token
             assert process_start_token(helper.pid) == lease['owner_token']
-            assert gate_process.ppid() == helper.pid
+            # The gate's Python interpreter may have its own venv launcher too.
+            # The lease, not a gate-reported parent, identifies the kill target.
+            assert gate_process.ppid() == gate_parent_pid
+            assert gate_process in helper.children(recursive=True)
             assert (root / 'core/alpha.py').read_bytes() == b'alpha = 2\n'
             helper.kill()  # psutil fences PID reuse against this process instance
             killed = future.result(timeout=30)
