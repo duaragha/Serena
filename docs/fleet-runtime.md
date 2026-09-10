@@ -63,6 +63,33 @@ Exhaustion and non-lock errors remain visible; disk-full and corruption are not 
 
 ## Durable resource recovery and actionable stops
 
+Declared integration test sequences have one narrow generated-type preparation
+pass: when `npm run typecheck` exits 2 with TS2307 naming a `.generated` or
+`/generated` module, and the combined checkout declares a `codegen` script,
+Fleet invokes that script with npm lifecycle hooks disabled and rechecks the
+same typecheck once. The gate retains the original failure, preparation result
+and recheck result. Ordinary missing packages and unrelated TypeScript errors
+do not trigger this path; preparation or recheck failure still rejects the
+integration. This repairs checkout-local generated state without another model
+turn or copying unverified generated files from a peer. It does not repair
+unsupported runtime versions.
+
+The resident recovery poll can queue one supervisor-only integration replay per
+leg for saved failures in this exact class. Admission requires the current failed
+zero-exit writer attempt, previously accepted completion evidence, a rejected
+local integration receipt, and its saved patch. Cancellation and queueing share
+a transaction; live attempts prevent admission. Other input blockers remain
+untouched. A dedicated Python helper owns the replay's process group and normal
+worker lease; the resident service must never become the worker PID for recovery
+or termination. The parent uses Fleet's bounded process/output transport and
+tracks cancellation. The helper takes the write claim and revalidates
+completion evidence, and requires an exact saved-patch SHA-256 match inside the
+integration lock before applying. It neither refreshes the worker checkout nor
+spends a native model turn. Its new attempt has no observed model identity; the
+original failed attempt retains provider provenance. A refused replay parks for
+input rather than repeatedly spending attempts. This bounded replay is not yet
+a general integration journal with crash-safe commit reconciliation.
+
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
 attempt as evidence. Independent ready work continues; a run with only parked work releases its

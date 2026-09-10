@@ -1568,6 +1568,39 @@ def run_test_gate(
     }
 
 
+def _generated_types_preparation(
+    root: Path | str, command: list[str], failure: dict[str, Any]
+) -> list[str] | None:
+    """Recognise a missing generated-type prerequisite, not arbitrary TS errors.
+
+    Rebuild only through the checkout's declared codegen script, using the
+    already selected npm executable. Never install packages or copy generated
+    files from another worker. Lifecycle hooks are deliberately disabled.
+    """
+
+    if failure.get("ok") or failure.get("exit_code") != 2:
+        return None
+    if len(command) != 3 or command[1:] != ["run", "typecheck"]:
+        return None
+    if Path(command[0]).name not in {"npm", "npm.cmd"}:
+        return None
+    if not re.search(
+        r"error TS2307: Cannot find module ['\"][^'\"\n]*[./]generated(?:[./][^'\"\n]*)?['\"]",
+        str(failure.get("output_tail") or ""),
+    ):
+        return None
+    try:
+        manifest = json.loads((Path(root) / "package.json").read_text())
+    except (OSError, ValueError):
+        return None
+    scripts = manifest.get("scripts") if isinstance(manifest, dict) else None
+    if not isinstance(scripts, dict) or not isinstance(scripts.get("codegen"), str):
+        return None
+    if not scripts["codegen"].strip():
+        return None
+    return [command[0], "--ignore-scripts", "run", "codegen"]
+
+
 def run_test_gates(
     root: Path | str, commands: list[list[str]] | None, *, timeout: int = 900
 ) -> dict[str, Any]:
@@ -1585,6 +1618,20 @@ def run_test_gates(
     results: list[dict[str, Any]] = []
     for command in commands:
         result = run_test_gate(root, command, timeout=timeout)
+        preparation = _generated_types_preparation(root, command, result)
+        if preparation:
+            original = result
+            prepared = run_test_gate(root, preparation, timeout=timeout)
+            result = (
+                run_test_gate(root, command, timeout=timeout)
+                if prepared.get("ok")
+                else dict(original)
+            )
+            result["prerequisite_recovery"] = {
+                "original_failure": original,
+                "preparation": prepared,
+                "rechecked": bool(prepared.get("ok")),
+            }
         results.append(result)
         if not result.get("ok", False):
             return {
@@ -1700,6 +1747,7 @@ def integrate_workspace(
     declared_tests: list[list[str]] | None = None,
     declared_paths: list[str] | tuple[str, ...] | None = None,
     apply_changes: bool = True,
+    expected_patch_sha256: str | None = None,
 ) -> IntegrationResult:
     """Run the entire integration transaction under the repository mutex."""
 
@@ -1714,6 +1762,7 @@ def integrate_workspace(
                 declared_tests=declared_tests,
                 declared_paths=declared_paths,
                 apply_changes=apply_changes,
+                expected_patch_sha256=expected_patch_sha256,
             )
     except RepositoryResolutionError as error:
         return IntegrationResult(
@@ -1731,6 +1780,7 @@ def _integrate_workspace_locked(
     declared_tests: list[list[str]] | None = None,
     declared_paths: list[str] | tuple[str, ...] | None = None,
     apply_changes: bool = True,
+    expected_patch_sha256: str | None = None,
 ) -> IntegrationResult:
     """Merge one worker's isolated work back, or refuse and say exactly why.
 
@@ -1754,6 +1804,9 @@ def _integrate_workspace_locked(
 
     current_branch = _workspace_branch(workspace)
     if current_branch and current_branch != workspace.branch:
+        if expected_patch_sha256 is not None:
+            return IntegrationResult(False, run_id, worker_key,
+                                     "saved integration replay refuses a switched branch")
         try:
             delivery = published_branch_delivery(workspace, declared_paths)
         except IsolationError as error:
@@ -1793,6 +1846,9 @@ def _integrate_workspace_locked(
 
     changed = workspace_changed_paths(workspace)
     if not changed:
+        if expected_patch_sha256 is not None:
+            return IntegrationResult(False, run_id, worker_key,
+                                     "saved integration replay patch is no longer present")
         result = IntegrationResult(
             ok=True,
             run_id=run_id,
@@ -1840,6 +1896,12 @@ def _integrate_workspace_locked(
         return result
 
     patch = _workspace_patch(workspace, changed)
+    if expected_patch_sha256 is not None and (
+        patch is None or hashlib.sha256(patch.encode("utf-8", errors="surrogateescape")).hexdigest()
+        != expected_patch_sha256
+    ):
+        return IntegrationResult(False, run_id, worker_key,
+                                 "saved integration replay patch fingerprint changed")
     if patch is None:
         result = IntegrationResult(
             ok=False,

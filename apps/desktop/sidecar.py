@@ -10,6 +10,11 @@ from pathlib import Path
 if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+if __name__ == "__main__" and sys.argv[1:] == ["--fleet-integration-replay"]:
+    from fleet.integration_recovery import main as replay_integration
+
+    raise SystemExit(replay_integration())
+
 if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
     from fleet.peer_mcp import mcp
 
