@@ -2,6 +2,37 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Linked Native Context (2026-09-10)
+
+The native frame asks its verified parent for current split membership on focus
+and the context heartbeat. The parent responds only to the exact frame/session,
+with mounted members of the active Chats/Code split. The frame includes this in
+its existing sequenced view report. Backend validation rejects duplicate,
+malformed or self-excluding identities; snapshots omit missing/closed owners.
+Neither reporting path attaches a missing partner.
+
+The aggregate runtime endpoint now takes split membership from the same context
+as the selected focused session. It no longer combines a freshly focused native
+session with an unrelated older GTK/PTY split. This is context publication;
+native reusable-work admission and idle process sleeping remain unfinished.
+
+Scoped verification:
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_split_context_stays_with_its_focused_owner tests/test_workspace_host.py::test_view_context_auth_order_expiry_and_draft_retention tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short
+# exit 0: 4 passed in 17.97s; both-provider browser layout reporting,
+# no partner auto-launch, exact split/focus, expiry and validation
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+# exit 0: real Electron linked Claude/Codex focus, split partners and drafts;
+# native creation/clipboard/local commands/reload/view closure preserved owners;
+# source backend, no inference or credential changes, isolated children reaped
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py tests/test_workspace_host.py tests/test_workspace_app.py
+# exit 0
+node --check ui/static/workspace-page.mjs
+# exit 0
+node --check scripts/verify-workspace-electron.cjs
+# exit 0
+```
+
 ## Native View Context (2026-09-10)
 
 Native panes now publish boolean focus, visibility and draft presence through an

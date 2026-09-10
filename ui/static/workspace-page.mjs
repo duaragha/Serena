@@ -37,6 +37,7 @@ const pane = new WorkspacePane(document.querySelector('#workspace-pane'), {
 });
 let intersects=true;
 let viewContext=null;
+let splitSids=[];
 let lastContextSignature='',lastContextAt=0;
 const contextKey=`serena-workspace-view:${boot.sessionId}`;
 try {
@@ -48,7 +49,7 @@ function reportContext(closing=false) {
   closing=closing===true;
   if(!viewContext)return;
   const visible=!closing && intersects && document.visibilityState==='visible';
-  const state={visible,focused:visible && document.hasFocus(),
+  const state={visible,focused:visible && document.hasFocus(),split_sids:visible ? splitSids : [],
     draft:!!(pane.input.value.trim() || pane.files.length || pane.selectedSkills.length)};
   const signature=JSON.stringify(state),now=performance.now();
   if(!closing && signature===lastContextSignature && now-lastContextAt<1800)return;
@@ -61,7 +62,11 @@ function reportContext(closing=false) {
     body:JSON.stringify(data),
   }).catch(()=>{});
 }
-const contextTimer=setInterval(reportContext,2000);
+function refreshContext() {
+  if(parent!==window)parent.postMessage({type:'serena-workspace-context-request',sid:boot.sessionId},location.origin);
+  reportContext();
+}
+const contextTimer=setInterval(refreshContext,2000);
 document.addEventListener('input',reportContext);
 window.addEventListener('blur',reportContext);
 const updateVisibility=()=>{
@@ -75,7 +80,7 @@ const visibilityObserver=new IntersectionObserver(entries=>{
 visibilityObserver.observe(pane.root);
 document.addEventListener('visibilitychange',updateVisibility);
 function reportFocus() {
-  reportContext();
+  refreshContext();
   if(parent!==window && intersects && document.visibilityState==='visible' && document.hasFocus())
     parent.postMessage({type:'serena-workspace-focused',sid:boot.sessionId},location.origin);
 }
@@ -87,6 +92,11 @@ function reportState() {
   if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:pane.conversation.status},location.origin);
 }
 window.addEventListener('message', e => {
+  if(e.origin===location.origin && e.source===parent && e.data?.type==='serena-workspace-layout'
+    && e.data.sid===boot.sessionId && Array.isArray(e.data.split_sids)
+    && e.data.split_sids.length<=4 && e.data.split_sids.every(sid=>typeof sid==='string')){
+    splitSids=e.data.split_sids;reportContext();return;
+  }
   if (e.origin === location.origin && e.source === parent && e.data?.type === 'serena-workspace-focus') pane.input.focus();
   if(e.origin!==location.origin || e.source!==parent || e.data?.type!=='serena-workspace-handoff' || e.data.sid!==boot.sessionId)return;
   const {requestId,text}=e.data;

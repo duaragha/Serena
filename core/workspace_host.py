@@ -127,12 +127,17 @@ class WorkspaceHost:
 
     def note_view_context(self, sid, data):
         self._validate_session(sid)
-        if (not isinstance(data, dict) or set(data) != {"view_id", "sequence", "focused", "visible", "draft"}
+        if (not isinstance(data, dict) or set(data) - {"split_sids"} != {"view_id", "sequence", "focused", "visible", "draft"}
                 or not isinstance(data["view_id"], str) or str(UUID(data["view_id"])) != data["view_id"]
                 or type(data["sequence"]) is not int or not 0 <= data["sequence"] <= 2 ** 53 - 1
                 or any(type(data[key]) is not bool for key in ("focused", "visible", "draft"))
                 or (data["focused"] and not data["visible"])):
             raise ValueError("Expected an exact view identity, sequence and boolean context")
+        split = data.get("split_sids", [])
+        if (not isinstance(split, list) or len(split) > 4
+                or any(not isinstance(value, str) or not value for value in split)
+                or len(set(split)) != len(split) or (split and sid not in split)):
+            raise ValueError("Split context must contain unique session identities including this view")
         with self._guard:
             if self._stopped or self._loop is None:
                 return {"ok": False, "observing": False}
@@ -162,7 +167,8 @@ class WorkspaceHost:
             fresh = [view for view in views if now - view["seen"] < 6]
             alive = owner.state not in {"closed", "unavailable"}
             if alive:
-                focus.extend((view["focused_at"], sid) for view in fresh if view["focused"])
+                focus.extend((view["focused_at"], sid, view.get("split_sids", []))
+                             for view in fresh if view["focused"])
             runtimes.append({
                 "sid": sid,
                 "agent": provider,
@@ -176,9 +182,12 @@ class WorkspaceHost:
                 "draft": any(view["draft"] for view in views),
                 "draft_known": bool(views) and len(fresh) == len(views),
             })
-        focused_at, focused_sid = max(focus, default=(0, None))
+        focused_at, focused_sid, split = max(focus, default=(0, None, []))
+        split = [sid for sid in split if sid in self._sessions
+                 and self._sessions[sid][0].state not in {"closed", "unavailable"}]
         return {"runtimes": runtimes, "focused_sid": focused_sid,
-                "focused_at": focused_at, "window_active": bool(focused_sid)}
+                "focused_at": focused_at, "window_active": bool(focused_sid),
+                "split_pair": split if len(split) > 1 else []}
 
     def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:

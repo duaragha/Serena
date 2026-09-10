@@ -211,6 +211,38 @@ def test_view_context_auth_order_expiry_and_draft_retention(tmp_path, monkeypatc
         host.shutdown()
 
 
+def test_split_context_stays_with_its_focused_owner(tmp_path, monkeypatch):
+    from ui import web
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'split.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'claude' if sid == 'left' else 'codex',
+                             'cwd': str(tmp_path)}, factories={'claude': Owner, 'codex': Owner})
+    monkeypatch.setitem(web.app.extensions, 'workspace_host', host)
+    monkeypatch.setattr(web, '_native_runtime_context', lambda: {
+        'focused_sid': 'old', 'focused_at': 1, 'split_pair': ['old', 'wrong'], 'runtimes': []})
+    monkeypatch.setattr(web.pty_terminal, 'runtime_context_snapshot', lambda: {'runtimes': []})
+    monkeypatch.setattr(web, '_decorate_runtime_entry', lambda row: dict(row))
+    data = {'view_id': '11111111-1111-4111-8111-111111111111', 'sequence': 1,
+            'focused': True, 'visible': True, 'draft': False}
+    try:
+        host.attach('left')
+        host.attach('right')
+        host.note_view_context('left', data)
+        client = web.app.test_client()
+        context = client.get('/api/runtime-context').json
+        assert context['focused_sid'] == 'left' and context['split_pair'] == []
+        host.note_view_context('left', {**data, 'sequence': 2, 'split_sids': ['left', 'right']})
+        context = client.get('/api/runtime-context').json
+        assert context['focused_sid'] == 'left' and context['split_pair'] == ['left', 'right']
+        for split in [['right'], ['left', 'left'], 'left', ['left', 1]]:
+            with pytest.raises(ValueError):
+                host.note_view_context('left', {**data, 'sequence': 3, 'split_sids': split})
+        host._sessions['right'][0].state = 'closed'
+        assert host.runtime_context_snapshot()['split_pair'] == []
+        assert len(host._sessions) == 2 and all(not owner.sent for owner, _ in host._sessions.values())
+    finally:
+        host.shutdown()
+
+
 def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
     calls = []
     class AccountOwner(Owner):

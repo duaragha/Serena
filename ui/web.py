@@ -7141,6 +7141,12 @@ function _startStructuredPane(sid, opts) {
   });
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
+    if(event.data.type==='serena-workspace-context-request'){
+      const split=currentTab==='chats' && convMode==='live' && _gtkSplitActive && _gtkSplitSids?.includes(sid)
+        ? _gtkSplitSids.filter(id=>termSessions.has(id)) : [];
+      frame.contentWindow.postMessage({type:'serena-workspace-layout',sid,split_sids:split},location.origin);
+      return;
+    }
     if(event.data.type==='serena-workspace-focused'){
       const rect=mount.getBoundingClientRect();
       if(currentTab!=='chats' || convMode!=='live' || !document.hasFocus() || document.activeElement!==frame
@@ -11850,14 +11856,9 @@ def api_runtime_context():
         for context in contexts
         for entry in context.get("runtimes", [])
     ]
-    focused_sid = next(
-        (context.get("focused_sid") for context in contexts if context.get("focused_sid")),
-        None,
-    )
-    split_pair = next(
-        (context.get("split_pair") for context in contexts if context.get("split_pair")),
-        [],
-    )
+    focused_context = next((context for context in contexts if context.get("focused_sid")), {})
+    focused_sid = focused_context.get("focused_sid")
+    split_pair = focused_context.get("split_pair", [])
     focused_at = max(
         (float(context.get("focused_at") or 0.0) for context in contexts),
         default=0.0,

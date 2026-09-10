@@ -263,6 +263,12 @@ async function main() {
       await draft.fill(`Keep the ${index===0?'Claude':'Codex'} draft`);
       await draft.click();
       await page.waitForFunction(id=>activeTermSid===id && _webRuntimeFocusSid===id,id);
+      await page.waitForFunction(async ({id,ids})=>{
+        const context=await(await fetch('/api/runtime-context')).json();
+        return context.focused_sid===id && context.window_active
+          && context.split_pair.length===ids.length && ids.every(sid=>context.split_pair.includes(sid))
+          && context.runtimes.find(row=>row.sid===id)?.draft;
+      },{id,ids:linkedIds});
       assert.equal(await page.locator(`.term-pane[data-sid="${id}"]`).evaluate(el=>el.classList.contains('runtime-focused')),true);
       await linkedPane.getByRole('button',{name:'Session events',exact:true}).click();
       await linkedPane.getByRole('dialog',{name:'Session events',exact:true}).waitFor();
@@ -294,6 +300,7 @@ async function main() {
     console.log('PASS: multi-agent picker created exact native Claude/Codex identities with one retained title and persisted group before any model input');
     console.log('PASS: closing both linked views kept their real owners in Active; reopening observed the same session without creating another');
     console.log('PASS: clicking either native linked composer selected its exact parent session; toolbar dialogs retained focus and drafts survived');
+    console.log('PASS: both real native linked panes published exact focus, split partners and draft state to the local backend');
   } catch (error) {
     if (app) {
       const page = await app.firstWindow();
