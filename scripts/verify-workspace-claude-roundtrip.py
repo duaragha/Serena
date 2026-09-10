@@ -23,6 +23,8 @@ from core.workspace_lease import SessionLease
 
 
 async def main(bridge=False, background_task=False, typescript_sdk=None, mcp_form=False):
+    if typescript_sdk:
+        typescript_sdk = str(Path(typescript_sdk).resolve(strict=True))
     binary = shutil.which("claude")
     if not binary:
         raise RuntimeError("Installed Claude unavailable")

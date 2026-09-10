@@ -2,6 +2,47 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Current user scope (2026-09-10): finish **Claude and Codex**; Gemini is deferred
+at the user's explicit request. Historical three-provider requirements below
+are retained as history, not a reason to block this two-provider delivery.
+
+## Authenticated Claude Verification
+
+2026-09-10: existing subscription authentication was used only in disposable
+private proof storage; metered API fallback was stripped. Claude answered a real
+first turn, resumed the exact saved identity through the TypeScript workspace
+adapter, answered a second turn, and exposed native context/command output.
+The real MCP tool form also traversed the public SDK and owner; its validated
+answer reached the fixture tool and the parent turn completed. Cleanup removed
+the isolated authentication/history and reaped owned processes.
+
+Commands, final exits **0**:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_roundtrip_arguments.py -q
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-claude-roundtrip.py tests/test_workspace_roundtrip_arguments.py
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference --typescript-sdk runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-roundtrip.py --allow-inference --typescript-sdk runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs --mcp-form
+```
+
+The first Claude proof attempt exited **1** after a successful first response:
+the relative SDK argument resolved under the isolated project and the worker
+closed its pipe. The proof now resolves/validates it before authentication or
+launch. The focused prerequisite regression test passed (**1 passed**), followed
+by both successful full proof runs above.
+
+The current Codex authenticated command remains blocked:
+
+```sh
+SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-roundtrip.py --allow-inference
+```
+
+Exit **1**: provider returned `unauthorized`, reporting that the refresh token
+had already been used, before the first turn completed. No logout or original
+credential/session modification was performed. Existing local-command packaged
+proofs remain valid but do not establish authenticated Codex responses. A fresh
+authorized sign-in is required before claiming that verification passed.
+
 ## Current Windows Packaged Verification
 
 2026-09-10: rebuilt Windows from synced source after verifying the pane JavaScript
