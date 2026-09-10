@@ -2,6 +2,35 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Host Sleep Admission (2026-09-10)
+
+The local authenticated `/api/workspace/<sid>/sleep` control acts only on an
+existing owner. Codex and Claude share host admission: ready/no active turn,
+no questions/elicitations, no job reservation or bridge queue, no uncertain
+dispatch, fresh composer reports with no draft/focus and explicitly unpinned
+state, plus a successful empty native background-task query. Admission is
+rechecked after that query. Unknown task status is busy, not idle. Focus or pin
+reports wake the same process; observe/poll never wake or sleep it.
+
+The parent now publishes its real group pin setting to native views, and views
+report it with sequenced draft/focus telemetry. Unknown pin state prevents sleep.
+Owner status exposes `sleeping` separately from turn state. No automatic sleep
+trigger is enabled yet: pane-selection policy and Windows remain pending.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_native_sleep_admission_and_focus_wake -q --tb=short
+# exit 0: 26 passed in 2.40s; final HTTP auth/payload rerun: 26 passed in 2.88s
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 1: 105 passed, obsolete exact status assertion and missing default browser
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 107 passed in 17.12s; explicit installed browser used for browser test
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-work.py --allow-inference --pause
+# exit 0: real Codex owner stopped, focus woke it, native account read succeeded,
+# exact route/job/retry used same process; no duplicate turn, children reaped
+node --check ui/static/workspace-page.mjs
+# exit 0
+```
+
 ## Native Transport Pause/Wake Primitive (2026-09-10)
 
 The shared process transport now supports explicit idle POSIX group suspension.

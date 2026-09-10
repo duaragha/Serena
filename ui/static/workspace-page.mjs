@@ -38,6 +38,7 @@ const pane = new WorkspacePane(document.querySelector('#workspace-pane'), {
 let intersects=true;
 let viewContext=null;
 let splitSids=[];
+let pinned=null;
 let lastContextSignature='',lastContextAt=0;
 const contextKey=`serena-workspace-view:${boot.sessionId}`;
 try {
@@ -50,6 +51,7 @@ function reportContext(closing=false) {
   if(!viewContext)return;
   const visible=!closing && intersects && document.visibilityState==='visible';
   const state={visible,focused:visible && document.hasFocus(),split_sids:visible ? splitSids : [],
+    ...(typeof pinned==='boolean' ? {pinned} : {}),
     draft:!!(pane.input.value.trim() || pane.files.length || pane.selectedSkills.length)};
   const signature=JSON.stringify(state),now=performance.now();
   if(!closing && signature===lastContextSignature && now-lastContextAt<1800)return;
@@ -95,7 +97,9 @@ window.addEventListener('message', e => {
   if(e.origin===location.origin && e.source===parent && e.data?.type==='serena-workspace-layout'
     && e.data.sid===boot.sessionId && Array.isArray(e.data.split_sids)
     && e.data.split_sids.length<=4 && e.data.split_sids.every(sid=>typeof sid==='string')){
-    splitSids=e.data.split_sids;reportContext();return;
+    splitSids=e.data.split_sids;
+    pinned=typeof e.data.pinned==='boolean' ? e.data.pinned : null;
+    reportContext();return;
   }
   if (e.origin === location.origin && e.source === parent && e.data?.type === 'serena-workspace-focus') pane.input.focus();
   if(e.origin!==location.origin || e.source!==parent || e.data?.type!=='serena-workspace-handoff' || e.data.sid!==boot.sessionId)return;

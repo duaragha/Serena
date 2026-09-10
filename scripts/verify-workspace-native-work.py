@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def child(root, expect_auth_failure=False, lose_receipt=False, lose_ack=False):
+def child(root, expect_auth_failure=False, lose_receipt=False, lose_ack=False, pause=False):
     from werkzeug.serving import make_server
 
     from core.coding_job_contract import CodingJobBrief, capture_git_snapshot
@@ -93,7 +93,20 @@ def child(root, expect_auth_failure=False, lose_receipt=False, lose_ack=False):
         item, dispatch, view = str(uuid4()), str(uuid4()), str(uuid4())
         prompt = 'Reply exactly SERENA_NATIVE_WORK_PROOF. Do not use tools.'
         host.note_view_context(sid, {'view_id': view, 'sequence': 0,
-                                    'visible': True, 'focused': True, 'draft': False})
+                                    'visible': True, 'focused': not pause, 'draft': False, 'pinned': False})
+        if pause:
+            import psutil
+            assert host.set_sleep(sid, True)['ok']
+            async def confirm_stopped():
+                async with asyncio.timeout(5):
+                    while psutil.Process(pid).status() != psutil.STATUS_STOPPED:
+                        await asyncio.sleep(.01)
+            host._dispatch(confirm_stopped(), 10)
+            assert host.observe(sid)['sleeping']
+            host.note_view_context(sid, {'view_id': view, 'sequence': 1,
+                                        'visible': True, 'focused': True, 'draft': False, 'pinned': False})
+            assert not host.observe(sid)['sleeping']
+            assert host._dispatch(owner.account_status(), 10)['account']
         context = host.runtime_context_snapshot()
         context['bridge_port'] = server.server_port
         route = discover_work_route(str(project), prompt, runtime_contexts=[context],
@@ -125,7 +138,7 @@ def child(root, expect_auth_failure=False, lose_receipt=False, lose_ack=False):
             owner.rpc.request = lose_native_reply
         outcomes = []
         for sequence in ((1, 2, 3) if lose_receipt or lose_ack else (1, 2)):
-            host.note_view_context(sid, {'view_id': view, 'sequence': sequence,
+            host.note_view_context(sid, {'view_id': view, 'sequence': sequence + 10,
                                         'visible': True, 'focused': True, 'draft': False})
             request = Request(f'http://127.0.0.1:{server.server_port}/api/codex-work-bridge',
                 method='POST', headers={'Content-Type': 'application/json'}, data=json.dumps(body).encode())
@@ -158,6 +171,8 @@ def child(root, expect_auth_failure=False, lose_receipt=False, lose_ack=False):
         assert subprocess.check_output(['git', '-C', str(project), 'status', '--porcelain'], text=True) == ''
         if not expect_auth_failure:
             print('PASS: after one user model-selection turn, actual native runtime inventory selected the exact existing owner and HTTP bridge')
+        if pause:
+            print('PASS: host safely paused the real native owner; focus woke the same process before job routing and input')
         if lose_receipt:
             print('PASS: injected receipt failure recovered from durable exact-turn evidence without resubmission')
         if lose_ack:
@@ -182,9 +197,10 @@ def main():
     failure = parser.add_mutually_exclusive_group()
     failure.add_argument('--lose-receipt', action='store_true')
     failure.add_argument('--lose-ack', action='store_true')
+    parser.add_argument('--pause', action='store_true')
     args = parser.parse_args()
     if args.child:
-        child(args.child, args.expect_auth_failure, args.lose_receipt, args.lose_ack)
+        child(args.child, args.expect_auth_failure, args.lose_receipt, args.lose_ack, args.pause)
         return
     from core.billing import strip_metered_auth_env
     from core.work_session_router import SOL_MODEL
@@ -213,7 +229,8 @@ def main():
         process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--allow-inference', '--child', str(root),
                                     *(['--expect-auth-failure'] if args.expect_auth_failure else []),
                                     *(['--lose-receipt'] if args.lose_receipt else []),
-                                    *(['--lose-ack'] if args.lose_ack else [])],
+                                    *(['--lose-ack'] if args.lose_ack else []),
+                                    *(['--pause'] if args.pause else [])],
                                    cwd=ROOT, env=env)
         try:
             raise SystemExit(process.wait(timeout=240))

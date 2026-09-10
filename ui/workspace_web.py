@@ -57,6 +57,13 @@ def workspace_blueprint(host, *, token: str):
     def view_context(sid):
         return jsonify(host.note_view_context(sid, request.get_json(silent=True)))
 
+    @bp.post("/<sid>/sleep")
+    def sleep(sid):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) != {"sleeping"} or type(data["sleeping"]) is not bool:
+            raise ValueError("An explicit boolean sleeping state is required")
+        return jsonify(host.set_sleep(sid, data["sleeping"]))
+
     @bp.post("/<sid>/handoff")
     def handoff(sid):
         data = request.get_json(silent=True)

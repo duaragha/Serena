@@ -129,12 +129,14 @@ class WorkspaceHost:
 
     def note_view_context(self, sid, data):
         self._validate_session(sid)
-        if (not isinstance(data, dict) or set(data) - {"split_sids"} != {"view_id", "sequence", "focused", "visible", "draft"}
+        if (not isinstance(data, dict) or set(data) - {"split_sids", "pinned"} != {"view_id", "sequence", "focused", "visible", "draft"}
                 or not isinstance(data["view_id"], str) or str(UUID(data["view_id"])) != data["view_id"]
                 or type(data["sequence"]) is not int or not 0 <= data["sequence"] <= 2 ** 53 - 1
                 or any(type(data[key]) is not bool for key in ("focused", "visible", "draft"))
                 or (data["focused"] and not data["visible"])):
             raise ValueError("Expected an exact view identity, sequence and boolean context")
+        if "pinned" in data and type(data["pinned"]) is not bool:
+            raise ValueError("Pinned context must be boolean")
         split = data.get("split_sids", [])
         if (not isinstance(split, list) or len(split) > 4
                 or any(not isinstance(value, str) or not value for value in split)
@@ -156,7 +158,76 @@ class WorkspaceHost:
         if previous is None and len(views) >= 32:
             raise ValueError("Too many views for this session")
         views[data["view_id"]] = {**data, "seen": monotonic(), "focused_at": time.time()}
+        if data["focused"] or data.get("pinned"):
+            transport = self._owner_transport(*self._sessions[sid])
+            if transport is not None and getattr(transport, "suspended", False):
+                transport.wake()
         return {"ok": True}
+
+    @staticmethod
+    def _owner_transport(owner, provider):
+        if provider == "codex":
+            return getattr(owner, "rpc", None)
+        return getattr(getattr(getattr(owner, "client", None), "transport", None), "rpc", None)
+
+    def set_sleep(self, sid, sleeping):
+        """Explicit power control of an existing owner; never attach or launch."""
+        self._validate_session(sid)
+        if type(sleeping) is not bool:
+            raise ValueError("Sleeping must be boolean")
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"ok": False, "message": "No native owner is available"}
+            future = asyncio.run_coroutine_threadsafe(self._set_sleep(sid, sleeping), self._loop)
+        return future.result(timeout=35)
+
+    def _sleep_blocker(self, sid):
+        owner, _ = self._sessions[sid]
+        if owner.state != "ready" or owner.active_turn:
+            return "Native work is active or uncertain"
+        if getattr(owner, "questions", None) or getattr(owner, "elicitations", None):
+            return "Native questions are pending"
+        if self._work_reservations.get(sid) or self._bridge_queues.get(sid):
+            return "Native work is reserved or queued"
+        tasks = getattr(getattr(owner, "events", None), "tasks", {})
+        if any(task.get("status") not in {"completed", "failed", "stopped", "killed"} for task in tasks.values()):
+            return "Native background work is active or unknown"
+        views = list(self._views.get(sid, {}).values())
+        if not views or any(monotonic() - view["seen"] >= 6 for view in views):
+            return "Composer state is not freshly confirmed"
+        if any(view["draft"] or view["focused"] or view.get("pinned") is not False for view in views):
+            return "Native pane is focused, pinned, has a draft, or pin state is unknown"
+        return ""
+
+    async def _set_sleep(self, sid, sleeping):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            if sid not in self._sessions:
+                return {"ok": False, "message": "No native owner is available"}
+            owner, provider = self._sessions[sid]
+            transport = self._owner_transport(owner, provider)
+            if transport is None:
+                return {"ok": False, "message": "Native power control is unavailable"}
+            if not sleeping:
+                transport.wake()
+                return {"ok": True, "sleeping": False}
+            error = self._sleep_blocker(sid)
+            if error:
+                return {"ok": False, "message": error}
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                return {"ok": False, "message": "Native dispatch is unconfirmed"}
+            if not getattr(transport, "suspended", False):
+                try:
+                    tasks = await owner.list_background_tasks()
+                except Exception:
+                    return {"ok": False, "message": "Native background work could not be checked"}
+                if not isinstance(tasks, dict) or tasks.get("data") != []:
+                    return {"ok": False, "message": "Native background work is active or unknown"}
+            error = self._sleep_blocker(sid)
+            if error or self._stopped:
+                return {"ok": False, "message": error or "Host stopped"}
+            paused = await transport.pause_idle()
+            return {"ok": paused, "sleeping": bool(getattr(transport, "suspended", False)),
+                    "message": "Native owner paused" if paused else "Native transport cannot pause safely"}
 
     async def _runtime_context_snapshot(self):
         runtimes = []
@@ -482,6 +553,7 @@ class WorkspaceHost:
             "provider": provider,
             "state": owner.state,
             "turn_id": owner.active_turn,
+            "sleeping": bool(getattr(self._owner_transport(owner, provider), "suspended", False)),
             **({"error": "Session runtime is unavailable; retry is refused until its cleanup and ownership are confirmed"}
                if owner.state in {"closed", "unavailable"} else {}),
         }

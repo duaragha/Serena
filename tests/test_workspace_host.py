@@ -1,10 +1,12 @@
 import asyncio
 import io
+import os
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from flask import Flask
@@ -14,6 +16,77 @@ from core.workspace_host import WorkspaceHost
 from core.workspace_journal import WorkspaceJournal
 from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+@pytest.mark.parametrize("blocker", [None, "running", "draft", "focused", "pinned", "unknown_pin",
+                                    "stale", "questions", "reserved", "queued", "background", "rpc_failure", "race"])
+def test_native_sleep_admission_and_focus_wake(tmp_path, provider, blocker):
+    class Transport:
+        suspended = False
+        pauses = 0
+        async def pause_idle(self):
+            self.suspended = True
+            self.pauses += 1
+            return True
+        def wake(self):
+            self.suspended = False
+
+    class SleepOwner(Owner):
+        async def open(self):
+            await super().open()
+            self.transport = Transport()
+            self.rpc = self.transport
+            self.client = SimpleNamespace(transport=SimpleNamespace(rpc=self.transport))
+        async def list_background_tasks(self):
+            if blocker == "rpc_failure":
+                raise RuntimeError("unavailable")
+            if blocker == "race":
+                self.state = "running"
+            return {"data": [{"processId": "active"}] if blocker == "background" else []}
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "sleep.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": provider, "cwd": str(tmp_path)},
+        factories={provider: SleepOwner})
+    app = Flask(__name__)
+    app.register_blueprint(workspace_blueprint(host, token="s" * 32))
+    client = app.test_client()
+    headers = {"X-Serena-Workspace-Token": "s" * 32}
+    view = "11111111-1111-4111-8111-111111111111"
+    try:
+        assert client.post("/api/workspace/exact/sleep", json={"sleeping": True}).status_code == 403
+        assert client.post("/api/workspace/exact/sleep", json={"sleeping": True}, headers=headers,
+                           environ_overrides={"REMOTE_ADDR": "192.0.2.1"}).status_code == 403
+        assert client.post("/api/workspace/exact/sleep", json={"sleeping": "true"}, headers=headers).status_code == 400
+        assert not host.set_sleep("exact", True)["ok"] and host._loop is None
+        host.attach("exact")
+        data = {"view_id": view, "sequence": 1, "visible": True,
+                "focused": blocker == "focused", "draft": blocker == "draft", "pinned": blocker == "pinned"}
+        if blocker == "unknown_pin":
+            data.pop("pinned")
+        host.note_view_context("exact", data)
+        owner = host._sessions["exact"][0]
+        if blocker == "running":
+            owner.state = "running"
+        if blocker == "questions":
+            owner.questions = {"pending": {}}
+        if blocker == "stale":
+            host._views["exact"][view]["seen"] -= 10
+        if blocker == "reserved":
+            host._work_reservations["exact"] = "job"
+        if blocker == "queued":
+            host._bridge_queues["exact"] = ["queued"]
+        assert not owner.transport.suspended  # Opening/reporting never sleeps.
+        result = client.post("/api/workspace/exact/sleep", json={"sleeping": True}, headers=headers).json
+        assert result["ok"] is (blocker is None)
+        assert owner.transport.pauses == (1 if blocker is None else 0)
+        if blocker is None:
+            assert host.observe("exact")["sleeping"]
+            host.note_view_context("exact", {**data, "sequence": 2, "focused": True})
+            assert not owner.transport.suspended
+    finally:
+        host._bridge_queues.clear()
+        host.shutdown()
 
 
 def test_claude_queued_input_is_session_bound_and_deduplicated(tmp_path):
@@ -511,7 +584,7 @@ def test_sessions_http_lists_native_owner_without_a_mounted_pane(tmp_path, monke
         result = client.get('/api/sessions').json
         assert result[0]['workspace_runtime'] == {
             'ok': True, 'session_id': 'exact', 'provider': 'codex',
-            'state': 'running', 'turn_id': 'work-in-progress'}
+            'state': 'running', 'turn_id': 'work-in-progress', 'sleeping': False}
         assert host._sessions['exact'][0] is owner and not owner.sent and not owner.closed
         owner.state = 'unavailable'
         assert not client.get('/api/sessions').json[0]['workspace_runtime']['ok']
@@ -1515,7 +1588,7 @@ window.addEventListener('pagehide',()=>connection.dispose());
     thread.start()
     try:
         with playwright.sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(executable_path=os.environ.get("SERENA_PROOF_BROWSER"))
             page = browser.new_page(viewport={"width": 1200, "height": 800})
             page.set_default_timeout(5000)
             errors = []

@@ -7144,7 +7144,8 @@ function _startStructuredPane(sid, opts) {
     if(event.data.type==='serena-workspace-context-request'){
       const split=currentTab==='chats' && convMode==='live' && _gtkSplitActive && _gtkSplitSids?.includes(sid)
         ? _gtkSplitSids.filter(id=>termSessions.has(id)) : [];
-      frame.contentWindow.postMessage({type:'serena-workspace-layout',sid,split_sids:split},location.origin);
+      frame.contentWindow.postMessage({type:'serena-workspace-layout',sid,split_sids:split,
+        pinned:Boolean(_gtkCurrentGroup && _gtkPinnedGroups.has(_gtkCurrentGroup))},location.origin);
       return;
     }
     if(event.data.type==='serena-workspace-focused'){
