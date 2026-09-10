@@ -2,6 +2,53 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Fresh Packaged Electron Checks (2026-09-10, 765021a)
+
+Both source-current sidecars built and passed the native Codex history/browser
+proof plus actual Electron main/preload integration. The Electron phase also
+created real Claude sessions, executed a native local command, and created and
+reopened a linked Claude/Codex pair. No credentials or inference were used.
+Observed flows: exact persisted resume and 50+1 history, file mentions, skill
+configuration, draft/focus telemetry, hidden polling, read-only replay on reload,
+explicit disconnect/reaping, indexed native fork, clipboard copy/multiline paste,
+new-chat title retention, corrupt-creation refusal, linked focus and draft
+retention, and owners surviving view/shell close before final isolated cleanup.
+This does not prove every CLI command or final release/default activation.
+
+Build commands:
+
+```sh
+env PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps /home/raghav/Documents/Projects/serena/.venv/bin/python -m PyInstaller --noconfirm --distpath apps/desktop/build/sidecar --workpath apps/desktop/build/pyinstaller-work apps/desktop/build/pyinstaller-work/serena-web-sidecar.spec
+# exit 0: Linux onedir build completed in about 113s; optional dependency warnings.
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B -m PyInstaller --noconfirm --distpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\dist --workpath C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\windows-proof-5cadd13\work C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\windows\sidecar-win.spec"
+# exit 0: Windows onedir build completed in about 86s; optional DLL/hook warnings.
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: all native/browser/Electron assertions passed; final cleanup passed.
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc powershell -NoProfile -Command -
+```
+
+The Windows proof command above received this stdin (exit 0; all native,
+desktop/mobile browser and Electron assertions passed, cleanup true):
+
+```powershell
+$r='C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace'; $env:SERENA_PROOF_PYTHONPATH="$r\apps\desktop\build\proof-tools\windows-python"; $env:SERENA_PROOF_BROWSER_EXECUTABLE='C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'; $env:SERENA_PROOF_ELECTRON="$r\apps\desktop\build\proof-tools\windows-electron\node_modules\electron\dist\electron.exe"; $env:SERENA_PROOF_PLAYWRIGHT="$r\apps\desktop\build\proof-tools\windows-python\playwright\driver\package"; & 'C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe' -B "$r\scripts\verify-workspace-codex-windows.py" --frozen "$r\apps\desktop\build\windows-proof-5cadd13\dist\serena-web-sidecar\serena-web-sidecar.exe"; exit $LASTEXITCODE
+```
+
+Built executable SHA-256:
+- Linux `apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar`:
+  `be1a0d31f05c3724de6cb9a66220659f464724e211e524c79aab118cb43c4f56`.
+- Windows `apps/desktop/build/windows-proof-5cadd13/dist/serena-web-sidecar/serena-web-sidecar.exe`:
+  `8de346f434ebd785edbb1a7f696704f2385539323f5538ec11cb340c163eba5d`.
+
+Inspected final Linux and Windows linked Electron screenshots and mobile Codex
+screenshots: neon-black palette retained, both composers visible, long command
+text wraps, controls do not overlap. Proof images are under the ignored
+`apps/desktop/build/workspace-proof/`; Windows copies have the `windows-` prefix.
+This is visual evidence for those sizes/flows, not a claim of exhaustive UI parity.
+No installed app was updated, no services were restarted, and no main merge or
+release occurred. Remaining checks include live sleep-state display, stale-view
+admission, full command parity and the final integration/release/default-enable path.
+
 ## Verified Windows Thread-Owned Sleep (2026-09-10)
 
 The failed status-based approach below is superseded. The owned Job Object now
