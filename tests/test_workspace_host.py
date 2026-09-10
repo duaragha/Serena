@@ -201,6 +201,63 @@ def test_pending_clear_catalog_filters_deduplicates_and_retires_after_indexing(t
         host.shutdown()
 
 
+@pytest.mark.parametrize("case", ["missing", "persisted", "ambiguous"])
+def test_pending_delete_retains_recovery_and_rejects_owned_target(tmp_path, monkeypatch, case):
+    import json
+
+    from core import indexer, metadata
+    from core.workspace_catalog import register_fork
+    from core.workspace_lease import SessionLease, SessionOwnedError
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setenv("SERENA_RUNTIME_LEASE_DIR", str(tmp_path / "leases"))
+    monkeypatch.setattr(indexer, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(indexer, "DB_PATH", tmp_path / "data/index.db")
+    monkeypatch.setattr(indexer, "_INDEX_LOCK_PATH", tmp_path / "data/index.lock")
+    monkeypatch.setattr(metadata, "METADATA_DIR", tmp_path / "meta")
+    monkeypatch.setattr(metadata, "METADATA_PATH", tmp_path / "legacy.json")
+    monkeypatch.setattr(metadata, "_migrated", False)
+    sid = "11111111-2222-4333-8444-555555555555"
+    journal = WorkspaceJournal(tmp_path / "workspace.db")
+    target = {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)}
+    journal.claim_command("source", "clear", {"action": "clear_session", "payload": {"confirmed": True}})
+    journal.prepare_clear("source", "clear", target)
+    host = WorkspaceHost(journal=journal, resolve=lambda sid: pytest.fail("must not launch"), register_fork=register_fork)
+    assert host.delete_pending_session(sid, source="proof") is None
+    journal.complete_clear("source", "clear")
+    journal.append(sid, {"method": "proof", "params": {"text": "retained"}})
+    metadata.set_custom_title(sid, "Keep title")
+    if case != "missing":
+        transcript = tmp_path / "claude/projects/project" / f"{sid}.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"type": "user", "cwd": str(tmp_path), "message": {"content": "Native history"}}) + "\n")
+        if case == "ambiguous":
+            other = transcript.parent.parent / "other" / transcript.name
+            other.parent.mkdir()
+            other.write_bytes(transcript.read_bytes())
+    lease = SessionLease(sid)
+    try:
+        with pytest.raises(SessionOwnedError):
+            host.delete_pending_session(sid, source="proof")
+        assert journal.uncataloged_clears() and metadata.get_meta(sid)["custom_title"] == "Keep title"
+    finally:
+        lease.release()
+    if case == "ambiguous":
+        with pytest.raises(ValueError, match="ambiguous"):
+            host.delete_pending_session(sid, source="proof")
+        assert journal.uncataloged_clears() and metadata.get_meta(sid)["custom_title"] == "Keep title"
+        assert not list(tmp_path.rglob("recovery.json"))
+        return
+    assert host.delete_pending_session(sid, source="proof")
+    assert not journal.uncataloged_clears() and host.describe_pending_session(sid) is None
+    assert not metadata.get_meta(sid)
+    assert journal.read(sid)["events"][0]["event"]["params"]["text"] == "retained"
+    manifests = list(tmp_path.rglob("recovery.json"))
+    assert len(manifests) == 1 and json.loads(manifests[0].read_text())["metadata"]["custom_title"] == "Keep title"
+    assert host.delete_pending_session(sid, source="proof") is None
+    assert host._loop is None and not host._sessions
+
+
 def test_completed_clear_indexes_only_persisted_committed_target_and_retries_failure(tmp_path):
     journal = WorkspaceJournal(tmp_path / "catalog.db")
     target = {"session_id": "11111111-2222-4333-8444-555555555555", "provider": "claude", "cwd": str(tmp_path)}

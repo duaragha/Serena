@@ -2,6 +2,21 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Pending clear deletion (2026-09-09): single/bulk delete now route committed
+uncataloged identities through an exact-session lease. A native transcript that
+has appeared is registered and archived under the existing recoverable deletion
+path. A truly absent transcript leaves a private recovery manifest containing
+the target, metadata and retained journal location; no native transcript is
+invented. The placeholder is retired only after recovery information exists.
+Uncommitted/retired identities are not treated as pending; ambiguous or invalid
+native metadata is rejected without deletion. Journal event history is retained.
+Verification:
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_catalog.py tests/test_workspace_pending_catalog_api.py -q --tb=short`: exit 0, 74 passed, including missing/persisted/ambiguous transcripts, active-owner refusal, recoverable metadata, and no automatic runtime launch.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_catalog.py tests/test_workspace_host.py tests/test_workspace_pending_catalog_api.py scripts/verify-workspace-claude-clear-transport.py`: exit 0, all checks passed.
+- `SERENA_EVIDENCE_KIND=live SERENA_PROOF_PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages node scripts/verify-workspace-claude-clear.mjs runtimes/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs /home/raghav/.local/bin/claude /home/raghav/Documents/Projects/serena/.venv/bin/python`: final exit 0. Real newly cleared native identities refused deletion while owned, then disconnected and deleted recoverably without reappearing, at both viewport sizes. Prior browser/history/title checks and cleanup passed with zero inference. First run exited 1 because the fixture's custom owner lease directory differed from the default deletion directory; the fixture now explicitly shares its isolated directory, as production does. Inspection also changed missing-cwd metadata from a TypeError to an honest validation rejection.
+Crash-time reconciliation, restoration UI, complete provider parity and final
+packaged/installed-app verification remain open.
+
 Packaged backend refresh and reconnect visual repair (2026-09-09): rebuilt the
 frozen sidecar from 523034d and exercised both providers through it. Codex proof
 now includes packaged disconnect/reconnect after fork navigation. Its initial

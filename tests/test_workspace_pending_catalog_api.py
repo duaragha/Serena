@@ -23,7 +23,7 @@ def test_owned_delete_reports_conflict_and_bulk_keeps_other_results():
 
     source = Path(__file__).resolve().parents[1] / "ui/web.py"
     selected = [node for node in ast.parse(source.read_text()).body if isinstance(node, ast.FunctionDef)
-                and node.name in {"api_delete_session", "api_bulk_delete"}]
+                and node.name in {"api_delete_session", "api_bulk_delete", "_delete_workspace_session"}]
     namespace = {"app": app, "request": request, "jsonify": jsonify,
                  "get_session": lambda sid: {"session_id": sid}, "delete_session": delete,
                  "_is_serena_voice_session": lambda row: False, "_fleet_worker_marker": lambda sid: None}

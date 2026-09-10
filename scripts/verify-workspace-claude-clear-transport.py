@@ -92,6 +92,7 @@ async def main():
             finished.set()
 
     leases = Path(root) / "leases"
+    os.environ["SERENA_RUNTIME_LEASE_DIR"] = str(leases)
     owner = ClaudeWorkspace(session_id=source, cwd=root, publish=old_publish,
                             client_factory=lambda options: ClaudeTypeScriptClient(
                                 options=options, sdk_path=sdk, node_path=node),
@@ -249,6 +250,23 @@ async def main():
                 finally:
                     browser.close()
             assert psutil.pid_exists(pid), "Closing the page must preserve native ownership"
+            pending = browser_host.command(target, f"delete-clear-{width}", "clear_session", {"confirmed": True})
+            assert pending["ok"], pending
+            pending_sid = pending["result"]["session_id"]
+            from core.workspace_lease import SessionOwnedError
+
+            try:
+                browser_host.delete_pending_session(pending_sid, source="native-proof")
+            except SessionOwnedError:
+                pass
+            else:
+                raise AssertionError("Pending deletion accepted a live native owner")
+            disconnected = browser_host.command(pending_sid, f"delete-disconnect-{width}", "disconnect_session", {"confirmed": True})
+            assert disconnected["ok"] and not psutil.pid_exists(pid), disconnected
+            assert browser_host.delete_pending_session(pending_sid, source="native-proof")
+            assert browser_host.describe_pending_session(pending_sid) is None
+            assert browser_host.include_pending_sessions([]) == []
+            print(f"PASS: {width}px real cleared identity refused live-owner deletion, then disconnected and deleted recoverably without reappearing")
             print(f"PASS: {width}px browser confirmed native clear, recovered receipt on reload, opened exact target, sent local command; one retained PID")
             print(f"PASS: {width}px pending rename used synced metadata and survived real native transcript indexing without a duplicate row")
         finally:

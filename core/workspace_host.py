@@ -657,6 +657,48 @@ class WorkspaceHost:
         return {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],
                 "title": "New Claude conversation", "native_persistence_pending": True}
 
+    def delete_pending_session(self, sid, *, source):
+        """Explicit deletion only; retain journal history and a recovery manifest."""
+        from uuid import uuid4
+
+        from core import indexer, metadata
+        from core.workspace_catalog import NativeTranscriptPending
+        from core.workspace_lease import SessionLease
+
+        target = self.journal.clear_target(sid, uncataloged_only=True)
+        if not target or not target["committed"]:
+            return None
+        lease = SessionLease(sid)
+        try:
+            target = self.journal.clear_target(sid, uncataloged_only=True)
+            if not target or not target["committed"]:
+                return None
+            if self.register_fork is None:
+                raise ValueError("Native session catalog is unavailable")
+            native = {key: target[key] for key in ("session_id", "provider", "cwd")}
+            try:
+                self.register_fork(native)
+            except NativeTranscriptPending:
+                recovery = self.journal.path.parent / "deleted-workspaces" / f"{sid}-{uuid4()}"
+                recovery.mkdir(parents=True, mode=0o700)
+                (recovery / "recovery.json").write_text(json.dumps({
+                    "session_id": sid, "target": native, "deleted_via": source,
+                    "metadata": metadata.get_meta(sid), "journal": str(self.journal.path),
+                    "native_transcript_present": False,
+                }, indent=2) + "\n", encoding="utf-8")
+                result = str(recovery)
+            else:
+                with indexer._index_update_lock():
+                    indexed = indexer.get_session(sid)
+                    if indexed is None:
+                        raise ValueError("Native registration did not produce the exact session")
+                    result = indexer._delete_unowned_session(indexed, source=source)
+            self.journal.mark_clear_cataloged(sid)
+            metadata.delete_meta(sid)
+            return result
+        finally:
+            lease.release()
+
     def include_pending_sessions(self, sessions, *, projects=()):
         from core.config import claude_project_dir_for
 

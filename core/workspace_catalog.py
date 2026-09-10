@@ -25,7 +25,7 @@ def register_fork(target):
         projects = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
         candidates = [p for directory in (projects / "sessions", projects / "archived_sessions")
                       for p in directory.rglob(f"rollout-*{sid}.jsonl")]
-    if not candidates and provider == "claude" and target.get("prompt_id"):
+    if not candidates and provider == "claude":
         raise NativeTranscriptPending("Completed prompt transcript is not persisted yet")
     if len(candidates) != 1:
         raise ValueError("Native fork transcript is missing or ambiguous")
@@ -55,7 +55,7 @@ def register_fork(target):
         if header.get("type") != "session_meta" or payload.get("id", payload.get("session_id")) != sid:
             raise ValueError("Native fork transcript identity does not match")
         meta = parse_codex_metadata(path)
-    if meta is None or meta.session_id != sid or Path(meta.cwd).resolve() != Path(target["cwd"]).resolve():
+    if meta is None or meta.session_id != sid or not isinstance(meta.cwd, str) or Path(meta.cwd).resolve() != Path(target["cwd"]).resolve():
         raise ValueError("Native fork metadata does not match its project and identity")
     with _index_update_lock():
         if provider == "codex":

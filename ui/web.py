@@ -12360,6 +12360,15 @@ def api_bulk_done():
     return jsonify({"ok": True, "count": count})
 
 
+def _delete_workspace_session(session_id, *, source):
+    workspace = app.extensions.get("workspace_host")
+    if workspace is not None:
+        result = workspace.delete_pending_session(session_id, source=source)
+        if result is not None:
+            return result
+    return delete_session(session_id, source=source)
+
+
 @app.route("/api/session/<session_id>", methods=["DELETE"])
 def api_delete_session(session_id):
     from core.workspace_lease import SessionOwnedError
@@ -12370,7 +12379,7 @@ def api_delete_session(session_id):
     if _fleet_worker_marker(session_id):
         return jsonify({"error": "Fleet worker chats are durable run history and cannot be deleted"}), 409
     try:
-        path = delete_session(session_id, source="serena-web")
+        path = _delete_workspace_session(session_id, source="serena-web")
         return jsonify({"ok": True, "path": path})
     except SessionOwnedError:
         return jsonify({"error": "Disconnect the session before deleting it; runtime ownership is still active or unconfirmed"}), 409
@@ -12392,7 +12401,7 @@ def api_bulk_delete():
             errors.append({"id": sid, "error": "Fleet worker chats are durable run history and cannot be deleted"})
             continue
         try:
-            delete_session(sid, source="serena-web-bulk")
+            _delete_workspace_session(sid, source="serena-web-bulk")
             deleted.append(sid)
         except Exception as e:
             errors.append({"id": sid, "error": str(e)})
