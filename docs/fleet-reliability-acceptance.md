@@ -112,6 +112,16 @@ writes a file, kills itself with SIGKILL, then resumes with the preserved patch 
 completed Research attempt. This is not a live-model test. 108 process/resource/
 worker/supervisor/UI tests pass. Other platform exit codes remain unclassified.
 
+Mixed-failure checkpoint: a capacity wait is retained even when an independent
+sibling or earlier phase failed for another reason. Disk and capacity waits can
+coexist, and either positive probe may recover its own lane first without
+redispatching an authority-blocked sibling. Multiple capacity waits no longer
+attempt to resume the same stale parked-run snapshot twice in one probe pass.
+Tests cover both recovery orders across a new SQLite store instance and the real
+scheduler resuming a disk-failed lane beside an unchanged honest stop. 92 resource,
+capacity and store tests, then 72 resource/supervisor tests pass. Providers in this
+checkpoint are scripted; this is not live-model acceptance.
+
 New baseline checkout receipts now place Projects-based deliverables under the
 synced `_artifacts/fleet-checkouts/<run-id>/` tree. Standalone test repositories
 retain colocated private state, and existing receipts are not relocated or erased.

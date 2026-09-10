@@ -2036,10 +2036,15 @@ class FleetStore:
                 snapshot = self._snapshot(connection, run_id)
                 snapshot["retry_activated"] = False
                 return snapshot
-            incomplete = connection.execute(
-                "SELECT leg_id, state FROM fleet_legs WHERE run_id = ? AND phase = ? "
-                "AND state != 'completed' ORDER BY ordinal",
-                (run_id, phase),
+            # Any recoverable lane keeps its receipt, even when an earlier phase
+            # or independent sibling has a different failure. Capacity takes
+            # run-state precedence; resource probes also support that state.
+            capacity_rows = connection.execute(
+                "SELECT w.leg_id, w.reason, w.not_before, w.resets_at, "
+                "w.eligible_providers_json FROM fleet_capacity_waits w "
+                "JOIN fleet_legs l ON l.leg_id = w.leg_id "
+                "WHERE w.run_id = ? AND l.state = 'waiting_for_capacity' ORDER BY l.ordinal",
+                (run_id,),
             ).fetchall()
             resource_wait = connection.execute(
                 "SELECT w.reason FROM fleet_resource_waits w "
@@ -2047,7 +2052,7 @@ class FleetStore:
                 "WHERE w.run_id = ? AND l.state = 'waiting_for_resources' LIMIT 1",
                 (run_id,),
             ).fetchone()
-            if resource_wait is not None:
+            if resource_wait is not None and not capacity_rows:
                 connection.execute(
                     "UPDATE fleet_runs SET state = 'waiting_for_resources', error = ?, "
                     "owner_pid = NULL, owner_token = NULL, completed_at = NULL, updated_at = ? "
@@ -2060,19 +2065,7 @@ class FleetStore:
                 snapshot = self._snapshot(connection, run_id)
                 snapshot["resource_waiting"] = True
                 return snapshot
-            capacity_rows = connection.execute(
-                "SELECT w.leg_id, w.reason, w.not_before, w.resets_at, "
-                "w.eligible_providers_json FROM fleet_capacity_waits w "
-                "JOIN fleet_legs l ON l.leg_id = w.leg_id "
-                "WHERE w.run_id = ? AND l.phase = ? ORDER BY l.ordinal",
-                (run_id, phase),
-            ).fetchall()
-            waiting_ids = {str(row["leg_id"]) for row in capacity_rows}
-            if incomplete and all(
-                str(row["state"]) == "waiting_for_capacity"
-                and str(row["leg_id"]) in waiting_ids
-                for row in incomplete
-            ):
+            if capacity_rows:
                 earliest = min(float(row["not_before"]) for row in capacity_rows)
                 reset_values = [
                     float(row["resets_at"])

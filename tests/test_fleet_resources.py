@@ -18,6 +18,108 @@ from fleet.store import FleetStore
 # ruff: noqa: F811
 
 
+@pytest.mark.parametrize("recover_first", ["disk", "capacity"])
+def test_mixed_waits_survive_an_independent_failure_and_restart(tmp_path, monkeypatch, recover_first):
+    from test_fleet_policy_store import _create
+
+    store = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _create(store, worker_count=3)
+    rid = run["run_id"]
+    store.claim_run(rid)
+    blocked, disk, capacity = run["phases"][0]["legs"]
+    reason = "work stopped before completion: authority unavailable"
+    for leg, error in [(blocked, reason), (disk, "[Errno 28] No space left on device"),
+                       (capacity, "quota exhausted")]:
+        attempt = store.begin_attempt(leg["leg_id"])
+        store.finish_attempt(attempt["attempt_id"], state="failed", error=error)
+    store.request_capacity_wait(rid, capacity["leg_id"], failed_provider=capacity["runtime"],
+                                eligible_providers=[capacity["runtime"]], reason="quota exhausted",
+                                not_before=time.time())
+    parked_run = store.resolve_phase_failure(rid, "discover", reason)
+    assert parked_run["state"] == "waiting_for_capacity"
+    assert len(parked_run["capacity_waits"]) == len(parked_run["resource_waits"]) == 1
+    store = FleetStore(store.path)
+    monkeypatch.setattr("fleet.resources.shutil.disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
+
+    for resource in [recover_first, "capacity" if recover_first == "disk" else "disk"]:
+        leg = disk if resource == "disk" else capacity
+        if resource == "disk":
+            assert resume_ready_resource_waits(store, now=time.time() + 120) == [leg["leg_id"]]
+        else:
+            store.resume_capacity_wait(rid, leg["leg_id"], provider=leg["runtime"], reason="positive probe")
+        assert store.claim_run(rid)
+        attempt = store.begin_attempt(leg["leg_id"])
+        store.finish_attempt(attempt["attempt_id"], state="completed", output_text="recovered independently")
+        parked_run = store.resolve_phase_failure(rid, "discover", reason)
+    assert parked_run["state"] == "waiting_for_input"
+    assert [leg["state"] for leg in parked_run["phases"][0]["legs"]] == [
+        "waiting_for_input", "completed", "completed",
+    ]
+    assert parked_run["completed_at"] is None
+    assert parked_run["capacity_waits"] == parked_run["resource_waits"] == []
+
+
+def test_multiple_capacity_waits_do_not_resume_a_stale_run_snapshot(tmp_path):
+    from test_fleet_policy_store import _create
+
+    from fleet import supervisor
+
+    store = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _create(store)
+    rid = run["run_id"]
+    store.claim_run(rid)
+    for leg in run["phases"][0]["legs"]:
+        attempt = store.begin_attempt(leg["leg_id"])
+        store.finish_attempt(attempt["attempt_id"], state="failed", error="quota exhausted")
+        store.request_capacity_wait(rid, leg["leg_id"], failed_provider=leg["runtime"],
+                                    eligible_providers=[leg["runtime"]], reason="quota exhausted",
+                                    not_before=time.time())
+    store.resolve_phase_failure(rid, "discover", "quota")
+    # Supply the same positive observation shape used by the production probe.
+    observed = {"codex": {"available": True}, "claude": {"available": True}}
+    from unittest.mock import patch
+    with patch.object(supervisor, "_capacity_recovered", return_value=(True, "available")):
+        assert supervisor.resume_ready_capacity_waits(store, capacity=observed, now=time.time() + 120) == [rid]
+    snapshot = store.get_run(rid)
+    assert snapshot["state"] == "queued"
+    assert len(snapshot["capacity_waits"]) == 1
+    assert sorted(leg["state"] for leg in snapshot["phases"][0]["legs"]) == ["queued", "waiting_for_capacity"]
+
+
+def test_scheduler_keeps_recoverable_lane_alive_beside_honest_stop(fleet_env, monkeypatch):
+    from fleet import supervisor
+    from fleet.workers import WorkerResult
+
+    calls = []
+    disk_failed = False
+
+    def worker(request, **kwargs):
+        nonlocal disk_failed
+        calls.append((request.worker_key, request.phase))
+        error = None
+        if request.worker_key == "agent:a":
+            error = "work stopped before completion: additional authority required"
+        elif not disk_failed:
+            disk_failed = True
+            error = "[Errno 28] No space left on device"
+        return WorkerResult(not error, "fixture evidence" if not error else "", "mixed-session",
+                            request.model, request.effort, 1 if error else 0, error)
+
+    monkeypatch.setattr(supervisor, "run_worker", worker)
+    run = supervisor.start_run("research two independent recovery fixtures", activity="research",
+                               provider_mode="codex", worker_count=2, cwd=str(fleet_env))
+    rid = run["run_id"]
+    parked_run = supervisor.run_supervisor(rid)
+    assert parked_run["state"] == "waiting_for_resources", parked_run.get("error")
+    monkeypatch.setattr("fleet.resources.shutil.disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
+    assert resume_ready_resource_waits(supervisor._store(), now=time.time() + 120)
+    recovered = supervisor.run_supervisor(rid)
+    assert recovered["state"] == "waiting_for_input", recovered.get("error")
+    assert calls.count(("agent:a", "discover")) == 1
+    assert calls.count(("agent:b", "discover")) == 2
+    assert recovered["phases"][0]["legs"][1]["state"] == "completed"
+
+
 def test_real_scheduler_parks_and_resumes_same_worker(fleet_env, monkeypatch):
     from fleet import supervisor
     from fleet.workers import WorkerResult

@@ -68,6 +68,12 @@ database filesystems. Only positive free-space checks of at least 2 GiB on both 
 An unreadable filesystem stays parked. This does not solve inode exhaustion or a database too full
 to commit the initial receipt.
 
+Mixed failures do not delete a sibling's recovery receipt. A remaining capacity wait takes
+run-state precedence over a resource wait, but resource probes support both states so disk recovery
+need not wait for provider recovery. Either recovered lane can queue the run while the other wait
+and any unchanged authority blocker remain intact. Each capacity-probe pass wakes at most one lane
+per run, avoiding a second resume against the now-queued run's stale parked snapshot.
+
 Narrow transient transport failures and recorded POSIX worker deaths by signals 6, 9, 11, 13 or 15
 have separate per-leg budgets of two same-provider, same-model retries with 30/60-second backoff.
 Transport classification excludes authority, authentication, identity, quota and acceptance errors.

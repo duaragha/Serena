@@ -821,6 +821,10 @@ def resume_ready_capacity_waits(
     current = time.time() if now is None else float(now)
     resumed: list[str] = []
     for wait in waits:
+        # Resuming the first lane queues the run. Its remaining capacity waits
+        # survive for the next parked pass; do not resume a stale run snapshot.
+        if str(wait["run_id"]) in resumed:
+            continue
         if wait.get("run_state") != "waiting_for_capacity":
             continue
         if current < float(wait.get("not_before") or 0.0):

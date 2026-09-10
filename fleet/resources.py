@@ -44,7 +44,7 @@ def resume_ready_resource_waits(store, *, now: float | None = None) -> list[str]
             "SELECT w.*, r.cwd FROM fleet_resource_waits w "
             "JOIN fleet_runs r ON r.run_id = w.run_id "
             "WHERE w.not_before <= ? AND r.cancel_requested = 0 "
-            "AND r.state IN ('running', 'queued', 'waiting_for_resources')",
+            "AND r.state IN ('running', 'queued', 'waiting_for_resources', 'waiting_for_capacity')",
             (now,),
         ).fetchall()
     for row in rows:
@@ -65,7 +65,7 @@ def resume_ready_resource_waits(store, *, now: float | None = None) -> list[str]
                 (row["leg_id"], row["attempt_id"]),
             ).fetchone()
             if (current is None or current["cancel_requested"]
-                    or current["run_state"] not in {"running", "queued", "waiting_for_resources"}
+                    or current["run_state"] not in {"running", "queued", "waiting_for_resources", "waiting_for_capacity"}
                     or current["leg_state"] != "waiting_for_resources"
                     or current["not_before"] > now):
                 continue
@@ -81,7 +81,7 @@ def resume_ready_resource_waits(store, *, now: float | None = None) -> list[str]
                 (now, row["leg_id"]),
             )
             reset_work_unit_leg_for_retry(connection, leg_id=row["leg_id"], now=now)
-            if current["run_state"] == "waiting_for_resources":
+            if current["run_state"] in {"waiting_for_resources", "waiting_for_capacity"}:
                 connection.execute(
                     "UPDATE fleet_runs SET state = 'queued', error = NULL, updated_at = ? "
                     "WHERE run_id = ?", (now, row["run_id"]),
