@@ -290,6 +290,32 @@ def test_closed_fallback_client_can_restart_cleanly(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_reset_thread_keeps_the_initialized_app_server_warm(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        binary, log = _fake_codex(tmp_path)
+        environment = dict(os.environ)
+        environment["FAKE_CODEX_LOG"] = str(log)
+        client = CodexBrainClient(
+            cwd=tmp_path / "brain-cwd",
+            developer_instructions="persona",
+            state_path=tmp_path / "state.json",
+            binary=str(binary),
+            environ=environment,
+            ephemeral=True,
+        )
+        await client.start()
+        process = client.process
+        await client.reset_thread()
+        assert client.process is process
+        await client.close()
+
+        messages = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert sum(item.get("method") == "initialize" for item in messages) == 1
+        assert sum(item.get("method") == "thread/start" for item in messages) == 2
+
+    asyncio.run(scenario())
+
+
 def test_image_turn_uses_the_native_codex_image_input(tmp_path: Path) -> None:
     async def scenario() -> None:
         binary, log = _fake_codex(tmp_path)

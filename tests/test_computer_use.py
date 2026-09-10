@@ -524,7 +524,14 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
     monkeypatch.setattr(computer_mcp, "origin_arguments", lambda *args: source)
 
     options = []
+    model_events = []
     real_agent = computer_agent.ComputerAgent
+
+    monkeypatch.setattr(
+        computer_agent,
+        "build_task_pack",
+        lambda request: "\n--- saved aws runbook ---\nverify the current account before proceeding.",
+    )
 
     class Model:
         active_turn_id = None
@@ -532,9 +539,14 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
         def __init__(self, **kwargs):
             options.append(kwargs)
 
+        async def start(self):
+            model_events.append("start")
+
         async def turn(self, message, **kwargs):
+            model_events.append(message)
             assert kwargs["images"][0]["data"]
             assert all(f"prior-message-{i}:" in message for i in range(30))
+            assert "saved aws runbook" in message
             return {"text": "open the next setup step", "tool_calls": []}
 
         async def close(self):
@@ -586,6 +598,8 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
         assert options[0]["model"] == "gpt-6-astra" and options[0]["effort"] == "medium"
         assert options[0]["service_tier"] == "fast"
         assert options[0]["allow_user_hooks"] is False
+        assert model_events[0] == "start"
+        assert isinstance(model_events[1], str)
         assert store.coaching(parent)[0]["text"] == controller.session.observation
     finally:
         controller.stop()

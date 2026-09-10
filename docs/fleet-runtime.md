@@ -57,6 +57,9 @@ an already terminal failed run still requires explicit `fleet_retry`.
 
 Store initialization serializes check-then-ALTER schema migrations with an immediate SQLite
 transaction. This prevents simultaneous worker startup from adding the same migration column twice.
+Concurrent WAL-mode switches can return SQLITE_BUSY/SQLITE_LOCKED before that transaction;
+Fleet and isolation stores retry only those codes up to five times with bounded backoff.
+Exhaustion and non-lock errors remain visible; disk-full and corruption are not hidden.
 
 ## Durable resource recovery and actionable stops
 
@@ -81,13 +84,37 @@ Cooldown expiry is a diagnostic retry, not evidence that a connection or process
 Retry counts survive restart. Cancellation prevents wakeup, and terminal or superseded attempt
 callbacks are fenced before they can overwrite the current leg.
 
-An accepted honest stop or exhausted transport/process budget becomes `waiting_for_input` when
-the scheduler resolves the failed phase. The failed attempt remains failed; the run has no completion
-timestamp and does not automatically redispatch an unchanged blocker. The durable event and UI expose
+An accepted honest stop or exhausted transport/process budget immediately parks its leg in
+`waiting_for_input`, even while healthy siblings run. The scheduler parks the whole run only when
+no independent work can advance. The failed attempt remains failed; the unfinished phase/run has no
+completion timestamp and does not automatically redispatch an unchanged blocker. The durable event and UI expose
 the reason and next action. Steering and explicit whole-run or targeted-leg retry preserve valid
-completed work. Other unclassified failures still fail closed; these mechanisms are not a universal
+completed work. A targeted input-blocker retry can also wake a resource-parked run without waking
+or removing the sibling's resource wait. Other unclassified failures still fail closed; these mechanisms are not a universal
 recovery guarantee. Autonomy shows scheduled retries, resource wakeups, ignored late callbacks and
 actionable stops separately from successful completion.
+
+A worker whose Code is durably waiting for input may still perform a rotated Review
+of a disjoint, ready peer unit. Likewise, a ready Fix is not held behind that worker's
+unrelated Review waiting on dependencies or input. Research must still complete;
+active or queued turns are never bypassed, unknown/overlapping assignments fail closed,
+and the target's DAG dependencies and one-live-turn-per-worker rule remain mandatory.
+Neither exception marks the parked assignment complete or retries its unchanged blocker.
+
+## Activating repairs without cancelling parked runs
+
+The ordinary acceptance gate still refuses active runs. For durable input/resource/capacity
+waits, `python -m fleet.activation --repo <repo> --receipt <receipt> --fleet-db <database>`
+is an explicit Fleet-only restart operation, not a read-only diagnostic. It requires
+current passing source acceptance, takes SQLite's immediate writer lock, then refuses
+queued/running/stopping/unknown run states and any live or unverified owner, worker,
+helper or lesson-review execution. It holds that lock across the fixed systemd restart,
+so another dispatcher cannot claim work between inspection and restart. Missing schema
+or unverifiable process/service identity fails closed. It requires the service's exact
+repository, active state and Type=simple, which can start without waiting for DB access.
+No run, attempt, wait or saved work is deleted or marked complete; no chat host is restarted.
+After return the lock is released. A restart command failure is reported as unconfirmed,
+not proof the old process survived; inspect service health before any further action.
 
 ## Explicit run baseline and local task branches
 
@@ -639,6 +666,15 @@ existing retry path. It is never counted as success. Because a rejected contract
 exhaustion, it deliberately does not trigger automatic capacity handoff. If the gate itself raises,
 the leg fails closed and a retryable `leg.completion_gate_failed` event distinguishes evidence
 infrastructure failure from contradictory worker evidence.
+
+The first enforced rejection receives one same-model corrective turn. Its failed attempt,
+queued leg/DAG state and `leg.completion_repair_requested` receipt commit in one transaction;
+there is no post-failure callback window in which an interruption can lose the repair.
+The budget survives restart and duplicate callbacks. Repeated rejection records
+`leg.completion_repair_exhausted` and immediately parks its leg in `waiting_for_input`,
+retaining the failed attempt and rejection reasons. An unchanged blocker does not spin.
+Disk exhaustion takes precedence and waits for storage readiness without spending this budget.
+Cancellation never schedules correction, and an accepted honest stop is not a format repair.
 
 An honest stop emits `leg.completion_evidence_stopped` with `accepted: true` and
 `completion_allowed: false`; it is not auto-retried as though the worker merely formatted its

@@ -48,7 +48,8 @@ class ComputerServer(ThreadingHTTPServer):
                         "that scoped session directly. No manual user terminal step is required. "
                         "Use computer_start with its default background=true for live coaching. "
                         "The worker uses Astra medium with fast processing and the exact launching "
-                        "chat's history. Prompt hooks supply completed advice on follow-up questions; "
+                        "chat's history plus a bounded local task pack from Serena knowledge and project runbooks. "
+                        "Prompt hooks supply completed advice on follow-up questions; "
                         "computer_history is the fallback when hooks are unavailable. "
                         "If that tool is not loaded, execute chats computer watch --detach "
                         "for live guidance or chats computer run --detach for a GUI task. "
@@ -150,7 +151,8 @@ class ComputerServer(ThreadingHTTPServer):
         raise ComputerError("unknown computer operation")
 
     def start_indicator(self):
-        self.controller.indicator_rect = Rect(20, 20, 430, 112)
+        # Match the compact HUD's initial footprint before its first heartbeat.
+        self.controller.indicator_rect = Rect(20, 20, 500, 118)
         self.indicator_process = subprocess.Popen(
             child_command("indicator"),
             cwd=Path(__file__).resolve().parents[1],

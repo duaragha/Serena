@@ -480,7 +480,7 @@ button { font: inherit; }
 const ACTIVE_STATES = new Set(['created','pending','queued','running','stopping','waiting_for_capacity','waiting_for_resources','waiting_for_input']);
 const DELETABLE_STATES = new Set(['completed','failed','cancelled','planned']);
 const RETRY_STATES = new Set(['failed','error','stopped','cancelled','canceled','waiting_for_input']);
-const LEG_RETRY_RUN_STATES = new Set(['queued','running','failed','waiting_for_capacity','waiting_for_input']);
+const LEG_RETRY_RUN_STATES = new Set(['queued','running','failed','waiting_for_capacity','waiting_for_resources','waiting_for_input']);
 const LEG_HANDOFF_RUN_STATES = new Set(['queued','running','failed','waiting_for_capacity']);
 const state = { runs: [], selectedId: null, detail: null, visible: false,
   timer: null, loading: false, detailSeq: 0, pendingLegRetries: new Set(),
@@ -874,7 +874,10 @@ function renderLeg(run, phase, leg) {
     row.append(el('div', 'leg-context', contextBits.join(' · ')));
   }
   const error = text(attempt.error || leg.error || '');
-  if (error && !waitingForControl) row.append(el('div', 'leg-error', error));
+  if (error && !waitingForControl) row.append(el(
+    'div', status === 'waiting_for_input' ? 'leg-wait' : 'leg-error',
+    status === 'waiting_for_input' ? 'needs attention: ' + error +
+      ' · resolve this blocker, then retry this worker; no automatic retry is running' : error));
   return row;
 }
 

@@ -31,16 +31,21 @@ reattaches to its updates. `--speak` sends completed observations through
 Serena's existing local voice output. `chats computer steer "new instruction"`
 steers the active Astra turn without starting a second controller.
 
-The desktop indicator shows the complete latest observation, wraps text and
-identifies the focused application and window title from the latest captured
-frame. In browsers this normally includes the selected tab's title. It refreshes
-while the model is thinking, without waiting for another coaching reply. This
-label describes focus within the selected capture scope; desktop mode still
-captures the desktop. Missing or expired frame details show a waiting label.
-The indicator
-grows to fit. Long updates scroll within the popup while the stop button stays
-visible. The screenshot mask follows the popup's size so advice is not fed back
-into the next visual observation.
+The desktop indicator is a compact, movable HUD card. Drag its header to move it
+out of the way; its current position and size are sent back to the helper so the
+card stays masked from screenshots. The header shows whether Astra is starting,
+thinking, watching, or has seen a changed screen. The context row identifies the
+focused application and window title from the latest captured frame (in a
+browser this normally includes the selected tab) and the selected display or
+window scope. The footer shows model/timing metadata, copies the latest guidance,
+and keeps the stop control visible.
+
+Use the chevron in the header to collapse the guidance body while keeping the
+current app, state, timing, copy, and stop controls available. The card refreshes
+while the model is thinking, without waiting for another coaching reply. Missing
+or expired frame details show a waiting label. Long updates scroll inside the
+card, and the screenshot mask follows its size so advice is not fed back into
+the next visual observation.
 
 Watch replies stream into the popup as a labelled draft before completion. A
 changed page clears the draft, and only completed advice enters conversation
@@ -101,6 +106,14 @@ Worker context is passed verbatim up to a 700 KB per-request guard; exceeding it
 produces a visible error instead of silently dropping earlier messages. Native
 parent-chat compaction still applies to very long chats. Stored text remains
 available for retrieval; this is not an unlimited model context window.
+
+Before the first screenshot turn, the worker warms the local Codex app-server
+connection and builds a small read-only task pack from Serena's knowledge store
+plus shallow project `it/` and `docs/` folders. It ranks files against the task,
+strips HTML noise, caps the pack at 18 KB, and redacts obvious credentials. A
+matching AWS runbook therefore reaches Astra with the linked chat and current
+screenshot; the worker does not need to rediscover that saved setup research.
+The pack is sent once per visual thread and is reloaded after history rotation.
 
 Use `background=false` only for deliberate interactive MCP sessions handled
 by the connected chat's own model. This shares the screen but does not start
@@ -167,7 +180,9 @@ There is no API-key requirement. Each visual thread is ephemeral and rotates
 after eight watch turns. Model choice does not silently fall back to another
 model. Missing access or an unaccepted fast tier is returned as a visible error.
 Fast mode is scoped to computer workers and does not change the parent chat's
-model or effort. [Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
+model or effort. The worker keeps its app-server process warm when it rotates
+the visual thread, so the next screenshot does not pay initialization again.
+[Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
 uses 2.5 times standard Codex credits where available. It does not remove
 model inference latency.
 
