@@ -7,9 +7,9 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/Documents/Projects/serena
 Environment=PYTHONUNBUFFERED=1
-Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v24.14.0/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
 UnsetEnvironment=OPENAI_API_KEY OPENAI_API_BASE OPENAI_BASE_URL OPENAI_ORG_ID OPENAI_ORGANIZATION CODEX_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_SESSION_ACCESS_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
-ExecStart=%h/Documents/Projects/serena/.venv/bin/chats fleet serve
+ExecStart=%h/Documents/Projects/serena/scripts/serena-fleet-service.sh
 Restart=always
 RestartSec=2
 TimeoutStopSec=20

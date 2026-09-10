@@ -1703,6 +1703,7 @@ def serve_forever(
         if monotonic_now >= next_capacity_probe:
             from fleet.resources import resume_ready_resource_waits
             from fleet.ready_resume import resume_ready_input_runs
+            from fleet.integration_recovery import resume_saved_integrations
 
             with suppress(Exception):
                 resume_ready_resource_waits(store)
@@ -1710,6 +1711,8 @@ def serve_forever(
                 resume_ready_capacity_waits(store)
             with suppress(Exception):
                 resume_ready_input_runs(store)
+            with suppress(Exception):
+                resume_saved_integrations(store)
             next_capacity_probe = monotonic_now + CAPACITY_POLL_SECONDS
         launched = False
         while not stopper.is_set():
@@ -2412,6 +2415,11 @@ def _skip_finalize_leg(
 
 
 def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerResult:
+    from fleet.integration_recovery import execute_saved_integration
+
+    replayed = execute_saved_integration(store, run_id, leg)
+    if replayed is not None:
+        return replayed
     skipped = _skip_finalize_leg(store, run_id, leg)
     if skipped is not None:
         return skipped

@@ -33,6 +33,16 @@ not use Hermes as a dependency, replace Serena's identity, or route through a ge
 
 ## Run ownership and deletion
 
+The Linux service starts through `scripts/serena-fleet-service.sh`. When NVM is
+installed, it selects the operator's already-installed `default` alias rather
+than pinning a versioned Node directory in the unit. It does not source login
+profiles or install runtimes. An unavailable configured default refuses startup
+with an explicit error instead of silently using another Node. Without NVM,
+the inherited service PATH is preserved. `--check` reports runtime resolution
+without starting Fleet. This honours the operator default; per-project engine
+compatibility still requires separate validation. Unit changes require a
+systemd daemon reload and a safe Fleet-only restart, never an active-worker kill.
+
 `serena-fleet.service` claims every queued run and supervises each in its own thread. There is no
 numeric cap on simultaneous Fleet runs. Provider availability still controls whether a native turn
 can start, and coding runs targeting the same repository retain the per-checkout lock so integration
@@ -63,13 +73,54 @@ Exhaustion and non-lock errors remain visible; disk-full and corruption are not 
 
 ## Durable resource recovery and actionable stops
 
+Declared integration test sequences have one narrow generated-type preparation
+pass: when `npm run typecheck` exits 1 or 2 with TS2307 naming a `.generated` or
+`/generated` module, and the combined checkout declares a `codegen` script,
+Fleet invokes that script with npm lifecycle hooks disabled and rechecks the
+same typecheck once. The gate retains the original failure, preparation result
+and recheck result. Ordinary missing packages and unrelated TypeScript errors
+do not trigger this path; preparation or recheck failure still rejects the
+integration. This repairs checkout-local generated state without another model
+turn or copying unverified generated files from a peer. It does not repair
+unsupported runtime versions.
+
+The resident recovery poll can queue one supervisor-only integration replay per
+leg for saved failures in this exact class. Admission requires the current failed
+zero-exit writer attempt, previously accepted completion evidence, a rejected
+local integration receipt, and its saved patch. Cancellation and queueing share
+a transaction; live attempts prevent admission. Other input blockers remain
+untouched. A dedicated Python helper owns the replay's process group and normal
+worker lease; the resident service must never become the worker PID for recovery
+or termination. The parent uses Fleet's bounded process/output transport and
+tracks cancellation. The helper takes the write claim and revalidates
+completion evidence, and requires an exact saved-patch SHA-256 match inside the
+integration lock before applying. It neither refreshes the worker checkout nor
+spends a native model turn. Its new attempt has no observed model identity; the
+original failed attempt retains provider provenance. A refused replay parks for
+input rather than repeatedly spending attempts. This bounded replay is not yet
+a general integration journal with crash-safe commit reconciliation.
+
+Replay attempt creation and its verification-only dispatch marker commit in one
+transaction. If the helper dies by a supported POSIX signal before recording its
+outcome, the parent retains the real signal exit status and uses the existing
+two-retry process budget and 30/60-second delays. The next attempt remains a
+verification helper tied to the original saved result, not a native model turn.
+Cancellation remains cancelled; exhausted budgets park for input. Newer unrelated
+attempts cannot be mistaken for a replay. Death after applying a patch but before completion
+still requires integration-journal reconciliation and is not claimed solved here.
+
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
 attempt as evidence. Independent ready work continues; a run with only parked work releases its
-owner and waits durably. Every 30 seconds the resident service checks both the source checkout and
-database filesystems. Only positive free-space checks of at least 2 GiB on both requeue a disk wait.
-An unreadable filesystem stays parked. This does not solve inode exhaustion or a database too full
-to commit the initial receipt.
+owner and waits durably. Every 30 seconds the resident service checks the source and database
+filesystems plus recorded integration, worker checkout and event-log locations. A disk wait resumes
+only when every checked location has the required free bytes (normally at least 2 GiB), positive
+unprivileged inode availability where fixed inode accounting exists, and no read-only filesystem flag.
+Dynamic-inode filesystems and platforms without statvfs retain byte checks without inventing inode
+measurements. Unreadable locations remain parked. The wait reason exposes the failed check and
+the resume event retains observed filesystem checks. These read-only, point-in-time measurements
+do not reserve capacity or prove quota/write permission; a database too full to commit the initial
+receipt is still a separate failure class.
 
 Mixed failures do not delete a sibling's recovery receipt. A remaining capacity wait takes
 run-state precedence over a resource wait, but resource probes support both states so disk recovery
@@ -146,6 +197,12 @@ requires neither a push nor a PR; switching away from that reserved branch still
 published stacked-PR delivery gate below.
 
 ## Continuous orphan recovery and progress budgets
+
+After a native process exits, the pipe-drain grace period bounds inherited output
+handles, not metadata callback latency. On expiry Fleet terminates the owned process
+group and parses the finite event backlog already received before returning. A slow
+session/event callback therefore cannot discard queued model identity or the final answer;
+new output from a descendant cannot extend that captured backlog indefinitely.
 
 The resident service reconciles dead process owners every 30 seconds, not only on boot. Its own
 thread registry also identifies a per-run supervisor thread that exited while the service PID stayed
