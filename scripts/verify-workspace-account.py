@@ -16,7 +16,7 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
 
 
-async def main(browser_login=False):
+async def main(browser_login=False, pause=False):
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
     with tempfile.TemporaryDirectory(prefix="serena-account-proof-") as directory:
@@ -36,12 +36,24 @@ async def main(browser_login=False):
         owner = CodexWorkspace(session_id="new:" + str(uuid4()), cwd=project, publish=publish,
                                lease_factory=lambda sid: SessionLease(sid, directory=root / "leases"))
         process = None
+        wake_ms = None
         try:
             await owner.create(checkpoint=checkpoint, binary=binary, env=env)
             process = owner.rpc.process
             sid = owner.session_id
             result = await owner.account_status()
             assert result == {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False, "login": None}, result
+            if pause:
+                import psutil
+                async with asyncio.timeout(5):
+                    while not await owner.rpc.pause_idle():
+                        await asyncio.sleep(.01)
+                    while psutil.Process(process.pid).status() != psutil.STATUS_STOPPED:
+                        await asyncio.sleep(.01)
+                started = asyncio.get_running_loop().time()
+                assert (await owner.account_status())["account"] is None
+                wake_ms = round((asyncio.get_running_loop().time() - started) * 1000, 2)
+                assert not owner.rpc.suspended
             if browser_login:
                 login = await owner.login_account()
                 assert login["status"] == "pending" and login["loginId"] and login["authUrl"].startswith("https://")
@@ -58,10 +70,13 @@ async def main(browser_login=False):
     print(json.dumps({"ok": True, "nativeAccountRead": True, "sameOwner": True,
                       "signedIn": False, "loginStarted": browser_login, "loginCancelled": browser_login,
                       "browserOpened": False, "inference": False,
+                      "nativePauseWake": pause, "wakeAccountRoundTripMs": wake_ms,
                       "childReaped": True, "temporaryProfileRemoved": True}))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser-login", action="store_true", help="Start and cancel native OAuth without opening a browser")
-    asyncio.run(main(parser.parse_args().browser_login))
+    parser.add_argument("--pause", action="store_true", help="Prove POSIX native pause and wake without inference")
+    args = parser.parse_args()
+    asyncio.run(main(args.browser_login, args.pause))

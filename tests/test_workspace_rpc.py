@@ -39,6 +39,56 @@ for line in sys.stdin:
 """
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX group suspension")
+def test_idle_pause_wakes_same_child_before_rpc_and_close(tmp_path):
+    async def run():
+        rpc = WorkspaceRpc()
+        await rpc.start([sys.executable, "-u", "-c", PEER], cwd=tmp_path, env=dict(os.environ))
+        process = rpc.process
+        try:
+            assert await rpc.request("ping", {"ready": True}) == {"ready": True}
+            assert await rpc.pause_idle()
+            assert rpc.suspended
+            async with asyncio.timeout(2):
+                while psutil.Process(process.pid).status() != psutil.STATUS_STOPPED:
+                    await asyncio.sleep(.01)
+            assert await rpc.request("ping", {"awake": True}, timeout=2) == {"awake": True}
+            assert rpc.process is process and not rpc.suspended
+            assert await rpc.pause_idle()
+        finally:
+            await rpc.close()
+        assert process.returncode == 0 and not rpc.suspended
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX group suspension")
+@pytest.mark.parametrize("blocker", ["pending", "questions", "events", "group"])
+def test_pause_refuses_inflight_control_or_unsafe_group(tmp_path, monkeypatch, blocker):
+    async def run():
+        rpc = WorkspaceRpc()
+        await rpc.start([sys.executable, "-u", "-c", PEER], cwd=tmp_path, env=dict(os.environ))
+        try:
+            assert await rpc.request("ping", {}) == {}
+            if blocker == "pending":
+                rpc._pending[123] = asyncio.get_running_loop().create_future()
+            elif blocker == "questions":
+                rpc._questions.add("approval")
+            elif blocker == "events":
+                await rpc.events.put({"method": "turn/started"})
+            else:
+                monkeypatch.setattr(os, "getpgid", lambda pid: os.getpgrp())
+            if blocker == "group":
+                with pytest.raises(WorkspaceRpcError, match="isolated"):
+                    await rpc.pause_idle()
+            else:
+                assert not await rpc.pause_idle()
+            assert not rpc.suspended
+        finally:
+            rpc._pending.clear()
+            await rpc.close()
+    asyncio.run(run())
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows assignment gate")
 def test_failed_job_assignment_never_executes_provider(tmp_path, monkeypatch):
     from core.workspace_windows_job import WindowsJob

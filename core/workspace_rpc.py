@@ -34,6 +34,42 @@ class WorkspaceRpc:
         self._tasks: list[asyncio.Task] = []
         self._failure: str | None = None
         self._windows_job = None
+        self.suspended = False
+
+    async def pause_idle(self) -> bool:
+        """Pause a caller-verified idle POSIX owner, never a pending RPC.
+
+        The host must additionally exclude active turns, background tasks,
+        drafts and reservations. Windows requires a separate job-tree freezer.
+        """
+        async with self._lifecycle_lock, self._write_lock:
+            process = self.process
+            if (os.name == "nt" or process is None or process.returncode is not None
+                    or self._failure or self._pending or self._questions or not self.events.empty()):
+                return False
+            if self.suspended:
+                return True
+            # start() creates this dedicated session. Never signal our own group.
+            try:
+                if os.getpgid(process.pid) != process.pid or process.pid == os.getpgrp():
+                    raise WorkspaceRpcError("Provider does not own an isolated process group")
+                os.killpg(process.pid, signal.SIGSTOP)
+            except ProcessLookupError:
+                return False
+            self.suspended = True
+            return True
+
+    def wake(self) -> None:
+        """Wake the same owned process before writes or explicit shutdown."""
+        if not self.suspended:
+            return
+        process = self.process
+        if process is not None and process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                if os.getpgid(process.pid) != process.pid or process.pid == os.getpgrp():
+                    raise WorkspaceRpcError("Provider process group changed while suspended")
+                os.killpg(process.pid, signal.SIGCONT)
+        self.suspended = False
 
     async def start(self, command: list[str], *, cwd: Path, env: dict[str, str]) -> None:
         async with self._lifecycle_lock:
@@ -127,6 +163,7 @@ class WorkspaceRpc:
         ):
             raise WorkspaceRpcError(self._failure or "Agent transport is closed")
         try:
+            self.wake()
             process.stdin.write((json.dumps(message, ensure_ascii=False) + "\n").encode())
             await process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as error:
@@ -181,6 +218,7 @@ class WorkspaceRpc:
             process = self.process
             if process is None:
                 return
+            self.wake()
             if process.stdin:
                 process.stdin.close()
             try:

@@ -2,6 +2,25 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Transport Pause/Wake Primitive (2026-09-10)
+
+The shared process transport now supports explicit idle POSIX group suspension.
+It refuses pending RPCs, unanswered native requests, unread events, dead or
+non-isolated process groups. Writes and explicit shutdown wake the same owned
+process before touching stdin. It never restarts or creates a session. Neither
+renderer visibility nor polling invokes suspension. Host-level active-turn,
+background-task, draft and pin policy is still required before enabling this;
+Windows job-tree suspension is not implemented by this primitive.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_rpc.py -q --tb=short
+# exit 0: 12 passed, 1 Windows-only test skipped in 2.74s
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --pause
+# exit 0: actual Codex app-server observed stopped by psutil, then woke on native
+# account/read in 2.79ms (single observed round trip, not a latency guarantee).
+# Same owner, no inference or login, child reaped and temporary home removed.
+```
+
 ## Lost Native Acknowledgement Recovery (2026-09-10)
 
 Each new job claim now records its pre-dispatch journal sequence. When no
