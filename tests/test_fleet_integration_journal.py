@@ -271,7 +271,8 @@ def test_helper_cleanup_checks_pid_birth_identity(monkeypatch, original, observe
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux process-state verification")
 @pytest.mark.parametrize("crash", [False, True])
-def test_helper_exit_cleans_gates_with_private_pipes(tmp_path, monkeypatch, crash):
+@pytest.mark.parametrize("helper", [False, True])
+def test_helper_exit_cleans_gates_with_private_pipes(tmp_path, monkeypatch, crash, helper):
     from fleet.workers import _stream_process
     from test_fleet_workers import _request
     child_code = (
@@ -293,7 +294,7 @@ def test_helper_exit_cleans_gates_with_private_pipes(tmp_path, monkeypatch, cras
     result = _stream_process([sys.executable, "-c", script], request=_request(tmp_path, "codex"),
                              parse_stdout=lambda line: seen.append(int(line)),
                              cancel_requested=lambda: False, on_event=lambda *a: None,
-                             cleanup_exited_group=True)
+                             **({"cleanup_exited_group": True} if helper else {}))
     assert result.exit_code == (-9 if crash else 0)
     assert len(seen) == 1
     deadline = time.monotonic() + 2
