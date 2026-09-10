@@ -48,6 +48,7 @@ DEFAULT_TESTS = (
     "tests/test_fleet_isolation.py",
     "tests/test_fleet_generated_prerequisites.py",
     "tests/test_fleet_integration_recovery.py",
+    "tests/test_fleet_integration_journal.py",
     "tests/test_fleet_completion.py",
     "tests/test_fleet_completion_gate.py",
     "tests/test_fleet_policy_store.py",

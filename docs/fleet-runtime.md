@@ -97,8 +97,30 @@ completion evidence, and requires an exact saved-patch SHA-256 match inside the
 integration lock before applying. It neither refreshes the worker checkout nor
 spends a native model turn. Its new attempt has no observed model identity; the
 original failed attempt retains provider provenance. A refused replay parks for
-input rather than repeatedly spending attempts. This bounded replay is not yet
-a general integration journal with crash-safe commit reconciliation.
+input rather than repeatedly spending attempts.
+
+Local patch integration now commits an immutable intent in the isolation database
+before Git changes the combined checkout. The intent binds the canonical checkout,
+target branch, worker workspace incarnation/base, and exact patch SHA-256 to full
+pre/post file images and the original rollback reference. A restarted integration
+under the repository lock may recheck an exact postimage without applying it twice;
+a mixture of whole-file pre/postimages is restored to the original preimage before
+applying again. Every affected path is checked before restoration, and each write
+boundary is checked again. Binary bytes, symlinks, executable modes and original
+rollback permissions are preserved. The journal never bypasses current claims,
+patch fingerprints, completion evidence, or integration tests. Test receipts expose
+the intent ID and whether a postimage or mixed-image recovery occurred.
+Saved patch files use unique exclusive names and are flushed, along with their
+containing directory on POSIX, before any receipt can reference them. Two attempts
+in the same second cannot overwrite each other's recovery evidence.
+
+Foreign bytes, within-file partial writes, redirected parent directories, malformed
+or corrupt intents, and changed patch identities are not guessed away. They refuse
+integration and preserve surviving work. Preview does not perform pending recovery.
+Older applied patches without an intent remain unproven; this is not retroactive
+reconstruction. Run deletion removes that run's private journal images. This covers
+same-patch local integration reconciliation, not published-branch deliveries,
+arbitrary external effects of gate commands, or unrecordable database/filesystem loss.
 
 Replay attempt creation and its verification-only dispatch marker commit in one
 transaction. If the helper dies by a supported POSIX signal before recording its
@@ -106,8 +128,15 @@ outcome, the parent retains the real signal exit status and uses the existing
 two-retry process budget and 30/60-second delays. The next attempt remains a
 verification helper tied to the original saved result, not a native model turn.
 Cancellation remains cancelled; exhausted budgets park for input. Newer unrelated
-attempts cannot be mistaken for a replay. Death after applying a patch but before completion
-still requires integration-journal reconciliation and is not claimed solved here.
+attempts cannot be mistaken for a replay. Real SIGKILL tests cover death after
+application, after the successful integration receipt but before attempt completion,
+and during rollback; exact-file journal recovery retains normal verification gates.
+Verification helpers also clean up their POSIX process group after direct-process
+exit, even when a gate uses private pipes and does not keep the helper's output
+open. A captured process birth identity protects against signalling a reused
+leader PID. Tests cover normal exit and SIGKILL with a SIGTERM-ignoring gate.
+Windows process-tree cleanup and descendants that escape the owned process group
+are separate coverage gaps; this helper-only rule does not claim those solved.
 
 When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
 recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed

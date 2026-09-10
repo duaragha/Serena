@@ -615,6 +615,7 @@ def _stream_process(
     parse_stdout: Callable[[str], None],
     cancel_requested: CancelCallback,
     on_event: EventCallback,
+    cleanup_exited_group: bool = False,
 ) -> _ProcessResult:
     log_path = _event_log_path(request)
     log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -630,6 +631,8 @@ def _stream_process(
         start_new_session=True,
     )
     readers: list[threading.Thread] = []
+    from core.work_jobs import process_start_token
+    start_token = process_start_token(process.pid) if cleanup_exited_group and os.name != "nt" else None
     try:
         # Claude waits only briefly for piped input. Start draining output and
         # deliver the prompt before any callback that may refresh Serena's
@@ -781,6 +784,8 @@ def _stream_process(
     finally:
         if process.poll() is None:
             _terminate_process_group(process)
+        if cleanup_exited_group:
+            _cleanup_exited_group(process, start_token)
         with suppress(subprocess.TimeoutExpired):
             process.wait(timeout=5)
         for pipe in (process.stdin, process.stdout, process.stderr):
@@ -789,6 +794,18 @@ def _stream_process(
                     pipe.close()
         for reader in readers:
             reader.join(timeout=1)
+
+
+def _cleanup_exited_group(process, start_token):
+    """A helper's private-pipe gates must not survive and race its next replay."""
+    if os.name == "nt" or not start_token:
+        return
+    from core.work_jobs import process_start_token
+    observed = process_start_token(process.pid)
+    if observed and observed != start_token:
+        # The original group is gone and its numeric ID has been reused.
+        return
+    _terminate_process_group(process)
 
 
 def _terminate_process_group(process: subprocess.Popen[str]) -> None:
