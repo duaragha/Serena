@@ -162,7 +162,7 @@ export class WorkspaceConnection {
         this.requireReceipts();
         if (['steer','queue_input'].includes(action) && !expectedTurnId) throw Error('Running turn identity is unavailable');
         if (files.length > 16) throw Error('Attach up to 16 files per message');
-        const inputs = text || options.skills?.length ? [{type: 'text', text: text || ''}] : [];
+        const inputs = text || options.skills?.length || options.apps?.length ? [{type: 'text', text: text || ''}] : [];
         for (const file of files) {
           if (!file.size || file.size > 25 * 1024 * 1024) throw Error('Attach non-empty files no larger than 25 MB');
           const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
@@ -184,7 +184,7 @@ export class WorkspaceConnection {
             return this.command('queue_input',prior.payload);
           }
         }
-        return this.command(action, {inputs, ...(['steer','queue_input'].includes(action) ? {expectedTurnId, ...(action === 'steer' && options.skills?.length ? {skills:options.skills} : {})} : {}), ...(action === 'submit' && Object.keys(options).length ? {options} : {})});
+        return this.command(action, {inputs, ...(['steer','queue_input'].includes(action) ? {expectedTurnId, ...(action === 'steer' && options.skills?.length ? {skills:options.skills} : {}), ...(action === 'steer' && options.apps?.length ? {apps:options.apps} : {})} : {}), ...(action === 'submit' && Object.keys(options).length ? {options} : {})});
   }
 
   pendingQueuedInputs() {
@@ -216,6 +216,7 @@ export class WorkspaceConnection {
       models: () => this.command('models', {}),
       commands: () => this.command('commands', {}),
       hooks: () => this.command('hooks', {}),
+      apps: () => this.command('apps', {}),
       projectDiff: () => this.command('project_diff', {}),
       reloadSkills: () => this.command('reload_skills', {}),
       reloadPlugins: () => this.command('reload_plugins', {}),

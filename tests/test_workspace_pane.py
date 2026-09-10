@@ -11,6 +11,56 @@ STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.apps=async()=>{calls.push('apps');return {data:[
+        {id:'demo',name:'Demo App',description:'<b>literal metadata</b>',accessible:true,enabled:true,callable:true},
+        {id:'disabled',name:'Disabled App',description:'Not callable',accessible:true,enabled:false,callable:false}]};};
+      controls.submit=async value=>{window.sent=value;throw Error('Send failed');};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/apps';pane.render();
+    }""")
+    assert page.evaluate('calls') == []
+    page.get_by_role('button', name='Send message', exact=True).first.click()
+    dialog = page.get_by_role('dialog', name='Apps and connectors', exact=True)
+    dialog.get_by_text('<b>literal metadata</b>', exact=True).wait_for()
+    assert dialog.locator('b').count() == 0
+    assert dialog.get_by_role('button', name='Select app Disabled App').is_disabled()
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth+1')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'apps-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button', name='Select app Demo App', exact=True).click()
+    assert page.evaluate('pane.selectedApps') == [{'id': 'demo', 'name': 'Demo App'}]
+    assert page.evaluate('pane.input.value') == ''
+    assert page.evaluate("JSON.parse(sessionStorage.getItem(pane.draftKey+':apps'))") == [{'id': 'demo', 'name': 'Demo App'}]
+    page.locator('#left textarea').fill('Read selected app')
+    page.get_by_role('button', name='Send message', exact=True).first.click()
+    page.get_by_text('Send failed', exact=True).wait_for()
+    assert page.evaluate('sent.options.apps') == ['demo']
+    assert page.evaluate('pane.input.value') == 'Read selected app'
+    assert page.evaluate('pane.selectedApps.length') == 1
+    page.evaluate("()=>{controls.apps=async()=>{throw Error('Apps unavailable');};}")
+    page.get_by_role('button', name='Apps and connectors', exact=True).click()
+    dialog.get_by_text('Apps unavailable', exact=True).wait_for()
+    assert dialog.get_by_role('button', name='Select app Demo App').count() == 0
+    dialog.get_by_role('button', name='Close apps').click()
+    page.get_by_role('button', name='Remove app Demo App', exact=True).click()
+    assert page.evaluate('pane.selectedApps') == []
+    assert page.evaluate('calls') == ['apps']
+    page.evaluate("""()=>{
+      emit({method:'turn/started',params:{turn:{id:'app-turn',status:'inProgress'}}});
+      emit({method:'item/started',params:{turnId:'app-turn',item:{id:'app-message',type:'userMessage',content:[{type:'mention',name:'<b>Demo App</b>',path:'app://demo'}]}}});
+    }""")
+    mention=page.locator('#left .aw-user-message [title="app://demo"]')
+    playwright.expect(mention).to_have_text('<b>Demo App</b>')
+    assert mention.locator('b').count() == 0
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_project_diff_is_explicit_read_only_and_text_safe(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

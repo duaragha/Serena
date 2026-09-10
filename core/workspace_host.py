@@ -793,6 +793,7 @@ class WorkspaceHost:
             "background_tasks",
             "commands",
             "hooks",
+            "apps",
             "project_diff",
             "reload_skills",
             "set_skill_enabled",
@@ -836,7 +837,7 @@ class WorkspaceHost:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "models", "permissions", "context_usage", "background_tasks",
-                "commands", "hooks", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes",
+                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1041,6 +1042,11 @@ class WorkspaceHost:
                     if provider != "claude" or payload:
                         raise ValueError("Skill reload requires a Claude session and no payload")
                     result = await owner.reload_skills()
+                elif action == "apps":
+                    retryable = True
+                    if provider != "codex" or payload:
+                        raise ValueError("App discovery requires an existing Codex session")
+                    result = await owner.list_apps()
                 elif action == "hooks":
                     if provider != "codex" or payload:
                         raise ValueError("Hook discovery requires a Codex session and no payload")
@@ -1111,7 +1117,7 @@ class WorkspaceHost:
                     result = await owner.queue_input(inputs, expected_turn_id=payload["expectedTurnId"])
                 elif action == "steer":
                     if (
-                        set(payload) - {"inputs", "expectedTurnId", "skills"}
+                        set(payload) - {"inputs", "expectedTurnId", "skills", "apps"}
                         or not {"inputs", "expectedTurnId"} <= payload.keys()
                         or not isinstance(payload["expectedTurnId"], str)
                         or not payload["expectedTurnId"]
@@ -1125,6 +1131,8 @@ class WorkspaceHost:
                     kwargs = {"expected_turn_id": payload["expectedTurnId"]}
                     if "skills" in payload:
                         kwargs["skills"] = payload["skills"]
+                    if "apps" in payload:
+                        kwargs["apps"] = payload["apps"]
                     result = await owner.steer(inputs, **kwargs)
                 elif action == "interrupt":
                     if payload and (set(payload) != {"expectedTurnId"} or not isinstance(payload["expectedTurnId"], str) or not payload["expectedTurnId"]):

@@ -27,6 +27,7 @@ export class WorkspacePane {
     this.lastItemCount = 0;
     this.files = [];
     this.selectedSkills = [];
+    this.selectedApps = [];
     this.previews = new Map();
     this.historyImageUrls = new Set();
     this.sending = false;
@@ -61,6 +62,8 @@ export class WorkspacePane {
     this.copyOutputButton.hidden=provider!=='Codex';head.append(this.copyOutputButton);
     this.hooksButton=this.button('Lifecycle hooks','webhook',()=>this.openHooks());
     this.hooksButton.hidden=provider!=='Codex' || !controls.hooks;head.append(this.hooksButton);
+    this.appsButton=this.button('Apps and connectors','blocks',()=>this.openApps());
+    this.appsButton.hidden=provider!=='Codex' || !controls.apps;head.append(this.appsButton);
     this.diffButton=this.button('Project diff','file-diff',()=>this.openProjectDiff());
     this.diffButton.hidden=provider!=='Codex' || !controls.projectDiff;head.append(this.diffButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
@@ -103,6 +106,8 @@ export class WorkspacePane {
       if(!Object.hasOwn(promptColors,this.promptColor))this.promptColor='default';
       this.form.style.borderColor=promptColors[this.promptColor];
       if(provider==='Codex' && Array.isArray(skills))this.selectedSkills=skills.filter(s=>typeof s?.name==='string' && typeof s?.path==='string');
+      const apps=JSON.parse(this.draftStorage.getItem(`${this.draftKey}:apps`) || '[]');
+      if(provider==='Codex' && Array.isArray(apps))this.selectedApps=apps.filter(a=>typeof a?.name==='string' && typeof a?.id==='string').slice(0,20);
     }
     catch (error) { this.error(new Error(`Draft storage unavailable: ${error.message}`)); }
     this.input.addEventListener('input', () => this.persistDraft());
@@ -1031,6 +1036,43 @@ export class WorkspacePane {
     this.diffDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();load();
   }
 
+  openApps() {
+    if(this.appsDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Apps and connectors');
+    const status=node('p');status.setAttribute('role','status');
+    const search=node('input');search.type='search';search.setAttribute('aria-label','Search apps');
+    const list=node('div');let apps=[];
+    const render=()=>{
+      list.replaceChildren();
+      for(const app of apps.filter(a=>`${a.name} ${a.description}`.toLowerCase().includes(search.value.toLowerCase()))){
+        const row=node('div','aw-background-task');row.style.display='block';row.style.overflowWrap='anywhere';
+        row.append(node('strong','',app.name),node('p','',app.description));
+        row.append(node('small','',app.callable?'Available':!app.accessible?'Not connected':!app.enabled?'Disabled':'Unavailable under current policy'));
+        const select=this.button(`Select app ${app.name}`,'plus',()=>{
+          if(this.selectedApps.length>=20){status.textContent='Select at most 20 apps';return;}
+          if(!this.selectedApps.some(a=>a.id===app.id))this.selectedApps.push({id:app.id,name:app.name});
+          this.persistApps();this.renderAttachments();
+          if(this.input.value.trim()==='/apps'){this.input.value='';this.persistDraft();}
+          dialog.close();this.input.focus();
+        });
+        select.disabled=!app.callable || this.selectedApps.some(a=>a.id===app.id);row.append(select);list.append(row);
+      }
+      this.refreshIcons();
+    };
+    const load=async()=>{
+      refresh.disabled=true;status.textContent='Loading...';
+      try{const result=await this.controls.apps();if(!dialog.open || this.disposed)return;apps=result.data;render();status.textContent=apps.length?`${apps.length} installed apps`:'No installed apps in this session';}
+      catch(error){if(dialog.open){apps=[];render();status.textContent=error.message;}}
+      finally{refresh.disabled=false;}
+    };
+    const refresh=this.button('Refresh apps','refresh-cw',load);
+    const close=this.button('Close apps','x',()=>dialog.close());
+    search.addEventListener('input',render);
+    dialog.append(node('h3','','Apps and connectors'),close,refresh,search,status,list);
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.appsDialog=dialog;this.root.append(dialog);dialog.showModal();search.focus();this.refreshIcons();load();
+  }
+
   openHooks() {
     if(this.hooksDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Lifecycle hooks');
@@ -1188,7 +1230,7 @@ export class WorkspacePane {
 
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
-      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,
+      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
       model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton};
   }
 
@@ -1218,10 +1260,11 @@ export class WorkspacePane {
   async submit() {
     const text = this.input.value;
     if(this.provider==='Codex' && /^\/copy(?:\s|$)/.test(text.trim())){
-      if(text.trim()!=='/copy' || this.files.length || this.selectedSkills.length){this.error(Error('Copy does not accept arguments or attachments'));return;}
+      if(text.trim()!=='/copy' || this.files.length || this.selectedSkills.length || this.selectedApps.length){this.error(Error('Copy does not accept arguments or attachments'));return;}
       await this.copyLatestOutput();return;
     }
-    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|mention|hooks|diff)(?:\s|$)/.test(text.trim());
+    if(this.provider==='Codex' && /^\/[A-Za-z]/.test(text.trim()) && this.selectedApps.length){this.error(Error('Remove selected apps before running a session command'));return;}
+    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
@@ -1262,10 +1305,12 @@ export class WorkspacePane {
     }
     const files = [...this.files];
     const skills = [...this.selectedSkills];
+    const apps = [...this.selectedApps];
     this.sending = true; this.send.disabled = true; this.alert.hidden = true;
     try {
       // Uploads and text are submitted through one session-owner operation.
       const options = {};
+      if(apps.length)options.apps=apps.map(a=>a.id);
       if(skills.length){
         options.skills=skills.map(s=>s.path);
       }
@@ -1276,13 +1321,14 @@ export class WorkspacePane {
         if (files.length || skills.length || !this.controls.compact) throw Error('Compaction does not accept attachments or skills');
         await this.controls.compact();
       }
-      else if (this.canSteer()) await this.controls.steer({text, files, ...(skills.length?{options:{skills:options.skills}}:{}), expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
+      else if (this.canSteer()) await this.controls.steer({text, files, options:{...(skills.length?{skills:options.skills}:{}),...(apps.length?{apps:options.apps}:{})}, expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else if (this.canQueue()) await this.controls.queueInput({text, files,
         expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else await this.controls.submit({text, files, options});
       if (this.input.value === text) { this.input.value = ''; this.persistDraft(); }
       this.files = this.files.filter(file => !files.includes(file));
       this.selectedSkills=this.selectedSkills.filter(skill=>!skills.includes(skill));this.persistSkills();
+      this.selectedApps=this.selectedApps.filter(app=>!apps.includes(app));this.persistApps();
       this.renderAttachments();
     } catch (error) { this.error(error); }
     finally { this.sending = false; if (!this.disposed) this.render(); }
@@ -1296,6 +1342,11 @@ export class WorkspacePane {
     return this.provider === 'Claude' && this.conversation.status === 'running' && typeof this.controls.queueInput === 'function';
   }
 
+  persistApps() {
+    try{this.draftStorage.setItem(`${this.draftKey}:apps`,JSON.stringify(this.selectedApps));}
+    catch(error){this.error(error);}
+  }
+
   persistSkills() {
     try {this.draftStorage.setItem(`${this.draftKey}:skills`,JSON.stringify(this.selectedSkills));}
     catch(error){this.error(error);}
@@ -1306,6 +1357,11 @@ export class WorkspacePane {
       if (!this.files.includes(file)) { URL.revokeObjectURL(url); this.previews.delete(file); }
     }
     this.attachments.replaceChildren();
+    for(const app of this.selectedApps){
+      const row=node('span','aw-attachment',app.name);row.title=`app://${app.id}`;
+      row.append(this.button(`Remove app ${app.name}`,'x',()=>{this.selectedApps=this.selectedApps.filter(a=>a.id!==app.id);this.persistApps();this.renderAttachments();}));
+      this.attachments.append(row);
+    }
     for(const skill of this.selectedSkills){
       const row=node('span','aw-attachment',`$${skill.name}`);row.title=skill.path;
       row.append(this.button(`Remove skill ${skill.name}`,'x',()=>{this.selectedSkills=this.selectedSkills.filter(s=>s.path!==skill.path);this.persistSkills();this.renderAttachments();}));
@@ -1388,6 +1444,8 @@ export class WorkspacePane {
       for (const part of item.content || []) {
         if (part.previewToken || part.type === 'image') {
           this.appendHistoryImage(message, part, 'Attached image');
+        } else if(part.type==='mention' && typeof part.path==='string' && part.path.startsWith('app://')){
+          const app=node('span','aw-attachment',part.name || part.path);app.title=part.path;message.append(app);
         } else message.append(node('div', '', part.text ?? part.path ?? part.url ?? JSON.stringify(part)));
       }
       entry.append(message);

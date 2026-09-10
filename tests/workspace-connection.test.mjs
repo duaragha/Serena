@@ -413,6 +413,25 @@ test('background controls use exact process ID and disposal sends no stop',async
   ]);
 });
 
+test('apps are explicit and selections reach exact submit and steer routes',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    assert.equal(url,'/api/workspace/exact/commands');
+    calls.push(JSON.parse(options.body));return response({ok:true,result:{}});
+  }});
+  assert.equal(calls.length,0);
+  await conn.controls().apps();
+  await conn.controls().submit({text:'Read app',options:{apps:['demo']}});
+  await conn.controls().steer({text:'Read app',options:{apps:['demo']},expectedTurnId:'working'});
+  assert.deepEqual(calls.map(({action,payload})=>({action,payload})),[
+    {action:'apps',payload:{}},
+    {action:'submit',payload:{inputs:[{type:'text',text:'Read app'}],options:{apps:['demo']}}},
+    {action:'steer',payload:{inputs:[{type:'text',text:'Read app'}],apps:['demo'],expectedTurnId:'working'}},
+  ]);
+  conn.dispose();
+  assert.equal(calls.length,3);
+});
+
 test('skill-only sends and steering keep native selections and the expected turn',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{

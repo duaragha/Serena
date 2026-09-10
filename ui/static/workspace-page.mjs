@@ -63,7 +63,7 @@ function reportContext(closing=false,sleepPeers=false) {
     ...(typeof pinned==='boolean' ? {pinned} : {}),
     ...(sleepPeers===true && visible && document.hasFocus() && pinned===false && splitSids.length>1
       ? {sleep_peers:true} : {}),
-    draft:!!(pane.input.value.trim() || pane.files.length || pane.selectedSkills.length)};
+    draft:!!(pane.input.value.trim() || pane.files.length || pane.selectedSkills.length || pane.selectedApps.length)};
   const signature=JSON.stringify(state),now=performance.now();
   if(!closing && sleepPeers!==true && signature===lastContextSignature && now-lastContextAt<1800)return;
   const data={view_id:viewContext.view_id,sequence:++viewContext.sequence,...state};

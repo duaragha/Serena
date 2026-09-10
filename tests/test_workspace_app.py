@@ -313,6 +313,10 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
                 {"method": "workspace/history", "params": {"thread": {"id": self.sid, "turns": []}}}
             )
 
+        async def list_apps(self):
+            return {'data': [{'id': 'demo', 'name': 'Demo App', 'description': '',
+                              'accessible': True, 'enabled': True, 'callable': True}]}
+
         async def submit(self, inputs, options=None):
             self.sent.append(inputs)
             await asyncio.sleep(0.01)
@@ -473,6 +477,16 @@ function setTermStatus(status){window.lastStatus=status;}
             owners[0].rpc.suspended = False
             playwright.expect(page.locator('.aw-state')).to_have_text('ready')
             page.unroute('**/api/workspace/exact/view-context')
+            if provider == 'codex':
+                page.get_by_role('button', name='Apps and connectors', exact=True).click()
+                with page.expect_response(lambda response: response.url.endswith('/view-context')
+                                          and response.request.post_data_json.get('draft') is True):
+                    page.get_by_role('button', name='Select app Demo App', exact=True).click()
+                assert host.runtime_context_snapshot()['runtimes'][0]['draft']
+                assert not owners[0].sent and len(owners) == 1
+                with page.expect_response(lambda response: response.url.endswith('/view-context')
+                                          and response.request.post_data_json.get('draft') is False):
+                    page.get_by_role('button', name='Remove app Demo App', exact=True).click()
             with page.expect_response(lambda response: response.url.endswith('/view-context')
                                       and response.request.post_data_json.get('draft') is True):
                 page.get_by_role("textbox", name=f"Message {provider.capitalize()}").fill(

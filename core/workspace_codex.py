@@ -475,6 +475,58 @@ class CodexWorkspace:
             await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
             return {**catalog, "currentValue": mode}
 
+    async def list_apps(self) -> dict:
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        snapshot = await self.rpc.request("app/installed", {"threadId": self.session_id, "forceRefresh": True})
+        installed = snapshot.get("apps") if isinstance(snapshot, dict) else None
+        if not isinstance(installed, list) or len(installed) > 1000:
+            raise WorkspaceRpcError("Codex returned an invalid installed app snapshot")
+        runtime, apps = {}, []
+        for app in installed:
+            if (not isinstance(app, dict) or not isinstance(app.get("id"), str) or app["id"] in runtime
+                    or type(app.get("enabled")) is not bool or type(app.get("callable")) is not bool):
+                raise WorkspaceRpcError("Codex returned invalid app runtime state")
+            identity = app['id']
+            # Native IDs are opaque, not filesystem paths or URL slugs.
+            if not identity or len(identity) > 1024 or any(ord(c) < 32 or ord(c) == 127 for c in identity):
+                raise WorkspaceRpcError("Codex returned an invalid app ID")
+            runtime[app["id"]] = app
+        ids = list(runtime)
+        for start in range(0, len(ids), 100):
+            batch = ids[start:start + 100]
+            page = await self.rpc.request('app/read', {'appIds': batch, 'includeTools': False})
+            if not isinstance(page, dict) or not isinstance(page.get('apps'), list) or not isinstance(page.get('missingAppIds'), list):
+                raise WorkspaceRpcError('Codex returned invalid app metadata')
+            metadata = {}
+            for app in page['apps']:
+                if not isinstance(app, dict) or not isinstance(app.get('id'), str) or app['id'] not in batch or app['id'] in metadata:
+                    raise WorkspaceRpcError('Codex returned unexpected app metadata')
+                name, description = app.get('name'), app.get('description') or ''
+                if not isinstance(name, str) or not name or len(name) > 1000 or not isinstance(description, str) or len(description) > 8192:
+                    raise WorkspaceRpcError('Codex returned invalid app details')
+                metadata[app['id']] = {'name': name, 'description': description}
+            missing = page['missingAppIds']
+            if any(not isinstance(identity, str) or identity not in batch or identity in metadata for identity in missing) or len(set(missing)) != len(missing) or set(metadata) | set(missing) != set(batch):
+                raise WorkspaceRpcError('Codex app metadata did not match the installed snapshot')
+            for identity in batch:
+                state = runtime[identity]
+                info = metadata.get(identity, {'name': identity, 'description': 'App metadata unavailable'})
+                apps.append({'id': identity, **info, 'accessible': identity in metadata,
+                             'enabled': state['enabled'],
+                             'callable': identity in metadata and state['enabled'] and state['callable']})
+        return {"data": apps}
+
+    async def _app_inputs(self, apps):
+        if not isinstance(apps, list) or len(apps) > 20 or any(not isinstance(app, str) for app in apps) or len(set(apps)) != len(apps):
+            raise ValueError("Select distinct apps from the current session")
+        if not apps:
+            return []
+        catalog = {app["id"]: app for app in (await self.list_apps())["data"] if app["callable"]}
+        if any(app not in catalog for app in apps):
+            raise ValueError("Selected app is no longer callable in this session")
+        return [{"type": "mention", "name": catalog[app]["name"], "path": f"app://{app}"} for app in apps]
+
     async def list_hooks(self) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")
@@ -798,6 +850,7 @@ class CodexWorkspace:
             self._reject_unrouted_command(inputs)
             params = deepcopy(options or {})
             selected = await self._skill_inputs(params.pop("skills", []))
+            selected += await self._app_inputs(params.pop("apps", []))
             allowed = {
                 "model",
                 "effort",
@@ -841,7 +894,7 @@ class CodexWorkspace:
                     self.state = "uncertain"
                 raise
 
-    async def steer(self, inputs: list[dict], *, expected_turn_id: str | None = None, skills=None) -> Any:
+    async def steer(self, inputs: list[dict], *, expected_turn_id: str | None = None, skills=None, apps=None) -> Any:
         self._reject_unrouted_command(inputs)
         turn_id = self.active_turn
         if not self.active_turn or self.state != "running":
@@ -849,6 +902,7 @@ class CodexWorkspace:
         if expected_turn_id is not None and expected_turn_id != self.active_turn:
             raise WorkspaceRpcError("The running turn changed; steering was not sent")
         selected = await self._skill_inputs([] if skills is None else skills)
+        selected += await self._app_inputs([] if apps is None else apps)
         if self.active_turn != turn_id or self.state != "running":
             raise WorkspaceRpcError("The running turn changed; steering was not sent")
         return await self.rpc.request(

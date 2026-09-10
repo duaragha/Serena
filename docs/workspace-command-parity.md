@@ -16,6 +16,69 @@ that a command's full behavior works. Gemini is deferred.
   `ui/static/workspace-pane.mjs`; focused tests and exact historical runtime
   receipts are in `interactive-workspace.md`.
 
+## Installed Codex App Picker (2026-09-10)
+
+The explicit Apps and connectors button and `/apps` now open an installed-app
+picker. Selection is a removable, session-scoped persisted draft attachment.
+Submit and steer pass selected IDs separately; the owner rechecks them against
+the current native runtime and constructs exact `mention` inputs with
+`app://<id>` and the native display name. It does not invent a text-only command,
+enable apps, install anything, change permissions, or launch another owner.
+Selected app attachments also block background-job admission through view context.
+History renders app names as literal text with exact IDs in the tooltip.
+
+[Official App Server documentation](https://learn.chatgpt.com/docs/app-server),
+accessed 2026-09-10, documents `app/installed` for effective enabled/callable state,
+`app/read` for metadata in batches of at most 100 IDs, and `mention` user input.
+Implementation refreshes the installed snapshot for the exact loaded thread,
+then reads metadata only for those IDs. Missing metadata makes selection unavailable.
+The backend caps the installed inventory at 1,000 and selection at 20 distinct IDs;
+it validates returned identities and states and excludes unrelated metadata.
+
+Live discovery changed the implementation: initial full-directory `app/list`
+proofs exited 1 on repeated IDs across pages, then on over 1,000 unique entries.
+The final implementation does not fetch that directory. A non-refreshing
+installed snapshot initially returned zero; explicit refresh returned eight.
+The production picker therefore refreshes the runtime snapshot, not just an empty cache.
+
+Commands below ran from the isolated worktree. Python is
+`/home/raghav/Documents/Projects/serena/.venv/bin/python`.
+
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py::test_account_status_requires_explicit_owner_and_rejects_mutations tests/test_workspace_pane.py::test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads -q --tb=short`
+  exited 0: 95 passed in 27.46s. Includes malformed metadata, missing metadata,
+  100+1 batching, exact submit/steer routing, state revalidation, no auto-load,
+  disabled selections, text-safe rendering and retained failed-send drafts.
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads -q --tb=short`
+  exited 0: 2 passed in 3.81s after adding literal app-mention history rendering.
+- `env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short`
+  exited 0: 2 passed in 42.34s. Actual mounted Claude/Codex pages; selected app
+  alone reports draft=true, removal reports false, no extra owner or submission.
+- `node --test tests/workspace-connection.test.mjs` exited 0: 47 passed,
+  0 failed, 152.559706ms. Includes exact-session app routes and no auto-launch.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --signed-apps`
+  exited 0: signed-in native snapshot contained 8 installed apps; one exact
+  selection revalidated through the real native metadata API. Same owner stayed
+  ready, child reaped and disposable profile removed. Subscription auth was copied
+  into an isolated profile with apps enabled there only. No browser, inference,
+  tool execution, or user configuration writes. This proves discovery/selection,
+  not a real model's downstream use of a connector; actual turn transport is
+  covered by controlled submit/steer tests, not an inference claim.
+- `env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_browser.py::test_navigation_projects_and_drafts_do_not_spawn -q --tb=short`
+  exited 1 at setup: that separate legacy fixture ignores the executable override
+  and its bundled Chromium is missing. No production assertion ran there. The
+  mounted rich-page and pane tests above ran with installed Edge successfully.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py tests/test_workspace_app.py scripts/verify-workspace-account.py`
+  exited 0: all checks passed. `node --check ui/static/workspace-pane.mjs`,
+  `node --check ui/static/workspace-page.mjs`, and `git diff --check` each exited
+  0 with no output.
+
+Screenshots inspected at 390 and 1600 pixels:
+`apps/desktop/build/workspace-proof/apps-{390,1600}.png` (controlled metadata,
+real renderer). Dialogs fit without horizontal overflow; disabled state and
+markup-as-text were visible. Remaining app parity: marketplace browsing/install,
+configuration management, and a real inference using a selected connector.
+The full rich-pane goal remains incomplete and unreleased.
+
 ## Claude Native Catalog
 
 Every name in the observed 45-entry catalog is included below. Forwarding means

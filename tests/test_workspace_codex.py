@@ -76,6 +76,99 @@ def test_hook_catalog_is_project_scoped_read_only_and_validated(tmp_path, invali
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('invalid', [None, 'foreign', 'duplicate', 'identity', 'runtime', 'missing'])
+def test_apps_catalog_is_exact_thread_bounded_and_read_only(tmp_path, invalid):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        app = dict(id='demo-app', name='Demo App', description='Description', secret='omit')
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'app/installed':
+                assert params == {'threadId': owner.session_id, 'forceRefresh': True}
+                return {'apps': [dict(id='invalid\nidentity' if invalid == 'identity' else 'demo-app', enabled=True, callable='true' if invalid == 'runtime' else True)]}
+            assert method == 'app/read' and params == {'appIds': ['demo-app'], 'includeTools': False}
+            if invalid == 'foreign':
+                app['id'] = 'other'
+            return {'apps': [app, app] if invalid == 'duplicate' else [app], 'missingAppIds': ['other'] if invalid == 'missing' else []}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'preserved'
+            if invalid:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.list_apps()
+            else:
+                assert await owner.list_apps() == {'data': [dict(id='demo-app', name='Demo App', description='Description', accessible=True, enabled=True, callable=True)]}
+                assert len(calls) == 2
+            assert owner.state == 'running' and owner.active_turn == 'preserved'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('steering', [False, True])
+def test_selected_apps_revalidated_and_native_mentions_use_catalog_identity(tmp_path, steering):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls, callable_state = [], True
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'app/read':
+                return {'apps': [dict(id='demo', name='Native name')], 'missingAppIds': []}
+            if method == 'app/installed':
+                return {'apps': [dict(id='demo', enabled=True, callable=callable_state)]}
+            assert method in {'turn/start', 'turn/steer'}
+            return {'turn': {'id': 'turn'}}
+        rpc.request = request
+        async def send(ids):
+            inputs = [{'type': 'text', 'text': 'Read my selected app'}]
+            if steering:
+                owner.state, owner.active_turn = 'running', 'turn'
+                return await owner.steer(inputs, expected_turn_id='turn', apps=ids)
+            owner.state = 'ready'
+            return await owner.submit(inputs, options={'apps': ids})
+        try:
+            await send(['demo'])
+            assert calls[-1][1]['threadId'] == owner.session_id
+            assert calls[-1][1]['input'][-1] == {'type': 'mention', 'name': 'Native name', 'path': 'app://demo'}
+            callable_state = False
+            for ids in (['demo'], ['unknown'], ['demo', 'demo'], [None]):
+                calls.clear()
+                with pytest.raises(ValueError):
+                    await send(ids)
+                assert not any(method.startswith('turn/') for method, _ in calls)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+def test_installed_apps_batch_metadata_and_missing_apps_are_not_callable(tmp_path):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        batches = []
+        async def request(method, params):
+            if method == 'app/installed':
+                return {'apps': [dict(id=f'app.{i}', enabled=True, callable=True) for i in range(101)]}
+            assert method == 'app/read'
+            batch = params['appIds']
+            batches.append(len(batch))
+            return {'apps': [dict(id=identity, name=identity) for identity in batch if identity != 'app.100'],
+                    'missingAppIds': ['app.100'] if 'app.100' in batch else []}
+        rpc.request = request
+        try:
+            result = await owner.list_apps()
+            assert batches == [100, 1]
+            assert len(result['data']) == 101
+            assert result['data'][0]['callable']
+            assert not result['data'][-1]['accessible'] and not result['data'][-1]['callable']
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("account", [None, {"type": "chatgpt", "email": "person@example.test", "planType": "pro", "accessToken": "never-forward"}])
 def test_account_status_uses_exact_owner_without_refresh_or_inference(tmp_path, account):
     async def run():

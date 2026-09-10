@@ -16,7 +16,7 @@ from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
 
 
-async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False):
+async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False, signed_apps=False):
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
     with tempfile.TemporaryDirectory(prefix="serena-account-proof-") as directory:
@@ -25,7 +25,9 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
         project = root / "project"
         (home / ".codex").mkdir(parents=True)
         project.mkdir()
-        if signed_limits:
+        if signed_apps:
+            (home / '.codex' / 'config.toml').write_text('[features]\napps = true\n')
+        if signed_limits or signed_apps:
             source = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
             auth = json.loads(source.read_text())
             if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
@@ -51,13 +53,22 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
             process = owner.rpc.process
             sid = owner.session_id
             result = await owner.account_status()
-            if signed_limits:
+            if signed_limits or signed_apps:
                 assert result.get("account") is not None, "Copied subscription login was not recognized"
+            else:
+                assert result == {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False, "login": None}, result
+            if signed_limits:
                 snapshot = await owner.account_rate_limits()
                 assert snapshot["limits"] and snapshot["observedAt"]
                 assert any(event.get("method") == "workspace/accountLimits" for event in events)
-            else:
-                assert result == {"account": None, "requiresOpenaiAuth": True, "credentialsVerified": False, "login": None}, result
+            if signed_apps:
+                catalog = await owner.list_apps()
+                assert isinstance(catalog['data'], list)
+                selected = [app['id'] for app in catalog['data'] if app['callable']][:1]
+                if selected:
+                    mentions = await owner._app_inputs(selected)
+                    assert mentions[0]['path'] == 'app://' + selected[0]
+                assert owner.session_id == sid and owner.rpc.process is process and owner.state == 'ready'
             if limits:
                 from core.workspace_rpc import WorkspaceRpcError
 
@@ -146,7 +157,7 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
         assert process is not None and process.returncode is not None
     assert not root.exists()
     print(json.dumps({"ok": True, "nativeAccountRead": True, "sameOwner": True,
-                      "signedIn": signed_limits, "loginStarted": browser_login, "loginCancelled": browser_login,
+                      "signedIn": signed_limits or signed_apps, "loginStarted": browser_login, "loginCancelled": browser_login,
                       "browserOpened": False, "inference": False,
                       "nativePauseWake": pause, "wakeAccountRoundTripMs": wake_ms,
                       "readOnlyRuntimeSnapshot": pause,
@@ -154,6 +165,10 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
                       "nativeUnsignedLimitsRefused": limits,
                       "nativeSignedLimitsRead": signed_limits,
                       "nativeEmptyHookCatalogRead": hooks,
+                      "nativeAppCatalogRead": signed_apps,
+                      "appsEnabledOnlyInDisposableProfile": signed_apps,
+                      "appCount": len(catalog['data']) if signed_apps else None,
+                      "nativeAppSelectionValidated": bool(selected) if signed_apps else False,
                       "unroutedCommandsRefusedOnNativeOwner": command_guard,
                       "closedViewRetiredWithoutWaking": pause,
                       "childReaped": True, "temporaryProfileRemoved": True}))
@@ -168,7 +183,10 @@ if __name__ == "__main__":
     parser.add_argument("--signed-limits", action="store_true", help="Read real limits with an isolated subscription login copy; no inference")
     parser.add_argument("--hooks", action="store_true", help="Read native empty hook inventory without running hooks")
     parser.add_argument("--command-guard", action="store_true", help="Reject unsupported slash input on a disposable native owner")
+    parser.add_argument("--signed-apps", action="store_true", help="Read apps with an isolated subscription login copy; no tool calls or inference")
     args = parser.parse_args()
     if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks or args.command_guard):
         parser.error("--signed-limits must run alone")
-    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard))
+    if args.signed_apps and any(value for key, value in vars(args).items() if key != 'signed_apps'):
+        parser.error("--signed-apps must run alone")
+    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard, args.signed_apps))
