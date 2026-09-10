@@ -2,6 +2,29 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Windows Codex Browser Workflow
+
+Extended the Windows native proof with the existing browser workflow, using
+installed Edge against the real source workspace routes and native Codex owner.
+Only browser executable discovery and the print-only shell command were made
+portable; no mock provider or replay-only substitute was used.
+
+```sh
+SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -c \"import os,sys; __file__=r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-codex-windows.py'; os.environ['SERENA_PROOF_PYTHONPATH']=r'C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\apps\desktop\build\proof-tools\windows-python'; os.environ['SERENA_PROOF_BROWSER_EXECUTABLE']=r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'; sys.argv.append('--browser'); exec(compile(sys.stdin.read(),__file__,'exec'))\"" < scripts/verify-workspace-codex-windows.py
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -k 'history or pagination' -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-windows.py scripts/verify-workspace-codex-history.py
+```
+
+All exited 0. Native/browser proof: 51 seeded local-command turns, exact resume,
+pagination, file picker and inline mentions without sending, persistent skill
+disable/re-enable with draft retained, shell output, and explicit disconnect then
+same-session resume passed at 1440px and 390px. Cancelling disconnect and closing
+the page preserved the owner. No browser errors or horizontal overflow. Mobile
+screenshot `apps/desktop/build/workspace-proof/codex-native-mobile.png` inspected:
+wrapped commands and controls remain contained. No credentials or inference used.
+Focused tests: 4 passed, 45 deselected. This is a source-backed browser proof,
+not the Windows Electron shell or a release.
+
 ## Native Windows Codex Ownership
 
 The proof now persists 51 print-only turns and checks actual native pagination:

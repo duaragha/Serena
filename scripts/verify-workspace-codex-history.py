@@ -67,7 +67,8 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
     artifacts.mkdir(parents=True, exist_ok=True)
     forks = []
     with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = playwright.chromium.launch(
+                executable_path=os.environ.get("SERENA_PROOF_BROWSER_EXECUTABLE") or None)
             try:
                 pid = None
                 for label, width in (("desktop", 1440), ("mobile", 390)):
@@ -114,7 +115,7 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                     page.get_by_role("button", name="Run shell command", exact=True).click()
                     dialog = page.get_by_role("dialog", name="Run shell command")
                     token = f"SERENA_BROWSER_{label.upper()}"
-                    dialog.get_by_role("textbox", name="Shell command").fill(f"printf {token}")
+                    dialog.get_by_role("textbox", name="Shell command").fill(f"echo {token}")
                     dialog.get_by_role("checkbox").check()
                     dialog.get_by_role("button", name="Run command", exact=True).click()
                     page.locator("summary").filter(has_text=token).first.click(timeout=15000)

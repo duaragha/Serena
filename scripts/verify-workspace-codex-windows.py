@@ -1,5 +1,6 @@
 """Verify installed Windows Codex startup through the owned gate without inference."""
 import asyncio
+import importlib.util
 import json
 import os
 import shutil
@@ -22,6 +23,10 @@ async def main():
     with tempfile.TemporaryDirectory(prefix="serena-codex-windows-") as temporary:
         root = Path(temporary)
         (root / "codex").mkdir()
+        (root / "workspace-mention-proof.py").write_text("# Isolated file mention fixture\n")
+        skill = root / "codex" / "skills" / "workspace-setting-proof" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("---\nname: workspace-setting-proof\ndescription: Isolated skill proof\n---\nNo inference.\n")
         env = {key: value for key, value in os.environ.items()
                if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}}
         env.update(HOME=str(root), USERPROFILE=str(root), CODEX_HOME=str(root / "codex"),
@@ -39,7 +44,7 @@ async def main():
             sid = (await rpc.request("thread/start", {"cwd": str(root)}))["thread"]["id"]
             for number in range(51):
                 await rpc.request("thread/shellCommand", {"threadId": sid,
-                    "command": f"echo SERENA_WINDOWS_SEED_{number:03d}", "timeoutMs": 5000})
+                    "command": f"echo SERENA_HISTORY_{number:03d}", "timeoutMs": 5000})
                 async with asyncio.timeout(15):
                     while True:
                         event = await rpc.events.get()
@@ -67,14 +72,14 @@ async def main():
             assert history["thread"]["id"] == sid
             assert len(history["thread"]["turns"]) == 50
             recent = json.dumps(history["thread"]["turns"])
-            assert "SERENA_WINDOWS_SEED_050" in recent
-            assert "SERENA_WINDOWS_SEED_000" not in recent
+            assert "SERENA_HISTORY_050" in recent
+            assert "SERENA_HISTORY_000" not in recent
             original_pid = owner.rpc.process.pid
             cursor = owner.history_cursor
             assert cursor
             older = await owner.load_earlier(cursor)
             assert len(older["turns"]) == 1 and older["historyCursor"] is None
-            assert "SERENA_WINDOWS_SEED_000" in json.dumps(older["turns"])
+            assert "SERENA_HISTORY_000" in json.dumps(older["turns"])
             assert owner.rpc.process.pid == original_pid
             await owner.shell_command("echo SERENA_WINDOWS_RESUMED", True)
             await asyncio.wait_for(completed.wait(), 15)
@@ -84,6 +89,14 @@ async def main():
         finally:
             await owner.close()
         assert owner.rpc.process is None
+        if "--browser" in sys.argv[1:]:
+            packages = os.environ.get("SERENA_PROOF_PYTHONPATH")
+            if packages:
+                sys.path.append(packages)
+            spec = importlib.util.spec_from_file_location("codex_history_proof", Path(__file__).with_name("verify-workspace-codex-history.py"))
+            proof = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(proof)
+            await asyncio.to_thread(proof.browser_proof, sid, root, root, env, binary)
         print(json.dumps({"gated_startup": True, "isolated_empty_catalog": True,
                           "exact_resume": True, "native_command_exit_code": 0,
                           "recent_turns": 50, "older_turns": 1, "history_kept_owner": True,
