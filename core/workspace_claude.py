@@ -457,11 +457,21 @@ class ClaudeWorkspace:
                 item["workspaceAction"] = item["name"]
             elif item["name"] == "color":
                 item["workspaceAction"] = "color"
+            elif item["name"] == "doctor":
+                item["workspaceAction"] = "doctor"
             elif item["name"] in self.events.capabilities.get("terminal_slash_commands", []):
                 item["unavailableReason"] = "Claude reports this command requires a terminal"
             result["data"].append(item)
         await self.publish(self.events.event("workspace/commands", result))
         return result
+
+    async def diagnostics(self):
+        from core.workspace_diagnostics import claude_doctor
+
+        async with self._control:
+            if self.state != "ready" or self.client is None:
+                raise RuntimeError("Wait for Claude's current turn before checking installation health")
+            return await claude_doctor(self.client.options.cli_path, self.cwd, self.client.options.env)
 
     async def submit(self, inputs, *, options=None):
         return await self._submit(inputs, options=options)

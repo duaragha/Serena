@@ -2,6 +2,38 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Installation Diagnostics (2026-09-10)
+
+Claude `/doctor` opens an explicit native-report dialog. Run invokes only the
+installed `claude doctor`, in the owned session's project and environment, with
+metered fallback stripped. No user prompt, coding session, repair or approval is
+created. Output is plain text with credential redaction and actual numeric exit
+code. It is bounded to 20 seconds / 1 MiB, and its process group (POSIX) or gated
+job (Windows) is cleaned up. Existing owner identity/draft stays unchanged and
+running turns refuse diagnostics. This is installation health reporting, not the
+agentic `/doctor` skill's broader setup-repair workflow.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_diagnostics.py tests/test_workspace_claude.py::test_diagnostics_keep_exact_owner_and_refuse_a_running_turn tests/test_workspace_claude.py::test_command_catalog_and_session_switch_guard tests/test_workspace_host.py::test_diagnostics_route_is_exact_receipted_and_never_submits tests/test_workspace_pane.py::test_installation_diagnostics_are_explicit_and_show_native_exit_without_sending -q
+# exit 0: 8 passed; initial browser fixture run had 2 failures from an unescaped
+# newline in test JavaScript, corrected to a raw string
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-diagnostics.py
+# exit 0: Linux native doctor 2.1.267, unsigned disposable profile, no repair
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_diagnostics.py core/workspace_claude.py core/workspace_host.py tests/test_workspace_diagnostics.py tests/test_workspace_claude.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-diagnostics.py
+# exit 0
+node --check ui/static/workspace-pane.mjs
+# exit 0
+```
+
+Windows proof also exited 0 against native Claude 2.1.260. New files had not yet
+Syncthing-synced, so current module/proof sources were streamed over SSH into
+Python memory, not written into the PC checkout. Executed module SHA256:
+`894543ec59885abb500a98b1b8d9844c2103af596fae6d5a968f9ffb4a65388e`.
+The first Windows proof exited 1 only when printing a Unicode arrow through
+cp1252, after successful diagnostics. Proof output now uses ASCII JSON and the
+rerun passed. Warnings about absent credentials/config in these proofs describe
+their intentionally empty profiles, not Raghav's real installation health.
+
 ## Hidden Pane Polling (2026-09-10)
 
 The actual iframe now reports visibility through IntersectionObserver plus
@@ -66,8 +98,8 @@ alone are not treated as proof of working invocation. Reload plugins and skills
 now map to existing public SDK controls from both typed slash commands and the
 command picker, rather than submitting model input or disabling the supported
 plugin action. The reload UI prevents overlapping reload operations and retains
-the draft. `doctor` still needs an explicit native-interface equivalent; its
-terminal-only flag is retained. The later prompt-presentation slice covers color.
+the draft. Later slices add installation diagnostics and prompt color controls.
+The diagnostic report does not stand in for the agentic setup-repair skill.
 
 Commands and observed exits:
 

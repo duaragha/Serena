@@ -84,6 +84,30 @@ class Owner:
         self.closed = True
 
 
+def test_diagnostics_route_is_exact_receipted_and_never_submits(tmp_path):
+    calls = []
+
+    class DiagnosticOwner(Owner):
+        async def diagnostics(self):
+            calls.append(self.sid)
+            return {"command": "claude doctor", "exitCode": 3, "output": "Native warning"}
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "doctor.db"),
+                         resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+                         factories={"claude": DiagnosticOwner})
+    try:
+        assert not calls
+        host.attach("exact")
+        result = host.command("exact", "doctor-once", "diagnostics", {})
+        assert result["ok"] and result["result"]["exitCode"] == 3
+        assert host.command("exact", "doctor-once", "diagnostics", {}) == result
+        assert not host.command("exact", "invalid", "diagnostics", {"repair": True})["ok"]
+        assert calls == ["exact"]
+        assert not host._sessions["exact"][0].sent
+    finally:
+        host.shutdown()
+
+
 def test_gemini_explicit_owner_uses_acp_mapping_and_deduplicates_delivery(tmp_path):
     host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "gemini.db"),
                          resolve=lambda sid: {"session_id": sid, "provider": "gemini", "cwd": str(tmp_path)},

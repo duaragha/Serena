@@ -12,6 +12,7 @@ const connection = new WorkspaceConnection({
   error: error => connectionFailed(error),
 });
 const controls = connection.controls();
+controls.diagnostics = () => connection.command('diagnostics',{});
 controls.listSessions = (query, offset=0) => connection.request('/sessions?' + new URLSearchParams({provider:boot.provider.toLowerCase(),q:query,offset}));
 controls.openSession = sid => {
   if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid))throw Error('Invalid session identity');

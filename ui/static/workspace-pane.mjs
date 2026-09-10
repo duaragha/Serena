@@ -48,6 +48,9 @@ export class WorkspacePane {
     head.append(this.resumeButton);
     this.colorButton=this.button('Prompt color','palette',()=>this.openPromptColor());
     head.append(this.colorButton);
+    this.diagnosticsButton=this.button('Installation diagnostics','stethoscope',()=>this.openDiagnostics());
+    this.diagnosticsButton.hidden=provider!=='Claude' || !controls.diagnostics;
+    head.append(this.diagnosticsButton);
     const eventsButton=this.button('Session events','list-collapse',()=>this.openEvents());
     eventsButton.hidden=!controls.events;head.append(eventsButton);
     this.forkButton=this.button('Fork conversation','git-fork',()=>this.openFork());
@@ -479,6 +482,26 @@ export class WorkspacePane {
     window.lucide?.createIcons();await load('');
   }
 
+  async openDiagnostics() {
+    if(this.diagnosticsDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Installation diagnostics');
+    const status=node('p');status.setAttribute('role','status');
+    const output=node('pre');output.style.whiteSpace='pre-wrap';output.style.overflowWrap='anywhere';
+    const run=this.button('Run installation diagnostics','play',async()=>{
+      run.disabled=true;status.textContent='Checking installation...';output.textContent='';
+      try{
+        const result=await this.controls.diagnostics();
+        if(!dialog.open || this.disposed)return;
+        status.textContent=`${result.command} exited ${result.exitCode}`;output.textContent=result.output;
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{run.disabled=false;}
+    });
+    const close=this.button('Close installation diagnostics','x',()=>dialog.close());
+    dialog.append(node('h3','','Installation diagnostics'),close,run,status,output);
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.diagnosticsDialog=dialog;this.root.append(dialog);dialog.showModal();run.focus();window.lucide?.createIcons();
+  }
+
   setPromptColor(value) {
     if(!Object.hasOwn(promptColors,value))throw Error('Choose one of the available prompt colors');
     if(value==='default')this.draftStorage.removeItem(`${this.draftKey}:color`);
@@ -525,7 +548,7 @@ export class WorkspacePane {
         button.append(node('strong','',`${command.kind==='skill'?'$':'/'}${command.name}`),node('small','',command.kind==='skill'?command.path:command.argumentHint || ''),node('span','',command.description || ''));
         button.disabled=busy;
         if(command.paneControl)button.disabled=busy || command.paneControl.hidden || command.paneControl.disabled;
-        const actionControls={clear:this.clearButton,fork:this.forkButton,resume:this.resumeButton,color:this.colorButton,'reload-plugins':plugins,'reload-skills':reload};
+        const actionControls={clear:this.clearButton,fork:this.forkButton,resume:this.resumeButton,color:this.colorButton,doctor:this.diagnosticsButton,'reload-plugins':plugins,'reload-skills':reload};
         const localAction=this.provider==='Claude' && Object.hasOwn(actionControls,command.workspaceAction) ? command.workspaceAction : null;
         if(localAction){
           const control=actionControls[localAction];
@@ -970,6 +993,11 @@ export class WorkspacePane {
   async submit() {
     const text = this.input.value;
     if (this.sending || this.send.disabled || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
+    if(this.provider==='Claude' && /^\/doctor(?:\s|$)/.test(text.trim())){
+      if(text.trim()!=='/doctor' || this.files.length || this.selectedSkills.length){this.error(Error('Installation diagnostics does not accept arguments, attachments or skills'));return;}
+      if(this.diagnosticsButton.hidden){this.error(Error('Installation diagnostics is unavailable'));return;}
+      this.openDiagnostics();return;
+    }
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
       if(this.files.length || this.selectedSkills.length){this.error(Error('Prompt color does not accept attachments or skills'));return;}
@@ -1555,6 +1583,7 @@ export class WorkspacePane {
     this.tasksDialog?.close();
     this.commandsDialog?.close();
     this.colorDialog?.close();
+    this.diagnosticsDialog?.close();
     this.sessionsDialog?.close();
     this.clearDialog?.close();
     this.disconnectDialog?.close();

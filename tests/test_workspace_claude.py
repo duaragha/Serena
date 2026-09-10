@@ -753,16 +753,16 @@ def test_command_catalog_and_session_switch_guard(tmp_path):
 
             owner.client.get_server_info = info
             owner.events.capabilities = {
-                "slash_commands": ["context", "extra", "color", "reload-plugins", "reload-skills"],
-                "terminal_slash_commands": ["color", "reload-plugins"],
+                "slash_commands": ["context", "extra", "color", "reload-plugins", "reload-skills", "doctor"],
+                "terminal_slash_commands": ["color", "reload-plugins", "doctor"],
             }
             result = await owner.list_commands()
-            assert [c["name"] for c in result["data"]] == ["context", "clear", "extra", "color", "reload-plugins", "reload-skills"]
+            assert [c["name"] for c in result["data"]] == ["context", "clear", "extra", "color", "reload-plugins", "reload-skills", "doctor"]
             assert result["data"][1]["workspaceAction"] == "clear"
             assert "unavailableReason" not in result["data"][1]
             assert result["data"][3]["workspaceAction"] == "color"
             assert "unavailableReason" not in result["data"][3]
-            for command in result["data"][-2:]:
+            for command in result["data"][-3:]:
                 assert command["workspaceAction"] == command["name"]
                 assert "unavailableReason" not in command
             assert events[-1]["method"] == "workspace/commands"
@@ -772,6 +772,32 @@ def test_command_catalog_and_session_switch_guard(tmp_path):
             assert not owner.client.sent
             await owner.submit([{"type": "text", "text": "/context"}])
             assert owner.client.sent[0][0] == "exact"
+        finally:
+            await owner.close()
+
+    asyncio.run(run())
+
+
+def test_diagnostics_keep_exact_owner_and_refuse_a_running_turn(tmp_path, monkeypatch):
+    async def run():
+        calls = []
+
+        async def doctor(binary, cwd, env):
+            calls.append((binary, cwd))
+            return {"command": "claude doctor", "exitCode": 0, "output": "Native report"}
+
+        monkeypatch.setattr("core.workspace_diagnostics.claude_doctor", doctor)
+        owner, _ = make(tmp_path)
+        try:
+            await owner.open()
+            client = owner.client
+            assert (await owner.diagnostics())["output"] == "Native report"
+            assert calls == [("/controlled/claude", tmp_path)]
+            assert owner.client is client and not client.sent and not client.closed
+            owner.state = "running"
+            with pytest.raises(RuntimeError, match="current turn"):
+                await owner.diagnostics()
+            assert len(calls) == 1
         finally:
             await owner.close()
 
