@@ -227,7 +227,14 @@ class WorkspaceRpc:
             process = self.process
             if process is None:
                 return
-            self.wake()
+            try:
+                self.wake()
+            except OSError:
+                if self._windows_job is None:
+                    raise
+                # Explicit owner shutdown must reap children even if wake failed.
+                self._windows_job.terminate()
+                self.suspended = False
             if process.stdin:
                 process.stdin.close()
             try:

@@ -53,6 +53,11 @@ class WindowsJob:
             "TerminateJobObject": ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
             "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
             "IsProcessInJob": ([wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)], wintypes.BOOL),
+            "OpenThread": ([wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
+            "GetProcessIdOfThread": ([wintypes.HANDLE], wintypes.DWORD),
+            "SuspendThread": ([wintypes.HANDLE], wintypes.DWORD),
+            "ResumeThread": ([wintypes.HANDLE], wintypes.DWORD),
+            "WaitForSingleObject": ([wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
         }
         for name, (args, result) in signatures.items():
             function = getattr(self._api, name)
@@ -124,29 +129,63 @@ class WindowsJob:
         finally:
             self._check(self._api.CloseHandle(process))
 
+    def _threads(self):
+        threads = set()
+        for pid in self.process_ids():
+            try:
+                if pid == os.getpid() or not self._contains(pid):
+                    raise OSError("Provider job membership changed")
+                threads.update((pid, thread.id) for thread in psutil.Process(pid).threads())
+            except psutil.NoSuchProcess:
+                continue
+            except OSError:
+                if psutil.pid_exists(pid):
+                    raise
+        return threads
+
+    def _thread_alive(self, handle):
+        result = self._api.WaitForSingleObject(handle, 0)
+        if result not in (0, 258):  # signalled / WAIT_TIMEOUT
+            raise ctypes.WinError(ctypes.get_last_error())
+        return result == 258
+
+    def _suspend_thread(self, pid, tid):
+        # Retain a kernel handle, not a reusable TID, until our increment is undone.
+        handle = self._api.OpenThread(0x100802, False, tid)  # SYNCHRONIZE | QUERY_LIMITED | SUSPEND_RESUME
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if self._api.GetProcessIdOfThread(handle) != pid or not self._contains(pid):
+                raise OSError("Provider thread membership changed")
+            if self._api.SuspendThread(handle) == 0xFFFFFFFF:
+                raise ctypes.WinError(ctypes.get_last_error())
+        except BaseException:
+            self._api.CloseHandle(handle)
+            raise
+        return handle
+
     def suspend(self):
-        """Suspend only job members; bound enumeration and undo partial failure."""
+        """Own one suspend-count increment per job thread; undo only our increments."""
         if self._suspended:
             return True
         try:
             for _ in range(8):
-                members = self.process_ids()
-                if not members:
+                threads = self._threads()
+                if not threads:
                     self.resume()
                     return False
-                covered = {process.pid for process in self._suspended if process.is_running()}
-                if members <= covered:
-                    return True
-                for pid in sorted(members - covered):
-                    if pid == os.getpid():
-                        raise OSError("Refusing to suspend the host")
-                    process = psutil.Process(pid)
-                    if not self._contains(pid) or not process.is_running():
-                        raise OSError("Provider job membership changed")
-                    if process.status() == psutil.STATUS_STOPPED:
-                        raise OSError("Provider member is suspended by another owner")
-                    process.suspend()
-                    self._suspended.append(process)
+                covered = {(pid, tid) for pid, tid, handle in self._suspended if self._thread_alive(handle)}
+                if threads <= covered:
+                    return bool(self._suspended)
+                for pid, tid in sorted(threads - covered):
+                    try:
+                        handle = self._suspend_thread(pid, tid)
+                    except OSError:
+                        # Startup helpers can exit between enumeration and open.
+                        if (pid, tid) not in self._threads():
+                            continue
+                        raise
+                    self._suspended.append((pid, tid, handle))
             raise OSError("Provider job did not settle for suspension")
         except BaseException:
             self.resume()
@@ -158,14 +197,15 @@ class WindowsJob:
 
     def resume(self):
         remaining, failure = [], None
-        for process in reversed(self._suspended):
+        for pid, tid, handle in reversed(self._suspended):
             try:
-                process.resume()
-            except psutil.NoSuchProcess:
-                pass
-            except psutil.Error as error:
-                remaining.append(process)
+                if self._thread_alive(handle) and self._api.ResumeThread(handle) == 0xFFFFFFFF:
+                    raise ctypes.WinError(ctypes.get_last_error())
+            except OSError as error:
+                remaining.append((pid, tid, handle))
                 failure = error
+            else:
+                self._api.CloseHandle(handle)
         self._suspended = remaining
         if failure:
             raise OSError("Provider job could not fully resume") from failure
@@ -177,4 +217,6 @@ class WindowsJob:
         if self.handle:
             self._check(self._api.CloseHandle(self.handle))
             self.handle = None
+            for _, _, handle in self._suspended:
+                self._api.CloseHandle(handle)
             self._suspended.clear()

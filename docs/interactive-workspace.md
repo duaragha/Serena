@@ -2,6 +2,100 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Verified Windows Thread-Owned Sleep (2026-09-10)
+
+The failed status-based approach below is superseded. The owned Job Object now
+enumerates threads, validates each thread handle's process against job membership,
+and owns exactly one `SuspendThread` increment per thread. Handles are retained
+until wake so reused thread IDs cannot receive a resume. `ResumeThread` removes
+only our increment, preserving existing suspension counts. Enumeration is bounded
+and repeated to cover newly created threads. Confirmed exiting helpers are skipped;
+access failures on live members still fail with rollback. Failed resumes retain
+their handles for retry; explicit owner shutdown terminates the job even if wake
+fails. No renderer-disconnect behavior changed.
+
+Primary Microsoft references, accessed 2026-09-10:
+- https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-suspendthread
+- https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread
+- https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessidofthread
+
+These APIs specify suspend-count ownership and suppression of user-mode execution.
+The proof no longer treats psutil's all-threads Waiting/Suspended classification as
+the only valid representation of suspension. Instead, it verifies positive native
+thread suspend counts, queues real control input while paused, confirms that input
+cannot complete, then wakes the same native owner and receives its real reply.
+The Python RPC test independently exercises blocked stdin and shutdown cleanup.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_windows_job.py tests/test_workspace_rpc.py tests/test_workspace_claude_transport.py tests/test_workspace_claude_client.py -q --tb=short
+# exit 0: 48 passed, 7 platform skips in 3.11s (Linux).
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_windows_job.py core/workspace_rpc.py tests/test_workspace_windows_job.py tests/test_workspace_rpc.py scripts/verify-workspace-claude-sleep.py
+# exit 0: All checks passed.
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B -m pytest -o pythonpath=C:/Users/ragha/Projects/_artifacts/serena-interactive-workspace C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\test_workspace_windows_job.py C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\test_workspace_rpc.py -q --tb=short"
+# exit 0: 22 passed, 5 platform skips in 4.66s (Windows).
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-sleep.py
+# exit 0: Linux native Claude same PID/session, paused input blocked, wake
+# round trip 33.95ms, local slash command, zero inference, children/profile reaped.
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-claude-sleep.py"
+# exit 0: Windows native Claude same PID/session, suspend counts confirmed,
+# paused input blocked, wake round trip 65.39ms, local slash command,
+# zero inference, children/profile reaped.
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-account.py --pause"
+# exit 0: Windows native Codex same owner, pause/wake account round trip 4.69ms,
+# no login/browser/inference, child/profile reaped.
+```
+
+Timing is one observed control round trip, not a guaranteed bound. PC hashes
+matched laptop before the final tests/proofs. Before the final race fix, Windows
+tests passed 20/5 skipped but Claude proof exited 1 with WinError 87 when a startup
+helper exited between enumeration and opening. Two focused regression tests now
+cover disappearing helpers versus real access failure. Syncthing's ongoing scan
+temporarily delayed file delivery; no remote source edits or app restarts were used.
+Full packaged/browser/Electron delivery gates remain open; this is not a release.
+
+## Historical Native Sleep Verification Failure (2026-09-10)
+
+Historical investigation checkpoint (superseded above): Windows pause counted requests rather than
+confirmed stopped members. Current working changes require stopped status,
+preserve pre-suspended helpers without acquiring wake ownership, and wait a
+bounded eight rounds without stacking suspension counts. Rollback is retained.
+This fails closed, but is NOT yet a working Windows pause implementation:
+native Claude and the real Python RPC-child test fail confirmation. Do not
+release these changes or weaken the test to accept a false success.
+
+The process-status check itself needs investigation. psutil's Windows code
+requires every thread to report Waiting/Suspended; whether that is an adequate
+confirmation for a process blocked in native I/O has not been established.
+Source inspected 2026-09-10:
+https://github.com/giampaolo/psutil/blob/release-7.0.0/psutil/arch/windows/proc.c
+(`psutil_proc_is_suspended`). This is an investigation hypothesis, not a finding
+that the failed processes were actually safely paused.
+
+Latest recorded commands, from this worktree unless stated otherwise:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_windows_job.py tests/test_workspace_rpc.py tests/test_workspace_claude_transport.py tests/test_workspace_claude_client.py -q --tb=short
+# exit 0: 44 passed, 6 skipped in 3.07s (Linux).
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_windows_job.py tests/test_workspace_windows_job.py scripts/verify-workspace-claude-sleep.py
+# exit 0: All checks passed.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-claude-sleep.py
+# exit 0: native Claude same PID/session, stopped, wake control 16.83ms,
+# local slash command, zero inference, paused-close cleanup, profile removed.
+ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B -m pytest -o pythonpath=C:/Users/ragha/Projects/_artifacts/serena-interactive-workspace C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\test_workspace_windows_job.py C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\tests\test_workspace_rpc.py -q --tb=short"
+# exit 1: 1 failed, 16 passed, 5 skipped in 4.18s.
+# test_idle_pause_wakes_same_child_before_rpc_and_close fails:
+# Provider job did not settle for suspension.
+env SERENA_EVIDENCE_KIND=live ssh -o BatchMode=yes -o ConnectTimeout=5 docker-pc "C:\Users\ragha\Projects\serena\.venv\Scripts\python.exe -B C:\Users\ragha\Projects\_artifacts\serena-interactive-workspace\scripts\verify-workspace-claude-sleep.py"
+# exit 1: Provider job did not settle for suspension; finally closes transport.
+```
+
+PC source/test SHA-256 matched laptop for these final runs:
+`e33c5860fead7abb8efccbbca0b3f8e8c986713be4bcdbb232e6930b10a000c7`
+(Windows job) and
+`4cf9c60f0675612502af85b001da20ea5a2661772a7e1ab2b42dc22b70419a9d`
+(job tests). No source files were written remotely, no installed app was
+restarted, and no user credentials were used in the new Claude proof.
+
 ## Windows Native Sleep (2026-09-10)
 
 Windows now suspends the provider's non-breakaway Job Object members using

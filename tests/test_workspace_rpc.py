@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import os
 import sys
 
@@ -48,10 +49,17 @@ def test_idle_pause_wakes_same_child_before_rpc_and_close(tmp_path):
             assert await rpc.request("ping", {"ready": True}) == {"ready": True}
             assert await rpc.pause_idle()
             assert rpc.suspended
-            async with asyncio.timeout(2):
-                while psutil.Process(process.pid).status() != psutil.STATUS_STOPPED:
-                    await asyncio.sleep(.01)
+            # Queue real input without the normal automatic wake. It must not
+            # execute until wake, including when the child was blocked in ReadFile.
+            future = asyncio.get_running_loop().create_future()
+            rpc._pending["paused-proof"] = future
+            process.stdin.write((json.dumps({"id": "paused-proof", "method": "ping", "params": {"paused": True}}) + "\n").encode())
+            await process.stdin.drain()
+            await asyncio.sleep(.1)
+            assert not future.done()
             assert await rpc.request("ping", {"awake": True}, timeout=2) == {"awake": True}
+            assert (await asyncio.wait_for(future, 2))["result"] == {"paused": True}
+            rpc._pending.pop("paused-proof")
             assert rpc.process is process and not rpc.suspended
             assert await rpc.pause_idle()
         finally:
@@ -85,6 +93,27 @@ def test_pause_refuses_inflight_control_or_unsafe_group(tmp_path, monkeypatch, b
         finally:
             rpc._pending.clear()
             await rpc.close()
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows assignment gate")
+def test_explicit_close_reaps_job_when_resume_fails(tmp_path, monkeypatch):
+    async def run():
+        rpc = WorkspaceRpc()
+        await rpc.start([sys.executable, "-u", "-c", PEER], cwd=tmp_path, env=dict(os.environ))
+        process = rpc.process
+        try:
+            assert await rpc.request("ping", {}) == {}
+            assert await rpc.pause_idle()
+            def fail():
+                raise OSError("injected wake failure")
+            monkeypatch.setattr(rpc._windows_job, "resume", fail)
+            await rpc.close()
+            assert process.returncode is not None and rpc._windows_job is None
+            assert not rpc.suspended
+        finally:
+            if rpc.process is not None:
+                await rpc.close()
     asyncio.run(run())
 
 
