@@ -1018,12 +1018,7 @@ export class WorkspacePane {
       const message = node('div', 'aw-user-message');
       for (const part of item.content || []) {
         if (part.previewToken || part.type === 'image') {
-          const image = node('img', 'aw-history-image');
-          image.alt = part.name || 'Attached image';
-          message.append(image);
-          this.loadHistoryImage(image, part).catch(() => {
-            image.replaceWith(node('span', '', 'Attached image unavailable'));
-          });
+          this.appendHistoryImage(message, part, 'Attached image');
         } else message.append(node('div', '', part.text ?? part.path ?? part.url ?? JSON.stringify(part)));
       }
       entry.append(message);
@@ -1031,6 +1026,9 @@ export class WorkspacePane {
       entry.append(node('div', 'aw-author', item.type === 'commandOutput' ? 'Command result' : item.type === 'plan' ? 'Plan' : item.type.endsWith('ReviewMode') ? 'Review' : item.parentToolUseId ? 'Subagent response' : this.provider));
       const message = node('div', 'aw-message');
       message.innerHTML = renderWorkspaceMarkdown(item.text ?? item.review);
+      for (const part of Array.isArray(item.content) ? item.content : []) {
+        if (part.type === 'image') this.appendHistoryImage(message, part, 'Assistant image');
+      }
       for (const block of message.querySelectorAll('pre')) {
         const code = block.querySelector('code');
         if (!code) continue;
@@ -1091,6 +1089,10 @@ export class WorkspacePane {
             detail.append(node('pre','aw-tool-output',block.content.text));
             continue;
           }
+          if(item.type==='acpToolCall' && block?.type==='content' && block.content?.type==='image'){
+            this.appendHistoryImage(detail, {source:{type:'base64',data:block.content.data,media_type:block.content.mimeType}}, 'Tool result image');
+            continue;
+          }
           const text=typeof block==='string'?block:block?.type==='text' && typeof block.text==='string'?block.text:JSON.stringify(block,null,2);
           detail.append(node('pre','aw-tool-output',text));
         }
@@ -1123,6 +1125,18 @@ export class WorkspacePane {
       entry.append(detail);
     }
     return entry;
+  }
+
+  appendHistoryImage(parent, part, label) {
+    const image = node('img', 'aw-history-image');
+    image.alt = part.name || label;
+    const unavailable = () => {
+      if (this.historyImageUrls.delete(image.src)) URL.revokeObjectURL(image.src);
+      image.replaceWith(node('span', '', `${label} unavailable`));
+    };
+    image.addEventListener('error', unavailable, {once:true});
+    parent.append(image);
+    this.loadHistoryImage(image, part).catch(unavailable);
   }
 
   async loadHistoryImage(image, part) {

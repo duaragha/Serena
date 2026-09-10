@@ -1545,9 +1545,19 @@ def test_compact_command_is_native_and_waits_for_provider_completion(pane):
     assert not errors
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
+@pytest.mark.parametrize("mime,data", [("image/svg+xml", "PHN2Zz48L3N2Zz4="), ("image/png", "broken!"), ("image/png", "bm90IGEgcG5n")])
+def test_assistant_image_rejects_unsupported_or_invalid_data(pane, mime, data):
+    page, errors = pane
+    page.evaluate("([mime,data]) => emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'invalid-image',type:'agentMessage',content:[{type:'image',source:{type:'base64',media_type:mime,data}}]}}})", [mime, data])
+    page.get_by_text("Assistant image unavailable", exact=True).wait_for()
+    assert page.locator('[data-item-id="invalid-image"] img').count() == 0
+    assert page.evaluate('pane.historyImageUrls.size') == 0
+    assert page.evaluate('calls') == [] and not errors
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex", "gemini", "gemini-agent", "gemini-tool"])
 @pytest.mark.parametrize("width", [390, 1600])
-def test_history_image_renders_without_base64_text(pane, provider, width):
+def test_history_image_renders_without_base64_text(pane, provider, width, tmp_path):
     import base64
     import io
 
@@ -1556,7 +1566,7 @@ def test_history_image_renders_without_base64_text(pane, provider, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 1000})
     image = io.BytesIO()
-    Image.new("RGB", (8, 8), "green").save(image, format="PNG")
+    Image.new("RGB", (800, 400), "green").save(image, format="PNG")
     data = base64.b64encode(image.getvalue()).decode()
     if provider == "codex":
         page.evaluate(
@@ -1566,26 +1576,33 @@ def test_history_image_renders_without_base64_text(pane, provider, width):
         page.evaluate(
             "emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'localImage',previewToken:'owned-token',path:'/not-rendered.png'}]}}})"
         )
-    elif provider == "gemini":
+    elif provider.startswith("gemini"):
         from core.workspace_acp_events import AcpEvents
 
         events = AcpEvents("exact")
         events.begin("t")
-        event = events.update({"sessionId": "exact", "update": {
-            "sessionUpdate": "user_message_chunk", "content": {
-                "type": "image", "mimeType": "image/png", "data": data}}})
+        content = {"type": "image", "mimeType": "image/png", "data": data}
+        update = {"sessionUpdate": "agent_message_chunk" if provider == "gemini-agent" else "user_message_chunk", "content": content}
+        if provider == "gemini-tool":
+            update = {"sessionUpdate": "tool_call", "toolCallId": "image", "title": "Image result", "status": "completed",
+                      "content": [{"type": "content", "content": content}]}
+        event = events.update({"sessionId": "exact", "update": update})
         event["params"]["item"]["id"] = "photo"
         page.evaluate("event => emit(event)", event)
+        if provider == "gemini-tool":
+            page.get_by_text("Image result", exact=True).click()
     else:
         page.evaluate(
             "data => emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'image',source:{type:'base64',media_type:'image/png',data}}]}}})",
             data,
         )
-    page.wait_for_function("document.querySelector('.aw-history-image')?.naturalWidth === 8")
+    page.wait_for_function("document.querySelector('.aw-history-image')?.naturalWidth === 800")
     assert data not in page.locator("#left").inner_text()
     assert page.locator(".aw-history-image").get_attribute("src").startswith("blob:")
     assert page.evaluate("pane.historyImageUrls.size") == 1
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    assert page.locator('.aw-history-image').evaluate("image => {const c=document.createElement('canvas');c.width=c.height=8;const ctx=c.getContext('2d');ctx.drawImage(image,0,0);return [...ctx.getImageData(0,0,1,1).data]}") == [0, 128, 0, 255]
+    page.screenshot(path=str(tmp_path / f"{provider}-{width}.png"))
     page.evaluate(
         "emit({method:'item/completed',params:{threadId:'exact',turnId:'t',item:{id:'photo',type:'userMessage',content:[{type:'text',text:'image replaced'}]}}})"
     )

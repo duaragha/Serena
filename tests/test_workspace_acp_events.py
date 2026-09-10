@@ -117,22 +117,23 @@ def test_context_usage_is_provider_reported_not_an_account_limit(used, size, val
     assert events.turn is None and not events.items
 
 
-def test_user_image_keeps_text_boundaries_and_original_content():
+@pytest.mark.parametrize('kind,item_type', [('user_message_chunk', 'userMessage'), ('agent_message_chunk', 'agentMessage')])
+def test_image_keeps_text_boundaries_and_original_content(kind, item_type):
     events = AcpEvents("exact")
     events.begin("history")
-    before = update(events, "user_message_chunk", content={"type": "text", "text": "before"})
+    before = update(events, kind, content={"type": "text", "text": "before"})
     content = {"type": "image", "mimeType": "image/png", "data": "encoded", "annotations": {"audience": ["assistant"]}}
-    image = update(events, "user_message_chunk", content=content)
-    after = update(events, "user_message_chunk", content={"type": "text", "text": "after"})
+    image = update(events, kind, content=content)
+    after = update(events, kind, content={"type": "text", "text": "after"})
     assert len({before["id"], image["id"], after["id"]}) == 3
-    assert image["type"] == "userMessage"
+    assert image["type"] == item_type
     assert image["content"] == [{"type": "image", "source": {
         "type": "base64", "media_type": "image/png", "data": "encoded"}}]
     assert image["providerOriginal"]["content"] == content
     content["data"] = "changed"
     assert image["providerOriginal"]["content"]["data"] == "encoded"
     with pytest.raises(ValueError, match="Invalid ACP image"):
-        update(events, "user_message_chunk", content={"type": "image", "data": None})
+        update(events, kind, content={"type": "image", "data": None})
 
 
 def test_permission_requires_exact_offered_option_and_explicit_resolution():

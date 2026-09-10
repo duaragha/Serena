@@ -6,6 +6,33 @@ assumption that Antigravity has no suitable interactive interface. The installed
 
 ## Primary Evidence
 
+### Assistant And Tool Images
+
+ACP assistant image chunks now become image-bearing assistant messages instead
+of generic protocol dumps. Text before and after remains separate, and original
+metadata is preserved. Tool-call image content uses the same bounded loader as
+history attachments. Only PNG/JPEG/GIF/WebP blobs are displayed; malformed base64,
+undecodable bytes and unsupported media produce a visible unavailable label.
+Failed images and replaced items release their object URLs. This adds rendering
+support, not authenticated image-generation or Google session compatibility.
+
+2026-09-10 commands, each exit **0**:
+
+```sh
+env PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_events.py tests/test_workspace_pane.py -k 'image' -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_acp_events.py -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_acp_events.py tests/test_workspace_acp_events.py tests/test_workspace_pane.py
+node --check ui/static/workspace-pane.mjs
+```
+
+Image checks: **16 passed, 150 deselected**. Event module: **22 passed** (overlaps
+the image run). Actual Chromium rendered controlled 800x400 PNG content at 390px
+and 1600px, including user, assistant and tool images. Pixel checks matched the
+fixture, no horizontal overflow or page errors occurred, and replacement released
+all image URLs. Mobile assistant and desktop tool screenshots were inspected.
+SVG, malformed base64 and invalid PNG bytes were rejected. These are browser and
+translation checks with fixtures, not a native provider image turn.
+
 ### Disconnect Capability Boundary
 
 Rechecked the official [ACP terminal contract](https://agentclientprotocol.com/protocol/v1/terminals)

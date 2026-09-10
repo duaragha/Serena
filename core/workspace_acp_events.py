@@ -65,13 +65,13 @@ class AcpEvents:
                 self.items[item_id] = item
                 return self.event("item/agentMessage/delta", {
                     "turnId": self.turn, "itemId": item_id, "delta": text})
-        elif kind == "user_message_chunk" and update["content"].get("type") == "image":
+        elif kind in {"user_message_chunk", "agent_message_chunk"} and update["content"].get("type") == "image":
             content = update["content"]
             if not isinstance(content.get("data"), str) or not isinstance(content.get("mimeType"), str):
                 raise ValueError("Invalid ACP image")
             self.last_message = None
             item_id = f"{self.turn}:event:{len(self.items)}"
-            item = {"id": item_id, "type": "userMessage", "content": [{"type": "image", "source": {
+            item = {"id": item_id, "type": "userMessage" if kind == "user_message_chunk" else "agentMessage", "content": [{"type": "image", "source": {
                 "type": "base64", "media_type": content["mimeType"], "data": content["data"]}}],
                 "providerOriginal": deepcopy(update)}
         elif kind == "plan":
