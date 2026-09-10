@@ -39,12 +39,21 @@ pane.receive({sequence:1,event:{method:'workspace/history',params:{thread:{id:'p
             page.get_by_role("button", name="Copy latest completed output", exact=True).click()
             page.wait_for_function("async()=>await navigator.clipboard.readText()==='Exact completed output\\nSecond line'")
             assert page.evaluate("pane.input.value") == "Unsent draft"
+            page.evaluate("""()=>{
+              window.searches=[];
+              pane.controls.searchFiles=async query=>{searches.push(query);return {paths:['src/proof.py']};};
+              pane.mentionButton.hidden=false;pane.input.value='/mention src';pane.submit();
+            }""")
+            page.get_by_role("button", name="src/proof.py", exact=True).click()
+            assert page.evaluate("pane.input.value") == "@src/proof.py "
+            assert page.evaluate("searches") == ["src"]
             assert not errors, errors
             context.close()
         finally:
             browser.close()
     print(json.dumps({"ok": True, "actualBrowserClipboard": True, "partialOutputExcluded": True,
-                      "draftPreserved": True, "providerLaunched": False, "browserClosed": True}))
+                      "draftPreserved": True, "inlineMentionInserted": True,
+                      "providerLaunched": False, "browserClosed": True}))
 
 
 if __name__ == "__main__":

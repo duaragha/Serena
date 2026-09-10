@@ -411,12 +411,14 @@ export class WorkspacePane {
 
   openFileSearch() {
     if(this.fileSearchDialog?.open)return;
-    const start=this.input.selectionStart,end=this.input.selectionEnd;
     const original=this.input.value;
+    const command=this.provider==='Codex' && /^\/mention(?:\s+(.*))?$/.exec(original.trim());
+    const start=command?0:this.input.selectionStart,end=command?original.length:this.input.selectionEnd;
     const dialog=node('dialog','aw-review-dialog aw-commands-dialog');
     dialog.setAttribute('aria-label','Mention project file');
     const search=node('input');search.type='search';search.maxLength=200;
     search.setAttribute('aria-label','Find project file');
+    if(command?.[1])search.value=command[1];
     const status=node('p');status.setAttribute('role','status');
     const list=node('div','aw-command-list');
     let generation=0;
@@ -452,6 +454,7 @@ export class WorkspacePane {
     dialog.addEventListener('close',()=>{generation++;dialog.remove();});
     dialog.append(node('h3','','Mention project file'),close,search,find,status,list);
     this.fileSearchDialog=dialog;this.root.append(dialog);dialog.showModal();search.focus();
+    if(search.value)run();
     window.lucide?.createIcons();
   }
 
@@ -1119,7 +1122,7 @@ export class WorkspacePane {
 
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
-      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,
+      mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,mention:this.mentionButton,
       model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,copy:this.copyOutputButton};
   }
 
@@ -1152,7 +1155,8 @@ export class WorkspacePane {
       if(text.trim()!=='/copy' || this.files.length || this.selectedSkills.length){this.error(Error('Copy does not accept arguments or attachments'));return;}
       await this.copyLatestOutput();return;
     }
-    if (this.sending || this.send.disabled || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
+    const readOnlyCommand=this.provider==='Codex' && /^\/(ps|mention)(?:\s|$)/.test(text.trim());
+    if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
       if(this.files.length || this.selectedSkills.length){this.error(Error('Prompt color does not accept attachments or skills'));return;}
@@ -1169,6 +1173,10 @@ export class WorkspacePane {
     const codexCommand=this.provider==='Codex' && /^\/([a-z]+)(?:\s|$)/.exec(text.trim());
     const codexControl=codexCommand && this.codexCommandControls()[codexCommand[1]];
     if(codexControl){
+      if(codexCommand[1]==='mention' && /^\/mention\s+\S/.test(text.trim()) && !this.files.length && !this.selectedSkills.length){
+        if(text.trim().slice('/mention'.length).trim().length>200){this.error(Error('File search is limited to 200 characters'));return;}
+        this.activateCommandControl(codexControl);return;
+      }
       if(text.trim()!==`/${codexCommand[1]}` || this.files.length || this.selectedSkills.length){
         this.error(Error('Session commands do not accept arguments, attachments or skills'));return;
       }

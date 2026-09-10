@@ -136,6 +136,8 @@ piped separately to Ruff `check --stdin-filename <path> --output-format concise 
 | `status` | Existing event snapshot plus explicit native account-limit refresh | Native unsigned refusal, signed-in successful retrieval and controlled positive rendering verified; explicit snapshot, not a continuous feed |
 | `plan` | Explicit native mode picker and `thread/settings/update` | Native Plan/Default confirmed with unchanged model/effort; workspace-confirmed mode restored across two real process replacements, no inference |
 | `copy` | Copy button, slash action and Ctrl+O | Completed response/plan only; drafts retained, native browser clipboard verified. Rollback-specific suppression still needs coverage. |
+| `ps` | Existing native background-task dialog | Explicit refresh and task controls; slash routing tested without submitting a prompt |
+| `mention` | Existing project file picker, including inline search | Selection replaces the slash command with a quoted file mention; cancellation preserves draft; desktop/mobile verified |
 
 ### Codex Documentation Inventory (2026-09-10)
 
@@ -146,7 +148,7 @@ support. These documented names are not yet fully covered by the rows above:
 `ide`, `keymap`, `vim`, `setup-default-sandbox`, `sandbox-add-read-dir`, `agent`,
 `subagents`, `apps`, `plugins`, `hooks`, `clear`, `rename`, `archive`, `delete`,
 `diff`, `exit`, `experimental`, `approve`, `memories`, `import`, `feedback`, `init`,
-`logout`, `mention`, `fast`, `goal`, `personality`, `ps`, `stop`, `app`, `side`,
+`logout`, `fast`, `goal`, `personality`, `stop`, `app`, `side`,
 `btw`, `raw`, `new`, `quit`, `usage`, `debug-config`, `statusline`, `title`, `theme`,
 `pets`, `pet`.
 
@@ -160,6 +162,22 @@ permissions, background tasks and other non-command controls also retain their
 provider-specific delivery gates in the main contract.
 
 Copy verification:
+
+Read-only command routing receipts (2026-09-10):
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_inline_mention_replaces_command_only_after_file_selection tests/test_workspace_pane.py::test_project_file_picker_preserves_draft_and_never_sends tests/test_workspace_pane.py::test_codex_local_commands_use_controls_not_model_prompts tests/test_workspace_pane.py::test_codex_unavailable_or_argument_commands_do_not_submit -q --tb=short
+# exit 0: 22 passed in 10.78s.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-copy.py
+# exit 0: real browser clipboard plus controlled inline file search/selection
+# during a running turn. No provider launched; does not prove native file search.
+# Initial exit 1 exposed the send-disabled guard blocking read-only commands;
+# ps/mention now bypass only that guard, not control availability checks.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py scripts/verify-workspace-copy.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+```
 
 ```sh
 env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_copy_completed_output_ignores_running_turn_and_preserves_draft tests/test_workspace_pane.py::test_codex_local_commands_use_controls_not_model_prompts tests/test_workspace_pane.py::test_codex_picker_lists_local_actions_and_preserves_draft -q --tb=short

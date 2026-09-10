@@ -1217,12 +1217,12 @@ def test_session_slash_commands_open_confirmed_action_without_sending(pane, widt
     assert not errors
 
 
-@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills"])
+@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills", "ps", "mention"])
 def test_codex_local_commands_use_controls_not_model_prompts(pane, command):
     page, errors = pane
     page.evaluate("""command => {
       pane.provider='Codex';
-      for(const method of ['openFork','openReview','openMcpServers','openPermissions','openCommands'])
+      for(const method of ['openFork','openReview','openMcpServers','openPermissions','openCommands','openBackgroundTasks','openFileSearch'])
         pane[method]=()=>calls.push('control');
       controls.compact=async()=>calls.push('control');
       for(const control of Object.values(pane.codexCommandControls()))control.hidden=false;
@@ -1235,7 +1235,7 @@ def test_codex_local_commands_use_controls_not_model_prompts(pane, command):
     assert not errors
 
 
-@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills", "model", "reasoning", "status"])
+@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills", "model", "reasoning", "status", "ps"])
 def test_codex_unavailable_or_argument_commands_do_not_submit(pane, command):
     page, errors = pane
     page.evaluate("""command=>{pane.provider='Codex';pane.input.value='/'+command+' extra';pane.render();}""", command)
@@ -1245,6 +1245,28 @@ def test_codex_unavailable_or_argument_commands_do_not_submit(pane, command):
     page.get_by_role("button", name="Send message", exact=True).first.click()
     page.get_by_text("Session action is not available right now", exact=True).wait_for()
     assert page.evaluate("calls") == []
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
+def test_codex_inline_mention_replaces_command_only_after_file_selection(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""()=>{
+      pane.provider='Codex';pane.mentionButton.hidden=false;
+      controls.searchFiles=async query=>{calls.push(['search',query]);return {paths:['src/with space.py']};};
+      pane.input.value='/mention src';pane.render();
+    }""")
+    page.get_by_role('button',name='Send message',exact=True).first.click()
+    dialog=page.get_by_role('dialog',name='Mention project file')
+    dialog.get_by_role('button',name='src/with space.py',exact=True).wait_for()
+    assert page.evaluate('pane.input.value') == '/mention src'
+    dialog.get_by_role('button',name='Close file search').click()
+    assert page.evaluate('pane.input.value') == '/mention src'
+    page.get_by_role('button',name='Send message',exact=True).first.click()
+    dialog.get_by_role('button',name='src/with space.py',exact=True).click()
+    assert page.evaluate('pane.input.value') == '@"src/with space.py" '
+    assert page.evaluate('calls') == [['search','src'],['search','src']]
     assert not errors
 
 
