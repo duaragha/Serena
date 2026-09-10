@@ -18,6 +18,50 @@ from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
 
 
+@pytest.mark.parametrize("mode", ["click", "heartbeat", "busy", "pinned", "switch_chat", "different_split"])
+def test_only_explicit_linked_pane_click_sleeps_idle_sibling(tmp_path, mode):
+    class Transport:
+        suspended = False
+        async def pause_idle(self):
+            self.suspended = True
+            return True
+        def wake(self):
+            self.suspended = False
+
+    class PowerOwner(Owner):
+        async def open(self):
+            await super().open()
+            self.rpc = Transport()
+        async def list_background_tasks(self):
+            return {"data": []}
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "power.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+        factories={"codex": PowerOwner})
+    view = "11111111-1111-4111-8111-111111111111"
+    try:
+        for sid in ("source", "peer", "unrelated"):
+            host.attach(sid)
+            host.note_view_context(sid, {"view_id": view, "sequence": 1, "visible": True,
+                                        "focused": False, "draft": False, "pinned": mode == "pinned",
+                                        "split_sids": [] if mode == "different_split" and sid == "peer"
+                                        else ["source", "peer"] if sid != "unrelated" else []})
+        if mode == "busy":
+            host._sessions["peer"][0].state = "running"
+        data = {"view_id": view, "sequence": 2, "visible": True, "focused": True,
+                "draft": False, "pinned": mode == "pinned", "split_sids": ["source", "peer"],
+                "sleep_peers": mode != "heartbeat"}
+        host.note_view_context("source", data)
+        host.note_view_context("source", {**data, "sequence": 3, "sleep_peers": False,
+                                          "focused": mode != "switch_chat", "visible": mode != "switch_chat"})
+        host._dispatch(asyncio.sleep(.15), 2)
+        assert host._sessions["peer"][0].rpc.suspended is (mode == "click")
+        assert not host._sessions["source"][0].rpc.suspended
+        assert not host._sessions["unrelated"][0].rpc.suspended
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize("provider", ["codex", "claude"])
 @pytest.mark.parametrize("blocker", [None, "running", "draft", "focused", "pinned", "unknown_pin",
                                     "stale", "questions", "reserved", "queued", "background", "rpc_failure", "race"])

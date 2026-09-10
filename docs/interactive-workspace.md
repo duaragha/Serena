@@ -2,6 +2,33 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Linked-Pane Click Sleep Policy (2026-09-10)
+
+Trusted pointer clicks inside a native pane now publish explicit peer-sleep
+intent only while focused in a known unpinned split. Heartbeats, programmatic
+focus, visibility changes and opening a chat do not publish that intent. The
+host allows 50ms for the peer's blur report, then applies guarded idle admission
+only to a peer reporting the same visible split. The source focus epoch is
+checked before and after asynchronous admission; switching chats or focus
+invalidates delayed work. Unchanged telemetry heartbeats do not invalidate a
+real click. Busy work is never queued for later suspension. Focus/input wakes
+the existing process through the previously verified path.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_only_explicit_linked_pane_click_sleeps_idle_sibling tests/test_workspace_host.py::test_native_sleep_admission_and_focus_wake -q --tb=short
+# exit 0: 32 passed in 5.88s; controlled owners cover idle peer, no gesture,
+# busy, pinned, changed chat/focus, different split and unrelated session
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_app.py::test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch -q --tb=short
+# exit 0: 2 passed in 23.10s; actual Claude/Codex page modules and trusted
+# browser clicks publish authenticated peer intent; controlled provider adapters
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-work.py --allow-inference --pause
+# exit 0: real native host pause/focus wake and subsequent exact job/retry;
+# same process, no duplicate input, unchanged project and disposable cleanup
+```
+
+This enables the guarded click trigger on POSIX, not a general background idle
+timer. Windows suspension and final cross-platform delivery remain pending.
+
 ## Native Host Sleep Admission (2026-09-10)
 
 The local authenticated `/api/workspace/<sid>/sleep` control acts only on an

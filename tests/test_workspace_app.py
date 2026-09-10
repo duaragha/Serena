@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import os
 import threading
 from pathlib import Path
 
@@ -349,7 +350,8 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
 <main id="termMounts" style="height:100vh"></main><script>
 const termSessions=new Map();let activeTermSid=null;
 let convMode='live',currentTab='chats',_webRuntimeFocusSid=null;
-let _gtkSplitActive=false,_gtkSplitSids=null;
+let _gtkSplitActive=false,_gtkSplitSids=null,_gtkCurrentGroup=null;
+const _gtkPinnedGroups=new Set();
 const _pseudoSessions=[{session_id:'new-proof',pending_rename_title:'My named conversation'}];
 let sessionSource=[..._pseudoSessions];
 const _pendingTermPartners=new Map();const _fdPairResolved={};window.linked=[];
@@ -409,7 +411,7 @@ function setTermStatus(status){window.lastStatus=status;}
     thread.start()
     try:
         with playwright.sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(executable_path=os.environ.get("SERENA_PROOF_BROWSER"))
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             page.set_default_timeout(5000)
             errors = []
@@ -542,6 +544,9 @@ function setTermStatus(status){window.lastStatus=status;}
                 nested.get_by_role('textbox', name=f'Message {provider.capitalize()}').click()
             assert len(owners) == 1
             assert host.runtime_context_snapshot()['split_pair'] == []  # No owner for the unmounted partner.
+            with page.expect_response(lambda response: response.url.endswith('/view-context')
+                                      and response.request.post_data_json.get('sleep_peers') is True):
+                nested.get_by_role('textbox', name=f'Message {provider.capitalize()}').click()
             page.evaluate("_gtkSplitActive=false;_gtkSplitSids=null;termSessions.delete('partner')")
             nested.get_by_role('button', name='Session events', exact=True).click()
             nested.get_by_role('dialog', name='Session events').wait_for()

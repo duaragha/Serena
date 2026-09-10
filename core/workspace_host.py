@@ -129,7 +129,7 @@ class WorkspaceHost:
 
     def note_view_context(self, sid, data):
         self._validate_session(sid)
-        if (not isinstance(data, dict) or set(data) - {"split_sids", "pinned"} != {"view_id", "sequence", "focused", "visible", "draft"}
+        if (not isinstance(data, dict) or set(data) - {"split_sids", "pinned", "sleep_peers"} != {"view_id", "sequence", "focused", "visible", "draft"}
                 or not isinstance(data["view_id"], str) or str(UUID(data["view_id"])) != data["view_id"]
                 or type(data["sequence"]) is not int or not 0 <= data["sequence"] <= 2 ** 53 - 1
                 or any(type(data[key]) is not bool for key in ("focused", "visible", "draft"))
@@ -137,6 +137,8 @@ class WorkspaceHost:
             raise ValueError("Expected an exact view identity, sequence and boolean context")
         if "pinned" in data and type(data["pinned"]) is not bool:
             raise ValueError("Pinned context must be boolean")
+        if "sleep_peers" in data and type(data["sleep_peers"]) is not bool:
+            raise ValueError("Peer sleep intent must be boolean")
         split = data.get("split_sids", [])
         if (not isinstance(split, list) or len(split) > 4
                 or any(not isinstance(value, str) or not value for value in split)
@@ -157,12 +159,39 @@ class WorkspaceHost:
             return {"ok": True, "stale": True}
         if previous is None and len(views) >= 32:
             raise ValueError("Too many views for this session")
-        views[data["view_id"]] = {**data, "seen": monotonic(), "focused_at": time.time()}
+        same_focus = previous is not None and all(previous.get(key) == data.get(key)
+                                                  for key in ("focused", "visible", "split_sids", "pinned"))
+        epoch = previous.get("focus_epoch", previous["sequence"]) if same_focus else data["sequence"]
+        views[data["view_id"]] = {**data, "seen": monotonic(), "focused_at": time.time(), "focus_epoch": epoch}
         if data["focused"] or data.get("pinned"):
             transport = self._owner_transport(*self._sessions[sid])
             if transport is not None and getattr(transport, "suspended", False):
                 transport.wake()
+        if data.get("sleep_peers") and data["focused"] and data.get("pinned") is False:
+            asyncio.create_task(self._run(self._sleep_clicked_peers(sid, {**data, "focus_epoch": epoch})))
         return {"ok": True}
+
+    def _peer_sleep_current(self, source, data, peer):
+        view = self._views.get(source, {}).get(data["view_id"], {})
+        split = data.get("split_sids", [])
+        if (self._stopped or view.get("focus_epoch") != data["focus_epoch"]
+                or not view.get("focused") or not view.get("visible") or view.get("pinned") is not False
+                or monotonic() - view.get("seen", 0) >= 6 or source == peer or peer not in split):
+            return False
+        return any(other.get("visible") and other.get("split_sids") == split
+                   for other in self._views.get(peer, {}).values())
+
+    async def _sleep_clicked_peers(self, source, data):
+        # Allow the sibling's blur report to arrive; never retry after busy work.
+        await asyncio.sleep(.05)
+        for peer in data.get("split_sids", []):
+            if not self._peer_sleep_current(source, data, peer):
+                continue
+            try:
+                await self._set_sleep(peer, True, guard=lambda peer=peer: self._peer_sleep_current(source, data, peer))
+            except (RuntimeError, OSError):
+                # Power saving is optional; failed admission must not affect work.
+                continue
 
     @staticmethod
     def _owner_transport(owner, provider):
@@ -199,8 +228,10 @@ class WorkspaceHost:
             return "Native pane is focused, pinned, has a draft, or pin state is unknown"
         return ""
 
-    async def _set_sleep(self, sid, sleeping):
+    async def _set_sleep(self, sid, sleeping, *, guard=None):
         async with self._locks.setdefault(sid, asyncio.Lock()):
+            if guard is not None and not guard():
+                return {"ok": False, "message": "Pane selection changed"}
             if sid not in self._sessions:
                 return {"ok": False, "message": "No native owner is available"}
             owner, provider = self._sessions[sid]
@@ -223,7 +254,7 @@ class WorkspaceHost:
                 if not isinstance(tasks, dict) or tasks.get("data") != []:
                     return {"ok": False, "message": "Native background work is active or unknown"}
             error = self._sleep_blocker(sid)
-            if error or self._stopped:
+            if error or self._stopped or (guard is not None and not guard()):
                 return {"ok": False, "message": error or "Host stopped"}
             paused = await transport.pause_idle()
             return {"ok": paused, "sleeping": bool(getattr(transport, "suspended", False)),

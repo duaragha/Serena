@@ -46,15 +46,17 @@ try {
   viewContext=saved && typeof saved.view_id==='string' && Number.isSafeInteger(saved.sequence)
     ? saved : {view_id:crypto.randomUUID(),sequence:0};
 } catch { /* Context telemetry must not interfere with the session. */ }
-function reportContext(closing=false) {
+function reportContext(closing=false,sleepPeers=false) {
   closing=closing===true;
   if(!viewContext)return;
   const visible=!closing && intersects && document.visibilityState==='visible';
   const state={visible,focused:visible && document.hasFocus(),split_sids:visible ? splitSids : [],
     ...(typeof pinned==='boolean' ? {pinned} : {}),
+    ...(sleepPeers===true && visible && document.hasFocus() && pinned===false && splitSids.length>1
+      ? {sleep_peers:true} : {}),
     draft:!!(pane.input.value.trim() || pane.files.length || pane.selectedSkills.length)};
   const signature=JSON.stringify(state),now=performance.now();
-  if(!closing && signature===lastContextSignature && now-lastContextAt<1800)return;
+  if(!closing && sleepPeers!==true && signature===lastContextSignature && now-lastContextAt<1800)return;
   const data={view_id:viewContext.view_id,sequence:++viewContext.sequence,...state};
   try {sessionStorage.setItem(contextKey,JSON.stringify(viewContext));} catch {return;}
   lastContextSignature=signature;lastContextAt=now;
@@ -88,6 +90,9 @@ function reportFocus() {
 }
 document.addEventListener('focusin',reportFocus);
 document.addEventListener('pointerdown',reportFocus);
+document.addEventListener('pointerdown',event=>{
+  if(event.isTrusted)setTimeout(()=>reportContext(false,true),0);
+});
 window.addEventListener('focus',reportFocus);
 function reportState() {
   if (pane.conversation.status === 'unavailable') showRetry();
