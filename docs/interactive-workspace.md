@@ -2,6 +2,14 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+Antigravity ACP discovery (2026-09-09): Google's separate `antigravity-acp`
+registry binary successfully initialized through the new production ACP
+transport, advertising saved-session load/resume, images/audio and Google-account
+authentication. This supersedes the earlier CLI-only conclusion below, not the
+remaining integration requirements. See [native evidence and next integration
+steps](workspace-antigravity-acp.md). Seven real-pipe transport tests and the
+no-auth/no-session native handshake exited 0. No app admission or rollout yet.
+
 Native session slash-command routing (2026-09-09): Claude's advertised clear
 and fork commands now point to the existing confirmed workspace actions instead
 of being disabled. Typed `/clear`, `/reset`, `/new` and `/fork` open those dialogs;
