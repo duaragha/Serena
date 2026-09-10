@@ -225,6 +225,8 @@ class WorkspaceHost:
         owner, _ = self._sessions[sid]
         if owner.state != "ready" or owner.active_turn:
             return "Native work is active or uncertain"
+        if getattr(owner, "active_agent_threads", None):
+            return "Delegated agent work is active or uncertain"
         if getattr(owner, "questions", None) or getattr(owner, "elicitations", None):
             return "Native questions are pending"
         if self._work_reservations.get(sid) or self._bridge_queues.get(sid):
@@ -283,8 +285,8 @@ class WorkspaceHost:
             alive = owner.state not in {"closed", "unavailable"}
             pending_interactions = bool(getattr(owner, "questions", None) or getattr(owner, "elicitations", None))
             tasks = getattr(getattr(owner, "events", None), "tasks", {})
-            background_busy = any(task.get("status") not in {"completed", "failed", "stopped", "killed"}
-                                  for task in tasks.values())
+            background_busy = bool(getattr(owner, "active_agent_threads", None)) or any(
+                task.get("status") not in {"completed", "failed", "stopped", "killed"} for task in tasks.values())
             settings = getattr(owner, "settings", {})
             if alive:
                 focus.extend((view["focused_at"], sid, view.get("split_sids", []))
@@ -330,6 +332,8 @@ class WorkspaceHost:
         owner = entry[0]
         if owner.state != "ready" or owner.active_turn or getattr(owner, "questions", None):
             return "Native session has active work or pending questions"
+        if getattr(owner, "active_agent_threads", None):
+            return "Delegated agent work is active or uncertain"
         if getattr(owner, "settings", {}).get("collaborationMode") == "plan":
             return "Native session is in Plan mode"
         if self._bridge_queues.get(sid):
@@ -358,7 +362,7 @@ class WorkspaceHost:
             if await asyncio.to_thread(self.journal.has_pending_work, sid):
                 return False
             owner = self._sessions[sid][0]
-            if owner.active_turn or owner.state != "ready" or getattr(owner, "questions", None):
+            if owner.active_turn or owner.state != "ready" or getattr(owner, "questions", None) or getattr(owner, "active_agent_threads", None):
                 return False
             self._work_reservations.pop(sid)
             self._work_turns.pop(sid, None)
@@ -801,6 +805,8 @@ class WorkspaceHost:
             "goal",
             "update_goal",
             "clear_goal",
+            "agents",
+            "inspect_agent",
             "review",
             "compact",
             "background_tasks",
@@ -852,7 +858,7 @@ class WorkspaceHost:
                 raise ValueError("Explicitly attach this session before sending controls")
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "models", "permissions", "context_usage", "background_tasks",
-                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes", "personality", "goal",
+                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "mcp_servers", "session_modes", "personality", "goal", "agents", "inspect_agent",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1110,6 +1116,11 @@ class WorkspaceHost:
                     if provider != "codex" or set(payload) != {"target"}:
                         raise ValueError("Review requires a Codex target")
                     result = await owner.review(payload["target"])
+                elif action in {"agents", "inspect_agent"}:
+                    allowed = {"cursor"} | ({"thread_id"} if action == "inspect_agent" else set())
+                    if provider != "codex" or set(payload) != allowed:
+                        raise ValueError("Exact native agent inspection is required")
+                    result = await (owner.list_agents(**payload) if action == "agents" else owner.inspect_agent(**payload))
                 elif action == "goal":
                     if provider != "codex" or payload:
                         raise ValueError("Goal inspection requires an attached Codex session")

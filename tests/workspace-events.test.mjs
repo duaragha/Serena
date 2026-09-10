@@ -5,6 +5,22 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('child lifecycle updates never complete or replace the parent turn',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,history));
+  model.apply(wrap(2,{method:'turn/started',params:{turn:{id:'parent',status:'inProgress'}}}));
+  model.apply(wrap(3,{method:'workspace/agentEvent',params:{threadId:'exact',agentThreadId:'child',activeAgentCount:0,event:{method:'turn/completed',params:{threadId:'child',turn:{id:'child-turn',status:'completed'}}}}}));
+  assert.equal(model.status,'running');
+  assert.equal(model.turns.size,1);
+  assert.equal(model.turns.has('child-turn'),false);
+  assert.equal(model.metadata.activeAgentCount,0);
+  assert.equal(model.otherEvents.at(-1).params.agentThreadId,'child');
+  model.apply(wrap(4,{id:77,method:'item/commandExecution/requestApproval',params:{threadId:'exact',agentThreadId:'child'}}));
+  assert.equal(model.questions.get(77).params.agentThreadId,'child');
+  model.apply(wrap(5,{method:'serverRequest/resolved',params:{threadId:'exact',agentThreadId:'child',requestId:77}}));
+  assert.equal(model.questions.size,0);
+});
+
 test('reverted history suppresses copy until a new completed main output',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,history));

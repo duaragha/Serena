@@ -3,7 +3,48 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
-## Subagent Integration Audit (2026-09-10)
+## Native Agent Inspection (2026-09-10)
+
+`/agent`, `/subagents` and Session actions now open an explicit descendant
+switcher. Lists and paged full turns use the parent's existing native connection;
+inspection never resumes, starts or forks a child. Native ancestry is checked
+before history reads, with cycle/foreign-ID/depth rejection. Opening/closing
+and switching agents preserve the parent draft and turn. History is labeled a
+snapshot; child notifications mark it stale without auto-reading or replacing
+the selected transcript. Delegated input is not falsely attributed to Raghav.
+
+Previously, any unexpected foreign-thread notification stopped the owner event
+loop. Verified descendant notifications now have their own journal envelope,
+never complete or replace the parent turn, and report active agent work to the
+busy/sleep/admission guards. Reverse requests retain their original native IDs
+and thread data in the owner; the parent UI shows the exact child identity and
+still requires an explicit approval/answer. Unrelated threads remain rejected.
+Closing the native owner clears descendant caches for the next attachment.
+
+Remaining: this is an inspector, not full child-composer/steering/stop parity.
+Child image previews are explicitly unavailable rather than routed through the
+wrong parent's media endpoint. Actual model-spawned child end-to-end behavior
+has not been proved; positive child event/history coverage uses protocol doubles.
+The native proof exercises actual empty descendant discovery and rejection of
+a separate persisted fork, with zero inference or delegated agents. The first
+proof attempt used an unregistered `thread/start` and exited 1 because the
+existing foreign-event guard correctly rejected it; the corrected proof uses
+the owner's registered fork path. That failure motivated the ancestry audit.
+
+Commands from this worktree, all final exits 0:
+
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py tests/test_workspace_host.py::test_agent_reads_use_existing_parent_even_when_job_reserved -q --tb=short`: 139 passed in 2.90s.
+- `env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short`: 140 passed in 32.10s.
+- `env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_agent_switcher_inspects_without_launching_and_keeps_parent_draft -q --tb=short`: 2 passed in 7.19s; desktop/mobile, safe text, paging, stale notice, failure preservation and explicit child decline. Mobile screenshot inspected.
+- `node --test tests/workspace-events.test.mjs`: 14 passed, 214.30ms; child event isolation and explicit question resolution included.
+- `env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-agents.py`: native discovery and foreign-fork rejection passed with the same process/session, only `thread/list` and `thread/read` calls during inspection, no inference; child process reaped and disposable profile removed.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-agents.py`: all checks passed.
+- `node --check ui/static/workspace-pane.mjs`: no errors.
+- `/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py::test_child_events_are_isolated_and_approvals_stay_explicit -q --tb=short`: final cache-cleanup regression, exit 0; 2 passed in 0.71s.
+
+No release, installed-app mutation or full-parity claim.
+
+## Subagent Integration Audit (2026-09-10, Before Implementation)
 
 Re-read the current renderer and installed 0.153.4 schemas, then checked
 https://learn.chatgpt.com/docs/app-server and

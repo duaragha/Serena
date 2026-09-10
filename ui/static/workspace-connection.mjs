@@ -231,6 +231,8 @@ export class WorkspaceConnection {
       personality: () => this.command('personality', {}),
       setPersonality: value => this.command('set_personality', {value}),
       goal: () => this.command('goal', {}),
+      agents: (cursor=null) => this.command('agents', {cursor}),
+      inspectAgent: (thread_id,cursor=null) => this.command('inspect_agent', {thread_id,cursor}),
       updateGoal: (changes,expected) => this.command('update_goal', {changes,expected,confirmed:true}),
       clearGoal: expected => this.command('clear_goal', {expected,confirmed:true}),
       disconnectSession: () => this.command('disconnect_session', {confirmed:true}),

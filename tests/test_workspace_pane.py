@@ -207,6 +207,55 @@ def test_goal_requires_confirmation_preserves_draft_and_recovers_failure(pane, w
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_agent_switcher_inspects_without_launching_and_keeps_parent_draft(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.agents=async cursor=>{calls.push(['list',cursor]);return {data:[{id:'child-exact',agentNickname:'Research <img onerror=alert(1)>',status:{type:'active'}}],nextCursor:null};};
+      controls.inspectAgent=async(id,cursor)=>{calls.push(['inspect',id,cursor]);return {thread:{id,status:{type:'active'},turns:[{id:cursor?'older':'latest',status:'completed',items:[{id:cursor?'old-answer':'answer',type:'agentMessage',text:cursor?'Earlier answer':'Actual child answer'},{id:'input',type:'userMessage',content:[{type:'text',text:'Delegated input'},{type:'image',url:'https://example.invalid/private.png'}]}]}]},historyCursor:cursor?null:'older-cursor'};};
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'turn/started',params:{turn:{id:'parent-running',status:'inProgress'}}});pane.input.value='/agent';pane.render();
+    }""")
+    assert page.evaluate('calls') == []
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role('dialog', name='Delegated agents', exact=True)
+    row = dialog.get_by_role('button', name='Research <img onerror=alert(1)> child-exact active', exact=True)
+    row.click()
+    dialog.get_by_text('Actual child answer', exact=True).wait_for()
+    assert dialog.get_by_text('Agent input', exact=True).count() == 1
+    assert dialog.get_by_text('Agent image preview unavailable', exact=True).count() == 1
+    assert dialog.locator('img').count() == 0
+    assert page.evaluate('calls') == [['list', None], ['inspect', 'child-exact', None]]
+    dialog.get_by_role('button', name='Earlier agent turns', exact=True).click()
+    dialog.get_by_text('Earlier answer', exact=True).wait_for()
+    assert dialog.get_by_text('Actual child answer', exact=True).count() == 1
+    assert dialog.get_by_role('button', name='Earlier agent turns', exact=True).is_hidden()
+    page.evaluate("()=>emit({method:'workspace/agentEvent',params:{threadId:'exact',agentThreadId:'child-exact',activeAgentCount:1,event:{method:'turn/started',params:{threadId:'child-exact',turn:{id:'child-live'}}}}})")
+    dialog.get_by_text('Agent changed; refresh snapshot', exact=True).wait_for()
+    assert page.evaluate('pane.conversation.turns.has("child-live")') is False
+    assert page.evaluate('calls.length') == 3
+    page.evaluate("()=>{controls.inspectAgent=async()=>{throw Error('Agent read unavailable');};}")
+    dialog.get_by_role('button', name='Refresh selected agent', exact=True).click()
+    dialog.get_by_text('Agent read unavailable', exact=True).wait_for()
+    assert dialog.get_by_text('Actual child answer', exact=True).count() == 1
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'agents-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button', name='Close agents', exact=True).click()
+    assert page.evaluate('pane.input.value') == '/agent'
+    assert page.evaluate('pane.conversation.status') == 'running'
+    page.evaluate("()=>emit({id:77,method:'item/commandExecution/requestApproval',params:{threadId:'exact',agentThreadId:'child-exact',command:'echo child'}})")
+    page.get_by_text('Agent: child-exact', exact=True).wait_for()
+    assert page.evaluate('calls.length') == 3
+    page.get_by_role('button', name='Decline', exact=True).click()
+    page.wait_for_function('calls.length===4')
+    assert page.evaluate('calls.at(-1)') == ['answer',77,{'decision':'decline'}]
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_app_picker_selects_exact_ids_preserves_failed_draft_and_never_auto_loads(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

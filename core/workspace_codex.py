@@ -58,6 +58,8 @@ class CodexWorkspace:
         self._fork_ready = asyncio.Event()
         self._fork_ready.set()
         self._fork_ids: set[str] = set()
+        self._agent_ids: set[str] = set()
+        self.active_agent_threads: set[str] = set()
         self.history_cursor: str | None = None
         self._history_revision = 0
         self._history_cursors: set[str] = set()
@@ -349,6 +351,85 @@ class CodexWorkspace:
             except BaseException:
                 await self._close()
                 raise
+
+    async def list_agents(self, cursor=None):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Attach Codex before inspecting agents")
+        if cursor is not None and (not isinstance(cursor, str) or not 1 <= len(cursor) <= 4096):
+            raise ValueError("Invalid agent list cursor")
+        result = await self.rpc.request("thread/list", {
+            "ancestorThreadId": self.session_id, "limit": 50, "cursor": cursor,
+            "sourceKinds": ["subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther"],
+        })
+        if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+            raise WorkspaceRpcError("Codex returned an invalid agent list")
+        seen = {self.session_id}
+        for thread in result["data"]:
+            if (not isinstance(thread, dict) or not isinstance(thread.get("id"), str)
+                    or not thread["id"] or thread["id"] in seen or not thread.get("parentThreadId")):
+                raise WorkspaceRpcError("Codex returned an invalid agent identity")
+            seen.add(thread["id"])
+        following = result.get("nextCursor")
+        if following is not None and (not isinstance(following, str) or not following or following == cursor):
+            raise WorkspaceRpcError("Agent list pagination did not advance")
+        return deepcopy(result)
+
+    async def _descendant_thread(self, thread_id):
+        if not isinstance(thread_id, str) or not 1 <= len(thread_id) <= 256 or thread_id == self.session_id:
+            raise ValueError("An exact child agent is required")
+        # A row or caller-supplied ID is not authority to read another conversation.
+        # Verify its native ancestry through this existing parent's connection.
+        seen = {self.session_id}
+        current = thread_id
+        selected = None
+        for _ in range(32):
+            if current in seen:
+                raise WorkspaceRpcError("Agent ancestry contains a cycle")
+            seen.add(current)
+            result = await self.rpc.request("thread/read", {"threadId": current, "includeTurns": False})
+            thread = result.get("thread") if isinstance(result, dict) else None
+            if not isinstance(thread, dict) or thread.get("id") != current:
+                raise WorkspaceRpcError("Codex returned a different agent")
+            if selected is None:
+                selected = deepcopy(thread)
+            parent = thread.get("parentThreadId")
+            if parent == self.session_id:
+                break
+            if not isinstance(parent, str) or not 1 <= len(parent) <= 256:
+                raise WorkspaceRpcError("Agent does not belong to this conversation")
+            current = parent
+        else:
+            raise WorkspaceRpcError("Agent ancestry exceeds the inspection limit")
+        # Thread ancestry is immutable. Bound the cache; evicted IDs are rechecked.
+        if len(self._agent_ids) >= 4096:
+            self._agent_ids.clear()
+        self._agent_ids.add(thread_id)
+        if selected.get("status", {}).get("type") not in {"idle", "notLoaded"}:
+            self.active_agent_threads.add(thread_id)
+        return selected
+
+    async def inspect_agent(self, thread_id, cursor=None):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Attach Codex before inspecting agents")
+        if cursor is not None and (not isinstance(cursor, str) or not 1 <= len(cursor) <= 4096):
+            raise ValueError("A valid agent history cursor is required")
+        selected = await self._descendant_thread(thread_id)
+        page = await self.rpc.request("thread/turns/list", {
+            "threadId": thread_id, "limit": 50, "sortDirection": "desc", "itemsView": "full", "cursor": cursor,
+        })
+        if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+            raise WorkspaceRpcError("Codex returned invalid agent history")
+        ids = set()
+        for turn in page["data"]:
+            if (not isinstance(turn, dict) or not isinstance(turn.get("id"), str) or not turn["id"]
+                    or turn["id"] in ids or not isinstance(turn.get("items"), list)):
+                raise WorkspaceRpcError("Codex returned invalid agent turns")
+            ids.add(turn["id"])
+        following = page.get("nextCursor")
+        if following is not None and (not isinstance(following, str) or not following or following == cursor):
+            raise WorkspaceRpcError("Agent history pagination did not advance")
+        selected["turns"] = list(reversed(deepcopy(page["data"])))
+        return {"thread": selected, "historyCursor": following}
 
     async def rename(self, name):
         if not isinstance(name, str) or not name.strip() or len(name) > 1000 or any(ord(c) < 32 or ord(c) == 127 for c in name):
@@ -1188,7 +1269,30 @@ class CodexWorkspace:
                         # The native fork loads a dormant thread in this server.
                         # Its lifecycle notifications are not source-chat output.
                         continue
-                    raise WorkspaceRpcError("Received an event for a different coding session")
+                    if thread_id not in self._agent_ids:
+                        await self._descendant_thread(thread_id)
+                    if method == "turn/started":
+                        self.active_agent_threads.add(thread_id)
+                    elif method in {"turn/completed", "thread/closed"}:
+                        self.active_agent_threads.discard(thread_id)
+                    elif method == "thread/status/changed":
+                        if params.get("status", {}).get("type") in {"idle", "notLoaded"}:
+                            self.active_agent_threads.discard(thread_id)
+                        else:
+                            self.active_agent_threads.add(thread_id)
+                    if "id" in event:
+                        self.questions[event["id"]] = deepcopy(event)
+                    elif method == "serverRequest/resolved":
+                        self.questions.pop(params.get("requestId"), None)
+                    if "id" in event or method == "serverRequest/resolved":
+                        routed = {**deepcopy(event), "params": {**deepcopy(params),
+                                  "threadId": self.session_id, "agentThreadId": thread_id}}
+                    else:
+                        routed = {"method": "workspace/agentEvent", "params": {
+                            "threadId": self.session_id, "agentThreadId": thread_id,
+                            "activeAgentCount": len(self.active_agent_threads), "event": deepcopy(event)}}
+                    await self.publish(routed)
+                    continue
                 if "id" in event:
                     self.questions[event["id"]] = deepcopy(event)
                 if method == "thread/reverted":
@@ -1290,6 +1394,8 @@ class CodexWorkspace:
         self._history_cursors.clear()
         self._history_revision = 0
         self._fork_ids.clear()
+        self._agent_ids.clear()
+        self.active_agent_threads.clear()
 
     def can_retry_attachment(self) -> bool:
         return (self.state == "closed" and self.rpc.process is None

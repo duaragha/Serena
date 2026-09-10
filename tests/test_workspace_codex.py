@@ -92,6 +92,107 @@ def test_goal_controls_preserve_exact_session_and_reject_stale_state(tmp_path, c
 
 
 @pytest.mark.parametrize('state', ['ready', 'running'])
+@pytest.mark.parametrize('case', ['direct', 'nested', 'foreign', 'cycle', 'wrong_id', 'bad_history'])
+def test_agent_inspection_uses_parent_connection_and_validates_ancestry(tmp_path, state, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.state = state
+        owner.active_turn = 'parent-turn' if state == 'running' else None
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/list':
+                assert params['ancestorThreadId'] == owner.session_id
+                assert params['limit'] == 50
+                return {'data': [{'id': 'child', 'parentThreadId': owner.session_id}], 'nextCursor': None}
+            if method == 'thread/read':
+                parent = owner.session_id
+                if case == 'foreign':
+                    parent = None
+                elif case == 'cycle':
+                    parent = 'child'
+                elif case == 'nested' and params['threadId'] == 'child':
+                    parent = 'middle'
+                return {'thread': {'id': 'wrong' if case == 'wrong_id' else params['threadId'], 'parentThreadId': parent}}
+            assert method == 'thread/turns/list'
+            assert params == {'threadId': 'child', 'cursor': None, 'limit': 50, 'sortDirection': 'desc', 'itemsView': 'full'}
+            return {'data': [None] if case == 'bad_history' else [{'id': 'turn', 'items': []}], 'nextCursor': None}
+        rpc.request = request
+        try:
+            assert (await owner.list_agents())['data'][0]['id'] == 'child'
+            if case in {'direct', 'nested'}:
+                result = await owner.inspect_agent('child')
+                assert result['thread']['id'] == 'child'
+                assert result['thread']['turns'] == [{'id': 'turn', 'items': []}]
+            else:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.inspect_agent('child')
+                assert any(method == 'thread/turns/list' for method, _ in calls) is (case == 'bad_history')
+            assert owner.state == state
+            assert owner.active_turn == ('parent-turn' if state == 'running' else None)
+            assert all(method in {'thread/list', 'thread/read', 'thread/turns/list'} for method, _ in calls)
+            with pytest.raises(ValueError):
+                await owner.inspect_agent(owner.session_id)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('foreign', [False, True])
+def test_child_events_are_isolated_and_approvals_stay_explicit(tmp_path, foreign):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        events.clear()
+        owner.state = 'running'
+        owner.active_turn = 'parent-turn'
+        original = rpc.request
+        async def request(method, params):
+            if method == 'thread/read':
+                return {'thread': {'id': params['threadId'], 'parentThreadId': None if foreign else owner.session_id}}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            await rpc.events.put({'method': 'turn/completed', 'params': {'threadId': 'child', 'turn': {'id': 'child-turn', 'status': 'completed'}}})
+            async with asyncio.timeout(2):
+                while not events:
+                    await asyncio.sleep(.01)
+            if foreign:
+                assert owner.state == 'unavailable'
+                assert events[0]['method'] == 'workspace/error'
+                return
+            assert owner.state == 'running' and owner.active_turn == 'parent-turn'
+            assert not owner.active_agent_threads
+            assert events[0]['method'] == 'workspace/agentEvent'
+            assert events[0]['params']['threadId'] == owner.session_id
+            assert events[0]['params']['agentThreadId'] == 'child'
+            question = {'id': 77, 'method': 'item/commandExecution/requestApproval',
+                        'params': {'threadId': 'child', 'turnId': 'child-turn', 'command': 'echo child'}}
+            await rpc.events.put(question)
+            async with asyncio.timeout(2):
+                while 77 not in owner.questions:
+                    await asyncio.sleep(.01)
+            assert not any(method == 'answer' for method, _ in rpc.calls)
+            assert owner.questions[77] == question
+            assert events[-1]['params']['agentThreadId'] == 'child'
+            assert events[-1]['params']['threadId'] == owner.session_id
+            await owner.answer(77, {'decision': 'decline'})
+            assert rpc.calls[-1] == ('answer', (77, {'decision': 'decline'}))
+            assert not owner.questions
+            assert owner.active_turn == 'parent-turn'
+            await rpc.events.put({'method': 'turn/started', 'params': {'threadId': 'child', 'turn': {'id': 'child-next'}}})
+            async with asyncio.timeout(2):
+                while not owner.active_agent_threads:
+                    await asyncio.sleep(.01)
+            assert owner.active_agent_threads == {'child'}
+        finally:
+            await owner.close()
+        assert not owner.active_agent_threads and not owner._agent_ids
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('state', ['ready', 'running'])
 def test_native_rename_targets_and_verifies_exact_thread_without_new_turn(tmp_path, state):
     async def run():
         owner, rpc, _ = await make(tmp_path)

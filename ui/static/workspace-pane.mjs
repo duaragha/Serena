@@ -89,6 +89,8 @@ export class WorkspacePane {
     this.personalityButton.hidden=provider!=='Codex' || !controls.personality || !controls.setPersonality;head.append(this.personalityButton);
     this.goalButton=this.button('Session goal','flag',()=>this.openGoal());
     this.goalButton.hidden=provider!=='Codex' || !controls.goal || !controls.updateGoal || !controls.clearGoal;head.append(this.goalButton);
+    this.agentsButton=this.button('Delegated agents','users',()=>this.openAgents());
+    this.agentsButton.hidden=provider!=='Codex' || !controls.agents || !controls.inspectAgent;head.append(this.agentsButton);
     this.disconnectButton=this.button('Disconnect session','unplug',()=>this.openDisconnect());
     this.disconnectButton.hidden=!controls.disconnectSession;
     this.disconnectButton.disabled=true;head.append(this.disconnectButton);
@@ -845,6 +847,75 @@ export class WorkspacePane {
     }catch(error){if(dialog.open)status.textContent=error.message;}
   }
 
+  async openAgents() {
+    if(this.agentsDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-agents-dialog');dialog.setAttribute('aria-label','Delegated agents');
+    const status=node('p','','Loading agents...');status.setAttribute('role','status');
+    const list=node('div','aw-agent-list');list.setAttribute('aria-label','Agent threads');
+    const output=node('section','aw-agent-history');output.setAttribute('aria-label','Selected agent history');
+    const refresh=this.button('Refresh agents','refresh-cw',()=>loadList(true));
+    const more=this.button('More agents','chevron-down',()=>loadList(false));more.hidden=true;
+    const reload=this.button('Refresh selected agent','refresh-cw',()=>inspect(selected,false));reload.hidden=true;
+    const earlier=this.button('Earlier agent turns','arrow-up',()=>inspect(selected,true));earlier.hidden=true;
+    const close=this.button('Close agents','x',()=>dialog.close());
+    let busy=false,selected=null,listCursor=null,historyCursor=null;
+    const listCursors=new Set(),historyCursors=new Set(),rows=new Map(),turns=new Map();
+    const changes=new Map();
+    this.notifyAgentChange=params=>{
+      changes.set(params.agentThreadId,(changes.get(params.agentThreadId)||0)+1);
+      if(selected===params.agentThreadId)status.textContent='Agent changed; refresh snapshot';
+    };
+    const enable=()=>{refresh.disabled=more.disabled=reload.disabled=earlier.disabled=busy;for(const row of rows.values())row.disabled=busy;};
+    const inspect=async(id,older)=>{
+      if(busy || !id)return;busy=true;enable();status.textContent='Reading agent snapshot...';
+      const revision=changes.get(id)||0;
+      try{
+        const result=await this.controls.inspectAgent(id,older?historyCursor:null);
+        if(!dialog.open)return;
+        if(result.thread?.id!==id || !Array.isArray(result.thread.turns))throw Error('Agent identity or history is invalid');
+        if(older && result.historyCursor && historyCursors.has(result.historyCursor))throw Error('Agent history pagination did not advance');
+        if(!older){turns.clear();historyCursors.clear();}
+        const merged=new Map(result.thread.turns.map(turn=>[turn.id,turn]));
+        for(const [key,value] of turns)if(!merged.has(key))merged.set(key,value);
+        turns.clear();for(const [key,value] of merged)turns.set(key,value);
+        selected=id;historyCursor=result.historyCursor;historyCursors.add(historyCursor);
+        for(const [key,row] of rows)row.setAttribute('aria-pressed',String(key===selected));
+        output.replaceChildren(node('h4','',result.thread.agentNickname || result.thread.name || 'Agent'),node('code','aw-agent-id',id));
+        for(const turn of turns.values()){
+          output.append(node('p','aw-author',`Turn ${turn.id} / ${turn.status || 'Unknown'}`));
+          for(const item of turn.items)output.append(this.renderItem(item,{historyImages:false,userLabel:'Agent input'}));
+        }
+        if(!turns.size)output.append(node('p','','No persisted turns'));
+        status.textContent=(changes.get(id)||0)!==revision?'Agent changed; refresh snapshot':`Snapshot / ${result.thread.status?.type || 'Status unavailable'}`;
+        reload.hidden=false;earlier.hidden=!historyCursor;this.refreshIcons();
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;enable();}
+    };
+    const loadList=async reset=>{
+      if(busy)return;busy=true;enable();status.textContent='Loading agents...';
+      try{
+        const result=await this.controls.agents(reset?null:listCursor);
+        if(!dialog.open)return;
+        if(!Array.isArray(result.data))throw Error('Agent list is unavailable');
+        if(!reset && result.nextCursor && listCursors.has(result.nextCursor))throw Error('Agent list pagination did not advance');
+        if(reset){list.replaceChildren();rows.clear();listCursors.clear();}
+        for(const thread of result.data){
+          if(rows.has(thread.id))continue;
+          const row=node('button','aw-agent-row');row.type='button';row.setAttribute('aria-pressed',String(thread.id===selected));
+          row.append(node('strong','',thread.agentNickname || thread.name || 'Agent'),node('code','aw-agent-id',thread.id),node('small','',thread.status?.type || 'Status unavailable'));
+          if(thread.agentRole)row.append(node('small','',thread.agentRole));
+          row.addEventListener('click',()=>inspect(thread.id,false));rows.set(thread.id,row);list.append(row);
+        }
+        listCursor=result.nextCursor;listCursors.add(listCursor);more.hidden=!listCursor;
+        status.textContent=rows.size?'Select an agent':'No delegated agents';
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;enable();}
+    };
+    dialog.addEventListener('close',()=>{this.notifyAgentChange=null;dialog.remove();this.input.focus();});
+    dialog.append(node('h3','','Delegated agents'),close,refresh,status,list,more,reload,earlier,output);
+    this.agentsDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();await loadList(true);
+  }
+
   async openGoal() {
     if(this.goalDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog aw-goal-dialog');dialog.setAttribute('aria-label','Session goal');
@@ -1382,6 +1453,7 @@ export class WorkspacePane {
 
   renderStatus() {
     this.status.textContent = this.sleeping ? 'sleeping' : this.conversation.status;
+    if(this.conversation.metadata.activeAgentCount>0)this.status.textContent+=` / ${this.conversation.metadata.activeAgentCount} agents working`;
     if (this.conversation.metadata.bridgeQueueCount > 0) this.status.textContent += ` / ${this.conversation.metadata.bridgeQueueCount} queued`;
     this.refreshSessionStatus?.();
   }
@@ -1403,6 +1475,7 @@ export class WorkspacePane {
       this.alert.hidden=true;this.alert.textContent='';
     }
     if(['mcpServer/oauthLogin/completed','mcpServer/startupStatus/updated'].includes(envelope.event?.method))this.refreshMcp?.();
+    if(envelope.event?.method==='workspace/agentEvent')this.notifyAgentChange?.(envelope.event.params);
     if(older){
       if(this.frame){cancelAnimationFrame(this.frame);this.frame=0;}
       const count=[...this.conversation.turns.values()].reduce((n,t)=>n+t.items.size,0);
@@ -1425,7 +1498,7 @@ export class WorkspacePane {
   codexCommandControls() {
     return {resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
-      model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
+      agent:this.agentsButton,subagents:this.agentsButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }
 
   async copyLatestOutput() {
@@ -1459,7 +1532,7 @@ export class WorkspacePane {
       await this.copyLatestOutput();return;
     }
     if(this.provider==='Codex' && /^\/[A-Za-z]/.test(text.trim()) && this.selectedApps.length){this.error(Error('Remove selected apps before running a session command'));return;}
-    const readOnlyCommand=this.provider==='Codex' && /^\/(goal|new|ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
+    const readOnlyCommand=this.provider==='Codex' && /^\/(agent|subagents|goal|new|ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
@@ -1630,7 +1703,7 @@ export class WorkspacePane {
     this.tierSelect.hidden = !(model?.serviceTiers?.length);
   }
 
-  renderItem(item) {
+  renderItem(item,{historyImages=true,userLabel='Raghav'}={}) {
     const entry = node('article', 'aw-item'); entry.dataset.itemId = item.id;
     if(item.parentToolUseId){
       entry.dataset.parentToolUseId=item.parentToolUseId;
@@ -1639,11 +1712,12 @@ export class WorkspacePane {
       entry.append(origin);
     }
     if (item.type === 'userMessage') {
-      entry.append(node('div', 'aw-author', 'Raghav'));
+      entry.append(node('div', 'aw-author', userLabel));
       const message = node('div', 'aw-user-message');
       for (const part of item.content || []) {
         if (part.previewToken || part.type === 'image') {
-          this.appendHistoryImage(message, part, 'Attached image');
+          if(historyImages)this.appendHistoryImage(message, part, 'Attached image');
+          else message.append(node('p','','Agent image preview unavailable'));
         } else if(part.type==='mention' && typeof part.path==='string' && part.path.startsWith('app://')){
           const app=node('span','aw-attachment',part.name || part.path);app.title=part.path;message.append(app);
         } else message.append(node('div', '', part.text ?? part.path ?? part.url ?? JSON.stringify(part)));
@@ -1654,7 +1728,10 @@ export class WorkspacePane {
       const message = node('div', 'aw-message');
       message.innerHTML = renderWorkspaceMarkdown(item.text ?? item.review);
       for (const part of Array.isArray(item.content) ? item.content : []) {
-        if (part.type === 'image') this.appendHistoryImage(message, part, 'Assistant image');
+        if (part.type === 'image') {
+          if(historyImages)this.appendHistoryImage(message, part, 'Assistant image');
+          else message.append(node('p','','Agent image preview unavailable'));
+        }
       }
       for (const block of message.querySelectorAll('pre')) {
         const code = block.querySelector('code');
@@ -1817,6 +1894,7 @@ export class WorkspacePane {
     for (const [id, question] of this.conversation.questions) {
       const form = node('form', 'aw-question');
       const p = question.params || {};
+      if(p.agentThreadId)form.append(node('p','aw-agent-id',`Agent: ${p.agentThreadId}`));
       if (question.method === 'session/request_permission') {
         form.append(node('p','',p.toolCall?.title || 'Tool permission requested'));
         if(p.toolCall?.rawInput!==undefined)form.append(node('pre','',JSON.stringify(p.toolCall.rawInput,null,2)));
@@ -2067,6 +2145,7 @@ export class WorkspacePane {
 
   dispose() {
     this.goalDialog?.close();
+    this.agentsDialog?.close();
     this.personalityDialog?.close();
     this.rewindDialog?.close();
     this.disposeActions?.();

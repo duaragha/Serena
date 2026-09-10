@@ -91,6 +91,9 @@ export class WorkspaceConversation {
     } else if (method === 'workspace/bridgeQueue') {
       this.metadata.bridgeQueueCount = p.count;
       this.metadata.bridgeQueue = p.requests || [];
+    } else if (method === 'workspace/agentEvent') {
+      if(Number.isSafeInteger(p.activeAgentCount) && p.activeAgentCount>=0)this.metadata.activeAgentCount=p.activeAgentCount;
+      this.rememberEvent(event);
     } else if (method === 'workspace/activity') {
       this.status = p.status;
     } else if (method === 'workspace/commands') {

@@ -865,6 +865,36 @@ def test_personality_restores_only_saved_exact_session_and_closes_on_failure(tmp
         host.shutdown()
 
 
+def test_agent_reads_use_existing_parent_even_when_job_reserved(tmp_path):
+    calls = []
+    class AgentOwner(Owner):
+        async def list_agents(self, cursor):
+            calls.append(('list', self.sid, cursor))
+            return {'data': [], 'nextCursor': None}
+        async def inspect_agent(self, thread_id, cursor):
+            calls.append(('inspect', self.sid, thread_id, cursor))
+            return {'thread': {'id': thread_id, 'turns': []}}
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'agents.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': AgentOwner})
+    try:
+        host.attach('exact')
+        host._work_reservations['exact'] = {'item_id': 'job'}
+        assert not calls
+        assert host.command('exact', 'list', 'agents', {'cursor': None})['ok']
+        assert host.command('exact', 'read', 'inspect_agent', {'thread_id': 'child', 'cursor': None})['ok']
+        assert not host.command('exact', 'bad', 'inspect_agent', {'thread_id': 'child', 'cursor': None, 'cwd': '/other'})['ok']
+        assert calls == [('list', 'exact', None), ('inspect', 'exact', 'child', None)]
+        assert list(host._sessions) == ['exact']
+        assert not host._sessions['exact'][0].sent
+        owner = host._sessions['exact'][0]
+        owner.active_agent_threads = {'child'}
+        assert host._sleep_blocker('exact') == 'Delegated agent work is active or uncertain'
+        assert host._work_admission_error('exact') == 'Delegated agent work is active or uncertain'
+    finally:
+        host.shutdown()
+
+
 def test_goal_controls_are_exact_receipted_and_job_guarded(tmp_path):
     calls = []
     class GoalOwner(Owner):

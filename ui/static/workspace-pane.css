@@ -83,6 +83,13 @@
 .aw-rewind-dialog input[type=checkbox],.aw-tasks-dialog input[type=checkbox],.aw-goal-dialog input[type=checkbox]{width:auto;accent-color:#ff85cb;margin:12px 6px 0 0;color-scheme:dark}
 .aw-goal-dialog textarea{box-sizing:border-box;width:100%;min-height:120px;resize:vertical;background:#100d11;border:1px solid #493545;color:#dfd8e3;padding:10px;font:inherit}
 .aw-goal-dialog input[type=number]{display:block;box-sizing:border-box;width:100%;margin-top:8px;background:#100d11;border:1px solid #493545;color:#dfd8e3;padding:10px;font:inherit;color-scheme:dark}
+.aw-agents-dialog{width:min(900px,calc(100vw - 24px))}
+.aw-agent-list{display:grid;gap:4px}
+.aw-agent-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;width:100%;text-align:left;padding:10px;border:1px solid #493545;background:#100d11;color:#dfd8e3}
+.aw-agent-row[aria-pressed=true]{border-color:#ff85cb}
+.aw-agent-id{overflow-wrap:anywhere;white-space:normal;font-size:11px}
+.aw-agent-history{min-width:0;border-top:1px solid #302631;margin-top:12px}
+.aw-agent-history .aw-item{margin:12px 0}
 .aw-review-dialog h2{font-size:16px;margin:0 0 16px}.aw-review-dialog label{display:block;margin-bottom:14px}.aw-review-dialog label[hidden]{display:none}.aw-review-dialog select,.aw-review-dialog textarea{box-sizing:border-box;display:block;width:100%;margin-top:6px;background:#000;color:inherit;border:1px solid #63455d;padding:8px}.aw-review-dialog button{margin-right:8px}
 .aw-tasks-dialog{max-height:80vh;overflow:auto}.aw-tasks-dialog h3{font-size:16px;margin:0 0 12px}.aw-background-task{border-top:1px solid #392b36;padding:12px 0;display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:8px}.aw-background-task pre{grid-column:1/-1;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:inherit}.aw-background-task small{overflow-wrap:anywhere;color:#b7a6b4}.aw-tasks-dialog svg{width:16px;height:16px}
 .aw-message h1,.aw-message h2,.aw-message h3{font-size:15px;line-height:1.5;margin:16px 0 8px}
