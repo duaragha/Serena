@@ -46,6 +46,7 @@ class Lease:
         "leftover",
         "post-descendant",
         "cleanup",
+        "external-fork",
     ],
 )
 def test_native_delete_is_exact_recoverable_and_never_opens_a_writer(tmp_path, case):
@@ -63,15 +64,22 @@ def test_native_delete_is_exact_recoverable_and_never_opens_a_writer(tmp_path, c
     contents = {identity: f'{{"id":"{identity}"}}\n' for identity in paths}
     for identity, path in paths.items():
         path.write_text(contents[identity], encoding="utf-8")
+    if case == "external-fork":
+        external = str(uuid4())
+        (active_store / f"{external}.jsonl").write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"id": external, "history_base": {"thread_id": root}},
+        }) + "\n", encoding="utf-8")
     calls, checkpoints = [], []
 
     class Rpc:
         process = None
-        deleted = False
+        deleted = None
 
         def __init__(self):
             self.events = asyncio.Queue()
             self.list_counts = {False: 0, True: 0}
+            self.deleted = set()
 
         async def start(self, argv, **kwargs):
             calls.append(("start", argv))
@@ -88,7 +96,7 @@ def test_native_delete_is_exact_recoverable_and_never_opens_a_writer(tmp_path, c
                 return {}
             if method == "thread/read":
                 identity = params["threadId"]
-                parents = {root: None, child: root, archived_child: root}
+                parents = {root: None, child: root, archived_child: child}
                 return {"thread": {
                     "id": identity,
                     "parentThreadId": parents[identity],
@@ -98,30 +106,28 @@ def test_native_delete_is_exact_recoverable_and_never_opens_a_writer(tmp_path, c
             if method == "thread/list":
                 archived = params["archived"]
                 self.list_counts[archived] += 1
-                if self.deleted:
+                if root in self.deleted:
                     if case == "post-descendant" and not archived:
                         return {"data": [{"id": child, "parentThreadId": root}], "nextCursor": None}
                     return {"data": [], "nextCursor": None}
                 if case == "changed" and not archived and self.list_counts[False] > 1:
                     return {"data": [], "nextCursor": None}
                 if archived:
-                    return {"data": [{"id": archived_child, "parentThreadId": root}], "nextCursor": None}
+                    return {"data": [{"id": archived_child, "parentThreadId": child}], "nextCursor": None}
                 parent = str(uuid4()) if case == "ancestry" else root
                 return {"data": [{"id": child, "parentThreadId": parent}], "nextCursor": None}
             if method == "thread/loaded/list":
                 return {"data": [child] if case == "loaded" else []}
             assert method == "thread/delete"
-            self.deleted = True
-            for identity, path in paths.items():
-                if not (case == "leftover" and identity == child):
-                    path.unlink()
+            identity = params["threadId"]
+            self.deleted.add(identity)
+            path = paths[identity]
+            if not (case == "leftover" and identity == child):
+                path.unlink()
             if case == "bad-ack":
                 return {"deleted": True}
-            notices = [root, child, archived_child]
-            if case == "wrong-notice":
-                notices[0] = str(uuid4())
-            for identity in notices:
-                await self.events.put({"method": "thread/deleted", "params": {"threadId": identity}})
+            notice = str(uuid4()) if case == "wrong-notice" else identity
+            await self.events.put({"method": "thread/deleted", "params": {"threadId": notice}})
             return {}
 
         async def close(self):
@@ -167,6 +173,8 @@ def test_native_delete_is_exact_recoverable_and_never_opens_a_writer(tmp_path, c
             assert result["thread_ids"] == [target["session_id"] for target in result["targets"]]
             assert result["thread_ids"][0] == root
             assert set(result["thread_ids"]) == set(paths)
+            delete_ids = [call[1]["threadId"] for call in calls if call[0] == "thread/delete"]
+            assert delete_ids == [archived_child, child, root]
             assert checkpoints == [{key: result[key] for key in (
                 "session_id", "provider", "cwd", "targets", "recovery_dir"
             )}]
@@ -188,8 +196,13 @@ def test_native_delete_is_exact_recoverable_and_never_opens_a_writer(tmp_path, c
         methods = [call[0] for call in calls]
         assert not {"thread/resume", "thread/start", "turn/start"} & set(methods)
         mutation_cases = {"ok", "archived-root", "bad-ack", "wrong-notice", "leftover", "post-descendant", "cleanup"}
-        assert methods.count("thread/delete") == (1 if case in mutation_cases else 0)
-        if case in {"owned-child", "owner-guard", "family-guard", "loaded", "ancestry", "changed"}:
+        expected_mutations = 0
+        if case in {"bad-ack", "wrong-notice"}:
+            expected_mutations = 1
+        elif case in mutation_cases:
+            expected_mutations = 3
+        assert methods.count("thread/delete") == expected_mutations
+        if case in {"owned-child", "owner-guard", "family-guard", "loaded", "ancestry", "changed", "external-fork"}:
             assert not recovery.exists()
         if case == "checkpoint":
             assert recovery.is_dir() and methods.count("thread/delete") == 0

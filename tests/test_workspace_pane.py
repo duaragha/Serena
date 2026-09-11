@@ -824,7 +824,7 @@ def test_project_diff_is_explicit_read_only_and_text_safe(pane, width):
     assert not errors
 
 
-@pytest.mark.parametrize('command', ['/plugins', '/delete', '/debug-config', '/prompts:custom', '/unknown arg'])
+@pytest.mark.parametrize('command', ['/plugins', '/debug-config', '/prompts:custom', '/unknown arg'])
 def test_unknown_codex_command_stays_in_draft_without_model_call(pane, command):
     page, errors = pane
     page.evaluate("command=>{pane.provider='Codex';pane.input.value=command;pane.render();}", command)
@@ -2595,6 +2595,138 @@ def test_codex_archive_requires_confirmation_and_reconciles_without_repeating(pa
     assert page.locator('#left').get_by_role("button", name="Send message", exact=True).is_disabled()
     assert dialog.evaluate("el=>el.scrollWidth<=el.clientWidth")
     page.screenshot(path=str(tmp_path / f"archive-{width}.png"))
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
+def test_codex_delete_requires_consent_and_reconciles_without_repeating(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""()=>{
+      const requestId='11111111-1111-4111-8111-111111111111';
+      window.deletePending=null;window.calls=[];
+      controls.pendingDelete=()=>deletePending;
+      controls.deleteSession=async options=>{
+        calls.push(['delete',options]);
+        if(calls.length===1){
+          deletePending=requestId;
+          const error=Error('Delete outcome is unconfirmed');
+          error.deleteUncertain=true;error.deleteRequestId=requestId;throw error;
+        }
+        deletePending=null;
+        return {session_id:'exact',deleted:true,thread_ids:['exact','child'],thread_count:2};
+      };
+      controls.openSession=async sid=>calls.push(['open',sid]);
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      pane.conversation.status='ready';pane.input.value='/delete';pane.render();
+    }""")
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role('dialog', name='Delete conversation', exact=True)
+    confirm = dialog.get_by_role('button', name='Confirm delete conversation', exact=True)
+    assert page.evaluate('calls') == []
+    assert confirm.is_disabled()
+    assert 'private local recovery copy is retained' in dialog.get_by_role('status').inner_text()
+    dialog.get_by_role('checkbox', name='Confirm conversation deletion', exact=True).check()
+    confirm.click()
+    dialog.get_by_text('Delete outcome is unconfirmed', exact=True).wait_for()
+    assert page.evaluate('calls') == [["delete", {"reconcile": False, "requestId": None}]]
+    assert dialog.get_by_role('button', name='Check delete outcome', exact=True).is_visible()
+    assert page.evaluate('pane.input.value') == '/delete'
+    dialog.get_by_role('button', name='Check delete outcome', exact=True).click()
+    dialog.get_by_text('Deleted 2 conversations from Codex and Serena. Local recovery was retained.', exact=True).wait_for()
+    assert page.evaluate('calls') == [
+        ["delete", {"reconcile": False, "requestId": None}],
+        ["delete", {"reconcile": True, "requestId": "11111111-1111-4111-8111-111111111111"}],
+    ]
+    assert page.evaluate('pane.conversation.status') == 'unavailable'
+    assert page.locator('#left').get_by_role('button', name='Send message', exact=True).is_disabled()
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    page.screenshot(path=str(tmp_path / f'delete-{width}.png'))
+    assert not errors
+
+
+@pytest.mark.parametrize('archived', [False, True])
+@pytest.mark.parametrize('width', [390, 1600])
+def test_saved_picker_delete_is_explicit_and_never_opens_the_session(pane, width, archived):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""({archived})=>{
+      const target='22222222-2222-4222-8222-222222222222';
+      const Pane=pane.constructor;pane.dispose();window.calls=[];window.deleted=false;
+      pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,
+        listSessions:async(q,offset,wantsArchive)=>{
+          calls.push(['list',wantsArchive]);
+          return {data:wantsArchive===archived&&!deleted?[{session_id:target,title:'Saved target',cwd:'/project'}]:[],nextOffset:null};
+        },
+        restoreArchive:async()=>{throw Error('must not restore while deleting')},
+        openSession:async sid=>calls.push(['open',sid]),
+        deleteSavedSession:async(sid,options)=>{
+          calls.push(['delete',sid,options]);deleted=true;
+          return {session_id:sid,deleted:true,thread_ids:[sid],thread_count:1};
+        }}});
+      pane.conversation.status='ready';pane.input.value='draft survives';pane.render();
+    }""", {'archived': archived})
+    page.evaluate('pane.openSessions()')
+    saved = page.get_by_role('dialog', name='Saved conversations', exact=True)
+    if archived:
+        saved.get_by_role('radio', name='Archived', exact=True).check()
+    remove = saved.get_by_role('button', name='Delete Saved target', exact=True)
+    remove.click()
+    dialog = page.get_by_role('dialog', name='Delete conversation', exact=True)
+    assert page.evaluate("calls.filter(call=>call[0]!=='list')") == []
+    confirm = dialog.get_by_role('button', name='Confirm delete conversation', exact=True)
+    assert confirm.is_disabled()
+    dialog.get_by_role('checkbox', name='Confirm conversation deletion', exact=True).check()
+    confirm.click()
+    dialog.get_by_text('Deleted 1 conversation from Codex and Serena. Local recovery was retained.', exact=True).wait_for()
+    assert page.evaluate("calls.filter(call=>call[0]!=='list')") == [[
+        'delete', '22222222-2222-4222-8222-222222222222',
+        {'reconcile': False, 'requestId': None},
+    ]]
+    assert page.evaluate('pane.input.value') == 'draft survives'
+    assert page.evaluate("calls.some(call=>call[0]==='open')") is False
+    assert saved.get_by_role('button', name='Delete Saved target', exact=True).count() == 0
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_saved_picker_pending_child_checks_root_without_replaying_delete(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      const child='22222222-2222-4222-8222-222222222222';
+      const root='33333333-3333-4333-8333-333333333333';
+      const requestId='44444444-4444-4444-8444-444444444444';
+      const Pane=pane.constructor;pane.dispose();window.calls=[];window.checked=false;
+      pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,
+        listSessions:async()=>({data:checked?[]:[{session_id:child,title:'Pending child',cwd:'/project',
+          delete_request_id:requestId,delete_source_id:root}],nextOffset:null}),
+        openSession:async sid=>calls.push(['open',sid]),
+        deleteSavedSession:async(sid,options)=>{
+          calls.push(['check',sid,options]);checked=true;
+          return {session_id:sid,deleted:true,thread_ids:[sid,child],thread_count:2};
+        }}});
+      pane.conversation.status='ready';pane.input.value='draft survives';pane.render();
+    }""")
+    page.evaluate('pane.openSessions()')
+    saved = page.get_by_role('dialog', name='Saved conversations', exact=True)
+    saved.locator('.aw-command').filter(has_text='Pending child').click()
+    dialog = page.get_by_role('dialog', name='Delete conversation', exact=True)
+    assert page.evaluate('calls') == []
+    assert dialog.get_by_role('checkbox', name='Confirm conversation deletion', exact=True).is_hidden()
+    assert dialog.get_by_role('button', name='Confirm delete conversation', exact=True).is_hidden()
+    dialog.get_by_role('button', name='Check delete outcome', exact=True).click()
+    dialog.get_by_text('Deleted 2 conversations from Codex and Serena. Local recovery was retained.', exact=True).wait_for()
+    assert page.evaluate('calls') == [[
+        'check', '33333333-3333-4333-8333-333333333333',
+        {'reconcile': True, 'requestId': '44444444-4444-4444-8444-444444444444'},
+    ]]
+    assert page.evaluate("calls.some(call=>call[0]==='open')") is False
+    assert page.evaluate('pane.input.value') == 'draft survives'
+    assert saved.get_by_text('Delete outcome unconfirmed', exact=True).count() == 0
     assert not errors
 
 

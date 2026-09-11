@@ -8,6 +8,120 @@ import pytest
 from core.workspace_journal import WorkspaceJournal
 
 
+def _delete_checkpoint(tmp_path, root, child=None):
+    identities = [root, *([child] if child else [])]
+    recovery = tmp_path / "delete-recovery"
+    return {
+        "session_id": root,
+        "provider": "codex",
+        "cwd": str(tmp_path),
+        "recovery_dir": str(recovery),
+        "targets": [{
+            "session_id": identity,
+            "provider": "codex",
+            "cwd": str(tmp_path),
+            "path": str(tmp_path / "codex" / "sessions" / f"{identity}.jsonl"),
+            "archived": False,
+            "recovery_path": str(recovery / "rollouts" / f"{identity}.jsonl"),
+            "size": 1,
+            "sha256": "0" * 64,
+        } for identity in identities],
+    }
+
+
+def test_delete_checkpoint_blocks_family_and_completes_exactly_once(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "delete.db")
+    root, child, request = str(uuid4()), str(uuid4()), str(uuid4())
+    checkpoint = _delete_checkpoint(tmp_path, root, child)
+    assert journal.claim_delete(root, request) == (True, None)
+    assert journal.has_pending_delete(root) and not journal.has_pending_delete(child)
+    journal.prepare_delete(root, request, checkpoint)
+    journal.prepare_delete(root, request, checkpoint)
+    reopened = WorkspaceJournal(journal.path)
+    assert reopened.delete_checkpoint(root, request) == checkpoint
+    assert reopened.pending_deletes([root, child, str(uuid4())]) == {
+        root: {"session_id": root, "request_id": request},
+        child: {"session_id": root, "request_id": request},
+    }
+    with pytest.raises(ValueError, match="unconfirmed"):
+        reopened.claim_delete(child, str(uuid4()))
+    with pytest.raises(ValueError, match="archiving is unavailable"):
+        reopened.claim_archive(child, str(uuid4()))
+    with pytest.raises(ValueError, match="restoration is unavailable"):
+        reopened.claim_archive_restore(child, str(uuid4()))
+    with pytest.raises(ValueError, match="different native family"):
+        reopened.prepare_delete(root, request, _delete_checkpoint(tmp_path, root))
+    receipt = {"ok": True, "result": {
+        "session_id": root,
+        "provider": "codex",
+        "cwd": str(tmp_path),
+        "deleted": True,
+        "thread_ids": [root, child],
+        "recovery_dir": checkpoint["recovery_dir"],
+        "catalog_removed": True,
+        "thread_count": 2,
+    }}
+    assert reopened.complete_delete(root, request, receipt) == receipt
+    assert not journal.has_pending_delete(root) and not journal.has_pending_delete(child)
+    assert journal.claim_delete(root, request) == (False, receipt)
+    assert [row["event"]["method"] for row in journal.read(root)["events"]][-2:] == [
+        "workspace/deletePrepared", "workspace/deleted",
+    ]
+
+
+def test_delete_and_archive_family_claims_conflict_before_mutation(tmp_path):
+    root, child = str(uuid4()), str(uuid4())
+    checkpoint = _delete_checkpoint(tmp_path, root, child)
+
+    journal = WorkspaceJournal(tmp_path / "pending-command.db")
+    journal.claim_command(child, str(uuid4()), {"action": "submit", "payload": {}})
+    delete_request = str(uuid4())
+    journal.claim_delete(root, delete_request)
+    with pytest.raises(ValueError, match="another unconfirmed operation"):
+        journal.prepare_delete(root, delete_request, checkpoint)
+
+    archive = WorkspaceJournal(tmp_path / "pending-delete.db")
+    delete_request, archive_request = str(uuid4()), str(uuid4())
+    archive.claim_delete(child, delete_request)
+    archive.claim_archive(root, archive_request)
+    archive_target = {"session_id": root, "provider": "codex", "cwd": str(tmp_path)}
+    with pytest.raises(ValueError, match="unconfirmed delete"):
+        archive.prepare_archive(root, archive_request, {
+            **archive_target,
+            "targets": [archive_target, {**archive_target, "session_id": child}],
+        })
+
+
+def test_delete_completion_receipt_and_event_are_atomic(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "delete-atomic.db")
+    root, request = str(uuid4()), str(uuid4())
+    checkpoint = _delete_checkpoint(tmp_path, root)
+    journal.claim_delete(root, request)
+    journal.prepare_delete(root, request, checkpoint)
+    receipt = {"ok": True, "result": {
+        "session_id": root,
+        "provider": "codex",
+        "cwd": str(tmp_path),
+        "deleted": True,
+        "thread_ids": [root],
+        "recovery_dir": checkpoint["recovery_dir"],
+        "catalog_removed": True,
+        "thread_count": 1,
+    }}
+    with sqlite3.connect(journal.path) as conn:
+        conn.execute("""CREATE TRIGGER reject_delete_event BEFORE INSERT ON workspace_events
+                     WHEN json_extract(NEW.event, '$.method')='workspace/deleted'
+                     BEGIN SELECT RAISE(ABORT, 'simulated delete receipt failure'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="simulated delete receipt failure"):
+        journal.complete_delete(root, request, receipt)
+    assert journal.command_receipt(
+        root, request, {"action": "delete_session", "payload": {"confirmed": True}}
+    ) == (True, None)
+    with sqlite3.connect(journal.path) as conn:
+        conn.execute("DROP TRIGGER reject_delete_event")
+    assert journal.complete_delete(root, request, receipt) == receipt
+
+
 def test_archive_checkpoint_blocks_root_and_descendant_until_exact_receipt(tmp_path):
     journal = WorkspaceJournal(tmp_path / "archive.db")
     root, child, request = str(uuid4()), str(uuid4()), str(uuid4())

@@ -5,7 +5,40 @@ from uuid import uuid4
 
 import pytest
 
-from core.workspace_catalog import register_fork
+from core.workspace_catalog import register_fork, remove_deleted_codex_target
+
+
+def test_native_delete_catalog_cleanup_requires_missing_source_and_preserves_siblings(tmp_path, monkeypatch):
+    from core import indexer, metadata
+
+    monkeypatch.setattr(indexer, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(indexer, "DB_PATH", tmp_path / "data" / "index.db")
+    monkeypatch.setattr(indexer, "_schema_ready", False)
+    monkeypatch.setattr(indexer, "_INDEX_LOCK_PATH", tmp_path / "data" / "index.lock")
+    monkeypatch.setattr(metadata, "METADATA_DIR", tmp_path / "metadata")
+    monkeypatch.setattr(metadata, "METADATA_PATH", tmp_path / "legacy.json")
+    home = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    sid, sibling = str(uuid4()), str(uuid4())
+    path = home / "sessions" / f"rollout-2026-09-10T00-00-00-{sid}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": sid, "cwd": str(tmp_path)}}) + "\n",
+        encoding="utf-8",
+    )
+    metadata._save_one(sid, {"custom_title": "Delete me"})
+    metadata._save_one(sibling, {"custom_title": "Keep me"})
+    register_fork({"session_id": sid, "provider": "codex", "cwd": str(tmp_path)})
+    target = {"session_id": sid, "provider": "codex", "path": str(path)}
+    with pytest.raises(RuntimeError, match="still exists"):
+        remove_deleted_codex_target(target)
+    assert indexer.get_session(sid) is not None and metadata.get_meta(sid)["custom_title"] == "Delete me"
+    path.unlink()
+    assert remove_deleted_codex_target(target) == {"session_id": sid, "removed": True}
+    assert remove_deleted_codex_target(target) == {"session_id": sid, "removed": True}
+    assert indexer.get_session(sid) is None and metadata.get_meta(sid) == {}
+    assert metadata.get_meta(sibling) == {"custom_title": "Keep me"}
+    assert not (indexer.DATA_DIR / "deleted-sessions").exists()
 
 
 def test_native_archive_index_preserves_custom_metadata_and_restores_exact_row(tmp_path, monkeypatch):

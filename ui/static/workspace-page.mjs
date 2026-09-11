@@ -49,6 +49,11 @@ if(boot.provider==='Codex')controls.reconcileArchive=async(sid,requestId)=>{
   const target=new WorkspaceConnection({sessionId:sid,token:boot.token,receive:()=>{},error:()=>{}});
   try{return await target.archiveSession({reconcile:true,requestId});}finally{target.dispose();}
 };
+if(boot.provider==='Codex')controls.deleteSavedSession=async(sid,{reconcile=false,requestId=null}={})=>{
+  if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid))throw Error('Invalid delete session identity');
+  const target=new WorkspaceConnection({sessionId:sid,token:boot.token,receive:()=>{},error:()=>{}});
+  try{return await target.deleteSession({reconcile,requestId});}finally{target.dispose();}
+};
 controls.openSession = sid => {
   if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid))throw Error('Invalid session identity');
   if(parent!==window)parent.postMessage({type:'serena-workspace-open-session',sid:boot.sessionId,target:sid},location.origin);
@@ -128,7 +133,11 @@ document.addEventListener('pointerdown',event=>{
 });
 window.addEventListener('focus',reportFocus);
 function reportState() {
-  if (pane.conversation.status === 'unavailable') showRetry();
+  if (pane.conversation.status === 'unavailable') {
+    if(pane.conversation.error==='Conversation deleted'){
+      button.hidden=true;button.disabled=true;button.textContent='Conversation deleted';
+    }else showRetry();
+  }
   if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:pane.conversation.status},location.origin);
 }
 window.addEventListener('message', e => {

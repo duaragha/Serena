@@ -82,6 +82,17 @@ test('durable archive completion makes the exact pane unavailable',()=>{
   assert.throws(()=>model.apply(wrap(3,{method:'workspace/archived',params:{threadId:'foreign'}})),/another session/);
 });
 
+test('durable delete completion makes only the exact pane unavailable',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,history));
+  model.apply(wrap(2,{method:'workspace/deleted',params:{threadId:'exact',threadIds:['exact','child'],count:2}}));
+  assert.equal(model.status,'unavailable');
+  assert.equal(model.error,'Conversation deleted');
+  assert.equal(model.questions.size,0);
+  assert.throws(()=>model.apply(wrap(3,{method:'workspace/deleted',params:{threadId:'foreign',threadIds:['foreign'],count:1}})),/another session/);
+  assert.equal(model.sequence,2);
+});
+
 test('older pages prepend without overwriting live turns or changing working status',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,{method:'workspace/history',params:{historyCursor:'older',thread:{id:'exact',turns:[{id:'live',status:'inProgress',items:[{id:'a',type:'agentMessage',text:'current'}]}]}}}));

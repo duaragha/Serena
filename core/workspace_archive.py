@@ -345,7 +345,7 @@ def _backup_delete_family(recovery, threads, metadata_reader):
     return targets
 
 
-def _validate_delete_checkpoint(session_id, cwd, checkpoint):
+def validate_codex_delete_checkpoint(session_id, cwd, checkpoint):
     targets = checkpoint.get("targets") if isinstance(checkpoint, dict) else None
     recovery = checkpoint.get("recovery_dir") if isinstance(checkpoint, dict) else None
     if (not isinstance(checkpoint, dict)
@@ -378,6 +378,49 @@ def _validate_delete_checkpoint(session_id, cwd, checkpoint):
             or len({str(Path(target["recovery_path"]).resolve()) for target in targets}) != len(targets)):
         raise ValueError("Checkpointed delete targets must be unique")
     return targets, Path(recovery).resolve()
+
+
+def _delete_family_order(session_id, descendants):
+    parents = {thread["id"]: thread["parentThreadId"] for thread in descendants}
+
+    def depth(identity):
+        seen = set()
+        current = identity
+        distance = 0
+        while current != session_id:
+            if current in seen or current not in parents:
+                raise WorkspaceRpcError("Delete descendant ancestry is cyclic or disconnected")
+            seen.add(current)
+            current = parents[current]
+            distance += 1
+        return distance
+
+    return [
+        thread["id"]
+        for thread in sorted(descendants, key=lambda row: (-depth(row["id"]), row["id"]))
+    ] + [session_id]
+
+
+def _external_history_referrers(home, family_ids):
+    referrers = []
+    for store in (home / "sessions", home / "archived_sessions"):
+        if not store.is_dir():
+            continue
+        for path in store.rglob("*.jsonl"):
+            try:
+                with path.open(encoding="utf-8") as stream:
+                    record = json.loads(stream.readline())
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            payload = record.get("payload") if isinstance(record, dict) else None
+            history = payload.get("history_base") if isinstance(payload, dict) else None
+            identity = payload.get("id", payload.get("session_id")) if isinstance(payload, dict) else None
+            source = history.get("thread_id") if isinstance(history, dict) else None
+            if (isinstance(record, dict) and record.get("type") == "session_meta"
+                    and isinstance(identity, str)
+                    and identity not in family_ids and source in family_ids):
+                referrers.append(identity)
+    return sorted(set(referrers))
 
 
 async def delete_codex_tree(session_id, cwd, recovery_dir, *, confirmed=False, binary=None, env=None,
@@ -443,6 +486,7 @@ async def delete_codex_tree(session_id, cwd, recovery_dir, *, confirmed=False, b
         family_ids = {session_id, *active_ids, *archived_ids}
         if any(thread["parentThreadId"] not in family_ids for thread in active + archived):
             raise WorkspaceRpcError("Delete descendant ancestry is incomplete")
+        delete_order = _delete_family_order(session_id, active + archived)
         rows = sorted([*(row | {"archived": False} for row in active),
                        *(row | {"archived": True} for row in archived)], key=lambda row: row["id"])
         threads = [root]
@@ -488,6 +532,11 @@ async def delete_codex_tree(session_id, cwd, recovery_dir, *, confirmed=False, b
         loaded = await rpc.request("thread/loaded/list", {})
         if not isinstance(loaded, dict) or loaded.get("data") != []:
             raise WorkspaceRpcError("Delete maintenance unexpectedly loaded a coding thread")
+        referrers = _external_history_referrers(home, family_ids)
+        if referrers:
+            raise WorkspaceRpcError(
+                f"Native delete is blocked by {len(referrers)} retained conversation fork(s)"
+            )
         source_paths = [str(Path(thread["path"]).resolve()) for thread in threads]
         if len(set(source_paths)) != len(source_paths):
             raise WorkspaceRpcError("Delete family contains duplicate native transcripts")
@@ -498,19 +547,20 @@ async def delete_codex_tree(session_id, cwd, recovery_dir, *, confirmed=False, b
             checkpoint(prepared)
         while not rpc.events.empty():
             rpc.events.get_nowait()
-        result = await rpc.request("thread/delete", {"threadId": session_id})
-        if result != {}:
-            raise WorkspaceRpcError("Native delete acknowledgement was invalid")
         expected = [target["session_id"] for target in targets]
         notices = set()
-        async with asyncio.timeout(15):
-            while not set(expected) <= notices:
-                event = await rpc.events.get()
-                if event.get("method") == "thread/deleted":
-                    identity = (event.get("params") or {}).get("threadId")
-                    if not isinstance(identity, str) or identity not in expected:
-                        raise WorkspaceRpcError("Native delete notification had an unexpected identity")
-                    notices.add(identity)
+        for delete_id in delete_order:
+            result = await rpc.request("thread/delete", {"threadId": delete_id})
+            if result != {}:
+                raise WorkspaceRpcError("Native delete acknowledgement was invalid")
+            async with asyncio.timeout(15):
+                while delete_id not in notices:
+                    event = await rpc.events.get()
+                    if event.get("method") == "thread/deleted":
+                        identity = (event.get("params") or {}).get("threadId")
+                        if not isinstance(identity, str) or identity not in expected:
+                            raise WorkspaceRpcError("Native delete notification had an unexpected identity")
+                        notices.add(identity)
         if any(Path(target["path"]).exists() for target in targets):
             raise WorkspaceRpcError("One or more native delete transcripts remain")
         if await _descendants(rpc, session_id, False) or await _descendants(rpc, session_id, True):
@@ -540,7 +590,7 @@ async def inspect_codex_delete_tree(session_id, cwd, checkpoint, *, binary=None,
     if not project.is_absolute() or not project.is_dir():
         raise ValueError("An existing absolute project directory is required")
     project = project.resolve()
-    targets, recovery = _validate_delete_checkpoint(session_id, project, checkpoint)
+    targets, recovery = validate_codex_delete_checkpoint(session_id, project, checkpoint)
     executable = binary or shutil.which("codex")
     if not executable:
         raise WorkspaceRpcError("Codex executable is unavailable")

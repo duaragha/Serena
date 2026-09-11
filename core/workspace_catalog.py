@@ -113,3 +113,34 @@ def register_fork(target):
                 return result
         finally:
             conn.close()
+
+
+def remove_deleted_codex_target(target):
+    """Remove one natively deleted Codex thread from Serena's local catalog."""
+    from core import indexer, metadata
+
+    sid = target.get("session_id") if isinstance(target, dict) else None
+    raw_path = target.get("path") if isinstance(target, dict) else None
+    if (not isinstance(sid, str) or str(UUID(sid)) != sid or target.get("provider") != "codex"
+            or not isinstance(raw_path, str) or not Path(raw_path).is_absolute()):
+        raise ValueError("An exact deleted Codex target is required")
+    path = Path(raw_path).resolve()
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").resolve()
+    if not (path.is_relative_to(home / "sessions") or path.is_relative_to(home / "archived_sessions")):
+        raise ValueError("Deleted Codex transcript is outside the native store")
+    with indexer._index_update_lock():
+        if path.exists():
+            raise RuntimeError("Native Codex transcript still exists; catalog removal refused")
+        session = indexer.get_session(sid)
+        if session is not None:
+            indexed_path = Path(session["file_path"]).resolve()
+            if session.get("session_id") != sid or session.get("agent") != "codex":
+                raise RuntimeError("Catalog identity does not match the deleted Codex thread")
+            if indexed_path.exists():
+                raise RuntimeError("Catalog points to a surviving transcript; removal refused")
+            indexer._delete_unowned_session(session, source="workspace-native-delete")
+        else:
+            metadata.delete_meta(sid)
+        if indexer.get_session(sid) is not None:
+            raise RuntimeError("Deleted Codex thread remains in the local catalog")
+    return {"session_id": sid, "removed": True}

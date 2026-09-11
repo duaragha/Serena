@@ -121,6 +121,19 @@ def workspace_blueprint(host, *, token: str):
             **({"reconcile": True} if request.path.endswith("/reconcile-archive-session") else {}),
         ))
 
+    @bp.post("/<sid>/delete-session")
+    @bp.post("/<sid>/reconcile-delete-session")
+    def delete_session(sid):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) != {"request_id", "confirmed"}:
+            raise ValueError("Expected request_id and explicit confirmation")
+        return jsonify(host.delete_session(
+            sid,
+            data["request_id"],
+            confirmed=data["confirmed"],
+            **({"reconcile": True} if request.path.endswith("/reconcile-delete-session") else {}),
+        ))
+
     @bp.post("/<sid>/uploads")
     def upload(sid):
         from core.workspace_uploads import MAX_UPLOAD_BYTES

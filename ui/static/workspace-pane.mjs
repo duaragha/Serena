@@ -35,6 +35,7 @@ export class WorkspacePane {
     this.sending = false;
     this.interrupting = false;
     this.archiving = false;
+    this.deleting = false;
     this.disposed = false;
     this.frame = 0;
     try{this.clearedSession=controls.lastClear?.();}catch{this.clearedSession=null;}
@@ -85,6 +86,9 @@ export class WorkspacePane {
     this.archiveButton=this.button('Archive conversation','archive',()=>this.openArchive());
     this.archiveButton.hidden=provider!=='Codex' || !controls.archiveSession;
     this.archiveButton.disabled=true;head.append(this.archiveButton);
+    this.deleteButton=this.button('Delete conversation','trash-2',()=>this.openDelete());
+    this.deleteButton.hidden=provider!=='Codex' || !controls.deleteSession;
+    this.deleteButton.disabled=true;head.append(this.deleteButton);
     this.newConversationButton=this.button('New conversation','square-pen',()=>{
       const title=/^\/new(?:\s+(.*))?$/.exec(this.input.value.trim())?.[1] || '';
       this.controls.newConversation(title);
@@ -461,6 +465,64 @@ export class WorkspacePane {
     this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
   }
 
+  openDelete(session=null,refresh=null) {
+    if(this.deleteDialog?.open || this.deleting)return;
+    const source=session?.delete_source_id || session?.session_id || this.conversation.sessionId;
+    const current=source===this.conversation.sessionId;
+    if(!current && !this.controls.deleteSavedSession){this.error(Error('Saved conversation deletion is unavailable'));return;}
+    let pending;
+    try{pending=session?.delete_request_id || (current?this.controls.pendingDelete?.():null) || null;}
+    catch(error){this.error(error);return;}
+    const title=session?.title || 'this conversation';
+    const subject=session?`"${title}"`:'this Codex conversation';
+    const dialog=node('dialog','aw-review-dialog aw-delete-dialog');dialog.setAttribute('aria-label','Delete conversation');
+    const status=node('p','',pending
+      ? 'A previous delete outcome is unconfirmed. Check native state without repeating it.'
+      : `Delete ${subject} and all of its spawned agent chats from Codex and Serena? A private local recovery copy is retained. Nothing opens automatically.`);
+    status.setAttribute('role','status');
+    const identity=node('code','',source);
+    const consent=node('input');consent.type='checkbox';consent.setAttribute('aria-label','Confirm conversation deletion');
+    const consentLabel=node('label');consentLabel.append(consent,document.createTextNode(' I understand this removes the conversation from Codex and Serena.'));
+    consentLabel.hidden=Boolean(pending);
+    const close=this.button('Close delete conversation','x',()=>dialog.close());
+    const confirm=this.button('Confirm delete conversation','trash-2',()=>run(false));
+    const check=this.button('Check delete outcome','refresh-cw',()=>run(true));check.hidden=!pending;
+    confirm.hidden=Boolean(pending);confirm.disabled=true;
+    consent.addEventListener('change',()=>{confirm.disabled=!consent.checked;});
+    let busy=false;
+    const run=async(reconcile)=>{
+      if(busy || (!reconcile && !consent.checked))return;
+      busy=true;if(current)this.deleting=true;
+      confirm.disabled=true;check.disabled=true;
+      status.textContent=reconcile?'Checking native delete state...':'Deleting conversation...';this.render();
+      try{
+        const options={reconcile,requestId:reconcile?pending:null};
+        const result=current
+          ? await this.controls.deleteSession(options)
+          : await this.controls.deleteSavedSession(source,options);
+        if(result?.session_id!==source || result?.deleted!==true || !Array.isArray(result.thread_ids)
+          || result.thread_ids[0]!==source || new Set(result.thread_ids).size!==result.thread_ids.length
+          || result.thread_count!==result.thread_ids.length || result.thread_ids.length<1){
+          throw Error('Deleted session identity is unconfirmed');
+        }
+        if(result.thread_ids.includes(this.conversation.sessionId))this.conversation.status='unavailable';
+        status.textContent=`Deleted ${result.thread_count} conversation${result.thread_count===1?'':'s'} from Codex and Serena. Local recovery was retained.`;
+        consentLabel.hidden=true;confirm.hidden=true;check.hidden=true;
+        if(this.sessionsDialog?.open && typeof refresh==='function' && !this.disposed)await refresh();
+      }catch(error){
+        if(dialog.open && !this.disposed){
+          status.textContent=error.message;
+          if(error.deleteRetryable===true){pending=null;consent.checked=false;consentLabel.hidden=false;confirm.hidden=false;confirm.disabled=true;check.hidden=true;}
+          else if(error.deleteUncertain===true){pending=error.deleteRequestId || (current?this.controls.pendingDelete?.():pending);consentLabel.hidden=true;confirm.hidden=true;check.hidden=!pending;}
+          check.disabled=false;
+        }
+      }finally{busy=false;if(current)this.deleting=false;if(!this.disposed)this.render();}
+    };
+    dialog.append(node('h3','','Delete conversation'),close,status,identity,consentLabel,confirm,check);
+    dialog.addEventListener('close',()=>dialog.remove());this.deleteDialog=dialog;
+    this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
+  }
+
   openFork() {
     if(this.forkDialog?.open || this.forkCreating)return;
     try{this.createdFork ??= this.controls.lastFork?.();}
@@ -590,23 +652,34 @@ export class WorkspacePane {
         const result=await this.controls.listSessions(value,offset,archived);
         if(!dialog.open || this.disposed || request!==generation)return;
         for(const session of result.data){
+          const row=node('div','aw-session-row');
           const button=node('button','aw-command');button.type='button';
           button.append(node('strong','',session.title),node('small','',session.session_id),node('span','',session.cwd || ''));
           const pendingArchive=Boolean(session.archive_request_id);
+          const pendingDelete=Boolean(session.delete_request_id);
           const isArchive=archived || Boolean(session.archive_restore_request_id);
-          button.disabled=!pendingArchive && !isArchive && session.session_id===this.conversation.sessionId;
+          button.disabled=!pendingDelete && !pendingArchive && !isArchive && session.session_id===this.conversation.sessionId;
           if(session.archive_restore_request_id)button.append(node('span','','Restore outcome unconfirmed'));
           if(pendingArchive)button.append(node('span','','Archive outcome unconfirmed'));
+          if(pendingDelete)button.append(node('span','','Delete outcome unconfirmed'));
           button.addEventListener('click',async()=>{
+            if(pendingDelete){this.openDelete(session,()=>load(search.value));return;}
             if(pendingArchive){this.openArchiveReconcile(session,()=>load(search.value));return;}
             if(isArchive){this.openArchiveRestore(session,()=>load(search.value));return;}
             button.disabled=true;
             try{await this.controls.openSession(session.session_id);dialog.close();}
             catch(error){status.textContent=error.message;button.disabled=false;}
-          });list.append(button);
+          });
+          row.append(button);
+          if(this.provider==='Codex' && this.controls.deleteSavedSession){
+            const remove=this.button(`Delete ${session.title}`,'trash-2',()=>this.openDelete(session,()=>load(search.value)));
+            remove.classList.add('aw-session-delete');row.append(remove);
+          }
+          list.append(row);
         }
         next=result.nextOffset;more.hidden=next===null;
         status.textContent=list.childElementCount?`${list.childElementCount} conversations`:'No matching conversations';
+        this.refreshIcons();
       }catch(error){if(request===generation && dialog.open)status.textContent=error.message;}
       finally{if(request===generation)more.disabled=false;}
     };
@@ -1915,7 +1988,7 @@ export class WorkspacePane {
   }
 
   codexCommandControls() {
-    return {clear:this.clearButton,archive:this.archiveButton,exit:this.disconnectButton,quit:this.disconnectButton,resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
+    return {clear:this.clearButton,archive:this.archiveButton,delete:this.deleteButton,exit:this.disconnectButton,quit:this.disconnectButton,resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
       agent:this.agentsButton,subagents:this.agentsButton,fast:this.speedButton,usage:this.accountUsageButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }
@@ -2552,10 +2625,11 @@ export class WorkspacePane {
     this.modelSelect.disabled=queueing;
     this.send.title = steering ? 'Steer running turn' : queueing ? 'Queue message' : 'Send message';
     this.send.setAttribute('aria-label', this.send.title);
-    this.send.disabled = this.sending || this.clearing || this.archiving || Boolean(this.clearedSession) || (!steering && !queueing && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
+    this.send.disabled = this.sending || this.clearing || this.archiving || this.deleting || Boolean(this.clearedSession) || (!steering && !queueing && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.forkButton.disabled=this.forkCreating || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.clearButton.disabled=this.clearing || this.sending || (!this.clearedSession && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
-    this.archiveButton.disabled=this.archiving || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
+    this.archiveButton.disabled=this.archiving || this.deleting || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
+    this.deleteButton.disabled=this.deleting || this.archiving || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.disconnectButton.disabled=this.clearing || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.shellButton.disabled=this.shellSubmitting || !['ready','running','completed','interrupted'].includes(this.conversation.status);
     if (this.conversation.error) this.error(this.conversation.error);
@@ -2581,6 +2655,7 @@ export class WorkspacePane {
     this.accountUsageDialog?.close();
     this.settingRecoveryDialog?.close();
     this.sessionsDialog?.close();
+    this.deleteDialog?.close();
     this.clearDialog?.close();
     this.disconnectDialog?.close();
     this.sessionModeDialog?.close();

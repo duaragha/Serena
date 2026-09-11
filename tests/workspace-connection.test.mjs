@@ -112,6 +112,76 @@ test('confirmed unapplied archive clears its receipt but ambiguous identity rema
   }
 });
 
+test('conversation delete persists one request and reconciles without replay after a lost response',async()=>{
+  const saved=storage(),calls=[];
+  const sid='11111111-1111-4111-8111-111111111111';
+  const child='22222222-2222-4222-8222-222222222222';
+  const options={sessionId:sid,token:'token',storage:saved,receive:()=>{},error:()=>{},
+    fetcher:async(url,request)=>{
+      calls.push([url,JSON.parse(request.body)]);
+      assert.ok(saved.getItem(`serena-workspace-pending:${sid}`));
+      if(calls.length===1)throw Error('lost delete response');
+      return response({ok:true,result:{session_id:sid,deleted:true,thread_ids:[sid,child],thread_count:2}});
+    }};
+  let conn=new WorkspaceConnection(options);
+  await assert.rejects(conn.controls().deleteSession(),error=>{
+    assert.equal(error.message,'lost delete response');
+    assert.equal(error.deleteUncertain,true);
+    assert.match(error.deleteRequestId,/^[a-f0-9-]{36}$/);
+    return true;
+  });
+  const pending=conn.controls().pendingDelete();
+  conn.dispose();conn=new WorkspaceConnection(options);
+  assert.equal(conn.controls().pendingDelete(),pending);
+  assert.deepEqual(await conn.controls().deleteSession({reconcile:true,requestId:pending}),
+    {session_id:sid,deleted:true,thread_ids:[sid,child],thread_count:2});
+  assert.equal(calls[0][0],`/api/workspace/${sid}/delete-session`);
+  assert.equal(calls[1][0],`/api/workspace/${sid}/reconcile-delete-session`);
+  assert.deepEqual(calls[0][1],calls[1][1]);
+  assert.deepEqual(calls[0][1],{request_id:pending,confirmed:true});
+  assert.equal(conn.controls().pendingDelete(),null);
+  conn.dispose();
+});
+
+test('confirmed unapplied delete clears its browser receipt',async()=>{
+  const saved=storage();
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},
+    fetcher:async()=>response({ok:false,retryable:true,error:'delete not applied',result:{session_id:'exact',deleted:false}})});
+  await assert.rejects(conn.controls().deleteSession(),error=>{
+    assert.equal(error.message,'delete not applied');
+    assert.equal(error.deleteRetryable,true);
+    assert.equal(error.deleteUncertain,false);
+    return true;
+  });
+  assert.equal(conn.controls().pendingDelete(),null);
+  conn.dispose();
+});
+
+test('ambiguous delete replies retain the exact receipt for inspection',async()=>{
+  const sid='11111111-1111-4111-8111-111111111111';
+  const child='22222222-2222-4222-8222-222222222222';
+  const foreign='33333333-3333-4333-8333-333333333333';
+  for(const result of [
+    {ok:true,result:{session_id:foreign,deleted:true,thread_ids:[foreign],thread_count:1}},
+    {ok:true,result:{session_id:sid,deleted:true,thread_ids:[child],thread_count:1}},
+    {ok:true,result:{session_id:sid,deleted:true,thread_ids:[sid],thread_count:0}},
+    {ok:true,result:{session_id:sid,deleted:true,thread_ids:[sid],thread_count:2}},
+    {ok:true,result:{session_id:sid,deleted:true,thread_ids:[sid,sid],thread_count:2}},
+    null,
+  ]){
+    const saved=storage();
+    const conn=new WorkspaceConnection({sessionId:sid,token:'token',storage:saved,receive:()=>{},error:()=>{},
+      fetcher:async()=>response(result)});
+    await assert.rejects(conn.controls().deleteSession(),error=>{
+      assert.equal(error.deleteUncertain,true);
+      assert.match(error.deleteRequestId,/^[a-f0-9-]{36}$/);
+      return true;
+    });
+    assert.match(conn.controls().pendingDelete(),/^[a-f0-9-]{36}$/);
+    conn.dispose();
+  }
+});
+
 test('failed attach exposes recovery only for the exact requested session',async()=>{
   for(const sid of ['exact','foreign']){
     const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},

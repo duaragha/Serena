@@ -183,6 +183,45 @@ export class WorkspaceConnection {
     return receipt.result;
   }
 
+  async deleteSession({reconcile=false,requestId=null}={}) {
+    this.requireReceipts();
+    const signature=JSON.stringify({action:'delete_session',payload:{confirmed:true}});
+    if(requestId!==null){
+      if(!reconcile || typeof requestId!=='string' || !/^[a-f0-9-]{36}$/.test(requestId))throw Error('Invalid delete recovery receipt');
+      if(this.pending[signature] && this.pending[signature]!==requestId)throw Error('Saved delete receipt differs from the durable record');
+      this.pending[signature]=requestId;
+    }
+    if(reconcile && !this.pending[signature])throw Error('No pending delete receipt');
+    const request_id=this.pending[signature] || crypto.randomUUID();
+    this.pending[signature]=request_id;
+    this.storage.setItem(this.key,JSON.stringify(this.pending));
+    let receipt;
+    try{
+      receipt=await this.request(reconcile?'/reconcile-delete-session':'/delete-session',{request_id,confirmed:true});
+    }catch(error){error.deleteUncertain=true;error.deleteRequestId=request_id;throw error;}
+    if(!receipt || typeof receipt!=='object' || Array.isArray(receipt)){
+      const error=Error('Delete outcome is unconfirmed');error.deleteUncertain=true;error.deleteRequestId=request_id;throw error;
+    }
+    if(receipt.ok!==true){
+      const retryable=receipt.retryable===true && receipt.result?.session_id===this.sessionId
+        && receipt.result?.deleted===false;
+      if(retryable)this.forgetPending(signature);
+      const error=Error(receipt.error || 'Delete outcome is unconfirmed');
+      error.deleteRetryable=retryable;error.deleteUncertain=!retryable;error.deleteRequestId=request_id;
+      throw error;
+    }
+    const threadIds=receipt.result?.thread_ids;
+    if(receipt.result?.session_id!==this.sessionId || receipt.result?.deleted!==true
+      || !Array.isArray(threadIds) || threadIds[0]!==this.sessionId
+      || threadIds.some(id=>typeof id!=='string' || !/^[a-f0-9-]{36}$/.test(id))
+      || new Set(threadIds).size!==threadIds.length
+      || receipt.result?.thread_count!==threadIds.length || threadIds.length<1){
+      const error=Error('Deleted session identity is unconfirmed');error.deleteUncertain=true;error.deleteRequestId=request_id;throw error;
+    }
+    this.forgetPending(signature);
+    return receipt.result;
+  }
+
   async command(action, payload) {
     this.requireReceipts();
     const encoded = JSON.stringify({action, payload});
@@ -325,6 +364,11 @@ export class WorkspaceConnection {
       pendingArchive: () => {
         this.requireReceipts();
         return this.pending[JSON.stringify({action:'archive_session',payload:{confirmed:true}})] || null;
+      },
+      deleteSession: options => this.deleteSession(options),
+      pendingDelete: () => {
+        this.requireReceipts();
+        return this.pending[JSON.stringify({action:'delete_session',payload:{confirmed:true}})] || null;
       },
       personality: () => this.command('personality', {}),
       setPersonality: value => this.command('set_personality', {value}),

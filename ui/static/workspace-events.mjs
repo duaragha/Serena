@@ -128,9 +128,11 @@ export class WorkspaceConversation {
       item.aggregatedOutput = (item.aggregatedOutput || '') + (p.delta || '');
     } else if (method === 'serverRequest/resolved') {
       this.questions.delete(p.requestId);
-    } else if (method === 'workspace/transportClosed' || method === 'workspace/error' || method === 'workspace/archived') {
+    } else if (method === 'workspace/transportClosed' || method === 'workspace/error'
+      || method === 'workspace/archived' || method === 'workspace/deleted') {
       this.status = 'unavailable';
-      this.error = p.reason || (method === 'workspace/archived' ? 'Conversation archived' : 'Session connection unavailable');
+      this.error = p.reason || (method === 'workspace/archived' ? 'Conversation archived'
+        : method === 'workspace/deleted' ? 'Conversation deleted' : 'Session connection unavailable');
       this.questions.clear();
     } else if (method === 'error') {
       this.error = p.error?.message || p.message || 'Agent reported an error';

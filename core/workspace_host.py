@@ -33,11 +33,17 @@ def _claude_owner(**kwargs):
 
 
 class WorkspaceHost:
-    def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None, register_fork=None):
+    def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None, register_fork=None,
+                 delete_catalog=None):
         self.journal = journal
         self.uploads = WorkspaceUploads(journal.path.parent / "workspace-uploads")
         self.resolve = resolve
         self.register_fork = register_fork
+        if delete_catalog is None:
+            from core.workspace_catalog import remove_deleted_codex_target
+
+            delete_catalog = remove_deleted_codex_target
+        self.delete_catalog = delete_catalog
         self.factories = (
             factories
             if factories is not None
@@ -339,6 +345,8 @@ class WorkspaceHost:
             return "Native session is in Plan mode"
         if self._bridge_queues.get(sid):
             return "Native session has queued bridge work"
+        if self.journal.has_pending_delete(sid):
+            return "Native session has an unconfirmed delete"
         views = self._active_views(sid)
         if not views or any(monotonic() - view["seen"] >= 6 for view in views):
             return "Native composer state is not freshly confirmed"
@@ -548,6 +556,7 @@ class WorkspaceHost:
         session_ids = [row["session_id"] for row in page["data"]]
         restores = self.journal.pending_archive_restores(session_ids)
         archives = self.journal.pending_archives(session_ids)
+        deletes = self.journal.pending_deletes(session_ids)
         return {**page, "data": [{
             **row,
             **({"archive_restore_request_id": restores[row["session_id"]]}
@@ -556,6 +565,10 @@ class WorkspaceHost:
                 "archive_request_id": archives[row["session_id"]]["request_id"],
                 "archive_source_id": archives[row["session_id"]]["session_id"],
             } if row["session_id"] in archives else {}),
+            **({
+                "delete_request_id": deletes[row["session_id"]]["request_id"],
+                "delete_source_id": deletes[row["session_id"]]["session_id"],
+            } if row["session_id"] in deletes else {}),
         } for row in page["data"]]}
 
     def archive_session(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
@@ -575,11 +588,38 @@ class WorkspaceHost:
             if self._work_reservations.get(identity) or self._bridge_queues.get(identity):
                 raise RuntimeError("An archive descendant is reserved by background work")
             if (self.journal.has_pending_work(identity) or self.journal.has_pending_clear(identity)
-                    or self.journal.has_pending_archive_restore(identity)):
+                    or self.journal.has_pending_archive_restore(identity)
+                    or self.journal.has_pending_delete(identity)):
                 raise RuntimeError("An archive descendant has an unconfirmed durable operation")
             pending_archive = self.journal.pending_archive_operation(identity)
             if pending_archive is not None and pending_archive != archive_operation:
                 raise RuntimeError("An archive descendant has another unconfirmed archive")
+
+    def _delete_family_guard(self, threads, delete_operation, *, identities=None):
+        thread_ids = [thread["id"] for thread in threads]
+        expected = list(identities) if identities is not None else thread_ids
+        if threads and (len(set(thread_ids)) != len(thread_ids) or set(thread_ids) != set(expected)):
+            raise RuntimeError("Delete family no longer matches its durable checkpoint")
+        for identity in expected:
+            entry = self._sessions.get(identity)
+            if entry and (entry[0].state != "closed"
+                          or not getattr(entry[0], "can_retry_attachment", lambda: False)()):
+                raise RuntimeError("A delete descendant still has a workspace writer")
+            if (self._work_reservations.get(identity) or self._work_turns.get(identity)
+                    or self._bridge_queues.get(identity)):
+                raise RuntimeError("A delete descendant is reserved by background work")
+            if (self.journal.has_pending_work(identity)
+                    or self.journal.has_pending_clear_involving(identity)
+                    or self.journal.has_pending_archive_restore(identity)
+                    or self.journal.has_pending_command_conflict(
+                        identity, (delete_operation["session_id"], delete_operation["request_id"])
+                    )):
+                raise RuntimeError("A delete descendant has another unconfirmed durable operation")
+            if self.journal.has_pending_archive(identity):
+                raise RuntimeError("A delete descendant has an unconfirmed archive")
+            pending_delete = self.journal.pending_delete_operation(identity)
+            if pending_delete is not None and pending_delete != delete_operation:
+                raise RuntimeError("A delete descendant has another unconfirmed delete")
 
     async def _finish_archive(self, sid, request_id, archived):
         catalogs = []
@@ -653,7 +693,8 @@ class WorkspaceHost:
             if (self._work_reservations.get(sid) or self._bridge_queues.get(sid)
                     or await asyncio.to_thread(self.journal.has_pending_work, sid)
                     or await asyncio.to_thread(self.journal.has_pending_clear, sid)
-                    or await asyncio.to_thread(self.journal.has_pending_archive_restore, sid)):
+                    or await asyncio.to_thread(self.journal.has_pending_archive_restore, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_delete, sid)):
                 raise ValueError("Session has active or unconfirmed background work")
             entry = self._sessions.get(sid)
             if entry is None or entry[1] != "codex":
@@ -710,6 +751,181 @@ class WorkspaceHost:
                 await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
                 return receipt
 
+    def delete_session(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
+        if (type(reconcile) is not bool or confirmed is not True
+                or not isinstance(sid, str) or str(UUID(sid)) != sid
+                or not isinstance(request_id, str) or str(UUID(request_id)) != request_id):
+            raise ValueError("Explicit confirmation and exact session/request UUIDs are required")
+        return self._dispatch(self._delete_session(sid, request_id, reconcile=reconcile), timeout)
+
+    async def _finish_delete(self, sid, request_id, deleted):
+        if (deleted.get("session_id") != sid or deleted.get("provider") != "codex"
+                or deleted.get("deleted") is not True or not isinstance(deleted.get("targets"), list)
+                or not deleted["targets"]):
+            raise RuntimeError("Native delete result is incomplete")
+        for target in deleted["targets"]:
+            catalog = await asyncio.to_thread(self.delete_catalog, target)
+            if catalog != {"session_id": target["session_id"], "removed": True}:
+                raise RuntimeError(f"Catalog removal was not confirmed for {target['session_id']}")
+        result = {key: deleted[key] for key in (
+            "session_id", "provider", "cwd", "deleted", "thread_ids", "recovery_dir"
+        )}
+        result.update(catalog_removed=True, thread_count=len(deleted["targets"]))
+        receipt = {"ok": True, "result": result}
+        await asyncio.to_thread(self.journal.complete_delete, sid, request_id, receipt)
+        for identity in deleted["thread_ids"]:
+            self._sessions.pop(identity, None)
+            self._views.pop(identity, None)
+            self._work_reservations.pop(identity, None)
+            self._work_turns.pop(identity, None)
+            self._bridge_queues.pop(identity, None)
+        return receipt
+
+    async def _delete_session(self, sid, request_id, *, reconcile=False):
+        from core.workspace_archive import delete_codex_tree, inspect_codex_delete_tree
+
+        payload = {"action": "delete_session", "payload": {"confirmed": True}}
+        operation = {"session_id": sid, "request_id": request_id}
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            found, receipt = await asyncio.to_thread(
+                self.journal.command_receipt, sid, request_id, payload
+            )
+            if found and (receipt is not None or not reconcile):
+                return receipt or {
+                    "ok": False,
+                    "uncertain": True,
+                    "error": "Delete outcome is unconfirmed; it will not be repeated",
+                }
+            if reconcile:
+                if not found:
+                    raise ValueError("No matching delete receipt exists")
+                checkpoint = await asyncio.to_thread(
+                    self.journal.delete_checkpoint, sid, request_id
+                )
+                if checkpoint is None:
+                    receipt = {
+                        "ok": False,
+                        "retryable": True,
+                        "error": "Delete did not reach its native mutation checkpoint; a new explicit attempt is available",
+                        "result": {
+                            "session_id": sid,
+                            "provider": "codex",
+                            "cwd": "",
+                            "deleted": False,
+                            "thread_ids": [sid],
+                        },
+                    }
+                    await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                    return receipt
+                identities = [target["session_id"] for target in checkpoint["targets"]]
+                try:
+                    inspected = await inspect_codex_delete_tree(
+                        sid,
+                        checkpoint["cwd"],
+                        checkpoint,
+                        family_guard=lambda threads: self._delete_family_guard(
+                            threads, operation, identities=identities
+                        ),
+                    )
+                    if inspected["deleted"]:
+                        return await self._finish_delete(sid, request_id, inspected)
+                    receipt = {
+                        "ok": False,
+                        "retryable": True,
+                        "error": "Delete was not applied; a new explicit attempt is available",
+                        "result": {
+                            "session_id": sid,
+                            "provider": "codex",
+                            "cwd": inspected["cwd"],
+                            "deleted": False,
+                            "thread_ids": inspected["thread_ids"],
+                        },
+                    }
+                    await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                    return receipt
+                except Exception as error:
+                    return {"ok": False, "uncertain": True, "error": str(error)}
+
+            if (self._work_reservations.get(sid) or self._work_turns.get(sid)
+                    or self._bridge_queues.get(sid)
+                    or await asyncio.to_thread(self.journal.has_pending_work, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_clear_involving, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_archive, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_archive_restore, sid)):
+                raise ValueError("Session has active or unconfirmed background work")
+            entry = self._sessions.get(sid)
+            owner = None
+            if entry is not None:
+                owner, provider = entry
+                if provider != "codex":
+                    raise ValueError("Only exact Codex sessions support native deletion")
+                if owner.state not in {"ready", "closed"}:
+                    raise ValueError("Finish the current Codex turn before deleting")
+                if owner.state == "closed" and not owner.can_retry_attachment():
+                    raise ValueError("Prior runtime cleanup is unconfirmed")
+                target = {"session_id": sid, "provider": "codex", "cwd": str(owner.cwd)}
+                if owner.state == "ready":
+                    if (getattr(owner, "active_turn", None) or getattr(owner, "questions", {})
+                            or getattr(owner, "elicitations", {})
+                            or getattr(owner, "active_agent_threads", set())):
+                        raise ValueError("Finish active Codex work before deleting")
+                    tasks = await owner.list_background_tasks()
+                    native_tasks = getattr(getattr(owner, "events", None), "tasks", {})
+                    if (not isinstance(tasks, dict) or tasks.get("data") != []
+                            or any(task.get("status") not in {"completed", "failed", "stopped"}
+                                   for task in native_tasks.values())):
+                        raise ValueError("Stop background tasks before deleting")
+            else:
+                target = await asyncio.to_thread(self.resolve, sid)
+                if (not isinstance(target, dict) or target.get("session_id") != sid
+                        or target.get("provider") != "codex"):
+                    raise ValueError("Exact persisted Codex session is required for deletion")
+            if (not isinstance(target.get("cwd"), str) or not Path(target["cwd"]).is_absolute()
+                    or not Path(target["cwd"]).is_dir()):
+                raise ValueError("Exact Codex project is required for deletion")
+            claimed, prior = await asyncio.to_thread(self.journal.claim_delete, sid, request_id)
+            if not claimed:
+                return prior or {
+                    "ok": False,
+                    "uncertain": True,
+                    "error": "Delete outcome is unconfirmed; it will not be repeated",
+                }
+            try:
+                if owner is not None and owner.state != "closed":
+                    await owner.close()
+                if owner is not None and not owner.can_retry_attachment():
+                    raise RuntimeError("Runtime cleanup is unconfirmed")
+                recovery = self.journal.path.parent / "workspace-deleted-sessions" / f"{sid}-{request_id}"
+                deleted = await delete_codex_tree(
+                    sid,
+                    target["cwd"],
+                    recovery,
+                    confirmed=True,
+                    family_guard=lambda threads: self._delete_family_guard(threads, operation),
+                    checkpoint=lambda value: self.journal.prepare_delete(sid, request_id, value),
+                )
+                return await self._finish_delete(sid, request_id, deleted)
+            except Exception as error:
+                checkpoint = await asyncio.to_thread(
+                    self.journal.delete_checkpoint, sid, request_id
+                )
+                if checkpoint is not None:
+                    return {"ok": False, "uncertain": True, "error": str(error)}
+                receipt = {
+                    "ok": False,
+                    "retryable": True,
+                    "error": str(error),
+                    "result": {
+                        "session_id": sid,
+                        "provider": "codex",
+                        "cwd": target["cwd"],
+                        "deleted": False,
+                        "thread_ids": [sid],
+                    },
+                }
+                await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                return receipt
+
     def restore_archive(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
         if (type(reconcile) is not bool or confirmed is not True or not isinstance(sid, str) or str(UUID(sid)) != sid
                 or not isinstance(request_id, str) or str(UUID(request_id)) != request_id):
@@ -732,7 +948,8 @@ class WorkspaceHost:
             if entry and (entry[0].state != 'closed' or not getattr(entry[0], 'can_retry_attachment', lambda: False)()):
                 raise ValueError('Session still has a runtime owner')
             if (await asyncio.to_thread(self.journal.has_pending_work, sid)
-                    or await asyncio.to_thread(self.journal.has_pending_clear, sid)):
+                    or await asyncio.to_thread(self.journal.has_pending_clear, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_delete, sid)):
                 raise ValueError('Session has unconfirmed background work or a clear handoff')
             if self.register_fork is None:
                 raise ValueError('Native session catalog is unavailable')
@@ -758,6 +975,8 @@ class WorkspaceHost:
 
     async def _attach(self, sid):
         async with self._locks.setdefault(sid, asyncio.Lock()):
+            if await asyncio.to_thread(self.journal.has_pending_delete, sid):
+                raise ValueError("Delete outcome is unconfirmed; attachment is unavailable")
             if await asyncio.to_thread(self.journal.has_pending_archive, sid):
                 raise ValueError("Archive outcome is unconfirmed; attachment is unavailable")
             if await asyncio.to_thread(self.journal.has_pending_archive_restore, sid):
