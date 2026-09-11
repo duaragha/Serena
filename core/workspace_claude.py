@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import re
 import shutil
 from copy import deepcopy
 from pathlib import Path
@@ -233,6 +234,8 @@ class ClaudeWorkspace:
                     "displayName": model.get("displayName", model["value"]),
                     "supportedReasoningEfforts": [{"reasoningEffort": effort} for effort in self._model_efforts(model)],
                     "claudeCapabilities": model,
+                    "serviceTiers": ([{"id": "fast", "name": "Fast"}]
+                                     if model.get("supportsFastMode") is True else []),
                 }
                 for model in self.model_catalog
             ]
@@ -541,7 +544,7 @@ class ClaudeWorkspace:
             elif self.state != "ready":
                 raise RuntimeError("Claude is not ready for a new turn")
             options = options or {}
-            if not isinstance(options, dict) or options.keys() - {"model", "effort"}:
+            if not isinstance(options, dict) or options.keys() - {"model", "effort", "serviceTier"}:
                 raise ValueError("Unsupported Claude per-turn settings")
             if not isinstance(inputs, list) or not inputs:
                 raise ValueError("A message or attachment is required")
@@ -554,21 +557,33 @@ class ClaudeWorkspace:
                 ["/fork"],
             ]:
                 raise ValueError("Session switching is not implemented in this pane")
-            if "model" in options or "effort" in options:
+            if options:
                 if self.model_catalog is None:
                     await self.list_models()
-                selected = next((model for model in self.model_catalog if model["value"] == options.get("model")), None)
+                model_id = options.get("model", self.events.model)
+                normalize = lambda value: re.sub(r"\[\d+[km]\]$", "", value or "", flags=re.I)
+                selected = next((model for model in self.model_catalog if model["value"] == model_id), None)
+                if selected is None and "model" not in options and model_id:
+                    selected = next((model for model in self.model_catalog if any(
+                        value and normalize(value) == normalize(model_id)
+                        for value in (model["value"], model.get("resolvedModel")))), None)
                 if selected is None:
                     raise ValueError("Claude did not advertise this model")
                 if "effort" in options and options["effort"] not in self._model_efforts(selected):
                     raise ValueError("Claude did not advertise this effort for the selected model")
-                await self.client.set_model(options["model"])
-                await self.publish(
-                    self.events.event("workspace/settings", {"model": options["model"]})
-                )
+                if "serviceTier" in options and (options["serviceTier"] not in (None, "fast")
+                        or (options["serviceTier"] == "fast" and selected.get("supportsFastMode") is not True)):
+                    raise ValueError("Claude did not advertise this speed for the selected model")
+                if "model" in options:
+                    await self.client.set_model(options["model"])
+                    self.events.model = options["model"]
+                    await self.publish(self.events.event("workspace/settings", {"model": options["model"]}))
                 if "effort" in options:
                     await self.client.set_effort(options["effort"])
                     await self.publish(self.events.event("workspace/settings", {"reasoningEffort": options["effort"]}))
+                if "serviceTier" in options:
+                    await self.client.set_fast_mode(options["serviceTier"] == "fast")
+                    await self.publish(self.events.event("workspace/settings", {"serviceTier": options["serviceTier"]}))
             turn_id = str(uuid4())
             command = text.strip().split(maxsplit=1)
             if len(command) == 2 and command[0] == "/rename" and all(part.get("type") == "text" for part in inputs):

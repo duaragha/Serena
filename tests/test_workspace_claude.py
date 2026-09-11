@@ -927,6 +927,39 @@ def test_diagnostics_keep_exact_owner_and_refuse_a_running_turn(tmp_path, monkey
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('speed', [None, 'fast', 'invalid'])
+def test_inline_effort_and_speed_preserve_current_claude_model(tmp_path, speed):
+    async def run():
+        owner, events = make(tmp_path)
+        try:
+            await owner.open()
+            owner.events.model = 'claude-opus-5[1m]'
+            async def info():
+                return {'models': [{'value': 'opus', 'resolvedModel': 'claude-opus-5',
+                    'supportsEffort': True, 'supportedEffortLevels': ['high'], 'supportsFastMode': True}]}
+            settings = []
+            async def effort(value): settings.append(('effort', value))
+            async def fast(value): settings.append(('fast', value))
+            owner.client.get_server_info = info
+            owner.client.set_effort = effort
+            owner.client.set_fast_mode = fast
+            models = await owner.list_models()
+            assert models['data'][0]['serviceTiers'] == [{'id': 'fast', 'name': 'Fast'}]
+            if speed == 'invalid':
+                with pytest.raises(ValueError, match='speed'):
+                    await owner.submit([{'type':'text','text':'work'}], options={'effort':'high','serviceTier':speed})
+                assert not settings and not owner.client.sent
+            else:
+                await owner.submit([{'type':'text','text':'work'}], options={'effort':'high','serviceTier':speed})
+                assert settings == [('effort','high'),('fast',speed == 'fast')]
+                assert owner.client.sent
+            assert owner.client.models_set == []
+            assert owner.events.model == 'claude-opus-5[1m]'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 def test_advertised_model_selection_uses_existing_client(tmp_path):
     async def run():
         owner, events = make(tmp_path)

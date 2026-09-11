@@ -208,7 +208,7 @@ export class WorkspacePane {
     this.tasksButton.hidden = !['Codex','Claude'].includes(provider) || !controls.backgroundTasks;
     footer.insertBefore(this.tasksButton, this.stop);
     this.commandsButton = this.button('Commands and skills', 'slash', () => this.provider==='Gemini'?this.openCommands():this.commandSuggestions.open());
-    this.commandsButton.hidden = !['Claude','Codex','Gemini'].includes(provider) || !controls.commands;
+    this.commandsButton.hidden = provider !== 'Gemini' || !controls.commands;
     footer.insertBefore(this.commandsButton, this.stop);
     this.mcpButton = this.button('MCP connections', 'plug', () => this.openMcpServers());
     this.mcpButton.hidden = !['Claude','Codex'].includes(provider) || !controls.mcpServers;
@@ -220,7 +220,7 @@ export class WorkspacePane {
     this.sessionModeButton.hidden=provider!=='Gemini' || !controls.sessionModes || !controls.setSessionMode;
     footer.insertBefore(this.sessionModeButton,this.stop);
     this.claudeEffortButton=this.button('Claude reasoning effort','gauge',()=>this.openClaudeEffort());
-    this.claudeEffortButton.hidden=provider!=='Claude' || !controls.models || !controls.commands;
+    this.claudeEffortButton.hidden=true;
     footer.insertBefore(this.claudeEffortButton,this.stop);
     this.queueButton = this.button('Queued sibling messages', 'messages-square', () => this.openBridgeQueue());
     this.queueButton.hidden=true; footer.insertBefore(this.queueButton, this.stop);
@@ -2440,7 +2440,7 @@ export class WorkspacePane {
     if(skills.length)options.skills=skills.map(skill=>skill.path);
     if(this.modelSelect.value)options.model=this.modelSelect.value;
     if(this.effortSelect.value)options.effort=this.effortSelect.value;
-    if(this.tierSelect.value)options.serviceTier=this.tierSelect.value==='__default'?null:this.tierSelect.value;
+    if(!this.tierSelect.hidden && this.tierSelect.value)options.serviceTier=this.tierSelect.value==='__default'?null:this.tierSelect.value;
     return options;
   }
 
@@ -2567,6 +2567,7 @@ export class WorkspacePane {
       if(text.trim()!==`/${codexCommand[1]}` || this.files.length || this.selectedSkills.length){
         this.error(Error('Session commands do not accept arguments, attachments or skills'));return;
       }
+      if(codexCommand[1]==='skills' && this.controls.commands){this.commandSuggestions.open();return;}
       if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
       if(codexCommand[1]!=='compact'){this.activateCommandControl(codexControl);return;}
     }
@@ -2662,10 +2663,11 @@ export class WorkspacePane {
     if (Object.hasOwn(this.conversation.metadata, 'model')) this.modelLabel.textContent = this.conversation.metadata.model || 'Model unavailable';
     const selected = this.modelSelect.value;
     this.modelSelect.replaceChildren();
-    const unchanged = node('option', '', this.conversation.metadata.model || 'Session model');
+    const current = this.catalogModel(this.conversation.metadata.model);
+    const unchanged = node('option', '', current?.displayName || this.conversation.metadata.model || 'Session model');
     unchanged.value = ''; this.modelSelect.append(unchanged);
     for (const model of models) {
-      if (model.hidden || !model.model) continue;
+      if (model.hidden || !model.model || model === current) continue;
       const option = node('option', '', model.displayName || model.model);
       option.value = model.model; this.modelSelect.append(option);
     }
@@ -2674,9 +2676,16 @@ export class WorkspacePane {
     this.renderEfforts(false);
   }
 
+  catalogModel(value) {
+    const normalize=value=>String(value || '').replace(/\[\d+[km]\]$/i,'');
+    return this.conversation.models.find(model=>model.model===value)
+      || (this.provider==='Claude' ? this.conversation.models.find(model=>
+        [model.model,model.claudeCapabilities?.resolvedModel].some(id=>id && normalize(id)===normalize(value))) : null);
+  }
+
   renderEfforts(changedModel) {
     const selected = this.effortSelect.value;
-    const model = this.provider==='Claude' && !this.modelSelect.value ? null : this.conversation.models.find(m => m.model === (this.modelSelect.value || this.conversation.metadata.model));
+    const model = this.catalogModel(this.modelSelect.value || this.conversation.metadata.model);
     this.effortSelect.replaceChildren();
     const unchanged = node('option', '', this.modelSelect.value ? `Default (${model?.defaultReasoningEffort || 'provider'})` : (this.conversation.metadata.reasoningEffort || 'Session effort'));
     unchanged.value = ''; this.effortSelect.append(unchanged);

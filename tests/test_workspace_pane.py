@@ -10,6 +10,32 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('provider', ['Claude', 'Codex'])
+@pytest.mark.parametrize('width', [390, 1600])
+def test_inline_model_effort_speed_and_no_duplicate_current_model(pane, provider, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.evaluate("""provider=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider,controls});window.seq=0;
+      const model=provider==='Claude'?'claude-opus-5':'gpt-6-astra';
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]},model:provider==='Claude'?model+'[1m]':model}});
+      emit({method:'workspace/models',params:{data:[{model,displayName:provider==='Claude'?'Opus 5':'GPT-6 Astra',
+        supportedReasoningEfforts:[{reasoningEffort:'high'},{reasoningEffort:'low'}],serviceTiers:[{id:'fast',name:'Fast'}]}]}});
+      pane.render();
+    }""", provider)
+    model = page.locator('#left').get_by_role('combobox', name='Model', exact=True)
+    assert model.locator('option').count() == 1
+    effort = page.locator('#left').get_by_role('combobox', name='Reasoning effort', exact=True)
+    speed = page.locator('#left').get_by_role('combobox', name='Speed tier', exact=True)
+    effort.select_option('high')
+    speed.select_option('fast')
+    assert page.evaluate('pane.turnOptions([])') == {'effort':'high','serviceTier':'fast'}
+    assert page.locator('#left').get_by_role('button',name='Commands and skills',exact=True).is_hidden()
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    page.screenshot(path=str(tmp_path / f'inline-settings-{provider}-{width}.png'))
+    assert not errors
+
+
 @pytest.mark.parametrize('width', [390, 1600])
 def test_initial_replay_renders_once_at_bottom_then_preserves_reader_scroll(pane, width, tmp_path):
     page, errors = pane
@@ -74,15 +100,15 @@ def test_inline_suggestions_ignore_stale_lookup_and_never_send_while_loading(pan
     assert not errors
 
 
-def test_command_button_opens_inline_choices_and_tab_inserts(pane):
+def test_command_typing_opens_inline_choices_without_toolbar_button(pane):
     page, errors = pane
     page.evaluate("""()=>{
       controls.commands=async()=>({data:[{name:'fleet',kind:'command',description:'Work'}]});
       pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Claude',controls});
     }""")
     composer=page.locator('#left textarea').first
-    composer.fill('draft')
-    page.locator('#left').get_by_role('button',name='Commands and skills',exact=True).click()
+    assert page.locator('#left').get_by_role('button',name='Commands and skills',exact=True).is_hidden()
+    composer.fill('draft /')
     choices=page.get_by_role('listbox',name='Command and skill suggestions')
     playwright.expect(choices.get_by_role('option')).to_have_count(1)
     composer.press('Tab')
@@ -2348,7 +2374,7 @@ def test_claude_effort_uses_native_command_without_consuming_draft(pane, tmp_pat
     }""")
     draft = page.get_by_role("textbox", name="Message Claude")
     draft.fill("Keep this draft")
-    page.get_by_role("button", name="Claude reasoning effort", exact=True).click()
+    page.evaluate('pane.openClaudeEffort()')
     dialog = page.get_by_role("dialog", name="Claude reasoning effort")
     close_box = dialog.get_by_role('button', name='Close reasoning effort').bounding_box()
     title_box = dialog.get_by_role('heading', name='Reasoning effort').bounding_box()
@@ -3589,7 +3615,7 @@ def test_advertised_model_effort_selection_reaches_submit_and_header(pane, tmp_p
     page.locator("#left .aw-head small").filter(has_text="chosen").wait_for()
     page.get_by_role("combobox", name="Model", exact=True).first.select_option("")
     assert page.get_by_role("combobox", name="Reasoning effort", include_hidden=True).first.input_value() == ""
-    assert page.get_by_role("combobox", name="Reasoning effort", include_hidden=True).first.is_hidden()
+    assert page.get_by_role("combobox", name="Reasoning effort", include_hidden=True).first.is_visible()
     assert page.get_by_role("combobox", name="Speed tier", include_hidden=True).first.input_value() == ""
     assert not errors
 

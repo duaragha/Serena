@@ -125,6 +125,10 @@ def test_compatibility_controls_and_native_records():
         await client.set_model("model")
         await client.set_effort("high")
         assert ("applyFlagSettings", {"effortLevel": "high"}) in client.transport.calls
+        await client.set_fast_mode(True)
+        assert ("applyFlagSettings", {"fastMode": True}) in client.transport.calls
+        await client.set_fast_mode(False)
+        assert ("applyFlagSettings", {"fastMode": False}) in client.transport.calls
         await client.set_permission_mode("plan")
         assert (await client.get_server_info())["current_permission_mode"] == "plan"
         await client.stop_task("task")

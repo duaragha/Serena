@@ -40,6 +40,7 @@ class ClaudeEvents:
     def __init__(self, sid):
         self.sid = sid
         self.turn = None
+        self.model = None
         self.message_ids = {}
         self.tools = {}
         self.streaming_tools = {}
@@ -136,6 +137,7 @@ class ClaudeEvents:
                 else:
                     turns[-1]["items"].append(item)
                     turn_items[item["id"]] = item
+        self.model = model
         return {
             "method": "workspace/history",
             "params": {"thread": {"id": self.sid, "turns": turns, **({"model": model} if model else {})}, "provider": "claude"},
@@ -195,6 +197,7 @@ class ClaudeEvents:
             events.append(self.event("workspace/backgroundTask", {"task": deepcopy(task)}))
         elif kind == "SystemMessage" and data.get("subtype") == "init":
             self.capabilities = deepcopy(data["data"])
+            self.model = data["data"].get("model") or self.model
             events.append(
                 self.event(
                     "workspace/settings",
@@ -307,6 +310,7 @@ class ClaudeEvents:
                     target_turn = message_id if kind == "UserMessage" and message_id in self.pending_inputs else self.turn
                     events.append(self.event("item/completed", {"turnId": target_turn, "item": item}))
             if parent == "root" and data.get("model") and data["model"] != "<synthetic>":
+                self.model = data["model"]
                 events.append(self.event("workspace/settings", {"model": data["model"]}))
         elif kind == "ResultMessage" and self.turn:
             completed_inputs = [self.turn]
