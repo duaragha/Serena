@@ -234,6 +234,7 @@ export class ClaudeSdkSession {
       return result;
     }
     const allowed=['applyFlagSettings','supportedAgents','reloadSkills','reloadPlugins',
+      'usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET',
       'supportedCommands','supportedModels','setModel','setPermissionMode',
       'mcpServerStatus','getContextUsage','interrupt','stopTask','reconnectMcpServer','toggleMcpServer'];
     if (!allowed.includes(method) || typeof this.stream[method]!=='function') {

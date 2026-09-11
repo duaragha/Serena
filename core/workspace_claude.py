@@ -270,6 +270,11 @@ class ClaudeWorkspace:
             await self.publish(self.events.event("workspace/settings", {"permissionMode": mode}))
             return await self.permissions()
 
+    async def account_rate_limits(self):
+        if self.state not in {"ready", "running"}:
+            raise RuntimeError("Attach Claude before checking account limits")
+        return await self.client.get_usage()
+
     async def context_usage(self):
         if self.client is None or self.state in {"closed", "opening", "unavailable"}:
             raise RuntimeError("Claude is not attached")

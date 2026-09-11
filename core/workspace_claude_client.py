@@ -115,6 +115,9 @@ class ClaudeTypeScriptClient:
     async def get_context_usage(self):
         return await self.transport.control("getContextUsage")
 
+    async def get_usage(self):
+        return await self.transport.control("usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET", {"skipBehaviors": True})
+
     async def stop_task(self, task_id):
         return await self.transport.control("stopTask", task_id)
 

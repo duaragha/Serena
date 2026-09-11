@@ -23,6 +23,18 @@ function fixture(overrides={}, sessionOptions={}) {
   return {session,calls,outputs,stream,get setup(){return setup;}};
 }
 
+test('usage control reads the existing stream without spawning another process', async()=>{
+  const f=fixture();
+  const method='usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET';
+  f.stream[method]=async options=>({options,rate_limits_available:true});
+  try {
+    await f.session.open();
+    const result=await f.session.control(method,{skipBehaviors:true});
+    assert.deepEqual(result,{options:{skipBehaviors:true},rate_limits_available:true});
+    assert.equal(f.calls.filter(value=>value==='spawn').length,1);
+  }finally{await f.session.close();}
+});
+
 test('resume finds the original transcript while retaining the latest working directory', async()=>{
   const seen=[];
   const f=fixture({getSessionInfo:async(sid,options)=>{
