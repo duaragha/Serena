@@ -11,6 +11,14 @@ const node = (tag, cls, text) => {
   return el;
 };
 const icon = name => { const el = node('i'); el.dataset.lucide = name; return el; };
+const toolRunning = item => ['inProgress','in_progress','running'].includes(item.status);
+const toolStatus = item => {
+  const running = toolRunning(item);
+  const status = node('small', `aw-tool-status${running ? ' aw-tool-running' : ''}`,
+    running ? 'Running' : ({completed:'Completed',failed:'Failed',cancelled:'Cancelled'}[item.status] || item.status));
+  status.setAttribute('role','status');
+  return status;
+};
 let usageScopeSequence = 0;
 const promptColors={default:'#50354a',red:'#ff7979',blue:'#82b3ff',green:'#77d99b',yellow:'#ead976',purple:'#c09bff',orange:'#f4ae75',pink:'#ff80bf',cyan:'#70dbe1'};
 
@@ -2743,7 +2751,7 @@ export class WorkspacePane {
       const detail=node('details','aw-tool');
       detail.open=item.type==='claudeToolCall';
       const summary=node('summary');summary.append(node('span','',item.input?.description || item.tool || 'Tool'));
-      if(item.status)summary.append(node('small','',item.status));detail.append(summary);
+      if(item.status)summary.append(toolStatus(item));detail.append(summary);
       const input=item.input || {};
       if(typeof input.file_path==='string')detail.append(node('div','aw-file-name',input.file_path));
       if(item.inputStreaming || item.inputUnavailable){
@@ -2761,6 +2769,7 @@ export class WorkspacePane {
         detail.append(node('div','aw-author','Requested file content'),node('pre','',input.content));
       }else if(Object.keys(input).length)detail.append(node('pre','',JSON.stringify(input,null,2)));
       const output=item.type==='acpToolCall' && Array.isArray(item.displayContent) && item.displayContent.length?item.displayContent:item.output;
+      if(toolRunning(item) && (output===undefined || output===null || output===''))detail.append(node('p','aw-output-pending','Waiting for tool output'));
       if(output!==undefined && output!==null){
         detail.append(node('div','aw-author','Output'));
         const blocks=Array.isArray(output)?output:[output];
@@ -2805,10 +2814,11 @@ export class WorkspacePane {
       const detail = node('details', 'aw-tool');
       const summary = node('summary');
       summary.append(node('span', '', item.command || item.tool || item.query || item.type));
-      if (item.status) summary.append(node('small', '', item.status));
+      if (item.status) summary.append(toolStatus(item));
       detail.append(summary);
       // Unknown tools remain fully inspectable, including all provider metadata.
       if (item.type === 'commandExecution') {
+        if(toolRunning(item) && !item.aggregatedOutput)detail.append(node('p','aw-output-pending','Waiting for tool output'));
         if (item.aggregatedOutput) detail.append(node('pre', 'aw-tool-output', item.aggregatedOutput));
       } else detail.append(node('pre', '', item.aggregatedOutput ?? JSON.stringify(item, null, 2)));
       if (item.exitCode !== undefined && item.exitCode !== null) detail.append(node('div', 'aw-exit', `Exit ${item.exitCode}`));

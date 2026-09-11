@@ -10,6 +10,29 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('kind', ['claudeToolCall', 'commandExecution'])
+@pytest.mark.parametrize('width', [390, 1400])
+def test_running_tool_status_is_visible_until_native_completion(pane, kind, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""kind=>{
+      window.progressItem={id:'progress',type:kind,tool:'Bash',command:'pytest tests/',input:{command:'pytest tests/'},status:'inProgress'};
+      emit({method:'item/started',params:{turnId:'t',item:progressItem}});
+    }""", kind)
+    status = page.locator('#left [data-item-id="progress"] .aw-tool-status')
+    playwright.expect(status).to_have_text('Running')
+    playwright.expect(status).to_be_visible()
+    detail = page.locator('#left [data-item-id="progress"] details.aw-tool')
+    detail.evaluate('el=>el.open=true')
+    playwright.expect(page.locator('#left .aw-output-pending')).to_be_visible()
+    page.screenshot(path=str(tmp_path / f'progress-{kind}-{width}.png'))
+    page.evaluate("""()=>emit({method:'item/completed',params:{turnId:'t',item:{...progressItem,status:'completed',output:'1 passed',aggregatedOutput:'1 passed',exitCode:0}}})""")
+    playwright.expect(status).to_have_text('Completed')
+    assert page.locator('#left .aw-output-pending').count() == 0
+    assert page.locator('#left .aw-tool-running').count() == 0
+    assert not errors
+
+
 def test_claude_activity_visible_and_permission_close_in_header(pane, tmp_path):
     page, errors = pane
     page.evaluate("""()=>{

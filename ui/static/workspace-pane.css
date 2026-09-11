@@ -35,6 +35,9 @@
 .aw-tool summary{display:flex;gap:8px;align-items:center;cursor:pointer;padding:10px 0;overflow-wrap:anywhere}
 .aw-tool summary:before{content:'>';color:#a89bad}.aw-tool[open] summary:before{content:'v'}
 .aw-tool small{margin-left:auto;color:#a89bad;flex-shrink:0}
+.aw-tool .aw-tool-running{color:#77d99b;font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.aw-tool-running:before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor}
+.aw-output-pending{color:#a89bad;font-size:12px;margin:8px 0}
 .aw-tool pre,.aw-question pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;font:10px/1.8 monospace}
 .aw-exit{color:#a89bad;padding-bottom:9px}.aw-file-name{font-size:10px;color:#c6b4cf;padding:7px 0;overflow-wrap:anywhere}
 .aw-diff{border-left:2px solid #52735f;background:#0c1b12;padding:9px 11px;white-space:pre-wrap;font:10px/1.9 monospace;overflow-wrap:anywhere}
