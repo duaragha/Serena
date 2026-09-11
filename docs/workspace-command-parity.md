@@ -3,6 +3,38 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Exclusive Archive Restoration Primitive (2026-09-10)
+
+`core/workspace_archive.py::restore_codex_archive` now performs native restoration
+under the shared exclusive session lease. Explicit confirmation, canonical session
+identity, exact project and native archived transcript location are required before
+mutation. Restoration verifies the same ID and active transcript location, then
+checks that no coding thread was loaded. It never resumes a session, starts a turn
+or retries an ambiguous acknowledgement. Transport construction and shutdown
+failures release the lock without discarding uncertain live-process ownership.
+
+This is not yet a user-facing restore feature: the host must first provide a
+durable mutation receipt, enforce job reservations and reindex the result before
+the archive picker can expose it. No installed app or default behavior changed.
+
+Separately executed verification commands:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_archive.py tests/test_workspace_catalog.py -q --tb=short
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_archive.py tests/test_workspace_archive.py scripts/verify-workspace-archive-contract.py
+```
+
+Each exited 0. Tests: 39 passed in 0.95s, including foreign identity/project,
+existing ownership, missing confirmation, transport creation failure, lost reply,
+wrong restored identity, unexpected loaded writer and uncertain cleanup. Native
+proof now calls the production restoration function, not a raw unarchive RPC:
+exact history restored, custom title/done/group metadata unchanged, no loaded
+coding writer or inference. Three disposable processes reaped; no credentials
+used, temporary profile removed and no user sessions/project files changed.
+Ruff: all checks passed. The older two-process receipts below describe earlier
+versions of the probe, not this run.
+
 ## Read-Only Inspection During Recovery (2026-09-10)
 
 `/status` and `/usage` no longer silently stop at the disabled message-send gate

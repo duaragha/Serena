@@ -13,6 +13,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core import indexer, metadata
+from core.workspace_archive import restore_codex_archive
 from core.workspace_catalog import list_saved_sessions, register_fork
 from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
@@ -82,16 +83,24 @@ async def main():
             await rpc.notify("initialized", {})
             read = await rpc.request("thread/read", {"threadId": sid, "includeTurns": True})
             assert read["thread"]["id"] == sid and "archive-contract-original" in json.dumps(read)
-            restored = await rpc.request("thread/unarchive", {"threadId": sid})
-            assert restored["thread"]["id"] == sid
+            loaded = await rpc.request("thread/loaded/list", {})
+            assert loaded["data"] == [], loaded
+            await rpc.close()
+
+            class TrackedRpc(WorkspaceRpc):
+                async def start(self, *args, **kwargs):
+                    await super().start(*args, **kwargs)
+                    processes.append(self.process)
+
+            restored = await restore_codex_archive(sid, project, confirmed=True, binary=binary, env=env,
+                rpc_factory=TrackedRpc, lease_factory=lambda identity: SessionLease(identity, directory=root / 'leases'))
+            assert restored['session_id'] == sid and restored['archived'] is False
             assert not archived[0].exists()
             assert len(list((home / "sessions").rglob(f"*{sid}.jsonl"))) == 1
             register_fork(target)
             assert list_saved_sessions('codex')['data'][0]['session_id'] == sid
             assert not list_saved_sessions('codex', archived=True)['data']
             assert metadata.get_meta(sid) == saved_meta
-            loaded = await rpc.request("thread/loaded/list", {})
-            assert loaded["data"] == [], loaded
             print("PASS: archived history read and exact restore require no resumed writer or model turn")
         finally:
             await rpc.close()
