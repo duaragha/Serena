@@ -1228,6 +1228,44 @@ def test_saved_session_picker_does_not_submit_or_stop_running_work(pane, provide
     assert not errors
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_archived_picker_restores_only_on_confirmation_and_opens_separately(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 1000})
+    page.evaluate("""()=>{
+      const Pane=pane.constructor;pane.dispose();window.calls=[];window.restored=false;window.failRestore=true;
+      pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,
+        listSessions:async(q,offset,archived)=>{calls.push(['list',archived]);return {data:archived&&!restored?[{session_id:'019de3ff-997e-76e3-9e51-2eeff93b0318',title:'My archived chat',cwd:'/project'}]:[],nextOffset:null};},
+        restoreArchive:async sid=>{calls.push(['restore',sid]);if(failRestore)throw Error('Restoration unconfirmed');restored=true;return {session_id:sid,archived:false};},
+        openSession:async sid=>calls.push(['open',sid])}});
+      pane.input.value='Retain this draft';
+    }""")
+    assert page.evaluate('calls') == []
+    page.evaluate('pane.openSessions()')
+    saved = page.get_by_role('dialog', name='Saved conversations', exact=True)
+    saved.get_by_role('radio', name='Archived', exact=True).check()
+    saved.locator('.aw-command').filter(has_text='My archived chat').click()
+    dialog = page.get_by_role('dialog', name='Restore archived conversation', exact=True)
+    assert page.evaluate("calls.filter(c=>c[0]!=='list')") == []
+    dialog.get_by_role('button', name='Close archive restore', exact=True).click()
+    saved.locator('.aw-command').filter(has_text='My archived chat').click()
+    dialog.get_by_role('button', name='Confirm restore conversation', exact=True).click()
+    playwright.expect(dialog.get_by_role('status')).to_have_text('Restoration unconfirmed')
+    page.evaluate('window.failRestore=false')
+    dialog.get_by_role('button', name='Confirm restore conversation', exact=True).click()
+    playwright.expect(dialog.get_by_role('status')).to_have_text('Conversation restored')
+    assert page.evaluate("calls.filter(c=>c[0]==='open')") == []
+    assert not saved.locator('.aw-command').filter(has_text='My archived chat').count()
+    assert page.evaluate('pane.input.value') == 'Retain this draft'
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'archive-restore-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button', name='Open restored conversation', exact=True).click()
+    assert page.evaluate('calls.at(-1)') == ['open', '019de3ff-997e-76e3-9e51-2eeff93b0318']
+    assert not errors
+
+
 @pytest.mark.parametrize("width", [390, 1600])
 def test_grouped_reply_marks_queued_input_without_duplicate_duration(pane, width, tmp_path):
     page, errors = pane

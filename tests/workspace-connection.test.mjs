@@ -11,6 +11,38 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('archive restore persists exact request before delivery and reuses it after reload',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'archived',token:'token',storage:saved,receive:()=>{},error:()=>{},
+    fetcher:async(url,request)=>{
+      calls.push([url,JSON.parse(request.body)]);
+      assert.ok(saved.getItem('serena-workspace-pending:archived'));
+      if(calls.length===1)throw Error('lost response');
+      return response({ok:true,result:{session_id:'archived',archived:false}});
+    }};
+  let conn=new WorkspaceConnection(options);
+  assert.deepEqual(calls,[]);
+  await assert.rejects(conn.restoreArchive(),/lost response/);
+  conn.dispose();conn=new WorkspaceConnection(options);
+  assert.deepEqual(await conn.restoreArchive(),{session_id:'archived',archived:false});
+  assert.deepEqual(calls[0],calls[1]);
+  assert.equal(calls[0][0],'/api/workspace/archived/restore-archive');
+  assert.equal(calls[0][1].confirmed,true);
+  assert.deepEqual(JSON.parse(saved.getItem(conn.key)),{});
+  conn.dispose();
+});
+
+test('archive restore refuses ambiguous identities and keeps the pending receipt',async()=>{
+  for(const result of [{session_id:'foreign',archived:false},{session_id:'exact',archived:true}]){
+    const saved=storage();
+    const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},
+      fetcher:async()=>response({ok:true,result})});
+    await assert.rejects(conn.restoreArchive(),/identity is unconfirmed/);
+    assert.equal(Object.keys(JSON.parse(saved.getItem(conn.key))).length,1);
+    conn.dispose();
+  }
+});
+
 test('failed attach exposes recovery only for the exact requested session',async()=>{
   for(const sid of ['exact','foreign']){
     const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},

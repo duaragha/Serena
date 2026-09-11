@@ -38,7 +38,12 @@ controls.accountTokenUsage = scope => connection.command('account_token_usage',s
 controls.accountLogin = () => connection.command('account_login',{});
 controls.cancelAccountLogin = loginId => connection.command('account_login_cancel',{loginId});
 controls.resetSavedSetting = failureId => connection.command('reset_saved_setting',{failure_id:failureId,confirmed:true});
-controls.listSessions = (query, offset=0) => connection.request('/sessions?' + new URLSearchParams({provider:boot.provider.toLowerCase(),q:query,offset}));
+controls.listSessions = (query, offset=0, archived=false) => connection.request('/sessions?' + new URLSearchParams({provider:boot.provider.toLowerCase(),q:query,offset,archived}));
+if(boot.provider==='Codex')controls.restoreArchive=async sid=>{
+  if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid))throw Error('Invalid session identity');
+  const target=new WorkspaceConnection({sessionId:sid,token:boot.token,receive:()=>{},error:()=>{}});
+  return target.restoreArchive();
+};
 controls.openSession = sid => {
   if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid))throw Error('Invalid session identity');
   if(parent!==window)parent.postMessage({type:'serena-workspace-open-session',sid:boot.sessionId,target:sid},location.origin);

@@ -531,19 +531,29 @@ export class WorkspacePane {
     const search=node('input');search.type='search';search.setAttribute('aria-label','Search saved conversations');
     const status=node('p');status.setAttribute('role','status');
     const list=node('div','aw-command-list');
-    let generation=0,next=null,query='';
+    let generation=0,next=null,query='',archived=false;
+    const scope=node('fieldset','aw-usage-scope');scope.append(node('legend','','Conversation state'));
+    scope.hidden=this.provider!=='Codex' || !this.controls.restoreArchive;
+    const groupName=`archive-scope-${++usageScopeSequence}`;
+    for(const [value,label] of [[false,'Active'],[true,'Archived']]){
+      const input=node('input');input.type='radio';input.name=groupName;input.checked=!value;
+      const choice=node('label');choice.append(input,document.createTextNode(label));scope.append(choice);
+      input.addEventListener('change',()=>{if(input.checked){archived=value;load(search.value);}});
+    }
     const more=this.button('Load more conversations','chevron-down',()=>load(query,next));more.hidden=true;
     const load=async(value,offset=0)=>{
       const request=++generation;query=value;more.disabled=true;status.textContent='Searching...';
       if(offset===0)list.replaceChildren();
       try{
-        const result=await this.controls.listSessions(value,offset);
+        const result=await this.controls.listSessions(value,offset,archived);
         if(!dialog.open || this.disposed || request!==generation)return;
         for(const session of result.data){
           const button=node('button','aw-command');button.type='button';
           button.append(node('strong','',session.title),node('small','',session.session_id),node('span','',session.cwd || ''));
-          button.disabled=session.session_id===this.conversation.sessionId;
+          button.disabled=!archived && session.session_id===this.conversation.sessionId;
+          const isArchive=archived;
           button.addEventListener('click',async()=>{
+            if(isArchive){this.openArchiveRestore(session,()=>load(search.value));return;}
             button.disabled=true;
             try{await this.controls.openSession(session.session_id);dialog.close();}
             catch(error){status.textContent=error.message;button.disabled=false;}
@@ -558,9 +568,36 @@ export class WorkspacePane {
     search.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();load(search.value);}});
     const close=this.button('Close saved conversations','x',()=>dialog.close());
     dialog.addEventListener('close',()=>{generation++;dialog.remove();this.input.focus();});
-    dialog.append(node('h3','','Saved conversations'),close,search,find,status,list,more);
+    dialog.append(node('h3','','Saved conversations'),close,scope,search,find,status,list,more);
     this.sessionsDialog=dialog;this.root.append(dialog);dialog.showModal();search.focus();
     window.lucide?.createIcons();await load('');
+  }
+
+  openArchiveRestore(session,refresh) {
+    if(this.archiveRestoreDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Restore archived conversation');
+    const status=node('p','',`Restore "${session.title}"?`);status.setAttribute('role','status');
+    const identity=node('p','',session.session_id);identity.style.overflowWrap='anywhere';
+    let busy=false;
+    const close=this.button('Close archive restore','x',()=>dialog.close());
+    const open=this.button('Open restored conversation','arrow-up-right',async()=>{
+      try{await this.controls.openSession(session.session_id);dialog.close();this.sessionsDialog?.close();}
+      catch(error){status.textContent=error.message;}
+    });open.hidden=true;
+    const confirm=this.button('Confirm restore conversation','archive-restore',async()=>{
+      if(busy)return;
+      busy=true;confirm.disabled=true;status.textContent='Restoring conversation...';
+      try{
+        const restored=await this.controls.restoreArchive(session.session_id);
+        if(restored?.session_id!==session.session_id || restored?.archived!==false)throw Error('Restored session identity is unconfirmed');
+        if(dialog.open && !this.disposed){status.textContent='Conversation restored';confirm.hidden=true;open.hidden=false;}
+        if(this.sessionsDialog?.open && !this.disposed)await refresh();
+      }catch(error){if(dialog.open && !this.disposed){status.textContent=error.message;confirm.disabled=false;}}
+      finally{busy=false;}
+    });
+    dialog.append(node('h3','','Restore archived conversation'),close,status,identity,confirm,open);
+    dialog.addEventListener('close',()=>dialog.remove());this.archiveRestoreDialog=dialog;
+    this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
   }
 
   async openAccountUsage() {

@@ -3,6 +3,42 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Archived Conversation Picker (2026-09-10)
+
+The Codex saved-conversation dialog now has Active/Archived radio filters with
+the existing search and paging. Archived rows open an explicit restoration
+confirmation instead of navigating into a coding owner. A successful restore
+refreshes the archive list and exposes a separate Open action; it never
+automatically opens, attaches or sends a message. Claude's existing picker is
+unchanged. Drafts remain intact, and errors stay visible in the confirmation.
+
+The target connection persists its restoration request ID before HTTP delivery
+and reuses it after a lost response or reload. It validates the returned exact ID
+and archive state before clearing the pending receipt. No connection polling or
+attachment starts when this temporary transport is constructed.
+
+```sh
+node --test tests/workspace-connection.test.mjs
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_archived_picker_restores_only_on_confirmation_and_opens_separately tests/test_workspace_pane.py::test_saved_session_picker_does_not_submit_or_stop_running_work -q --tb=short
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py
+node --check ui/static/workspace-pane.mjs
+node --check ui/static/workspace-page.mjs
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py
+```
+
+Each command ran separately and exited 0: 57 transport tests; final browser run
+6 passed in 6.65s at 390px/1600px, covering cancel, visible restore error, explicit
+retry, exact open destination, separate opening and unchanged draft. Native
+host/index restore proof passed with three processes reaped and no credentials
+or inference. Node syntax checks and Ruff passed. Screenshots
+`apps/desktop/build/workspace-proof/archive-restore-{390,1600}.png` inspected:
+full UUID fits, actions and status do not overlap, no horizontal page overflow.
+
+These browser tests use controlled callbacks; the native proof covers the host
+separately. Full browser-to-native and packaged restore flow remain unverified.
+Uncertain-outcome reconciliation and archiving existing sessions (including
+descendant guards) are still pending. Nothing installed or released.
+
 ## Durable Archive Restore Control (2026-09-10)
 
 `WorkspaceHost.restore_archive` and the authenticated `POST /api/workspace/<sid>/restore-archive`
