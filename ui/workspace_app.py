@@ -65,7 +65,8 @@ def install_workspace(
         provider = {"codex": "Codex", "claude": "Claude", "gemini": "Gemini"}.get(
             session.get("agent"), "Unknown"
         )
-        boot = json.dumps({"sessionId": sid, "provider": provider, "token": token}).replace(
+        boot = json.dumps({"sessionId": sid, "provider": provider, "token": token,
+                           "autoResume": request.args.get("resume") == "1"}).replace(
             "<", "\\u003c"
         )
         response = Response(
