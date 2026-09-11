@@ -33,7 +33,7 @@ def test_running_tool_status_is_visible_until_native_completion(pane, kind, widt
     assert not errors
 
 
-def test_claude_activity_visible_and_permission_close_in_header(pane, tmp_path):
+def test_claude_activity_visible_without_permission_selector(pane, tmp_path):
     page, errors = pane
     page.evaluate("""()=>{
       controls.permissions=async()=>({mode:'default',modes:['default','bypassPermissions']});
@@ -43,12 +43,8 @@ def test_claude_activity_visible_and_permission_close_in_header(pane, tmp_path):
     playwright.expect(page.get_by_text('Checking files', exact=True)).to_be_visible()
     playwright.expect(page.locator('#left .aw-command', has_text='pwd')).to_be_visible()
     page.evaluate("pane.openPermissions()")
-    dialog = page.get_by_role('dialog', name='Permission mode')
-    close = dialog.get_by_role('button', name='Close permission mode')
-    title = dialog.get_by_role('heading', name='Permission mode')
-    a, b = close.bounding_box(), title.bounding_box()
-    assert abs(a['y'] + a['height']/2 - b['y'] - b['height']/2) < 2
-    assert a['x'] > b['x'] + b['width']
+    assert page.get_by_role('dialog', name='Permission mode').count() == 0
+    assert page.get_by_role('button', name='Permission mode', exact=True).is_hidden()
     page.screenshot(path=str(tmp_path/'claude-permissions.png'))
     assert not errors
 
@@ -2284,7 +2280,7 @@ def test_codex_permission_profile_picker_disables_managed_denials(pane):
     assert not errors
 
 
-def test_permission_mode_requires_explicit_apply_and_bypass_confirmation(pane, tmp_path):
+def test_claude_permission_selector_is_unavailable_even_with_controls(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})
     page.evaluate("""() => {
@@ -2294,19 +2290,11 @@ def test_permission_mode_requires_explicit_apply_and_bypass_confirmation(pane, t
       window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Claude',controls});
     }""")
     assert page.evaluate("calls") == []
-    page.get_by_role("button", name="Permission mode", exact=True).click()
-    dialog = page.get_by_role("dialog", name="Permission mode", exact=True)
-    select = dialog.get_by_role("combobox", name="Permission mode")
-    select.select_option("bypassPermissions")
-    dialog.get_by_role("button", name="Apply", exact=True).click()
-    dialog.get_by_text("Confirm bypassing permission prompts first").wait_for()
+    assert page.get_by_role("button", name="Permission mode", exact=True).is_hidden()
+    page.evaluate('pane.openPermissions()')
+    assert page.get_by_role('dialog', name='Permission mode').count() == 0
     assert page.evaluate("calls") == []
     page.screenshot(path=str(tmp_path / "permission-mode-mobile.png"))
-    dialog.get_by_role("checkbox", name="Allow tools without permission prompts").check()
-    dialog.get_by_role("button", name="Apply", exact=True).click()
-    page.wait_for_function("calls.length===1")
-    assert page.evaluate("calls") == [["bypassPermissions", True]]
-    dialog.get_by_role("button", name="Close permission mode").click()
     assert not errors
 
 

@@ -70,6 +70,8 @@ test('explicit fresh creation fixes the reserved UUID and never resumes or forks
   assert.equal(options.continue,false);
   assert.equal(options.forkSession,false);
   assert.equal(options.persistSession,true);
+  assert.equal(options.permissionMode,'bypassPermissions');
+  assert.equal(options.allowDangerouslySkipPermissions,true);
   assert.equal(options.resumeSessionAt,undefined);
   assert.equal(f.session.state,'ready');
   assert.deepEqual(f.calls,['spawn']);
@@ -279,6 +281,8 @@ test('explicit exact resume, one spawn, inputs and public controls',async()=>{
   await f.session.open();
   assert.equal(f.setup.options.resume,'exact');
   assert.equal(f.setup.options.forkSession,false);
+  assert.equal(f.setup.options.permissionMode,'bypassPermissions');
+  assert.equal(f.setup.options.allowDangerouslySkipPermissions,true);
   assert.throws(()=>f.setup.options.spawnClaudeCodeProcess({}),/Duplicate/);
   await assert.rejects(f.session.open(),/twice/);
   f.session.send({type:'user',session_id:'exact',message:{role:'user',content:'hello'}});

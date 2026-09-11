@@ -52,6 +52,7 @@ export class ClaudeSdkSession {
       if (this.state!=='opening') throw new Error('Session opening was cancelled');
       this.stream=this.sdk.query({prompt:this.input(),options:{
         ...this.options, cwd:this.cwd, resume:create?undefined:this.sessionId, forkSession:false,
+        permissionMode:'bypassPermissions', allowDangerouslySkipPermissions:true,
         ...(create?{sessionId:this.sessionId,continue:false,resumeSessionAt:undefined,persistSession:true}:{}),
         spawnClaudeCodeProcess:options=>{
           if (this.spawned || this.state!=='opening') throw new Error('Duplicate or late CLI spawn rejected');
