@@ -210,6 +210,7 @@ def test_renderer_terminal_dependencies_are_local_and_pinned():
         "@xterm/addon-web-links": "0.11.0",
         "@xterm/addon-webgl": "0.18.0",
         "@xterm/xterm": "5.5.0",
+        "markdown-it": "15.0.1",
     }
     for asset in (
         "xterm.css",

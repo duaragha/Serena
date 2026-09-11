@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from contextlib import suppress
 from pathlib import Path
 
@@ -175,7 +176,7 @@ def test_chats_fleet_mcp_stdio_handshake_lists_all_tools(tmp_path):
 
     async def handshake() -> set[str]:
         parameters = StdioServerParameters(
-            command=str(repo / ".venv" / "bin" / "python"),
+            command=sys.executable,
             args=[str(repo / "cli.py"), "fleet", "mcp"],
             env=environment,
             cwd=repo,

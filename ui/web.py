@@ -63,6 +63,13 @@ app.register_blueprint(fleet_bp)
 app.register_blueprint(operator_bp)
 app.register_blueprint(webhook_bp)
 
+_STRUCTURED_WORKSPACE_ENABLED = os.environ.get("SERENA_STRUCTURED_WORKSPACE", "1") != "0"
+
+if _STRUCTURED_WORKSPACE_ENABLED:
+    from ui.workspace_app import install_workspace
+
+    install_workspace(app, DATA_DIR / "workspace-events.db")
+
 
 def _is_serena_voice_session(session: dict | None) -> bool:
     return bool(session) and (
@@ -3826,6 +3833,7 @@ async function loadSessions(projectOrDirs, opts) {
     // own rows now; user can click them to continue, or mark the old one done.
     // Keep any in-flight pseudo sessions pinned at the top after a reload
     setSessionSource(_pseudoSessions.length ? [..._pseudoSessions, ...allSessions] : allSessions);
+    if (allSessions.some(_sessionHasActiveRuntime)) _ensureActiveRefresh();
     _maybeFollowSpawnedChat();
     renderSessionList();
     updateChatCount();
@@ -4272,9 +4280,7 @@ function renderSessionList() {
   // Do not infer voice ownership from broader Serena work metadata.
   const voiceChats = [];
 
-  const active = _activeTerms.size
-    ? visibleTop.filter(s => rowMembers(s).some(x => _activeTerms.has(x.session_id)))
-    : [];
+  const active = visibleTop.filter(s => rowMembers(s).some(_sessionHasActiveRuntime));
   const activeSet = new Set(active.map(s => s.session_id));
 
   // Done chats — hidden from Active/Starred/time groups, rendered at bottom.
@@ -4599,11 +4605,16 @@ function _agentBadge(agent) {
 // Bootstrap Icons "link" — inline so color: var(--group-color) applies.
 const _LINK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M6.354 5.5H4a3 3 0 0 0 0 6h3a3 3 0 0 0 2.83-4H9q-.13 0-.25.031A2 2 0 0 1 7 10.5H4a2 2 0 1 1 0-4h1.535c.218-.376.495-.714.82-1z"/><path d="M9 5.5a3 3 0 0 0-2.83 4h1.098A2 2 0 0 1 9 6.5h3a2 2 0 1 1 0 4h-1.535a4 4 0 0 1-.82 1H12a3 3 0 1 0 0-6z"/></svg>';
 
+function _sessionHasActiveRuntime(session) {
+  if (session.workspace_runtime) return session.workspace_runtime.ok === true;
+  return _activeTerms.has(session.session_id);
+}
+
 function renderSessionRow(s, idx, opts) {
   opts = opts || {};
   const isFocused = idx === focusedIndex;
   const isSelected = selectedIds.has(s.session_id);
-  const isActive = _activeTerms.has(s.session_id);
+  const isActive = _sessionHasActiveRuntime(s);
   const isDone = !!s.is_done && !_isSerenaVoiceSession(s);
   const needsAttention = _attentionSids.has(s.session_id);
   const childCount = opts.childCount || 0;
@@ -5929,7 +5940,7 @@ let _activeRefreshInFlight = false;
 function _ensureActiveRefresh() {
   if (_activeRefreshTimer) return;
   _activeRefreshTimer = setInterval(async () => {
-    if (_activeTerms.size === 0) {
+    if (_activeTerms.size === 0 && !allSessions.some(_sessionHasActiveRuntime)) {
       clearInterval(_activeRefreshTimer);
       _activeRefreshTimer = null;
       return;
@@ -6020,6 +6031,8 @@ async function _reconcilePseudos(fresh, opts) {
   opts = opts || {};
   let changed = false;
   for (const pseudo of [..._pseudoSessions]) {
+    // Structured creation returns an authoritative ID through its own iframe.
+    if (pseudo.structured_pending) continue;
     // Front-door pseudos expire: if the pane never wrote a session file,
     // drop the pseudo (and its pair bucket) instead of letting it claim an
     // unrelated session later.
@@ -6181,10 +6194,10 @@ async function _reconcilePseudos(fresh, opts) {
   }
 }
 
-function _markActive(sid) {
+function _markActive(sid, clearAttention = true) {
   if (!sid) return;
   // Focusing a chat clears any "needs attention" flag for it
-  _clearAttention(sid);
+  if (clearAttention) _clearAttention(sid);
   if (_activeTerms.has(sid)) return;
   _rememberActive(sid);
   renderSessionList();
@@ -6267,6 +6280,7 @@ async function loadReadTranscript(sid, force) {
     const r = await fetch('/api/conversation/' + sid);
     const data = await r.json();
     if (currentSessionId !== sid) return;  // user switched away while we loaded
+    if (!r.ok) throw new Error(data.error || 'Conversation unavailable');
     const externallyRunning = Boolean(data.external_runtime_active);
     _patchClientSession(sid, { external_runtime_active: externallyRunning });
 
@@ -6297,11 +6311,14 @@ async function loadReadTranscript(sid, force) {
           + '</div>';
       }
     }
-    document.getElementById('convBody').innerHTML = html || '<div class="empty-text">No messages</div>';
+    document.getElementById('convBody').innerHTML = html || (data.native_persistence_pending
+      ? '<div class="empty-text">Native transcript not indexed yet.</div>'
+      : '<div class="empty-text">No messages</div>');
     _convLoaded.add(sid);
-    if ((externallyRunning || _isSerenaVoiceSession(data.agent || sid)) && convMode === 'read') _scheduleExternalReadRefresh(sid);
+    if ((externallyRunning || data.native_persistence_pending || _isSerenaVoiceSession(data.agent || sid)) && convMode === 'read') _scheduleExternalReadRefresh(sid);
     else _stopExternalReadRefresh();
   } catch(e) {
+    if (currentSessionId !== sid) return;
     document.getElementById('convBody').innerHTML = '<div class="empty-text">Error loading conversation</div>';
   }
 }
@@ -6592,11 +6609,12 @@ function _bindWebTerminalWindowFocus() {
   const refocus = () => {
     if (currentTab !== 'chats' || convMode !== 'live' || !activeTermSid) return;
     const runtime = termSessions.get(activeTermSid);
-    if (!runtime || !runtime.term) return;
+    if (!runtime || (!runtime.term && !runtime.structured)) return;
     // Never yank focus out from under a text field or an open modal.
     const el = document.activeElement;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
     if (document.getElementById('modalBackdrop')?.classList.contains('visible')) return;
+    if (runtime.structured) { runtime.focus(); return; }
     // A window resize while hidden leaves xterm measured for the old box.
     try { runtime.fit.fit(); } catch(e) {}
     _sendResizeForSid(activeTermSid);
@@ -6732,7 +6750,7 @@ let _webRuntimeSyncing = false;
 async function _syncWebRuntimePolicy() {
   if (_webRuntimeSyncing || !_webRuntimeFocusSid) return;
   const focus = termSessions.get(_webRuntimeFocusSid);
-  if (!focus) return;
+  if (!focus || focus.structured) return;
   const siblingSid = _linkedSiblingSid(_webRuntimeFocusSid);
   const sibling = siblingSid ? termSessions.get(siblingSid) : null;
   // Unsent input is the user's work in progress. Freezing a pane that holds a
@@ -6741,6 +6759,7 @@ async function _syncWebRuntimePolicy() {
   const protectedTids = [];
   const standbyTids = [];
   for (const [runtimeSid, runtime] of termSessions) {
+    if (runtime.structured) continue;
     if ((window.__termDrafts && window.__termDrafts.get(runtimeSid)) || runtime.busy) {
       protectedTids.push(runtime.tid);
     }
@@ -6748,7 +6767,7 @@ async function _syncWebRuntimePolicy() {
   }
   // The sibling is still named so the server sweeps it, but it no longer
   // sleeps on sight: every unfocused pane must prove it has been quiet first.
-  if (sibling && !standbyTids.includes(sibling.tid)) standbyTids.push(sibling.tid);
+  if (sibling && sibling.tid && !standbyTids.includes(sibling.tid)) standbyTids.push(sibling.tid);
   // A merged view has two panes on screen and only one of them holds focus.
   // Naming just the focused one let the server stop the other while the user
   // was looking straight at it.
@@ -6767,7 +6786,7 @@ async function _syncWebRuntimePolicy() {
       body: JSON.stringify({
         focus_tid: focus.tid,
         visible_tids: visibleTids,
-        standby_tids: sibling ? [sibling.tid] : [],
+        standby_tids: sibling && sibling.tid ? [sibling.tid] : [],
         all_open_tids: standbyTids,
         protected_tids: protectedTids,
         pin_both: pinned,
@@ -6956,7 +6975,7 @@ function _scrollWebTerminalTail(runtime) {
 }
 
 function _armWebTerminalTail(runtime) {
-  if (!runtime) return;
+  if (!runtime || runtime.structured) return;
   runtime.tailFollowUntil = window.SerenaTerminalLifecycle.tailDeadline(performance.now());
 }
 
@@ -7000,7 +7019,9 @@ function _activateTermPane(sid) {
     .filter(Boolean);
   for (const runtime of visibleRuntimes) _armWebTerminalTail(runtime);
   // Status reflects the now-visible session
-  if (s.ws && s.ws.readyState === 1) {
+  if (s.structured) {
+    setTermStatus(s.state || 'Ready to resume.', s.state === 'unavailable' ? 'error' : '');
+  } else if (s.ws && s.ws.readyState === 1) {
     setTermStatus('● live · cwd: ' + (s.cwd || '(unknown)') + (split ? '  ·  ⛓ split' : ''), 'live');
   } else if (s.ws && s.ws.readyState === 0) {
     setTermStatus('Connecting…');
@@ -7010,7 +7031,7 @@ function _activateTermPane(sid) {
   requestAnimationFrame(() => {
     _fitVisibleWebTerms();
     for (const runtime of visibleRuntimes) _scrollWebTerminalTail(runtime);
-    try { s.term.focus(); } catch(e) {}
+    try { if (s.structured) s.focus(); else s.term.focus(); } catch(e) {}
   });
   _scheduleWebRuntimePolicy();
 }
@@ -7052,6 +7073,179 @@ function _revealSurvivingLinkedTerminals(sid) {
   if (available.length) _activateTermPane(available.includes(activeTermSid) ? activeTermSid : available[0]);
 }
 
+function _adoptStructuredIdentity(sid, target) {
+  const pseudo = _pseudoSessions.find(session => session.session_id === sid);
+  if (!pseudo) return null;
+  const partners = _pendingPartnersOf(sid);
+  _pendingTermPartners.delete(sid);
+  _setPendingPartners(target, partners);
+  for (const other of partners) {
+    _setPendingPartners(other, _pendingPartnersOf(other).map(value => value === sid ? target : value));
+  }
+  if (pseudo.fd_pair_id) {
+    const bucket = (_fdPairResolved[pseudo.fd_pair_id] ||= []);
+    if (!bucket.includes(target)) bucket.push(target);
+    if (bucket.length >= 2) _fdLinkPair([...bucket], 0);
+  }
+  if (pseudo.pending_group_link_with) {
+    const members = pseudo.pending_group_member_sids || [pseudo.pending_group_link_with];
+    _fdLinkPair(Array.from(new Set([...members.filter(Boolean), target])), 0);
+  }
+  _pseudoSessions.splice(_pseudoSessions.indexOf(pseudo), 1);
+  const existing = _findClientSession(target);
+  const replacement = {...pseudo, ...existing, session_id:target, isPseudo:false, structured_pending:false};
+  setSessionSource([replacement, ...sessionSource.filter(session => ![sid,target].includes(session.session_id))]);
+  // This handoff already owns navigation; the background discovery follower
+  // must not reopen either member of a user-created pair on a later refresh.
+  _seenSids.add(target);
+  _freshSids.delete(target);
+  _autoSwitched.add(target);
+  return pseudo.group || null;
+}
+
+function _startStructuredPane(sid, opts) {
+  if (opts.isNew) {
+    const pseudo = _pseudoSessions.find(session => session.session_id === sid);
+    if (pseudo) pseudo.structured_pending = true;
+  }
+  if (opts.isNew && !['codex', 'claude'].includes(opts.agent)) {
+    setTermStatus('New structured sessions are not available for this provider yet.', 'error');
+    return null;
+  }
+  if (termSessions.has(sid)) {
+    if (!opts.background) _activateTermPane(sid);
+    return termSessions.get(sid);
+  }
+  const container = document.getElementById('termMounts');
+  const mount = document.createElement('div');
+  mount.className = 'term-pane'; mount.dataset.sid = sid;
+  const frame = document.createElement('iframe');
+  frame.src = opts.isNew ? '/workspace/new?' + new URLSearchParams({source:sid, provider:opts.agent, cwd:opts.cwd || _defaultCwd(), seeded:opts.seed ? '1' : '0'})
+    : '/workspace/' + encodeURIComponent(sid);
+  if (opts.isNew && opts.seed) frame.addEventListener('load', () => {
+    frame.contentWindow?.postMessage({type:'serena-workspace-seed', sid, seed:opts.seed}, location.origin);
+  });
+  frame.title = 'Session ' + sid.slice(0, 8);
+  frame.style.cssText = 'display:block;width:100%;height:100%;border:0;background:#000';
+  mount.appendChild(frame); container.appendChild(mount);
+  const runtime = {sid, mount, structured:true, state:'Ready to resume.', busy:false,
+    focus:() => frame.contentWindow?.postMessage({type:'serena-workspace-focus'}, location.origin)};
+  const handoffs = new Map();
+  let frameLoaded=false;
+  let createdTarget=null,creationOpening=false;
+  frame.addEventListener('load',()=>{frameLoaded=true;});
+  runtime.handoff = text => new Promise(resolve => {
+    const requestId=crypto.randomUUID();
+    const timer=setTimeout(()=>{handoffs.delete(requestId);resolve({ok:false,pending:true,error:'Handoff acknowledgement is pending; do not resend.'});},40000);
+    handoffs.set(requestId,{resolve,timer});
+    const send=()=>{if(handoffs.has(requestId))frame.contentWindow?.postMessage({type:'serena-workspace-handoff',sid,requestId,text},location.origin);};
+    if(frameLoaded)send();else frame.addEventListener('load',send,{once:true});
+  });
+  const receive = async event => {
+    if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
+    if(event.data.type==='serena-workspace-new-conversation'){
+      if(document.getElementById('modalBackdrop')?.classList.contains('visible'))return;
+      const title=event.data.title;
+      const session=_findClientSession(sid);
+      const cwd=opts.cwd || session?.cwd;
+      const provider=opts.agent || session?.agent;
+      if(typeof title!=='string' || title.length>1000 || title.includes('\0') || !cwd || !['codex','claude'].includes(provider))return;
+      await newChatInline(cwd,{agent:provider,title});
+      return;
+    }
+    if(event.data.type==='serena-workspace-title-changed'){
+      await loadSessions(currentProject, {refresh:true});
+      const current=_findClientSession(sid);
+      if(currentSessionId===sid && current)document.getElementById('convTitle').textContent=current.display_title || current.title || '';
+      return;
+    }
+    if(event.data.type==='serena-workspace-catalog'){
+      const title=event.data.title;
+      if(typeof title!=='string' || !title.trim() || title.length>1000)return;
+      const displayTitle=_findClientSession(sid)?.custom_title || title;
+      _patchClientSession(sid,{display_title:displayTitle});
+      renderSessionList();
+      if(currentSessionId===sid)document.getElementById('convTitle').textContent=displayTitle;
+      return;
+    }
+    if(event.data.type==='serena-workspace-context-request'){
+      const split=currentTab==='chats' && convMode==='live' && _gtkSplitActive && _gtkSplitSids?.includes(sid)
+        ? _gtkSplitSids.filter(id=>termSessions.has(id)) : [];
+      frame.contentWindow.postMessage({type:'serena-workspace-layout',sid,split_sids:split,
+        pinned:Boolean(_gtkCurrentGroup && _gtkPinnedGroups.has(_gtkCurrentGroup))},location.origin);
+      return;
+    }
+    if(event.data.type==='serena-workspace-focused'){
+      const rect=mount.getBoundingClientRect();
+      if(currentTab!=='chats' || convMode!=='live' || !document.hasFocus() || document.activeElement!==frame
+        || !rect.width || !rect.height || getComputedStyle(mount).visibility!=='visible')return;
+      activeTermSid=sid;_webRuntimeFocusSid=sid;
+      for(const [id,entry] of termSessions)entry.mount.classList.toggle('runtime-focused',id===sid);
+      setTermStatus(runtime.state,runtime.state==='unavailable'?'error':'');
+      _clearAttention(sid);
+      return;
+    }
+    if(event.data?.type==='serena-workspace-handoff-result'){
+      const pending=handoffs.get(event.data.requestId);
+      if(pending){clearTimeout(pending.timer);handoffs.delete(event.data.requestId);pending.resolve(event.data.result);}
+      return;
+    }
+    if(['serena-workspace-open-fork','serena-workspace-open-cleared','serena-workspace-open-created','serena-workspace-open-session'].includes(event.data?.type)){
+      const target=event.data.target;
+      if(typeof target !== 'string' || !/^[a-f0-9-]{36}$/.test(target) || target===sid)return;
+      const created=event.data.type==='serena-workspace-open-created' && opts.isNew;
+      if(created && (creationOpening || (createdTarget && createdTarget!==target)))return;
+      if(created){createdTarget=target;creationOpening=true;}
+      try{
+        if (event.data.type === 'serena-workspace-open-created' && opts.isNew) {
+          const title = _pseudoSessions.find(session => session.session_id === sid)?.pending_rename_title;
+          if (title) {
+            const response = await fetch('/api/rename/' + encodeURIComponent(target), {method:'POST',
+              headers:{'Content-Type':'application/json'}, body:JSON.stringify({title})});
+            const result = await response.json();
+            if (!response.ok) throw Error(result.error || 'Could not preserve the new chat name');
+          }
+        }
+        const provisionalGroup=created ? _adoptStructuredIdentity(sid,target) : null;
+        await loadSessions(currentProject);
+        if(provisionalGroup && !_findClientSession(target)?.group) _patchClientSession(target,{group:provisionalGroup});
+        if(!_findClientSession(target))document.getElementById('convTitle').textContent='Conversation ' + target.slice(0,8);
+        await openConv(target);
+        if (event.data.type === 'serena-workspace-open-created' && opts.isNew) {
+          _unmarkActive(sid);
+          runtime.cancelOutput();
+          termSessions.delete(sid);
+          mount.remove();
+        }
+      }catch(error){showToast('Could not open conversation: '+error.message,{variant:'error'});}
+      finally{if(created)creationOpening=false;}
+      return;
+    }
+    if(event.data?.type !== 'serena-workspace-state')return;
+    const state = event.data.state;
+    if (!['ready','running','completed','failed','interrupted','unavailable'].includes(state)) return;
+    runtime.state = state; runtime.busy = state === 'running';
+    _patchClientSession(sid, {workspace_runtime:{ok:state!=='unavailable',session_id:sid,state}});
+    if (state !== 'unavailable') _markActive(sid,
+      activeTermSid === sid && convMode === 'live' && currentTab === 'chats' && document.hasFocus());
+    else _unmarkActive(sid);
+    if (activeTermSid === sid) setTermStatus(state, state === 'unavailable' ? 'error' : '');
+  };
+  window.addEventListener('message', receive);
+  runtime.cancelOutput = () => {
+    window.removeEventListener('message', receive);
+    for(const pending of handoffs.values()){clearTimeout(pending.timer);pending.resolve({ok:false,pending:true,error:'View closed before handoff acknowledgement; do not resend.'});}
+    handoffs.clear();
+  };
+  termSessions.set(sid, runtime);
+  if (opts.background) {
+    mount.classList.add('hidden');
+    if (activeTermSid) _activateTermPane(activeTermSid);
+  }
+  else { _activateTermPane(sid); _startLinkedTerminals(sid); }
+  return runtime;
+}
+
 async function startLiveTerminal(sid, opts) {
   // `opts` is for new-chat mode: { cwd: string, agent?: string, isNew: true }.
   // For existing chats (omit opts), we resume by session_id.
@@ -7065,6 +7259,7 @@ async function startLiveTerminal(sid, opts) {
     if (!opts.background) setConvMode('read');
     return null;
   }
+  if (window.SERENA?.structuredWorkspace) return _startStructuredPane(sid, opts);
   // A missing CLI/session in one pane must not block the rest of the group.
   if (!opts.background && !opts.isNew) _startLinkedTerminals(sid);
   // Already alive? Just bring its pane to front.
@@ -8336,7 +8531,7 @@ async function newChat() {
   } catch(e) {}
 }
 
-async function newChatInline(cwdOverride) {
+async function newChatInline(cwdOverride, defaults = {}) {
   // In-app new chat — spawns a fresh claude in the in-app terminal:
   //   - Linux GTK shell: uses native VTE widget
   //   - Windows/macOS pywebview: uses xterm.js + PTY via WebSocket
@@ -8348,10 +8543,11 @@ async function newChatInline(cwdOverride) {
     title: 'New chat' + (cwdOverride ? ` (${cwdOverride.split('/').filter(Boolean).pop() || cwdOverride})` : ''),
     body: '',
     placeholder: 'Name this chat (e.g. Debug deploy)',
+    defaultValue: defaults.title || '',
     confirm: 'Create',
     agentPicker: true,
-    defaultAgent: _lastNewChatAgent || 'claude',
-    defaultAgents: _lastNewChatAgents,
+    defaultAgent: defaults.agent || _lastNewChatAgent || 'claude',
+    defaultAgents: defaults.agent ? [defaults.agent] : _lastNewChatAgents,
   });
   if (res === null) return;
   const typedTitle = (res.value || '').trim();
@@ -8631,6 +8827,13 @@ async function _feedTerminalWhenReady(sid, text, submit, opts) {
     }
     if (!window.__nativeTerminalBridge) {
       const runtime = termSessions.get(sid);
+      if(runtime?.structured){
+        if(!submit)return false;
+        const result=await runtime.handoff(text);
+        if(result?.ok)return true;
+        if(result?.pending)return 'pending';
+        return false;
+      }
       if (runtime && runtime.ws && runtime.ws.readyState === 1) {
         if (settleMs) await _sleep(settleMs);
         runtime.ws.send('\x1b[200~' + text + '\x1b[201~');
@@ -8771,8 +8974,8 @@ async function handoffSession(srcSid, targetAgent) {
           timeoutMs: 5000,
           settleMs: 0,
         });
-        toast.update(ok ? 'Handed off to ' + targetLabel : 'Handoff did not reach ' + targetLabel,
-          ok ? 'success' : 'error');
+        toast.update(ok === 'pending' ? 'Handoff pending for ' + targetLabel + '; do not resend.' : ok ? 'Handed off to ' + targetLabel : 'Handoff did not reach ' + targetLabel,
+          ok === 'pending' ? 'warning' : ok ? 'success' : 'error');
       }
     } else {
       openConv(targetSid);
@@ -8780,8 +8983,8 @@ async function handoffSession(srcSid, targetAgent) {
         timeoutMs: 15000,
         settleMs: 1200,
       });
-      toast.update(ok ? 'Handed off to ' + targetLabel : 'Opened ' + targetLabel + ', but handoff may not have landed',
-        ok ? 'success' : 'error');
+      toast.update(ok === 'pending' ? 'Handoff pending for ' + targetLabel + '; do not resend.' : ok ? 'Handed off to ' + targetLabel : 'Opened ' + targetLabel + ', but handoff may not have landed',
+        ok === 'pending' ? 'warning' : ok ? 'success' : 'error');
     }
     return;
   }
@@ -8844,8 +9047,14 @@ async function handoffSession(srcSid, targetAgent) {
 
   setTermStatus('Starting ' + targetAgent + '…', 'live');
   if (window.__nativeTerminalBridge) await startGtkCode(tempId);
-  else await startLiveTerminal(tempId, { cwd, agent: targetAgent, isNew: true });
+  else await startLiveTerminal(tempId, { cwd, agent: targetAgent, isNew: true,
+    ...(window.SERENA?.structuredWorkspace ? {seed:resp.prompt} : {}) });
   _startPseudoReconciler();
+
+  if(termSessions.get(tempId)?.structured){
+    toast.update('Ready to create ' + _agentLabel(targetAgent) + ' with handoff context', 'success');
+    return;
+  }
 
   const ok = await _feedTerminalWhenReady(tempId, resp.prompt, true, {
     timeoutMs: 18000,
@@ -8919,6 +9128,7 @@ async function forkLinkedContext(srcSid, targetAgent) {
   document.getElementById('convMeta').textContent = cwd || '~';
 
   setTermStatus('Starting ' + targetAgent + '…', 'live');
+  let structured = false;
   if (window.__nativeTerminalBridge) {
     const rect = await _prepareGtkTermMount();
     window.gtkSend({
@@ -8932,15 +9142,16 @@ async function forkLinkedContext(srcSid, targetAgent) {
     });
     _gtkCodeSid = tempId;
   } else {
-    await startLiveTerminal(tempId, {
+    const runtime = await startLiveTerminal(tempId, {
       cwd,
       agent: targetAgent,
       isNew: true,
       seed: resp.prompt,
     });
+    structured = !!runtime?.structured;
   }
   _startPseudoReconciler();
-  toast.update('Started standalone ' + _agentLabel(targetAgent) + ' context fork', 'success');
+  toast.update((structured ? 'Ready to create standalone ' : 'Started standalone ') + _agentLabel(targetAgent) + ' context fork', 'success');
 }
 
 // Voice coding jobs are executed only by the resident work supervisor. The
@@ -11038,6 +11249,7 @@ def index():
                 "home": home,
                 "homeSlug": home_slug,
                 "platform": sys.platform,
+                "structuredWorkspace": _STRUCTURED_WORKSPACE_ENABLED,
                 # Which box this window is actually running on. Agents already
                 # get this through the SessionStart hook; the header shows the
                 # same answer so a glance settles it too.
@@ -11109,6 +11321,13 @@ def _decorate_sessions(sessions: list[dict]) -> list[dict]:
         # === GROUP FEATURE === (per-row group id — frontend hashes it for color)
         sid = s.get("session_id")
         session_meta = (all_meta.get(sid) or {}) if sid else {}
+        if s.get("native_persistence_pending"):
+            if session_meta.get("custom_title"):
+                s["custom_title"] = session_meta["custom_title"]
+                s["display_title"] = session_meta["custom_title"]
+            s["starred"] = bool(session_meta.get("starred"))
+            s["is_done"] = bool(session_meta.get("done"))
+            s["done_at"] = session_meta.get("done_at")
         gid = session_meta.get("group")
         if gid:
             s["group"] = gid
@@ -11329,6 +11548,10 @@ def api_sessions():
     else:
         sessions = list_sessions(limit=100_000)
 
+    workspace = app.extensions.get("workspace_host")
+    if workspace is not None:
+        sessions = workspace.include_pending_sessions(sessions, projects=dirs)
+        sessions = workspace.decorate_runtime_sessions(sessions)
     return jsonify(_decorate_sessions(_include_permanent_serena_session(sessions)))
 
 
@@ -11653,20 +11876,18 @@ def api_runtime_context():
         return jsonify({"ok": False, "error": "runtime context is local-only"}), 403
     native = _native_runtime_context()
     browser = pty_terminal.runtime_context_snapshot()
-    contexts = [context for context in (native, browser) if context]
+    workspace = app.extensions.get("workspace_host")
+    structured = workspace.runtime_context_snapshot() if workspace is not None else None
+    contexts = [context for context in (native, browser, structured) if context]
+    contexts.sort(key=lambda context: float(context.get("focused_at") or 0), reverse=True)
     runtimes = [
         _decorate_runtime_entry(entry)
         for context in contexts
         for entry in context.get("runtimes", [])
     ]
-    focused_sid = next(
-        (context.get("focused_sid") for context in contexts if context.get("focused_sid")),
-        None,
-    )
-    split_pair = next(
-        (context.get("split_pair") for context in contexts if context.get("split_pair")),
-        [],
-    )
+    focused_context = next((context for context in contexts if context.get("focused_sid")), {})
+    focused_sid = focused_context.get("focused_sid")
+    split_pair = focused_context.get("split_pair", [])
     focused_at = max(
         (float(context.get("focused_at") or 0.0) for context in contexts),
         default=0.0,
@@ -11696,13 +11917,16 @@ def api_runtime_context():
 @app.route("/api/codex-bridge", methods=["POST"])
 def api_codex_bridge():
     from core.codex_bridge import call_codex_via_bridge
+    from ui.workspace_bridge import structured_bridge
     data = request.get_json(silent=True) or {}
     target_sid = (data.get("target_sid") or "").strip()
     prompt = data.get("prompt") or ""
     timeout = float(data.get("timeout") or 300.0)
     if not target_sid or not prompt:
         return jsonify({"ok": False, "message": "target_sid and prompt are required"}), 400
-    result = call_codex_via_bridge(target_sid, prompt, timeout=timeout)
+    result = structured_bridge("codex", target_sid, prompt, timeout)
+    if result is None:
+        result = call_codex_via_bridge(target_sid, prompt, timeout=timeout)
     return jsonify(result)
 
 
@@ -11711,6 +11935,7 @@ def api_codex_work_bridge():
     if not _local_runtime_request():
         return jsonify({"ok": False, "message": "work bridge is local-only"}), 403
     from core.codex_bridge import call_codex_work_via_bridge
+    from ui.workspace_bridge import structured_work_bridge
 
     data = request.get_json(silent=True) or {}
     target_sid = str(data.get("target_sid") or "").strip()
@@ -11727,6 +11952,9 @@ def api_codex_work_bridge():
                 "message": "target_sid, prompt, and item_id are required",
             }
         ), 400
+    native = structured_work_bridge(target_sid, prompt, item_id, data.get("dispatch_id"), timeout)
+    if native is not None:
+        return jsonify(native)
     return jsonify(
         call_codex_work_via_bridge(
             target_sid, prompt, item_id, timeout=timeout
@@ -11739,6 +11967,7 @@ def api_codex_work_interrupt():
     if not _local_runtime_request():
         return jsonify({"ok": False, "message": "work interrupt is local-only"}), 403
     from core.codex_bridge import interrupt_codex_work
+    from ui.workspace_bridge import structured_work_interrupt
 
     data = request.get_json(silent=True) or {}
     target_sid = str(data.get("target_sid") or "").strip()
@@ -11747,7 +11976,9 @@ def api_codex_work_interrupt():
         return jsonify(
             {"ok": False, "message": "target_sid and item_id are required"}
         ), 400
-    result = interrupt_codex_work(target_sid, item_id)
+    result = structured_work_interrupt(target_sid, item_id)
+    if result is None:
+        result = interrupt_codex_work(target_sid, item_id)
     return jsonify(result), 200 if result.get("ok") else 409
 
 
@@ -11757,13 +11988,16 @@ def api_claude_bridge():
     `chats ask-claude` so codex (or any caller) can feed a prompt into a
     linked claude session and get its reply back."""
     from core.claude_bridge import call_claude_via_bridge
+    from ui.workspace_bridge import structured_bridge
     data = request.get_json(silent=True) or {}
     target_sid = (data.get("target_sid") or "").strip()
     prompt = data.get("prompt") or ""
     timeout = float(data.get("timeout") or 300.0)
     if not target_sid or not prompt:
         return jsonify({"ok": False, "message": "target_sid and prompt are required"}), 400
-    result = call_claude_via_bridge(target_sid, prompt, timeout=timeout)
+    result = structured_bridge("claude", target_sid, prompt, timeout)
+    if result is None:
+        result = call_claude_via_bridge(target_sid, prompt, timeout=timeout)
     return jsonify(result)
 
 
@@ -12236,7 +12470,18 @@ def api_ask_linked_claude():
 def api_conversation(session_id):
     session = get_session(session_id)
     if not session:
-        return jsonify({"error": "Not found"}), 404
+        pending = _pending_workspace_meta(session_id)
+        workspace = app.extensions.get("workspace_host")
+        target = workspace.describe_pending_session(session_id) if pending is not None else None
+        if target is not None:
+            return jsonify({"session_id": session_id, "agent": target["agent"],
+                            "title": pending.get("custom_title") or target["title"], "date": "",
+                            "cwd": target["cwd"], "messages": [], "native_persistence_pending": True,
+                            "external_runtime_active": _external_runtime_active(session_id),
+                            "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_create_tokens": 0})
+        session = get_session(session_id)
+        if not session:
+            return jsonify({"error": "Not found"}), 404
 
     # Reconcile any slug-copies (laptop/PC/renamed-dir duplicates) so the view
     # shows the full union regardless of which slug this device wrote.
@@ -12339,10 +12584,38 @@ def api_open_path():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def _pending_workspace_meta(session_id):
+    """Only committed, not-yet-indexed native identities may use metadata alone."""
+    workspace = app.extensions.get("workspace_host")
+    pending = workspace.journal.pending_target(session_id) if workspace else None
+    if pending and pending["committed"] and get_session(session_id) is None:
+        from core.metadata import get_meta
+
+        return get_meta(session_id)
+    return None
+
+
+def _toggle_workspace_done(session_id, pending):
+    from datetime import datetime, timezone
+
+    from core.metadata import set_done
+
+    done = not pending.get("done", False)
+    set_done(session_id, done, datetime.now(timezone.utc).isoformat() if done else None)
+    return done
+
+
 @app.route("/api/star/<session_id>", methods=["POST"])
 def api_star(session_id):
     try:
-        starred = toggle_star(session_id)
+        pending = _pending_workspace_meta(session_id)
+        if pending is None:
+            starred = toggle_star(session_id)
+        else:
+            from core.metadata import set_starred
+
+            starred = not pending.get("starred", False)
+            set_starred(session_id, starred)
         return jsonify({"starred": starred})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
@@ -12352,7 +12625,8 @@ def api_star(session_id):
 def api_done(session_id):
     from core.indexer import toggle_done
     try:
-        done = toggle_done(session_id)
+        pending = _pending_workspace_meta(session_id)
+        done = toggle_done(session_id) if pending is None else _toggle_workspace_done(session_id, pending)
         return jsonify({"ok": True, "done": done})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
@@ -12369,6 +12643,13 @@ def api_bulk_done():
         try:
             cur = get_session(sid)
             if cur is None:
+                pending = _pending_workspace_meta(sid)
+                if pending is None:
+                    continue
+                desired = mark if mark is not None else not pending.get("done")
+                if bool(pending.get("done")) != bool(desired):
+                    _toggle_workspace_done(sid, pending)
+                    count += 1
                 continue
             desired = mark if mark is not None else (not cur.get("is_done"))
             if bool(cur.get("is_done")) == bool(desired):
@@ -12380,16 +12661,29 @@ def api_bulk_done():
     return jsonify({"ok": True, "count": count})
 
 
+def _delete_workspace_session(session_id, *, source):
+    workspace = app.extensions.get("workspace_host")
+    if workspace is not None:
+        result = workspace.delete_pending_session(session_id, source=source)
+        if result is not None:
+            return result
+    return delete_session(session_id, source=source)
+
+
 @app.route("/api/session/<session_id>", methods=["DELETE"])
 def api_delete_session(session_id):
+    from core.workspace_lease import SessionOwnedError
+
     session = get_session(session_id)
     if _is_serena_voice_session(session):
         return jsonify({"error": "Serena's permanent conversation cannot be deleted"}), 403
     if _fleet_worker_marker(session_id):
         return jsonify({"error": "Fleet worker chats are durable run history and cannot be deleted"}), 409
     try:
-        path = delete_session(session_id, source="serena-web")
+        path = _delete_workspace_session(session_id, source="serena-web")
         return jsonify({"ok": True, "path": path})
+    except SessionOwnedError:
+        return jsonify({"error": "Disconnect the session before deleting it; runtime ownership is still active or unconfirmed"}), 409
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
 
@@ -12408,7 +12702,7 @@ def api_bulk_delete():
             errors.append({"id": sid, "error": "Fleet worker chats are durable run history and cannot be deleted"})
             continue
         try:
-            delete_session(sid, source="serena-web-bulk")
+            _delete_workspace_session(sid, source="serena-web-bulk")
             deleted.append(sid)
         except Exception as e:
             errors.append({"id": sid, "error": str(e)})
@@ -12422,7 +12716,12 @@ def api_rename(session_id):
     if not title:
         return jsonify({"error": "Title required"}), 400
     try:
-        set_title(session_id, title)
+        if _pending_workspace_meta(session_id) is not None:
+            from core.metadata import set_custom_title
+
+            set_custom_title(session_id, title)
+        else:
+            set_title(session_id, title)
         return jsonify({"ok": True, "title": title})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404

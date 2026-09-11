@@ -269,8 +269,14 @@ def _candidate_blocker(
     if "alive" in record and not bool(record.get("alive")):
         return "the chat has no live terminal owner"
     runtime_state = str(record.get("state") or record.get("runtime_state") or "").strip()
-    if runtime_state and runtime_state not in {"live", "paused"}:
+    native = record.get("owner") == "workspace"
+    allowed_states = {"ready"} if native else {"live", "paused"}
+    if (native or runtime_state) and runtime_state not in allowed_states:
         return f"the chat runtime is {runtime_state}"
+    if native and record.get("draft_known") is not True:
+        return "the native composer's draft state is not freshly confirmed"
+    if native and record.get("pending_interactions"):
+        return "the native chat has pending questions"
     if record.get("fleet_worker") or metadata.get("fleet_worker"):
         return "Fleet workers are not reusable chats"
     if "external_runtime_active" in record:
@@ -587,7 +593,9 @@ def choose_work_route(
             for member in _context_members(bridge_context)
             if _session_id(member)
             and bool(member.get("alive", True))
-            and str(member.get("state") or "live") in {"live", "paused"}
+            and (str(member.get("state") or "") == "ready"
+                 if member.get("owner") == "workspace"
+                 else str(member.get("state") or "live") in {"live", "paused"})
         }
         for sid, base in indexed.items():
             if sid not in live_sids:
@@ -647,7 +655,6 @@ def choose_work_route(
         for member in _context_members(context)
         if _session_id(member)
         and bool(member.get("alive", True))
-        and str(member.get("state") or "live") in {"live", "paused"}
     }
     owned_sids.update(str(value).strip() for value in active_session_ids if str(value).strip())
     historical: list[tuple[float, str, dict[str, Any]]] = []

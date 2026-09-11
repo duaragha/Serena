@@ -77,10 +77,18 @@ class _Orphan:
         # "Exits immediately" is not "before this line": wait until init has
         # actually adopted the child, or the sweep correctly refuses it as a
         # process with a living parent and the test flakes.
-        assert _wait_for(lambda: pty_terminal._proc_field(self.pid, 4) == 1), "never orphaned"
-        if stop:
-            os.killpg(os.getpgid(self.pid), signal.SIGSTOP)
-            assert _wait_for(lambda: pty_terminal._is_stopped(self.pid)), "did not stop"
+        try:
+            if not _wait_for(lambda: pty_terminal._proc_field(self.pid, 4) == 1):
+                parent = pty_terminal._proc_field(self.pid, 4)
+                if parent and parent > 1:
+                    pytest.skip(f"Runner reparents orphan helpers to PID {parent}, not init; PID-1 sweep precondition unavailable")
+                raise AssertionError("never orphaned")
+            if stop:
+                os.killpg(os.getpgid(self.pid), signal.SIGSTOP)
+                assert _wait_for(lambda: pty_terminal._is_stopped(self.pid)), "did not stop"
+        except BaseException:
+            self.cleanup()
+            raise
 
     def _find(self, before: set[int]) -> int:
         found: list[int] = []

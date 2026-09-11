@@ -70,6 +70,7 @@ class Terminal:
     eof: bool = False
     reader_thread: threading.Thread | None = None
     session_id: str | None = None
+    runtime_lease: object | None = None
     agent: str = ""
     cwd: str = ""
     pty_backend: str = ""
@@ -493,6 +494,47 @@ def spawn(
     agent: str = "",
     env: dict[str, str] | None = None,
 ) -> str:
+    from core.workspace_lease import SessionLease
+
+    # Reject definite pre-launch errors before persisting a crash-ambiguity marker.
+    if not argv:
+        raise ValueError("A terminal command is required")
+    if not os.path.isdir(cwd):
+        raise FileNotFoundError(f"Project directory is unavailable: {cwd}")
+    cols, rows = max(MIN_COLS, int(cols)), max(MIN_ROWS, int(rows))
+    if not _IS_WINDOWS and shutil.which(
+        argv[0], path=(os.environ if env is None else env).get("PATH")
+    ) is None:
+        raise FileNotFoundError(f"The command was not found or was not executable: {argv[0]}.")
+    lease = SessionLease(session_id) if session_id else None
+    tid = None
+    try:
+        if lease:
+            lease.launching()
+        tid = _spawn_process(argv, cwd, cols, rows, session_id=session_id, agent=agent, env=env)
+        if lease:
+            term = get(tid)
+            lease.bind(term.proc.pid)
+            term.runtime_lease = lease
+        return tid
+    except BaseException:
+        if tid:
+            kill(tid)
+        if lease:
+            lease.release()
+        raise
+
+
+def _spawn_process(
+    argv: list[str],
+    cwd: str,
+    cols: int = 100,
+    rows: int = 30,
+    *,
+    session_id: str | None = None,
+    agent: str = "",
+    env: dict[str, str] | None = None,
+) -> str:
     if _PtyProcess is None:
         raise RuntimeError(
             "PTY backend not installed. Install 'pywinpty' on Windows or "
@@ -603,10 +645,19 @@ _session_tids: dict[str, str] = {}
 
 def register_session(sid: str, tid: str) -> None:
     with _registry_lock:
-        _session_tids[sid] = tid
         term = _terminals.get(tid)
         if term:
+            if term.runtime_lease is None or term.session_id != sid:
+                from core.workspace_lease import SessionLease
+
+                lease = SessionLease(sid)
+                lease.bind(term.proc.pid)
+                old_lease = term.runtime_lease
+                term.runtime_lease = lease
+                if old_lease:
+                    old_lease.release()
             term.session_id = sid
+            _session_tids[sid] = tid
 
 
 def migrate_session(old_sid: str, new_sid: str, tid: str | None = None) -> bool:
@@ -618,6 +669,19 @@ def migrate_session(old_sid: str, new_sid: str, tid: str | None = None) -> bool:
         mapped_tid = tid or _session_tids.get(old_sid)
         if not mapped_tid or mapped_tid not in _terminals:
             return False
+        term = _terminals[mapped_tid]
+        if term.session_id != new_sid or term.runtime_lease is None:
+            from core.workspace_lease import SessionLease, SessionOwnedError
+
+            try:
+                lease = SessionLease(new_sid)
+            except SessionOwnedError:
+                return False
+            lease.bind(term.proc.pid)
+            old_lease = term.runtime_lease
+            term.runtime_lease = lease
+            if old_lease:
+                old_lease.release()
         if _session_tids.get(old_sid) == mapped_tid:
             _session_tids.pop(old_sid, None)
         _session_tids[new_sid] = mapped_tid
@@ -1400,7 +1464,10 @@ def is_alive(tid: str) -> bool:
     if not term:
         return False
     try:
-        return term.proc.isalive()
+        alive = term.proc.isalive()
+        if not alive and term.runtime_lease:
+            term.runtime_lease.release()
+        return alive
     except Exception:
         return False
 
@@ -1427,6 +1494,9 @@ def kill(tid: str) -> None:
             term.proc.terminate(force=True)
     except Exception:
         pass
+
+    if term.runtime_lease:
+        term.runtime_lease.release()
 
 
 def kill_all() -> int:

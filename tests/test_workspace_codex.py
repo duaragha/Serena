@@ -1,0 +1,2574 @@
+import asyncio
+import os
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+from core.workspace_codex import CodexWorkspace
+from core.workspace_rpc import WorkspaceRpcError
+
+
+@pytest.fixture
+def tmp_path(tmp_path):
+    # Owners canonicalize their project path before sending native requests.
+    return tmp_path.resolve()
+
+
+@pytest.mark.parametrize('case', ['ok', 'unsupported', 'busy', 'invalid', 'changed', 'malformed'])
+def test_speed_tier_is_native_exact_and_does_not_start_a_turn(tmp_path, case):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.settings['model'] = 'current'
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'model/list':
+                return {'data': [{'model': 'current', 'serviceTiers': [] if case == 'unsupported' else [{'id': 'priority', 'name': 'Fast'}]}]}
+            assert method == 'thread/settings/update'
+            return None if case == 'malformed' else {}
+        rpc.request = request
+        if case == 'busy':
+            owner.state = 'running'
+        try:
+            if case == 'ok':
+                assert (await owner.set_speed_tier('priority', 'current'))['currentValue'] == 'priority'
+                assert calls[-1] == ('thread/settings/update', {'threadId': owner.session_id, 'serviceTier': 'priority'})
+                assert events[-1] == {'method': 'workspace/speed', 'params': {'model': 'current', 'value': 'priority'}}
+                assert (await owner.set_speed_tier(None, 'current'))['currentValue'] is None
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.set_speed_tier('unknown' if case == 'invalid' else 'priority', 'other' if case == 'changed' else 'current')
+                assert any(method == 'thread/settings/update' for method, _ in calls) is (case == 'malformed')
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('case', ['ok', 'unsupported', 'busy', 'invalid', 'changed', 'malformed'])
+def test_personality_uses_native_capability_and_exact_session(tmp_path, case):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.settings['model'] = 'current'
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'model/list':
+                if case == 'changed':
+                    owner.settings['model'] = 'changed'
+                return {'data': [{'model': 'current', 'supportsPersonality': case != 'unsupported'}]}
+            assert method == 'thread/settings/update'
+            return None if case == 'malformed' else {}
+        rpc.request = request
+        if case == 'busy':
+            owner.state = 'running'
+        try:
+            if case == 'ok':
+                result = await owner.set_personality('friendly')
+                assert result['currentValue'] == 'friendly'
+                assert calls[-1] == ('thread/settings/update', {'threadId': owner.session_id, 'personality': 'friendly'})
+                assert owner.settings['model'] == 'current'
+                assert events[-1]['params']['personality'] == 'friendly'
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.set_personality('invalid' if case == 'invalid' else 'friendly')
+                assert 'personality' not in owner.settings
+                assert any(method == 'thread/settings/update' for method, _ in calls) is (case == 'malformed')
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('case', ['ok', 'stale', 'unconfirmed', 'foreign', 'invalid_budget', 'running'])
+def test_goal_controls_preserve_exact_session_and_reject_stale_state(tmp_path, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        current = {'threadId':owner.session_id,'objective':'Original','status':'paused','tokenBudget':1000,
+                   'tokensUsed':0,'timeUsedSeconds':0,'createdAt':1,'updatedAt':1}
+        calls = []
+        async def request(method, params):
+            nonlocal current
+            calls.append((method, params))
+            assert params['threadId'] == owner.session_id
+            if method == 'thread/goal/get':
+                return {'goal':{**current,'threadId':'foreign'} if case == 'foreign' else current}
+            if method == 'thread/goal/set':
+                current = {**current, **{k:v for k,v in params.items() if k!='threadId'}}
+                return {'goal':current}
+            assert method == 'thread/goal/clear'
+            current = None
+            return {'cleared':True}
+        rpc.request = request
+        if case == 'running':
+            owner.state='running'
+            owner.active_turn='active'
+        try:
+            expected = None if case == 'stale' else dict(current)
+            changes = {'tokenBudget':True} if case == 'invalid_budget' else {'status':'active'}
+            if case in {'ok','running'}:
+                result = await owner.update_goal(changes, expected, True)
+                assert result['goal']['status'] == 'active'
+                assert await owner.clear_goal(result['goal'], True) == {'goal':None}
+                assert owner.active_turn == ('active' if case == 'running' else None)
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.update_goal(changes, expected, case != 'unconfirmed')
+                assert not any(method in {'thread/goal/set','thread/goal/clear'} for method,_ in calls)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('state', ['ready', 'running'])
+@pytest.mark.parametrize('case', ['direct', 'nested', 'foreign', 'cycle', 'wrong_id', 'bad_history'])
+def test_agent_inspection_uses_parent_connection_and_validates_ancestry(tmp_path, state, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.state = state
+        owner.active_turn = 'parent-turn' if state == 'running' else None
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/list':
+                assert params['ancestorThreadId'] == owner.session_id
+                assert params['limit'] == 50
+                return {'data': [{'id': 'child', 'parentThreadId': owner.session_id}], 'nextCursor': None}
+            if method == 'thread/read':
+                parent = owner.session_id
+                if case == 'foreign':
+                    parent = None
+                elif case == 'cycle':
+                    parent = 'child'
+                elif case == 'nested' and params['threadId'] == 'child':
+                    parent = 'middle'
+                return {'thread': {'id': 'wrong' if case == 'wrong_id' else params['threadId'], 'parentThreadId': parent}}
+            assert method == 'thread/turns/list'
+            assert params == {'threadId': 'child', 'cursor': None, 'limit': 50, 'sortDirection': 'desc', 'itemsView': 'full'}
+            return {'data': [None] if case == 'bad_history' else [{'id': 'turn', 'items': []}], 'nextCursor': None}
+        rpc.request = request
+        try:
+            assert (await owner.list_agents())['data'][0]['id'] == 'child'
+            if case in {'direct', 'nested'}:
+                result = await owner.inspect_agent('child')
+                assert result['thread']['id'] == 'child'
+                assert result['thread']['turns'] == [{'id': 'turn', 'items': []}]
+            else:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.inspect_agent('child')
+                assert any(method == 'thread/turns/list' for method, _ in calls) is (case == 'bad_history')
+            assert owner.state == state
+            assert owner.active_turn == ('parent-turn' if state == 'running' else None)
+            assert all(method in {'thread/list', 'thread/read', 'thread/turns/list'} for method, _ in calls)
+            with pytest.raises(ValueError):
+                await owner.inspect_agent(owner.session_id)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('foreign', [False, True])
+def test_child_events_are_isolated_and_approvals_stay_explicit(tmp_path, foreign):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        events.clear()
+        owner.state = 'running'
+        owner.active_turn = 'parent-turn'
+        original = rpc.request
+        async def request(method, params):
+            if method == 'thread/read':
+                return {'thread': {'id': params['threadId'], 'parentThreadId': None if foreign else owner.session_id}}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            await rpc.events.put({'method': 'turn/completed', 'params': {'threadId': 'child', 'turn': {'id': 'child-turn', 'status': 'completed'}}})
+            async with asyncio.timeout(2):
+                while not events:
+                    await asyncio.sleep(.01)
+            if foreign:
+                assert owner.state == 'unavailable'
+                assert events[0]['method'] == 'workspace/error'
+                return
+            assert owner.state == 'running' and owner.active_turn == 'parent-turn'
+            assert not owner.active_agent_threads
+            assert events[0]['method'] == 'workspace/agentEvent'
+            assert events[0]['params']['threadId'] == owner.session_id
+            assert events[0]['params']['agentThreadId'] == 'child'
+            question = {'id': 77, 'method': 'item/commandExecution/requestApproval',
+                        'params': {'threadId': 'child', 'turnId': 'child-turn', 'command': 'echo child'}}
+            await rpc.events.put(question)
+            async with asyncio.timeout(2):
+                while 77 not in owner.questions:
+                    await asyncio.sleep(.01)
+            assert not any(method == 'answer' for method, _ in rpc.calls)
+            assert owner.questions[77] == question
+            assert events[-1]['params']['agentThreadId'] == 'child'
+            assert events[-1]['params']['threadId'] == owner.session_id
+            await owner.answer(77, {'decision': 'decline'})
+            assert rpc.calls[-1] == ('answer', (77, {'decision': 'decline'}))
+            assert not owner.questions
+            assert owner.active_turn == 'parent-turn'
+            await rpc.events.put({'method': 'turn/started', 'params': {'threadId': 'child', 'turn': {'id': 'child-next'}}})
+            async with asyncio.timeout(2):
+                while not owner.active_agent_threads:
+                    await asyncio.sleep(.01)
+            assert owner.active_agent_threads == {'child'}
+        finally:
+            await owner.close()
+        assert not owner.active_agent_threads and not owner._agent_ids
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('case', ['ok', 'unconfirmed', 'stale', 'ambiguous', 'foreign', 'malformed', 'unavailable'])
+def test_agent_stop_is_confirmed_exact_and_does_not_complete_parent(tmp_path, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.state = 'unavailable' if case == 'unavailable' else 'running'
+        owner.active_turn = 'parent-turn'
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/read':
+                return {'thread': {'id': params['threadId'], 'parentThreadId': None if case == 'foreign' else owner.session_id, 'status': {'type': 'active'}}}
+            if method == 'thread/turns/list':
+                turns = [{'id': 'changed' if case == 'stale' else 'child-turn', 'status': 'inProgress', 'items': []}]
+                if case == 'ambiguous':
+                    turns.append({'id': 'second', 'status': 'inProgress', 'items': []})
+                return {'data': turns, 'nextCursor': None}
+            assert method == 'turn/interrupt'
+            assert params == {'threadId': 'child', 'turnId': 'child-turn'}
+            return None if case == 'malformed' else {}
+        rpc.request = request
+        try:
+            if case == 'ok':
+                assert await owner.interrupt_agent('child', 'child-turn', True) == {'requested': True, 'threadId': 'child', 'turnId': 'child-turn'}
+                assert owner.active_agent_threads == {'child'}
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.interrupt_agent('child', 'child-turn', case != 'unconfirmed')
+            assert any(method == 'turn/interrupt' for method, _ in calls) is (case in {'ok', 'malformed'})
+            assert owner.active_turn == 'parent-turn'
+            assert owner.state == ('unavailable' if case == 'unavailable' else 'running')
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('case', ['ok', 'image', 'stale', 'foreign', 'unconfirmed', 'command', 'empty'])
+def test_agent_message_steers_exact_turn_without_start_or_resume(tmp_path, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.state = 'running'
+        owner.active_turn = 'parent-turn'
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/read':
+                return {'thread': {'id': 'child', 'parentThreadId': None if case == 'foreign' else owner.session_id}}
+            if method == 'thread/turns/list':
+                return {'data': [{'id': 'changed' if case == 'stale' else 'child-turn', 'status': 'inProgress', 'items': []}], 'nextCursor': None}
+            assert method == 'turn/steer'
+            expected = [{'type': 'localImage', 'path': '/managed/photo.png'}] if case == 'image' else [{'type': 'text', 'text': 'Focus on tests\nKeep the scope'}]
+            assert params == {'threadId': 'child', 'expectedTurnId': 'child-turn', 'input': expected}
+            return {'turnId': 'wrong' if case == 'unconfirmed' else 'child-turn'}
+        rpc.request = request
+        try:
+            text = '/new' if case == 'command' else '' if case == 'empty' else 'Focus on tests\nKeep the scope'
+            if case == 'image':
+                assert await owner.steer_agent('child', 'child-turn', inputs=[{'type': 'localImage', 'path': '/managed/photo.png'}]) == {'accepted': True, 'threadId': 'child', 'turnId': 'child-turn'}
+            elif case == 'ok':
+                assert await owner.steer_agent('child', 'child-turn', text) == {'accepted': True, 'threadId': 'child', 'turnId': 'child-turn'}
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.steer_agent('child', 'child-turn', text)
+            assert any(method == 'turn/steer' for method, _ in calls) is (case in {'ok', 'image', 'unconfirmed'})
+            assert owner.active_turn == 'parent-turn' and owner.state == 'running'
+            assert all(method in {'thread/read', 'thread/turns/list', 'turn/steer'} for method, _ in calls)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('state', ['ready', 'running'])
+@pytest.mark.parametrize('case', ['ok', 'stale', 'foreign', 'unloaded', 'ambiguous', 'fast', 'unconfirmed'])
+def test_idle_agent_continuation_keeps_exact_owner_and_checks_snapshot(tmp_path, state, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.state = state
+        owner.active_turn = 'parent-turn' if state == 'running' else None
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/read':
+                return {'thread': {'id': 'child', 'parentThreadId': 'foreign' if case == 'foreign' else owner.session_id,
+                                   'status': {'type': 'notLoaded' if case == 'unloaded' else 'idle'}}}
+            if method == 'thread/turns/list':
+                return {'data': [{'id': 'changed' if case == 'stale' else 'latest', 'status': 'completed', 'items': []}], 'nextCursor': None}
+            assert method == 'turn/start'
+            assert params == {'threadId': 'child', 'input': [{'type': 'text', 'text': 'Continue the review'}]}
+            assert 'child' in owner.active_agent_threads
+            if case == 'ambiguous':
+                raise WorkspaceRpcError('lost response')
+            if case == 'fast':
+                owner.active_agent_threads.discard('child')
+            return {} if case == 'unconfirmed' else {'turn': {'id': 'next', 'status': 'inProgress'}}
+        rpc.request = request
+        try:
+            if state == 'ready' and case in {'ok', 'fast'}:
+                assert await owner.continue_agent('child', 'latest', 'Continue the review', True) == {'accepted': True, 'threadId': 'child', 'turnId': 'next'}
+                assert owner.state == 'ready' and owner.active_turn is None
+                assert ('child' in owner.active_agent_threads) is (case != 'fast')
+            else:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.continue_agent('child', 'latest', 'Continue the review', True)
+            assert any(method == 'turn/start' for method, _ in calls) is (state == 'ready' and case in {'ok', 'fast', 'ambiguous', 'unconfirmed'})
+            if state == 'ready' and case in {'ambiguous', 'unconfirmed'}:
+                assert owner.state == 'uncertain'
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.continue_agent('child', 'latest', 'Continue the review', True)
+                assert sum(method == 'turn/start' for method, _ in calls) == 1
+            assert all(method in {'thread/read', 'thread/turns/list', 'turn/start'} for method, _ in calls)
+            with pytest.raises(ValueError):
+                await owner.continue_agent('child', 'latest', 'Continue', False)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('state', ['ready', 'running'])
+def test_native_rename_targets_and_verifies_exact_thread_without_new_turn(tmp_path, state):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/name/set':
+                return {}
+            assert method == 'thread/read'
+            return {'thread': {'id': owner.session_id, 'name': 'New title'}}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = state, 'current' if state == 'running' else None
+            before = owner.active_turn
+            assert await owner.rename(' New title ') == {'session_id': owner.session_id, 'name': 'New title'}
+            assert calls == [('thread/name/set', {'threadId': owner.session_id, 'name': 'New title'}),
+                             ('thread/read', {'threadId': owner.session_id, 'includeTurns': False})]
+            assert owner.state == state and owner.active_turn == before
+            assert owner.thread['name'] == 'New title'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('name', ['', '  ', None, 'x' * 1001, 'two\nlines', 'delete\x7f'])
+def test_native_rename_rejects_invalid_names_before_rpc(tmp_path, name):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        with pytest.raises(ValueError):
+            await owner.rename(name)
+        assert not rpc.calls
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('reply', [None, {'thread': {'id': 'foreign', 'name': 'New'}}, {'thread': {'id': 'wrong', 'name': 'Old'}}])
+def test_native_rename_does_not_claim_unverified_name(tmp_path, reply):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        async def request(method, params):
+            return {} if method == 'thread/name/set' else reply
+        rpc.request = request
+        try:
+            with pytest.raises(WorkspaceRpcError, match='could not be verified'):
+                await owner.rename('New')
+            assert owner.state == 'ready'
+            assert owner.thread.get('name') != 'New'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('command', ['/plugins', '/delete', '/debug-config', '/prompts:custom', '/unknown arg'])
+def test_unrouted_commands_never_reach_submit_or_steer(tmp_path, command):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        async def request(*args, **kwargs):
+            pytest.fail('Unrouted command reached native RPC')
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match='not sent to the model'):
+                await owner.submit([{'type': 'text', 'text': command}])
+            owner.state, owner.active_turn = 'running', 'existing'
+            with pytest.raises(ValueError, match='not sent to the model'):
+                await owner.steer([{'type': 'text', 'text': command}], expected_turn_id='existing')
+            assert owner.state == 'running' and owner.active_turn == 'existing'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('text', ['/home/user/file.py', '/foo/bar explain', 'Explain /plugins', '$skill', 'ordinary text'])
+def test_paths_and_normal_text_are_not_slash_commands(text):
+    CodexWorkspace._reject_unrouted_command([{'type': 'text', 'text': text}])
+
+
+@pytest.mark.parametrize('invalid', [None, 'cwd', 'state', 'warnings'])
+def test_hook_catalog_is_project_scoped_read_only_and_validated(tmp_path, invalid):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        hook = dict(key='h', eventName='preToolUse', handlerType='command', source='project',
+                    sourcePath='/project/hooks.json', trustStatus='untrusted', enabled=False,
+                    isManaged=False, command='echo hello', privateField='omit')
+        page = {'cwd': str(tmp_path), 'hooks': [hook], 'warnings': [], 'errors': []}
+        if invalid == 'cwd':
+            page['cwd'] = '/wrong'
+        if invalid == 'state':
+            hook['enabled'] = 'true'
+        if invalid == 'warnings':
+            page['warnings'] = [{}]
+        async def request(method, params):
+            calls.append((method, params))
+            return {'data': [page]}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'preserved'
+            if invalid:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.list_hooks()
+            else:
+                result = await owner.list_hooks()
+                assert result['data'][0]['trustStatus'] == 'untrusted'
+                assert 'privateField' not in result['data'][0]
+            assert calls == [('hooks/list', {'cwds': [str(tmp_path)]})]
+            assert owner.state == 'running' and owner.active_turn == 'preserved'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('invalid', [None, 'foreign', 'duplicate', 'identity', 'runtime', 'missing'])
+def test_apps_catalog_is_exact_thread_bounded_and_read_only(tmp_path, invalid):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        app = dict(id='demo-app', name='Demo App', description='Description', secret='omit')
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'app/installed':
+                assert params == {'threadId': owner.session_id, 'forceRefresh': True}
+                return {'apps': [dict(id='invalid\nidentity' if invalid == 'identity' else 'demo-app', enabled=True, callable='true' if invalid == 'runtime' else True)]}
+            assert method == 'app/read' and params == {'appIds': ['demo-app'], 'includeTools': False}
+            if invalid == 'foreign':
+                app['id'] = 'other'
+            return {'apps': [app, app] if invalid == 'duplicate' else [app], 'missingAppIds': ['other'] if invalid == 'missing' else []}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'preserved'
+            if invalid:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.list_apps()
+            else:
+                assert await owner.list_apps() == {'data': [dict(id='demo-app', name='Demo App', description='Description', accessible=True, enabled=True, callable=True)]}
+                assert len(calls) == 2
+            assert owner.state == 'running' and owner.active_turn == 'preserved'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('steering', [False, True])
+def test_selected_apps_revalidated_and_native_mentions_use_catalog_identity(tmp_path, steering):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls, callable_state = [], True
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'app/read':
+                return {'apps': [dict(id='demo', name='Native name')], 'missingAppIds': []}
+            if method == 'app/installed':
+                return {'apps': [dict(id='demo', enabled=True, callable=callable_state)]}
+            assert method in {'turn/start', 'turn/steer'}
+            return {'turn': {'id': 'turn'}}
+        rpc.request = request
+        async def send(ids):
+            inputs = [{'type': 'text', 'text': 'Read my selected app'}]
+            if steering:
+                owner.state, owner.active_turn = 'running', 'turn'
+                return await owner.steer(inputs, expected_turn_id='turn', apps=ids)
+            owner.state = 'ready'
+            return await owner.submit(inputs, options={'apps': ids})
+        try:
+            await send(['demo'])
+            assert calls[-1][1]['threadId'] == owner.session_id
+            assert calls[-1][1]['input'][-1] == {'type': 'mention', 'name': 'Native name', 'path': 'app://demo'}
+            callable_state = False
+            for ids in (['demo'], ['unknown'], ['demo', 'demo'], [None]):
+                calls.clear()
+                with pytest.raises(ValueError):
+                    await send(ids)
+                assert not any(method.startswith('turn/') for method, _ in calls)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+def test_installed_apps_batch_metadata_and_missing_apps_are_not_callable(tmp_path):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        batches = []
+        async def request(method, params):
+            if method == 'app/installed':
+                return {'apps': [dict(id=f'app.{i}', enabled=True, callable=True) for i in range(101)]}
+            assert method == 'app/read'
+            batch = params['appIds']
+            batches.append(len(batch))
+            return {'apps': [dict(id=identity, name=identity) for identity in batch if identity != 'app.100'],
+                    'missingAppIds': ['app.100'] if 'app.100' in batch else []}
+        rpc.request = request
+        try:
+            result = await owner.list_apps()
+            assert batches == [100, 1]
+            assert len(result['data']) == 101
+            assert result['data'][0]['callable']
+            assert not result['data'][-1]['accessible'] and not result['data'][-1]['callable']
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("account", [None, {"type": "chatgpt", "email": "person@example.test", "planType": "pro", "accessToken": "never-forward"}])
+def test_account_status_uses_exact_owner_without_refresh_or_inference(tmp_path, account):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        with pytest.raises(WorkspaceRpcError, match="Attach"):
+            await client.account_status()
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            return {"account": account, "requiresOpenaiAuth": True, "refreshToken": "never-forward"}
+        rpc.request = request
+        try:
+            client.state, client.active_turn = "running", "preserved"
+            result = await client.account_status()
+            assert result["credentialsVerified"] is False
+            assert "never-forward" not in str(result)
+            assert result["account"] == (None if account is None else {k: account[k] for k in ("type", "email", "planType")})
+            assert calls == [("account/read", {"refreshToken": False})]
+            assert client.state == "running" and client.active_turn == "preserved"
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('kind', ['legacy', 'multiple', 'malformed', 'unavailable'])
+def test_session_usage_is_exact_estimated_and_preserves_int64(tmp_path, kind):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if kind == 'unavailable':
+                return {'threadUsage': None}
+            return {'threadUsage': {'threadId': 'foreign' if kind == 'malformed' else owner.session_id,
+                    'estimatedUsageCreditsMicros': 2**63-1, 'estimatedUsageUsdMicros': None,
+                    'groups': [{'estimatedUsageCreditsMicros': 1, 'inputTokens': 0, 'model': 'native', 'accessToken': 'secret'}]}}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'same'
+            if kind == 'malformed':
+                with pytest.raises(WorkspaceRpcError, match='different session'):
+                    await owner.thread_token_usage()
+            else:
+                result = await owner.thread_token_usage()
+                if kind == 'unavailable':
+                    assert result['threadUsage'] is None
+                else:
+                    usage = result['threadUsage']
+                    assert usage['estimatedUsageCreditsMicros'] == str(2**63-1)
+                    assert usage['estimatedUsageUsdMicros'] is None
+                    assert usage['groups'][0]['inputTokens'] == '0' and usage['groups'][0]['totalTokens'] is None
+                    assert 'secret' not in str(result)
+            assert calls == [('account/usage/read', {'threadId': owner.session_id})]
+            assert owner.state == 'running' and owner.active_turn == 'same'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('kind', ['legacy', 'multiple', 'malformed', 'unavailable'])
+def test_account_token_usage_is_bounded_exact_and_preserves_missing_data(tmp_path, kind):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        with pytest.raises(WorkspaceRpcError, match='Attach'):
+            await owner.account_token_usage()
+        await owner.open(binary='codex')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if kind == 'unavailable':
+                raise WorkspaceRpcError('Not authenticated')
+            if kind == 'malformed':
+                return {'summary': {'lifetimeTokens': True}}
+            return {'summary': {'lifetimeTokens': 2**63-1, 'currentStreakDays': 0, 'secret': 'never-forward'},
+                    'dailyUsageBuckets': [{'startDate': '2026-09-09', 'tokens': 0}, {'startDate': '2026-09-10', 'tokens': 2**63-1}] if kind == 'multiple' else None,
+                    'accessToken': 'never-forward'}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'same-turn'
+            if kind in {'unavailable', 'malformed'}:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.account_token_usage()
+            else:
+                result = await owner.account_token_usage()
+                assert result['summary']['lifetimeTokens'] == str(2**63-1)
+                assert result['summary']['peakDailyTokens'] is None
+                assert result['summary']['currentStreakDays'] == '0'
+                assert 'never-forward' not in str(result)
+                if kind == 'multiple':
+                    assert result['dailyUsageBuckets'][0] == {'startDate': '2026-09-10', 'tokens': str(2**63-1)}
+                else:
+                    assert result['dailyUsageBuckets'] is None
+            assert calls == [('account/usage/read', {})]
+            assert owner.state == 'running' and owner.active_turn == 'same-turn'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('buckets', [
+    [{'startDate': '2026-02-30', 'tokens': 1}], [{'startDate': '2026-9-1', 'tokens': 1}],
+    [{'startDate': '2026-09-10', 'tokens': -1}], [{'startDate': '2026-09-10', 'tokens': None}],
+    [{'startDate': '2026-09-10', 'tokens': 1}] * 2, [{}] * 10001,
+])
+def test_account_token_usage_rejects_invalid_daily_activity(tmp_path, buckets):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        async def request(*args):
+            return {'summary': {}, 'dailyUsageBuckets': buckets}
+        rpc.request = request
+        try:
+            with pytest.raises(WorkspaceRpcError):
+                await owner.account_token_usage()
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('kind', ['legacy', 'multiple', 'malformed', 'unavailable'])
+def test_account_limits_are_native_sanitized_and_do_not_submit(tmp_path, kind):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        bucket = {'primary': None, 'secondary': {'usedPercent': 57, 'windowDurationMins': 10080, 'resetsAt': None}, 'accessToken': 'secret'}
+        async def request(method, params):
+            calls.append((method, params))
+            if kind == 'unavailable':
+                raise WorkspaceRpcError('Not authenticated')
+            if kind == 'malformed':
+                return {'rateLimits': {'primary': {'usedPercent': True}}}
+            return {'rateLimits': bucket, 'accountId': 'private', 'rateLimitsByLimitId': {'codex': bucket, 'other': {'primary': {'usedPercent': 0}}} if kind == 'multiple' else None}
+        rpc.request = request
+        try:
+            owner.state, owner.active_turn = 'running', 'same-turn'
+            if kind in {'malformed', 'unavailable'}:
+                with pytest.raises(WorkspaceRpcError):
+                    await owner.account_rate_limits()
+                assert not any(e['method'] == 'workspace/accountLimits' for e in events)
+            else:
+                result = await owner.account_rate_limits()
+                assert result['limits'][0]['primary'] is None
+                assert result['limits'][0]['secondary']['usedPercent'] == 57
+                assert 'secret' not in str(result) and 'private' not in str(result)
+                assert len(result['limits']) == (2 if kind == 'multiple' else 1)
+                assert events[-1]['params'] == result
+            assert calls == [('account/rateLimits/read', {})]
+            assert owner.state == 'running' and owner.active_turn == 'same-turn'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["complete", "early", "cancel", "timeout", "unsafe"])
+def test_browser_login_is_single_owner_subscription_only_and_exact(tmp_path, outcome):
+    from core.workspace_codex_auth import CodexLoginLease
+    from core.workspace_lease import SessionOwnedError
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        client._lease.metadata = tmp_path / "session.json"
+        rpc.process.pid = os.getpid()
+        calls = []
+        completion = {"loginId": "native-login", "success": True}
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "account/login/start":
+                assert params == {"type": "chatgpt"}
+                with pytest.raises(SessionOwnedError):
+                    CodexLoginLease("codex-browser-login", directory=tmp_path)
+                if outcome == "timeout":
+                    raise WorkspaceRpcError("timed out")
+                if outcome == "early":
+                    client._finish_account_login(completion)
+                return {"type": "chatgpt", "loginId": "native-login",
+                        "authUrl": "https://evil.example/" if outcome == "unsafe" else "https://auth.openai.com/authorize?state=proof"}
+            assert method == "account/login/cancel" and params == {"loginId": "native-login"}
+            return {"status": "canceled"}
+        rpc.request = request
+        try:
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.login_account()
+            assert not calls
+            client.state = "ready"
+            if outcome in {"timeout", "unsafe"}:
+                with pytest.raises(WorkspaceRpcError):
+                    await client.login_account()
+                assert (await client.login_account())["status"] == "uncertain"
+            else:
+                result = await client.login_account()
+                assert result["status"] == ("succeeded" if outcome == "early" else "pending")
+                if outcome != "early":
+                    assert await client.login_account() == result
+                    client._finish_account_login({"loginId": "other", "success": True})
+                    assert client._account_login["status"] == "pending"
+                    with pytest.raises(ValueError):
+                        await client.cancel_account_login("other")
+                    if outcome == "cancel":
+                        assert (await client.cancel_account_login("native-login"))["status"] == "cancelled"
+                    else:
+                        await rpc.events.put({"method": "account/login/completed", "params": completion})
+                        await asyncio.sleep(0)
+                        assert client._account_login["status"] == "succeeded"
+                assert client._account_login_lease is None
+                prior = dict(client._account_login)
+                client._finish_account_login({"loginId": "native-login", "success": False})
+                assert client._account_login == prior
+                lease = CodexLoginLease("codex-browser-login", directory=tmp_path)
+                lease.release()
+            assert len([call for call in calls if call[0] == "account/login/start"]) == 1
+            assert client.state == "ready" and client.active_turn is None
+            assert not any(method in {"turn/start", "account/logout"} for method, _ in calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "repeat", "busy", "pending_login", "bad_response", "bad_event", "still_signed_in", "missing_event"],
+)
+def test_account_logout_requires_idle_owner_and_native_confirmation(tmp_path, outcome):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary="codex")
+        calls = []
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "account/logout":
+                if outcome != "missing_event":
+                    await rpc.events.put({
+                        "method": "account/updated",
+                        "params": {
+                            "authMode": "chatgpt" if outcome == "bad_event" else None,
+                            "planType": "pro" if outcome == "bad_event" else None,
+                        },
+                    })
+                return None if outcome == "bad_response" else {}
+            assert method == "account/read" and params == {"refreshToken": False}
+            return {
+                "account": {"type": "chatgpt"} if outcome == "still_signed_in" else None,
+                "requiresOpenaiAuth": True,
+            }
+
+        rpc.request = request
+        if outcome == "busy":
+            owner.state, owner.active_turn = "running", "turn"
+        elif outcome == "pending_login":
+            owner._account_login = {"status": "pending", "loginId": "login"}
+        try:
+            if outcome in {"success", "repeat"}:
+                assert await owner.logout_account() == {"loggedOut": True}
+                if outcome == "repeat":
+                    assert await owner.logout_account() == {"loggedOut": True}
+                assert calls.count(("account/logout", None)) == (2 if outcome == "repeat" else 1)
+                assert owner._account_login is None
+                assert any(event.get("method") == "account/updated" for event in events)
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.logout_account(
+                        notification_timeout=0.01 if outcome == "missing_event" else 5
+                    )
+                if outcome in {"busy", "pending_login"}:
+                    assert calls == []
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await owner.close()
+
+    asyncio.run(run())
+
+
+def test_project_identity_accepts_alias_spelling_not_other_directory(tmp_path):
+    async def run():
+        client, _, _ = await make(tmp_path)
+        assert client._same_project(str(tmp_path / "."))
+        assert client._same_project(str(tmp_path) + os.sep)
+        if os.name == "nt":
+            assert client._same_project(str(tmp_path).swapcase())
+        other = tmp_path / "other"
+        other.mkdir()
+        for value in (str(other), str(tmp_path / "missing"), ".", None, {}, "\0"):
+            assert not client._same_project(value)
+    asyncio.run(run())
+
+
+def test_native_skills_accept_same_directory_with_alternate_spelling(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        async def request(method, params):
+            assert method == "skills/list"
+            alternate = str(tmp_path).swapcase() if os.name == "nt" else str(tmp_path) + os.sep
+            return {"data": [{"cwd": alternate, "skills": [], "errors": []}]}
+        rpc.request = request
+        try:
+            assert (await client.list_commands())["data"] == []
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("url", ["https://auth.example/authorize?state=one", "javascript:alert(1)"])
+def test_mcp_login_exact_server_pending_guard_and_native_completion(tmp_path, url):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "config/read":
+                return {"config": {}}
+            if method == "mcpServerStatus/list":
+                return {"data": [{"name": "local", "tools": {}, "authStatus": "notLoggedIn"}]}
+            if method == "mcpServer/oauth/login":
+                assert params == {"name": "local", "threadId": "exact-session"}
+                return {"authorizationUrl": url}
+            assert method == "config/mcpServer/reload" and params == {}
+            return {}
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError):
+                await client.login_mcp("other")
+            if url.startswith("https"):
+                assert (await client.login_mcp("local"))["authorizationUrl"] == url
+                assert (await client.login_mcp("local"))["status"] == "pending"
+            else:
+                with pytest.raises(WorkspaceRpcError, match="authorization URL"):
+                    await client.login_mcp("local")
+                assert (await client.login_mcp("local"))["status"] == "uncertain"
+            assert len([call for call in calls if call[0] == "mcpServer/oauth/login"]) == 1
+            await rpc.events.put({"method": "mcpServer/oauthLogin/completed", "params": {"threadId": "exact-session", "name": "local", "success": False, "error": "Denied"}})
+            await asyncio.sleep(0)
+            assert (await client.list_mcp_servers())["data"][0]["login"] == {"status": "failed", "error": "Denied"}
+            assert (await client.reload_mcp())["data"][0]["name"] == "local"
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.reload_mcp()
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.login_mcp("local")
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+        assert not client._mcp_logins
+    asyncio.run(run())
+
+
+def test_skill_configuration_is_exact_explicit_and_uses_effective_native_state(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        path = str(tmp_path / "SKILL.md")
+        calls, enabled = [], True
+        async def request(method, params):
+            nonlocal enabled
+            calls.append((method, params))
+            if method == "skills/list":
+                return {"data": [{"cwd": str(tmp_path), "errors": [], "skills": [{"name": "proof", "path": path, "enabled": enabled}]}]}
+            assert method == "skills/config/write" and params == {"path": path, "enabled": False}
+            enabled = False
+            return {"effectiveEnabled": False}
+        rpc.request = request
+        try:
+            for bad_path, value in [("/not-discovered", False), (path, "false"), (path, 0)]:
+                with pytest.raises(ValueError):
+                    await client.set_skill_enabled(bad_path, value)
+            assert not any(method == "skills/config/write" for method, _ in calls)
+            result = await client.set_skill_enabled(path, False)
+            assert result["effectiveEnabled"] is False
+            assert result["data"][0]["unavailableReason"] == "Skill is disabled"
+            assert result["data"][0]["enabled"] is False
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.set_skill_enabled(path, True)
+            assert len([call for call in calls if call[0] == "skills/config/write"]) == 1
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_config_diagnostics_are_sanitized_read_only_and_project_scoped(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        config_path = str(tmp_path / "config.toml")
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "config/read":
+                assert params == {"includeLayers": True, "cwd": str(tmp_path)}
+                return {
+                    "config": {
+                        "model": "gpt-proof",
+                        "features": {"memories": True},
+                        "mcp_servers": {
+                            "private": {"env": {"TOKEN": "never-return-this"}}
+                        },
+                    },
+                    "origins": {},
+                    "layers": [
+                        {
+                            "name": {"type": "user", "file": config_path},
+                            "version": "version-one",
+                            "config": {"secret": "never-return-this"},
+                        },
+                        {
+                            "name": {
+                                "type": "project",
+                                "dotCodexFolder": str(tmp_path / ".codex"),
+                            },
+                            "version": "version-two",
+                            "config": {},
+                            "disabledReason": "managed",
+                        },
+                    ],
+                }
+            assert method == "configRequirements/read" and params is None
+            return {
+                "requirements": {
+                    "allowedSandboxModes": ["workspace-write"],
+                    "featureRequirements": {"memories": True},
+                    "network": {
+                        "enabled": True,
+                        "domains": {"private.example": "allow"},
+                        "unixSockets": {"/private/socket": "deny"},
+                    },
+                    "feedback": {"enabled": False},
+                }
+            }
+
+        rpc.request = request
+        try:
+            result = await client.config_diagnostics()
+            assert result == {
+                "layers": [
+                    {"type": "user", "enabled": True, "file": config_path},
+                    {
+                        "type": "project",
+                        "enabled": False,
+                        "dotCodexFolder": str(tmp_path / ".codex"),
+                        "disabledReason": "managed",
+                    },
+                ],
+                "effective": {
+                    "model": "gpt-proof",
+                    "features": {"memories": True},
+                    "mcpServerCount": 1,
+                },
+                "requirements": {
+                    "configured": True,
+                    "allowedSandboxModes": ["workspace-write"],
+                    "featureRequirements": {"memories": True},
+                    "network": {
+                        "enabled": True,
+                        "domainRuleCount": 1,
+                        "unixSocketRuleCount": 1,
+                    },
+                    "feedbackEnabled": False,
+                },
+                "settingsWritable": True,
+            }
+            assert "never-return-this" not in str(result)
+            assert "private.example" not in str(result)
+            assert all(method != "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_experimental_features_paginate_and_change_exact_versioned_setting(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        config_path = str(tmp_path / "config.toml")
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "experimentalFeature/list":
+                assert params["threadId"] == client.session_id
+                assert params["limit"] == 100
+                if params.get("cursor") is None:
+                    return {
+                        "data": [
+                            {
+                                "name": "proof",
+                                "displayName": "Proof feature",
+                                "description": "A test feature",
+                                "enabled": True,
+                                "defaultEnabled": False,
+                                "stage": "beta",
+                            }
+                        ],
+                        "nextCursor": "next",
+                    }
+                assert params["cursor"] == "next"
+                return {
+                    "data": [
+                        {
+                            "name": "stable_feature",
+                            "enabled": True,
+                            "defaultEnabled": True,
+                            "stage": "stable",
+                        }
+                    ],
+                    "nextCursor": None,
+                }
+            if method == "config/read":
+                return {
+                    "config": {"features": {"proof": True}},
+                    "origins": {},
+                    "layers": [
+                        {
+                            "name": {"type": "user", "file": config_path},
+                            "version": "version-one",
+                            "config": {},
+                        }
+                    ],
+                }
+            if method == "config/value/write":
+                assert params == {
+                    "keyPath": "features.proof",
+                    "value": False,
+                    "mergeStrategy": "replace",
+                    "filePath": config_path,
+                    "expectedVersion": "version-one",
+                }
+                return {
+                    "filePath": config_path,
+                    "status": "ok",
+                    "version": "version-two",
+                }
+            assert method == "experimentalFeature/enablement/set"
+            assert params == {"enablement": {"proof": False}}
+            return {"enablement": {"proof": False}}
+
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match="confirmed"):
+                await client.set_experimental_feature("proof", False, False)
+            assert calls == []
+            result = await client.set_experimental_feature("proof", False, True)
+            assert result == {
+                "name": "proof",
+                "enabled": False,
+                "saved": True,
+                "applied": True,
+                "restartRequired": False,
+                "notice": "",
+            }
+            assert [
+                params.get("cursor") for method, params in calls
+                if method == "experimentalFeature/list"
+            ] == [None, "next"]
+            assert not any(method == "turn/start" for method, _ in calls)
+            before = len(calls)
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.set_experimental_feature("proof", True, True)
+            assert len(calls) == before
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_memory_controls_separate_chat_mode_from_global_defaults(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        config_path = str(tmp_path / "config.toml")
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "config/read":
+                return {
+                    "config": {
+                        "features": {"memories": True},
+                        "memories": {
+                            "use_memories": True,
+                            "generate_memories": False,
+                        },
+                    },
+                    "origins": {},
+                    "layers": [
+                        {
+                            "name": {"type": "user", "file": config_path},
+                            "version": "version-one",
+                            "config": {},
+                        }
+                    ],
+                }
+            if method == "thread/memoryMode/set":
+                assert params == {"threadId": client.session_id, "mode": "disabled"}
+                return {}
+            assert method == "config/batchWrite"
+            assert params == {
+                "edits": [
+                    {
+                        "keyPath": "features.memories",
+                        "value": True,
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "memories.use_memories",
+                        "value": False,
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "memories.generate_memories",
+                        "value": True,
+                        "mergeStrategy": "replace",
+                    },
+                ],
+                "filePath": config_path,
+                "expectedVersion": "version-one",
+                "reloadUserConfig": True,
+            }
+            return {
+                "filePath": config_path,
+                "status": "ok",
+                "version": "version-two",
+            }
+
+        rpc.request = request
+        try:
+            assert await client.memory_settings() == {
+                "featureEnabled": True,
+                "useMemories": True,
+                "generateMemories": False,
+                "currentChatMode": None,
+                "settingsWritable": True,
+            }
+            with pytest.raises(ValueError, match="confirmed"):
+                await client.set_memory_mode("disabled", False)
+            assert (await client.set_memory_mode("disabled", True))["currentChatMode"] == "disabled"
+            assert events[-1]["params"]["memoryMode"] == "disabled"
+            with pytest.raises(ValueError, match="confirmed"):
+                await client.set_memory_defaults(False, True, False)
+            assert await client.set_memory_defaults(False, True, True) == {
+                "featureEnabled": True,
+                "useMemories": False,
+                "generateMemories": True,
+                "notice": "",
+            }
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_guardian_denial_is_exact_explicit_and_one_shot(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        event = {
+            "method": "item/autoApprovalReview/completed",
+            "params": {
+                "threadId": client.session_id,
+                "turnId": "turn-one",
+                "targetItemId": "item-one",
+                "reviewId": "review-one",
+                "action": {
+                    "type": "command",
+                    "command": "rm proof.txt",
+                    "cwd": str(tmp_path),
+                    "source": "agent",
+                },
+                "review": {
+                    "status": "denied",
+                    "riskLevel": "high",
+                    "rationale": "Needs explicit approval",
+                },
+                "decisionSource": "agent",
+                "startedAtMs": 1,
+                "completedAtMs": 2,
+            },
+        }
+
+        async def request(method, params):
+            calls.append((method, params))
+            assert method == "thread/approveGuardianDeniedAction"
+            assert params == {"threadId": client.session_id, "event": event["params"]}
+            return {}
+
+        rpc.request = request
+        try:
+            await rpc.events.put(event)
+            async with asyncio.timeout(2):
+                while client.guardian_denial()["denial"] is None:
+                    await asyncio.sleep(0.01)
+            assert client.guardian_denial() == {
+                "denial": {
+                    "reviewId": "review-one",
+                    "turnId": "turn-one",
+                    "actionType": "command",
+                    "summary": "rm proof.txt",
+                    "riskLevel": "high",
+                    "rationale": "Needs explicit approval",
+                }
+            }
+            for review_id, confirmed in (("other", True), ("review-one", False)):
+                with pytest.raises(ValueError, match="exact latest"):
+                    await client.approve_guardian_denial(review_id, confirmed)
+            assert calls == []
+            assert await client.approve_guardian_denial("review-one", True) == {
+                "approved": True,
+                "reviewId": "review-one",
+            }
+            with pytest.raises(ValueError, match="exact latest"):
+                await client.approve_guardian_denial("review-one", True)
+            assert len(calls) == 1
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("policy", ["enabled", "disabled", "malformed"])
+def test_feedback_is_confirmed_policy_checked_and_bound_to_exact_thread(tmp_path, policy):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "configRequirements/read":
+                feedback = {"enabled": policy == "enabled"}
+                return {"requirements": {"feedback": "bad" if policy == "malformed" else feedback}}
+            assert method == "feedback/upload"
+            assert params == {
+                "classification": "bug",
+                "reason": "broken behavior",
+                "includeLogs": False,
+                "extraLogFiles": None,
+                "tags": {"client": "serena-workspace"},
+                "threadId": client.session_id,
+            }
+            return {"threadId": client.session_id}
+
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match="confirmed"):
+                await client.submit_feedback("bug", "broken behavior", False, False)
+            assert calls == []
+            if policy == "enabled":
+                assert await client.submit_feedback(
+                    "bug", " broken behavior ", False, True
+                ) == {"submitted": True, "threadId": client.session_id}
+                assert [method for method, _ in calls] == [
+                    "configRequirements/read",
+                    "feedback/upload",
+                ]
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await client.submit_feedback("bug", "broken behavior", False, True)
+                assert [method for method, _ in calls] == ["configRequirements/read"]
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_external_import_uses_only_confirmed_detected_items_and_sanitizes_progress(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        raw_item = {
+            "itemType": "SESSIONS",
+            "description": "One compatible session",
+            "cwd": str(tmp_path),
+            "details": {
+                "sessions": [
+                    {
+                        "cwd": str(tmp_path),
+                        "path": "/private/transcript.jsonl",
+                        "title": "Private title",
+                    }
+                ]
+            },
+        }
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "externalAgentConfig/detect":
+                assert params == {
+                    "includeHome": True,
+                    "cwds": [str(tmp_path)],
+                    "maxSessionAgeDays": 30,
+                    "maxSessions": 50,
+                }
+                return {
+                    "items": [raw_item],
+                    "connectors": [
+                        {
+                            "name": "calendar",
+                            "sessionCount": 2,
+                            "source": "sessionToolUse",
+                        }
+                    ],
+                }
+            assert method == "externalAgentConfig/import"
+            assert params == {
+                "migrationItems": [raw_item],
+                "source": "serena-workspace",
+            }
+            return {"importId": "import-one"}
+
+        rpc.request = request
+        try:
+            detected = await client.detect_external_imports()
+            assert detected["connectors"] == [
+                {"name": "calendar", "sessionCount": 2, "source": "sessionToolUse"}
+            ]
+            assert detected["items"][0]["itemType"] == "SESSIONS"
+            assert detected["items"][0]["detailCounts"] == {"sessions": 1}
+            assert "/private/transcript.jsonl" not in str(detected)
+            candidate = detected["items"][0]["id"]
+            with pytest.raises(ValueError, match="confirm"):
+                await client.import_external_items([candidate], False)
+            assert [method for method, _ in calls] == ["externalAgentConfig/detect"]
+            assert await client.import_external_items([candidate], True) == {
+                "importId": "import-one",
+                "itemCount": 1,
+            }
+            await rpc.events.put(
+                {
+                    "method": "externalAgentConfig/import/completed",
+                    "params": {
+                        "importId": "import-one",
+                        "itemTypeResults": [
+                            {
+                                "itemType": "SESSIONS",
+                                "successes": [
+                                    {
+                                        "itemType": "SESSIONS",
+                                        "target": "/private/imported.jsonl",
+                                    }
+                                ],
+                                "failures": [
+                                    {
+                                        "itemType": "SESSIONS",
+                                        "failureStage": "write",
+                                        "message": "One item was skipped",
+                                        "source": "/private/source.jsonl",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                }
+            )
+            async with asyncio.timeout(2):
+                while not any(
+                    event["method"] == "workspace/importProgress" for event in events
+                ):
+                    await asyncio.sleep(0.01)
+            progress = next(
+                event["params"]
+                for event in events
+                if event["method"] == "workspace/importProgress"
+            )
+            assert progress == {
+                "importId": "import-one",
+                "completed": True,
+                "results": [
+                    {
+                        "itemType": "SESSIONS",
+                        "successCount": 1,
+                        "failureCount": 1,
+                        "failures": ["One item was skipped"],
+                    }
+                ],
+            }
+            assert "/private/" not in str(progress)
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_native_file_search_is_bound_to_owned_project(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        (tmp_path / "selected file.py").write_text("fixture")
+        async def request(method, params):
+            assert method == "fuzzyFileSearch"
+            assert params == {"query": "selected", "roots": [str(tmp_path)]}
+            return {"files": [{"root": str(tmp_path), "path": "selected file.py", "match_type": "file"}]}
+        rpc.request = request
+        try:
+            assert await client.search_files("selected") == {"paths": ["selected file.py"]}
+            with pytest.raises(ValueError):
+                await client.search_files("")
+            async def escaped(method, params):
+                return {"files": [{"root": str(tmp_path), "path": "../outside", "match_type": "file"}]}
+            rpc.request = escaped
+            with pytest.raises(WorkspaceRpcError, match="outside"):
+                await client.search_files("selected")
+            assert client.state == "ready"
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_shell_command_requires_confirmation_and_preserves_exact_input(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        try:
+            with pytest.raises(ValueError, match="confirmation"):
+                await client.shell_command("printf hello", False)
+            with pytest.raises(ValueError, match="non-empty"):
+                await client.shell_command("", True)
+            command = "printf '%s' 'hello world'"
+            assert await client.shell_command(command, True) == {"accepted": True}
+            assert rpc.calls[-1] == ("thread/shellCommand", {"threadId": "exact-session", "command": command})
+            assert client.state == "running"
+            assert not any(method == "turn/start" for method, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_shell_command_timeout_is_uncertain_not_retried(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append(method)
+            raise TimeoutError()
+        rpc.request = request
+        try:
+            with pytest.raises(TimeoutError):
+                await client.shell_command("printf hello", True)
+            assert client.state == "uncertain"
+            with pytest.raises(WorkspaceRpcError):
+                await client.shell_command("printf hello", True)
+            assert calls == ["thread/shellCommand"]
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_paginated_resume_and_explicit_older_page(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        original = rpc.request
+        requests = []
+        async def request(method, params):
+            if method == "thread/resume":
+                return {"thread": {"id": rpc.sid, "historyMode": "paginated", "turns": []}}
+            if method == "thread/turns/list":
+                requests.append(params)
+                ids = ["newer", "middle"] if "cursor" not in params else ["oldest"]
+                return {"data": [{"id": sid, "status": "completed", "items": []} for sid in ids],
+                        "nextCursor": None if "cursor" in params else "older"}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            history = await client.open(binary="codex")
+            assert [t["id"] for t in history["thread"]["turns"]] == ["middle", "newer"]
+            assert history["historyCursor"] == "older" and len(requests) == 1
+            with pytest.raises(WorkspaceRpcError, match="stale"):
+                await client.load_earlier("wrong")
+            await client.load_earlier("older")
+            assert events[-1]["method"] == "workspace/historyPage"
+            assert events[-1]["params"]["turns"][0]["id"] == "oldest"
+            assert client.history_cursor is None and client.state == "ready"
+            assert requests == [{"threadId": rpc.sid, "limit": 50, "sortDirection": "desc", "itemsView": "full"},
+                                {"threadId": rpc.sid, "limit": 50, "sortDirection": "desc", "itemsView": "full", "cursor": "older"}]
+            await client.close()
+            reopened = await client.open(binary="codex")
+            assert reopened["historyCursor"] == "older"
+            await client.load_earlier("older")
+            assert client.history_cursor is None and client.state == "ready"
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("bad", [{"data": [] , "nextCursor": "same"}, {"data": [{}]}, {"data": None}])
+def test_history_page_rejection_does_not_advance_cursor(tmp_path, bad):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        await client.open(binary="codex")
+        client.history_cursor = "same"
+        async def request(method, params):
+            return bad
+        rpc.request = request
+        before = len(events)
+        try:
+            with pytest.raises(WorkspaceRpcError):
+                await client.load_earlier("same")
+            assert client.history_cursor == "same" and len(events) == before
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_fork_preserves_owner_and_filters_only_created_thread(tmp_path):
+    async def run():
+        client, rpc, published = await make(tmp_path)
+        await client.open(binary="codex")
+        fork_id = str(uuid4())
+        original = rpc.request
+        async def request(method, params):
+            if method == "thread/fork":
+                assert params == {"threadId": "exact-session"}
+                await rpc.events.put({"method": "thread/started", "params": {"thread": {"id": fork_id}}})
+                await asyncio.sleep(0)
+                return {"thread": {"id": fork_id, "cwd": str(tmp_path)}}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="current Codex turn"):
+                await client.fork_session()
+            client.state = "ready"
+            assert await client.fork_session() == {"session_id": fork_id, "cwd": str(tmp_path), "provider": "codex"}
+            await asyncio.sleep(0)
+            assert client.session_id == "exact-session" and client.state == "ready"
+            assert not any(e.get("method") == "thread/started" for e in published)
+            assert not any(m == "turn/start" for m, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", ["same", "invalid", "project"])
+def test_fork_rejects_invalid_native_identity(tmp_path, case):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        async def request(method, params):
+            return {"thread": {"id": "exact-session" if case == "same" else "invalid" if case == "invalid" else str(uuid4()),
+                               "cwd": str(tmp_path / "wrong") if case == "project" else str(tmp_path)}}
+        rpc.request = request
+        try:
+            with pytest.raises(WorkspaceRpcError, match="invalid identity"):
+                await client.fork_session()
+            assert not client._fork_ids and client._fork_ready.is_set()
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+class Rpc:
+    def __init__(self):
+        self.events = asyncio.Queue()
+        self.calls = []
+        self.sid = "exact-session"
+        self.closed = False
+        self.race = False
+        self.timeout = False
+        self.process = SimpleNamespace(pid=12345)
+
+    async def start(self, command, **kwargs):
+        self.command, self.options = command, kwargs
+
+    async def request(self, method, params):
+        self.calls.append((method, params))
+        if method == "initialize":
+            return {}
+        if method == "thread/resume":
+            return {
+                "thread": {"id": self.sid, "turns": []},
+                "model": "chosen-model",
+                "reasoningEffort": "high",
+            }
+        if method == "model/list":
+            return {
+                "data": [
+                    {
+                        "model": "chosen-model",
+                        "displayName": "Chosen model",
+                        "defaultReasoningEffort": "high",
+                        "supportedReasoningEfforts": [
+                            {"reasoningEffort": "high"},
+                            {"reasoningEffort": "low"},
+                        ],
+                    }
+                ],
+                "nextCursor": None,
+            }
+        if method == "turn/start":
+            if self.timeout:
+                raise TimeoutError()
+            if self.race:
+                await self.events.put(
+                    {
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": self.sid,
+                            "turn": {"id": "turn-1", "status": "completed"},
+                        },
+                    }
+                )
+                await asyncio.sleep(0)
+            return {"turn": {"id": "turn-1"}}
+        return {}
+
+    async def notify(self, method, params):
+        self.calls.append((method, params))
+
+    async def answer(self, request_id, answer):
+        self.calls.append(("answer", (request_id, answer)))
+
+    async def close(self):
+        self.closed = True
+
+
+def test_permission_profiles_enforce_policy_confirmation_and_exact_thread(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        original = rpc.request
+        async def request(method, params):
+            if method == "permissionProfile/list":
+                assert params["cwd"] == str(tmp_path)
+                return {"data": [{"id": ":read-only", "allowed": True}, {"id": "blocked", "allowed": False}], "nextCursor": None}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match="confirmation"):
+                await client.set_permissions(":read-only")
+            with pytest.raises(ValueError, match="blocked"):
+                await client.set_permissions("blocked", True)
+            assert not any(method == "thread/settings/update" for method, _ in rpc.calls)
+            assert (await client.set_permissions(":read-only", True))["mode"] == ":read-only"
+            updates = [params for method, params in rpc.calls if method == "thread/settings/update"]
+            assert updates == [{"threadId": "exact-session", "permissions": ":read-only"}]
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="current Codex turn"):
+                await client.set_permissions(":read-only", True)
+            assert not any(method == "turn/start" for method, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_skill_steering_preserves_turn_and_rechecks_after_discovery(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        client.state, client.active_turn = "running", "original"
+        async def skills():
+            return {"data": [{"name": "proof", "path": "/skill", "unavailableReason": ""}]}
+        client.list_commands = skills
+        try:
+            await client.steer([{"type": "text", "text": ""}], expected_turn_id="original", skills=["/skill"])
+            request = [params for method, params in rpc.calls if method == "turn/steer"][-1]
+            assert request["expectedTurnId"] == "original"
+            assert request["input"][-1] == {"type": "skill", "name": "proof", "path": "/skill"}
+            async def raced():
+                client.active_turn = "replacement"
+                return await skills()
+            client.list_commands = raced
+            with pytest.raises(WorkspaceRpcError, match="turn changed"):
+                await client.steer([{"type": "text", "text": ""}], expected_turn_id="original", skills=["/skill"])
+            assert len([m for m, _ in rpc.calls if m == "turn/steer"]) == 1
+            assert not any(m == "turn/start" for m, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_selected_skills_are_revalidated_and_sent_as_native_skill_inputs(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        original = rpc.request
+        path = str(tmp_path / "SKILL.md")
+        async def request(method, params):
+            if method == "skills/list":
+                assert params == {"cwds": [str(tmp_path)], "forceReload": True}
+                return {"data": [{"cwd": str(tmp_path), "errors": [], "skills": [{"name": "proof", "path": path, "enabled": True, "description": "Proof"}]}]}
+            return await original(method, params)
+        rpc.request = request
+        try:
+            assert (await client.list_commands())["data"][0]["kind"] == "skill"
+            for selected in (["/foreign/SKILL.md"], [path, path], {}):
+                with pytest.raises(ValueError):
+                    await client.submit([{"type": "text", "text": "Run"}], options={"skills": selected})
+            assert not any(method == "turn/start" for method, _ in rpc.calls)
+            await client.submit([{"type": "text", "text": "Run"}], options={"skills": [path]})
+            turn = [params for method, params in rpc.calls if method == "turn/start"][-1]
+            assert turn["threadId"] == "exact-session"
+            assert turn["input"][-1] == {"type": "skill", "name": "proof", "path": path}
+            assert "skills" not in turn
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_mcp_inventory_paginates_exact_thread_without_inventing_connection_status(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            if method == "config/read":
+                return {"config": {}}
+            calls.append((method, params))
+            if not params.get("cursor"):
+                return {"data": [{"name": "first", "tools": {"tool": {}}, "authStatus": "oAuth", "runtimeStatus": None}], "nextCursor": "next"}
+            return {"data": [{"name": "second", "tools": {}, "authStatus": "unknown", "runtimeStatus": "failed"}], "nextCursor": None}
+        rpc.request = request
+        try:
+            result = await client.list_mcp_servers()
+            assert result["data"][0] == {"name": "first", "status": "unknown", "authStatus": "oAuth", "toolCount": 1}
+            assert result["data"][1]["status"] == "failed"
+            assert len(calls) == 2
+            assert all(method == "mcpServerStatus/list" and params["threadId"] == "exact-session" for method, params in calls)
+            assert calls[1][1]["cursor"] == "next"
+            async def stuck(method, params):
+                return {"data": [], "nextCursor": "same"}
+            rpc.request = stuck
+            with pytest.raises(WorkspaceRpcError, match="pagination"):
+                await client.list_mcp_servers()
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_mcp_verbose_inventory_uses_full_native_detail_and_bounds_forwarded_data(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "config/read":
+                return {"config": {}}
+            return {
+                "data": [{
+                    "name": "proof",
+                    "tools": {"native-key": {"name": "proof_tool", "title": "Proof tool",
+                                               "description": "Native diagnostic", "inputSchema": {"secret": True}}},
+                    "resources": [{"uri": "private://resource"}],
+                    "resourceTemplates": [{"uriTemplate": "private://{id}"}],
+                    "serverInfo": {"name": "proof-server", "version": "1.2.3", "title": "Proof",
+                                   "description": "Local server", "websiteUrl": "https://example.test",
+                                   "private": "not-forwarded"},
+                    "toolsError": None,
+                    "authStatus": "oAuth",
+                    "runtimeStatus": "connected",
+                }],
+                "nextCursor": None,
+            }
+
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match="boolean"):
+                await client.list_mcp_servers(1)
+            result = await client.list_mcp_servers(True)
+            assert calls[0] == ("mcpServerStatus/list", {
+                "threadId": "exact-session", "limit": 100, "detail": "full",
+            })
+            server = result["data"][0]
+            assert server["status"] == "connected" and server["toolCount"] == 1
+            assert server["details"] == {
+                "serverInfo": {"name": "proof-server", "version": "1.2.3", "title": "Proof",
+                               "description": "Local server", "websiteUrl": "https://example.test"},
+                "tools": [{"name": "proof_tool", "title": "Proof tool", "description": "Native diagnostic"}],
+                "toolsOmitted": 0,
+                "resourceCount": 1,
+                "resourceTemplateCount": 1,
+                "toolsError": None,
+            }
+            assert "private" not in str(result) and "inputSchema" not in str(result)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("overridden", [False, True])
+def test_mcp_setting_uses_native_versioned_write_and_effective_state(tmp_path, overridden):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        name, enabled, calls = 'proof.dot"quoted', True, []
+        config_path = str(tmp_path / "config.toml")
+        async def request(method, params):
+            nonlocal enabled
+            calls.append((method, params))
+            if method == "config/read":
+                assert params == {"includeLayers": True, "cwd": str(tmp_path)}
+                return {"config": {"mcp_servers": {name: {"enabled": enabled, "env": {"TOKEN": "private-token"}}}}, "layers": [
+                    {"name": {"type": "user", "file": config_path}, "version": "version-one"}]}
+            if method == "config/value/write":
+                assert params == {"keyPath": 'mcp_servers."proof.dot\\"quoted".enabled', "value": False,
+                                  "mergeStrategy": "replace", "filePath": config_path, "expectedVersion": "version-one"}
+                enabled = overridden
+                return {"status": "okOverridden" if overridden else "ok"}
+            if method == "mcpServerStatus/list":
+                return {"data": []}
+            assert method == "config/mcpServer/reload" and params == {}
+            return {}
+        rpc.request = request
+        try:
+            for bad_name, value in [("other", False), (name, "false"), (name, 0)]:
+                with pytest.raises(ValueError):
+                    await client.set_mcp_enabled(bad_name, value)
+            assert not any(method == "config/value/write" for method, _ in calls)
+            result = await client.set_mcp_enabled(name, False)
+            assert result["effectiveEnabled"] is overridden
+            assert bool(result["notice"]) is overridden
+            assert result["data"][0]["enabled"] is overridden
+            assert result["data"][0]["settingsWritable"] is True
+            assert "private-token" not in str(result)
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.set_mcp_enabled(name, True)
+            assert len([call for call in calls if call[0] == "config/value/write"]) == 1
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_mcp_setting_version_conflict_does_not_reload_or_retry(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append(method)
+            if method == "config/read":
+                return {"config": {"mcp_servers": {"proof": {}}}, "layers": [
+                    {"name": {"type": "user", "file": str(tmp_path / "config.toml")}, "version": "old"}]}
+            assert method == "config/value/write"
+            raise WorkspaceRpcError("Version conflict")
+        rpc.request = request
+        try:
+            with pytest.raises(WorkspaceRpcError, match="Version conflict"):
+                await client.set_mcp_enabled("proof", False)
+            assert calls == ["config/read", "config/value/write"]
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("mode", ["missing", "profile", "relative", "no-version", "busy"])
+def test_mcp_setting_refuses_ambiguous_writer_or_changed_session(tmp_path, mode):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        async def request(method, params):
+            calls.append(method)
+            assert method == "config/read"
+            layer = {"name": {"type": "user", "file": str(tmp_path / "config.toml")}, "version": "one"}
+            if mode == "profile":
+                layer["name"]["profile"] = "selected"
+            if mode == "relative":
+                layer["name"]["file"] = "config.toml"
+            if mode == "no-version":
+                layer.pop("version")
+            if mode == "busy":
+                client.state = "running"
+            return {"config": {"mcp_servers": {"proof": {}}}, "layers": [] if mode == "missing" else [layer]}
+        rpc.request = request
+        try:
+            with pytest.raises((ValueError, WorkspaceRpcError)):
+                await client.set_mcp_enabled("proof", False)
+            assert calls == ["config/read"]
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_background_tasks_paginate_and_stop_only_exact_session_process(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+
+        async def request(method, params):
+            calls.append((method, params))
+            assert params["threadId"] == "exact-session"
+            if method.endswith("/terminate"):
+                return {"terminated": True}
+            if params.get("cursor") == "next":
+                return {"data": [], "nextCursor": None}
+            return {
+                "data": [
+                    {"processId": "p1", "itemId": "i1", "command": "sleep 30", "cwd": "/project"}
+                ],
+                "nextCursor": "next",
+            }
+
+        rpc.request = request
+        try:
+            assert len((await client.list_background_tasks())["data"]) == 1
+            assert (await client.terminate_background_task("p1"))["terminated"]
+            with pytest.raises(ValueError, match="no longer running"):
+                await client.terminate_background_task("foreign-process")
+            stops = [p for m, p in calls if m.endswith("/terminate")]
+            assert stops == [{"threadId": "exact-session", "processId": "p1"}]
+            assert client.state == "ready"
+            assert not any(m in {"turn/start", "turn/interrupt"} for m, _ in calls)
+
+            async def looping(method, params):
+                return {"data": [], "nextCursor": "loop"}
+
+            rpc.request = looping
+            with pytest.raises(WorkspaceRpcError, match="pagination"):
+                await client.list_background_tasks()
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', [None, 'busy', 'changed', 'unknown', 'invalid', 'rejected'])
+def test_session_modes_preserve_model_and_use_exact_native_owner(tmp_path, failure):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        owner.settings.update(model='chosen-model', reasoningEffort='xhigh')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'collaborationMode/list':
+                if failure == 'changed':
+                    owner.state = 'running'
+                return {'data': [{'name': 'Plan', 'mode': 'plan', 'model': 'do-not-switch', 'reasoning_effort': 'medium'}]}
+            if failure == 'rejected':
+                raise WorkspaceRpcError('Native rejection')
+            return None if failure == 'invalid' else {}
+        rpc.request = request
+        try:
+            if failure == 'busy':
+                owner.state = 'running'
+            if failure:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.set_session_mode('invented' if failure == 'unknown' else 'plan')
+                assert 'collaborationMode' not in owner.settings
+            else:
+                result = await owner.set_session_mode('plan')
+                assert result['currentValue'] == 'plan'
+                assert calls[-1] == ('thread/settings/update', {'threadId': 'exact-session', 'collaborationMode': {
+                    'mode': 'plan', 'settings': {'model': 'chosen-model', 'reasoning_effort': 'xhigh', 'developer_instructions': None}}})
+                assert events[-1]['params']['collaborationMode'] == 'plan'
+                assert owner.settings['model'] == 'chosen-model'
+            assert all(method not in {'turn/start', 'thread/start', 'thread/resume'} for method, _ in calls)
+            if failure in {'busy', 'changed', 'unknown'}:
+                assert not any(method == 'thread/settings/update' for method, _ in calls)
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_native_revert_reconciles_exact_history_without_another_owner(tmp_path, failure):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        events.clear()
+        owner.history_cursor = 'stale'
+        owner._completed.append('discarded')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            assert owner.state == 'reconciling'
+            assert events[-1]['method'] == 'thread/reverted'
+            if failure:
+                raise WorkspaceRpcError('History unavailable')
+            return {'data': [{'id': 'retained', 'status': 'completed', 'items': []}], 'nextCursor': None}
+        rpc.request = request
+        try:
+            await rpc.events.put({'method': 'thread/reverted', 'params': {'threadId': owner.session_id}})
+            async with asyncio.timeout(2):
+                while not any(e['method'] in {'workspace/history', 'workspace/error'} for e in events):
+                    await asyncio.sleep(.01)
+            assert calls == [('thread/turns/list', {'threadId': owner.session_id, 'limit': 50, 'sortDirection': 'desc', 'itemsView': 'full'})]
+            assert owner.history_cursor is None and not owner._completed
+            if failure:
+                assert owner.state == 'unavailable'
+                assert events[-1]['method'] == 'workspace/error'
+            else:
+                assert owner.state == 'ready'
+                assert events[-1]['params']['copyUnavailableAfterRevert'] is True
+                assert [t['id'] for t in owner.thread['turns']] == ['retained']
+            with pytest.raises(WorkspaceRpcError, match='stale'):
+                await owner.load_earlier('stale')
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+def test_revert_rejects_inflight_old_history_page(tmp_path):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary='codex')
+        events.clear()
+        owner.history_cursor = 'old'
+        requested, release = asyncio.Event(), asyncio.Event()
+        async def request(method, params):
+            assert method == 'thread/turns/list'
+            if params.get('cursor') == 'old':
+                requested.set()
+                await release.wait()
+                return {'data': [{'id': 'discarded', 'items': []}], 'nextCursor': 'stale-next'}
+            return {'data': [{'id': 'retained', 'items': [], 'status': 'completed'}], 'nextCursor': None}
+        rpc.request = request
+        pending = asyncio.create_task(owner.load_earlier('old'))
+        try:
+            await asyncio.wait_for(requested.wait(), 2)
+            await rpc.events.put({'method': 'thread/reverted', 'params': {'threadId': owner.session_id}})
+            async with asyncio.timeout(2):
+                while not any(e['method'] == 'workspace/history' for e in events):
+                    await asyncio.sleep(.01)
+            release.set()
+            with pytest.raises(WorkspaceRpcError, match='History changed'):
+                await pending
+            assert not any(e['method'] == 'workspace/historyPage' for e in events)
+            assert owner.history_cursor is None
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('case', ['ok', 'unconfirmed', 'busy', 'stale', 'rejected',
+                                  'background', 'unknown_background', 'null_thread', 'foreign_thread'])
+def test_rewind_requires_confirmation_current_history_and_same_owner(tmp_path, case):
+    async def run():
+        owner, rpc, _ = await make(tmp_path)
+        await owner.open(binary='codex')
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            if method == 'thread/backgroundTerminals/list':
+                assert params == {'threadId': owner.session_id, 'limit': 100}
+                if case == 'unknown_background':
+                    raise WorkspaceRpcError('Background query failed')
+                return {'data': ([{'processId': 'live', 'itemId': 'item', 'command': 'sleep 60',
+                                  'cwd': str(tmp_path)}] if case == 'background' else [])}
+            if method == 'thread/turns/list':
+                return {'data': [{'id': 'latest', 'status': 'completed', 'items': []}], 'nextCursor': None}
+            assert method == 'thread/revert'
+            if case == 'rejected':
+                raise WorkspaceRpcError('Native refusal')
+            if case in {'null_thread', 'foreign_thread'}:
+                return {'thread': None if case == 'null_thread' else {'id': 'foreign'}}
+            owner._history_revision += 1
+            owner.state = 'ready'
+            return {'thread': {'id': owner.session_id}}
+        rpc.request = request
+        try:
+            if case == 'busy':
+                owner.state = 'running'
+            if case == 'ok':
+                assert await owner.revert_history('latest', 'latest', True) == {
+                    'session_id': owner.session_id, 'before_turn_id': 'latest', 'files_changed': False}
+                assert calls[-1] == ('thread/revert', {'threadId': owner.session_id, 'beforeTurnId': 'latest'})
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.revert_history('latest', 'old' if case == 'stale' else 'latest', case != 'unconfirmed')
+                ambiguous = case in {'rejected', 'null_thread', 'foreign_thread'}
+                assert any(m == 'thread/revert' for m, _ in calls) is ambiguous
+                if ambiguous:
+                    assert owner.state == 'uncertain'
+                elif case in {'background', 'unknown_background'}:
+                    assert owner.state == 'ready'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
+async def make(tmp_path):
+    events = []
+
+    async def publish(event):
+        events.append(event)
+
+    rpc = Rpc()
+    lease = SimpleNamespace(launching=lambda: None, bind=lambda pid: None, release=lambda: None)
+    client = CodexWorkspace(
+        session_id=rpc.sid, cwd=tmp_path, publish=publish, rpc=rpc, lease_factory=lambda sid: lease
+    )
+    return client, rpc, events
+
+
+@pytest.mark.parametrize("failure", [None, "identity", "cwd", "ephemeral", "turns", "checkpoint", "transport"])
+def test_new_thread_checkpoints_before_ownership_and_never_retries_creation(tmp_path, failure):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        client.session_id = "new:" + str(uuid4())
+        native_sid = str(uuid4())
+        order = []
+        lease = SimpleNamespace(launching=lambda: None, bind=lambda pid: None,
+                                release=lambda: order.append("release"))
+        def transfer(sid):
+            assert sid == native_sid and order == ["checkpoint"]
+            order.append("transfer")
+            return lease
+        lease.transfer_after_transition = transfer
+        client._lease_factory = lambda sid: lease
+        original = rpc.request
+        async def request(method, params):
+            if method != "thread/start":
+                assert method != "thread/resume"
+                return await original(method, params)
+            rpc.calls.append((method, params))
+            assert params == {"cwd": str(tmp_path), "ephemeral": False}
+            if failure == "transport":
+                raise WorkspaceRpcError("lost response")
+            thread = {"id": native_sid, "cwd": str(tmp_path), "ephemeral": False, "turns": [], "historyMode": "paginated"}
+            if failure == "identity":
+                thread["id"] = "unknown"
+            elif failure == "cwd":
+                thread["cwd"] = "/wrong"
+            elif failure == "ephemeral":
+                thread["ephemeral"] = True
+            elif failure == "turns":
+                thread["turns"] = [{"id": "existing"}]
+            return {"thread": thread, "model": "configured-model"}
+        rpc.request = request
+        async def checkpoint(target):
+            assert target == {"session_id": native_sid, "provider": "codex", "cwd": str(tmp_path)}
+            assert events == [] and client.state == "opening"
+            order.append("checkpoint")
+            if failure == "checkpoint":
+                raise OSError("durable write failed")
+        try:
+            with pytest.raises(WorkspaceRpcError, match="explicit creation"):
+                await client.open(binary="codex")
+            assert rpc.calls == []
+            if failure:
+                with pytest.raises((OSError, WorkspaceRpcError)):
+                    await client.create(checkpoint=checkpoint, binary="codex")
+                assert events == [] and "transfer" not in order
+                with pytest.raises(WorkspaceRpcError, match="already attempted"):
+                    await client.create(checkpoint=checkpoint, binary="codex")
+            else:
+                result = await client.create(checkpoint=checkpoint, binary="codex")
+                assert client.session_id == result["thread"]["id"] == native_sid
+                assert client.state == "ready" and order == ["checkpoint", "transfer"]
+                assert events[0]["method"] == "workspace/history"
+                with pytest.raises(ValueError):
+                    await client.create(checkpoint=checkpoint, binary="codex")
+            assert len([call for call in rpc.calls if call[0] == "thread/start"]) == 1
+            assert not any(method in {"turn/start", "thread/resume"} for method, _ in rpc.calls)
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_model_discovery_and_unsupported_effort_never_starts_turn(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        try:
+            await client.open(binary="codex")
+            catalog = await client.list_models()
+            assert catalog["settings"] == {"model": "chosen-model", "reasoningEffort": "high"}
+            assert catalog["data"][0]["model"] == "chosen-model"
+            assert events[-1]["method"] == "workspace/models"
+            for options in (
+                {"model": "invented"},
+                {"model": "chosen-model", "effort": "unsupported"},
+                {"serviceTier": "invented-fast"},
+            ):
+                with pytest.raises(ValueError):
+                    await client.submit([{"type": "text", "text": "message"}], options=options)
+            assert not any(method == "turn/start" for method, _ in rpc.calls)
+            assert client.state == "ready"
+            await client.submit([{"type": "text", "text": "message"}], options={"effort": "low"})
+            assert rpc.calls[-1][1]["effort"] == "low"
+            assert "model" not in rpc.calls[-1][1]
+            assert events[-1] == {
+                "method": "workspace/settings",
+                "params": {"model": "chosen-model", "reasoningEffort": "low"},
+            }
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_changed_model_without_effort_uses_advertised_default(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        try:
+            await client.open(binary="codex")
+            client.model_catalog = [
+                {
+                    "model": "new-model",
+                    "defaultReasoningEffort": "low",
+                    "supportedReasoningEfforts": [{"reasoningEffort": "low"}],
+                    "serviceTiers": [{"id": "fast"}],
+                }
+            ]
+            await client.submit(
+                [{"type": "text", "text": "hello"}],
+                options={"model": "new-model", "serviceTier": "fast"},
+            )
+            assert rpc.calls[-1][1]["effort"] == "low"
+            assert rpc.calls[-1][1]["serviceTier"] == "fast"
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_model_catalog_pagination_and_loop_rejection(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        try:
+            await client.open(binary="codex")
+            original = rpc.request
+            repeat = False
+
+            async def paged(method, params):
+                if method != "model/list":
+                    return await original(method, params)
+                if params.get("cursor"):
+                    return {"data": [{"model": "second"}], "nextCursor": "next" if repeat else None}
+                return {"data": [{"model": "first"}], "nextCursor": "next"}
+
+            rpc.request = paged
+            assert [m["model"] for m in (await client.list_models())["data"]] == ["first", "second"]
+            repeat = True
+            with pytest.raises(WorkspaceRpcError, match="pagination"):
+                await client.list_models()
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_exact_resume_and_real_turn_controls(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        try:
+            await client.open(binary="codex", env={"OPENAI_API_KEY": "must-not-pass"})
+            assert "OPENAI_API_KEY" not in rpc.options["env"]
+            assert "--disable" not in rpc.command
+            assert rpc.calls[2] == ("thread/resume", {"threadId": "exact-session"})
+            inputs = [
+                {"type": "text", "text": "hello"},
+                {"type": "localImage", "path": "/photo.png"},
+            ]
+            await client.submit(inputs, options={"model": "chosen-model", "effort": "high"})
+            assert rpc.calls[-1][1]["input"] == inputs
+            assert rpc.calls[-1][1]["threadId"] == "exact-session"
+            with pytest.raises(WorkspaceRpcError):
+                await client.submit(inputs)
+            previous_calls = list(rpc.calls)
+            with pytest.raises(WorkspaceRpcError, match="turn changed"):
+                await client.steer(
+                    [{"type": "text", "text": "correction"}], expected_turn_id="old-turn"
+                )
+            assert rpc.calls == previous_calls
+            await client.steer([{"type": "text", "text": "correction"}], expected_turn_id="turn-1")
+            assert rpc.calls[-1][1]["expectedTurnId"] == "turn-1"
+            await client.interrupt()
+            assert rpc.calls[-1] == (
+                "turn/interrupt",
+                {"threadId": "exact-session", "turnId": "turn-1"},
+            )
+            assert not rpc.closed
+            assert events[0]["method"] == "workspace/history"
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_attachment_retry_requires_transport_and_lease_cleanup(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        assert not client.can_retry_attachment()
+        client.state = "unavailable"
+        assert not client.can_retry_attachment()
+        await client.close()
+        assert not client.can_retry_attachment()  # Fixture still exposes a process.
+        rpc.process = None
+        assert client.can_retry_attachment()
+    asyncio.run(run())
+
+
+def test_wrong_resume_never_creates_fallback_session(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        rpc.sid = "wrong-session"
+        with pytest.raises(WorkspaceRpcError, match="different session"):
+            await client.open(binary="codex", env={})
+        assert rpc.closed
+        assert not any(method == "thread/start" for method, _ in rpc.calls)
+
+    asyncio.run(run())
+
+
+def test_review_stays_inline_and_rejects_busy_or_unknown_targets(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        try:
+            await client.open(binary="codex", env={})
+            original = rpc.request
+
+            async def request(method, params):
+                if method == "review/start":
+                    rpc.calls.append((method, params))
+                    return {"reviewThreadId": "exact-session", "turn": {"id": "review-1"}}
+                return await original(method, params)
+
+            rpc.request = request
+            with pytest.raises(ValueError):
+                await client.review({"type": "custom", "instructions": ""})
+            result = await client.review({"type": "baseBranch", "branch": "main"})
+            assert result["reviewThreadId"] == "exact-session"
+            assert rpc.calls[-1] == (
+                "review/start",
+                {
+                    "threadId": "exact-session",
+                    "delivery": "inline",
+                    "target": {"type": "baseBranch", "branch": "main"},
+                },
+            )
+            assert client.active_turn == "review-1"
+            with pytest.raises(WorkspaceRpcError, match="not ready"):
+                await client.review({"type": "uncommittedChanges"})
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_compaction_ack_does_not_make_session_ready_before_completion(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        try:
+            await client.open(binary="codex", env={})
+
+            async def request(method, params):
+                rpc.calls.append((method, params))
+                return {}
+
+            rpc.request = request
+            await client.compact()
+            assert rpc.calls[-1] == ("thread/compact/start", {"threadId": "exact-session"})
+            assert client.state == "submitting"
+            with pytest.raises(WorkspaceRpcError, match="not ready"):
+                await client.submit([{"type": "text", "text": "too early"}])
+            await rpc.events.put(
+                {
+                    "method": "turn/started",
+                    "params": {"threadId": "exact-session", "turn": {"id": "compact-1"}},
+                }
+            )
+            await rpc.events.put(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "exact-session",
+                        "turn": {"id": "compact-1", "status": "completed"},
+                    },
+                }
+            )
+            await asyncio.sleep(0.01)
+            assert client.state == "ready"
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_fast_completion_is_not_overwritten_by_start_reply(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        try:
+            rpc.race = True
+            await client.open(binary="codex", env={})
+            await client.submit([{"type": "text", "text": "go"}])
+            assert client.state == "ready"
+            assert client.active_turn is None
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_ambiguous_submission_cannot_be_retried_as_new_turn(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        try:
+            await client.open(binary="codex", env={})
+            rpc.timeout = True
+            with pytest.raises(TimeoutError):
+                await client.submit([{"type": "text", "text": "go"}])
+            assert client.state == "uncertain"
+            with pytest.raises(WorkspaceRpcError):
+                await client.submit([{"type": "text", "text": "go"}])
+            assert sum(method == "turn/start" for method, _ in rpc.calls) == 1
+            assert not rpc.closed
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_permission_grants_cannot_expand_profile_or_drop_deny_entries(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        permissions = {
+            "network": {"enabled": True},
+            "fileSystem": {
+                "entries": [
+                    {"access": "write", "path": {"type": "path", "path": "/project"}},
+                    {"access": "deny", "path": {"type": "path", "path": "/project/private"}},
+                ]
+            },
+        }
+        question = {
+            "method": "item/permissions/requestApproval",
+            "params": {"permissions": permissions},
+        }
+        for granted in (
+            {"network": {"enabled": False}},
+            {"fileSystem": {"write": ["/"]}},
+            {"fileSystem": {"entries": permissions["fileSystem"]["entries"][:1]}},
+            {"unexpected": {}},
+        ):
+            client.questions[7] = question
+            with pytest.raises(ValueError):
+                await client.answer(7, {"permissions": granted, "scope": "turn"})
+        assert not rpc.calls
+        for scope, granted in (
+            ("turn", {}),
+            ("turn", {"network": permissions["network"]}),
+            ("session", permissions),
+        ):
+            client.questions[7] = question
+            await client.answer(7, {"permissions": granted, "scope": scope})
+            assert rpc.calls[-1] == ("answer", (7, {"permissions": granted, "scope": scope}))
+            assert 7 not in client.questions
+        with pytest.raises(WorkspaceRpcError, match="no longer pending"):
+            await client.answer(7, {"permissions": permissions, "scope": "session"})
+
+    asyncio.run(run())
+
+
+def test_mcp_answer_validates_before_reply_and_rejects_stale_request(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        client.questions[8] = {
+            "method": "mcpServer/elicitation/request",
+            "params": {
+                "mode": "form",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {"count": {"type": "integer"}},
+                    "required": ["count"],
+                },
+            },
+        }
+        with pytest.raises(ValueError):
+            await client.answer(8, {"action": "accept", "content": {"count": "wrong"}})
+        assert not rpc.calls and 8 in client.questions
+        answer = {"action": "accept", "content": {"count": 3}}
+        await client.answer(8, answer)
+        assert rpc.calls == [("answer", (8, answer))]
+        with pytest.raises(WorkspaceRpcError, match="no longer pending"):
+            await client.answer(8, answer)
+
+    asyncio.run(run())
+
+
+def test_approval_validation_and_stale_resolution(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        try:
+            await client.open(binary="codex", env={})
+            event = {
+                "id": 7,
+                "method": "item/commandExecution/requestApproval",
+                "params": {"threadId": rpc.sid, "command": "git status"},
+            }
+            await rpc.events.put(event)
+            await asyncio.sleep(0)
+            assert events[-1] == event
+            with pytest.raises(ValueError):
+                await client.answer(7, {"decision": "yes"})
+            assert 7 in client.questions
+            await client.answer(7, {"decision": "decline"})
+            with pytest.raises(WorkspaceRpcError):
+                await client.answer(7, {"decision": "accept"})
+            await rpc.events.put(event)
+            await rpc.events.put(
+                {
+                    "method": "serverRequest/resolved",
+                    "params": {"threadId": rpc.sid, "requestId": 7},
+                }
+            )
+            await asyncio.sleep(0)
+            assert 7 not in client.questions
+        finally:
+            await client.close()
+
+    asyncio.run(run())

@@ -20,10 +20,16 @@ dependencies = [
     "watchdog>=4.0",
     "mcp>=1.28.1,<2",
     "Pillow>=11.0,<13",
+    "hjson==3.1.0",
     "python-xlib>=0.33,<0.34; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
+workspace = [
+    # Verified SDK control schema/process identity for the opt-in native pane.
+    "claude-agent-sdk==0.2.121",
+    "jsonschema==4.26.0",
+]
 voice = [
     "anthropic>=0.84.0",
     "faster-whisper>=1.1.0",

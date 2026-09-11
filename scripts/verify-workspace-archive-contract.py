@@ -1,0 +1,453 @@
+"""Probe native archive/restore semantics in an isolated, unsigned profile."""
+import argparse
+import asyncio
+import json
+import os
+import shutil
+import sys
+import tempfile
+import threading
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import patch
+from uuid import uuid4
+
+from flask import Flask
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from core import indexer, metadata
+from core.workspace_archive import archive_codex_tree, restore_codex_archive
+from core.workspace_catalog import list_saved_sessions, register_fork
+from core.workspace_codex import CodexWorkspace
+from core.workspace_host import WorkspaceHost
+from core.workspace_journal import WorkspaceJournal
+from core.workspace_lease import SessionLease
+from core.workspace_rpc import WorkspaceRpc
+from ui.workspace_web import workspace_blueprint
+
+
+def browser_archive(root, sid, target, width, native_archive):
+    from playwright.sync_api import expect, sync_playwright
+    from werkzeug.serving import WSGIRequestHandler, make_server
+
+    from ui.workspace_app import install_workspace
+
+    repo = Path(__file__).resolve().parents[1]
+    app = Flask(__name__, static_folder=str(repo / "ui/static"))
+    host = install_workspace(
+        app, root / "workspace.db", factories={},
+        resolve=lambda identity: target if identity == sid else None,
+    )
+
+    class Owner:
+        state = "ready"
+        cwd = Path(target["cwd"])
+        active_turn = None
+        questions = {}
+        elicitations = {}
+        active_agent_threads = set()
+        events = type("Events", (), {"tasks": {}})()
+
+        @staticmethod
+        async def list_background_tasks(): return {"data": []}
+
+        async def close(self): self.state = "closed"
+
+        def can_retry_attachment(self): return self.state == "closed"
+
+    host._sessions[sid] = (Owner(), "codex")
+    host._dispatch(asyncio.sleep(0), 5)
+    host.journal.append(sid, {
+        "method": "workspace/history", "params": {"thread": {"id": sid, "turns": []}},
+    })
+
+    class QuietHandler(WSGIRequestHandler):
+        def log_request(self, *args, **kwargs): pass
+
+    server = make_server("127.0.0.1", 0, app, threaded=True, request_handler=QuietHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    errors, requests = [], []
+    try:
+        with patch("core.workspace_archive.archive_codex_tree", native_archive), sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                executable_path=os.environ.get("SERENA_PROOF_BROWSER_EXECUTABLE") or shutil.which("microsoft-edge"),
+                headless=True,
+            )
+            try:
+                page = browser.new_page(viewport={"width": width, "height": 1000})
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.on("request", lambda request: requests.append(request.url))
+                page.on("response", lambda response: errors.append(f"{response.status} {response.url}")
+                        if response.status >= 400 else None)
+                page.goto(f"http://127.0.0.1:{server.server_port}/workspace/{sid}")
+                expect(page.locator(".aw-state")).to_have_text("ready")
+                page.locator(".aw-composer textarea").fill("Keep current archive draft")
+                button = page.get_by_role("button", name="Archive conversation", exact=True)
+                if not button.is_visible():
+                    page.get_by_role("button", name="Session actions", exact=True).click()
+                button.click()
+                dialog = page.get_by_role("dialog", name="Archive conversation", exact=True)
+                assert not any(url.endswith("/archive-session") for url in requests)
+                shots = repo / "apps/desktop/build/workspace-proof"
+                shots.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(shots / f"archive-current-confirm-{width}.png"))
+                with page.expect_response(lambda response: response.url.endswith("/archive-session")) as received:
+                    dialog.get_by_role("button", name="Confirm archive conversation", exact=True).click()
+                receipt = received.value.json()
+                request_id = received.value.request.post_data_json["request_id"]
+                assert receipt["ok"], receipt
+                expect(dialog.get_by_role("status")).to_have_text("Archived 1 conversation.")
+                expect(page.locator(".aw-state")).to_have_text("unavailable")
+                assert page.locator(".aw-composer textarea").input_value() == "Keep current archive draft"
+                assert len([url for url in requests if url.endswith("/archive-session")]) == 1
+                assert not any(url.endswith("/attach") or url.endswith("/commands") for url in requests)
+                assert page.locator("body").evaluate("el=>el.scrollWidth<=innerWidth")
+                page.screenshot(path=str(shots / f"archive-current-complete-{width}.png"))
+                assert not errors, errors
+                print(f"PASS: {width}px browser confirmed current archive with one explicit mutation and retained draft")
+                return receipt, request_id
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        host.shutdown()
+        assert not thread.is_alive()
+
+
+def browser_restore(root, sid, target, width, lose_ack=False, lose_receipt=False, fail_before=False):
+    from playwright.sync_api import expect, sync_playwright
+    from werkzeug.serving import WSGIRequestHandler, make_server
+
+    from ui.workspace_app import install_workspace
+
+    repo = Path(__file__).resolve().parents[1]
+    app = Flask(__name__, static_folder=str(repo / 'ui/static'))
+    host = install_workspace(app, root / 'workspace.db', factories={},
+                             resolve=lambda identity: target if identity == sid else None)
+    if lose_receipt:
+        finish = host.journal.finish_command
+        failed = []
+
+        def lose_first_finish(*args):
+            if not failed:
+                failed.append(True)
+                raise RuntimeError('Proof-injected lost final receipt after catalog registration')
+            return finish(*args)
+        host.journal.finish_command = lose_first_finish
+
+    class QuietHandler(WSGIRequestHandler):
+        def log_request(self, *args, **kwargs): pass
+
+    server = make_server('127.0.0.1', 0, app, threaded=True, request_handler=QuietHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    errors, requests = [], []
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(executable_path=os.environ.get('SERENA_PROOF_BROWSER_EXECUTABLE') or shutil.which('microsoft-edge'), headless=True)
+            try:
+                page = browser.new_page(viewport={'width': width, 'height': 1000})
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.on('request', lambda request: requests.append(request.url))
+                page.on('response', lambda response: errors.append(f'{response.status} {response.url}') if response.status >= 400 else None)
+                page.goto(f'http://127.0.0.1:{server.server_port}/workspace/{sid}')
+                page.locator('.aw-composer textarea').fill('Keep this archive draft')
+                button = page.get_by_role('button', name='Open saved conversation', exact=True)
+                if not button.is_visible():
+                    page.get_by_role('button', name='Session actions', exact=True).click()
+                button.click()
+                saved = page.get_by_role('dialog', name='Saved conversations', exact=True)
+                saved.get_by_role('radio', name='Archived', exact=True).check()
+                saved.locator('.aw-command').filter(has_text=sid).click()
+                dialog = page.get_by_role('dialog', name='Restore archived conversation', exact=True)
+                assert not host._sessions
+                assert not any('/restore-archive' in url or url.endswith('/attach') for url in requests)
+                shots = repo / 'apps/desktop/build/workspace-proof'
+                shots.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(shots / f'archive-native-confirm-{width}.png'))
+                with page.expect_response(lambda response: response.url.endswith('/restore-archive')) as received:
+                    dialog.get_by_role('button', name='Confirm restore conversation', exact=True).click()
+                response = received.value
+                result = response.json()
+                request_id = response.request.post_data_json['request_id']
+                if lose_ack or lose_receipt or fail_before:
+                    assert result.get('uncertain') and not result['ok'], result
+                    if lose_receipt:
+                        assert indexer.get_session(sid)['is_archived'] == 0
+                        page.evaluate("sid=>sessionStorage.removeItem('serena-workspace-pending:'+sid)", sid)
+                        page.reload()
+                        button = page.get_by_role('button', name='Open saved conversation', exact=True)
+                        if not button.is_visible():
+                            page.get_by_role('button', name='Session actions', exact=True).click()
+                        button.click()
+                        saved = page.get_by_role('dialog', name='Saved conversations', exact=True)
+                        expect(saved.get_by_role('radio', name='Active', exact=True)).to_be_checked()
+                        row = saved.locator('.aw-command').filter(has_text=sid)
+                        expect(row).to_contain_text('Restore outcome unconfirmed')
+                        row.click()
+                        dialog = page.get_by_role('dialog', name='Restore archived conversation', exact=True)
+                        expect(dialog.get_by_role('button', name='Confirm restore conversation', exact=True)).to_be_hidden()
+                    with page.expect_response(lambda response: response.url.endswith('/reconcile-archive')) as checked:
+                        dialog.get_by_role('button', name='Check restore outcome', exact=True).click()
+                    result = checked.value.json()
+                    assert checked.value.request.post_data_json['request_id'] == request_id
+                    if fail_before:
+                        assert result.get('retryable') and not result['ok'], result
+                        assert result['result']['archived'] is True
+                        assert indexer.get_session(sid)['is_archived'] == 1
+                        assert not host.journal.has_pending_archive_restore(sid)
+                        expect(dialog.get_by_role('button', name='Confirm restore conversation', exact=True)).to_be_visible()
+                        assert len([url for url in requests if url.endswith('/restore-archive')]) == 1
+                        page.screenshot(path=str(shots / f'archive-native-unapplied-{width}.png'))
+                        with page.expect_response(lambda response: response.url.endswith('/restore-archive')) as retried:
+                            dialog.get_by_role('button', name='Confirm restore conversation', exact=True).click()
+                        assert retried.value.request.post_data_json['request_id'] != request_id
+                        request_id = retried.value.request.post_data_json['request_id']
+                        result = retried.value.json()
+                assert result['ok'], result
+                expect(dialog.get_by_role('status')).to_have_text('Conversation restored')
+                if lose_receipt:
+                    expect(saved.locator('.aw-command')).to_have_count(1)
+                    expect(saved.locator('.aw-command')).not_to_contain_text('Restore outcome unconfirmed')
+                else:
+                    expect(saved.locator('.aw-command')).to_have_count(0)
+                assert not host._sessions
+                assert page.locator('.aw-composer textarea').input_value() == 'Keep this archive draft'
+                assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+                page.screenshot(path=str(shots / f'archive-native-restored-{width}.png'))
+                with page.expect_navigation():
+                    dialog.get_by_role('button', name='Open restored conversation', exact=True).click()
+                assert page.url.endswith('/workspace/' + sid)
+                expect(page.locator('.aw-composer textarea')).to_have_value('Keep this archive draft')
+                assert not host._sessions
+                assert not any(url.endswith('/attach') or url.endswith('/commands') for url in requests)
+                assert not errors, errors
+                if lose_receipt:
+                    print('PASS: pending restore rediscovered in active catalog after reload with browser receipt removed; original durable request reconciled')
+                if fail_before:
+                    print('PASS: native read confirmed unapplied restore; no automatic retry, new explicit attempt used a new durable request ID')
+                print(f'PASS: {width}px browser confirmed exact native restoration over HTTP; separate navigation, retained draft, zero attachment/turn calls or browser errors')
+                return result, request_id
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        host.shutdown()
+        assert not thread.is_alive()
+
+
+async def main(browser_width=None, lose_ack=False, lose_receipt=False, fail_before=False):
+    with tempfile.TemporaryDirectory(prefix="workspace-archive-contract-") as directory, ExitStack() as patches:
+        root = Path(directory)
+        home = root / "codex"
+        home.mkdir()
+        for module, key, value in ((indexer, 'DATA_DIR', root), (indexer, 'DB_PATH', root / 'index.db'),
+                                   (indexer, '_schema_ready', False), (indexer, '_INDEX_LOCK_PATH', root / 'index.lock'),
+                                   (metadata, 'METADATA_DIR', root / 'metadata'), (metadata, '_migrated', True)):
+            patches.enter_context(patch.object(module, key, value))
+        patches.enter_context(patch.dict(os.environ, {'CODEX_HOME': str(home)}))
+        project = root / "project"
+        project.mkdir()
+        env = {"PATH": os.environ["PATH"], "HOME": directory, "CODEX_HOME": str(home),
+               "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}
+        binary = shutil.which("codex")
+        events = []
+        async def publish(event):
+            events.append(event)
+        async def checkpoint(target): pass
+        owner = CodexWorkspace(session_id="new:" + str(uuid4()), cwd=project, publish=publish,
+                               lease_factory=lambda sid: SessionLease(sid, directory=root / "leases"))
+        processes = []
+        app = Flask(__name__)
+        catalog_host = WorkspaceHost(journal=WorkspaceJournal(root / 'workspace.db'), resolve=lambda _: None, factories={})
+        app.register_blueprint(workspace_blueprint(catalog_host, token='a' * 40))
+        client = app.test_client()
+
+        def catalog(archived):
+            response = client.get('/api/workspace/proof/sessions?provider=codex&archived=' + str(archived).lower(),
+                                  headers={'X-Serena-Workspace-Token': 'a' * 40})
+            assert response.status_code == 200, response.json
+            return response.json['data']
+
+        try:
+            await owner.create(binary=binary, env=env, checkpoint=checkpoint)
+            processes.append(owner.rpc.process)
+            sid = owner.session_id
+            await owner.shell_command("echo archive-contract-original", True)
+            async with asyncio.timeout(10):
+                while owner.state != "ready":
+                    await asyncio.sleep(.02)
+            original = list((home / "sessions").rglob(f"*{sid}.jsonl"))
+            assert len(original) == 1
+            target = {'session_id': sid, 'provider': 'codex', 'cwd': str(project)}
+            metadata._save_one(sid, {'custom_title': 'Retained archive title', 'group': 'proof-group', 'done': False})
+            register_fork(target)
+            saved_meta = metadata.get_meta(sid)
+            await owner.close()
+
+            class ArchiveRpc(WorkspaceRpc):
+                async def start(self, *args, **kwargs):
+                    await super().start(*args, **kwargs)
+                    processes.append(self.process)
+
+            async def isolated_archive(identity, cwd, *, confirmed, family_guard, checkpoint):
+                return await archive_codex_tree(
+                    identity, cwd, confirmed=confirmed, binary=binary, env=env,
+                    rpc_factory=ArchiveRpc,
+                    lease_factory=lambda thread_id: SessionLease(thread_id, directory=root / 'leases'),
+                    family_guard=family_guard, checkpoint=checkpoint,
+                )
+
+            class ClosedOwner:
+                state = 'closed'
+                cwd = project
+
+                @staticmethod
+                def can_retry_attachment(): return True
+
+                async def close(self): pass
+
+            archive_journal = WorkspaceJournal(root / 'workspace.db')
+            if browser_width:
+                archive_receipt, archive_request = await asyncio.to_thread(
+                    browser_archive, root, sid, target, browser_width, isolated_archive
+                )
+            else:
+                archive_host = WorkspaceHost(journal=archive_journal, resolve=lambda _: None,
+                                             factories={}, register_fork=register_fork)
+                archive_host._sessions[sid] = (ClosedOwner(), 'codex')
+                archive_request = str(uuid4())
+                with patch('core.workspace_archive.archive_codex_tree', isolated_archive):
+                    try:
+                        archive_receipt = await asyncio.to_thread(
+                            archive_host.archive_session, sid, archive_request, confirmed=True
+                        )
+                        assert await asyncio.to_thread(
+                            archive_host.archive_session, sid, archive_request, confirmed=True
+                        ) == archive_receipt
+                    finally:
+                        await asyncio.to_thread(archive_host.shutdown)
+            assert archive_receipt['ok'], archive_receipt
+            archived_result = archive_receipt['result']
+            assert archived_result == {
+                'session_id': sid, 'provider': 'codex', 'cwd': str(project),
+                'archived': True, 'thread_ids': [sid], 'cataloged': True, 'thread_count': 1,
+            }
+            assert archive_journal.archive_checkpoint(sid, archive_request)['targets'] == [target]
+            assert not archive_journal.has_pending_archive(sid)
+            archived = list((home / "archived_sessions").rglob(f"*{sid}.jsonl"))
+            assert len(archived) == 1 and not original[0].exists()
+            assert "archive-contract-original" in archived[0].read_text()
+            register_fork(target)
+            assert not list_saved_sessions('codex')['data']
+            assert list_saved_sessions('codex', archived=True)['data'][0]['session_id'] == sid
+            assert indexer.get_session(sid)['is_done'] == 0
+            assert metadata.get_meta(sid) == saved_meta
+            assert not catalog(False)
+            assert [row['session_id'] for row in catalog(True)] == [sid]
+            assert catalog(True)[0]['title'] == 'Retained archive title'
+            print("PASS: durable host archive confirmed exact ID and moved, rather than deleted, its real transcript")
+        finally:
+            await owner.close()
+
+        rpc = WorkspaceRpc()
+        try:
+            await rpc.start([binary, "app-server", "--stdio"], cwd=project, env=env)
+            processes.append(rpc.process)
+            await rpc.request("initialize", {"clientInfo": {"name": "serena-archive-proof", "version": "1"},
+                                              "capabilities": {"experimentalApi": True}})
+            await rpc.notify("initialized", {})
+            read = await rpc.request("thread/read", {"threadId": sid, "includeTurns": True})
+            assert read["thread"]["id"] == sid and "archive-contract-original" in json.dumps(read)
+            loaded = await rpc.request("thread/loaded/list", {})
+            assert loaded["data"] == [], loaded
+            await rpc.close()
+
+            mutations = []
+
+            class TrackedRpc(WorkspaceRpc):
+                async def start(self, *args, **kwargs):
+                    await super().start(*args, **kwargs)
+                    processes.append(self.process)
+
+                async def request(self, method, params, **kwargs):
+                    if method == 'thread/unarchive':
+                        mutations.append(params)
+                    return await super().request(method, params, **kwargs)
+
+            before_failure = []
+
+            async def isolated_restore(identity, cwd, *, confirmed, inspect_only=False):
+                if fail_before and not inspect_only and not before_failure:
+                    before_failure.append(True)
+                    raise RuntimeError('Proof-injected transport failure before native restoration')
+                restored = await restore_codex_archive(identity, cwd, confirmed=confirmed, binary=binary, env=env, inspect_only=inspect_only,
+                    rpc_factory=TrackedRpc, lease_factory=lambda identity: SessionLease(identity, directory=root / 'leases'))
+                if lose_ack and not inspect_only:
+                    raise RuntimeError('Proof-injected lost acknowledgement after real native restoration')
+                return restored
+
+            journal = WorkspaceJournal(root / 'workspace.db')
+            host = WorkspaceHost(journal=journal, resolve=lambda identity: target if identity == sid else None,
+                                 factories={}, register_fork=register_fork)
+            request_id = str(uuid4())
+            with patch('core.workspace_archive.restore_codex_archive', isolated_restore):
+                try:
+                    if browser_width:
+                        result, request_id = await asyncio.to_thread(browser_restore, root, sid, target, browser_width, lose_ack, lose_receipt, fail_before)
+                    else:
+                        result = await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True)
+                    assert result['ok'], result
+                    assert await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True) == result
+                    assert not host._sessions
+                    assert not journal.has_pending_archive_restore(sid)
+                finally:
+                    await asyncio.to_thread(host.shutdown)
+                recovered = WorkspaceHost(journal=WorkspaceJournal(journal.path), resolve=lambda _: None, factories={})
+                try:
+                    assert await asyncio.to_thread(recovered.restore_archive, sid, request_id, confirmed=True) == result
+                    assert not recovered._sessions
+                finally:
+                    await asyncio.to_thread(recovered.shutdown)
+            restored = result['result']
+            assert mutations == [{'threadId': sid}], mutations
+            assert restored['session_id'] == sid and restored['archived'] is False
+            assert not archived[0].exists()
+            assert len(list((home / "sessions").rglob(f"*{sid}.jsonl"))) == 1
+            register_fork(target)
+            assert list_saved_sessions('codex')['data'][0]['session_id'] == sid
+            assert not list_saved_sessions('codex', archived=True)['data']
+            assert metadata.get_meta(sid) == saved_meta
+            assert [row['session_id'] for row in catalog(False)] == [sid]
+            assert not catalog(True)
+            print("PASS: archived history read and exact restore require no resumed writer or model turn")
+        finally:
+            await rpc.close()
+        assert all(process.returncode is not None for process in processes)
+        assert not list(project.iterdir())
+        print(json.dumps({"ok": True, "processesReaped": len(processes), "credentialsUsed": False,
+                          "inference": False, "archiveNotificationConfirmed": True, "restoreDoesNotResume": True}))
+        print('PASS: real archive/restore reindexed exact session; custom title, done and group metadata unchanged')
+        print('PASS: authenticated catalog route separates real active/archive rows without a runtime host')
+        print('PASS: durable host archive closes ownership, checkpoints before mutation, and replays its receipt without another native process')
+        print('PASS: durable host restore replays its receipt across restart without another native process')
+    print("PASS: disposable profile removed; no user sessions or project files changed")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--browser-width', type=int, choices=(390, 1600))
+    parser.add_argument('--lose-restore-ack', action='store_true')
+    parser.add_argument('--lose-final-receipt', action='store_true')
+    parser.add_argument('--fail-before-restore', action='store_true')
+    args = parser.parse_args()
+    failures = [args.lose_restore_ack, args.lose_final_receipt, args.fail_before_restore]
+    if any(failures) and not args.browser_width:
+        parser.error('Failure injection requires --browser-width')
+    if sum(failures) > 1:
+        parser.error('Choose one failure injection per proof')
+    asyncio.run(main(args.browser_width, *failures))

@@ -1,0 +1,2238 @@
+"""Persistent structured-session owners independent of Flask requests and panes.
+
+The app supplies an authoritative resolver which rejects existing PTYs/external
+writers before opening. Provider adapters additionally acquire the shared lease.
+Nothing launches on construction, reads, polling, or renderer disconnection.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import hashlib
+import json
+import threading
+import time
+from collections.abc import Callable
+from contextlib import AsyncExitStack
+from copy import deepcopy
+from pathlib import Path
+from time import monotonic
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+from core.workspace_codex import CodexWorkspace
+from core.workspace_journal import WorkspaceJournal
+from core.workspace_uploads import WorkspaceUploads
+
+
+def _claude_owner(**kwargs):
+    # Keep the optional SDK dependency out of ordinary Codex-only startup.
+    from core.workspace_claude import ClaudeWorkspace
+    from core.workspace_claude_runtime import client_factory
+
+    return ClaudeWorkspace(client_factory=client_factory(), **kwargs)
+
+
+class WorkspaceHost:
+    def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None, register_fork=None,
+                 delete_catalog=None):
+        self.journal = journal
+        self.uploads = WorkspaceUploads(journal.path.parent / "workspace-uploads")
+        self.resolve = resolve
+        self.register_fork = register_fork
+        if delete_catalog is None:
+            from core.workspace_catalog import remove_deleted_codex_target
+
+            delete_catalog = remove_deleted_codex_target
+        self.delete_catalog = delete_catalog
+        self.factories = (
+            factories
+            if factories is not None
+            else {
+                "codex": CodexWorkspace,
+                "claude": _claude_owner,
+            }
+        )
+        self._guard = threading.Lock()
+        self._loop = None
+        self._thread = None
+        self._stopped = False
+        self._sessions = {}
+        self._locks = {}
+        self._operations = set()
+        self._bridge_queues = {}
+        self._bridge_messages = {}
+        self._bridge_cancelled = set()
+        self._views = {}
+        self._work_reservations = {}
+        self._work_turns = {}
+        self._restore_failures = {}
+        self._account_mutation_lock = None
+        self._codex_account_login = None
+
+    def _account_mutex(self):
+        # Construct on the resident owner loop, not in the Flask caller thread.
+        if self._account_mutation_lock is None:
+            self._account_mutation_lock = asyncio.Lock()
+        return self._account_mutation_lock
+
+    def _codex_login_error(self, sid):
+        login = self._codex_account_login
+        if login is None:
+            return ""
+        location = "this conversation" if login["sid"] == sid else "another conversation"
+        return f"Finish or cancel the Codex browser sign-in in {location} before continuing"
+
+    async def _account_change_owners(self, stack, sid, request_id, action):
+        other_ids = sorted(
+            identity
+            for identity, (candidate, provider) in self._sessions.items()
+            if identity != sid and provider == "codex"
+            and candidate.state not in {"closed", "unavailable"}
+        )
+        for identity in other_ids:
+            await stack.enter_async_context(self._locks.setdefault(identity, asyncio.Lock()))
+        owners = [(identity, self._sessions[identity][0]) for identity in [sid, *other_ids]]
+        for identity, candidate in owners:
+            if (candidate.state != "ready" or candidate.active_turn
+                    or getattr(candidate, "questions", None)
+                    or getattr(candidate, "elicitations", None)
+                    or getattr(candidate, "active_agent_threads", None)):
+                raise ValueError(
+                    f"Finish work in every open Codex conversation before {action}"
+                )
+            if (self._bridge_queues.get(identity)
+                    or self._work_reservations.get(identity)
+                    or self._work_turns.get(identity)):
+                raise ValueError(
+                    f"Resolve queued or reserved Codex work before {action}"
+                )
+            allowed = ((sid, request_id) if identity == sid else ("", ""))
+            if (await asyncio.to_thread(self.journal.has_pending_work, identity)
+                    or await asyncio.to_thread(
+                        self.journal.has_pending_command_conflict,
+                        identity,
+                        allowed,
+                    )):
+                raise ValueError(
+                    f"Resolve unconfirmed Codex operations before {action}"
+                )
+            tasks = await candidate.list_background_tasks()
+            if not isinstance(tasks, dict) or tasks.get("data") != []:
+                raise ValueError(
+                    f"Stop background work in every Codex conversation before {action}"
+                )
+        return owners
+
+    async def _settle_codex_account_login(self, sid, params):
+        login = self._codex_account_login
+        if (login is None or login["sid"] != sid
+                or not isinstance(params.get("loginId"), str)
+                or type(params.get("success")) is not bool):
+            return
+        async with self._account_mutex():
+            current = self._codex_account_login
+            if (current is not None and current["sid"] == sid
+                    and current.get("login_id") == params["loginId"]):
+                self._codex_account_login = None
+
+    async def _abandon_codex_account_login(self, sid):
+        if self._codex_account_login is None or self._codex_account_login["sid"] != sid:
+            return
+        async with self._account_mutex():
+            if self._codex_account_login is not None and self._codex_account_login["sid"] == sid:
+                self._codex_account_login = None
+
+    async def _run(self, coroutine):
+        task = asyncio.current_task()
+        self._operations.add(task)
+        try:
+            return await coroutine
+        finally:
+            self._operations.discard(task)
+
+    def _dispatch(self, coroutine, timeout):
+        with self._guard:
+            if self._stopped:
+                coroutine.close()
+                raise RuntimeError("Workspace host is stopped")
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                self._thread = threading.Thread(
+                    target=self._loop.run_forever, daemon=True, name="workspace-owners"
+                )
+                self._thread.start()
+            future = asyncio.run_coroutine_threadsafe(self._run(coroutine), self._loop)
+        try:
+            return future.result(timeout)
+        except concurrent.futures.TimeoutError:
+            # The caller stopped observing, not the provider. Never cancel the
+            # operation or free its session ownership on an HTTP timeout.
+            return {"ok": False, "pending": True, "error": "Operation is still pending"}
+
+    def attach(self, session_id: str, *, timeout=35):
+        self._validate_session(session_id)
+        return self._dispatch(self._attach(session_id), timeout)
+
+    def observe(self, session_id: str):
+        """Inspect an existing owner without starting the owner loop or a provider."""
+        self._validate_session(session_id)
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"observing": False, "session_id": session_id}
+            future = asyncio.run_coroutine_threadsafe(self._observe(session_id), self._loop)
+        return future.result(timeout=5)
+
+    async def _observe(self, sid):
+        entry = self._sessions.get(sid)
+        if entry is None or entry[0].state not in {"ready", "running", "completed", "failed", "interrupted"}:
+            return {"observing": False, "session_id": sid}
+        return {**self._status(sid), "observing": True}
+
+    def decorate_runtime_sessions(self, sessions):
+        """Expose owner state for sidebar rows independently of mounted views."""
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return sessions
+            future = asyncio.run_coroutine_threadsafe(self._runtime_snapshot(), self._loop)
+        states = future.result(timeout=5)
+        return [{**row, "workspace_runtime": states[row["session_id"]]}
+                if row["session_id"] in states else row for row in sessions]
+
+    async def _runtime_snapshot(self):
+        return {sid: self._status(sid) for sid in self._sessions if not sid.startswith("new:")}
+
+    def runtime_context_snapshot(self):
+        """Report existing native owners without resolving or attaching sessions."""
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"runtimes": []}
+            future = asyncio.run_coroutine_threadsafe(self._runtime_context_snapshot(), self._loop)
+        return future.result(timeout=5)
+
+    def note_view_context(self, sid, data):
+        self._validate_session(sid)
+        if (not isinstance(data, dict) or set(data) - {"split_sids", "pinned", "sleep_peers", "closed"} != {"view_id", "sequence", "focused", "visible", "draft"}
+                or not isinstance(data["view_id"], str) or str(UUID(data["view_id"])) != data["view_id"]
+                or type(data["sequence"]) is not int or not 0 <= data["sequence"] <= 2 ** 53 - 1
+                or any(type(data[key]) is not bool for key in ("focused", "visible", "draft"))
+                or (data["focused"] and not data["visible"])):
+            raise ValueError("Expected an exact view identity, sequence and boolean context")
+        if "pinned" in data and type(data["pinned"]) is not bool:
+            raise ValueError("Pinned context must be boolean")
+        if "sleep_peers" in data and type(data["sleep_peers"]) is not bool:
+            raise ValueError("Peer sleep intent must be boolean")
+        if "closed" in data and (type(data["closed"]) is not bool or
+                                 (data["closed"] and (data["visible"] or data["focused"] or data.get("sleep_peers")))):
+            raise ValueError("Closed view must be inactive")
+        split = data.get("split_sids", [])
+        if (not isinstance(split, list) or len(split) > 4
+                or any(not isinstance(value, str) or not value for value in split)
+                or len(set(split)) != len(split) or (split and sid not in split)):
+            raise ValueError("Split context must contain unique session identities including this view")
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"ok": False, "observing": False}
+            future = asyncio.run_coroutine_threadsafe(self._note_view_context(sid, dict(data)), self._loop)
+        return future.result(timeout=5)
+
+    async def _note_view_context(self, sid, data):
+        if sid not in self._sessions:
+            return {"ok": False, "observing": False}
+        views = self._views.setdefault(sid, {})
+        previous = views.get(data["view_id"])
+        if previous is not None and data["sequence"] <= previous["sequence"]:
+            return {"ok": True, "stale": True}
+        if data.get("closed"):
+            # Keep only the cursor so delayed pre-close telemetry cannot resurrect
+            # this view. A later page with the same identity may advance it again.
+            views[data["view_id"]] = {"sequence": data["sequence"], "closed": True}
+            return {"ok": True, "closed": True}
+        if (previous is None or previous.get("closed")) and len(self._active_views(sid)) >= 32:
+            raise ValueError("Too many views for this session")
+        same_focus = previous is not None and all(previous.get(key) == data.get(key)
+                                                  for key in ("focused", "visible", "split_sids", "pinned"))
+        epoch = previous.get("focus_epoch", previous["sequence"]) if same_focus else data["sequence"]
+        views[data["view_id"]] = {**data, "seen": monotonic(), "focused_at": time.time(), "focus_epoch": epoch}
+        if data["focused"] or data.get("pinned"):
+            transport = self._owner_transport(*self._sessions[sid])
+            if transport is not None and getattr(transport, "suspended", False):
+                transport.wake()
+        if data.get("sleep_peers") and data["focused"] and data.get("pinned") is False:
+            asyncio.create_task(self._run(self._sleep_clicked_peers(sid, {**data, "focus_epoch": epoch})))
+        return {"ok": True}
+
+    def _active_views(self, sid):
+        return [view for view in self._views.get(sid, {}).values() if not view.get("closed")]
+
+    def _peer_sleep_current(self, source, data, peer):
+        view = self._views.get(source, {}).get(data["view_id"], {})
+        split = data.get("split_sids", [])
+        if (self._stopped or view.get("focus_epoch") != data["focus_epoch"]
+                or not view.get("focused") or not view.get("visible") or view.get("pinned") is not False
+                or monotonic() - view.get("seen", 0) >= 6 or source == peer or peer not in split):
+            return False
+        return any(other.get("visible") and other.get("split_sids") == split
+                   for other in self._active_views(peer))
+
+    async def _sleep_clicked_peers(self, source, data):
+        # Allow the sibling's blur report to arrive; never retry after busy work.
+        await asyncio.sleep(.05)
+        for peer in data.get("split_sids", []):
+            if not self._peer_sleep_current(source, data, peer):
+                continue
+            try:
+                await self._set_sleep(peer, True, guard=lambda peer=peer: self._peer_sleep_current(source, data, peer))
+            except (RuntimeError, OSError):
+                # Power saving is optional; failed admission must not affect work.
+                continue
+
+    @staticmethod
+    def _owner_transport(owner, provider):
+        if provider == "codex":
+            return getattr(owner, "rpc", None)
+        return getattr(getattr(getattr(owner, "client", None), "transport", None), "rpc", None)
+
+    def set_sleep(self, sid, sleeping):
+        """Explicit power control of an existing owner; never attach or launch."""
+        self._validate_session(sid)
+        if type(sleeping) is not bool:
+            raise ValueError("Sleeping must be boolean")
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"ok": False, "message": "No native owner is available"}
+            future = asyncio.run_coroutine_threadsafe(self._set_sleep(sid, sleeping), self._loop)
+        return future.result(timeout=35)
+
+    def _sleep_blocker(self, sid):
+        owner, _ = self._sessions[sid]
+        if owner.state != "ready" or owner.active_turn:
+            return "Native work is active or uncertain"
+        if getattr(owner, "active_agent_threads", None):
+            return "Delegated agent work is active or uncertain"
+        if getattr(owner, "questions", None) or getattr(owner, "elicitations", None):
+            return "Native questions are pending"
+        if self._work_reservations.get(sid) or self._bridge_queues.get(sid):
+            return "Native work is reserved or queued"
+        tasks = getattr(getattr(owner, "events", None), "tasks", {})
+        if any(task.get("status") not in {"completed", "failed", "stopped", "killed"} for task in tasks.values()):
+            return "Native background work is active or unknown"
+        views = self._active_views(sid)
+        if not views or any(monotonic() - view["seen"] >= 6 for view in views):
+            return "Composer state is not freshly confirmed"
+        if any(view["draft"] or view["focused"] or view.get("pinned") is not False for view in views):
+            return "Native pane is focused, pinned, has a draft, or pin state is unknown"
+        return ""
+
+    async def _set_sleep(self, sid, sleeping, *, guard=None):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            if guard is not None and not guard():
+                return {"ok": False, "message": "Pane selection changed"}
+            if sid not in self._sessions:
+                return {"ok": False, "message": "No native owner is available"}
+            owner, provider = self._sessions[sid]
+            transport = self._owner_transport(owner, provider)
+            if transport is None:
+                return {"ok": False, "message": "Native power control is unavailable"}
+            if not sleeping:
+                transport.wake()
+                return {"ok": True, "sleeping": False}
+            error = self._sleep_blocker(sid)
+            if error:
+                return {"ok": False, "message": error}
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                return {"ok": False, "message": "Native dispatch is unconfirmed"}
+            if not getattr(transport, "suspended", False):
+                try:
+                    tasks = await owner.list_background_tasks()
+                except Exception:
+                    return {"ok": False, "message": "Native background work could not be checked"}
+                if not isinstance(tasks, dict) or tasks.get("data") != []:
+                    return {"ok": False, "message": "Native background work is active or unknown"}
+            error = self._sleep_blocker(sid)
+            if error or self._stopped or (guard is not None and not guard()):
+                return {"ok": False, "message": error or "Host stopped"}
+            paused = await transport.pause_idle()
+            return {"ok": paused, "sleeping": bool(getattr(transport, "suspended", False)),
+                    "message": "Native owner paused" if paused else "Native transport cannot pause safely"}
+
+    async def _runtime_context_snapshot(self):
+        runtimes = []
+        focus = []
+        now = monotonic()
+        for sid, (owner, provider) in self._sessions.items():
+            if sid.startswith("new:"):
+                continue
+            views = self._active_views(sid)
+            fresh = [view for view in views if now - view["seen"] < 6]
+            alive = owner.state not in {"closed", "unavailable"}
+            pending_interactions = bool(getattr(owner, "questions", None) or getattr(owner, "elicitations", None))
+            tasks = getattr(getattr(owner, "events", None), "tasks", {})
+            background_busy = bool(getattr(owner, "active_agent_threads", None)) or any(
+                task.get("status") not in {"completed", "failed", "stopped", "killed"} for task in tasks.values())
+            settings = getattr(owner, "settings", {})
+            if alive:
+                focus.extend((view["focused_at"], sid, view.get("split_sids", []))
+                             for view in fresh if view["focused"])
+            runtimes.append({
+                "sid": sid,
+                "agent": provider,
+                "cwd": str(owner.cwd),
+                "alive": alive,
+                "state": owner.state,
+                "busy": pending_interactions or background_busy or bool(owner.active_turn) or owner.state not in {
+                    "ready", "completed", "failed", "interrupted", "closed", "unavailable"},
+                "reserved": bool(self._bridge_queues.get(sid) or self._work_reservations.get(sid)),
+                "owner": "workspace",
+                "draft": any(view["draft"] for view in views),
+                "draft_known": bool(views) and len(fresh) == len(views),
+                "pending_interactions": pending_interactions,
+                "model": settings.get("model", ""),
+                "effort": settings.get("reasoningEffort", ""),
+            })
+        focused_at, focused_sid, split = max(focus, default=(0, None, []))
+        split = [sid for sid in split if sid in self._sessions
+                 and self._sessions[sid][0].state not in {"closed", "unavailable"}]
+        return {"runtimes": runtimes, "focused_sid": focused_sid,
+                "focused_at": focused_at, "window_active": bool(focused_sid),
+                "split_pair": split if len(split) > 1 else []}
+
+    def reserve_work(self, sid, item_id):
+        """Reserve an existing Codex owner; never attach or start a provider."""
+        self._validate_session(sid)
+        if not isinstance(item_id, str) or str(UUID(item_id)) != item_id:
+            raise ValueError("An exact work item UUID is required")
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {"ok": False, "message": "No native owner is available"}
+            future = asyncio.run_coroutine_threadsafe(self._reserve_work(sid, item_id), self._loop)
+        return future.result(timeout=35)
+
+    def _work_admission_error(self, sid):
+        entry = self._sessions.get(sid)
+        if entry is None or entry[1] != "codex":
+            return "No existing native Codex owner"
+        login_error = self._codex_login_error(sid)
+        if login_error:
+            return login_error
+        owner = entry[0]
+        if owner.state != "ready" or owner.active_turn or getattr(owner, "questions", None):
+            return "Native session has active work or pending questions"
+        if getattr(owner, "active_agent_threads", None):
+            return "Delegated agent work is active or uncertain"
+        if getattr(owner, "settings", {}).get("collaborationMode") == "plan":
+            return "Native session is in Plan mode"
+        if self._bridge_queues.get(sid):
+            return "Native session has queued bridge work"
+        if self.journal.has_pending_delete(sid):
+            return "Native session has an unconfirmed delete"
+        views = self._active_views(sid)
+        if not views or any(monotonic() - view["seen"] >= 6 for view in views):
+            return "Native composer state is not freshly confirmed"
+        if any(view["draft"] for view in views):
+            return "Native session has an unsent draft"
+        return ""
+
+    def release_work(self, sid, item_id):
+        self._validate_session(sid)
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return False
+            future = asyncio.run_coroutine_threadsafe(self._release_work(sid, item_id), self._loop)
+        return future.result(timeout=5)
+
+    async def _release_work(self, sid, item_id):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            if not item_id or self._work_reservations.get(sid) != item_id:
+                return False
+            if self._work_turns.get(sid, {}).get("uncertain"):
+                return False
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                return False
+            owner = self._sessions[sid][0]
+            if owner.active_turn or owner.state != "ready" or getattr(owner, "questions", None) or getattr(owner, "active_agent_threads", None):
+                return False
+            self._work_reservations.pop(sid)
+            self._work_turns.pop(sid, None)
+            return True
+
+    def submit_work(self, sid, item_id, prompt, dispatch_id, *, start_offset=None):
+        self._validate_session(sid)
+        if not isinstance(item_id, str) or str(UUID(item_id)) != item_id:
+            raise ValueError("An exact work item UUID is required")
+        if not isinstance(dispatch_id, str) or str(UUID(dispatch_id)) != dispatch_id:
+            raise ValueError("An exact dispatch UUID is required")
+        if not isinstance(prompt, str) or not prompt.strip() or "\0" in prompt or len(prompt.encode()) > 1024 * 1024:
+            raise ValueError("A nonempty work prompt of at most 1 MiB without NUL is required")
+        if start_offset is not None and (type(start_offset) is not int or start_offset < 0):
+            raise ValueError("Transcript start offset must be a nonnegative integer")
+        return self._dispatch(self._submit_work(sid, item_id, prompt, dispatch_id, start_offset=start_offset), 35)
+
+    async def _submit_work(self, sid, item_id, prompt, dispatch_id, *, start_offset=None):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            if self._work_reservations.get(sid) != item_id:
+                return {"ok": False, "committed": False, "message": "Job does not reserve this native owner"}
+            digest = hashlib.sha256(prompt.encode()).hexdigest()
+            key = "work:" + item_id + ":" + dispatch_id
+            payload = {"action": "work_submit", "item_id": item_id, "prompt_sha256": digest}
+            await asyncio.to_thread(self.journal.recover_completed_work, sid)
+            record = await asyncio.to_thread(self.journal.command_record, sid, key)
+            if record is not None:
+                stored = dict(record["payload"])
+                original_offset = stored.pop("start_offset", None)
+                stored.pop("event_start", None)
+                if stored != payload:
+                    raise ValueError("Request ID was already used with different content")
+                prior = record["result"]
+                if prior is None:
+                    self._work_turns[sid] = {"uncertain": True}
+                elif prior.get("ok") and prior.get("turn_id"):
+                    self._work_turns[sid] = {"uncertain": False, "turn_id": prior["turn_id"]}
+                    owner = self._sessions[sid][0]
+                    if (owner.state == "uncertain" and not owner.active_turn
+                            and await asyncio.to_thread(self.journal.turn_completion, sid, prior["turn_id"])):
+                        owner.state = "ready"
+                return prior or {"ok": False, "committed": True, "uncertain": True,
+                                 "start_offset": original_offset,
+                                 "message": "Prior native work submission is unconfirmed; it will not be repeated"}
+            if self._work_turns.get(sid, {}).get("uncertain"):
+                return {"ok": False, "committed": False, "message": "Prior native work dispatch is uncertain"}
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                return {"ok": False, "committed": False, "message": "A prior native work dispatch is unconfirmed"}
+            error = self._work_admission_error(sid)
+            if error:
+                return {"ok": False, "committed": False, "message": error}
+            owner = self._sessions[sid][0]
+            try:
+                tasks = await owner.list_background_tasks()
+                if not isinstance(tasks, dict) or tasks.get("data") != []:
+                    return {"ok": False, "committed": False, "message": "Native background work is active or unknown"}
+            except Exception as error:
+                return {"ok": False, "committed": False, "message": str(error)}
+            error = self._work_admission_error(sid)
+            if error or self._stopped:
+                return {"ok": False, "committed": False, "message": error or "Host stopped"}
+            payload["start_offset"] = start_offset
+            payload["event_start"] = await asyncio.to_thread(self.journal.latest_sequence, sid)
+            claimed, prior = await asyncio.to_thread(self.journal.claim_command, sid, key, payload)
+            if not claimed:
+                return prior or {"ok": False, "committed": True, "uncertain": True}
+            error = self._work_admission_error(sid)
+            if error or self._stopped:
+                receipt = {"ok": False, "committed": False, "start_offset": start_offset,
+                           "message": error or "Host stopped"}
+                await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+                return receipt
+            self._work_turns[sid] = {"uncertain": True}
+            try:
+                result = await owner.submit([{"type": "text", "text": prompt}])
+                turn_id = result.get("turn", {}).get("id") if isinstance(result, dict) else None
+                if not isinstance(turn_id, str) or not turn_id:
+                    raise RuntimeError("Native submission returned no exact turn identity")
+                receipt = {"ok": True, "committed": True, "session_id": sid, "turn_id": turn_id,
+                           "start_offset": start_offset}
+                await asyncio.to_thread(self.journal.append, sid, {
+                    "method": "workspace/workSubmitted", "params": {
+                        "threadId": sid, "requestId": key, "payload": payload, "receipt": receipt}})
+                await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+                self._work_turns[sid] = {"uncertain": False, "turn_id": turn_id}
+                return receipt
+            except Exception as error:
+                # Keep the pending durable claim and reservation after any
+                # ambiguous native result or failure to persist acknowledgement.
+                return {"ok": False, "committed": True, "uncertain": True,
+                        "start_offset": start_offset, "message": str(error)}
+
+    def interrupt_work(self, sid, item_id):
+        self._validate_session(sid)
+        return self._dispatch(self._interrupt_work(sid, item_id), 10)
+
+    async def _interrupt_work(self, sid, item_id):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            if not item_id or self._work_reservations.get(sid) != item_id:
+                return {"ok": False, "message": "Job does not reserve this native owner"}
+            turn = self._work_turns.get(sid, {})
+            owner = self._sessions[sid][0]
+            if turn.get("uncertain") or not turn.get("turn_id") or owner.active_turn != turn["turn_id"]:
+                return {"ok": False, "message": "Exact job turn is not active or confirmed"}
+            await owner.interrupt()
+            return {"ok": True, "message": "Exact native job turn interrupted", "turn_id": turn["turn_id"]}
+
+    async def _reserve_work(self, sid, item_id):
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            existing = self._work_reservations.get(sid)
+            if existing:
+                return {"ok": existing == item_id, "message": "Native session is reserved"}
+            await asyncio.to_thread(self.journal.recover_completed_work, sid)
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                return {"ok": False, "message": "A prior native work dispatch is unconfirmed"}
+            error = self._work_admission_error(sid)
+            if error:
+                return {"ok": False, "message": error}
+            owner = self._sessions[sid][0]
+            try:
+                tasks = await owner.list_background_tasks()
+                if not isinstance(tasks, dict) or tasks.get("data") != []:
+                    return {"ok": False, "message": "Native background work is active or unconfirmed"}
+            except Exception as error:
+                return {"ok": False, "message": f"Native background work could not be checked: {error}"}
+            # Notifications and view reports can arrive during the native RPC.
+            error = self._work_admission_error(sid)
+            if error or self._sessions[sid][0] is not owner or self._stopped:
+                return {"ok": False, "message": error or "Native owner changed during admission"}
+            self._work_reservations[sid] = item_id
+            return {"ok": True, "message": "Native owner reserved", "session_id": sid}
+
+    def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
+        if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
+            raise ValueError("Creation requires an exact request UUID")
+        if confirmed is not True or provider not in {"codex", "claude"} or provider not in self.factories:
+            raise ValueError("Explicit supported-provider creation is required")
+        if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
+            raise ValueError("An existing absolute project directory is required")
+        if not isinstance(seed, str) or "\0" in seed or len(seed.encode("utf-8")) > 1024 * 1024:
+            raise ValueError("Initial context must be text of at most 1 MiB without NUL")
+        return self._dispatch(self._create(request_id, provider, str(Path(cwd).resolve()), seed), timeout)
+
+    async def _create(self, request_id, provider, cwd, seed=""):
+        if provider == "codex":
+            async with self._account_mutex():
+                if self._codex_account_login is not None:
+                    raise ValueError(
+                        "Finish or cancel Codex browser sign-in before creating a conversation"
+                    )
+                return await self._create_locked(request_id, provider, cwd, seed)
+        return await self._create_locked(request_id, provider, cwd, seed)
+
+    async def _create_locked(self, request_id, provider, cwd, seed=""):
+        reservation = "new:" + request_id
+        payload = {"action": "create_session", "payload": {"provider": provider, "cwd": cwd, "confirmed": True}}
+        if seed:
+            payload["payload"]["seed"] = seed
+        async with self._locks.setdefault(reservation, asyncio.Lock()):
+            claimed, receipt = await asyncio.to_thread(self.journal.claim_command, reservation, request_id, payload)
+            if not claimed:
+                return receipt or {"ok": False, "pending": True, "error": "Creation is unconfirmed; it will not be repeated"}
+            owner = None
+            try:
+                async def publish(event):
+                    await self._publish(owner.session_id, event)
+                owner = self.factories[provider](session_id=reservation, cwd=Path(cwd), publish=publish)
+                self._sessions[reservation] = (owner, provider)
+                async def checkpoint(target):
+                    if target["session_id"] in self._sessions:
+                        raise ValueError("Native creation returned an already owned identity")
+                    await asyncio.to_thread(self.journal.prepare_creation, request_id, target)
+                    self._sessions[target["session_id"]] = (owner, provider)
+                    self._sessions.pop(reservation, None)
+                await owner.create(checkpoint=checkpoint)
+                initial = None
+                if seed:
+                    # Native completion may arrive during submit. Admit its
+                    # transcript for indexing before delivering the first turn.
+                    await asyncio.to_thread(self.journal.mark_creation_ready, request_id)
+                    initial = await self._command(owner.session_id, "creation-seed:" + request_id, "submit",
+                                                  {"inputs": [{"type": "text", "text": seed}]})
+                receipt = await asyncio.to_thread(self.journal.complete_creation, request_id, initial)
+                self._sessions.pop(reservation, None)
+                return receipt
+            except Exception as error:
+                # The durable claim is deliberately retained even if native
+                # creation or its acknowledgement was lost. Never auto-replay it.
+                return {"ok": False, "pending": True, "error": str(error)}
+
+    def decorate_archive_restores(self, page):
+        session_ids = [row["session_id"] for row in page["data"]]
+        restores = self.journal.pending_archive_restores(session_ids)
+        archives = self.journal.pending_archives(session_ids)
+        deletes = self.journal.pending_deletes(session_ids)
+        return {**page, "data": [{
+            **row,
+            **({"archive_restore_request_id": restores[row["session_id"]]}
+               if row["session_id"] in restores else {}),
+            **({
+                "archive_request_id": archives[row["session_id"]]["request_id"],
+                "archive_source_id": archives[row["session_id"]]["session_id"],
+            } if row["session_id"] in archives else {}),
+            **({
+                "delete_request_id": deletes[row["session_id"]]["request_id"],
+                "delete_source_id": deletes[row["session_id"]]["session_id"],
+            } if row["session_id"] in deletes else {}),
+        } for row in page["data"]]}
+
+    def archive_session(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
+        if (type(reconcile) is not bool or confirmed is not True
+                or not isinstance(sid, str) or str(UUID(sid)) != sid
+                or not isinstance(request_id, str) or str(UUID(request_id)) != request_id):
+            raise ValueError("Explicit confirmation and exact session/request UUIDs are required")
+        return self._dispatch(self._archive_session(sid, request_id, reconcile=reconcile), timeout)
+
+    def _archive_family_guard(self, threads, archive_operation):
+        for thread in threads:
+            identity = thread["id"]
+            entry = self._sessions.get(identity)
+            if entry and (entry[0].state != "closed"
+                          or not getattr(entry[0], "can_retry_attachment", lambda: False)()):
+                raise RuntimeError("An archive descendant still has a workspace writer")
+            if self._work_reservations.get(identity) or self._bridge_queues.get(identity):
+                raise RuntimeError("An archive descendant is reserved by background work")
+            if (self.journal.has_pending_work(identity) or self.journal.has_pending_clear(identity)
+                    or self.journal.has_pending_archive_restore(identity)
+                    or self.journal.has_pending_delete(identity)):
+                raise RuntimeError("An archive descendant has an unconfirmed durable operation")
+            pending_archive = self.journal.pending_archive_operation(identity)
+            if pending_archive is not None and pending_archive != archive_operation:
+                raise RuntimeError("An archive descendant has another unconfirmed archive")
+
+    def _delete_family_guard(self, threads, delete_operation, *, identities=None):
+        thread_ids = [thread["id"] for thread in threads]
+        expected = list(identities) if identities is not None else thread_ids
+        if threads and (len(set(thread_ids)) != len(thread_ids) or set(thread_ids) != set(expected)):
+            raise RuntimeError("Delete family no longer matches its durable checkpoint")
+        for identity in expected:
+            entry = self._sessions.get(identity)
+            if entry and (entry[0].state != "closed"
+                          or not getattr(entry[0], "can_retry_attachment", lambda: False)()):
+                raise RuntimeError("A delete descendant still has a workspace writer")
+            if (self._work_reservations.get(identity) or self._work_turns.get(identity)
+                    or self._bridge_queues.get(identity)):
+                raise RuntimeError("A delete descendant is reserved by background work")
+            if (self.journal.has_pending_work(identity)
+                    or self.journal.has_pending_clear_involving(identity)
+                    or self.journal.has_pending_archive_restore(identity)
+                    or self.journal.has_pending_command_conflict(
+                        identity, (delete_operation["session_id"], delete_operation["request_id"])
+                    )):
+                raise RuntimeError("A delete descendant has another unconfirmed durable operation")
+            if self.journal.has_pending_archive(identity):
+                raise RuntimeError("A delete descendant has an unconfirmed archive")
+            pending_delete = self.journal.pending_delete_operation(identity)
+            if pending_delete is not None and pending_delete != delete_operation:
+                raise RuntimeError("A delete descendant has another unconfirmed delete")
+
+    async def _finish_archive(self, sid, request_id, archived):
+        catalogs = []
+        for target in archived["targets"]:
+            catalog = await self._register_created_fork(target)
+            if catalog.get("session_id") != target["session_id"] or catalog.get("indexed") is not True:
+                raise RuntimeError(
+                    f"Archived session catalog registration failed for {target['session_id']}: "
+                    + str(catalog.get("error", "catalog unavailable"))
+                )
+            catalogs.append(catalog)
+        result = {key: archived[key] for key in ("session_id", "provider", "cwd", "archived", "thread_ids")}
+        result.update(cataloged=True, thread_count=len(catalogs))
+        receipt = {"ok": True, "result": result}
+        await asyncio.to_thread(self.journal.complete_archive, sid, request_id, receipt)
+        for identity in archived["thread_ids"]:
+            entry = self._sessions.get(identity)
+            if entry and entry[0].state == "closed":
+                self._sessions.pop(identity, None)
+        return receipt
+
+    async def _archive_session(self, sid, request_id, *, reconcile=False):
+        from core.workspace_archive import archive_codex_tree, inspect_codex_archive_tree
+
+        payload = {"action": "archive_session", "payload": {"confirmed": True}}
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            found, receipt = await asyncio.to_thread(
+                self.journal.command_receipt, sid, request_id, payload
+            )
+            if found and (receipt is not None or not reconcile):
+                return receipt or {
+                    "ok": False, "uncertain": True,
+                    "error": "Archive outcome is unconfirmed; it will not be repeated",
+                }
+            if reconcile:
+                if not found:
+                    raise ValueError("No matching archive receipt exists")
+                checkpoint = await asyncio.to_thread(
+                    self.journal.archive_checkpoint, sid, request_id
+                )
+                if checkpoint is None:
+                    receipt = {
+                        "ok": False, "retryable": True,
+                        "error": "Archive did not reach its native mutation checkpoint; a new explicit attempt is available",
+                        "result": {"session_id": sid, "provider": "codex", "cwd": "", "archived": False,
+                                   "thread_ids": [sid]},
+                    }
+                    await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                    return receipt
+                try:
+                    inspected = await inspect_codex_archive_tree(
+                        sid, checkpoint["cwd"], checkpoint["targets"],
+                        family_guard=lambda threads: self._archive_family_guard(
+                            threads, {"session_id": sid, "request_id": request_id}
+                        ),
+                    )
+                    if inspected["archived"]:
+                        return await self._finish_archive(sid, request_id, inspected)
+                    receipt = {
+                        "ok": False, "retryable": True,
+                        "error": "Archive was not applied; a new explicit attempt is available",
+                        "result": {key: inspected[key] for key in (
+                            "session_id", "provider", "cwd", "archived", "thread_ids"
+                        )},
+                    }
+                    await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                    return receipt
+                except Exception as error:
+                    return {"ok": False, "uncertain": True, "error": str(error)}
+
+            if (self._work_reservations.get(sid) or self._bridge_queues.get(sid)
+                    or await asyncio.to_thread(self.journal.has_pending_work, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_clear, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_archive_restore, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_delete, sid)):
+                raise ValueError("Session has active or unconfirmed background work")
+            entry = self._sessions.get(sid)
+            if entry is None or entry[1] != "codex":
+                raise ValueError("Explicitly open this Codex session before archiving")
+            owner = entry[0]
+            if owner.state not in {"ready", "closed"}:
+                raise ValueError("Finish the current Codex turn before archiving")
+            if owner.state == "closed" and not owner.can_retry_attachment():
+                raise ValueError("Prior runtime cleanup is unconfirmed")
+            target = {"session_id": sid, "provider": "codex", "cwd": str(owner.cwd)}
+            if not Path(target["cwd"]).is_absolute():
+                raise ValueError("Exact active Codex project is required")
+            if self.register_fork is None:
+                raise ValueError("Native session catalog is unavailable")
+            if owner.state == "ready":
+                if (getattr(owner, "active_turn", None) or getattr(owner, "questions", {})
+                        or getattr(owner, "elicitations", {}) or getattr(owner, "active_agent_threads", set())):
+                    raise ValueError("Finish active Codex work before archiving")
+                tasks = await owner.list_background_tasks()
+                native_tasks = getattr(getattr(owner, "events", None), "tasks", {})
+                if (not isinstance(tasks, dict) or tasks.get("data") != []
+                        or any(task.get("status") not in {"completed", "failed", "stopped"}
+                               for task in native_tasks.values())):
+                    raise ValueError("Stop background tasks before archiving")
+            claimed, prior = await asyncio.to_thread(self.journal.claim_archive, sid, request_id)
+            if not claimed:
+                return prior or {
+                    "ok": False, "uncertain": True,
+                    "error": "Archive outcome is unconfirmed; it will not be repeated",
+                }
+            try:
+                if owner.state != "closed":
+                    await owner.close()
+                if not owner.can_retry_attachment():
+                    raise RuntimeError("Runtime cleanup is unconfirmed")
+                archived = await archive_codex_tree(
+                    sid, target["cwd"], confirmed=True,
+                    family_guard=lambda threads: self._archive_family_guard(
+                        threads, {"session_id": sid, "request_id": request_id}
+                    ),
+                    checkpoint=lambda value: self.journal.prepare_archive(sid, request_id, value),
+                )
+                return await self._finish_archive(sid, request_id, archived)
+            except Exception as error:
+                checkpoint = await asyncio.to_thread(
+                    self.journal.archive_checkpoint, sid, request_id
+                )
+                if checkpoint is not None:
+                    return {"ok": False, "uncertain": True, "error": str(error)}
+                receipt = {"ok": False, "retryable": True, "error": str(error), "result": {
+                    "session_id": sid, "provider": "codex", "cwd": target["cwd"],
+                    "archived": False, "thread_ids": [sid],
+                }}
+                await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                return receipt
+
+    def delete_session(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
+        if (type(reconcile) is not bool or confirmed is not True
+                or not isinstance(sid, str) or str(UUID(sid)) != sid
+                or not isinstance(request_id, str) or str(UUID(request_id)) != request_id):
+            raise ValueError("Explicit confirmation and exact session/request UUIDs are required")
+        return self._dispatch(self._delete_session(sid, request_id, reconcile=reconcile), timeout)
+
+    async def _finish_delete(self, sid, request_id, deleted):
+        if (deleted.get("session_id") != sid or deleted.get("provider") != "codex"
+                or deleted.get("deleted") is not True or not isinstance(deleted.get("targets"), list)
+                or not deleted["targets"]):
+            raise RuntimeError("Native delete result is incomplete")
+        for target in deleted["targets"]:
+            catalog = await asyncio.to_thread(self.delete_catalog, target)
+            if catalog != {"session_id": target["session_id"], "removed": True}:
+                raise RuntimeError(f"Catalog removal was not confirmed for {target['session_id']}")
+        result = {key: deleted[key] for key in (
+            "session_id", "provider", "cwd", "deleted", "thread_ids", "recovery_dir"
+        )}
+        result.update(catalog_removed=True, thread_count=len(deleted["targets"]))
+        receipt = {"ok": True, "result": result}
+        await asyncio.to_thread(self.journal.complete_delete, sid, request_id, receipt)
+        for identity in deleted["thread_ids"]:
+            self._sessions.pop(identity, None)
+            self._views.pop(identity, None)
+            self._work_reservations.pop(identity, None)
+            self._work_turns.pop(identity, None)
+            self._bridge_queues.pop(identity, None)
+        return receipt
+
+    async def _delete_session(self, sid, request_id, *, reconcile=False):
+        from core.workspace_archive import delete_codex_tree, inspect_codex_delete_tree
+
+        payload = {"action": "delete_session", "payload": {"confirmed": True}}
+        operation = {"session_id": sid, "request_id": request_id}
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            found, receipt = await asyncio.to_thread(
+                self.journal.command_receipt, sid, request_id, payload
+            )
+            if found and (receipt is not None or not reconcile):
+                return receipt or {
+                    "ok": False,
+                    "uncertain": True,
+                    "error": "Delete outcome is unconfirmed; it will not be repeated",
+                }
+            if reconcile:
+                if not found:
+                    raise ValueError("No matching delete receipt exists")
+                checkpoint = await asyncio.to_thread(
+                    self.journal.delete_checkpoint, sid, request_id
+                )
+                if checkpoint is None:
+                    receipt = {
+                        "ok": False,
+                        "retryable": True,
+                        "error": "Delete did not reach its native mutation checkpoint; a new explicit attempt is available",
+                        "result": {
+                            "session_id": sid,
+                            "provider": "codex",
+                            "cwd": "",
+                            "deleted": False,
+                            "thread_ids": [sid],
+                        },
+                    }
+                    await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                    return receipt
+                identities = [target["session_id"] for target in checkpoint["targets"]]
+                try:
+                    inspected = await inspect_codex_delete_tree(
+                        sid,
+                        checkpoint["cwd"],
+                        checkpoint,
+                        family_guard=lambda threads: self._delete_family_guard(
+                            threads, operation, identities=identities
+                        ),
+                    )
+                    if inspected["deleted"]:
+                        return await self._finish_delete(sid, request_id, inspected)
+                    receipt = {
+                        "ok": False,
+                        "retryable": True,
+                        "error": "Delete was not applied; a new explicit attempt is available",
+                        "result": {
+                            "session_id": sid,
+                            "provider": "codex",
+                            "cwd": inspected["cwd"],
+                            "deleted": False,
+                            "thread_ids": inspected["thread_ids"],
+                        },
+                    }
+                    await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                    return receipt
+                except Exception as error:
+                    return {"ok": False, "uncertain": True, "error": str(error)}
+
+            if (self._work_reservations.get(sid) or self._work_turns.get(sid)
+                    or self._bridge_queues.get(sid)
+                    or await asyncio.to_thread(self.journal.has_pending_work, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_clear_involving, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_archive, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_archive_restore, sid)):
+                raise ValueError("Session has active or unconfirmed background work")
+            entry = self._sessions.get(sid)
+            owner = None
+            if entry is not None:
+                owner, provider = entry
+                if provider != "codex":
+                    raise ValueError("Only exact Codex sessions support native deletion")
+                if owner.state not in {"ready", "closed"}:
+                    raise ValueError("Finish the current Codex turn before deleting")
+                if owner.state == "closed" and not owner.can_retry_attachment():
+                    raise ValueError("Prior runtime cleanup is unconfirmed")
+                target = {"session_id": sid, "provider": "codex", "cwd": str(owner.cwd)}
+                if owner.state == "ready":
+                    if (getattr(owner, "active_turn", None) or getattr(owner, "questions", {})
+                            or getattr(owner, "elicitations", {})
+                            or getattr(owner, "active_agent_threads", set())):
+                        raise ValueError("Finish active Codex work before deleting")
+                    tasks = await owner.list_background_tasks()
+                    native_tasks = getattr(getattr(owner, "events", None), "tasks", {})
+                    if (not isinstance(tasks, dict) or tasks.get("data") != []
+                            or any(task.get("status") not in {"completed", "failed", "stopped"}
+                                   for task in native_tasks.values())):
+                        raise ValueError("Stop background tasks before deleting")
+            else:
+                target = await asyncio.to_thread(self.resolve, sid)
+                if (not isinstance(target, dict) or target.get("session_id") != sid
+                        or target.get("provider") != "codex"):
+                    raise ValueError("Exact persisted Codex session is required for deletion")
+            if (not isinstance(target.get("cwd"), str) or not Path(target["cwd"]).is_absolute()
+                    or not Path(target["cwd"]).is_dir()):
+                raise ValueError("Exact Codex project is required for deletion")
+            claimed, prior = await asyncio.to_thread(self.journal.claim_delete, sid, request_id)
+            if not claimed:
+                return prior or {
+                    "ok": False,
+                    "uncertain": True,
+                    "error": "Delete outcome is unconfirmed; it will not be repeated",
+                }
+            try:
+                if owner is not None and owner.state != "closed":
+                    await owner.close()
+                if owner is not None and not owner.can_retry_attachment():
+                    raise RuntimeError("Runtime cleanup is unconfirmed")
+                recovery = self.journal.path.parent / "workspace-deleted-sessions" / f"{sid}-{request_id}"
+                deleted = await delete_codex_tree(
+                    sid,
+                    target["cwd"],
+                    recovery,
+                    confirmed=True,
+                    family_guard=lambda threads: self._delete_family_guard(threads, operation),
+                    checkpoint=lambda value: self.journal.prepare_delete(sid, request_id, value),
+                )
+                return await self._finish_delete(sid, request_id, deleted)
+            except Exception as error:
+                checkpoint = await asyncio.to_thread(
+                    self.journal.delete_checkpoint, sid, request_id
+                )
+                if checkpoint is not None:
+                    return {"ok": False, "uncertain": True, "error": str(error)}
+                receipt = {
+                    "ok": False,
+                    "retryable": True,
+                    "error": str(error),
+                    "result": {
+                        "session_id": sid,
+                        "provider": "codex",
+                        "cwd": target["cwd"],
+                        "deleted": False,
+                        "thread_ids": [sid],
+                    },
+                }
+                await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                return receipt
+
+    def restore_archive(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
+        if (type(reconcile) is not bool or confirmed is not True or not isinstance(sid, str) or str(UUID(sid)) != sid
+                or not isinstance(request_id, str) or str(UUID(request_id)) != request_id):
+            raise ValueError('Explicit confirmation and exact session/request UUIDs are required')
+        return self._dispatch(self._restore_archive(sid, request_id, reconcile=reconcile), timeout)
+
+    async def _restore_archive(self, sid, request_id, *, reconcile=False):
+        from core.workspace_archive import restore_codex_archive
+
+        payload = {'action': 'restore_archive', 'payload': {'confirmed': True}}
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            found, receipt = await asyncio.to_thread(self.journal.command_receipt, sid, request_id, payload)
+            if found and (receipt is not None or not reconcile):
+                return receipt or {'ok': False, 'uncertain': True, 'error': 'Archive restoration is unconfirmed; it will not be repeated'}
+            if reconcile and not found:
+                raise ValueError('No matching archive restoration receipt exists')
+            if self._work_reservations.get(sid) or self._bridge_queues.get(sid):
+                raise ValueError('Session is reserved by background work')
+            entry = self._sessions.get(sid)
+            if entry and (entry[0].state != 'closed' or not getattr(entry[0], 'can_retry_attachment', lambda: False)()):
+                raise ValueError('Session still has a runtime owner')
+            if (await asyncio.to_thread(self.journal.has_pending_work, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_clear, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_delete, sid)):
+                raise ValueError('Session has unconfirmed background work or a clear handoff')
+            if self.register_fork is None:
+                raise ValueError('Native session catalog is unavailable')
+            target = await asyncio.to_thread(self.resolve, sid)
+            if target.get('session_id') != sid or target.get('provider') != 'codex':
+                raise ValueError('Exact Codex session is required for archive restoration')
+            if not reconcile:
+                claimed, receipt = await asyncio.to_thread(self.journal.claim_archive_restore, sid, request_id)
+                if not claimed:
+                    return receipt or {'ok': False, 'uncertain': True, 'error': 'Archive restoration is unconfirmed; it will not be repeated'}
+            try:
+                restored = await restore_codex_archive(sid, target['cwd'], confirmed=True, **({'inspect_only': True} if reconcile else {}))
+                catalog = await self._register_created_fork(restored)
+                if not isinstance(catalog, dict) or catalog.get('session_id') != sid or catalog.get('indexed') is not True:
+                    raise ValueError('Restored session catalog registration was not confirmed')
+                receipt = {'ok': not restored['archived'], 'result': {**restored, 'catalog': catalog}}
+                if restored['archived']:
+                    receipt.update(retryable=True, error='Session is still archived; restoration was not applied. A new explicit attempt is available.')
+                await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                return receipt
+            except Exception as error:
+                return {'ok': False, 'uncertain': True, 'error': str(error)}
+
+    async def _attach(self, sid):
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(self._account_mutex())
+            await stack.enter_async_context(self._locks.setdefault(sid, asyncio.Lock()))
+            if await asyncio.to_thread(self.journal.has_pending_delete, sid):
+                raise ValueError("Delete outcome is unconfirmed; attachment is unavailable")
+            if await asyncio.to_thread(self.journal.has_pending_archive, sid):
+                raise ValueError("Archive outcome is unconfirmed; attachment is unavailable")
+            if await asyncio.to_thread(self.journal.has_pending_archive_restore, sid):
+                raise ValueError('Archive restoration is unconfirmed; attachment is unavailable')
+            if self._work_reservations.get(sid):
+                return self._status(sid)
+            if sid in self._sessions:
+                owner = self._sessions[sid][0]
+                retry = getattr(owner, "can_retry_attachment", None)
+                if owner.state not in {"closed", "unavailable"} or retry is None or not retry():
+                    return self._status(sid)
+            if await asyncio.to_thread(self.journal.has_pending_clear, sid):
+                raise ValueError("A native clear handoff is unconfirmed; this source cannot be resumed automatically")
+            await asyncio.to_thread(self.journal.recover_completed_work, sid)
+            if await asyncio.to_thread(self.journal.has_pending_work, sid):
+                raise ValueError("A native work dispatch is unconfirmed; this session cannot be resumed automatically")
+            target = await asyncio.to_thread(self.resolve, sid)
+            if target.get("session_id") != sid:
+                raise ValueError("Resolver returned a different session")
+            if target.get("archived") is True:
+                raise ValueError("Restore this archived conversation before opening it")
+            if target.get("archived") not in {None, False}:
+                raise ValueError("Resolver returned an invalid archive state")
+            if target.get("provider") == "codex" and self._codex_account_login is not None:
+                raise ValueError(
+                    "Finish or cancel Codex browser sign-in before reconnecting this conversation"
+                )
+            factory = self.factories.get(target.get("provider"))
+            if factory is None:
+                raise ValueError("This provider has no verified structured adapter yet")
+
+            async def publish(event):
+                await self._publish(sid, event)
+
+            owner = factory(session_id=sid, cwd=Path(target["cwd"]), publish=publish)
+            # Reserve before the first awaited provider operation. Repeated
+            # requests reuse this owner even if attachment fails ambiguously.
+            self._sessions[sid] = (owner, target["provider"])
+            self._restore_failures.pop(sid, None)
+            try:
+                queued = await asyncio.to_thread(self.journal.recoverable_bridge_queue, sid, target["provider"])
+                mode = (await asyncio.to_thread(self.journal.saved_codex_mode, sid)
+                        if target["provider"] == "codex" else None)
+                revisions = ({setting: await asyncio.to_thread(self.journal.saved_codex_setting_revision, sid, setting)
+                              for setting in ("personality", "speed")} if target["provider"] == "codex" else {})
+                personality = (await asyncio.to_thread(self.journal.saved_codex_personality, sid)
+                               if target["provider"] == "codex" else None)
+                speed = (await asyncio.to_thread(self.journal.saved_codex_speed, sid)
+                         if target["provider"] == "codex" else None)
+                await owner.open()
+                if mode is not None:
+                    try:
+                        await owner.set_session_mode(mode)
+                    except Exception:
+                        # Do not expose a resumed writer under the wrong mode.
+                        await owner.close()
+                        raise
+                if personality is not None:
+                    try:
+                        await owner.set_personality(personality)
+                    except Exception as error:
+                        await owner.close()
+                        if getattr(owner, "can_retry_attachment", lambda: False)():
+                            self._restore_failures[sid] = {"failure_id": str(uuid4()), "setting": "personality",
+                                                          "expected": personality, "revision": revisions["personality"], "reason": str(error)}
+                        raise
+                if speed is not None:
+                    try:
+                        await owner.set_speed_tier(speed["value"], owner.settings["model"])
+                    except Exception as error:
+                        await owner.close()
+                        if getattr(owner, "can_retry_attachment", lambda: False)():
+                            self._restore_failures[sid] = {"failure_id": str(uuid4()), "setting": "speed",
+                                                          "expected": speed, "revision": revisions["speed"], "reason": str(error)}
+                        raise
+                await self._restore_bridge_queue(sid, owner, queued)
+            except Exception as error:
+                await publish({"method": "workspace/error", "params": {"reason": str(error)}})
+                return {"ok": False, "session_id": sid, "error": str(error), "state": "unavailable",
+                        **({"setting_recovery": deepcopy(self._restore_failures[sid])} if sid in self._restore_failures else {})}
+            return self._status(sid)
+
+    async def _restore_bridge_queue(self, sid, owner, requests):
+        if self._bridge_queues.get(sid):
+            return
+        if not requests:
+            return
+        queue = ["bridge:" + item["id"] for item in requests]
+        self._bridge_queues[sid] = queue
+        for key, item in zip(queue, requests, strict=True):
+            self._bridge_messages[(sid, key)] = item["prompt"]
+        await self._publish_bridge_queue(sid)
+        for key, item in zip(list(queue), requests, strict=True):
+            asyncio.create_task(self._run(self._deliver_bridge(sid, owner, item["prompt"], key)))
+
+    def _status(self, sid):
+        owner, provider = self._sessions[sid]
+        return {
+            "ok": owner.state not in {"closed", "unavailable"},
+            "session_id": sid,
+            "provider": provider,
+            "state": owner.state,
+            "turn_id": owner.active_turn,
+            "sleeping": bool(getattr(self._owner_transport(owner, provider), "suspended", False)),
+            **({"setting_recovery": deepcopy(self._restore_failures[sid])} if sid in self._restore_failures else {}),
+            **({"error": "Session runtime is unavailable; retry is refused until its cleanup and ownership are confirmed"}
+               if owner.state in {"closed", "unavailable"} else {}),
+        }
+
+    def events(self, session_id: str, *, after=0):
+        self._validate_session(session_id)
+        # Reading a journal must never resume a process or create the loop.
+        page = self.journal.read(session_id, after=after)
+        entry = self._sessions.get(session_id)
+        page["runtime"] = ({"session_id": session_id,
+                            "sleeping": bool(getattr(self._owner_transport(*entry), "suspended", False))}
+                           if entry is not None else None)
+        return page
+
+    def bridge(self, sid, provider, prompt, request_id, *, timeout=300):
+        """Use an already attached owner; None alone permits legacy fallback."""
+        self._validate_session(sid)
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("A bridge prompt is required")
+        if not isinstance(request_id, str) or not 1 <= len(request_id) <= 100:
+            raise ValueError("A stable bridge request ID is required")
+        found, receipt = self.journal.command_receipt(
+            sid, f"bridge:{request_id}", {"provider": provider, "prompt": prompt}
+        )
+        if found:
+            return receipt or {
+                "ok": False,
+                "pending": True,
+                "response": "",
+                "message": "Prior bridge delivery is unconfirmed; do not resend as a new request",
+            }
+        if self._loop is None:
+            return None
+        result = self._dispatch(self._bridge(sid, provider, prompt, request_id), timeout)
+        if result is not None and result.get("pending"):
+            result.update(
+                response="",
+                message=result.get(
+                    "message", "Bridge is still pending; do not resend as a new request"
+                ),
+            )
+        return result
+
+    async def _bridge(self, sid, provider, prompt, request_id):
+        if sid not in self._sessions:
+            return None
+        key = f"bridge:{request_id}"
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            if sid not in self._sessions:
+                return None
+            owner, actual_provider = self._sessions[sid]
+            if self._work_reservations.get(sid):
+                return {"ok": False, "message": "Native session is reserved by a coding job"}
+            if provider != actual_provider:
+                return {
+                    "ok": False,
+                    "response": "",
+                    "message": "Target belongs to another provider",
+                }
+            login_error = self._codex_login_error(sid) if provider == "codex" else ""
+            if login_error:
+                return {"ok": False, "response": "", "message": login_error}
+            claimed, prior = await asyncio.to_thread(
+                self.journal.claim_command, sid, key, {"provider": provider, "prompt": prompt}
+            )
+            if not claimed:
+                return prior or {"ok": False, "pending": True}
+            queue = self._bridge_queues.setdefault(sid, [])
+            queue.append(key)
+            self._bridge_messages[(sid, key)] = prompt
+            queued = owner.state in {"running", "submitting"} or len(queue) > 1
+            await self._publish_bridge_queue(sid)
+        delivery = self._deliver_bridge(sid, owner, prompt, key)
+        if queued:
+            # A sibling may itself be waiting inside a tool call. Return the
+            # queue acknowledgement now, not a mutual wait until both time out.
+            asyncio.create_task(self._run(delivery))
+            return {
+                "ok": True,
+                "pending": True,
+                "queued": True,
+                "message": "Queued behind the current turn; reuse request_id to collect the reply",
+            }
+        return await delivery
+
+    async def _publish_bridge_queue(self, sid):
+        requests = [
+            {"id": key.removeprefix("bridge:"), "prompt": self._bridge_messages[(sid, key)]}
+            for key in self._bridge_queues.get(sid, [])
+        ]
+        await asyncio.to_thread(
+            self.journal.append,
+            sid,
+            {
+                "method": "workspace/bridgeQueue",
+                "params": {"threadId": sid, "count": len(requests), "requests": requests},
+            },
+        )
+
+    async def _deliver_bridge(self, sid, owner, prompt, key):
+        queue = self._bridge_queues[sid]
+        try:
+            while True:
+                async with self._locks[sid]:
+                    if (sid, key) in self._bridge_cancelled:
+                        raise RuntimeError("Queued bridge cancelled before submission")
+                    if self._stopped:
+                        raise RuntimeError("Host stopped; queued bridge was not submitted")
+                    if owner.state in {"closed", "unavailable", "uncertain", "opening"}:
+                        raise RuntimeError("Session unavailable; queued bridge was not submitted")
+                    if queue[0] == key and owner.state == "ready":
+                        prompt = self._bridge_messages[(sid, key)]
+                        queue.remove(key)
+                        self._bridge_messages.pop((sid, key), None)
+                        await self._publish_bridge_queue(sid)
+                        cursor = await asyncio.to_thread(self.journal.latest_sequence, sid)
+                        result = await owner.submit([{"type": "text", "text": prompt}])
+                        turn_id = result["turn"]["id"]
+                        break
+                await asyncio.sleep(0.1)
+        except Exception as error:
+            receipt = {"ok": False, "response": "", "message": str(error)}
+            await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+            return receipt
+        finally:
+            async with self._locks[sid]:
+                if key in queue:
+                    queue.remove(key)
+                self._bridge_messages.pop((sid, key), None)
+                self._bridge_cancelled.discard((sid, key))
+                await self._publish_bridge_queue(sid)
+        texts = {}
+        receipt = None
+        while receipt is None:
+            if self._stopped:
+                receipt = {"ok": False, "message": "Host stopped before bridge completion"}
+                break
+            page = await asyncio.to_thread(self.journal.read, sid, after=cursor)
+            for envelope in page["events"]:
+                event = envelope["event"]
+                method, params = event["method"], event.get("params", {})
+                if method in {"workspace/error", "workspace/transportClosed"}:
+                    receipt = {"ok": False, "message": params.get("reason", "Session unavailable")}
+                    break
+                if params.get("turnId") == turn_id:
+                    if method == "item/agentMessage/delta":
+                        item_id = params["itemId"]
+                        texts[item_id] = texts.get(item_id, "") + params.get("delta", "")
+                    elif method == "item/completed" and params.get("item", {}).get("type") in {
+                        "agentMessage",
+                        "commandOutput",
+                    }:
+                        item = params["item"]
+                        texts[item["id"]] = item.get("text", "")
+                turn = params.get("turn") or {}
+                if method == "turn/completed" and turn.get("id") == turn_id:
+                    for item in turn.get("items", []):
+                        if item.get("type") in {"agentMessage", "commandOutput"}:
+                            texts[item["id"]] = item.get("text", "")
+                    receipt = {
+                        "ok": turn.get("status") == "completed",
+                        "message": f"finished ({turn.get('status', 'unknown')})",
+                    }
+                    break
+            cursor = page["cursor"]
+            if receipt is None and not page["has_more"]:
+                await asyncio.sleep(0.1)
+        receipt.update(response="\n\n".join(texts.values()), session_id=sid, turn_id=turn_id)
+        await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+        return receipt
+
+    def command(self, sid: str, request_id: str, action: str, payload: dict, *, timeout=35):
+        self._validate_session(sid)
+        if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
+            raise ValueError("A stable request ID is required")
+        if action not in {
+            "submit",
+            "steer",
+            "queue_input",
+            "interrupt",
+            "answer",
+            "models",
+            "session_modes",
+            "set_session_mode",
+            "personality",
+            "set_personality",
+            "speed_tiers",
+            "set_speed_tier",
+            "reset_saved_setting",
+            "goal",
+            "update_goal",
+            "clear_goal",
+            "agents",
+            "inspect_agent",
+            "interrupt_agent",
+            "steer_agent",
+            "continue_agent",
+            "review",
+            "compact",
+            "background_tasks",
+            "commands",
+            "hooks",
+            "apps",
+            "rename_session",
+            "revert_history",
+            "project_diff",
+            "reload_skills",
+            "set_skill_enabled",
+            "reload_plugins",
+            "diagnostics",
+            "config_diagnostics",
+            "experimental_features",
+            "set_experimental_feature",
+            "memory_settings",
+            "set_memory_mode",
+            "set_memory_defaults",
+            "guardian_denial",
+            "approve_guardian_denial",
+            "submit_feedback",
+            "detect_external_imports",
+            "import_external_items",
+            "account_status",
+            "account_rate_limits",
+            "account_token_usage",
+            "account_login",
+            "account_login_cancel",
+            "account_logout",
+            "search_files",
+            "load_earlier",
+            "shell_command",
+            "fork_session",
+            "clear_session",
+            "disconnect_session",
+            "register_fork",
+            "context_usage",
+            "permissions",
+            "set_permissions",
+            "mcp_servers",
+            "mcp_server_control",
+            "mcp_login",
+            "mcp_reload",
+            "set_mcp_enabled",
+            "terminate_background_task",
+            "cancel_queued_bridge",
+            "edit_queued_bridge",
+        } or not isinstance(payload, dict):
+            raise ValueError("Unsupported workspace control")
+        return self._dispatch(self._command(sid, request_id, action, deepcopy(payload)), timeout)
+
+    async def _command(self, sid, request_id, action, payload):
+        async with AsyncExitStack() as stack:
+            if action in {"account_login", "account_login_cancel", "account_logout"}:
+                await stack.enter_async_context(self._account_mutex())
+            await stack.enter_async_context(self._locks.setdefault(sid, asyncio.Lock()))
+            if action == "clear_session":
+                found, prior = await asyncio.to_thread(self.journal.command_receipt, sid, request_id,
+                                                       {"action": action, "payload": payload})
+                if found:
+                    return prior or {"ok": False, "uncertain": True,
+                                     "error": "Clear outcome is unconfirmed; it will not be repeated"}
+            if sid not in self._sessions:
+                raise ValueError("Explicitly attach this session before sending controls")
+            current_provider = self._sessions[sid][1]
+            login_error = self._codex_login_error(sid) if current_provider == "codex" else ""
+            allowed_during_login = (
+                action == "account_status"
+                or (action in {"account_login", "account_login_cancel"}
+                    and self._codex_account_login["sid"] == sid)
+            ) if login_error else True
+            if login_error and not allowed_during_login:
+                return {"ok": False, "retryable": True, "error": login_error}
+            if self._work_reservations.get(sid) and action not in {
+                "answer", "interrupt", "interrupt_agent", "models", "permissions", "context_usage", "background_tasks",
+                "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "account_token_usage", "mcp_servers", "session_modes", "personality", "speed_tiers", "goal", "agents", "inspect_agent",
+                "config_diagnostics", "experimental_features", "memory_settings", "guardian_denial", "detect_external_imports",
+            }:
+                return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
+            recorded_payload = payload
+            if action == "answer":
+                recorded_payload = {
+                    "sha256": hashlib.sha256(
+                        json.dumps(payload, sort_keys=True, allow_nan=False).encode()
+                    ).hexdigest()
+                }
+            claimed, result = await asyncio.to_thread(
+                self.journal.claim_command,
+                sid,
+                request_id,
+                {"action": action, "payload": recorded_payload},
+            )
+            if not claimed:
+                if result is None and action == "fork_session" and not payload and self._sessions[sid][1] in {"claude", "codex"}:
+                    target = await asyncio.to_thread(self.journal.fork_checkpoint, sid, request_id)
+                    if target is not None:
+                        receipt = {"ok": True, "result": await self._register_created_fork(target)}
+                        await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                        return receipt
+                return (
+                    result
+                    if result is not None
+                    else {
+                        "ok": False,
+                        "uncertain": True,
+                        "error": "Prior delivery has no confirmed result; it will not be repeated",
+                    }
+                )
+            owner, provider = self._sessions[sid]
+            retryable = False
+            try:
+                if action == "reset_saved_setting":
+                    failure = self._restore_failures.get(sid)
+                    if (provider != "codex" or set(payload) != {"failure_id", "confirmed"}
+                            or payload["confirmed"] is not True or failure is None
+                            or payload["failure_id"] != failure["failure_id"]):
+                        raise ValueError("Confirm the exact failed saved setting before resetting it")
+                    if owner.state != "closed" or not owner.can_retry_attachment():
+                        raise ValueError("The prior native owner must be fully closed before recovery")
+                    if self._bridge_queues.get(sid) or await asyncio.to_thread(self.journal.has_pending_work, sid):
+                        raise ValueError("Resolve pending background work before resetting a saved setting")
+                    await asyncio.to_thread(self.journal.reset_saved_codex_setting, sid, failure["setting"],
+                                            failure["expected"], failure["failure_id"], failure["revision"])
+                    self._restore_failures.pop(sid, None)
+                    result = {"setting": failure["setting"], "reset": True, "reconnectRequired": True}
+                elif action == "edit_queued_bridge":
+                    if set(payload) != {"request_id", "prompt", "expected_prompt"} or any(not isinstance(payload[field], str) for field in payload) or not payload["prompt"].strip():
+                        raise ValueError("An exact queued message, original text and non-empty replacement are required")
+                    key = f"bridge:{payload['request_id']}"
+                    if key not in self._bridge_queues.get(sid, []):
+                        raise ValueError("Message is no longer queued; running turns are not changed")
+                    if self._bridge_messages[(sid, key)] != payload["expected_prompt"]:
+                        raise ValueError("Queued message changed; reopen it before editing")
+                    self._bridge_messages[(sid, key)] = payload["prompt"]
+                    try:
+                        await self._publish_bridge_queue(sid)
+                    except BaseException:
+                        self._bridge_messages[(sid, key)] = payload["expected_prompt"]
+                        raise
+                    result = {"edited": True}
+                elif action == "cancel_queued_bridge":
+                    if set(payload) != {"request_id"} or not isinstance(payload["request_id"], str):
+                        raise ValueError("An exact queued bridge ID is required")
+                    key = f"bridge:{payload['request_id']}"
+                    queue = self._bridge_queues.get(sid, [])
+                    if key not in queue:
+                        raise ValueError(
+                            "Message is no longer queued; running turns are not cancelled"
+                        )
+                    self._bridge_cancelled.add((sid, key))
+                    queue.remove(key)
+                    self._bridge_messages.pop((sid, key), None)
+                    await self._publish_bridge_queue(sid)
+                    result = {"cancelled": True}
+                elif action == "permissions":
+                    if provider not in {"codex", "claude"} or payload:
+                        raise ValueError("Permission modes require a supported session and no payload")
+                    result = await owner.permissions()
+                elif action == "set_permissions":
+                    if provider not in {"codex", "claude"} or set(payload) != {"mode", "confirmed"} or type(payload["confirmed"]) is not bool:
+                        raise ValueError("An explicit native permission mode is required")
+                    result = await owner.set_permissions(payload["mode"], payload["confirmed"])
+                elif action == "context_usage":
+                    if provider != "claude" or payload:
+                        raise ValueError("Context breakdown requires a Claude session and no payload")
+                    result = await owner.context_usage()
+                elif action == "mcp_servers":
+                    if (provider not in {"codex", "claude"}
+                            or (provider == "claude" and payload)
+                            or (provider == "codex" and
+                                (set(payload) - {"verbose"}
+                                 or ("verbose" in payload and type(payload["verbose"]) is not bool)))):
+                        raise ValueError("MCP discovery requires a supported session and an optional Codex detail flag")
+                    result = await (owner.list_mcp_servers(True)
+                                    if provider == "codex" and payload.get("verbose") else owner.list_mcp_servers())
+                elif action == "set_skill_enabled":
+                    if provider != "codex" or set(payload) != {"path", "enabled"}:
+                        raise ValueError("An exact Codex skill path and enabled state are required")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Finish the current Codex turn before changing skills")
+                    result = await owner.set_skill_enabled(payload["path"], payload["enabled"])
+                elif action == "set_mcp_enabled":
+                    if provider != "codex" or set(payload) != {"name", "enabled"} or type(payload["enabled"]) is not bool:
+                        raise ValueError("An exact Codex MCP server and boolean enabled state are required")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Finish the current Codex turn before changing MCP settings")
+                    result = await owner.set_mcp_enabled(payload["name"], payload["enabled"])
+                elif action == "mcp_server_control":
+                    if provider != "claude" or set(payload) != {"name", "action"}:
+                        raise ValueError("An exact Claude MCP server and action are required")
+                    result = await owner.control_mcp_server(payload["name"], payload["action"])
+                elif action in {"mcp_login", "mcp_reload"}:
+                    if provider != "codex" or set(payload) != ({"name"} if action == "mcp_login" else set()):
+                        raise ValueError("An exact Codex MCP action is required")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Finish the current Codex turn before changing MCP connections")
+                    result = await owner.login_mcp(payload["name"]) if action == "mcp_login" else await owner.reload_mcp()
+                elif action == "register_fork":
+                    if provider not in {"claude", "codex"} or set(payload) != {"fork_request_id"} or not isinstance(payload["fork_request_id"], str) or self.register_fork is None:
+                        raise ValueError("An exact fork creation receipt is required")
+                    found, prior = await asyncio.to_thread(self.journal.command_receipt, sid,
+                                                          payload["fork_request_id"], {"action": "fork_session", "payload": {}})
+                    if not found or not prior or not prior.get("ok"):
+                        raise ValueError("Fork creation is not confirmed for this session")
+                    target = prior["result"]
+                    result = {key: target[key] for key in ("session_id", "provider", "cwd")}
+                    retryable = True  # Registration is idempotent and cannot create a native fork.
+                    await asyncio.to_thread(self.register_fork, result)
+                    result["indexed"] = True
+                elif action == "disconnect_session":
+                    if payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
+                        raise ValueError("Explicit session disconnect confirmation is required")
+                    if provider not in {"claude", "codex"}:
+                        raise ValueError("Safe disconnect is unavailable: this provider cannot confirm background task completion. Closing the view keeps the session running.")
+                    retryable = True
+                    if owner.state != "ready" or owner.active_turn or self._bridge_queues.get(sid):
+                        raise ValueError("Finish active and queued work before disconnecting")
+                    tasks = await owner.list_background_tasks()
+                    if not isinstance(tasks, dict) or tasks.get("data") != []:
+                        raise ValueError("Stop background tasks before disconnecting")
+                    native_tasks = getattr(getattr(owner, "events", None), "tasks", {})
+                    if any(task.get("status") not in {"completed", "failed", "stopped"} for task in native_tasks.values()):
+                        raise ValueError("Background task completion is unconfirmed")
+                    if owner.state != "ready" or owner.active_turn or getattr(owner, "questions", {}) or getattr(owner, "elicitations", {}):
+                        raise ValueError("Session became active; disconnect was not performed")
+                    retryable = False
+                    await owner.close()
+                    if not owner.can_retry_attachment():
+                        raise ValueError("Runtime cleanup is unconfirmed")
+                    await self._publish(sid, {"method": "workspace/transportClosed", "params": {"reason": "Session disconnected"}})
+                    result = {"disconnected": True, "session_id": sid}
+                elif action == "clear_session":
+                    name = payload.get("name")
+                    if (provider not in {"claude", "codex"}
+                            or set(payload) not in ({"confirmed"}, {"confirmed", "name"})
+                            or payload.get("confirmed") is not True
+                            or (name is not None and
+                                (not isinstance(name, str)
+                                 or not name.strip() or name != name.strip() or len(name) > 1000
+                                 or any(ord(char) < 32 or ord(char) == 127 for char in name)))):
+                        raise ValueError("Explicit confirmation for a supported session clear is required")
+                    if owner.state != "ready" or self._bridge_queues.get(sid):
+                        retryable = True
+                        raise ValueError("Finish active and queued work before clearing")
+                    return await self._clear_session(sid, request_id, owner, name=name)
+                elif action == "fork_session":
+                    if provider not in {"claude", "codex"} or payload or self.register_fork is None:
+                        raise ValueError("Native fork requires a supported session, no payload and an available catalog")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Wait for the current turn before forking")
+                    result = await owner.fork_session()
+                    await asyncio.to_thread(self.journal.append, sid, {
+                        "method": "workspace/sessionForked", "params": {"threadId": sid, "requestId": request_id, "fork": result}
+                    })
+                    result = await self._register_created_fork(result)
+                elif action == "shell_command":
+                    if provider != "codex" or set(payload) != {"command", "confirmed"}:
+                        raise ValueError("An explicit Codex shell command is required")
+                    result = await owner.shell_command(payload["command"], payload["confirmed"])
+                elif action == "load_earlier":
+                    if provider != "codex" or set(payload) != {"cursor"} or not isinstance(payload["cursor"], str):
+                        raise ValueError("An exact Codex history cursor is required")
+                    # Reading cannot start work. The owner revalidates its cursor
+                    # before publishing, so a confirmed failure can be retried.
+                    retryable = True
+                    result = await owner.load_earlier(payload["cursor"])
+                elif action == "search_files":
+                    if provider not in {"claude", "codex"} or set(payload) != {"query"}:
+                        raise ValueError("File search requires a supported session and query")
+                    retryable = True
+                    result = await owner.search_files(payload["query"])
+                elif action == "reload_plugins":
+                    if provider != "claude" or payload:
+                        raise ValueError("Plugin reload requires a Claude session and no payload")
+                    if owner.state != "ready":
+                        retryable = True
+                        raise ValueError("Wait for Claude's current turn before reloading plugins")
+                    result = await owner.reload_plugins()
+                elif action in {"account_login", "account_login_cancel"}:
+                    expected = {"loginId"} if action == "account_login_cancel" else set()
+                    if provider != "codex" or set(payload) != expected:
+                        raise ValueError("Browser login requires a Codex session and exact payload")
+                    retryable = True
+                    if action == "account_login":
+                        login = self._codex_account_login
+                        if login is None:
+                            owners = await self._account_change_owners(
+                                stack, sid, request_id, "signing in"
+                            )
+                            disconnected = []
+                            for identity, candidate in owners[1:]:
+                                await candidate.close()
+                                if not candidate.can_retry_attachment():
+                                    raise ValueError(
+                                        "A Codex owner did not confirm clean account-switch shutdown"
+                                    )
+                                disconnected.append(identity)
+                                await self._publish(identity, {
+                                    "method": "workspace/transportClosed",
+                                    "params": {
+                                        "reason": (
+                                            "Codex sign-in started in another conversation. "
+                                            "Reconnect after sign-in finishes to use the selected account."
+                                        )
+                                    },
+                                })
+                            self._codex_account_login = {
+                                "sid": sid,
+                                "login_id": None,
+                                "disconnected": tuple(disconnected),
+                            }
+                            try:
+                                result = await owner.login_account()
+                            except BaseException:
+                                pending = getattr(owner, "_account_login", None)
+                                if not isinstance(pending, dict) or pending.get("status") not in {
+                                    "pending", "uncertain"
+                                }:
+                                    self._codex_account_login = None
+                                raise
+                            self._codex_account_login["login_id"] = result.get("loginId")
+                            if result.get("status") not in {"pending", "uncertain", "succeeded"}:
+                                self._codex_account_login = None
+                        else:
+                            disconnected = list(login["disconnected"])
+                            result = await owner.login_account()
+                        result = {
+                            **result,
+                            "disconnectedSessionCount": len(disconnected),
+                        }
+                    else:
+                        result = await owner.cancel_account_login(payload["loginId"])
+                        if result.get("status") in {"cancelled", "failed"}:
+                            self._codex_account_login = None
+                elif action == "account_logout":
+                    if provider != "codex" or payload != {"confirmed": True}:
+                        raise ValueError("Account logout requires exact confirmation from a Codex session")
+                    # Native app-server processes cache authentication independently.
+                    # Lock and sign out every live Codex owner so one pane cannot
+                    # retain credentials after another confirms a global logout.
+                    retryable = True
+                    owners = await self._account_change_owners(
+                        stack, sid, request_id, "signing out"
+                    )
+                    for _, candidate in owners:
+                        logged_out = await candidate.logout_account()
+                        if logged_out != {"loggedOut": True}:
+                            raise ValueError("Codex account logout was not confirmed")
+                    result = {"loggedOut": True, "sessionCount": len(owners)}
+                elif action == "account_token_usage":
+                    if provider != "codex" or payload not in ({}, {"scope": "session"}):
+                        raise ValueError("Usage requires Codex and an exact account or session scope")
+                    retryable = True
+                    result = await owner.thread_token_usage() if payload else await owner.account_token_usage()
+                elif action == "account_rate_limits":
+                    if provider != "codex" or payload:
+                        raise ValueError("Account limits require a Codex session and no payload")
+                    retryable = True
+                    result = await owner.account_rate_limits()
+                elif action == "account_status":
+                    if provider != "codex" or payload:
+                        raise ValueError("Account status requires a Codex session and no payload")
+                    retryable = True
+                    result = await owner.account_status()
+                    login = self._codex_account_login
+                    if login is not None and login["sid"] == sid and isinstance(result.get("login"), dict):
+                        result["login"] = {
+                            **result["login"],
+                            "disconnectedSessionCount": len(login["disconnected"]),
+                        }
+                elif action == "diagnostics":
+                    if provider != "claude" or payload:
+                        raise ValueError("Installation diagnostics requires a Claude session and no payload")
+                    retryable = True
+                    result = await owner.diagnostics()
+                elif action == "config_diagnostics":
+                    if provider != "codex" or payload:
+                        raise ValueError("Configuration diagnostics require a Codex session")
+                    retryable = True
+                    result = await owner.config_diagnostics()
+                elif action == "experimental_features":
+                    if provider != "codex" or payload:
+                        raise ValueError("Experimental feature discovery requires a Codex session")
+                    retryable = True
+                    result = await owner.experimental_features()
+                elif action == "set_experimental_feature":
+                    if (
+                        provider != "codex"
+                        or set(payload) != {"name", "enabled", "confirmed"}
+                        or type(payload["enabled"]) is not bool
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("An exact confirmed Codex feature change is required")
+                    result = await owner.set_experimental_feature(**payload)
+                elif action == "memory_settings":
+                    if provider != "codex" or payload:
+                        raise ValueError("Memory settings require a Codex session")
+                    retryable = True
+                    result = await owner.memory_settings()
+                elif action == "set_memory_mode":
+                    if (
+                        provider != "codex"
+                        or set(payload) != {"mode", "confirmed"}
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("An exact confirmed Codex chat memory mode is required")
+                    result = await owner.set_memory_mode(**payload)
+                elif action == "set_memory_defaults":
+                    if (
+                        provider != "codex"
+                        or set(payload)
+                        != {"use_memories", "generate_memories", "confirmed"}
+                        or type(payload["use_memories"]) is not bool
+                        or type(payload["generate_memories"]) is not bool
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("Exact confirmed Codex memory defaults are required")
+                    result = await owner.set_memory_defaults(**payload)
+                elif action == "guardian_denial":
+                    if provider != "codex" or payload:
+                        raise ValueError("Auto-review status requires a Codex session")
+                    retryable = True
+                    result = owner.guardian_denial()
+                elif action == "approve_guardian_denial":
+                    if (
+                        provider != "codex"
+                        or set(payload) != {"review_id", "confirmed"}
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("An exact confirmed Codex auto-review denial is required")
+                    result = await owner.approve_guardian_denial(**payload)
+                elif action == "submit_feedback":
+                    if (
+                        provider != "codex"
+                        or set(payload)
+                        != {"classification", "reason", "include_logs", "confirmed"}
+                        or type(payload["include_logs"]) is not bool
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("Exact confirmed Codex feedback is required")
+                    result = await owner.submit_feedback(**payload)
+                elif action == "detect_external_imports":
+                    if provider != "codex" or payload:
+                        raise ValueError("External import discovery requires a Codex session")
+                    retryable = True
+                    result = await owner.detect_external_imports()
+                elif action == "import_external_items":
+                    if (
+                        provider != "codex"
+                        or set(payload) != {"candidate_ids", "confirmed"}
+                        or not isinstance(payload["candidate_ids"], list)
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("Exact confirmed Codex import items are required")
+                    result = await owner.import_external_items(**payload)
+                elif action == "reload_skills":
+                    if provider != "claude" or payload:
+                        raise ValueError("Skill reload requires a Claude session and no payload")
+                    result = await owner.reload_skills()
+                elif action == 'revert_history':
+                    if provider != 'codex' or set(payload) != {'before_turn_id', 'expected_latest_turn_id', 'confirmed'}:
+                        raise ValueError('Rewind requires an exact Codex history selection')
+                    if self._bridge_queues.get(sid):
+                        raise ValueError('Resolve queued messages before rewinding history')
+                    result = await owner.revert_history(**payload)
+                elif action == "rename_session":
+                    if provider != 'codex' or set(payload) != {'name'} or self.register_fork is None:
+                        raise ValueError('Native rename is unavailable for this session')
+                    renamed = await owner.rename(payload['name'])
+                    catalog = await self._register_created_fork({
+                        'session_id': sid, 'provider': provider, 'cwd': str(owner.cwd),
+                        'confirmed_native_name': renamed['name']})
+                    result = {**renamed, 'catalog': catalog}
+                elif action == "apps":
+                    retryable = True
+                    if provider != "codex" or payload:
+                        raise ValueError("App discovery requires an existing Codex session")
+                    result = await owner.list_apps()
+                elif action == "hooks":
+                    if provider != "codex" or payload:
+                        raise ValueError("Hook discovery requires a Codex session and no payload")
+                    retryable = True
+                    result = await owner.list_hooks()
+                elif action == "project_diff":
+                    if provider != "codex" or payload:
+                        raise ValueError("Project diff requires a Codex session and no payload")
+                    from core.workspace_diff import read_project_diff
+
+                    retryable = True
+                    result = await asyncio.to_thread(read_project_diff, owner.cwd)
+                elif action == "commands":
+                    if provider not in {"claude", "codex", "gemini"} or payload:
+                        raise ValueError(
+                            "Command discovery requires a supported session and no payload"
+                        )
+                    result = await owner.list_commands()
+                elif action == "background_tasks":
+                    if provider not in {"codex", "claude"} or payload:
+                        raise ValueError("Background tasks require a supported session and no payload")
+                    result = await owner.list_background_tasks()
+                elif action == "terminate_background_task":
+                    if provider not in {"codex", "claude"} or set(payload) != {"processId"}:
+                        raise ValueError("An exact native background task is required")
+                    result = await owner.terminate_background_task(payload["processId"])
+                elif action == "compact":
+                    if provider != "codex" or payload:
+                        raise ValueError("Compaction requires a Codex session and no payload")
+                    result = await owner.compact()
+                elif action == "review":
+                    if provider != "codex" or set(payload) != {"target"}:
+                        raise ValueError("Review requires a Codex target")
+                    result = await owner.review(payload["target"])
+                elif action == "steer_agent":
+                    if provider != "codex" or set(payload) not in (
+                        {"thread_id", "expected_turn_id", "text"},
+                        {"thread_id", "expected_turn_id", "inputs"},
+                    ):
+                        raise ValueError("An exact active agent message is required")
+                    routed = dict(payload)
+                    if "inputs" in routed:
+                        routed["inputs"] = await asyncio.to_thread(self.uploads.codex_inputs, sid, routed["inputs"])
+                    result = await owner.steer_agent(**routed)
+                elif action == "speed_tiers":
+                    if provider != "codex" or payload:
+                        raise ValueError("Speed inspection requires an attached Codex session")
+                    result = await owner.speed_tiers()
+                elif action == "set_speed_tier":
+                    if provider != "codex" or set(payload) != {"value", "expected_model"}:
+                        raise ValueError("An exact model and speed tier are required")
+                    if self._bridge_queues.get(sid):
+                        raise ValueError("Resolve queued messages before changing session speed")
+                    result = await owner.set_speed_tier(**payload)
+                elif action == "continue_agent":
+                    if provider != "codex" or set(payload) != {"thread_id", "expected_latest_turn_id", "text", "confirmed"}:
+                        raise ValueError("An exact confirmed idle agent continuation is required")
+                    if self._bridge_queues.get(sid):
+                        raise ValueError("Resolve queued messages before continuing an idle agent")
+                    result = await owner.continue_agent(**payload)
+                elif action == "interrupt_agent":
+                    if provider != "codex" or set(payload) != {"thread_id", "expected_turn_id", "confirmed"}:
+                        raise ValueError("An exact confirmed agent interruption is required")
+                    result = await owner.interrupt_agent(**payload)
+                elif action in {"agents", "inspect_agent"}:
+                    allowed = {"cursor"} | ({"thread_id"} if action == "inspect_agent" else set())
+                    if provider != "codex" or set(payload) != allowed:
+                        raise ValueError("Exact native agent inspection is required")
+                    result = await (owner.list_agents(**payload) if action == "agents" else owner.inspect_agent(**payload))
+                    if action == "inspect_agent":
+                        decorated = await asyncio.to_thread(
+                            self.uploads.decorate_event, sid,
+                            {"method": "workspace/history", "params": result},
+                        )
+                        result = decorated["params"]
+                elif action == "goal":
+                    if provider != "codex" or payload:
+                        raise ValueError("Goal inspection requires an attached Codex session")
+                    result = await owner.get_goal()
+                elif action in {"update_goal", "clear_goal"}:
+                    keys = {"expected", "confirmed"} | ({"changes"} if action == "update_goal" else set())
+                    if provider != "codex" or set(payload) != keys:
+                        raise ValueError("An exact confirmed Codex goal change is required")
+                    if self._bridge_queues.get(sid):
+                        raise ValueError("Resolve queued messages before changing the goal")
+                    result = await getattr(owner, action)(**payload)
+                elif action == "personality":
+                    if provider != "codex" or payload:
+                        raise ValueError("Personality requires an attached Codex session")
+                    result = await owner.personality()
+                elif action == "set_personality":
+                    if provider != "codex" or set(payload) != {"value"}:
+                        raise ValueError("An exact Codex personality selection is required")
+                    result = await owner.set_personality(payload["value"])
+                elif action == "session_modes":
+                    if provider not in {"codex", "gemini"} or payload:
+                        raise ValueError("Native session modes are unavailable")
+                    result = await owner.list_session_modes()
+                elif action == "set_session_mode":
+                    if provider not in {"codex", "gemini"} or set(payload) != {"mode"} or not isinstance(payload["mode"], str):
+                        raise ValueError("Invalid native session mode")
+                    result = await owner.set_session_mode(payload["mode"])
+                elif action == "models":
+                    if payload or provider not in {"codex", "claude", "gemini"}:
+                        raise ValueError("Model discovery is unavailable for this request")
+                    result = await owner.list_models()
+                elif action == "submit":
+                    if payload.keys() - {"inputs", "options"}:
+                        raise ValueError("Unsupported submit fields")
+                    mapper = {
+                        "codex": self.uploads.codex_inputs,
+                        "claude": self.uploads.claude_inputs,
+                        "gemini": self.uploads.acp_inputs,
+                    }.get(provider)
+                    if mapper is None:
+                        raise ValueError("Provider input mapping is not implemented")
+                    inputs = await asyncio.to_thread(mapper, sid, payload["inputs"])
+                    result = await owner.submit(inputs, options=payload.get("options"))
+                elif action == "queue_input":
+                    retryable = True
+                    if (provider != "claude" or set(payload) != {"inputs", "expectedTurnId"}
+                            or not isinstance(payload["expectedTurnId"], str) or not payload["expectedTurnId"]):
+                        raise ValueError("Claude queued input requires inputs and the expected active turn")
+                    inputs = await asyncio.to_thread(self.uploads.claude_inputs, sid, payload["inputs"])
+                    if owner.state != "running" or owner.active_turn != payload["expectedTurnId"]:
+                        raise ValueError("Claude active turn changed; queued input was not sent")
+                    retryable = False
+                    result = await owner.queue_input(inputs, expected_turn_id=payload["expectedTurnId"])
+                elif action == "steer":
+                    if (
+                        set(payload) - {"inputs", "expectedTurnId", "skills", "apps"}
+                        or not {"inputs", "expectedTurnId"} <= payload.keys()
+                        or not isinstance(payload["expectedTurnId"], str)
+                        or not payload["expectedTurnId"]
+                    ):
+                        raise ValueError("Steering requires inputs and the expected running turn")
+                    if provider != "codex":
+                        raise ValueError("Provider input mapping is not implemented")
+                    inputs = await asyncio.to_thread(
+                        self.uploads.codex_inputs, sid, payload["inputs"]
+                    )
+                    kwargs = {"expected_turn_id": payload["expectedTurnId"]}
+                    if "skills" in payload:
+                        kwargs["skills"] = payload["skills"]
+                    if "apps" in payload:
+                        kwargs["apps"] = payload["apps"]
+                    result = await owner.steer(inputs, **kwargs)
+                elif action == "interrupt":
+                    if payload and (set(payload) != {"expectedTurnId"} or not isinstance(payload["expectedTurnId"], str) or not payload["expectedTurnId"]):
+                        raise ValueError("Interrupt requires an exact expected turn ID")
+                    if payload and payload["expectedTurnId"] != owner.active_turn:
+                        raise ValueError("Displayed turn is no longer active; current turn was not interrupted")
+                    result = await owner.interrupt()
+                else:
+                    if set(payload) != {"request_id", "answer"}:
+                        raise ValueError("A pending question and answer are required")
+                    result = await owner.answer(payload["request_id"], payload["answer"])
+                receipt = {"ok": True, "result": result}
+            except Exception as error:
+                receipt = {"ok": False, "error": str(error)}
+                if retryable:
+                    receipt["retryable"] = True
+            await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+            return receipt
+
+    async def _publish(self, sid, event):
+        decorated = await asyncio.to_thread(self.uploads.decorate_event, sid, event)
+        await asyncio.to_thread(self.journal.append, sid, decorated)
+        method = event.get("method")
+        if method == "account/login/completed":
+            await self._settle_codex_account_login(sid, event.get("params", {}))
+        elif method == "workspace/transportClosed":
+            await self._abandon_codex_account_login(sid)
+        if event.get("method") == "workspace/renameCompleted" and self.register_fork is not None:
+            entry = self._sessions.get(sid)
+            title = event.get("params", {}).get("title")
+            if entry and entry[1] == "claude" and isinstance(title, str) and title:
+                registration = {"session_id": sid, "provider": "claude", "cwd": str(entry[0].cwd),
+                                "expected_native_title": title, "confirmed_native_name": title}
+                for attempt in range(5):
+                    result = await self._register_created_fork(registration)
+                    if not result.get("retryable"):
+                        break
+                    if attempt < 4:
+                        await asyncio.sleep(0.05 * (2 ** attempt))
+                await asyncio.to_thread(self.journal.append, sid, {"method": "workspace/catalog", "params": result})
+            return
+        if event.get("method") != "turn/completed" or self.register_fork is None:
+            return
+        target = await asyncio.to_thread(self.journal.pending_target, sid)
+        if not target or not target["committed"]:
+            return
+        # Clear creates an identity before a transcript. Only later native
+        # completion may materialize it; indexing failure must not lose output.
+        registration = {key: target[key] for key in ("session_id", "provider", "cwd")}
+        prompt_id = event.get("params", {}).get("turn", {}).get("providerOriginal", {}).get("user_message_uuid")
+        if prompt_id:
+            registration["prompt_id"] = prompt_id
+        for attempt in range(5):
+            result = await self._register_created_fork(registration)
+            if not result.get("retryable"):
+                break
+            if attempt < 4:
+                await asyncio.sleep(0.05 * (2 ** attempt))
+        if result["indexed"]:
+            await asyncio.to_thread(self.journal.mark_target_cataloged, sid)
+        await asyncio.to_thread(self.journal.append, sid, {"method": "workspace/catalog", "params": result})
+
+    async def _register_created_fork(self, target):
+        try:
+            if self.register_fork is None:
+                raise RuntimeError("Fork catalog is unavailable")
+            registered = await asyncio.to_thread(self.register_fork, target)
+            title = registered.get("display_title") if isinstance(registered, dict) else None
+            renamed = isinstance(registered, dict) and registered.get('native_rename') is True
+            return {**target, "indexed": True, **({"display_title": title} if isinstance(title, str) else {}),
+                    **({'native_rename': True} if renamed else {})}
+        except Exception as error:
+            from core.workspace_catalog import NativeTranscriptPending
+
+            # Creation already happened, including after an interrupted receipt.
+            return {**target, "indexed": False, "error": str(error),
+                    **({"retryable": True} if isinstance(error, NativeTranscriptPending) else {})}
+
+    async def _clear_session(self, sid, request_id, owner, *, name=None):
+        if self._sessions[sid][1] == "codex":
+            if owner.active_turn or owner.questions or owner.active_agent_threads:
+                raise ValueError("Finish active work before clearing Codex")
+            tasks = await owner.list_background_tasks()
+            if (tasks.get("data") != [] or owner.state != "ready" or owner.active_turn or owner.questions
+                    or owner.active_agent_threads or self._bridge_queues.get(sid)):
+                raise ValueError("Finish background work before clearing Codex")
+            # Unsubscribe retains Codex's native writer for an inactivity grace
+            # period. Closing the idle process releases it before new creation.
+            await owner.close()
+            if not owner.can_retry_attachment():
+                raise ValueError("Codex cleanup is unconfirmed; no new session was created")
+            creation_id = str(uuid5(NAMESPACE_URL, json.dumps(["serena-clear", sid, request_id])))
+            created = await self._create(creation_id, "codex", str(owner.cwd))
+            if not created.get("ok"):
+                raise ValueError("New Codex session is unconfirmed; creation will not be repeated: " + str(created.get("error", "unknown")))
+            target = dict(created["result"])
+            if name is not None:
+                target.update(requestedName=name, nameConfirmed=False)
+                try:
+                    target_owner = self._sessions.get(target["session_id"])
+                    if target_owner is None or target_owner[1] != "codex":
+                        raise ValueError("New Codex owner is unavailable for naming")
+                    renamed = await target_owner[0].rename(name)
+                    if renamed.get("session_id") != target["session_id"] or renamed.get("name") != name:
+                        raise ValueError("New Codex title was not confirmed")
+                    target["nameConfirmed"] = True
+                except Exception as error:
+                    message = " ".join(str(error).splitlines()).strip()[:1000]
+                    target["nameError"] = message or "Native title confirmation failed"
+            await asyncio.to_thread(self.journal.prepare_clear, sid, request_id, target)
+            return await asyncio.to_thread(self.journal.complete_clear, sid, request_id)
+        transitioned = False
+        try:
+            target = await (owner.begin_clear() if name is None else owner.begin_clear(name=name))
+            transitioned = True
+            await asyncio.to_thread(self.journal.prepare_clear, sid, request_id, target)
+            new_sid = target["session_id"]
+            if new_sid in self._sessions:
+                raise ValueError("Clear target already has a workspace owner")
+            async with self._locks.setdefault(new_sid, asyncio.Lock()):
+                if new_sid in self._sessions:
+                    raise ValueError("Clear target already has a workspace owner")
+
+                async def publish(event):
+                    await self._publish(new_sid, event)
+
+                # Reserve before acknowledgement; never retain an old-ID alias
+                # that could send source-chat input into the new conversation.
+                self._sessions[new_sid] = (owner, "claude")
+                del self._sessions[sid]
+                await owner.commit_clear(new_sid, publish=publish)
+                receipt = await asyncio.to_thread(self.journal.complete_clear, sid, request_id)
+                return receipt
+        except BaseException:
+            if transitioned or owner.state != "ready":
+                owner.state = "unavailable"
+            raise
+
+    def describe_pending_session(self, sid):
+        """Read-only catalog fallback; never claims a transcript exists yet."""
+        target = self.journal.pending_target(sid)
+        if target is None:
+            return None
+        title = (target.get("requestedName") if target.get("nameConfirmed") is True
+                 else f"New {target['provider'].title()} conversation")
+        return {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],
+                "title": title, "native_persistence_pending": True}
+
+    def delete_pending_session(self, sid, *, source):
+        """Explicit deletion only; retain journal history and a recovery manifest."""
+        from uuid import uuid4
+
+        from core import indexer, metadata
+        from core.workspace_catalog import NativeTranscriptPending
+        from core.workspace_lease import SessionLease
+
+        target = self.journal.pending_target(sid)
+        if not target or not target["committed"]:
+            return None
+        lease = SessionLease(sid)
+        try:
+            target = self.journal.pending_target(sid)
+            if not target or not target["committed"]:
+                return None
+            if self.register_fork is None:
+                raise ValueError("Native session catalog is unavailable")
+            native = {key: target[key] for key in ("session_id", "provider", "cwd")}
+            try:
+                self.register_fork(native)
+            except NativeTranscriptPending:
+                recovery = self.journal.path.parent / "deleted-workspaces" / f"{sid}-{uuid4()}"
+                recovery.mkdir(parents=True, mode=0o700)
+                (recovery / "recovery.json").write_text(json.dumps({
+                    "session_id": sid, "target": native, "deleted_via": source,
+                    "metadata": metadata.get_meta(sid), "journal": str(self.journal.path),
+                    "native_transcript_present": False,
+                }, indent=2) + "\n", encoding="utf-8")
+                result = str(recovery)
+            else:
+                with indexer._index_update_lock():
+                    indexed = indexer.get_session(sid)
+                    if indexed is None:
+                        raise ValueError("Native registration did not produce the exact session")
+                    result = indexer._delete_unowned_session(indexed, source=source)
+            self.journal.mark_target_cataloged(sid)
+            metadata.delete_meta(sid)
+            return result
+        finally:
+            lease.release()
+
+    def include_pending_sessions(self, sessions, *, projects=()):
+        from core.config import claude_project_dir_for
+
+        result = list(sessions)
+        seen = {session["session_id"] for session in sessions}
+        for target in reversed(self.journal.uncataloged_targets()):
+            sid = target["session_id"]
+            if sid in seen:
+                self.journal.mark_target_cataloged(sid)
+                continue
+            project = claude_project_dir_for(target["cwd"])
+            if projects and not any(value in project for value in projects):
+                continue
+            title = (target.get("requestedName") if target.get("nameConfirmed") is True
+                     else f"New {target['provider'].title()} conversation")
+            result.insert(0, {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],
+                              "project_dir": project, "display_title": title,
+                              "title": title, "created_at": target["created_at"],
+                              "last_timestamp": target["created_at"], "native_persistence_pending": True})
+        return result
+
+    @staticmethod
+    def _validate_session(sid):
+        if not isinstance(sid, str) or not sid or len(sid) > 200:
+            raise ValueError("An exact session ID is required")
+
+    def shutdown(self):
+        """Explicit host shutdown only. Never call from a view close handler."""
+        with self._guard:
+            self._stopped = True
+            loop, thread = self._loop, self._thread
+        if loop is None or loop.is_closed():
+            return
+
+        async def close_owners():
+            # An attach that was already admitted must finish before taking the
+            # owner snapshot, otherwise it could launch after shutdown's sweep.
+            await asyncio.gather(*list(self._operations), return_exceptions=True)
+            await asyncio.gather(*(owner.close() for owner, _ in self._sessions.values()))
+            await loop.shutdown_default_executor()
+
+        asyncio.run_coroutine_threadsafe(close_owners(), loop).result(15)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+        if thread.is_alive():
+            raise RuntimeError("Workspace loop did not stop")
+        loop.close()

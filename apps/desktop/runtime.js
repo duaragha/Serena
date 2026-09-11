@@ -130,7 +130,7 @@ async function findExistingBackend(options = {}) {
   }
 }
 
-function backendLaunch({ isPackaged, appDir, resourcesPath, port, platform = process.platform }) {
+function backendLaunch({ isPackaged, appDir, resourcesPath, port, platform = process.platform, execPath = process.execPath }) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new TypeError('backend port must be an integer between 1 and 65535');
   }
@@ -139,6 +139,11 @@ function backendLaunch({ isPackaged, appDir, resourcesPath, port, platform = pro
       command: path.join(resourcesPath, 'sidecar', 'serena-web-sidecar'),
       args: ['--host', LOOPBACK_HOST, '--port', String(port)],
       cwd: resourcesPath,
+      env: {
+        SERENA_WORKSPACE_RUNTIME_ROOT: path.join(resourcesPath, 'runtimes', 'claude-sdk'),
+        SERENA_WORKSPACE_NODE: execPath,
+        SERENA_WORKSPACE_NODE_MODE: 'electron',
+      },
     };
   }
   let repoRoot = path.resolve(appDir, '..');
@@ -156,6 +161,11 @@ function backendLaunch({ isPackaged, appDir, resourcesPath, port, platform = pro
       '--port', String(port),
     ],
     cwd: repoRoot,
+    env: {
+      SERENA_WORKSPACE_RUNTIME_ROOT: path.join(repoRoot, 'runtimes', 'claude-sdk'),
+      SERENA_WORKSPACE_NODE: execPath,
+      SERENA_WORKSPACE_NODE_MODE: 'electron',
+    },
   };
 }
 

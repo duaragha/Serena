@@ -90,6 +90,8 @@ New-Item -ItemType Directory -Path $SidecarDist -Force | Out-Null
 New-Item -ItemType Directory -Path $PyInstallerWork -Force | Out-Null
 
 Write-Host "[windows] building the PyInstaller onedir sidecar"
+& npm.cmd --prefix (Join-Path $RepoRoot "runtimes\claude-sdk") ci --ignore-scripts --omit=optional --no-audit --no-fund
+Assert-LastExitCode "Claude workspace SDK provisioning"
 & $Python -m PyInstaller `
     --noconfirm `
     --clean `
@@ -106,6 +108,10 @@ if (-not (Test-Path -LiteralPath $SidecarExe -PathType Leaf)) {
 Write-Host "[windows] smoke-testing the frozen Fleet peer MCP"
 & $Python (Join-Path $RepoRoot "scripts\fleet_peer_smoke.py") --binary $SidecarExe
 Assert-LastExitCode "Frozen Fleet peer MCP smoke test"
+
+Write-Host "[windows] smoke-testing the frozen workspace gate"
+& $Python (Join-Path $RepoRoot "scripts\verify-workspace-frozen-windows.py") $SidecarExe
+Assert-LastExitCode "Frozen workspace gate and process ownership smoke test"
 
 Write-Host "[windows] smoke-testing the frozen Fleet integration replay"
 $PreviousReplayBinary = $env:SERENA_FLEET_TEST_REPLAY_BINARY

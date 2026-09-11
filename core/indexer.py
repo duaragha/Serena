@@ -223,6 +223,7 @@ def _migrate(conn: sqlite3.Connection):
         "raw_message_count": "ALTER TABLE sessions ADD COLUMN raw_message_count INTEGER",
         "is_teammate": "ALTER TABLE sessions ADD COLUMN is_teammate INTEGER DEFAULT 0",
         "is_done": "ALTER TABLE sessions ADD COLUMN is_done INTEGER DEFAULT 0",
+        "is_archived": "ALTER TABLE sessions ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
         "done_at": "ALTER TABLE sessions ADD COLUMN done_at TEXT",
         "agent": "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
         "originator": "ALTER TABLE sessions ADD COLUMN originator TEXT",
@@ -232,6 +233,10 @@ def _migrate(conn: sqlite3.Connection):
     for col, sql in migrations.items():
         if col not in columns:
             conn.execute(sql)
+    if "is_archived" not in columns:
+        conn.execute("""UPDATE sessions SET is_archived = 1
+                        WHERE agent = 'codex'
+                        AND instr('/' || replace(file_path, char(92), '/'), '/archived_sessions/') > 0""")
     conn.commit()
 
 
@@ -531,7 +536,9 @@ def _apply_synced_meta(conn: sqlite3.Connection, session_id: str, synced: dict):
 
 
 def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict | None = None, agent: str = "claude"):
-    title = "Serena" if agent == "serena-voice" else generate_title(meta.first_message)
+    title = "Serena" if agent == "serena-voice" else (
+        getattr(meta, "native_title", None) if agent == "claude" else None
+    ) or generate_title(meta.first_message)
 
     # Get synced metadata (stars, tags, custom_title) from the shared JSON
     if all_meta is not None:
@@ -577,16 +584,17 @@ def _upsert_session(conn: sqlite3.Connection, meta: SessionMeta, all_meta: dict 
     conn.execute("""
         INSERT OR REPLACE INTO sessions
         (session_id, project_dir, cwd, last_cwd, device, first_message, title,
-         custom_title, starred, is_done, done_at,
+         custom_title, starred, is_done, done_at, is_archived,
          first_timestamp, last_timestamp,
          message_count, raw_message_count, is_teammate,
          model, git_branch, slug, file_path, file_size, file_mtime,
          input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, agent, originator,
          devices_used)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         meta.session_id, project_dir, cwd, last_cwd, meta.device,
         meta.first_message, title, custom_title, starred, is_done, done_at,
+        int(agent == "codex" and "archived_sessions" in str(meta.file_path).replace("\\", "/").split("/")[:-1]),
         meta.first_timestamp.isoformat() if meta.first_timestamp else None,
         meta.last_timestamp.isoformat() if meta.last_timestamp else None,
         meta.message_count, meta.raw_message_count,
@@ -1233,13 +1241,17 @@ def list_sessions(
     tag: str | None = None,
     starred_only: bool = False,
     limit: int = 50,
+    archived: bool = False,
 ) -> list[dict]:
     """List sessions from the index."""
+    if type(archived) is not bool:
+        raise ValueError("Archive filter must be a boolean")
     conn = _get_db()
 
     query = "SELECT s.* FROM sessions s"
     params = []
-    conditions = ["COALESCE(s.is_teammate, 0) = 0"]
+    conditions = ["COALESCE(s.is_teammate, 0) = 0", "COALESCE(s.is_archived, 0) = ?"]
+    params.append(int(archived))
 
     if tag:
         query += " JOIN tags t ON s.session_id = t.session_id"
@@ -1525,6 +1537,8 @@ def list_projects(*, include_machinery: bool = False) -> list[dict]:
 
 def delete_session(session_id_prefix: str, *, source: str = "unknown") -> str:
     """Remove a session from the index while retaining a recoverable copy."""
+    from core.workspace_lease import SessionLease
+
     session = get_session(session_id_prefix)
     if not session:
         raise ValueError(f"No session found with ID '{session_id_prefix}'")
@@ -1532,25 +1546,30 @@ def delete_session(session_id_prefix: str, *, source: str = "unknown") -> str:
     sid = session["session_id"]
     if sid == VOICE_SESSION_ID or session.get("agent") == "serena-voice":
         raise PermissionError("Serena's permanent conversation cannot be deleted")
-    file_path = Path(session["file_path"])
+    lease = SessionLease(sid)
+    try:
+        with _index_update_lock():
+            current = get_session(sid)
+            if current is None:
+                raise ValueError(f"No session found with ID '{sid}'")
+            return _delete_unowned_session(current, source=source)
+    finally:
+        lease.release()
 
-    # Remove from DB
-    conn = _get_db()
-    conn.execute("DELETE FROM tags WHERE session_id = ?", (sid,))
-    conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
-    conn.execute("DELETE FROM messages_fts WHERE session_id = ?", (sid,))
-    conn.commit()
-    conn.close()
+
+def _delete_unowned_session(session: dict, *, source: str) -> str:
+    sid = session["session_id"]
+    file_path = Path(session["file_path"])
 
     # Keep the source transcript recoverable. Syncthing's trashcan only
     # protects remote deletions, so a local unlink can otherwise be permanent.
+    archived_path = None
     if file_path.exists():
         recovery_dir = DATA_DIR / "deleted-sessions" / sid
         if recovery_dir.exists():
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             recovery_dir = recovery_dir.with_name(f"{sid}-{stamp}")
         recovery_dir.mkdir(parents=True, exist_ok=False)
-        shutil.move(str(file_path), str(recovery_dir / file_path.name))
         manifest = {
             "session_id": sid,
             "original_path": str(file_path),
@@ -1562,6 +1581,29 @@ def delete_session(session_id_prefix: str, *, source: str = "unknown") -> str:
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        archived_path = recovery_dir / file_path.name
+        shutil.move(str(file_path), str(archived_path))
+
+    conn = None
+    try:
+        conn = _get_db()
+        conn.execute("DELETE FROM tags WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM messages_fts WHERE session_id = ?", (sid,))
+        conn.commit()
+    except Exception:
+        try:
+            if conn is not None:
+                conn.rollback()
+        finally:
+            # The scanner is excluded by the caller. Restore the original path
+            # after a database failure, never overwrite an unexpected new file.
+            if archived_path is not None and archived_path.exists() and not file_path.exists():
+                shutil.move(str(archived_path), str(file_path))
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
 
     # Remove from synced metadata
     meta_sync.delete_meta(sid)

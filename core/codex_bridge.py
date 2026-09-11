@@ -513,6 +513,9 @@ def _release_work_owner(owner: dict, item_id: str) -> bool:
 
 
 def _owner_alive(owner: dict) -> bool:
+    if owner.get("kind") == "workspace":
+        return any(row.get("sid") == owner["sid"] and row.get("alive")
+                   for row in owner["host"].runtime_context_snapshot()["runtimes"])
     if owner.get("kind") == "gtk":
         inst = owner["instance"]
         return _pid_alive(getattr(inst, "_vte_pids", {}).get(owner["sid"]))

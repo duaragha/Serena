@@ -90,6 +90,12 @@ def _restore_peer_streams() -> None:
         _STREAM_SINKS.append(restored)
         setattr(sys, name, restored)
 
+if __name__ == "__main__" and sys.argv[1:] == ["--workspace-child"]:
+    _restore_peer_streams()
+    from core.workspace_windows_bootstrap import main as workspace_child
+
+    raise SystemExit(workspace_child())
+
 if __name__ == "__main__" and sys.argv[1:] == ["--fleet-integration-replay"]:
     _restore_peer_streams()
     from fleet.integration_recovery import main as replay_integration

@@ -41,7 +41,7 @@ def test_fleet_chats_have_one_collapsible_home_outside_normal_buckets() -> None:
     assert "_isSerenaVoiceSession(localSession || sid) || _isFleetSession(localSession)" in html
 
     partition = html.index("const fleetChats = visibleTop.filter")
-    active_bucket = html.index("const active = _activeTerms.size")
+    active_bucket = html.index("const active = visibleTop.filter(s => rowMembers(s).some(_sessionHasActiveRuntime))")
     done_bucket = html.index("const doneList = visibleTop.filter")
     starred_bucket = html.index("const starred = remaining.filter")
     assert partition < active_bucket < done_bucket < starred_bucket

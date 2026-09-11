@@ -746,6 +746,8 @@ def test_reused_chat_attempt_uses_live_owner_and_captures_exact_turn(
 
     assert len(dispatched) == 1
     assert dispatched[0]["target_sid"] == sid
+    from uuid import UUID
+    assert str(UUID(dispatched[0]["dispatch_id"])) == dispatched[0]["dispatch_id"]
     assert str(repo) in dispatched[0]["prompt"]
     assert result["session_id"] == sid
     assert result["message"] == "implemented and tested"

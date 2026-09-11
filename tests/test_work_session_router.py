@@ -51,6 +51,43 @@ def _git_repo(path):
     return path.resolve()
 
 
+@pytest.mark.parametrize("state", ["ready", "running", "opening", "uncertain", "awaiting-handoff"])
+def test_native_owner_is_not_resumed_as_unowned_history(state):
+    session = _session("native")
+    context = _context("", {"sid": "native", "agent": "codex", "owner": "workspace",
+                            "alive": True, "state": state})
+    route = choose_work_route(PROJECT, "fix it", [context], [session])
+    assert route.mode == "private" and route.session_id == ""
+
+
+@pytest.mark.parametrize("focused", [True, False])
+def test_ready_native_owner_routes_through_its_existing_bridge(focused):
+    session = _session("native", owner="workspace", alive=True, state="ready",
+                       draft_known=True, draft=False, pending_interactions=False)
+    route = choose_work_route(PROJECT, "fix it",
+                              [_context("native" if focused else "", session)], [session])
+    assert route.mode == "reuse"
+    assert route.session_id == "native" and route.bridge_port == 46747
+
+
+@pytest.mark.parametrize("override", [
+    {"draft_known": False}, {"draft_known": None}, {"draft_known": "true"},
+    {"draft": True}, {"pending_interactions": True}, {"busy": True},
+    {"reserved": True}, {"alive": False}, {"state": "running"},
+    {"state": ""}, {"state": "paused"}, {"state": "unavailable"},
+    {"model": "other-model"}, {"effort": "low"},
+])
+@pytest.mark.parametrize("focused", [True, False])
+def test_unsafe_native_owner_is_not_selected_or_resumed(override, focused):
+    session = _session("native", owner="workspace", alive=True, state="ready",
+                       draft_known=True, draft=False, pending_interactions=False)
+    session.update(override)
+    route = choose_work_route(PROJECT, "fix it",
+                              [_context("native" if focused else "", session)], [session])
+    assert route.mode != "reuse"
+    assert route.session_id != "native"
+
+
 @pytest.mark.parametrize(
     "spoken,expected",
     [

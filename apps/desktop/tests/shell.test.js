@@ -123,6 +123,12 @@ test('backend launch uses the repo venv in dev and bundled sidecar in production
   });
   assert.equal(packaged.command, path.join(resourcesPath, 'sidecar', 'serena-web-sidecar'));
   assert.equal(packaged.cwd, resourcesPath);
+  assert.equal(packaged.env.SERENA_WORKSPACE_RUNTIME_ROOT, path.join(resourcesPath, 'runtimes', 'claude-sdk'));
+  assert.equal(packaged.env.SERENA_WORKSPACE_NODE, process.execPath);
+  assert.equal(packaged.env.SERENA_WORKSPACE_NODE_MODE, 'electron');
+  assert.equal(packaged.env.ELECTRON_RUN_AS_NODE, undefined);
+  assert.equal(linuxDev.env.SERENA_WORKSPACE_RUNTIME_ROOT, path.join(repoRoot, 'runtimes', 'claude-sdk'));
+  assert.equal(windowsDev.env.SERENA_WORKSPACE_NODE_MODE, 'electron');
 });
 
 test('main and preload retain the required Electron security contract', () => {
@@ -131,6 +137,7 @@ test('main and preload retain the required Electron security contract', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
 
   assert.match(main, /requestSingleInstanceLock\(\)/);
+  assert.match(main, /\.\.\.launch\.env/);
   assert.match(main, /SMOKE_TEST[\s\S]*setPath\('userData',[\s\S]*-smoke-/);
   assert.match(main, /contextIsolation:\s*true/);
   assert.match(main, /nodeIntegration:\s*false/);
@@ -147,9 +154,35 @@ test('main and preload retain the required Electron security contract', () => {
   assert.deepEqual(packageJson.build.linux.target, ['AppImage', 'deb']);
 });
 
+test('both desktop builds provision SDK resources and native worker modules', () => {
+  const packageJson=JSON.parse(fs.readFileSync(path.join(desktopDir,'package.json'),'utf8'));
+  const sdk=packageJson.build.extraResources.find(resource=>resource.to==='runtimes/claude-sdk');
+  assert.equal(sdk.from,'../../runtimes/claude-sdk');
+  assert.ok(sdk.filter.includes('node_modules/**/*'));
+  const linux=fs.readFileSync(path.join(desktopDir,'scripts/build-sidecar.sh'),'utf8');
+  const windows=fs.readFileSync(path.join(desktopDir,'windows/build-win.ps1'),'utf8');
+  const spec=fs.readFileSync(path.join(desktopDir,'windows/sidecar-win.spec'),'utf8');
+  const builder=fs.readFileSync(path.join(desktopDir,'windows/electron-builder.win.yml'),'utf8');
+  assert.match(linux,/runtimes\/claude-sdk.*ci --ignore-scripts --omit=optional/);
+  assert.match(windows,/runtimes\\claude-sdk.*ci --ignore-scripts --omit=optional/);
+  assert.match(builder,/to: runtimes\/claude-sdk/);
+  for(const filename of ['workspace_claude_worker.mjs','workspace_claude_channel.mjs','workspace_claude_sdk.mjs']) {
+    assert.ok(linux.includes(filename));
+    assert.ok(spec.includes(filename));
+    assert.ok(fs.existsSync(path.resolve(desktopDir,'../../core',filename)));
+  }
+});
+
 test('linux sidecar packaging resolves the repository above apps/desktop', () => {
   const script = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-sidecar.sh'), 'utf8');
   assert.match(script, /repo_root="\$\(cd "\$desktop_dir\/\.\.\/\.\." && pwd\)"/);
+});
+
+test('linux sidecar bundles the opt-in Gemini adapter and checks its dependency', () => {
+  const script = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-sidecar.sh'), 'utf8');
+  assert.match(script, /--hidden-import core\.workspace_gemini/);
+  assert.match(script, /"\$python_bin" -c 'import hjson'/);
+  assert.ok(script.indexOf("import hjson") < script.indexOf('rm -rf'));
 });
 
 test('the AppImage smoke run is isolated from the installed app', () => {

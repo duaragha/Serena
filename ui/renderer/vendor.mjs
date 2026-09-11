@@ -21,3 +21,13 @@ for (const [source, name] of assets) {
 }
 
 console.log(`vendored ${assets.length} pinned xterm assets into ${target}`);
+
+const markdownTarget = resolve(here, '..', 'static', 'vendor', 'markdown-it');
+await mkdir(markdownTarget, {recursive:true});
+for (const [source, name] of [
+  ['dist/browser/markdown-it.esm.min.mjs', 'markdown-it.mjs'],
+  ['LICENSE', 'LICENSE.txt'],
+]) {
+  await copyFile(resolve(here, 'node_modules/markdown-it', source), resolve(markdownTarget, name));
+}
+console.log('vendored pinned markdown-it browser module and license');

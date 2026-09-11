@@ -20,6 +20,7 @@ from ui import web
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--screenshots", type=Path, required=True)
+    parser.add_argument("--pane-presentation", action="store_true")
     args = parser.parse_args()
     args.screenshots.mkdir(parents=True, exist_ok=True)
 
@@ -50,12 +51,13 @@ def main():
                     "allSessions.length > 0 && !!window.SerenaWorkspace", timeout=30000
                 )
                 count = page.evaluate("allSessions.length")
+                pane_ids = page.evaluate("['claude','codex'].map(agent=>allSessions.find(s=>s.agent===agent)?.session_id)")
                 sid = page.evaluate(
-                    "allSessions.find(s=>!s.is_done && s.agent==='codex').session_id"
+                    "allSessions.find(s=>!s.is_done && s.agent==='codex' && s.output_tokens>0 && s.output_tokens<5000)?.session_id"
                 )
+                assert sid, "A bounded nonempty Codex transcript is required for read-only proof"
                 page.evaluate("sid=>openConv(sid,{mode:'read'})", sid)
-                page.locator("#convBody").wait_for()
-                page.wait_for_timeout(500)
+                page.locator("#convBody .msg").first.wait_for(timeout=30000)
                 page.screenshot(path=str(args.screenshots / "desktop.png"))
                 page.locator("#workspaceChanges").click()
                 page.wait_for_function(
@@ -68,6 +70,7 @@ def main():
                 page.screenshot(path=str(args.screenshots / "tooling.png"))
                 page.set_viewport_size({"width": 390, "height": 844})
                 page.locator('.tab[data-tab="chats"]').click()
+                page.locator("#convBody .msg").first.wait_for(timeout=30000)
                 page.screenshot(path=str(args.screenshots / "mobile.png"))
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 assert not spawns, spawns
@@ -75,6 +78,33 @@ def main():
                 print(
                     f"PASS: real index ({count} sessions), Read transcript, Git inspector, Tooling, desktop/mobile; no coding runtime launches; no JS errors"
                 )
+                if args.pane_presentation:
+                    host = web.app.extensions.get("workspace_host")
+                    assert host is not None, "Enable SERENA_STRUCTURED_WORKSPACE for this read-only proof"
+                    assert all(pane_ids), "Both providers need indexed sessions for this proof"
+                    for provider, target in zip(("claude", "codex"), pane_ids, strict=True):
+                        for width in (390, 1600):
+                            page.set_viewport_size({"width": width, "height": 900})
+                            page.goto(f"http://127.0.0.1:{server.server_port}/workspace/{target}")
+                            if not page.get_by_role('button', name="Prompt color", exact=True).first.is_visible():
+                                page.get_by_role('button', name='Session actions', exact=True).first.click()
+                            page.get_by_role("button", name="Prompt color", exact=True).click()
+                            dialog = page.get_by_role("dialog", name="Prompt color")
+                            dialog.get_by_role("button", name="cyan prompt color", exact=True).click()
+                            assert page.locator(".aw-composer").evaluate("el=>getComputedStyle(el).borderColor") == "rgb(112, 219, 225)"
+                            assert page.locator(".agent-workspace-pane").evaluate("el=>getComputedStyle(el).backgroundColor") == "rgb(0, 0, 0)"
+                            assert dialog.evaluate("el=>el.scrollWidth<=el.clientWidth")
+                            assert page.locator(".aw-head").evaluate("el=>[...el.querySelectorAll('button')].filter(b=>!b.hidden).every(b=>b.getBoundingClientRect().right<=el.getBoundingClientRect().right && b.getBoundingClientRect().left>=el.getBoundingClientRect().left)")
+                            page.screenshot(path=str(args.screenshots / f"{provider}-color-{width}.png"))
+                            page.keyboard.press("Escape")
+                            page.reload()
+                            if not page.get_by_role('button', name="Prompt color", exact=True).first.is_visible():
+                                page.get_by_role('button', name='Session actions', exact=True).first.click()
+                            page.get_by_role("button", name="Prompt color", exact=True).wait_for()
+                            assert page.locator(".aw-composer").evaluate("el=>getComputedStyle(el).borderColor") == "rgb(112, 219, 225)"
+                    assert host._loop is None and not host._sessions
+                    assert not errors and not spawns
+                    print("PASS: actual saved Claude/Codex pane pages, color/restore, desktop/mobile; black background retained; no owner loop or runtime launched")
             finally:
                 browser.close()
     finally:
