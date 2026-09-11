@@ -81,6 +81,12 @@ export class WorkspaceConnection {
     return result;
   }
 
+  async open({resume = false} = {}) {
+    const observing = await this.observe();
+    if (!observing && resume) await this.connect();
+    return observing || resume;
+  }
+
   async observe() {
     const result = await this.request('/observe');
     if(result.session_id !== this.sessionId)throw Error('Session observation returned a different identity');

@@ -201,11 +201,12 @@ button.addEventListener('click', async () => {
     button.disabled = false;
   }
 });
-// Reopening a view may read its existing owner, but must never resume a process.
+// Opening Code opts into exact-session resume; plain observer URLs remain read-only.
 if(pane.clearedSession)button.disabled=false;
-else connection.observe().then(observing=>{
+else connection.open({resume:boot.autoResume===true}).then(observing=>{
   button.hidden=observing && pane.conversation.status!=='unavailable';
   button.disabled=false;
+  if(observing && boot.autoResume===true) connection.controls().models().catch(error=>pane.error(error));
 }).catch(connectionFailed);
 window.addEventListener('pagehide', () => {
   clearInterval(contextTimer);document.removeEventListener('input',reportContext);

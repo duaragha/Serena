@@ -7121,7 +7121,7 @@ function _startStructuredPane(sid, opts) {
   mount.className = 'term-pane'; mount.dataset.sid = sid;
   const frame = document.createElement('iframe');
   frame.src = opts.isNew ? '/workspace/new?' + new URLSearchParams({source:sid, provider:opts.agent, cwd:opts.cwd || _defaultCwd(), seeded:opts.seed ? '1' : '0'})
-    : '/workspace/' + encodeURIComponent(sid);
+    : '/workspace/' + encodeURIComponent(sid) + '?resume=1';
   if (opts.isNew && opts.seed) frame.addEventListener('load', () => {
     frame.contentWindow?.postMessage({type:'serena-workspace-seed', sid, seed:opts.seed}, location.origin);
   });
@@ -7259,7 +7259,8 @@ async function startLiveTerminal(sid, opts) {
     if (!opts.background) setConvMode('read');
     return null;
   }
-  if (window.SERENA?.structuredWorkspace) return _startStructuredPane(sid, opts);
+  const provider = opts.agent || localSession?.agent;
+  if (window.SERENA?.structuredWorkspace && ['claude', 'codex'].includes(provider)) return _startStructuredPane(sid, opts);
   // A missing CLI/session in one pane must not block the rest of the group.
   if (!opts.background && !opts.isNew) _startLinkedTerminals(sid);
   // Already alive? Just bring its pane to front.

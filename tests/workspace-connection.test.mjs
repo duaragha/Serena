@@ -11,6 +11,26 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('opening Code observes first and resumes only an absent owner once', async () => {
+  for (const resume of [false, true]) for (const observing of [false, true]) {
+    const calls=[];
+    const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{}});
+    conn.observe=async()=>{calls.push('observe');return observing;};
+    conn.connect=async()=>{calls.push('connect');};
+    assert.equal(await conn.open({resume}), observing || resume);
+    assert.deepEqual(calls, resume && !observing ? ['observe','connect'] : ['observe']);
+    conn.dispose();
+  }
+});
+
+test('failed observation does not launch or retry an owner', async()=>{
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{}});
+  conn.observe=async()=>{throw Error('unavailable');};
+  conn.connect=async()=>assert.fail('must not attach after uncertain observation');
+  await assert.rejects(conn.open({resume:true}),/unavailable/);
+  conn.dispose();
+});
+
 test('HTML failures are reported without retrying either provider request', async () => {
   for (const sessionId of ['claude-session', 'codex-session']) {
     let calls = 0;
