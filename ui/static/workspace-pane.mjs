@@ -2,6 +2,7 @@ import {WorkspaceConversation} from './workspace-events.mjs';
 import {renderWorkspaceMarkdown} from './workspace-markdown.mjs';
 import {renderElicitation} from './workspace-elicitation.mjs';
 import {installFileMentions} from './workspace-mentions.mjs';
+import {installCommandSuggestions} from './workspace-completions.mjs';
 import {installSessionActions} from './workspace-actions.mjs';
 
 const node = (tag, cls, text) => {
@@ -204,7 +205,7 @@ export class WorkspacePane {
     this.tasksButton = this.button('Background tasks', 'list-tree', () => this.openBackgroundTasks());
     this.tasksButton.hidden = !['Codex','Claude'].includes(provider) || !controls.backgroundTasks;
     footer.insertBefore(this.tasksButton, this.stop);
-    this.commandsButton = this.button('Commands and skills', 'slash', () => this.openCommands());
+    this.commandsButton = this.button('Commands and skills', 'slash', () => this.provider==='Gemini'?this.openCommands():this.commandSuggestions.open());
     this.commandsButton.hidden = !['Claude','Codex','Gemini'].includes(provider) || !controls.commands;
     footer.insertBefore(this.commandsButton, this.stop);
     this.mcpButton = this.button('MCP connections', 'plug', () => this.openMcpServers());
@@ -224,6 +225,16 @@ export class WorkspacePane {
     this.queueRecoveryButton=this.button('Unconfirmed queued messages','rotate-ccw',()=>this.openQueueRecovery());
     this.queueRecoveryButton.hidden=true;footer.insertBefore(this.queueRecoveryButton,this.stop);
     this.form.append(this.input, this.attachments, footer, this.fileInput);
+    this.commandSuggestions=installCommandSuggestions({input:this.input,form:this.form,provider:this.provider,
+      load:async()=>{
+        const result=await this.controls.commands();
+        const local=this.provider==='Codex'?Object.entries(this.codexCommandCatalog()).map(([name,spec])=>({name,kind:'command',description:spec.description,unavailableReason:spec.unavailableReason})):[];
+        return [...local,...result.data];
+      },choose:item=>{
+        if(item.kind==='skill' && !this.selectedSkills.some(skill=>skill.path===item.path)){
+          this.selectedSkills.push({name:item.name,path:item.path});this.persistSkills();this.renderAttachments();
+        }
+      },persist:()=>this.persistDraft()});
     this.disposeMentions=installFileMentions({input:this.input,form:this.form,
       enabled:()=>['Claude','Codex'].includes(this.provider) && typeof this.controls.searchFiles==='function',
       search:query=>this.controls.searchFiles(query),persist:()=>this.persistDraft()});
@@ -3157,6 +3168,7 @@ export class WorkspacePane {
     this.sessionStatusDialog?.close();
     this.imageDialog?.close();
     this.disposeMentions?.();
+    this.commandSuggestions?.dispose();
     this.reviewDialog?.close();
     this.tasksDialog?.close();
     this.commandsDialog?.close();

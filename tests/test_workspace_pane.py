@@ -10,6 +10,70 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+def test_inline_suggestions_ignore_stale_lookup_and_never_send_while_loading(pane):
+    page, errors = pane
+    page.evaluate("""()=>{controls.commands=()=>new Promise(resolve=>window.resolveCommands=resolve);}""")
+    composer=page.locator('#left textarea').first
+    composer.fill('/pending')
+    composer.press('Enter')
+    assert page.evaluate('calls')==[]
+    composer.fill('ordinary message')
+    page.evaluate("resolveCommands({data:[{name:'pending',kind:'command'}]})")
+    assert page.get_by_role('listbox',name='Command and skill suggestions').is_hidden()
+    assert composer.input_value()=='ordinary message'
+    assert not errors
+
+
+def test_command_button_opens_inline_choices_and_tab_inserts(pane):
+    page, errors = pane
+    page.evaluate("""()=>{
+      controls.commands=async()=>({data:[{name:'fleet',kind:'command',description:'Work'}]});
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Claude',controls});
+    }""")
+    composer=page.locator('#left textarea').first
+    composer.fill('draft')
+    page.locator('#left').get_by_role('button',name='Commands and skills',exact=True).click()
+    choices=page.get_by_role('listbox',name='Command and skill suggestions')
+    playwright.expect(choices.get_by_role('option')).to_have_count(1)
+    composer.press('Tab')
+    assert composer.input_value()=='draft /fleet '
+    assert page.get_by_role('dialog',name='Commands and skills').count()==0
+    assert page.evaluate('calls')==[]
+    assert not errors
+
+
+@pytest.mark.parametrize('provider,prefix', [('Claude','/'),('Codex','$')])
+@pytest.mark.parametrize('width', [390,1600])
+def test_inline_command_suggestions_insert_without_sending(pane, provider, prefix, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.evaluate("""provider=>{
+      pane.dispose();
+      controls.commands=async()=>({data:[{name:'fleet',kind:provider==='Codex'?'skill':'command',path:'/skills/fleet/SKILL.md',description:'Coordinate work'},
+        {name:'find',kind:provider==='Codex'?'skill':'command',path:'/skills/find/SKILL.md',description:'Find files'}]});
+      window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider,controls});
+    }""", provider)
+    composer=page.locator('#left textarea').first
+    composer.fill(prefix+'f')
+    choices=page.get_by_role('listbox',name='Command and skill suggestions')
+    playwright.expect(choices.get_by_role('option')).to_have_count(2)
+    page.screenshot(path=str(tmp_path / f'inline-{provider}-{width}.png'))
+    composer.press('ArrowDown')
+    composer.press('Enter')
+    assert composer.input_value()==prefix+'find '
+    assert page.evaluate('calls')==[]
+    assert page.get_by_role('dialog',name='Commands and skills').count()==0
+    if provider=='Codex':
+        assert page.evaluate('pane.selectedSkills')==[{'name':'find','path':'/skills/find/SKILL.md'}]
+    composer.fill(prefix+'fleet')
+    playwright.expect(choices.get_by_role('option')).to_have_count(1)
+    composer.press('Escape')
+    assert choices.is_hidden()
+    assert composer.input_value()==prefix+'fleet'
+    assert page.evaluate('calls')==[]
+    assert not errors
+
+
 @pytest.mark.parametrize('width', [390, 1600])
 def test_composer_grows_with_text_and_shrinks_after_clear(pane, width, tmp_path):
     page, errors = pane
@@ -980,7 +1044,7 @@ def test_codex_command_catalog_is_complete_and_terminal_boundaries_are_honest(pa
       window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,commands:async()=>({data:[]})}});
       pane.conversation.status='ready';pane.input.value='keep draft';pane.render();
     }""")
-    page.locator('#left').get_by_role('button', name='Commands and skills', exact=True).click()
+    page.evaluate("pane.openCommands()")
     dialog=page.get_by_role('dialog',name='Commands and skills',exact=True)
     dialog.get_by_role('button',name='/debug-config',exact=False).wait_for()
     names=page.evaluate("Object.keys(pane.codexCommandCatalog())")
@@ -1754,7 +1818,7 @@ def test_gemini_command_picker_preserves_draft_until_send(pane, width):
       emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
     }""")
     page.get_by_role("textbox", name="Message Gemini").fill("keep this task")
-    page.get_by_role("button", name="Commands and skills", exact=True).click()
+    page.evaluate("pane.openCommands()")
     page.get_by_role("button", name="/plan task Plan work").click()
     assert page.get_by_role("textbox", name="Message Gemini").input_value() == "/plan keep this task"
     assert page.evaluate("calls") == []
@@ -1841,7 +1905,7 @@ def test_codex_skill_toggle_waits_for_confirmation_and_preserves_draft(pane, wid
     }""")
     composer = page.get_by_role('textbox', name='Message Codex').first
     composer.fill('keep this draft')
-    page.get_by_role('button', name='Commands and skills', exact=True).click()
+    page.evaluate("pane.openCommands()")
     toggle = page.get_by_role('checkbox', name='Enable skill proof')
     toggle.wait_for()
     assert page.evaluate('calls') == []
@@ -1956,7 +2020,7 @@ def test_plugin_reload_is_explicit_refreshes_commands_and_reports_native_errors(
       controls.reloadPlugins=async()=>{calls.push('plugins');return {data:[{name:'fresh'}],plugins:[{name:'one'}],error_count:2};};
       pane.commandsButton.hidden=false;
     }""")
-    page.get_by_role('button', name='Commands and skills', exact=True).click()
+    page.evaluate("pane.openCommands()")
     dialog = page.get_by_role('dialog', name='Commands and skills')
     dialog.get_by_role('button', name='/old', exact=True).wait_for()
     assert page.evaluate('calls') == []
@@ -1982,7 +2046,7 @@ def test_reload_commands_use_native_controls_without_model_input(pane, command, 
     if entry == "typed":
         page.evaluate("pane.submit()")
     else:
-        page.get_by_role('button', name='Commands and skills', exact=True).click()
+        page.evaluate("pane.openCommands()")
         assert page.evaluate('calls') == []
         page.get_by_role('dialog', name='Commands and skills').get_by_role('button', name=f'/{command}', exact=True).click()
     page.wait_for_function('calls.length===1')
@@ -2012,7 +2076,7 @@ def test_pending_command_streams_output_without_raw_event_json(pane):
     tool = page.locator('[data-item-id="pending-command"]')
     tool.locator('summary').click()
     assert 'printf hello' in tool.inner_text()
-    assert 'inProgress' in tool.inner_text()
+    assert 'Running' in tool.inner_text()
     assert tool.locator('pre').count() == 0
     page.evaluate("""() => emit({method:'item/commandExecution/outputDelta',params:{
       turnId:'t',itemId:'pending-command',delta:'hello'
@@ -2371,7 +2435,7 @@ def test_codex_skill_selection_persists_and_sends_exact_path_only_on_submit(pane
       window.seq=0;
       emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
     }""")
-    page.get_by_role("button", name="Commands and skills", exact=True).click()
+    page.evaluate("pane.openCommands()")
     page.get_by_role("button", name="$proof", exact=False).wait_for()
     page.screenshot(path=str(tmp_path / "codex-skills-mobile.png"))
     page.get_by_role("button", name="$proof", exact=False).click()
@@ -2617,7 +2681,7 @@ def test_command_picker_preserves_draft_and_displays_native_output(pane, tmp_pat
       pane.commandsButton.hidden=false;
       pane.input.value='existing draft';
     }""")
-    page.get_by_role("button", name="Commands and skills", exact=True).click()
+    page.evaluate("pane.openCommands()")
     dialog = page.get_by_role("dialog", name="Commands and skills", exact=True)
     assert dialog.get_by_role("button", name="Close commands").locator("svg").count() == 1
     assert dialog.get_by_role("button", name="/clear", exact=False).is_disabled()
@@ -2646,7 +2710,7 @@ def test_command_picker_reload_is_explicit_and_keeps_draft(pane):
       controls.reloadSkills=async()=>{calls.push('reload');return {data:[{name:'fresh'}]};};
       pane.commandsButton.hidden=false;pane.input.value='draft';
     }""")
-    page.get_by_role("button", name="Commands and skills", exact=True).click()
+    page.evaluate("pane.openCommands()")
     dialog = page.get_by_role("dialog", name="Commands and skills", exact=True)
     dialog.get_by_role("button", name="/old", exact=True).wait_for()
     assert page.evaluate("calls") == []
@@ -2690,6 +2754,7 @@ def test_codex_local_commands_use_controls_not_model_prompts(pane, command):
       pane.provider='Codex';
       for(const method of ['openFork','openReview','openMcpServers','openPermissions','openCommands','openBackgroundTasks','openFileSearch'])
         pane[method]=()=>calls.push('control');
+      pane.commandSuggestions.open=()=>calls.push('control');
       controls.compact=async()=>calls.push('control');
       for(const control of Object.values(pane.codexCommandControls()))control.hidden=false;
       pane.input.value='/'+command;pane.render();
@@ -2751,7 +2816,7 @@ def test_codex_selection_commands_focus_native_control_without_sending(pane, wid
       control.showPicker=()=>{throw Error('No transient activation');};
     }""", command)
     if from_picker:
-        page.locator('#left').get_by_role('button', name='Commands and skills', exact=True).click()
+        page.evaluate("pane.openCommands()")
         page.get_by_role('dialog', name='Commands and skills').get_by_role('button', name=f'/{command} ', exact=False).click()
     else:
         page.locator('#left').get_by_role('button', name='Send message', exact=True).click()
@@ -2900,7 +2965,7 @@ def test_session_command_picker_uses_local_action_and_keeps_draft(pane):
       controls.clearSession=async()=>calls.push('clear');controls.openCleared=async()=>{};
       pane.clearButton.hidden=false;pane.input.value='keep draft';pane.render();
     }""")
-    page.get_by_role("button", name="Commands and skills", exact=True).first.click()
+    page.evaluate("pane.openCommands()")
     page.get_by_role("dialog", name="Commands and skills").get_by_role("button", name="/clear", exact=True).click()
     page.get_by_role("dialog", name="Clear context", exact=True).wait_for()
     assert page.evaluate("calls") == []
@@ -2916,7 +2981,7 @@ def test_codex_picker_lists_local_actions_and_preserves_draft(pane):
       pane.commandsButton.hidden=false;pane.forkButton.hidden=false;
       pane.input.value='keep my draft';pane.render();
     }""")
-    page.get_by_role("button", name="Commands and skills", exact=True).first.click()
+    page.evaluate("pane.openCommands()")
     dialog = page.get_by_role("dialog", name="Commands and skills")
     assert dialog.get_by_role("button", name="/compact", exact=False).is_disabled()
     dialog.get_by_role("button", name="/fork", exact=False).click()
