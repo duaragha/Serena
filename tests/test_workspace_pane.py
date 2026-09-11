@@ -959,7 +959,7 @@ def test_codex_configuration_experiments_and_memories_are_native_confirmed_contr
       window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,...native}});window.seq=0;
       emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/debug-config';pane.render();
     }""")
-    composer=page.locator('#left textarea')
+    composer=page.locator('#left').get_by_role('textbox', name='Message Codex', exact=True)
     composer.press('Enter')
     dialog=page.get_by_role('dialog',name='Codex configuration',exact=True)
     dialog.get_by_text('Codex user settings are writable',exact=True).wait_for()
@@ -1012,7 +1012,7 @@ def test_codex_guardian_feedback_and_import_require_explicit_consent(pane, width
       window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,...native}});window.seq=0;
       emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/approve';pane.render();
     }""")
-    composer=page.locator('#left textarea')
+    composer=page.locator('#left').get_by_role('textbox', name='Message Codex', exact=True)
     composer.press('Enter')
     dialog=page.get_by_role('dialog',name='Approve denied action',exact=True)
     dialog.get_by_text('rm proof.txt',exact=True).wait_for()
