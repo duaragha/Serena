@@ -212,7 +212,7 @@ export class WorkspacePane {
     footer.insertBefore(this.mcpButton, this.stop);
     const permissions=this.button('Permission mode','shield',()=>this.openPermissions());
     this.permissionsButton=permissions;
-    permissions.hidden=!['Codex','Claude'].includes(provider) || !controls.permissions;footer.insertBefore(permissions,this.stop);
+    permissions.hidden=provider!=='Codex' || !controls.permissions;footer.insertBefore(permissions,this.stop);
     this.sessionModeButton=this.button('Session mode','sliders-horizontal',()=>this.openSessionMode());
     this.sessionModeButton.hidden=!['Codex','Gemini'].includes(provider) || !controls.sessionModes || !controls.setSessionMode;
     footer.insertBefore(this.sessionModeButton,this.stop);
@@ -1875,6 +1875,7 @@ export class WorkspacePane {
   }
 
   async openPermissions() {
+    if(this.provider!=='Codex')return;
     if(this.permissionsDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Permission mode');
     const form=node('form');const status=node('p');status.setAttribute('role','status');status.textContent='Loading...';

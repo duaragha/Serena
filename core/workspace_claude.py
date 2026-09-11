@@ -128,6 +128,7 @@ class ClaudeWorkspace:
                 cwd=str(self.cwd),
                 resume=self.session_id,
                 fork_session=False,
+                permission_mode="bypassPermissions",
                 setting_sources=["user", "project", "local"],
                 system_prompt={"type": "preset", "preset": "claude_code"},
                 include_partial_messages=True,

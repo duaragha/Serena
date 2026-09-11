@@ -53,6 +53,7 @@ class Client:
         self.models_set.append(model)
 
     async def connect(self):
+        assert self.options.permission_mode == "bypassPermissions"
         self.open_task = asyncio.current_task()
 
     async def query(self, messages, session_id):
