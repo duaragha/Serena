@@ -35,6 +35,9 @@ def browser_proof(sid, root, project, env, binary):
     class NativeOwner(CodexWorkspace):
         async def open(self):
             return await super().open(binary=binary, env=env)
+
+        async def create(self, *, checkpoint):
+            return await super().create(checkpoint=checkpoint, binary=binary, env=env)
     app = Flask(__name__, static_folder=str(repo / "ui" / "static"))
     host = install_workspace(app, root / "browser.db",
         resolve=lambda requested: {"session_id": sid, "provider": "codex", "cwd": str(project)} if requested == sid else None,
@@ -51,7 +54,7 @@ def browser_proof(sid, root, project, env, binary):
         def owners():
             return [owner.rpc.process.pid for owner, _ in host._sessions.values()
                     if owner.rpc.process and owner.rpc.process.returncode is None]
-        browser_roundtrip(f"http://127.0.0.1:{server.server_port}", sid, owners, "codex-native", verify_disconnect=True)
+        browser_roundtrip(f"http://127.0.0.1:{server.server_port}", sid, owners, "codex-native", verify_disconnect=True, verify_clear=True)
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -59,7 +62,7 @@ def browser_proof(sid, root, project, env, binary):
         host.shutdown()
 
 
-def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disconnect=False):
+def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disconnect=False, verify_clear=False):
     from playwright.sync_api import expect, sync_playwright
 
     repo = Path(__file__).resolve().parents[1]
@@ -210,6 +213,38 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                         page.get_by_text(token, exact=True).wait_for()
                         assert page.url.endswith('/workspace/'+sid)
                         print(f"PASS: {prefix} {label} /exit cancellation preserved owner; confirmed /quit reaped owner; exact session resumed with persisted native command output")
+                    if verify_clear:
+                        composer = page.get_by_role('textbox', name='Message Codex', exact=True)
+                        composer.fill('/clear')
+                        composer.press('Enter')
+                        clear = page.get_by_role('dialog', name='Clear context', exact=True)
+                        clear.get_by_role('button', name='Confirm clear context', exact=True).click()
+                        clear.get_by_text('Context cleared', exact=True).wait_for()
+                        target = clear.locator('code').inner_text()
+                        assert target != sid and len(owners()) == 1 and pid not in owners()
+                        fresh_pid = owners()[0]
+                        page.screenshot(path=str(artifacts / f'{prefix}-clear-{label}.png'))
+                        clear.get_by_role('button', name='Open new conversation', exact=True).click()
+                        page.wait_for_url(f'{base}/workspace/{target}')
+                        expect(page.locator('#workspace-connect')).to_be_hidden()
+                        expect(page.locator('.aw-state')).to_have_text('ready')
+                        assert owners() == [fresh_pid]
+                        assert page.get_by_text(token, exact=True).count() == 0
+                        page.get_by_role('textbox', name='Message Codex', exact=True).fill('/quit')
+                        page.get_by_role('textbox', name='Message Codex', exact=True).press('Enter')
+                        page.get_by_role('dialog', name='Disconnect session', exact=True).get_by_role('button', name='Disconnect', exact=True).click()
+                        page.get_by_role('dialog', name='Disconnect session', exact=True).wait_for(state='hidden')
+                        assert not owners()
+                        page.goto(f'{base}/workspace/{sid}')
+                        page.get_by_role('button', name='Resume original conversation', exact=True).click()
+                        expect(page.locator('.aw-state')).to_have_text(re.compile(r'^(ready|completed)$'))
+                        assert len(owners()) == 1
+                        pid = owners()[0]
+                        summary = page.locator('summary').filter(has_text=token).first
+                        if not summary.evaluate('el=>el.parentElement.open'):
+                            summary.click()
+                        page.get_by_text(token, exact=True).wait_for()
+                        print(f'PASS: {prefix} {label} /clear opened fresh exact native session; old writer reaped and old history resumed independently')
                     assert not errors, errors
                     page.close()
                     assert owners() == [pid], "Closing page cancelled owner"

@@ -5,6 +5,29 @@ that a command's full behavior works. Gemini is deferred.
 
 ## Codex Clear Context (2026-09-10)
 
+Follow-up source browser verification now covers the full navigation round-trip:
+type `/clear`, confirm, inspect the exact new ID, open its real pending native
+session, verify the source output is absent, explicitly disconnect it, then
+resume the original conversation and inspect its persisted output. Both 1440px
+desktop and 390px mobile passed, and screenshots were visually inspected.
+The initial browser proof exited 1 because its selector expected Resume session
+instead of the existing Resume original conversation control; the verifier was
+corrected, without changing production navigation.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_clear_requires_confirmation_and_recovers_exact_target_without_repeating tests/test_workspace_host.py::test_codex_clear_releases_writer_before_durable_creation -q --tb=short
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-codex-history.py
+```
+
+All separately executed, exit 0. Tests: 11 passed in 6.62s. Native browser proof
+also preserved 50+1 history pagination, native output/exit 0, receipt deduplication,
+exact job reservation, file mentions, skill configuration, `/exit` cancellation,
+`/quit` cleanup, and non-cancelling page close. Visible refresh: 58ms/61ms.
+No browser console/network errors, credentials or inference; owned processes
+closed and temporary project unchanged. Ruff: all checks passed. This adds
+source HTTP/browser evidence, not packaged Electron or authenticated evidence.
+
 Codex now exposes Clear context and bare `/clear` using the existing confirmation
 and exact-target recovery dialog. History and the original draft are retained;
 the new chat is opened only on the user's explicit action. Named `/clear title`
