@@ -3,6 +3,43 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Explicit Restore Outcome Recovery (2026-09-10)
+
+The restore dialog now offers Check restore outcome after an error. This uses
+the same saved request ID on an authenticated reconciliation endpoint. The host
+requires an existing exact restoration claim and repeats the ownership/work
+guards, then inspects native identity, project, transcript location and unloaded
+thread state under the shared lease. Inspection sends no unarchive/resume/turn
+request. Confirmed active state completes the original success receipt; confirmed
+archived state completes an explicitly retryable failure. Only that confirmed
+failure clears the browser's pending request for another explicit restore attempt.
+Unknown identity, ownership or cleanup leaves the claim blocked, not guessed.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_archive.py tests/test_workspace_archive_host.py -q --tb=short
+node --test tests/workspace-connection.test.mjs
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_archived_picker_restores_only_on_confirmation_and_opens_separately tests/test_workspace_pane.py::test_saved_session_picker_does_not_submit_or_stop_running_work -q --tb=short
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py --browser-width 390 --lose-restore-ack
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py --browser-width 1600 --lose-restore-ack
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_archive.py core/workspace_host.py ui/workspace_web.py tests/test_workspace_archive.py tests/test_workspace_archive_host.py scripts/verify-workspace-archive-contract.py
+node --check ui/static/workspace-pane.mjs
+node --check ui/static/workspace-page.mjs
+```
+
+All commands separately executed, exit 0. Final backend tests: 42 passed in
+2.00s; 58 transport tests; browser regression tests: 6 passed in 9.29s; lint and
+syntax checks passed. Both real browser/native proofs inject a lost acknowledgement
+after the actual native restore, recover through the visible Check action and
+assert exactly one `thread/unarchive` overall. Four disposable processes reaped
+per proof (the fourth is read-only inspection), no coding owner, credentials,
+inference, browser errors or user data changes. Receipt replay after restart also
+passes. Still-archived recovery is covered by unit tests, not yet native proof.
+
+Remaining recovery gap: discovering a pending restore after catalog registration
+succeeded but the final receipt was lost and the view was subsequently reloaded.
+That chat may already be absent from the Archived list; a separate pending-restore
+entry point is still needed. Packaged checks and broader delivery gates remain.
+
 ## Browser-To-Native Restore Proof (2026-09-10)
 
 The archive verifier now optionally starts the real source Flask workspace and

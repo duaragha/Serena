@@ -544,20 +544,22 @@ class WorkspaceHost:
                 # creation or its acknowledgement was lost. Never auto-replay it.
                 return {"ok": False, "pending": True, "error": str(error)}
 
-    def restore_archive(self, sid, request_id, *, confirmed=False, timeout=35):
-        if (confirmed is not True or not isinstance(sid, str) or str(UUID(sid)) != sid
+    def restore_archive(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
+        if (type(reconcile) is not bool or confirmed is not True or not isinstance(sid, str) or str(UUID(sid)) != sid
                 or not isinstance(request_id, str) or str(UUID(request_id)) != request_id):
             raise ValueError('Explicit confirmation and exact session/request UUIDs are required')
-        return self._dispatch(self._restore_archive(sid, request_id), timeout)
+        return self._dispatch(self._restore_archive(sid, request_id, reconcile=reconcile), timeout)
 
-    async def _restore_archive(self, sid, request_id):
+    async def _restore_archive(self, sid, request_id, *, reconcile=False):
         from core.workspace_archive import restore_codex_archive
 
         payload = {'action': 'restore_archive', 'payload': {'confirmed': True}}
         async with self._locks.setdefault(sid, asyncio.Lock()):
             found, receipt = await asyncio.to_thread(self.journal.command_receipt, sid, request_id, payload)
-            if found:
+            if found and (receipt is not None or not reconcile):
                 return receipt or {'ok': False, 'uncertain': True, 'error': 'Archive restoration is unconfirmed; it will not be repeated'}
+            if reconcile and not found:
+                raise ValueError('No matching archive restoration receipt exists')
             if self._work_reservations.get(sid) or self._bridge_queues.get(sid):
                 raise ValueError('Session is reserved by background work')
             entry = self._sessions.get(sid)
@@ -571,15 +573,18 @@ class WorkspaceHost:
             target = await asyncio.to_thread(self.resolve, sid)
             if target.get('session_id') != sid or target.get('provider') != 'codex':
                 raise ValueError('Exact Codex session is required for archive restoration')
-            claimed, receipt = await asyncio.to_thread(self.journal.claim_archive_restore, sid, request_id)
-            if not claimed:
-                return receipt or {'ok': False, 'uncertain': True, 'error': 'Archive restoration is unconfirmed; it will not be repeated'}
+            if not reconcile:
+                claimed, receipt = await asyncio.to_thread(self.journal.claim_archive_restore, sid, request_id)
+                if not claimed:
+                    return receipt or {'ok': False, 'uncertain': True, 'error': 'Archive restoration is unconfirmed; it will not be repeated'}
             try:
-                restored = await restore_codex_archive(sid, target['cwd'], confirmed=True)
+                restored = await restore_codex_archive(sid, target['cwd'], confirmed=True, **({'inspect_only': True} if reconcile else {}))
                 catalog = await self._register_created_fork(restored)
                 if not isinstance(catalog, dict) or catalog.get('session_id') != sid or catalog.get('indexed') is not True:
                     raise ValueError('Restored session catalog registration was not confirmed')
-                receipt = {'ok': True, 'result': {**restored, 'catalog': catalog}}
+                receipt = {'ok': not restored['archived'], 'result': {**restored, 'catalog': catalog}}
+                if restored['archived']:
+                    receipt.update(retryable=True, error='Session is still archived; restoration was not applied. A new explicit attempt is available.')
                 await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
                 return receipt
             except Exception as error:

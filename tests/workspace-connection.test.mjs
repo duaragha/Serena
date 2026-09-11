@@ -43,6 +43,27 @@ test('archive restore refuses ambiguous identities and keeps the pending receipt
   }
 });
 
+test('archive reconciliation only checks an existing request and releases confirmed unapplied receipts',async()=>{
+  const saved=storage(),calls=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},
+    fetcher:async(url,request)=>{
+      calls.push([url,JSON.parse(request.body)]);
+      return response(url.endsWith('/reconcile-archive')
+        ? {ok:false,retryable:true,error:'Still archived',result:{session_id:'exact',archived:true}}
+        : {ok:false,uncertain:true,error:'Unconfirmed'});
+    }});
+  await assert.rejects(conn.restoreArchive({reconcile:true}),/No pending/);
+  assert.deepEqual(calls,[]);
+  await assert.rejects(conn.restoreArchive(),/Unconfirmed/);
+  await assert.rejects(conn.restoreArchive({reconcile:true}),/Still archived/);
+  assert.deepEqual(calls[0][1],calls[1][1]);
+  assert.equal(calls[1][0],'/api/workspace/exact/reconcile-archive');
+  assert.deepEqual(JSON.parse(saved.getItem(conn.key)),{});
+  await assert.rejects(conn.restoreArchive(),/Unconfirmed/);
+  assert.notEqual(calls[0][1].request_id,calls[2][1].request_id);
+  conn.dispose();
+});
+
 test('failed attach exposes recovery only for the exact requested session',async()=>{
   for(const sid of ['exact','foreign']){
     const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},

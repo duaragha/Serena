@@ -27,7 +27,7 @@ from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
 
 
-def browser_restore(root, sid, target, width):
+def browser_restore(root, sid, target, width, lose_ack=False):
     from playwright.sync_api import expect, sync_playwright
     from werkzeug.serving import WSGIRequestHandler, make_server
 
@@ -73,6 +73,12 @@ def browser_restore(root, sid, target, width):
                 response = received.value
                 result = response.json()
                 request_id = response.request.post_data_json['request_id']
+                if lose_ack:
+                    assert result.get('uncertain') and not result['ok'], result
+                    with page.expect_response(lambda response: response.url.endswith('/reconcile-archive')) as checked:
+                        dialog.get_by_role('button', name='Check restore outcome', exact=True).click()
+                    result = checked.value.json()
+                    assert checked.value.request.post_data_json['request_id'] == request_id
                 assert result['ok'], result
                 expect(dialog.get_by_role('status')).to_have_text('Conversation restored')
                 expect(saved.locator('.aw-command')).to_have_count(0)
@@ -98,7 +104,7 @@ def browser_restore(root, sid, target, width):
         assert not thread.is_alive()
 
 
-async def main(browser_width=None):
+async def main(browser_width=None, lose_ack=False):
     with tempfile.TemporaryDirectory(prefix="workspace-archive-contract-") as directory, ExitStack() as patches:
         root = Path(directory)
         home = root / "codex"
@@ -178,14 +184,24 @@ async def main(browser_width=None):
             assert loaded["data"] == [], loaded
             await rpc.close()
 
+            mutations = []
+
             class TrackedRpc(WorkspaceRpc):
                 async def start(self, *args, **kwargs):
                     await super().start(*args, **kwargs)
                     processes.append(self.process)
 
-            async def isolated_restore(identity, cwd, *, confirmed):
-                return await restore_codex_archive(identity, cwd, confirmed=confirmed, binary=binary, env=env,
+                async def request(self, method, params, **kwargs):
+                    if method == 'thread/unarchive':
+                        mutations.append(params)
+                    return await super().request(method, params, **kwargs)
+
+            async def isolated_restore(identity, cwd, *, confirmed, inspect_only=False):
+                restored = await restore_codex_archive(identity, cwd, confirmed=confirmed, binary=binary, env=env, inspect_only=inspect_only,
                     rpc_factory=TrackedRpc, lease_factory=lambda identity: SessionLease(identity, directory=root / 'leases'))
+                if lose_ack and not inspect_only:
+                    raise RuntimeError('Proof-injected lost acknowledgement after real native restoration')
+                return restored
 
             journal = WorkspaceJournal(root / 'workspace.db')
             host = WorkspaceHost(journal=journal, resolve=lambda identity: target if identity == sid else None,
@@ -194,7 +210,7 @@ async def main(browser_width=None):
             with patch('core.workspace_archive.restore_codex_archive', isolated_restore):
                 try:
                     if browser_width:
-                        result, request_id = await asyncio.to_thread(browser_restore, root, sid, target, browser_width)
+                        result, request_id = await asyncio.to_thread(browser_restore, root, sid, target, browser_width, lose_ack)
                     else:
                         result = await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True)
                     assert result['ok'], result
@@ -210,6 +226,7 @@ async def main(browser_width=None):
                 finally:
                     await asyncio.to_thread(recovered.shutdown)
             restored = result['result']
+            assert mutations == [{'threadId': sid}], mutations
             assert restored['session_id'] == sid and restored['archived'] is False
             assert not archived[0].exists()
             assert len(list((home / "sessions").rglob(f"*{sid}.jsonl"))) == 1
@@ -235,4 +252,8 @@ async def main(browser_width=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--browser-width', type=int, choices=(390, 1600))
-    asyncio.run(main(parser.parse_args().browser_width))
+    parser.add_argument('--lose-restore-ack', action='store_true')
+    args = parser.parse_args()
+    if args.lose_restore_ack and not args.browser_width:
+        parser.error('--lose-restore-ack requires --browser-width')
+    asyncio.run(main(args.browser_width, args.lose_restore_ack))

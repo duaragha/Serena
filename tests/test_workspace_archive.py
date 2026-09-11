@@ -8,7 +8,8 @@ from core.workspace_archive import restore_codex_archive
 
 
 @pytest.mark.parametrize('case', ['ok', 'unconfirmed', 'owned', 'factory', 'foreign', 'wrong-project', 'not-archived', 'lost', 'wrong-result', 'loaded', 'cleanup'])
-def test_restore_is_exact_exclusive_and_never_resumes(tmp_path, case):
+@pytest.mark.parametrize('inspect_only', [False, True])
+def test_restore_is_exact_exclusive_and_never_resumes(tmp_path, case, inspect_only):
     sid = str(uuid4())
     calls = []
     home = tmp_path / 'codex'
@@ -60,16 +61,16 @@ def test_restore_is_exact_exclusive_and_never_resumes(tmp_path, case):
 
     async def run():
         args = dict(confirmed=case != 'unconfirmed', binary='codex', env={'CODEX_HOME': str(home), 'OPENAI_API_KEY': 'never-forward'},
-                    rpc_factory=Rpc, lease_factory=lease_factory)
-        if case == 'ok':
+                    rpc_factory=Rpc, lease_factory=lease_factory, inspect_only=inspect_only)
+        if case == 'ok' or (inspect_only and case in {'not-archived', 'lost', 'wrong-result'}):
             result = await restore_codex_archive(sid, tmp_path, **args)
-            assert result == {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path), 'archived': False}
+            assert result == {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path), 'archived': inspect_only and case != 'not-archived'}
         else:
             with pytest.raises((ValueError, RuntimeError, TimeoutError)):
                 await restore_codex_archive(sid, tmp_path, **args)
         methods = [method for method, _ in calls]
         assert not {'thread/resume', 'thread/start', 'turn/start'} & set(methods)
-        assert methods.count('thread/unarchive') == (0 if case in {'unconfirmed', 'owned', 'factory', 'foreign', 'wrong-project', 'not-archived'} else 1)
+        assert methods.count('thread/unarchive') == (0 if inspect_only or case in {'unconfirmed', 'owned', 'factory', 'foreign', 'wrong-project', 'not-archived'} else 1)
         if case == 'unconfirmed':
             assert calls == []
         elif case == 'owned':

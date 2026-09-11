@@ -584,18 +584,20 @@ export class WorkspacePane {
       try{await this.controls.openSession(session.session_id);dialog.close();this.sessionsDialog?.close();}
       catch(error){status.textContent=error.message;}
     });open.hidden=true;
-    const confirm=this.button('Confirm restore conversation','archive-restore',async()=>{
+    const run=async(reconcile=false)=>{
       if(busy)return;
-      busy=true;confirm.disabled=true;status.textContent='Restoring conversation...';
+      busy=true;confirm.disabled=true;check.disabled=true;status.textContent=reconcile?'Checking native archive state...':'Restoring conversation...';
       try{
-        const restored=await this.controls.restoreArchive(session.session_id);
+        const restored=await this.controls.restoreArchive(session.session_id,reconcile);
         if(restored?.session_id!==session.session_id || restored?.archived!==false)throw Error('Restored session identity is unconfirmed');
-        if(dialog.open && !this.disposed){status.textContent='Conversation restored';confirm.hidden=true;open.hidden=false;}
+        if(dialog.open && !this.disposed){status.textContent='Conversation restored';confirm.hidden=true;check.hidden=true;open.hidden=false;}
         if(this.sessionsDialog?.open && !this.disposed)await refresh();
-      }catch(error){if(dialog.open && !this.disposed){status.textContent=error.message;confirm.disabled=false;}}
-      finally{busy=false;}
-    });
-    dialog.append(node('h3','','Restore archived conversation'),close,status,identity,confirm,open);
+      }catch(error){if(dialog.open && !this.disposed){status.textContent=error.message;confirm.disabled=false;check.hidden=false;}}
+      finally{busy=false;check.disabled=false;}
+    };
+    const confirm=this.button('Confirm restore conversation','archive-restore',()=>run());
+    const check=this.button('Check restore outcome','refresh-cw',()=>run(true));check.hidden=true;
+    dialog.append(node('h3','','Restore archived conversation'),close,status,identity,confirm,check,open);
     dialog.addEventListener('close',()=>dialog.remove());this.archiveRestoreDialog=dialog;
     this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
   }

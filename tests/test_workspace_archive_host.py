@@ -91,13 +91,14 @@ def test_restore_rejects_before_native_mutation(tmp_path, monkeypatch, guard):
         host.shutdown()
 
 
-def test_restore_route_requires_auth_and_exact_body():
+@pytest.mark.parametrize('reconcile', [False, True])
+def test_restore_route_requires_auth_and_exact_body(reconcile):
     calls = []
     app = Flask(__name__)
     host = SimpleNamespace(restore_archive=lambda *args, **kwargs: calls.append((args, kwargs)) or {'ok': True})
     app.register_blueprint(workspace_blueprint(host, token='s' * 40))
     client = app.test_client()
-    path = '/api/workspace/exact/restore-archive'
+    path = '/api/workspace/exact/' + ('reconcile-archive' if reconcile else 'restore-archive')
     payload = {'request_id': 'request', 'confirmed': True}
     assert client.post(path, json=payload).status_code == 403
     headers = {'X-Serena-Workspace-Token': 's' * 40}
@@ -105,7 +106,7 @@ def test_restore_route_requires_auth_and_exact_body():
     assert client.post(path, json=payload, headers={**headers, 'Origin': 'https://other.test'}).status_code == 403
     assert not calls
     assert client.post(path, json=payload, headers=headers).json == {'ok': True}
-    assert calls == [(('exact', 'request'), {'confirmed': True})]
+    assert calls == [(('exact', 'request'), {'confirmed': True, **({'reconcile': True} if reconcile else {})})]
 
 
 def test_distinct_restore_requests_cannot_bypass_pending_claim(tmp_path):
@@ -134,5 +135,41 @@ def test_unconfirmed_prior_work_prevents_restore(tmp_path, monkeypatch, pending)
         with pytest.raises(ValueError, match='unconfirmed'):
             host.restore_archive(sid, request, confirmed=True)
         assert journal.command_record(sid, request) is None
+    finally:
+        host.shutdown()
+
+
+@pytest.mark.parametrize('archived', [False, True])
+@pytest.mark.parametrize('fail_inspection', [False, True])
+def test_reconcile_only_checks_native_state_and_finishes_exact_pending_receipt(tmp_path, monkeypatch, archived, fail_inspection):
+    sid, request = str(uuid4()), str(uuid4())
+    journal = WorkspaceJournal(tmp_path / 'journal.db')
+    journal.claim_archive_restore(sid, request)
+    calls = []
+
+    async def inspect(identity, cwd, *, confirmed, inspect_only):
+        assert identity == sid and confirmed and inspect_only
+        calls.append(identity)
+        if fail_inspection:
+            raise RuntimeError('ownership unconfirmed')
+        return {'session_id': sid, 'provider': 'codex', 'cwd': cwd, 'archived': archived}
+
+    monkeypatch.setattr('core.workspace_archive.restore_codex_archive', inspect)
+    host = WorkspaceHost(journal=journal, resolve=lambda identity: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={}, register_fork=lambda _: None)
+    try:
+        with pytest.raises(ValueError, match='No matching'):
+            host.restore_archive(sid, str(uuid4()), confirmed=True, reconcile=True)
+        assert not calls
+        result = host.restore_archive(sid, request, confirmed=True, reconcile=True)
+        assert len(calls) == 1 and not host._sessions
+        assert journal.has_pending_archive_restore(sid) == fail_inspection
+        if fail_inspection:
+            assert result['uncertain'] and not result['ok']
+        else:
+            assert result['ok'] == (not archived)
+            assert result.get('retryable', False) == archived
+            assert host.restore_archive(sid, request, confirmed=True, reconcile=True) == result
+            assert len(calls) == 1
     finally:
         host.shutdown()
