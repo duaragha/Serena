@@ -349,6 +349,29 @@ class WorkspaceJournal:
                 "AND request_id LIKE 'work:%' AND result IS NULL LIMIT 1", (session_id,)
             ).fetchone() is not None
 
+    def has_pending_archive_restore(self, session_id: str) -> bool:
+        with closing(self._connect()) as conn:
+            return conn.execute(
+                "SELECT 1 FROM workspace_commands WHERE session_id=? AND result IS NULL "
+                "AND json_extract(payload, '$.action')='restore_archive' LIMIT 1", (session_id,)
+            ).fetchone() is not None
+
+    def claim_archive_restore(self, session_id: str, request_id: str):
+        payload = json.dumps({'action': 'restore_archive', 'payload': {'confirmed': True}}, sort_keys=True)
+        with closing(self._connect()) as conn, conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT payload,result FROM workspace_commands WHERE session_id=? AND request_id=?',
+                               (session_id, request_id)).fetchone()
+            if row:
+                if row[0] != payload:
+                    raise ValueError('Request ID was already used with different content')
+                return False, json.loads(row[1]) if row[1] is not None else None
+            if conn.execute("SELECT 1 FROM workspace_commands WHERE session_id=? AND result IS NULL "
+                            "AND json_extract(payload, '$.action')='restore_archive' LIMIT 1", (session_id,)).fetchone():
+                raise ValueError('Previous archive restoration is unconfirmed; it will not be repeated')
+            conn.execute('INSERT INTO workspace_commands VALUES (?, ?, ?, NULL)', (session_id, request_id, payload))
+            return True, None
+
     def recover_completed_work(self, session_id: str) -> int:
         """Repair lost receipts only from exact acceptance and terminal evidence."""
         recovered = 0

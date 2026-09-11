@@ -101,6 +101,13 @@ def workspace_blueprint(host, *, token: str):
         return jsonify(host.create(data["request_id"], data["provider"], data["cwd"], confirmed=data["confirmed"],
                                    **({"seed": data["seed"]} if "seed" in data else {})))
 
+    @bp.post('/<sid>/restore-archive')
+    def restore_archive(sid):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) != {'request_id', 'confirmed'}:
+            raise ValueError('Expected request_id and explicit confirmation')
+        return jsonify(host.restore_archive(sid, data['request_id'], confirmed=data['confirmed']))
+
     @bp.post("/<sid>/uploads")
     def upload(sid):
         from core.workspace_uploads import MAX_UPLOAD_BYTES

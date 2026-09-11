@@ -544,8 +544,51 @@ class WorkspaceHost:
                 # creation or its acknowledgement was lost. Never auto-replay it.
                 return {"ok": False, "pending": True, "error": str(error)}
 
+    def restore_archive(self, sid, request_id, *, confirmed=False, timeout=35):
+        if (confirmed is not True or not isinstance(sid, str) or str(UUID(sid)) != sid
+                or not isinstance(request_id, str) or str(UUID(request_id)) != request_id):
+            raise ValueError('Explicit confirmation and exact session/request UUIDs are required')
+        return self._dispatch(self._restore_archive(sid, request_id), timeout)
+
+    async def _restore_archive(self, sid, request_id):
+        from core.workspace_archive import restore_codex_archive
+
+        payload = {'action': 'restore_archive', 'payload': {'confirmed': True}}
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            found, receipt = await asyncio.to_thread(self.journal.command_receipt, sid, request_id, payload)
+            if found:
+                return receipt or {'ok': False, 'uncertain': True, 'error': 'Archive restoration is unconfirmed; it will not be repeated'}
+            if self._work_reservations.get(sid) or self._bridge_queues.get(sid):
+                raise ValueError('Session is reserved by background work')
+            entry = self._sessions.get(sid)
+            if entry and (entry[0].state != 'closed' or not getattr(entry[0], 'can_retry_attachment', lambda: False)()):
+                raise ValueError('Session still has a runtime owner')
+            if (await asyncio.to_thread(self.journal.has_pending_work, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_clear, sid)):
+                raise ValueError('Session has unconfirmed background work or a clear handoff')
+            if self.register_fork is None:
+                raise ValueError('Native session catalog is unavailable')
+            target = await asyncio.to_thread(self.resolve, sid)
+            if target.get('session_id') != sid or target.get('provider') != 'codex':
+                raise ValueError('Exact Codex session is required for archive restoration')
+            claimed, receipt = await asyncio.to_thread(self.journal.claim_archive_restore, sid, request_id)
+            if not claimed:
+                return receipt or {'ok': False, 'uncertain': True, 'error': 'Archive restoration is unconfirmed; it will not be repeated'}
+            try:
+                restored = await restore_codex_archive(sid, target['cwd'], confirmed=True)
+                catalog = await self._register_created_fork(restored)
+                if not isinstance(catalog, dict) or catalog.get('session_id') != sid or catalog.get('indexed') is not True:
+                    raise ValueError('Restored session catalog registration was not confirmed')
+                receipt = {'ok': True, 'result': {**restored, 'catalog': catalog}}
+                await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                return receipt
+            except Exception as error:
+                return {'ok': False, 'uncertain': True, 'error': str(error)}
+
     async def _attach(self, sid):
         async with self._locks.setdefault(sid, asyncio.Lock()):
+            if await asyncio.to_thread(self.journal.has_pending_archive_restore, sid):
+                raise ValueError('Archive restoration is unconfirmed; attachment is unavailable')
             if self._work_reservations.get(sid):
                 return self._status(sid)
             if sid in self._sessions:

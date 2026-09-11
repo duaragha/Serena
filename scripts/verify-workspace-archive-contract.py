@@ -18,6 +18,8 @@ from core import indexer, metadata
 from core.workspace_archive import restore_codex_archive
 from core.workspace_catalog import list_saved_sessions, register_fork
 from core.workspace_codex import CodexWorkspace
+from core.workspace_host import WorkspaceHost
+from core.workspace_journal import WorkspaceJournal
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
@@ -108,8 +110,30 @@ async def main():
                     await super().start(*args, **kwargs)
                     processes.append(self.process)
 
-            restored = await restore_codex_archive(sid, project, confirmed=True, binary=binary, env=env,
-                rpc_factory=TrackedRpc, lease_factory=lambda identity: SessionLease(identity, directory=root / 'leases'))
+            async def isolated_restore(identity, cwd, *, confirmed):
+                return await restore_codex_archive(identity, cwd, confirmed=confirmed, binary=binary, env=env,
+                    rpc_factory=TrackedRpc, lease_factory=lambda identity: SessionLease(identity, directory=root / 'leases'))
+
+            journal = WorkspaceJournal(root / 'workspace.db')
+            host = WorkspaceHost(journal=journal, resolve=lambda identity: target if identity == sid else None,
+                                 factories={}, register_fork=register_fork)
+            request_id = str(uuid4())
+            with patch('core.workspace_archive.restore_codex_archive', isolated_restore):
+                try:
+                    result = await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True)
+                    assert result['ok'], result
+                    assert await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True) == result
+                    assert not host._sessions
+                    assert not journal.has_pending_archive_restore(sid)
+                finally:
+                    await asyncio.to_thread(host.shutdown)
+                recovered = WorkspaceHost(journal=WorkspaceJournal(journal.path), resolve=lambda _: None, factories={})
+                try:
+                    assert await asyncio.to_thread(recovered.restore_archive, sid, request_id, confirmed=True) == result
+                    assert not recovered._sessions
+                finally:
+                    await asyncio.to_thread(recovered.shutdown)
+            restored = result['result']
             assert restored['session_id'] == sid and restored['archived'] is False
             assert not archived[0].exists()
             assert len(list((home / "sessions").rglob(f"*{sid}.jsonl"))) == 1
@@ -128,6 +152,7 @@ async def main():
                           "inference": False, "archiveNotificationConfirmed": True, "restoreDoesNotResume": True}))
         print('PASS: real archive/restore reindexed exact session; custom title, done and group metadata unchanged')
         print('PASS: authenticated catalog route separates real active/archive rows without a runtime host')
+        print('PASS: durable host restore replays its receipt across restart without another native process')
     print("PASS: disposable profile removed; no user sessions or project files changed")
 
 

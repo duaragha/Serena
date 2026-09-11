@@ -3,6 +3,39 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Durable Archive Restore Control (2026-09-10)
+
+`WorkspaceHost.restore_archive` and the authenticated `POST /api/workspace/<sid>/restore-archive`
+route now require explicit confirmation and exact session/request UUIDs. Resolution
+uses the host's existing admission checks, not a caller-supplied project. Runtime
+owners, job reservations, queued bridge work and unconfirmed work/clear operations
+block restoration. The native operation does not attach a coding owner.
+
+The journal atomically claims a restoration before native mutation, allowing only
+one outstanding restore per session even with different request IDs. Success is
+recorded only after native verification and catalog registration. Repeated requests
+and a restarted host return the saved result without launching anything. Lost
+native acknowledgements, index failures and receipt-write failures remain explicitly
+unconfirmed: neither another request ID nor attachment bypasses that state.
+Explicit reconciliation of these uncertain outcomes and the picker controls are
+still pending. No release, installed-app change or automatic terminal launch.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_archive_host.py tests/test_workspace_archive.py tests/test_workspace_catalog.py -q --tb=short
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_journal.py -q --tb=short
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py ui/workspace_web.py tests/test_workspace_archive_host.py scripts/verify-workspace-archive-contract.py
+```
+
+Commands ran separately, all final exits 0: 62 focused tests in 2.02s; 172
+host/journal regressions in 33.88s; Ruff passed. Real unsigned native restoration
+now goes through the production host, verifies catalog state, repeats its request
+and replays the receipt after host restart. Still exactly three disposable native
+processes, all reaped; no coding owner, credentials, inference or user data changes.
+The initial live run exited 1 because the new host expected a receipt directly
+from `register_fork`, which normally returns no value. Fixed by reusing the existing
+`_register_created_fork` adapter; the subsequent live run exited 0.
+
 ## Authenticated Archive Catalog Endpoint (2026-09-10)
 
 The saved-session endpoint now accepts exactly one `archived=true` or
