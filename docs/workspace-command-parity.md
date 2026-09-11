@@ -3,6 +3,42 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Native Archive Contract Research (2026-09-10)
+
+Archive is still unimplemented in the rich pane. The disposable native probe
+`scripts/verify-workspace-archive-contract.py` now establishes the runtime
+contract, rather than assuming archive is a done toggle:
+
+- A real persisted print-only thread produces `thread/archived` for its exact ID
+  after `thread/archive` returns an empty success object.
+- Its transcript moves from `sessions` to `archived_sessions`; content remains.
+- A separate unsigned app-server can read archived turns without resuming.
+- `thread/unarchive` restores the same ID and file. `thread/loaded/list` stays
+  empty afterward: restoration does not start a writer.
+
+```sh
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-archive-contract.py
+```
+
+Both separately executed, exit 0. Native notification, transcript movement,
+preserved history, exact restore and no loaded writer confirmed. Two processes
+reaped, disposable profile removed, no credentials/inference or user data writes.
+Ruff: all checks passed.
+
+Current integration constraints, confirmed by reading the live source:
+`core/codex_scanner.py` excludes archived sessions; `register_fork` in
+`core/workspace_catalog.py` can locate their moved transcripts, but
+`list_saved_sessions` has no archive filter. `core/indexer.py::toggle_done`
+sets completion metadata, not native archive state. Therefore an archive button
+must not merely invoke the native method or toggle done. It needs explicit
+archive/restore catalog state, retained linked-session identities, confirmed
+idle ownership, a durable mutation receipt and view refresh. Native archive
+also affects spawned descendants according to the
+[official app-server contract](https://learn.chatgpt.com/docs/app-server)
+(accessed 2026-09-10), so descendant ownership must be checked before exposing
+the mutation. This probe covers a root without descendants, not that final gate.
+
 ## Codex Clear Context (2026-09-10)
 
 Follow-up source browser verification now covers the full navigation round-trip:
