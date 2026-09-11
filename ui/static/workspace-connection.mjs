@@ -1,10 +1,12 @@
 /** Browser transport for a persistent owner. Disposal never closes the owner. */
 export class WorkspaceConnection {
-  constructor({sessionId, token, receive, error, runtime = () => {}, fetcher = fetch, storage = sessionStorage}) {
+  constructor({sessionId, token, receive, error, runtime = () => {}, replaying = () => {}, fetcher = fetch, storage = sessionStorage}) {
     this.sessionId = sessionId;
     this.token = token;
     this.receive = receive;
     this.runtime = runtime;
+    this.replaying = replaying;
+    this.initialReplayComplete = false;
     this.error = error;
     this.fetcher = fetcher;
     this.storage = storage;
@@ -102,7 +104,9 @@ export class WorkspaceConnection {
     clearTimeout(this.timer);
     this.polling = true;
     let failed = false;
+    const initialReplay = !this.initialReplayComplete;
     try {
+      if (initialReplay) this.replaying(true);
       let page;
       do {
         page = await this.request(`/events?after=${this.cursor}`);
@@ -117,12 +121,14 @@ export class WorkspaceConnection {
         }
       } while (page.has_more && !this.stopped);
       if(!this.stopped)this.runtime(page.runtime ?? null);
+      if(!this.stopped)this.initialReplayComplete = true;
     } catch (error) {
       failed = true;
       if (required) throw error;
       if (!this.stopped) this.error(error);
     } finally {
       this.polling = false;
+      if (initialReplay) this.replaying(false);
       if (!this.stopped && !(required && failed)) this.timer = setTimeout(() => this.poll(), this.visible ? 250 : 2000);
     }
   }

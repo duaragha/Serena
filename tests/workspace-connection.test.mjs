@@ -11,6 +11,35 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('initial replay brackets all pages once and leaves live polling incremental', async () => {
+  const seen=[];
+  let page=0;
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),error:()=>{},
+    replaying:active=>seen.push(active),receive:e=>seen.push(e.sequence),
+    fetcher:async()=>response({events:[{sequence:++page}],has_more:page<3})});
+  try {
+    await conn.poll({required:true});
+    assert.deepEqual(seen,[true,1,2,3,false]);
+    await conn.poll({required:true});
+    assert.deepEqual(seen,[true,1,2,3,false,4]);
+  } finally {conn.dispose();}
+});
+
+test('failed initial replay releases the view and retries from the accepted cursor', async () => {
+  const seen=[];
+  let calls=0;
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),error:()=>{},
+    replaying:active=>seen.push(active),receive:e=>seen.push(e.sequence),
+    fetcher:async()=>{if(++calls===2)throw Error('offline');return response({events:[{sequence:calls===1?1:2}],has_more:calls===1});}});
+  try {
+    await assert.rejects(conn.poll({required:true}),/offline/);
+    assert.deepEqual(seen,[true,1,false]);
+    assert.equal(conn.cursor,1);
+    await conn.poll({required:true});
+    assert.deepEqual(seen,[true,1,false,true,2,false]);
+  } finally {conn.dispose();}
+});
+
 test('opening Code observes first and resumes only an absent owner once', async () => {
   for (const resume of [false, true]) for (const observing of [false, true]) {
     const calls=[];
