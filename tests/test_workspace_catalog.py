@@ -8,6 +8,70 @@ import pytest
 from core.workspace_catalog import register_fork
 
 
+def test_native_archive_index_preserves_custom_metadata_and_restores_exact_row(tmp_path, monkeypatch):
+    from core import indexer, metadata
+    from core.workspace_catalog import list_saved_sessions
+
+    monkeypatch.setattr(indexer, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(indexer, 'DB_PATH', tmp_path / 'index.db')
+    monkeypatch.setattr(indexer, '_schema_ready', False)
+    monkeypatch.setattr(indexer, '_INDEX_LOCK_PATH', tmp_path / 'index.lock')
+    monkeypatch.setattr(metadata, 'METADATA_DIR', tmp_path / 'metadata')
+    monkeypatch.setattr(metadata, 'METADATA_PATH', tmp_path / 'legacy.json')
+    home = tmp_path / 'codex'
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    sid, sibling = str(uuid4()), str(uuid4())
+    path = home / 'sessions' / f'rollout-2026-09-10T00-00-00-{sid}.jsonl'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': sid, 'cwd': str(tmp_path)}}) + '\n')
+    target = {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)}
+    metadata._save_one(sid, {'custom_title': 'Keep my title', 'group': 'linked-group', 'starred': True,
+                             'done': True, 'done_at': '2099-01-01T00:00:00+00:00'})
+    metadata._save_one(sibling, {'custom_title': 'Sibling untouched', 'group': 'linked-group'})
+    register_fork(target)
+    before = metadata.get_meta(sid)
+    sibling_before = metadata.get_meta(sibling)
+    assert indexer.list_sessions()[0]['session_id'] == sid
+    archived = home / 'archived_sessions' / path.name
+    archived.parent.mkdir()
+    path.rename(archived)
+    register_fork(target)
+    assert not indexer.list_sessions()
+    assert not list_saved_sessions('codex')['data']
+    rows = indexer.list_sessions(archived=True)
+    assert len(rows) == 1 and rows[0]['session_id'] == sid and rows[0]['is_done'] == 1
+    assert rows[0]['display_title'] == 'Keep my title'
+    assert list_saved_sessions('codex', archived=True)['data'][0]['session_id'] == sid
+    assert indexer.get_session(sid)['file_path'] == str(archived)
+    assert metadata.get_meta(sid) == before and metadata.get_meta(sibling) == sibling_before
+    archived.rename(path)
+    register_fork(target)
+    assert indexer.list_sessions()[0]['session_id'] == sid
+    assert not indexer.list_sessions(archived=True)
+    assert not list_saved_sessions('codex', archived=True)['data']
+    assert metadata.get_meta(sid) == before and metadata.get_meta(sibling) == sibling_before
+
+
+def test_archive_schema_migration_preserves_existing_rows(tmp_path):
+    import sqlite3
+
+    from core.indexer import _migrate
+
+    conn = sqlite3.connect(tmp_path / 'old.db')
+    try:
+        conn.execute('CREATE TABLE sessions (session_id TEXT PRIMARY KEY, custom_title TEXT, is_done INTEGER, file_path TEXT, agent TEXT)')
+        conn.execute("INSERT INTO sessions VALUES ('exact','Custom title',1,'/sessions/file.jsonl','codex')")
+        conn.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ('archived', 'Archived title', 0, r'C:\Users\name\.codex\archived_sessions\rollout.jsonl', 'codex'))
+        conn.execute("INSERT INTO sessions VALUES ('claude','Claude title',0,'/project/archived_sessions/file.jsonl','claude')")
+        _migrate(conn)
+        _migrate(conn)
+        assert conn.execute("SELECT session_id,custom_title,is_done,is_archived FROM sessions WHERE session_id='exact'").fetchone() == ('exact', 'Custom title', 1, 0)
+        assert conn.execute("SELECT is_archived FROM sessions WHERE session_id='archived'").fetchone() == (1,)
+        assert conn.execute("SELECT is_archived FROM sessions WHERE session_id='claude'").fetchone() == (0,)
+    finally:
+        conn.close()
+
+
 def test_claude_native_title_reindexes_without_overwriting_custom_title(tmp_path, monkeypatch):
     from core import indexer
     from core.parser import parse_metadata

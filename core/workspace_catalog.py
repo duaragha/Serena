@@ -9,11 +9,11 @@ class NativeTranscriptPending(ValueError):
     """The native result arrived before its matching transcript record."""
 
 
-def list_saved_sessions(provider, query="", offset=0):
+def list_saved_sessions(provider, query="", offset=0, *, archived=False):
     """Read bounded catalog pages without starting or attaching any owner."""
     from core.indexer import _get_db
 
-    if provider not in {"claude", "codex"} or not isinstance(query, str) or len(query) > 200:
+    if provider not in {"claude", "codex"} or not isinstance(query, str) or len(query) > 200 or type(archived) is not bool:
         raise ValueError("Invalid session search")
     if type(offset) is not int or not 0 <= offset <= 1000000:
         raise ValueError("Invalid session page")
@@ -22,10 +22,11 @@ def list_saved_sessions(provider, query="", offset=0):
     try:
         rows = conn.execute(
             "SELECT session_id, COALESCE(NULLIF(custom_title,''), title, 'Untitled chat') AS title, "
-            "cwd, last_timestamp FROM sessions WHERE agent = ? AND COALESCE(is_teammate,0) = 0 "
+            "cwd, last_timestamp, is_archived FROM sessions WHERE agent = ? AND COALESCE(is_teammate,0) = 0 "
+            "AND COALESCE(is_archived,0) = ? "
             "AND (COALESCE(custom_title,title,'') LIKE ? ESCAPE '\\' "
             "OR session_id LIKE ? ESCAPE '\\') ORDER BY last_timestamp DESC, session_id LIMIT 51 OFFSET ?",
-            (provider, pattern, pattern, offset),
+            (provider, int(archived), pattern, pattern, offset),
         ).fetchall()
         return {"data": [dict(row) for row in rows[:50]], "nextOffset": offset + 50 if len(rows) > 50 else None}
     finally:

@@ -5,21 +5,30 @@ import os
 import shutil
 import sys
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core import indexer, metadata
+from core.workspace_catalog import list_saved_sessions, register_fork
 from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
 
 
 async def main():
-    with tempfile.TemporaryDirectory(prefix="workspace-archive-contract-") as directory:
+    with tempfile.TemporaryDirectory(prefix="workspace-archive-contract-") as directory, ExitStack() as patches:
         root = Path(directory)
         home = root / "codex"
         home.mkdir()
+        for module, key, value in ((indexer, 'DATA_DIR', root), (indexer, 'DB_PATH', root / 'index.db'),
+                                   (indexer, '_schema_ready', False), (indexer, '_INDEX_LOCK_PATH', root / 'index.lock'),
+                                   (metadata, 'METADATA_DIR', root / 'metadata'), (metadata, '_migrated', True)):
+            patches.enter_context(patch.object(module, key, value))
+        patches.enter_context(patch.dict(os.environ, {'CODEX_HOME': str(home)}))
         project = root / "project"
         project.mkdir()
         env = {"PATH": os.environ["PATH"], "HOME": directory, "CODEX_HOME": str(home),
@@ -42,6 +51,10 @@ async def main():
                     await asyncio.sleep(.02)
             original = list((home / "sessions").rglob(f"*{sid}.jsonl"))
             assert len(original) == 1
+            target = {'session_id': sid, 'provider': 'codex', 'cwd': str(project)}
+            metadata._save_one(sid, {'custom_title': 'Retained archive title', 'group': 'proof-group', 'done': False})
+            register_fork(target)
+            saved_meta = metadata.get_meta(sid)
             response = await owner.rpc.request("thread/archive", {"threadId": sid})
             assert response == {}, response
             async with asyncio.timeout(10):
@@ -51,6 +64,11 @@ async def main():
             archived = list((home / "archived_sessions").rglob(f"*{sid}.jsonl"))
             assert len(archived) == 1 and not original[0].exists()
             assert "archive-contract-original" in archived[0].read_text()
+            register_fork(target)
+            assert not list_saved_sessions('codex')['data']
+            assert list_saved_sessions('codex', archived=True)['data'][0]['session_id'] == sid
+            assert indexer.get_session(sid)['is_done'] == 0
+            assert metadata.get_meta(sid) == saved_meta
             print("PASS: native archive confirmed exact ID and moved, rather than deleted, its real transcript")
         finally:
             await owner.close()
@@ -68,6 +86,10 @@ async def main():
             assert restored["thread"]["id"] == sid
             assert not archived[0].exists()
             assert len(list((home / "sessions").rglob(f"*{sid}.jsonl"))) == 1
+            register_fork(target)
+            assert list_saved_sessions('codex')['data'][0]['session_id'] == sid
+            assert not list_saved_sessions('codex', archived=True)['data']
+            assert metadata.get_meta(sid) == saved_meta
             loaded = await rpc.request("thread/loaded/list", {})
             assert loaded["data"] == [], loaded
             print("PASS: archived history read and exact restore require no resumed writer or model turn")
@@ -77,6 +99,7 @@ async def main():
         assert not list(project.iterdir())
         print(json.dumps({"ok": True, "processesReaped": len(processes), "credentialsUsed": False,
                           "inference": False, "archiveNotificationConfirmed": True, "restoreDoesNotResume": True}))
+        print('PASS: real archive/restore reindexed exact session; custom title, done and group metadata unchanged')
     print("PASS: disposable profile removed; no user sessions or project files changed")
 
 

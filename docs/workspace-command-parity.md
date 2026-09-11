@@ -29,6 +29,38 @@ credentials/inference. Ruff passed; Node no syntax errors. No new release claim.
 
 ## Native Archive Contract Research (2026-09-10)
 
+Catalog foundation now implemented: SQLite `is_archived` is derived from the
+native Codex transcript path when a session is registered/reindexed. Migration
+backfills existing archived paths, including Windows separators, without changing
+done state or custom metadata. Active and archived queries are separate through
+`list_sessions(archived=...)` and `list_saved_sessions(..., archived=...)`.
+Claude paths do not acquire Codex archive state. Restore/re-registration clears
+the derived flag on the exact same row. No duplicate synced archive flag is
+written alongside the custom title or linked-group metadata.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py tests/test_codex_scanner_resident.py tests/test_codex_scanner_skips_copies.py -q --tb=short
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_catalog.py tests/test_workspace_catalog.py scripts/verify-workspace-archive-contract.py
+```
+
+All separately executed, exit 0: 38 tests passed in 2.62s; the real native probe
+now also reindexes archived/restored sessions and verifies unchanged title, done
+and group metadata. Two owned processes reaped, no credentials/inference or user
+data writes. Ruff passed for these files. Initial catalog-only run: exit 1,
+27 passed/1 failed because the synthetic rollout filename omitted its required
+date; corrected fixture then passed 28 tests in 2.88s. Two import-order findings
+were fixed in the new test/probe code.
+
+Shared indexer lint remains at its ten pre-existing findings, not new findings:
+`ruff check core/indexer.py core/workspace_catalog.py tests/test_workspace_catalog.py scripts/verify-workspace-archive-contract.py`
+exited 1 with ten indexer findings. Baseline comparison
+`git show HEAD:core/indexer.py | /home/raghav/Documents/Projects/serena/.venv/bin/ruff check --stdin-filename core/indexer.py --output-format concise -`
+also exited 1 with the same ten findings. Unrelated cleanup was left alone.
+The archive mutation, descendant ownership guards, archive/restore picker,
+sidebar counts and cross-platform integration are still pending; this foundation
+is not a completed or released archive feature.
+
 Archive is still unimplemented in the rich pane. The disposable native probe
 `scripts/verify-workspace-archive-contract.py` now establishes the runtime
 contract, rather than assuming archive is a done toggle:
@@ -50,7 +82,7 @@ preserved history, exact restore and no loaded writer confirmed. Two processes
 reaped, disposable profile removed, no credentials/inference or user data writes.
 Ruff: all checks passed.
 
-Current integration constraints, confirmed by reading the live source:
+Initial integration constraints, before the catalog foundation above:
 `core/codex_scanner.py` excludes archived sessions; `register_fork` in
 `core/workspace_catalog.py` can locate their moved transcripts, but
 `list_saved_sessions` has no archive filter. `core/indexer.py::toggle_done`
