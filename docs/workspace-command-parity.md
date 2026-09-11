@@ -3,6 +3,51 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Codex Clear Context (2026-09-10)
+
+Codex now exposes Clear context and bare `/clear` using the existing confirmation
+and exact-target recovery dialog. History and the original draft are retained;
+the new chat is opened only on the user's explicit action. Named `/clear title`
+arguments remain unsupported, rather than silently sent to the model.
+
+The initial same-process approach was rejected by native verification: two
+proof runs exited 1 when reopening the source returned `already has an active
+writer`. [Official app-server documentation](https://learn.chatgpt.com/docs/app-server)
+(accessed 2026-09-10) confirms unsubscribe retains the thread for a 30-minute
+inactivity grace period. It is not a writer-release acknowledgment.
+
+Final implementation closes only the verified-idle Codex owner, confirms cleanup,
+then uses the existing durable native-creation path with a deterministic creation
+request ID derived from source and clear request. The new native identity is
+checkpointed by creation and clear receipts; repeated requests cannot create
+another thread. Active turns, questions, agents, background terminals, queued
+bridge work and coding-job reservations block clear. The original session can
+resume independently after clear, without waiting for the native grace period.
+Claude retains its existing same-runtime SDK handoff.
+
+Exact final commands, each run separately:
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py::test_codex_clear_releases_writer_before_durable_creation tests/test_workspace_host.py::test_clear_checkpoint_exact_owner_routing_and_no_replay tests/test_workspace_host.py::test_clear_requires_confirmation_idle_owner_and_no_queued_bridge tests/test_workspace_pane.py::test_clear_requires_confirmation_and_recovers_exact_target_without_repeating tests/test_workspace_journal.py -q --tb=short
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-clear.py
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_host.py core/workspace_journal.py tests/test_workspace_host.py tests/test_workspace_pane.py scripts/verify-workspace-codex-clear.py
+node --check ui/static/workspace-pane.mjs
+```
+
+All exit 0. Tests: 25 passed in 8.07s. Coverage includes release-before-create,
+background/agent/cleanup refusal, lost creation/checkpoint/receipt, deduplication,
+Claude regression and Codex `/clear` dialog at 390/1600px. Two intermediate runs
+exited 1 (24 passed, 1 failed) because the receipt-failure test inspected the
+incomplete clear record rather than the separately committed creation checkpoint;
+the assertion now checks the correct durable record.
+
+Native proof passed twice after replacing the unsubscribe design: old writer
+closed, new exact session, deduplicated receipt, real print-only output confined
+to the target, old history independently resumed, four processes reaped, no
+credentials/inference, temporary profile removed and project unchanged. Ruff
+passed; Node no syntax errors. Source feature only; packaged browser clear flow,
+authenticated work and release remain part of the full delivery gates.
+
 ## Explicit Session Exit Commands (2026-09-10)
 
 Codex `/exit` and `/quit` now route to the existing Disconnect session dialog,

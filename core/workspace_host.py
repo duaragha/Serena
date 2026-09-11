@@ -17,7 +17,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from time import monotonic
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from core.workspace_codex import CodexWorkspace
 from core.workspace_journal import WorkspaceJournal
@@ -1039,8 +1039,8 @@ class WorkspaceHost:
                     await self._publish(sid, {"method": "workspace/transportClosed", "params": {"reason": "Session disconnected"}})
                     result = {"disconnected": True, "session_id": sid}
                 elif action == "clear_session":
-                    if provider != "claude" or payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
-                        raise ValueError("Explicit confirmation for a Claude session clear is required")
+                    if provider not in {"claude", "codex"} or payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
+                        raise ValueError("Explicit confirmation for a supported session clear is required")
                     if owner.state != "ready" or self._bridge_queues.get(sid):
                         retryable = True
                         raise ValueError("Finish active and queued work before clearing")
@@ -1348,6 +1348,24 @@ class WorkspaceHost:
                     **({"retryable": True} if isinstance(error, NativeTranscriptPending) else {})}
 
     async def _clear_session(self, sid, request_id, owner):
+        if self._sessions[sid][1] == "codex":
+            if owner.active_turn or owner.questions or owner.active_agent_threads:
+                raise ValueError("Finish active work before clearing Codex")
+            tasks = await owner.list_background_tasks()
+            if (tasks.get("data") != [] or owner.state != "ready" or owner.active_turn or owner.questions
+                    or owner.active_agent_threads or self._bridge_queues.get(sid)):
+                raise ValueError("Finish background work before clearing Codex")
+            # Unsubscribe retains Codex's native writer for an inactivity grace
+            # period. Closing the idle process releases it before new creation.
+            await owner.close()
+            if not owner.can_retry_attachment():
+                raise ValueError("Codex cleanup is unconfirmed; no new session was created")
+            creation_id = str(uuid5(NAMESPACE_URL, json.dumps(["serena-clear", sid, request_id])))
+            created = await self._create(creation_id, "codex", str(owner.cwd))
+            if not created.get("ok"):
+                raise ValueError("New Codex session is unconfirmed; creation will not be repeated: " + str(created.get("error", "unknown")))
+            await asyncio.to_thread(self.journal.prepare_clear, sid, request_id, created["result"])
+            return await asyncio.to_thread(self.journal.complete_clear, sid, request_id)
         transitioned = False
         try:
             target = await owner.begin_clear()

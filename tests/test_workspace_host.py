@@ -1299,6 +1299,75 @@ def test_clear_checkpoint_exact_owner_routing_and_no_replay(tmp_path, monkeypatc
         value.shutdown()
 
 
+@pytest.mark.parametrize('failure', [None, 'background', 'agent', 'cleanup', 'creation', 'checkpoint', 'receipt'])
+def test_codex_clear_releases_writer_before_durable_creation(tmp_path, monkeypatch, failure):
+    from uuid import uuid4
+    target = str(uuid4())
+    calls = []
+
+    class ClearOwner(Owner):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.questions = {}
+            self.active_agent_threads = set()
+
+        @property
+        def session_id(self):
+            return self.sid
+
+        async def list_background_tasks(self):
+            return {'data': [{}] if failure == 'background' else []}
+
+        async def close(self):
+            calls.append(('close', self.sid))
+            self.state = 'closed'
+
+        def can_retry_attachment(self):
+            return self.state == 'closed' and failure != 'cleanup'
+
+        async def create(self, *, checkpoint):
+            assert host._sessions['source'][0].state == 'closed'
+            calls.append(('create', self.sid))
+            if failure == 'creation':
+                raise RuntimeError('native response lost')
+            await checkpoint({'session_id': target, 'provider': 'codex', 'cwd': str(tmp_path)})
+            self.sid = target
+            self.state = 'ready'
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'codex-clear.db'),
+                         resolve=lambda sid: {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)},
+                         factories={'codex': ClearOwner})
+    try:
+        host.attach('source')
+        original = host._sessions['source'][0]
+        if failure == 'agent':
+            original.active_agent_threads.add('child')
+        if failure in {'checkpoint', 'receipt'}:
+            def fail(*args):
+                raise OSError('disk full')
+            monkeypatch.setattr(host.journal, 'prepare_clear' if failure == 'checkpoint' else 'complete_clear', fail)
+        result = host.command('source', 'once', 'clear_session', {'confirmed': True})
+        assert result['ok'] is (failure is None)
+        before = list(calls)
+        assert host.command('source', 'once', 'clear_session', {'confirmed': True}) == result
+        assert calls == before
+        if failure in {'background', 'agent'}:
+            assert calls == []
+        elif failure == 'cleanup':
+            assert calls == [('close', 'source')]
+        else:
+            assert calls[0] == ('close', 'source') and calls[1][0] == 'create'
+            assert len(calls) == 2
+            if failure != 'creation':
+                assert host._sessions[target][0] is not original
+                assert host.journal.creation_target(calls[1][1][4:])['committed']
+            if failure is None:
+                assert result['result']['session_id'] == target
+                assert host.journal.clear_target(target)['committed']
+    finally:
+        host.shutdown()
+
+
 def test_clear_requires_confirmation_idle_owner_and_no_queued_bridge(tmp_path):
     value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "clear.db"),
                           resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},

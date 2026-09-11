@@ -79,7 +79,7 @@ export class WorkspacePane {
     this.forkButton.disabled=true;
     head.append(this.forkButton);
     this.clearButton=this.button('Clear context','eraser',()=>this.openClear());
-    this.clearButton.hidden=provider!=='Claude' || !controls.clearSession || !controls.openCleared;
+    this.clearButton.hidden=!['Claude','Codex'].includes(provider) || !controls.clearSession || !controls.openCleared;
     this.clearButton.disabled=true;head.append(this.clearButton);
     this.newConversationButton=this.button('New conversation','square-pen',()=>{
       const title=/^\/new(?:\s+(.*))?$/.exec(this.input.value.trim())?.[1] || '';
@@ -392,7 +392,7 @@ export class WorkspacePane {
     try{this.clearedSession ??= this.controls.lastClear?.();}
     catch(error){this.error(error);return;}
     const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Clear context');
-    const status=node('p','','Start a new Claude conversation? Current history will be kept.');status.setAttribute('role','status');
+    const status=node('p','',`Start a new ${this.provider} conversation? Current history will be kept.`);status.setAttribute('role','status');
     const identity=node('code');identity.style.overflowWrap='anywhere';
     const close=this.button('Close clear context','x',()=>dialog.close());
     const open=this.button('Open new conversation','arrow-up-right',async()=>{
@@ -1800,7 +1800,7 @@ export class WorkspacePane {
   }
 
   codexCommandControls() {
-    return {exit:this.disconnectButton,quit:this.disconnectButton,resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
+    return {clear:this.clearButton,exit:this.disconnectButton,quit:this.disconnectButton,resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
       agent:this.agentsButton,subagents:this.agentsButton,fast:this.speedButton,usage:this.accountUsageButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }

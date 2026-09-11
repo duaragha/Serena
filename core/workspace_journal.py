@@ -241,7 +241,7 @@ class WorkspaceJournal:
     def prepare_clear(self, source_id: str, request_id: str, target: dict) -> None:
         sid = target.get("session_id")
         if (not isinstance(sid, str) or str(UUID(sid)) != sid or sid == source_id
-                or target.get("provider") != "claude" or not isinstance(target.get("cwd"), str)
+                or target.get("provider") not in {"claude", "codex"} or not isinstance(target.get("cwd"), str)
                 or not Path(target["cwd"]).is_absolute()
                 or set(target) != {"session_id", "provider", "cwd"}):
             raise ValueError("Exact native clear target required")
