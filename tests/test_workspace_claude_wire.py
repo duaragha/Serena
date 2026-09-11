@@ -9,6 +9,22 @@ def event(events, method):
     return next(item["params"] for item in events if item["method"] == method)
 
 
+def test_thinking_stream_is_visible_and_uses_the_completed_block_identity():
+    adapter = ClaudeEvents("exact")
+    adapter.begin_input("turn")
+    def stream(value):
+        return adapter.receive({"type": "stream_event", "event": value})
+    stream({"type": "message_start", "message": {"id": "m"}})
+    stream({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}})
+    result = stream({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Checking the files"}})
+    item = event(result, "item/started")["item"]
+    assert item["type"] == "claudeThinking"
+    assert item["text"] == "Checking the files"
+    done = adapter.blocks([{"thinking": "Checking the files", "signature": "opaque"}], "m")[0]
+    assert done["id"] == item["id"]
+    assert done["type"] == "claudeThinking"
+
+
 def test_queued_user_echo_and_individual_results_keep_exact_turns():
     events = ClaudeEvents("exact")
     events.begin_input("first")

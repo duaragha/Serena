@@ -10,6 +10,26 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+def test_claude_activity_visible_and_permission_close_in_header(pane, tmp_path):
+    page, errors = pane
+    page.evaluate("""()=>{
+      controls.permissions=async()=>({mode:'default',modes:['default','bypassPermissions']});
+      emit({method:'item/started',params:{turnId:'t',item:{id:'thought',type:'claudeThinking',text:'Checking files'}}});
+      emit({method:'item/started',params:{turnId:'t',item:{id:'command',type:'claudeToolCall',tool:'Bash',input:{command:'pwd'},status:'inProgress'}}});
+    }""")
+    playwright.expect(page.get_by_text('Checking files', exact=True)).to_be_visible()
+    playwright.expect(page.locator('#left .aw-command', has_text='pwd')).to_be_visible()
+    page.evaluate("pane.openPermissions()")
+    dialog = page.get_by_role('dialog', name='Permission mode')
+    close = dialog.get_by_role('button', name='Close permission mode')
+    title = dialog.get_by_role('heading', name='Permission mode')
+    a, b = close.bounding_box(), title.bounding_box()
+    assert abs(a['y'] + a['height']/2 - b['y'] - b['height']/2) < 2
+    assert a['x'] > b['x'] + b['width']
+    page.screenshot(path=str(tmp_path/'claude-permissions.png'))
+    assert not errors
+
+
 @pytest.mark.parametrize('width', [390, 1400])
 def test_session_actions_keep_headers_aligned_and_support_keyboard(pane, width):
     page, errors = pane
@@ -2103,7 +2123,7 @@ def test_streaming_tool_input_keeps_one_expanded_call(pane):
     page, errors = pane
     page.evaluate("emit({method:'item/started',params:{turnId:'t',item:{id:'streamed',type:'claudeToolCall',tool:'Bash',input:{},inputStreaming:true,inputJson:'{\"command\":',status:'inProgress'}}})")
     item = page.locator('[data-item-id="streamed"]')
-    item.locator("details > summary").first.click()
+    assert item.locator("details").first.evaluate("el=>el.open")
     assert item.get_by_text("Receiving tool input", exact=True).is_visible()
     assert item.locator(".aw-tool-input").inner_text() == '{"command":'
     assert item.locator(".aw-command").count() == 0
@@ -2128,7 +2148,7 @@ def test_claude_tools_show_readable_native_output_and_requested_edits(pane, tmp_
       ])emit({method:'item/completed',params:{turnId:'t',item}});
     }""")
     for identifier in ["bash-native", "edit-native", "write-native", "unknown-native"]:
-        page.locator(f'[data-item-id="{identifier}"] > details > summary').click()
+        assert page.locator(f'[data-item-id="{identifier}"] > details').evaluate("el=>el.open")
     command = page.locator('[data-item-id="bash-native"]')
     assert command.locator(".aw-command").inner_text() == "pytest tests/test_example.py -q"
     assert command.locator(".aw-tool-output").inner_text() == "3 passed in 0.4s"

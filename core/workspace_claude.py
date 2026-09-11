@@ -42,6 +42,7 @@ class ClaudeWorkspace:
         history=get_session_messages,
     ):
         self.session_id, self.cwd, self.publish = session_id, Path(cwd).resolve(), publish
+        self._session_directory = self.cwd
         self.client_factory, self.lease_factory = client_factory, lease_factory
         self.session_info, self.history_reader = session_info, history
         self.state, self.active_turn = "closed", None
@@ -92,6 +93,7 @@ class ClaudeWorkspace:
             )
             if info is None or info.session_id != self.session_id:
                 raise ValueError("Exact native Claude session is unavailable in this project")
+            self._session_directory = Path(getattr(info, "cwd", None) or self.cwd).resolve()
             records = await asyncio.to_thread(
                 self.history_reader, self.session_id, directory=str(self.cwd)
             )
@@ -119,6 +121,8 @@ class ClaudeWorkspace:
                     for key in set(METERED_AUTH_ENV_VARS) | (inherited.keys() - clean.keys())
                 },
             }
+            # Transcript discovery uses its original project, not the latest tool cwd.
+            env["SERENA_CLAUDE_SESSION_DIRECTORY"] = str(self._session_directory)
             options = ClaudeAgentOptions(
                 cli_path=binary,
                 cwd=str(self.cwd),
@@ -623,6 +627,13 @@ class ClaudeWorkspace:
         if not self.active_turn:
             raise RuntimeError("Claude has no active turn")
         await self.client.interrupt()
+        for future in list(self.questions.values()):
+            if not future.done():
+                future.set_result(PermissionResultDeny(message="Cancelled by the user", interrupt=True))
+        for future, _ in list(self.elicitations.values()):
+            if not future.done():
+                future.set_result({"action": "cancel"})
+        await asyncio.sleep(0)
         return {}
 
     async def _permission(self, tool, inputs, context):

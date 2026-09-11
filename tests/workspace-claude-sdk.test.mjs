@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import test from 'node:test';
 import {ClaudeSdkSession} from '../core/workspace_claude_sdk.mjs';
 
-function fixture(overrides={}) {
+function fixture(overrides={}, sessionOptions={}) {
   const calls=[], outputs=[];
   let setup, finish;
   const end=new Promise(done=>{finish=done;});
@@ -19,9 +19,23 @@ function fixture(overrides={}) {
     query(value){setup=value;value.options.spawnClaudeCodeProcess({});return stream;},...overrides};
   const session=new ClaudeSdkSession({sdk,sessionId:'exact',cwd:'/project',
     options:{resume:'wrong',forkSession:true},spawnOwned:()=>{calls.push('spawn');return {};},
-    publish:message=>outputs.push(message),request:async()=>({action:'decline'})});
+    publish:message=>outputs.push(message),request:async()=>({action:'decline'}),...sessionOptions});
   return {session,calls,outputs,stream,get setup(){return setup;}};
 }
+
+test('resume finds the original transcript while retaining the latest working directory', async()=>{
+  const seen=[];
+  const f=fixture({getSessionInfo:async(sid,options)=>{
+    seen.push([sid,options]);return {sessionId:'exact',cwd:resolve('/original')};
+  }},{sessionDirectory:'/original'});
+  try {
+    await f.session.open();
+    assert.deepEqual(seen,[['exact',{dir:resolve('/original')}]]);
+    assert.equal(f.setup.options.cwd,resolve('/project'));
+    assert.equal(f.setup.options.resume,'exact');
+    assert.equal(f.setup.options.forkSession,false);
+  } finally {f.stream.close();}
+});
 
 function transitionFixture(overrides={}){
   const f=fixture(overrides), inbox=[];let wake,closed=false;
