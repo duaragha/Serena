@@ -2406,28 +2406,24 @@ def test_complete_control_surface_fits_without_auto_actions(pane, tmp_path, prov
     assert not errors
 
 
-def test_codex_permission_profile_picker_disables_managed_denials(pane):
+@pytest.mark.parametrize('width', [390, 1600])
+def test_codex_policy_selectors_are_unavailable(pane, width, tmp_path):
     page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
     page.evaluate("""() => {
       pane.dispose();
-      controls.permissions=async()=>({mode:null,modes:[':read-only','blocked'],profiles:[{id:':read-only',allowed:true},{id:'blocked',allowed:false}]});
-      controls.setPermissions=async(mode,confirmed)=>{calls.push([mode,confirmed]);return {mode};};
+      for(const name of ['permissions','setPermissions','sessionModes','setSessionMode'])
+        controls[name]=async()=>{calls.push(name);return {};};
       window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      pane.input.value='keep draft';
     }""")
-    page.get_by_role("button", name="Permission mode", exact=True).click()
-    dialog = page.get_by_role("dialog", name="Permission mode", exact=True)
-    select = dialog.get_by_role("combobox", name="Permission mode")
-    select.select_option(":read-only")
-    assert select.locator("option[value=blocked]").evaluate("el=>el.disabled"), select.evaluate("el=>el.outerHTML")
-    select.focus()
-    select.press("ArrowDown")
-    assert select.input_value() == ":read-only"
-    dialog.get_by_role("button", name="Apply", exact=True).click()
-    assert page.evaluate("calls") == []
-    dialog.get_by_role("checkbox", name="Apply this permission profile to subsequent turns").check()
-    dialog.get_by_role("button", name="Apply", exact=True).click()
-    page.wait_for_function("calls.length===1")
-    assert page.evaluate("calls") == [[":read-only", True]]
+    assert page.locator('#left').get_by_role('button', name='Permission mode', exact=True).is_hidden()
+    assert page.locator('#left').get_by_role('button', name='Session mode', exact=True).is_hidden()
+    page.evaluate('async()=>{await pane.openPermissions();await pane.openSessionMode();}')
+    assert page.get_by_role('dialog').count() == 0
+    assert page.evaluate('calls') == []
+    assert page.evaluate('pane.input.value') == 'keep draft'
+    page.screenshot(path=str(tmp_path / f'codex-fixed-policy-{width}.png'))
     assert not errors
 
 
@@ -2935,33 +2931,6 @@ def test_codex_limits_refresh_is_explicit_and_missing_windows_are_not_zero(pane,
     artifact = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'codex-limits-{width}.png'
     artifact.parent.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(artifact))
-    assert not errors
-
-
-@pytest.mark.parametrize('width', [390, 1600])
-def test_codex_plan_picker_action_is_explicit_and_preserves_draft(pane, width):
-    page, errors = pane
-    page.set_viewport_size({'width': width, 'height': 900})
-    page.evaluate("""()=>{
-      pane.provider='Codex';pane.sessionModeButton.hidden=false;
-      const options=[{name:'Plan',value:'plan'},{name:'Default',value:'default'}];
-      controls.sessionModes=async()=>({currentValue:null,options});
-      controls.setSessionMode=async mode=>{calls.push(['mode',mode]);return {currentValue:mode,options};};
-      pane.input.value='keep draft';pane.render();
-    }""")
-    if not page.locator('#left').get_by_role('button', name='Session mode', exact=True).is_visible():
-        page.locator('#left').get_by_role('button', name='Session actions', exact=True).click()
-    page.locator('#left').get_by_role('button', name='Session mode', exact=True).click()
-    dialog = page.get_by_role('dialog', name='Session mode', exact=True)
-    assert dialog.get_by_role('button', name='Apply', exact=True).is_disabled()
-    assert page.evaluate('calls') == []
-    dialog.get_by_role('combobox').select_option('plan')
-    dialog.get_by_role('button', name='Apply', exact=True).click()
-    page.wait_for_function("calls.length===1")
-    assert dialog.get_by_role('status').inner_text() == 'Last confirmed: Plan'
-    assert page.evaluate('calls') == [['mode', 'plan']]
-    assert page.evaluate('pane.input.value') == 'keep draft'
-    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
     assert not errors
 
 

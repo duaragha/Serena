@@ -215,9 +215,9 @@ export class WorkspacePane {
     footer.insertBefore(this.mcpButton, this.stop);
     const permissions=this.button('Permission mode','shield',()=>this.openPermissions());
     this.permissionsButton=permissions;
-    permissions.hidden=provider!=='Codex' || !controls.permissions;footer.insertBefore(permissions,this.stop);
+    permissions.hidden=true;footer.insertBefore(permissions,this.stop);
     this.sessionModeButton=this.button('Session mode','sliders-horizontal',()=>this.openSessionMode());
-    this.sessionModeButton.hidden=!['Codex','Gemini'].includes(provider) || !controls.sessionModes || !controls.setSessionMode;
+    this.sessionModeButton.hidden=provider!=='Gemini' || !controls.sessionModes || !controls.setSessionMode;
     footer.insertBefore(this.sessionModeButton,this.stop);
     this.claudeEffortButton=this.button('Claude reasoning effort','gauge',()=>this.openClaudeEffort());
     this.claudeEffortButton.hidden=provider!=='Claude' || !controls.models || !controls.commands;
@@ -1871,6 +1871,7 @@ export class WorkspacePane {
   }
 
   async openSessionMode() {
+    if(this.provider==='Codex')return;
     if(this.sessionModeDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Session mode');
     const status=node('p','','Loading modes...');status.setAttribute('role','status');
@@ -1900,39 +1901,7 @@ export class WorkspacePane {
     catch(error){if(dialog.open)status.textContent=error.message;}
   }
 
-  async openPermissions() {
-    if(this.provider!=='Codex')return;
-    if(this.permissionsDialog?.open)return;
-    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Permission mode');
-    const form=node('form');const status=node('p');status.setAttribute('role','status');status.textContent='Loading...';
-    const label=node('label','','Mode');const select=node('select');select.setAttribute('aria-label','Permission mode');label.append(select);
-    const codex=this.provider==='Codex';
-    const confirmLabel=node('label','',codex?'Apply this permission profile to subsequent turns':'Allow tools without permission prompts');const confirm=node('input');confirm.type='checkbox';confirmLabel.prepend(confirm);confirmLabel.hidden=!codex;
-    const apply=node('button','','Apply');apply.type='submit';apply.disabled=true;
-    const close=this.button('Close permission mode','x',()=>dialog.close());
-    const labels=codex?{}:{default:'Ask when needed',acceptEdits:'Accept file edits',plan:'Plan',dontAsk:'Deny unapproved tools',auto:'Automatic decisions',bypassPermissions:'Bypass permission prompts'};
-    let busy=false;
-    select.addEventListener('change',()=>{confirm.checked=false;confirmLabel.hidden=!codex && select.value!=='bypassPermissions';});
-    form.addEventListener('submit',async event=>{
-      event.preventDefault();if(busy || apply.disabled)return;
-      if((codex || select.value==='bypassPermissions') && !confirm.checked){status.textContent=codex?'Confirm applying the permission profile first':'Confirm bypassing permission prompts first';return;}
-      busy=true;apply.disabled=true;select.disabled=true;
-      try{const result=await this.controls.setPermissions(select.value,confirm.checked);if(dialog.open){select.value=result.mode;status.textContent=`Last confirmed: ${labels[result.mode] || result.mode}`;}}
-      catch(error){if(dialog.open)status.textContent=error.message;}
-      finally{busy=false;apply.disabled=false;select.disabled=false;}
-    });
-    const header=node('header','aw-dialog-header');header.append(node('h3','','Permission mode'),close);
-    form.append(label,confirmLabel,apply);dialog.append(header,status,form);
-    dialog.addEventListener('close',()=>dialog.remove());this.permissionsDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();
-    try{
-      const result=await this.controls.permissions();if(!dialog.open || this.disposed)return;
-      for(const mode of result.modes){const profile=result.profiles?.find(p=>p.id===mode);const option=node('option','',labels[mode] || mode);option.value=mode;option.disabled=profile?.allowed===false;option.title=profile?.description || '';select.append(option);}
-      if(result.mode && result.modes.includes(result.mode))select.value=result.mode;
-      else {const unknown=node('option','','Select a mode');unknown.value='';unknown.disabled=true;select.prepend(unknown);select.value='';}
-      status.textContent=result.mode?`Last confirmed: ${labels[result.mode] || result.mode}`:'Current mode unavailable';
-      confirmLabel.hidden=!codex && select.value!=='bypassPermissions';apply.disabled=!result.modes.length;
-    }catch(error){if(dialog.open)status.textContent=error.message;}
-  }
+  async openPermissions() {}
 
   openShell() {
     if(this.shellDialog?.open || this.shellSubmitting)return;

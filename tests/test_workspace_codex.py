@@ -312,7 +312,8 @@ def test_idle_agent_continuation_keeps_exact_owner_and_checks_snapshot(tmp_path,
             if method == 'thread/turns/list':
                 return {'data': [{'id': 'changed' if case == 'stale' else 'latest', 'status': 'completed', 'items': []}], 'nextCursor': None}
             assert method == 'turn/start'
-            assert params == {'threadId': 'child', 'input': [{'type': 'text', 'text': 'Continue the review'}]}
+            assert params == {'threadId': 'child', 'input': [{'type': 'text', 'text': 'Continue the review'}],
+                              'approvalPolicy': 'never', 'sandboxPolicy': {'type': 'dangerFullAccess'}}
             assert 'child' in owner.active_agent_threads
             if case == 'ambiguous':
                 raise WorkspaceRpcError('lost response')
@@ -2175,7 +2176,8 @@ def test_new_thread_checkpoints_before_ownership_and_never_retries_creation(tmp_
                 assert method != "thread/resume"
                 return await original(method, params)
             rpc.calls.append((method, params))
-            assert params == {"cwd": str(tmp_path), "ephemeral": False}
+            assert params == {"cwd": str(tmp_path), "ephemeral": False,
+                              "approvalPolicy": "never", "sandbox": "danger-full-access"}
             if failure == "transport":
                 raise WorkspaceRpcError("lost response")
             thread = {"id": native_sid, "cwd": str(tmp_path), "ephemeral": False, "turns": [], "historyMode": "paginated"}
@@ -2308,12 +2310,17 @@ def test_exact_resume_and_real_turn_controls(tmp_path):
             await client.open(binary="codex", env={"OPENAI_API_KEY": "must-not-pass"})
             assert "OPENAI_API_KEY" not in rpc.options["env"]
             assert "--disable" not in rpc.command
-            assert rpc.calls[2] == ("thread/resume", {"threadId": "exact-session"})
+            assert rpc.calls[2] == ("thread/resume", {"threadId": "exact-session",
+                "approvalPolicy": "never", "sandbox": "danger-full-access"})
+            assert rpc.command[-4:] == ['-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"']
             inputs = [
                 {"type": "text", "text": "hello"},
                 {"type": "localImage", "path": "/photo.png"},
             ]
-            await client.submit(inputs, options={"model": "chosen-model", "effort": "high"})
+            await client.submit(inputs, options={"model": "chosen-model", "effort": "high",
+                "approvalPolicy": "on-request", "sandboxPolicy": {"type": "readOnly"}})
+            assert rpc.calls[-1][1]["approvalPolicy"] == "never"
+            assert rpc.calls[-1][1]["sandboxPolicy"] == {"type": "dangerFullAccess"}
             assert rpc.calls[-1][1]["input"] == inputs
             assert rpc.calls[-1][1]["threadId"] == "exact-session"
             with pytest.raises(WorkspaceRpcError):

@@ -432,7 +432,8 @@ class CodexWorkspace:
                 self._lease = self._lease_factory(self.session_id)
                 self._lease.launching()
                 await self.rpc.start(
-                    [executable, "app-server", "--stdio"],
+                    [executable, "app-server", "--stdio", "-c", 'approval_policy="never"',
+                     "-c", 'sandbox_mode="danger-full-access"'],
                     cwd=self.cwd,
                     env=strip_metered_auth_env(dict(os.environ if env is None else env)),
                 )
@@ -446,12 +447,14 @@ class CodexWorkspace:
                 )
                 await self.rpc.notify("initialized", {})
                 self._events_task = asyncio.create_task(self._events())
-                # Do not set baseInstructions, disable coding tools, or override
-                # the session's configured model and permission policy here.
+                # Keep session identity/model, but apply the desktop's explicit
+                # full-access policy even when saved threads used restrictions.
                 if checkpoint is None:
-                    result = await self.rpc.request("thread/resume", {"threadId": self.session_id})
+                    result = await self.rpc.request("thread/resume", {"threadId": self.session_id,
+                        "approvalPolicy": "never", "sandbox": "danger-full-access"})
                 else:
-                    result = await self.rpc.request("thread/start", {"cwd": str(self.cwd), "ephemeral": False})
+                    result = await self.rpc.request("thread/start", {"cwd": str(self.cwd), "ephemeral": False,
+                        "approvalPolicy": "never", "sandbox": "danger-full-access"})
                     thread = result.get("thread") if isinstance(result, dict) else None
                     sid = thread.get("id") if isinstance(thread, dict) else None
                     try:
@@ -624,7 +627,8 @@ class CodexWorkspace:
             # arrive before the response, and must remain authoritative.
             self.active_agent_threads.add(thread_id)
             try:
-                result = await self.rpc.request("turn/start", {"threadId": thread_id, "input": inputs})
+                result = await self.rpc.request("turn/start", {"threadId": thread_id, "input": inputs,
+                    "approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}})
                 turn = result.get("turn") if isinstance(result, dict) else None
                 if not isinstance(turn, dict) or not isinstance(turn.get("id"), str) or not turn["id"]:
                     raise WorkspaceRpcError("Agent continuation was not confirmed")
@@ -1919,6 +1923,7 @@ class CodexWorkspace:
                 raise ValueError("Unsupported turn option")
             await self._validate_model_options(params)
             params.update(threadId=self.session_id, input=deepcopy(inputs) + selected)
+            params.update(approvalPolicy="never", sandboxPolicy={"type": "dangerFullAccess"})
             self.state = "submitting"
             try:
                 result = await self.rpc.request("turn/start", params)
