@@ -2,6 +2,36 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Conversation Deletion (2026-09-10)
+
+The rich Codex workspace now deletes current, active-saved and archived-saved
+conversations through the real native API rather than hiding catalog rows.
+Deletion requires a checked confirmation, preserves a private recovery copy,
+removes spawned-agent descendants deepest-first and never opens or replaces a
+coding owner. Busy owners, PTYs, reservations, pending durable operations and
+outside forks fail before mutation. Closing the dialog or page does nothing.
+
+Durable request and native-family checkpoints make uncertain outcomes
+inspectable without replay. After a lost final receipt, the visible Check action
+uses native read-only inspection, completes the original request, then removes
+the exact family from Serena's catalog. The deleted view disables reconnection
+and retains the existing draft for copying.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_archive.py tests/test_workspace_archive_host.py tests/test_workspace_delete.py tests/test_workspace_delete_host.py tests/test_workspace_catalog.py tests/test_workspace_journal.py tests/test_workspace_host.py -q
+# exit 0: 323 passed in 37.41s.
+node --test tests/workspace-*.test.mjs
+# exit 0: 124 passed, 1 skipped.
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-delete.py --browser-width 390
+# exit 0: real root and archived spawned child deleted; one explicit request,
+# one inspection-only recovery, four processes reaped, no inference/credentials.
+```
+
+The focused destructive browser rerun passed eight tests; Ruff, JavaScript
+syntax and `git diff --check` passed. Full details and the manual-fork boundary
+are recorded in [workspace-command-parity.md](workspace-command-parity.md).
+This milestone is committed as `238d41d`; no package was installed or released.
+
 ## Explicit Codex Account Limits (2026-09-10)
 
 Session status now offers an explicit Refresh account limits control, routed to

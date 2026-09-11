@@ -3,6 +3,42 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Recoverable Native Codex Deletion (2026-09-10)
+
+Codex `/delete`, the current-pane trash control and saved-conversation trash
+controls now use one explicit confirmation flow. Serena resolves the exact
+unloaded native root and its spawned-agent descendants, closes only idle
+workspace owners, rejects live terminals/background reservations/pending work,
+and preserves an exact private recovery copy before sending `thread/delete`.
+Descendants are deleted deepest-first because native Codex refuses deletion of
+a parent while forked history still references it. No terminal, replacement
+owner, model turn or duplicate deletion starts automatically.
+
+The browser records the request before delivery. A lost acknowledgement or a
+failure after native mutation exposes **Check delete outcome**, which inspects
+native state and finishes the same receipt without replaying `thread/delete`.
+Catalog, FTS, tags and metadata are removed only after native absence is proven.
+Manual/external forks that reference the family but are not represented by the
+native spawned-agent graph cause a pre-mutation refusal; Serena does not guess
+that they belong to the delete operation.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_archive.py tests/test_workspace_archive_host.py tests/test_workspace_delete.py tests/test_workspace_delete_host.py tests/test_workspace_catalog.py tests/test_workspace_journal.py tests/test_workspace_host.py -q
+node --test tests/workspace-*.test.mjs
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-native-delete.py --browser-width 390
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_archive.py core/workspace_catalog.py core/workspace_host.py core/workspace_journal.py scripts/verify-workspace-native-delete.py tests/test_workspace_catalog.py tests/test_workspace_delete.py tests/test_workspace_delete_host.py tests/test_workspace_journal.py tests/test_workspace_pane.py
+git diff --check
+```
+
+All final commands exited 0: 323 Python tests passed in 37.41s; 124 Node tests
+passed and one was skipped; the native browser proof passed with one explicit
+HTTP delete request, two native family deletes, one read-only reconciliation,
+four reaped processes, retained draft/recovery copy and no credentials or
+inference; Ruff and diff checks passed. The focused destructive pane rerun also
+passed eight tests after removing `/delete` from the stale unsupported-command
+fixture. Source: [official App Server reference](https://learn.chatgpt.com/docs/app-server),
+accessed 2026-09-10. This is source verification, not final packaged parity.
+
 ## Unapplied Restore Native Proof (2026-09-10)
 
 The verifier now covers failure before native restoration, completing the
