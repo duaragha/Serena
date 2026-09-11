@@ -14040,7 +14040,13 @@ def api_health():
     running server (mobile_host) or spawn its own sidecar, so it has to live
     on the app rather than on one launcher.
     """
-    return jsonify({"ok": True, "pid": os.getpid()})
+    return jsonify({
+        "ok": True,
+        "pid": os.getpid(),
+        "capabilities": {
+            "structuredWorkspace": 1 if "workspace_host" in app.extensions else 0,
+        },
+    })
 
 
 # ---------------------------------------------------------------------------

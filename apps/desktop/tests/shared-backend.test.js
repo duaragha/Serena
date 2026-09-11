@@ -21,7 +21,7 @@ test('attaches to a healthy backend that is already running', async () => {
   const server = await serve((req, res) => {
     if (req.url === '/api/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, pid: 4242 }));
+      res.end(JSON.stringify({ ok: true, pid: 4242, capabilities: { structuredWorkspace: 1 } }));
       return;
     }
     res.writeHead(404).end();
@@ -34,6 +34,28 @@ test('attaches to a healthy backend that is already running', async () => {
   } finally {
     server.close();
   }
+});
+
+for (const capabilities of [undefined, {}, { structuredWorkspace: 0 }, { structuredWorkspace: true }, { structuredWorkspace: 2 }]) {
+  test(`does not reuse an incompatible workspace backend: ${JSON.stringify(capabilities)}`, async () => {
+    const server = await serve((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, pid: 4242, capabilities }));
+    });
+    try {
+      assert.equal(await findExistingBackend({ port: portOf(server) }), null);
+      assert.equal((await findExistingBackend({
+        port: portOf(server), requireStructuredWorkspace: false,
+      })).pid, 4242, 'explicit legacy rollback may reuse the old backend');
+    } finally {
+      server.close();
+    }
+  });
+}
+
+test('the shell requires the workspace unless explicitly rolled back', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(source, /requireStructuredWorkspace: process\.env\.SERENA_STRUCTURED_WORKSPACE !== '0'/);
 });
 
 test('ignores a server whose health payload is not ours', async () => {

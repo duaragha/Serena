@@ -112,7 +112,7 @@ const SHARED_BACKEND_PORT = Number.parseInt(
  *
  * mobile_host runs the same Flask app as a persistent service so the phone
  * can reach Serena while the desktop app is closed. When it is up there is
- * no reason to pay for a second copy, so the shell attaches to it instead.
+ * the shell can attach if it also supports the requested workspace contract.
  * Returns null when nothing healthy answers, and the caller spawns its own.
  */
 async function findExistingBackend(options = {}) {
@@ -124,6 +124,8 @@ async function findExistingBackend(options = {}) {
   const url = `http://${host}:${port}`;
   try {
     const health = await requestHealth(`${url}/api/health`, timeoutMs);
+    if (options.requireStructuredWorkspace !== false
+        && health.capabilities?.structuredWorkspace !== 1) return null;
     return { url, pid: health.pid, owned: false };
   } catch {
     return null;
