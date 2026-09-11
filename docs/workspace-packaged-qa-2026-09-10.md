@@ -1,5 +1,22 @@
 # Native Workspace Packaged QA
 
+## Superseding 0.2.46 Linux Candidate (2026-09-11)
+
+The merged 0.2.46 tree rebuilt the frozen sidecar and AppImage after integrating
+the v0.2.45 runtime hardening. The sidecar build exited 0, including its Fleet
+peer MCP contract smoke. Real Electron against that frozen binary exited 0 for
+native Claude/Codex creation, exact-session input/output, linked panes, history,
+clipboard, drafts, login cancellation, reconnect, ownership preservation and
+clean teardown. No inference or user session mutation was used by the proof.
+
+`Serena-0.2.46-x86_64.AppImage` then built with exit 0 and its packaged smoke
+exited 0 after starting the bundled sidecar and shutting down cleanly. SHA-256:
+`84b247bfdc3dfc7d3e6b735b1522c92d367d6b5112f885e07287a8bcdc12830f`.
+Linked, standalone Claude, standalone Codex and 390px Codex screenshots were
+visually inspected: panes are nonblank, controls fit, drafts remain visible and
+no incoherent overlap was present. The tagged Windows job remains responsible
+for the native Windows package proof.
+
 Source: `748573e` on `feat/interactive-workspace`. Executed 2026-09-10.
 This is a frozen-backend plus real Electron proof, not an installer release,
 default enablement, or a claim of complete command parity. Gemini is deferred.

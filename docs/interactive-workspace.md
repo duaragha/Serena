@@ -1,6 +1,45 @@
 # Interactive Workspace Delivery Contract
 
-Status: implementation in progress. Not a delivered replacement.
+Status: Claude and Codex release candidate 0.2.46. The structured workspace is
+the default code-pane path; set `SERENA_STRUCTURED_WORKSPACE=0` only for an
+explicit rollback. Gemini remains deferred by user direction. Historical
+checkpoint notes below are retained, but this status supersedes their earlier
+disabled, incomplete and unreleased statements.
+
+## Claude and Codex Default Delivery (2026-09-11)
+
+Claude and Codex now run as exact-session structured panes inside Serena. The
+workspace preserves linked identities, drafts, history, permissions, tools,
+uploads, clipboard behavior, session actions, responsive layouts and native
+provider output without embedding either provider's terminal UI. Reads do not
+start owners, closing a pane does not stop its session, and durable coding work
+continues to block a competing writer. Unsupported or unstable provider/TUI
+operations report an explicit unavailable state instead of becoming model text.
+
+Codex uses its native app-server protocol and authenticated ChatGPT account.
+Claude uses its native Agent SDK owner plus Serena-local command controls. Named
+Claude clear and forced plugin reload are exact native actions with durable
+receipts; Codex typed commands and the supported official command catalog route
+through native controls. Both providers keep their real model and session IDs.
+
+Final merged source and package gates:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_*.py -q --tb=short
+# exit 0: 1242 passed, 12 skipped, 1 forkpty deprecation warning in 433.29s
+SERENA_PYTHON=/home/raghav/Documents/Projects/serena/.venv/bin/python PYTHONPATH=apps/desktop/build/proof-tools/python-deps npm run build:sidecar
+# exit 0: frozen sidecar built; Fleet peer MCP startup/contract/refusal passed
+SERENA_EVIDENCE_KIND=live .../python scripts/verify-workspace-codex-history.py apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
+# exit 0: real Electron plus frozen backend, exact Claude/Codex owners, linked
+# panes, native input/output, resume, clipboard, creation and clean shutdown
+npm run smoke:appimage
+# exit 0: Serena-0.2.46-x86_64.AppImage started its sidecar and shut down cleanly
+```
+
+The AppImage SHA-256 is
+`84b247bfdc3dfc7d3e6b735b1522c92d367d6b5112f885e07287a8bcdc12830f`.
+Windows source and packaging contracts pass on Linux; native Windows build and
+release validation remain owned by the tagged GitHub Actions runner.
 
 ## Native Codex Command Controls (2026-09-11)
 

@@ -1,5 +1,21 @@
 # Rich Workspace Integration QA
 
+## Release Candidate 0.2.46 (2026-09-11)
+
+The structured workspace is default-on for Claude and Codex. Gemini is deferred.
+This release-candidate record supersedes the older checkpoint qualification
+immediately below.
+
+- Python workspace matrix: exit 0, 1,242 passed, 12 platform-only skipped.
+- Shared pane browser matrix: exit 0, 301 passed at responsive desktop/mobile
+  widths after the final focus regression repair.
+- Windows packaging and merged runtime gate: exit 0, 37 passed, 12 native-Windows
+  skipped on Linux; both frozen workspace and Fleet replay dispatches guarded.
+- Frozen Linux sidecar: build exit 0, followed by real Electron/native proof
+  exit 0 with exact Claude/Codex session input, output, linked panes and cleanup.
+- AppImage: build exit 0; packaged smoke exit 0 with sidecar startup and clean
+  shutdown. Screenshots were inspected for linked, standalone and mobile panes.
+
 2026-09-10. Worktree: `_artifacts/serena-interactive-workspace`.
 Full Claude/Codex delivery remains incomplete and unreleased; this is an
 integration checkpoint, not a claim that every CLI capability is finished.

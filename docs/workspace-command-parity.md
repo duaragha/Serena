@@ -1,7 +1,34 @@
 # Workspace Command Parity Audit
 
-Status: incomplete. Catalog presence and generic input forwarding are not proof
-that a command's full behavior works. Gemini is deferred.
+Status: Claude and Codex delivery scope complete for stable native capabilities.
+Commands without a stable provider API, including presentation-only terminal
+commands, are listed as unavailable and never forwarded as model prompts.
+Gemini is deferred. This status supersedes historical gap notes below.
+
+## Final Native Command Contract (2026-09-11)
+
+Every recognized Claude and Codex command is one of three things: an exact
+provider-native request, an exact Serena-local operation with a durable receipt,
+or an explicit unavailable response. Unknown slash commands are retained in the
+draft and never reach inference. Mutating actions require the exact session
+owner, reject competing durable work and preserve drafts on refusal.
+
+Claude supports its native SDK command catalog plus Serena-local session/model,
+effort, context, permission, plugin and lifecycle controls. `/clear [name]`
+creates the provider-native clean session, applies and verifies an optional
+native name, and swaps identity only after both operations succeed.
+`/reload-plugins --force` invokes the exact local reload path without replay.
+
+Codex uses current app-server controls for its stable command catalog, typed
+arguments, model/effort/speed, account, history, tools, MCP, skills, memories,
+apps, hooks, diff, file mentions and lifecycle behavior. TUI-only controls such
+as pets, theme, statusline and raw terminal presentation remain honestly
+unsupported in a structured pane.
+
+The final merged all-workspace run passed 1,242 tests with 12 platform-only
+skips. The real frozen Electron proof also exercised native Claude and Codex
+creation, exact-session routing, linked-pane focus, clipboard, drafts, native
+output, reconnect and shutdown without duplicate owners.
 
 ## Native Codex Extended Controls (2026-09-11)
 
