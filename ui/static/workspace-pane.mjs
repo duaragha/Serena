@@ -202,7 +202,7 @@ export class WorkspacePane {
       try { await this.controls.compact(); }
       catch(error){ this.error(error); this.render(); }
     });
-    this.compactButton.hidden=provider !== 'Codex' || !controls.compact;
+    this.compactButton.hidden=true;
     footer.insertBefore(this.compactButton,this.stop);
     this.tasksButton = this.button('Background tasks', 'list-tree', () => this.openBackgroundTasks());
     this.tasksButton.hidden = !['Codex','Claude'].includes(provider) || !controls.backgroundTasks;
@@ -2568,7 +2568,7 @@ export class WorkspacePane {
         this.error(Error('Session commands do not accept arguments, attachments or skills'));return;
       }
       if(codexCommand[1]==='skills' && this.controls.commands){this.commandSuggestions.open();return;}
-      if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
+      if((codexControl.hidden && codexCommand[1]!=='compact') || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
       if(codexCommand[1]!=='compact'){this.activateCommandControl(codexControl);return;}
     }
     const localCommand=this.provider==='Claude' && /^\/(clear|reset|new|fork|resume)(?:\s|$)/.exec(text.trim());

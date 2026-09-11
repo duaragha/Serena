@@ -3749,10 +3749,11 @@ def test_review_dialog_routes_explicit_target_without_submitting_message(pane):
 def test_compact_command_is_native_and_waits_for_provider_completion(pane):
     page, errors = pane
     page.evaluate("""() => {
-      pane.provider='Codex';pane.compactButton.hidden=false;controls.compact=async()=>{
+      pane.provider='Codex';controls.compact=async()=>{
         calls.push(['compact']);emit({method:'workspace/activity',params:{threadId:'exact',status:'compacting'}});
       };
     }""")
+    assert page.locator('#left').get_by_role('button', name='Compact conversation', exact=True).is_hidden()
     page.locator("#left textarea").fill("/compact")
     page.locator("#left").get_by_role("button", name="Send message", exact=True).click()
     page.wait_for_function("calls.length===1")
