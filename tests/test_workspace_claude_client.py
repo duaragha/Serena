@@ -85,6 +85,37 @@ def test_clear_waits_for_old_output_to_be_consumed_before_identity_handoff():
     asyncio.run(run())
 
 
+def test_named_clear_reaches_transport_and_preserves_native_confirmation():
+    async def run():
+        client = ClaudeTypeScriptClient(
+            options=SimpleNamespace(resume="old", cwd="/project", cli_path="claude", env={}),
+            sdk_path="sdk",
+            node_path="node",
+            transport_factory=Transport,
+        )
+
+        async def begin(name):
+            assert name == "Next work"
+            return {"sessionId": "new", "requestedName": name, "nameConfirmed": True}
+
+        client.transport.begin_clear = begin
+        async def drain():
+            async for _ in client.receive_messages():
+                pass
+
+        consumer = asyncio.create_task(drain())
+        result_task = asyncio.create_task(client.begin_clear("Next work"))
+        assert await result_task == {
+            "sessionId": "new",
+            "requestedName": "Next work",
+            "nameConfirmed": True,
+        }
+        await client.messages.put(None)
+        await consumer
+
+    asyncio.run(run())
+
+
 def test_compatibility_controls_and_native_records():
     async def run():
         options = SimpleNamespace(resume="exact", cwd="/project", cli_path="claude", env={})

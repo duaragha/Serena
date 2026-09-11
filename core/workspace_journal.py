@@ -251,7 +251,7 @@ class WorkspaceJournal:
                 or not Path(target["cwd"]).is_absolute()
                 or set(target) != identity_keys | (name_keys if named else set())
                 or (named and
-                    (target.get("provider") != "codex" or not isinstance(requested_name, str)
+                    (not isinstance(requested_name, str)
                      or not requested_name or requested_name != requested_name.strip()
                      or len(requested_name) > 1000
                      or any(ord(char) < 32 or ord(char) == 127 for char in requested_name)

@@ -293,6 +293,53 @@ def test_clear_refuses_any_old_session_work(tmp_path, busy):
     asyncio.run(run())
 
 
+def test_named_clear_requires_exact_native_title_confirmation(tmp_path):
+    async def run():
+        owner, _ = make(tmp_path)
+        await owner.open()
+        target = "11111111-2222-4333-8444-555555555555"
+
+        async def begin(name):
+            assert name == "Next work"
+            return {
+                "sessionId": target,
+                "requestedName": name,
+                "nameConfirmed": True,
+            }
+
+        owner.client.begin_clear = begin
+        result = await owner.begin_clear("Next work")
+        assert result == {
+            "session_id": target,
+            "provider": "claude",
+            "cwd": str(tmp_path),
+            "requestedName": "Next work",
+            "nameConfirmed": True,
+        }
+        assert owner.state == "awaiting-handoff"
+        await owner.close()
+
+        owner, _ = make(tmp_path)
+        await owner.open()
+
+        async def unconfirmed(name):
+            return {
+                "sessionId": target,
+                "requestedName": name,
+                "nameConfirmed": False,
+                "nameError": "Native rename unavailable",
+            }
+
+        owner.client.begin_clear = unconfirmed
+        result = await owner.begin_clear("Next work")
+        assert result["nameConfirmed"] is False
+        assert result["nameError"] == "Native rename unavailable"
+        assert owner.state == "awaiting-handoff"
+        await owner.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("failure", ["lease", "publish", "ack", "cancel"])
 def test_clear_handoff_failure_retains_correct_lease_and_blocks_input(tmp_path, failure):
     async def run():
@@ -802,6 +849,15 @@ def test_command_catalog_and_session_switch_guard(tmp_path):
             assert not owner.client.sent
             await owner.submit([{"type": "text", "text": "/context"}])
             assert owner.client.sent[0][0] == "exact"
+            await owner.client.messages.put(ResultMessage(
+                subtype="success", duration_ms=1, duration_api_ms=0, is_error=False,
+                num_turns=0, session_id="exact"))
+            for _ in range(50):
+                if owner.state == "ready":
+                    break
+                await asyncio.sleep(.01)
+            await owner.submit([{"type": "text", "text": "/reload-plugins --force"}])
+            assert owner.client.sent[-1][1]["message"]["content"][0]["text"] == "/reload-plugins --force"
         finally:
             await owner.close()
 

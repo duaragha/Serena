@@ -23,8 +23,8 @@ function fixture(overrides={}) {
   return {session,calls,outputs,stream,get setup(){return setup;}};
 }
 
-function transitionFixture(){
-  const f=fixture(), inbox=[];let wake,closed=false;
+function transitionFixture(overrides={}){
+  const f=fixture(overrides), inbox=[];let wake,closed=false;
   f.stream[Symbol.asyncIterator]=async function*(){while(!closed){if(inbox.length)yield inbox.shift();else await new Promise(done=>{wake=done;});}};
   f.stream.close=()=>{closed=true;wake?.();};
   f.emit=message=>{inbox.push(message);wake?.();wake=null;};
@@ -93,6 +93,46 @@ for(const receipt of [true,false])test(`clear blocks input until handoff and ret
   assert.throws(()=>f.session.send({type:'user',session_id:'exact'}),/exact/);
   f.session.send({type:'user',session_id:clearedId,message:{role:'user',content:'next'}});
   assert.equal((await f.setup.prompt.next()).value.session_id,clearedId);
+  await f.session.close();
+});
+
+test('named clear verifies the persisted target title before ownership handoff',async()=>{
+  const renames=[];
+  const f=transitionFixture({
+    renameSession:async(sid,title,options)=>renames.push([sid,title,options]),
+    getSessionInfo:async sid=>sid==='exact'
+      ? {sessionId:'exact',cwd:'/project'}
+      : {sessionId:clearedId,cwd:'/project',customTitle:'Next work'},
+  });
+  await f.session.open();
+  const clear=f.session.beginClear('Next work');
+  const input=(await f.setup.prompt.next()).value;
+  assert.equal(input.message.content,'/clear');
+  f.emit({type:'result',subtype:'success',is_error:false,session_id:clearedId,user_message_uuid:input.uuid});
+  assert.deepEqual(await clear,{sessionId:clearedId,requestedName:'Next work',nameConfirmed:true});
+  assert.deepEqual(renames,[[clearedId,'Next work',{dir:'/project'}]]);
+  await f.session.commitClear(clearedId);
+  await f.session.close();
+});
+
+test('named clear rejects invalid titles and receipts native rename failure without replay',async()=>{
+  for(const title of [' spaced', 'bad\nname', 'x'.repeat(1001)]){
+    const f=transitionFixture();await f.session.open();
+    await assert.rejects(f.session.beginClear(title),/Conversation title/);
+    assert.equal(f.session.state,'ready');
+    assert.equal(f.session.pending.length,0);
+    await f.session.close();
+  }
+  const f=transitionFixture({renameSession:async()=>{},getSessionInfo:async sid=>sid==='exact'
+    ? {sessionId:'exact',cwd:'/project'}
+    : {sessionId:clearedId,cwd:'/project',customTitle:'Wrong'}});
+  await f.session.open();
+  const clear=f.session.beginClear('Expected'),input=(await f.setup.prompt.next()).value;
+  f.emit({type:'result',subtype:'success',is_error:false,session_id:clearedId,user_message_uuid:input.uuid});
+  assert.deepEqual(await clear,{sessionId:clearedId,requestedName:'Expected',nameConfirmed:false,
+    nameError:'Native session title did not match the requested name'});
+  assert.equal(f.session.state,'awaiting-handoff');
+  await f.session.commitClear(clearedId);
   await f.session.close();
 });
 

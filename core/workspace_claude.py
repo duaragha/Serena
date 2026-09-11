@@ -355,8 +355,18 @@ class ClaudeWorkspace:
                 raise ValueError("Native fork did not return a new session identity")
             return {"session_id": sid, "provider": "claude", "cwd": str(self.cwd)}
 
-    async def begin_clear(self):
+    async def begin_clear(self, name=None):
         async with self._control:
+            if name is not None and (
+                not isinstance(name, str)
+                or not name
+                or name != name.strip()
+                or len(name) > 1000
+                or any(ord(char) < 32 or ord(char) == 127 for char in name)
+            ):
+                raise ValueError(
+                    "Conversation title must contain at most 1000 characters without control characters"
+                )
             if (self.state != "ready" or self.active_turn or self.questions or self.elicitations
                     or any(task.get("status") not in {"completed", "failed", "stopped", "killed"}
                            for task in self.events.tasks.values())):
@@ -366,7 +376,7 @@ class ClaudeWorkspace:
                 raise RuntimeError("This Claude runtime cannot transfer session ownership")
             self.state = "clearing"
             try:
-                result = await begin()
+                result = await (begin() if name is None else begin(name))
                 sid = result.get("sessionId") if isinstance(result, dict) else None
                 if not isinstance(sid, str) or str(UUID(sid)) != sid or sid == self.session_id:
                     raise ValueError("Native clear returned an invalid new identity")
@@ -376,7 +386,32 @@ class ClaudeWorkspace:
                     raise RuntimeError("Claude is no longer quiescent after draining clear output")
                 self._clear_target = sid
                 self.state = "awaiting-handoff"
-                return {"session_id": sid, "provider": "claude", "cwd": str(self.cwd)}
+                target = {"session_id": sid, "provider": "claude", "cwd": str(self.cwd)}
+                if name is not None:
+                    confirmed = result.get("nameConfirmed")
+                    name_error = result.get("nameError")
+                    if (
+                        result.get("requestedName") != name
+                        or type(confirmed) is not bool
+                        or (confirmed and name_error is not None)
+                        or (
+                            not confirmed
+                            and (
+                                not isinstance(name_error, str)
+                                or not name_error
+                                or len(name_error) > 1000
+                                or any(
+                                    ord(char) < 32 or ord(char) == 127
+                                    for char in name_error
+                                )
+                            )
+                        )
+                    ):
+                        raise ValueError("Native clear returned an invalid title receipt")
+                    target.update(requestedName=name, nameConfirmed=confirmed)
+                    if not confirmed:
+                        target["nameError"] = name_error
+                return target
             except BaseException:
                 self.state = "unavailable"
                 raise

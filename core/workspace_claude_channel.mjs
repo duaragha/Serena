@@ -56,8 +56,11 @@ export class ClaudeSdkChannel {
           result=await this.session.control(params.method,...params.args);
           break;
         case 'begin_clear':
-          if(!this.session || Object.keys(params).length || this.pending.size)throw new Error('Clear requires an open session without pending approvals');
-          result=await this.session.beginClear();
+          if(!this.session || Object.keys(params).some(key=>key!=='name')
+             || (Object.hasOwn(params,'name') && typeof params.name!=='string') || this.pending.size){
+            throw new Error('Clear requires an open session, optional title and no pending approvals');
+          }
+          result=await this.session.beginClear(params.name || '');
           break;
         case 'commit_clear':
           if(!this.session || Object.keys(params).length!==1 || typeof params.sessionId!=='string')throw new Error('Exact pending session identity required');

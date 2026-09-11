@@ -37,16 +37,18 @@ test('clear handoff has explicit private methods with exact payloads',async()=>{
   assert.deepEqual(f.calls,[]);
   await f.channel.receive({id:2,method:'open'});
   const target='11111111-2222-4333-8444-555555555555';
-  f.channel.session.beginClear=async()=>{f.calls.push('clear');return {sessionId:target};};
+  f.channel.session.beginClear=async name=>{f.calls.push(['clear',name]);return {sessionId:target};};
   f.channel.session.commitClear=async sid=>{assert.equal(sid,target);f.calls.push('commit');return {sessionId:sid};};
   await f.channel.receive({id:3,method:'begin_clear',params:{unexpected:true}});
   assert.ok(f.messages.at(-1).error);
-  await f.channel.receive({id:4,method:'begin_clear',params:{}});
+  await f.channel.receive({id:'bad-name',method:'begin_clear',params:{name:42}});
+  assert.ok(f.messages.at(-1).error);
+  await f.channel.receive({id:4,method:'begin_clear',params:{name:'Next work'}});
   assert.deepEqual(f.messages.at(-1).result,{sessionId:target});
   await f.channel.receive({id:5,method:'commit_clear',params:{sessionId:target,unexpected:true}});
   assert.ok(f.messages.at(-1).error);
   await f.channel.receive({id:6,method:'commit_clear',params:{sessionId:target}});
-  assert.deepEqual(f.calls,['create','clear','commit']);
+  assert.deepEqual(f.calls,['create',['clear','Next work'],'commit']);
 });
 
 test('pending permission prevents native clear dispatch',async()=>{

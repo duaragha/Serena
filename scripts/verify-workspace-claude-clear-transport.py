@@ -49,7 +49,10 @@ async def main():
         await transport.open()
         native_pid = transport.owned_pid
         wrapper_pid = transport.rpc.process.pid
-        target = (await transport.begin_clear())["sessionId"]
+        transition = await transport.begin_clear("Transport clear proof")
+        target = transition["sessionId"]
+        assert transition["requestedName"] == "Transport clear proof"
+        assert transition["nameConfirmed"] is True
         assert source != target and transport.session_id == source
         for operation in (transport.send({"session_id": source}),
                           transport.control("supportedAgents"), transport.commit_clear(source)):
@@ -101,7 +104,10 @@ async def main():
         await owner.open()
         native_pid = owner.client.owned_pid
         original_events = list(old_events)
-        target = (await owner.begin_clear())["session_id"]
+        transition = await owner.begin_clear("Owner clear proof")
+        target = transition["session_id"]
+        assert transition["requestedName"] == "Owner clear proof"
+        assert transition["nameConfirmed"] is True
         await owner.commit_clear(target, publish=new_publish)
         assert owner.state == "ready" and owner.client.options.resume == target
         assert owner._lease.record["child"]["pid"] == native_pid
@@ -159,7 +165,8 @@ async def main():
         pid = None
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch()
+                channel = os.environ.get("SERENA_PROOF_BROWSER_CHANNEL")
+                browser = p.chromium.launch(**({"channel": channel} if channel else {}))
                 try:
                     page = browser.new_page(viewport={"width": width, "height": 900})
                     errors = []

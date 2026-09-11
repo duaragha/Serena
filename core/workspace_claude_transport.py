@@ -157,21 +157,58 @@ class ClaudeSdkTransport:
         finally:
             barrier.cancel()
 
-    async def begin_clear(self):
+    async def begin_clear(self, name=None):
         self._ready()
         if self.questions:
             raise WorkspaceRpcError("Resolve pending interactions before clearing")
+        if name is not None and not isinstance(name, str):
+            raise WorkspaceRpcError("Conversation title must be text")
         self.transition_pending = True
         try:
-            result = await self.rpc.request("begin_clear", {})
+            result = await self.rpc.request(
+                "begin_clear", {} if name is None else {"name": name}
+            )
             sid = result.get("sessionId") if isinstance(result, dict) else None
             if not isinstance(sid, str) or str(UUID(sid)) != sid or sid == self.session_id:
                 raise WorkspaceRpcError("Native clear returned an invalid session identity")
+            if name is not None:
+                confirmed = result.get("nameConfirmed")
+                name_error = result.get("nameError")
+                if (
+                    result.get("requestedName") != name
+                    or type(confirmed) is not bool
+                    or (confirmed and name_error is not None)
+                    or (
+                        not confirmed
+                        and (
+                            not isinstance(name_error, str)
+                            or not name_error
+                            or len(name_error) > 1000
+                            or any(ord(char) < 32 or ord(char) == 127 for char in name_error)
+                        )
+                    )
+                ):
+                    raise WorkspaceRpcError("Native clear returned an invalid title receipt")
             self.transition_target = sid
             if self.failure or self.closing:
                 raise WorkspaceRpcError("Transport closed during clear")
             await self._drain_events()
-            return {"sessionId": sid}
+            return {
+                "sessionId": sid,
+                **(
+                    {
+                        "requestedName": name,
+                        "nameConfirmed": result["nameConfirmed"],
+                        **(
+                            {"nameError": result["nameError"]}
+                            if result["nameConfirmed"] is False
+                            else {}
+                        ),
+                    }
+                    if name is not None
+                    else {}
+                ),
+            }
         except asyncio.CancelledError:
             self.failure = WorkspaceRpcError("Clear outcome is unconfirmed after cancellation")
             raise

@@ -115,8 +115,25 @@ export class ClaudeSdkSession {
                || !transition.target || message.session_id!==transition.target){
               throw new Error('Native clear did not confirm the requested session transition');
             }
+            if(transition.requestedName){
+              try{
+                if(typeof this.sdk.renameSession!=='function')throw new Error('Native session rename is unavailable');
+                await this.sdk.renameSession(transition.target,transition.requestedName,{dir:this.cwd});
+                const info=await this.sdk.getSessionInfo(transition.target,{dir:this.cwd});
+                if(info?.sessionId!==transition.target || info.customTitle!==transition.requestedName){
+                  throw new Error('Native session title did not match the requested name');
+                }
+                transition.nameConfirmed=true;
+              }catch(error){
+                transition.nameConfirmed=false;
+                transition.nameError=String(error?.message || error).replace(/[\u0000-\u001f\u007f]+/g,' ').trim().slice(0,1000)
+                  || 'Native title confirmation failed';
+              }
+            }
             this.state='awaiting-handoff';
-            transition.resolve({sessionId:transition.target});
+            transition.resolve({sessionId:transition.target,
+              ...(transition.requestedName?{requestedName:transition.requestedName,nameConfirmed:transition.nameConfirmed,
+                ...(!transition.nameConfirmed?{nameError:transition.nameError}:{})}:{})});
           }
           continue;
         }
@@ -168,14 +185,18 @@ export class ClaudeSdkSession {
     if (this.state!=='ready') throw new Error('Native session is not ready');
   }
 
-  async beginClear() {
+  async beginClear(requestedName='') {
     this.requireReady();
     if(this.outstanding.size || this.pending.length)throw new Error('Finish pending inputs before clearing');
+    if(typeof requestedName!=='string' || requestedName.length>1000 || requestedName!==requestedName.trim()
+       || /[\u0000-\u001f\u007f]/.test(requestedName)){
+      throw new Error('Conversation title must contain at most 1000 characters without control characters');
+    }
     const requestId=randomUUID();
     let resolve,reject;
     const result=new Promise((done,fail)=>{resolve=done;reject=fail;});
     result.catch(()=>{});
-    this.transition={source:this.sessionId,requestId,events:[],resolve,reject};
+    this.transition={source:this.sessionId,requestId,events:[],requestedName,resolve,reject};
     this.state='clearing';
     this.pending.push({type:'user',uuid:requestId,session_id:this.sessionId,parent_tool_use_id:null,
       message:{role:'user',content:'/clear'}});

@@ -113,6 +113,56 @@ def test_clear_blocks_input_until_exact_handoff_ack(monkeypatch, tmp_path):
     asyncio.run(run())
 
 
+def test_named_clear_requires_exact_native_title_receipt(monkeypatch, tmp_path):
+    async def run():
+        transport, _ = make(monkeypatch, tmp_path)
+        await transport.open()
+        calls = []
+
+        async def request(method, params, **kwargs):
+            calls.append((method, params))
+            if method == "begin_clear":
+                return {
+                    "sessionId": TARGET,
+                    "requestedName": "Next work",
+                    "nameConfirmed": True,
+                }
+            return {"sessionId": TARGET}
+
+        transport.rpc.request = request
+        result = await transport.begin_clear("Next work")
+        assert result["requestedName"] == "Next work"
+        assert calls == [("begin_clear", {"name": "Next work"})]
+        await transport.commit_clear(TARGET)
+        await transport.close()
+
+        transport, _ = make(monkeypatch, tmp_path)
+        await transport.open()
+
+        async def unconfirmed(method, params, **kwargs):
+            if method == "close":
+                return {"closed": True}
+            return {
+                "sessionId": TARGET,
+                "requestedName": params["name"],
+                "nameConfirmed": False,
+                "nameError": "Native rename unavailable",
+            }
+
+        transport.rpc.request = unconfirmed
+        result = await transport.begin_clear("Next work")
+        assert result == {
+            "sessionId": TARGET,
+            "requestedName": "Next work",
+            "nameConfirmed": False,
+            "nameError": "Native rename unavailable",
+        }
+        assert transport.failure is None and transport.transition_pending
+        await transport.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("phase", ["begin_clear", "commit_clear"])
 @pytest.mark.parametrize("failure", ["cancel", "timeout", "identity"])
 def test_unconfirmed_clear_never_retries_or_unblocks(monkeypatch, tmp_path, phase, failure):

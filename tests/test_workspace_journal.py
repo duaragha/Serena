@@ -252,12 +252,14 @@ def test_clear_checkpoint_requires_claim_and_preserves_exact_identity(tmp_path):
         journal.complete_clear("source", "clear")
 
 
-@pytest.mark.parametrize("confirmed", [True, False])
-def test_named_clear_checkpoint_matches_exact_command_and_keeps_title_outcome(tmp_path, confirmed):
+@pytest.mark.parametrize(("provider", "confirmed"), [
+    ("codex", True), ("codex", False), ("claude", True), ("claude", False),
+])
+def test_named_clear_checkpoint_matches_exact_command_and_keeps_title_outcome(tmp_path, provider, confirmed):
     journal = WorkspaceJournal(tmp_path / "named-clear.db")
     target = {
         "session_id": "11111111-2222-4333-8444-555555555555",
-        "provider": "codex",
+        "provider": provider,
         "cwd": str(tmp_path),
         "requestedName": "Next work",
         "nameConfirmed": confirmed,

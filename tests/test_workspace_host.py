@@ -1676,6 +1676,48 @@ def test_codex_named_clear_renames_exact_created_owner_without_repeating_creatio
         host.shutdown()
 
 
+def test_claude_named_clear_uses_confirmed_native_transition_without_replay(tmp_path):
+    target = "11111111-2222-4333-8444-555555555555"
+    calls = []
+
+    class NamedClearOwner(Owner):
+        async def begin_clear(self, name=None):
+            calls.append(("clear", self.sid, name))
+            self.state = "awaiting-handoff"
+            return {
+                "session_id": target,
+                "provider": "claude",
+                "cwd": str(tmp_path),
+                "requestedName": name,
+                "nameConfirmed": True,
+            }
+
+        async def commit_clear(self, sid, *, publish):
+            calls.append(("commit", sid))
+            self.sid = sid
+            self.state = "ready"
+            await publish({"method": "workspace/history", "params": {"thread": {"id": sid, "turns": []}}})
+
+    host = WorkspaceHost(
+        journal=WorkspaceJournal(tmp_path / "claude-named-clear.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
+        factories={"claude": NamedClearOwner},
+    )
+    payload = {"confirmed": True, "name": "Next work"}
+    try:
+        host.attach("source")
+        result = host.command("source", "named", "clear_session", payload)
+        assert result["ok"]
+        assert result["result"]["session_id"] == target
+        assert result["result"]["requestedName"] == "Next work"
+        assert result["result"]["nameConfirmed"] is True
+        assert host.command("source", "named", "clear_session", payload) == result
+        assert calls == [("clear", "source", "Next work"), ("commit", target)]
+        assert host.describe_pending_session(target)["title"] == "Next work"
+    finally:
+        host.shutdown()
+
+
 def test_clear_requires_confirmation_idle_owner_and_no_queued_bridge(tmp_path):
     value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "clear.db"),
                           resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},

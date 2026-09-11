@@ -80,6 +80,9 @@ async def prove(root):
             result = await command(text)
             assert not result["is_error"] and result["num_turns"] == 0
             assert expected in result["result"], text
+        force_reload = await command("/reload-plugins --force")
+        assert not force_reload["is_error"] and force_reload["num_turns"] == 0
+        assert force_reload["total_cost_usd"] == 0
         title_records = []
         for path in (root / "config").rglob(f"{sid}.jsonl"):
             for line in path.read_text().splitlines():
@@ -127,6 +130,7 @@ async def prove(root):
         print(json.dumps({"commandNames": [command["name"] for command in catalog],
                           "catalogCount": len(catalog), "doctorIsNativeSkill": True,
                           "localCommandsVerified": list(local_commands),
+                          "forcedPluginReloadVerified": True,
                           "exactCommandOutputAndTurnIdentity": True,
                           "nativeRenamePersistedForExactSession": True,
                           "nativeRenameIndexedInCatalog": True,

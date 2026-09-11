@@ -67,8 +67,8 @@ class ClaudeTypeScriptClient:
     async def fork_session(self):
         return await self.transport.control("forkSession")
 
-    async def begin_clear(self):
-        result = await self.transport.begin_clear()
+    async def begin_clear(self, name=None):
+        result = await (self.transport.begin_clear() if name is None else self.transport.begin_clear(name))
         await self._drain_messages()
         return result
 

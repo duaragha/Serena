@@ -1933,6 +1933,18 @@ def test_reload_commands_use_native_controls_without_model_input(pane, command, 
     assert not errors
 
 
+def test_claude_force_plugin_reload_uses_exact_native_command_without_model_rewrite(pane):
+    page, errors = pane
+    page.evaluate("() => {pane.input.value='/reload-plugins --force';pane.render();}")
+    page.locator('#left').get_by_role('button', name='Send message', exact=True).click()
+    page.wait_for_function('calls.length===1')
+    assert page.evaluate('calls') == [[
+        'submit', {'text': '/reload-plugins --force', 'files': []}
+    ]]
+    assert page.evaluate('pane.input.value') == ''
+    assert not errors
+
+
 def test_pending_command_streams_output_without_raw_event_json(pane):
     page, errors = pane
     page.evaluate("""() => emit({method:'item/started',params:{turnId:'t',item:{
@@ -2858,15 +2870,16 @@ def test_session_command_arguments_never_reach_native_submit(pane, invalid):
 
 
 @pytest.mark.parametrize("width", [390, 1600])
-def test_codex_named_clear_confirms_exact_title_without_auto_opening(pane, width):
+@pytest.mark.parametrize("provider", ["Claude", "Codex"])
+def test_named_clear_confirms_exact_title_without_auto_opening(pane, width, provider):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})
-    page.evaluate("""()=>{
-      controls.clearSession=async name=>{calls.push(['clear',name]);return {session_id:'11111111-1111-4111-8111-111111111111',provider:'codex',requestedName:name,nameConfirmed:true};};
+    page.evaluate("""provider=>{
+      controls.clearSession=async name=>{calls.push(['clear',name]);return {session_id:'11111111-1111-4111-8111-111111111111',provider:provider.toLowerCase(),requestedName:name,nameConfirmed:true};};
       controls.openCleared=async sid=>calls.push(['open',sid]);
-      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider,controls});window.seq=0;
       emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/clear Next work';pane.render();
-    }""")
+    }""", provider)
     page.locator('#left textarea').press('Enter')
     dialog = page.get_by_role('dialog', name='Clear context', exact=True)
     assert 'named "Next work"' in dialog.inner_text()

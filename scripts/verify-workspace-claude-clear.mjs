@@ -13,9 +13,11 @@ assert(sdkPath && cliPath);
 const root=await mkdtemp(join(tmpdir(),'workspace-clear-proof-'));
 const path=process.env.PATH;
 const proofPythonPath=process.env.SERENA_PROOF_PYTHONPATH;
+const proofBrowserChannel=process.env.SERENA_PROOF_BROWSER_CHANNEL;
 const browsers=process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(),'.cache','ms-playwright');
 for(const key of Object.keys(process.env))delete process.env[key];
-Object.assign(process.env,{PATH:path,HOME:root,CLAUDE_CONFIG_DIR:join(root,'config'),XDG_CONFIG_HOME:join(root,'xdg'),ANTHROPIC_BASE_URL:'http://127.0.0.1:9'});
+Object.assign(process.env,{PATH:path,HOME:root,CLAUDE_CONFIG_DIR:join(root,'config'),XDG_CONFIG_HOME:join(root,'xdg'),ANTHROPIC_BASE_URL:'http://127.0.0.1:9',
+  ...(proofBrowserChannel?{SERENA_PROOF_BROWSER_CHANNEL:proofBrowserChannel}:{})});
 const sdk=await import(pathToFileURL(resolve(sdkPath)).href);
 const children=[],exits=[];
 let seed,stream,driver,stopped=false,wake;
@@ -67,8 +69,10 @@ try{
     request:async()=>{throw new Error('Local clear unexpectedly requested permission');}});
   await driver.open();
   const nativePid=children.at(-1).pid;
-  const transition=await driver.beginClear();
+  const transition=await driver.beginClear('Named clear proof');
   assert.equal(driver.state,'awaiting-handoff');assert.equal(driver.sessionId,original);
+  assert.equal(transition.requestedName,'Named clear proof');assert.equal(transition.nameConfirmed,true);
+  assert.equal((await sdk.getSessionInfo(transition.sessionId,{dir:root})).customTitle,'Named clear proof');
   assert.throws(()=>driver.send({type:'user',session_id:transition.sessionId}),/not ready/);
   await assert.rejects(driver.commitClear(original),/Exact pending/);
   await driver.commitClear(transition.sessionId);
@@ -81,7 +85,7 @@ try{
   assert.equal(children.at(-1).pid,nativePid);assert.equal(children.length,3);
   await driver.close();await exits[2];
   assert.deepEqual(await sdk.getSessionMessages(original,{dir:root}),before);
-  console.log('PASS: production SDK driver paused at the new identity until exact acknowledgement; same native process accepted subsequent input; original history preserved');
+  console.log('PASS: production SDK driver verified the named target, paused at the new identity until exact acknowledgement; same native process accepted subsequent input; original history preserved');
   if(pythonPath){
     const proof=spawn(resolve(pythonPath),[resolve('scripts/verify-workspace-claude-clear-transport.py'),resolve(sdkPath),resolve(cliPath),process.execPath,root,original],
       {env:{...process.env,PLAYWRIGHT_BROWSERS_PATH:browsers,...(proofPythonPath?{PYTHONPATH:proofPythonPath}:{})},stdio:'inherit'});

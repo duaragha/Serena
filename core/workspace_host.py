@@ -1611,7 +1611,7 @@ class WorkspaceHost:
                             or set(payload) not in ({"confirmed"}, {"confirmed", "name"})
                             or payload.get("confirmed") is not True
                             or (name is not None and
-                                (provider != "codex" or not isinstance(name, str)
+                                (not isinstance(name, str)
                                  or not name.strip() or name != name.strip() or len(name) > 1000
                                  or any(ord(char) < 32 or ord(char) == 127 for char in name)))):
                         raise ValueError("Explicit confirmation for a supported session clear is required")
@@ -2112,7 +2112,7 @@ class WorkspaceHost:
             return await asyncio.to_thread(self.journal.complete_clear, sid, request_id)
         transitioned = False
         try:
-            target = await owner.begin_clear()
+            target = await (owner.begin_clear() if name is None else owner.begin_clear(name=name))
             transitioned = True
             await asyncio.to_thread(self.journal.prepare_clear, sid, request_id, target)
             new_sid = target["session_id"]

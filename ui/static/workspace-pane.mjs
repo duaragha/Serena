@@ -2492,10 +2492,15 @@ export class WorkspacePane {
     }
     const reloadCommand=this.provider==='Claude' && /^\/(reload-plugins|reload-skills)(?:\s|$)/.exec(text.trim());
     if(reloadCommand){
-      if(text.trim()!==`/${reloadCommand[1]}` || this.files.length || this.selectedSkills.length){
+      const forcedPluginReload=reloadCommand[1]==='reload-plugins'
+        && text.trim()==='/reload-plugins --force';
+      if((text.trim()!==`/${reloadCommand[1]}` && !forcedPluginReload)
+         || this.files.length || this.selectedSkills.length){
         this.error(Error('Reload commands do not accept arguments, attachments or skills'));return;
       }
-      await this.openCommands(reloadCommand[1]);return;
+      if(!forcedPluginReload){await this.openCommands(reloadCommand[1]);return;}
+      // The public control has no force parameter; the installed headless CLI
+      // advertises this exact local-command form, so keep it on the same owner.
     }
     const codexCommand=this.provider==='Codex' && /^\/([A-Za-z][A-Za-z0-9_:-]*)(?:\s|$)/.exec(text.trim());
     const codexSpec=codexCommand && this.codexCommandCatalog()[codexCommand[1]];
@@ -2550,11 +2555,16 @@ export class WorkspacePane {
     const localCommand=this.provider==='Claude' && /^\/(clear|reset|new|fork|resume)(?:\s|$)/.exec(text.trim());
     if(localCommand){
       const control=localCommand[1]==='fork'?this.forkButton:localCommand[1]==='resume'?this.resumeButton:this.clearButton;
-      if(text.trim()!==`/${localCommand[1]}` || this.files.length || this.selectedSkills.length){
+      const argument=text.trim().slice(localCommand[1].length+1).trim();
+      const namedClear=['clear','reset','new'].includes(localCommand[1]);
+      if((argument && !namedClear) || this.files.length || this.selectedSkills.length){
         this.error(Error('Session commands do not accept arguments, attachments or skills'));return;
       }
+      if(argument.length>1000 || /[\u0000-\u001f\u007f]/.test(argument)){
+        this.error(Error('Conversation title must contain at most 1000 characters without control characters'));return;
+      }
       if(control.hidden || control.disabled){this.error(Error('Session action is not available right now'));return;}
-      if(localCommand[1]==='fork')this.openFork();else if(localCommand[1]==='resume')this.openSessions();else this.openClear();
+      if(localCommand[1]==='fork')this.openFork();else if(localCommand[1]==='resume')this.openSessions();else this.openClear(argument);
       return;
     }
     const files = [...this.files];
