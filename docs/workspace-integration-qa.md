@@ -1,6 +1,6 @@
 # Rich Workspace Integration QA
 
-## Release Candidate 0.2.46 (2026-09-11)
+## Release Candidate 0.2.47 (2026-09-11)
 
 The structured workspace is default-on for Claude and Codex. Gemini is deferred.
 This release-candidate record supersedes the older checkpoint qualification
@@ -15,6 +15,9 @@ immediately below.
   exit 0 with exact Claude/Codex session input, output, linked panes and cleanup.
 - AppImage: build exit 0; packaged smoke exit 0 with sidecar startup and clean
   shutdown. Screenshots were inspected for linked, standalone and mobile panes.
+- Windows cleanup regression: exit 0, 29 focused packaging/proof tests passed
+  and one native-Windows-only case skipped on Linux. The tagged runner owns the
+  final live proof of delayed Windows cwd-handle release.
 
 2026-09-10. Worktree: `_artifacts/serena-interactive-workspace`.
 Full Claude/Codex delivery remains incomplete and unreleased; this is an
