@@ -11,6 +11,44 @@ from core.workspace_rpc import WorkspaceRpcError
 TARGET = "11111111-2222-4333-8444-555555555555"
 
 
+def test_failed_sdk_initialization_releases_verified_wrapper_lease(tmp_path):
+    from core.workspace_lease import SessionLease, SessionOwnedError
+    program = """
+import json,sys
+for line in sys.stdin:
+    request=json.loads(line)
+    if request['method']=='close':
+        print(json.dumps({'id':request['id'],'result':{}}),flush=True)
+        break
+    print(json.dumps({'id':request['id'],'error':{'message':'Exact persisted session unavailable'}}),flush=True)
+"""
+    async def run():
+        async def publish(event): pass
+        async def request(*args): raise AssertionError('No agent interaction')
+        lease = SessionLease(TARGET, directory=tmp_path / 'leases')
+        transport = ClaudeSdkTransport(session_id=TARGET, cwd=tmp_path,
+            sdk_path='unused', cli_path='unused', node_path='unused',
+            publish=publish, request=request)
+        transport.command = [getattr(sys, '_base_executable', sys.executable), '-u', '-c', program]
+        def bind(pid):
+            lease.bind(pid)
+            with pytest.raises(SessionOwnedError):
+                SessionLease(TARGET, directory=tmp_path / 'leases')
+        transport.on_process_started = bind
+        lease.launching()
+        try:
+            with pytest.raises(WorkspaceRpcError, match='Exact persisted session unavailable'):
+                await transport.open()
+            assert lease.record['phase'] == 'bound'
+            assert transport.rpc.process is None
+        finally:
+            await transport.close()
+            lease.release()
+        recovered = SessionLease(TARGET, directory=tmp_path / 'leases')
+        recovered.release()
+    asyncio.run(run())
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Real Windows gated process ancestry")
 def test_real_windows_gated_worker_reports_owned_child(tmp_path):
     program = r"""

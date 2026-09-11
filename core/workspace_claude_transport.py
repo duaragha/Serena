@@ -25,6 +25,7 @@ class ClaudeSdkTransport:
         self.publish, self.request = publish, request
         self.rpc = rpc_factory()
         self.owned_pid = None
+        self.on_process_started = None
         self.started = False
         self.reader = None
         self.questions = {}
@@ -66,8 +67,12 @@ class ClaudeSdkTransport:
         else:
             clean.pop("ELECTRON_RUN_AS_NODE", None)
         await self.rpc.start(self.command, cwd=self.cwd, env=clean)
-        self.reader = asyncio.create_task(self._read())
         try:
+            # Bind the isolated wrapper before SDK initialization can fail.
+            # Its process group also contains the native Claude child.
+            if self.on_process_started is not None:
+                self.on_process_started(self.rpc.process.pid)
+            self.reader = asyncio.create_task(self._read())
             initialized = await self.rpc.request(method, {})
             # The process notification precedes the open response on stdout,
             # but its consumer runs in a separate task. Drain that event first.
