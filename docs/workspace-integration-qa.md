@@ -4,7 +4,49 @@
 Full Claude/Codex delivery remains incomplete and unreleased; this is an
 integration checkpoint, not a claim that every CLI capability is finished.
 
-## Current Source and Linux Package: 3725a32
+## Source Checkpoint: bfa2383
+
+2026-09-10. Includes account/session usage, guarded exit/quit and Codex fresh
+context with the original writer released before creation. The source was clean
+and unchanged during these checks. No installed application was updated.
+
+```sh
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py tests/test_workspace_journal.py tests/test_workspace_codex.py -q --tb=short
+```
+
+Exit 0: 358 passed in 29.82s. This covers the full owner/host/journal suites,
+including existing job, bridge, lifecycle, receipt and restore regressions.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q --tb=short
+```
+
+Exit 0: 267 passed in 360.57s. Full shared-pane browser regression suite,
+including command dispatch, approval/dialog interactions, attachment/draft
+handling, recovery and responsive layouts. This was a single uninterrupted run;
+no production edits were made while it ran. Its controlled provider fixtures do
+not substitute for positive authenticated native workflows.
+
+```sh
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/python-deps:/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge SERENA_PROOF_ELECTRON=/home/raghav/Documents/Projects/serena/apps/desktop/node_modules/electron/dist/electron SERENA_PROOF_PLAYWRIGHT=/home/raghav/.local/lib/python3.12/site-packages/playwright/driver/package SERENA_PROOF_XVFB=/home/raghav/Documents/Projects/_artifacts/serena-interactive-workspace/apps/desktop/build/proof-tools/xvfb/usr/bin/Xvfb /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py apps/desktop/sidecar.py
+```
+
+Exit 0: real source backend and actual Electron main/preload. Native 51 print-only
+turns, 50+1 history, exact job reservation, same-owner replay, file mentions,
+skills, explicit shell output/exit 0, exit cancellation and quit/resume passed.
+Desktop/mobile visibility refresh: 58ms/58ms. Actual Electron clipboard,
+native Claude/Codex creation, title preservation, login start/cancel, linked
+focus and drafts, and view-close owner preservation passed. Native owners were
+reaped, temporary project unchanged, no credentials or inference used.
+
+The linked-pane Electron screenshot was inspected. It verifies real native
+owners, layout and drafts, not full mockup parity with model-generated content.
+Codex clear's full source HTTP/browser round-trip is separately recorded in
+`workspace-command-parity.md`; this Electron script does not yet exercise that
+new action. Packaged binaries below predate this source checkpoint. Full
+authenticated workflows, remaining provider commands and release remain open.
+
+## Latest Verified Linux Package: 3725a32
 
 2026-09-10. This checkpoint includes persisted session speed, explicit account
 connection checks, isolated proof authentication, and confirmed failed-preference
