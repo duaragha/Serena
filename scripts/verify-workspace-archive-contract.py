@@ -1,10 +1,12 @@
 """Probe native archive/restore semantics in an isolated, unsigned profile."""
+import argparse
 import asyncio
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
@@ -25,7 +27,78 @@ from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
 
 
-async def main():
+def browser_restore(root, sid, target, width):
+    from playwright.sync_api import expect, sync_playwright
+    from werkzeug.serving import WSGIRequestHandler, make_server
+
+    from ui.workspace_app import install_workspace
+
+    repo = Path(__file__).resolve().parents[1]
+    app = Flask(__name__, static_folder=str(repo / 'ui/static'))
+    host = install_workspace(app, root / 'workspace.db', factories={},
+                             resolve=lambda identity: target if identity == sid else None)
+
+    class QuietHandler(WSGIRequestHandler):
+        def log_request(self, *args, **kwargs): pass
+
+    server = make_server('127.0.0.1', 0, app, threaded=True, request_handler=QuietHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    errors, requests = [], []
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(executable_path=os.environ.get('SERENA_PROOF_BROWSER_EXECUTABLE') or shutil.which('microsoft-edge'), headless=True)
+            try:
+                page = browser.new_page(viewport={'width': width, 'height': 1000})
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.on('request', lambda request: requests.append(request.url))
+                page.on('response', lambda response: errors.append(f'{response.status} {response.url}') if response.status >= 400 else None)
+                page.goto(f'http://127.0.0.1:{server.server_port}/workspace/{sid}')
+                page.locator('.aw-composer textarea').fill('Keep this archive draft')
+                button = page.get_by_role('button', name='Open saved conversation', exact=True)
+                if not button.is_visible():
+                    page.get_by_role('button', name='Session actions', exact=True).click()
+                button.click()
+                saved = page.get_by_role('dialog', name='Saved conversations', exact=True)
+                saved.get_by_role('radio', name='Archived', exact=True).check()
+                saved.locator('.aw-command').filter(has_text=sid).click()
+                dialog = page.get_by_role('dialog', name='Restore archived conversation', exact=True)
+                assert not host._sessions
+                assert not any('/restore-archive' in url or url.endswith('/attach') for url in requests)
+                shots = repo / 'apps/desktop/build/workspace-proof'
+                shots.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(shots / f'archive-native-confirm-{width}.png'))
+                with page.expect_response(lambda response: response.url.endswith('/restore-archive')) as received:
+                    dialog.get_by_role('button', name='Confirm restore conversation', exact=True).click()
+                response = received.value
+                result = response.json()
+                request_id = response.request.post_data_json['request_id']
+                assert result['ok'], result
+                expect(dialog.get_by_role('status')).to_have_text('Conversation restored')
+                expect(saved.locator('.aw-command')).to_have_count(0)
+                assert not host._sessions
+                assert page.locator('.aw-composer textarea').input_value() == 'Keep this archive draft'
+                assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+                page.screenshot(path=str(shots / f'archive-native-restored-{width}.png'))
+                with page.expect_navigation():
+                    dialog.get_by_role('button', name='Open restored conversation', exact=True).click()
+                assert page.url.endswith('/workspace/' + sid)
+                expect(page.locator('.aw-composer textarea')).to_have_value('Keep this archive draft')
+                assert not host._sessions
+                assert not any(url.endswith('/attach') or url.endswith('/commands') for url in requests)
+                assert not errors, errors
+                print(f'PASS: {width}px browser confirmed exact native restoration over HTTP; separate navigation, retained draft, zero attachment/turn calls or browser errors')
+                return result, request_id
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        host.shutdown()
+        assert not thread.is_alive()
+
+
+async def main(browser_width=None):
     with tempfile.TemporaryDirectory(prefix="workspace-archive-contract-") as directory, ExitStack() as patches:
         root = Path(directory)
         home = root / "codex"
@@ -120,7 +193,10 @@ async def main():
             request_id = str(uuid4())
             with patch('core.workspace_archive.restore_codex_archive', isolated_restore):
                 try:
-                    result = await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True)
+                    if browser_width:
+                        result, request_id = await asyncio.to_thread(browser_restore, root, sid, target, browser_width)
+                    else:
+                        result = await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True)
                     assert result['ok'], result
                     assert await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True) == result
                     assert not host._sessions
@@ -157,4 +233,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--browser-width', type=int, choices=(390, 1600))
+    asyncio.run(main(parser.parse_args().browser_width))

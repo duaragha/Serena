@@ -3,6 +3,36 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Browser-To-Native Restore Proof (2026-09-10)
+
+The archive verifier now optionally starts the real source Flask workspace and
+headless Edge. It creates a disposable native Codex transcript, archives it, then
+uses the production picker, target transport, authenticated HTTP route, host,
+journal and native restore implementation end to end. Only the profile, lease
+directory and catalog are isolated; no UI callbacks or native RPC results are
+simulated. The browser never attaches a coding owner.
+
+```sh
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py --browser-width 390
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py --browser-width 1600
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_archive_host.py tests/test_workspace_archive.py -q --tb=short
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-archive-contract.py
+```
+
+All separately executed, exit 0. Each browser proof confirmed explicit restore,
+exact native ID and retained custom title, active/archive catalog transition,
+preserved draft, separate same-session navigation, no attachment/turn HTTP calls,
+no console exceptions or HTTP errors, and receipt replay after host restart.
+Each reaped three native processes and removed its disposable profile, without
+credentials/inference or user data writes. Tests: 26 passed in 0.98s; Ruff passed.
+Inspected native confirmation/restored screenshots at 390px and 1600px under
+`apps/desktop/build/workspace-proof/archive-native-{confirm,restored}-{390,1600}.png`;
+full UUID and controls fit without horizontal overflow.
+
+This closes the source-browser restore integration gap, not the packaged
+Linux/Windows check, uncertain-outcome recovery, archive mutation/descendant
+guards, or the broader authenticated Claude/Codex delivery gates.
+
 ## Archived Conversation Picker (2026-09-10)
 
 The Codex saved-conversation dialog now has Active/Archived radio filters with
