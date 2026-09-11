@@ -36,6 +36,7 @@ export class WorkspacePane {
     this.interrupting = false;
     this.archiving = false;
     this.deleting = false;
+    this.loggingOut = false;
     this.disposed = false;
     this.frame = 0;
     try{this.clearedSession=controls.lastClear?.();}catch{this.clearedSession=null;}
@@ -60,6 +61,8 @@ export class WorkspacePane {
     this.accountButton=this.button('Codex account','user-round',()=>this.openAccount());
     this.accountButton.hidden=provider!=='Codex' || !controls.accountStatus;
     head.append(this.accountButton);
+    this.logoutCommandButton=this.button('Sign out of Codex','log-out',()=>this.openLogout());
+    this.logoutCommandButton.hidden=provider!=='Codex' || !controls.accountLogout;
     this.sessionStatusButton=this.button('Session status','info',()=>this.openSessionStatus());
     this.sessionStatusButton.hidden=provider!=='Codex';head.append(this.sessionStatusButton);
     this.copyOutputButton=this.button('Copy latest completed output','copy',()=>this.copyLatestOutput());
@@ -860,17 +863,21 @@ export class WorkspacePane {
       if(pending && dialog.open)timer=setTimeout(()=>refresh.click(),2000);
     };
     const act=async action=>{
-      if(busy)return;busy=true;signIn.disabled=true;cancel.disabled=true;refresh.disabled=true;verify.disabled=true;connectionStatus.textContent='';
+      if(busy)return;busy=true;signIn.disabled=true;signOut.disabled=true;cancel.disabled=true;refresh.disabled=true;verify.disabled=true;connectionStatus.textContent='';
       try{const value=await action();if(dialog.open && !this.disposed)showLogin(value);}
       catch(error){if(dialog.open)loginStatus.textContent=error.message;}
-      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);verify.disabled=signIn.disabled;}
+      finally{busy=false;refresh.disabled=false;signOut.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);verify.disabled=signIn.disabled;}
     };
     const signIn=this.button('Sign in with ChatGPT','log-in',()=>act(()=>this.controls.accountLogin()));
     signIn.hidden=!this.controls.accountLogin;
+    const signOut=this.button('Sign out of Codex','log-out',()=>{
+      dialog.close();this.openLogout();
+    });
+    signOut.hidden=true;
     const cancel=this.button('Cancel browser sign-in','x',()=>act(()=>this.controls.cancelAccountLogin(login.loginId)));cancel.hidden=true;
     const refresh=this.button('Refresh account status','refresh-cw',async()=>{
       if(busy)return;
-      busy=true;signIn.disabled=true;cancel.disabled=true;verify.disabled=true;connectionStatus.textContent='';
+      busy=true;signIn.disabled=true;signOut.disabled=true;cancel.disabled=true;verify.disabled=true;connectionStatus.textContent='';
       refresh.disabled=true;status.textContent='Checking account...';details.textContent='';
       try{
         const result=await this.controls.accountStatus();
@@ -878,13 +885,14 @@ export class WorkspacePane {
         const account=result.account;
         status.textContent=account ? (account.type==='chatgpt' ? 'ChatGPT account saved' : `Account type: ${account.type}`) : 'Not signed in';
         details.textContent=[account?.email,account?.planType,account ? 'Credential validity has not been verified.' : 'No account is saved for this session runtime.'].filter(Boolean).join(' · ');
+        signOut.hidden=!account || !this.controls.accountLogout;
         showLogin(result.login);
       }catch(error){if(dialog.open)status.textContent=error.message;}
-      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);verify.disabled=signIn.disabled;}
+      finally{busy=false;refresh.disabled=false;signOut.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);verify.disabled=signIn.disabled;}
     });
     const verify=this.button('Check account connection','shield-check',async()=>{
       if(busy || ['pending','uncertain'].includes(login?.status))return;
-      busy=true;verify.disabled=true;signIn.disabled=true;cancel.disabled=true;refresh.disabled=true;
+      busy=true;verify.disabled=true;signIn.disabled=true;signOut.disabled=true;cancel.disabled=true;refresh.disabled=true;
       connectionStatus.textContent='Checking account connection...';
       try{
         const result=await this.controls.accountRateLimits();
@@ -893,13 +901,42 @@ export class WorkspacePane {
         this.conversation.metadata.accountLimits=result;this.refreshSessionStatus?.();
         connectionStatus.textContent=`Account limits retrieved at ${new Date(result.observedAt).toLocaleTimeString()}. No model request was sent.`;
       }catch(error){if(dialog.open && !this.disposed)connectionStatus.textContent=`Account connection failed: ${error.message}`;}
-      finally{busy=false;refresh.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);verify.disabled=signIn.disabled;}
+      finally{busy=false;refresh.disabled=false;signOut.disabled=false;cancel.disabled=false;signIn.disabled=['pending','uncertain'].includes(login?.status);verify.disabled=signIn.disabled;}
     });
     verify.hidden=!this.controls.accountRateLimits;
     const close=this.button('Close account','x',()=>dialog.close());
-    dialog.append(node('h3','','Codex account'),close,status,details,loginStatus,link,signIn,cancel,refresh,verify,connectionStatus);
-    dialog.addEventListener('close',()=>{clearTimeout(timer);dialog.remove();this.input.focus();});
+    dialog.append(node('h3','','Codex account'),close,status,details,loginStatus,link,signIn,signOut,cancel,refresh,verify,connectionStatus);
+    this.refreshAccount=()=>{if(dialog.open && !busy)refresh.click();};
+    dialog.addEventListener('close',()=>{clearTimeout(timer);if(this.refreshAccount)this.refreshAccount=null;dialog.remove();this.input.focus();});
     this.accountDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();window.lucide?.createIcons();refresh.click();
+  }
+
+  openLogout() {
+    if(this.logoutDialog?.open || this.loggingOut || !this.controls.accountLogout)return;
+    const dialog=node('dialog','aw-review-dialog aw-delete-dialog');dialog.setAttribute('aria-label','Sign out of Codex');
+    const status=node('p','','This signs out every open Codex session in Serena. Active or background work blocks it; nothing is cancelled.');status.setAttribute('role','status');
+    const identity=node('code','',this.conversation.sessionId);
+    const consent=node('input');consent.type='checkbox';
+    const label=node('label');label.append(consent,document.createTextNode(' Confirm sign out of Codex on this computer.'));
+    const confirm=this.button('Confirm sign out of Codex','log-out',async()=>{
+      if(confirm.disabled)return;
+      this.loggingOut=true;confirm.disabled=true;consent.disabled=true;close.disabled=true;status.textContent='Signing out of Codex...';this.render();
+      try{
+        const result=await this.controls.accountLogout();
+        if(result?.loggedOut!==true || !Number.isSafeInteger(result.sessionCount) || result.sessionCount<1)throw Error('Codex account logout was not confirmed');
+        delete this.conversation.metadata.accountLimits;
+        this.conversation.metadata.account={authMode:null,planType:null};
+        label.hidden=true;confirm.hidden=true;close.disabled=false;close.replaceChildren(icon('check'));close.title='Close sign out';close.setAttribute('aria-label','Close sign out');
+        status.textContent=`Signed out across ${result.sessionCount} open Codex session${result.sessionCount===1?'':'s'}. Conversations and drafts were retained.`;
+        this.refreshSessionStatus?.();this.refreshIcons();
+      }catch(error){if(dialog.open){status.textContent=error.message;consent.disabled=false;close.disabled=false;confirm.disabled=!consent.checked;}}
+      finally{this.loggingOut=false;if(!this.disposed)this.render();}
+    });
+    confirm.disabled=true;consent.addEventListener('change',()=>{confirm.disabled=!consent.checked || this.loggingOut;});
+    const close=this.button('Cancel sign out','x',()=>dialog.close());
+    dialog.append(node('h3','','Sign out of Codex'),close,status,identity,label,confirm);
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.logoutDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
   }
 
   async openDiagnostics() {
@@ -1967,6 +2004,7 @@ export class WorkspacePane {
       this.alert.hidden=true;this.alert.textContent='';
     }
     if(['mcpServer/oauthLogin/completed','mcpServer/startupStatus/updated'].includes(envelope.event?.method))this.refreshMcp?.();
+    if(envelope.event?.method==='account/updated')this.refreshAccount?.();
     if(envelope.event?.method==='workspace/agentEvent')this.notifyAgentChange?.(envelope.event.params);
     if(older){
       if(this.frame){cancelAnimationFrame(this.frame);this.frame=0;}
@@ -1988,7 +2026,7 @@ export class WorkspacePane {
   }
 
   codexCommandControls() {
-    return {clear:this.clearButton,archive:this.archiveButton,delete:this.deleteButton,exit:this.disconnectButton,quit:this.disconnectButton,resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
+    return {clear:this.clearButton,archive:this.archiveButton,delete:this.deleteButton,exit:this.disconnectButton,quit:this.disconnectButton,logout:this.logoutCommandButton,resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
       agent:this.agentsButton,subagents:this.agentsButton,fast:this.speedButton,usage:this.accountUsageButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }
@@ -2630,6 +2668,7 @@ export class WorkspacePane {
     this.clearButton.disabled=this.clearing || this.sending || (!this.clearedSession && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.archiveButton.disabled=this.archiving || this.deleting || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.deleteButton.disabled=this.deleting || this.archiving || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
+    this.logoutCommandButton.disabled=this.loggingOut || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.disconnectButton.disabled=this.clearing || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.shellButton.disabled=this.shellSubmitting || !['ready','running','completed','interrupted'].includes(this.conversation.status);
     if (this.conversation.error) this.error(this.conversation.error);
@@ -2652,6 +2691,7 @@ export class WorkspacePane {
     this.colorDialog?.close();
     this.diagnosticsDialog?.close();
     this.accountDialog?.close();
+    this.logoutDialog?.close();
     this.accountUsageDialog?.close();
     this.settingRecoveryDialog?.close();
     this.sessionsDialog?.close();

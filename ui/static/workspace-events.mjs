@@ -86,6 +86,17 @@ export class WorkspaceConversation {
       this.metadata.claudeUsage = p.usage;
     } else if (method === 'workspace/accountLimits') {
       this.metadata.accountLimits = p;
+    } else if (method === 'account/updated') {
+      if ((p.authMode !== null && p.authMode !== undefined && typeof p.authMode !== 'string')
+        || (p.planType !== null && p.planType !== undefined && typeof p.planType !== 'string')) {
+        throw new Error('Invalid account update');
+      }
+      this.metadata.account = {
+        authMode: p.authMode ?? null,
+        planType: p.planType ?? null,
+      };
+      if (p.authMode === null) delete this.metadata.accountLimits;
+      this.rememberEvent(event);
     } else if (method === 'workspace/acpUsage') {
       this.metadata.acpUsage = p.usage;
     } else if (method === 'workspace/bridgeQueue') {

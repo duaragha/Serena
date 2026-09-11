@@ -1043,6 +1043,54 @@ def test_account_status_is_explicit_honest_and_preserves_draft(pane, width):
 
 
 @pytest.mark.parametrize("width", [390, 1600])
+def test_codex_logout_requires_confirmation_preserves_draft_and_clears_limits(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""() => {
+      controls.accountStatus=async()=>({account:{type:'chatgpt',email:'person@example.test',planType:'pro'},login:null});
+      controls.accountLogout=async()=>{calls.push('logout');return {loggedOut:true,sessionCount:2};};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      pane.conversation.metadata.accountLimits={limits:[{id:'stale'}]};pane.render();
+    }""")
+    composer = page.locator('#left textarea')
+    composer.fill('/logout')
+    composer.press('Enter')
+    dialog = page.get_by_role('dialog', name='Sign out of Codex', exact=True)
+    confirm = dialog.get_by_role('button', name='Confirm sign out of Codex', exact=True)
+    assert confirm.is_disabled()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('checkbox').check()
+    confirm.click()
+    dialog.get_by_text('Signed out across 2 open Codex sessions. Conversations and drafts were retained.', exact=True).wait_for()
+    assert page.evaluate('calls') == ['logout']
+    assert page.evaluate('pane.input.value') == '/logout'
+    assert page.evaluate('pane.conversation.metadata.accountLimits') is None
+    assert page.evaluate('pane.conversation.metadata.account.authMode') is None
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'account-logout-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    dialog.get_by_role('button', name='Close sign out', exact=True).click()
+    assert page.evaluate('document.activeElement===pane.input')
+
+    composer.fill('/logout now')
+    composer.press('Enter')
+    page.get_by_text('Session commands do not accept arguments, attachments or skills', exact=True).wait_for()
+    assert page.evaluate('calls') == ['logout']
+
+    page.evaluate("pane.input.value='account draft';pane.openAccount()")
+    account = page.get_by_role('dialog', name='Codex account', exact=True)
+    account.get_by_role('button', name='Sign out of Codex', exact=True).wait_for()
+    account.get_by_role('button', name='Sign out of Codex', exact=True).click()
+    page.get_by_role('dialog', name='Sign out of Codex', exact=True).wait_for()
+    assert page.evaluate('pane.input.value') == 'account draft'
+    page.keyboard.press('Escape')
+    assert page.evaluate('calls') == ['logout']
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
 def test_account_connection_check_is_explicit_and_recovers_from_expired_login(pane, width):
     page, errors = pane
     page.set_viewport_size({"width": width, "height": 900})

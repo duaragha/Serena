@@ -720,6 +720,71 @@ def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
         host.shutdown()
 
 
+@pytest.mark.parametrize("blocker", [None, "running", "background", "reserved", "pending"])
+def test_account_logout_is_confirmed_deduplicated_and_covers_every_live_codex_owner(tmp_path, blocker):
+    calls = []
+
+    class AccountOwner(Owner):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.questions = {}
+            self.active_agent_threads = set()
+
+        async def list_background_tasks(self):
+            return {
+                "data": (
+                    [{"processId": "work"}]
+                    if blocker == "background" and self.sid == "other"
+                    else []
+                )
+            }
+
+        async def logout_account(self):
+            calls.append(self.sid)
+            return {"loggedOut": True}
+
+    host = WorkspaceHost(
+        journal=WorkspaceJournal(tmp_path / "logout.db"),
+        resolve=lambda sid: {
+            "session_id": sid,
+            "provider": "codex",
+            "cwd": str(tmp_path),
+        },
+        factories={"codex": AccountOwner},
+    )
+    try:
+        host.attach("exact")
+        host.attach("other")
+        if blocker == "running":
+            host._sessions["other"][0].state = "running"
+        elif blocker == "reserved":
+            host._work_reservations["other"] = "job"
+        elif blocker == "pending":
+            host.journal.claim_command(
+                "other", "unfinished", {"action": "submit", "payload": {}}
+            )
+        assert not host.command("exact", "bad", "account_logout", {})["ok"]
+        result = host.command(
+            "exact", "logout-once", "account_logout", {"confirmed": True}
+        )
+        if blocker is None:
+            assert result == {
+                "ok": True,
+                "result": {"loggedOut": True, "sessionCount": 2},
+            }
+            assert host.command(
+                "exact", "logout-once", "account_logout", {"confirmed": True}
+            ) == result
+            assert calls == ["exact", "other"]
+        else:
+            assert not result["ok"] and result["retryable"]
+            assert calls == []
+        assert not host._sessions["exact"][0].sent
+        assert not host._sessions["other"][0].sent
+    finally:
+        host.shutdown()
+
+
 def test_session_usage_scope_is_readonly_and_cannot_choose_another_session(tmp_path):
     calls = []
     class UsageOwner(Owner):

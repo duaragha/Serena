@@ -14,6 +14,7 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from contextlib import AsyncExitStack
 from copy import deepcopy
 from pathlib import Path
 from time import monotonic
@@ -66,6 +67,13 @@ class WorkspaceHost:
         self._work_reservations = {}
         self._work_turns = {}
         self._restore_failures = {}
+        self._account_mutation_lock = None
+
+    def _account_mutex(self):
+        # Construct on the resident owner loop, not in the Flask caller thread.
+        if self._account_mutation_lock is None:
+            self._account_mutation_lock = asyncio.Lock()
+        return self._account_mutation_lock
 
     async def _run(self, coroutine):
         task = asyncio.current_task()
@@ -974,7 +982,9 @@ class WorkspaceHost:
                 return {'ok': False, 'uncertain': True, 'error': str(error)}
 
     async def _attach(self, sid):
-        async with self._locks.setdefault(sid, asyncio.Lock()):
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(self._account_mutex())
+            await stack.enter_async_context(self._locks.setdefault(sid, asyncio.Lock()))
             if await asyncio.to_thread(self.journal.has_pending_delete, sid):
                 raise ValueError("Delete outcome is unconfirmed; attachment is unavailable")
             if await asyncio.to_thread(self.journal.has_pending_archive, sid):
@@ -1290,6 +1300,7 @@ class WorkspaceHost:
             "account_token_usage",
             "account_login",
             "account_login_cancel",
+            "account_logout",
             "search_files",
             "load_earlier",
             "shell_command",
@@ -1313,7 +1324,10 @@ class WorkspaceHost:
         return self._dispatch(self._command(sid, request_id, action, deepcopy(payload)), timeout)
 
     async def _command(self, sid, request_id, action, payload):
-        async with self._locks.setdefault(sid, asyncio.Lock()):
+        async with AsyncExitStack() as stack:
+            if action in {"account_login", "account_login_cancel", "account_logout"}:
+                await stack.enter_async_context(self._account_mutex())
+            await stack.enter_async_context(self._locks.setdefault(sid, asyncio.Lock()))
             if action == "clear_session":
                 found, prior = await asyncio.to_thread(self.journal.command_receipt, sid, request_id,
                                                        {"action": action, "payload": payload})
@@ -1524,6 +1538,61 @@ class WorkspaceHost:
                         raise ValueError("Browser login requires a Codex session and exact payload")
                     result = (await owner.login_account() if action == "account_login"
                               else await owner.cancel_account_login(payload["loginId"]))
+                elif action == "account_logout":
+                    if provider != "codex" or payload != {"confirmed": True}:
+                        raise ValueError("Account logout requires exact confirmation from a Codex session")
+                    # Native app-server processes cache authentication independently.
+                    # Lock and sign out every live Codex owner so one pane cannot
+                    # retain credentials after another confirms a global logout.
+                    retryable = True
+                    other_ids = sorted(
+                        identity
+                        for identity, (candidate, candidate_provider) in self._sessions.items()
+                        if identity != sid and candidate_provider == "codex"
+                        and candidate.state not in {"closed", "unavailable"}
+                    )
+                    for identity in other_ids:
+                        await stack.enter_async_context(
+                            self._locks.setdefault(identity, asyncio.Lock())
+                        )
+                    owners = [
+                        (identity, self._sessions[identity][0])
+                        for identity in [sid, *other_ids]
+                    ]
+                    for identity, candidate in owners:
+                        if (candidate.state != "ready" or candidate.active_turn
+                                or getattr(candidate, "questions", None)
+                                or getattr(candidate, "elicitations", None)
+                                or getattr(candidate, "active_agent_threads", None)):
+                            raise ValueError(
+                                "Finish work in every open Codex conversation before signing out"
+                            )
+                        if (self._bridge_queues.get(identity)
+                                or self._work_reservations.get(identity)
+                                or self._work_turns.get(identity)):
+                            raise ValueError(
+                                "Resolve queued or reserved Codex work before signing out"
+                            )
+                        allowed = ((sid, request_id) if identity == sid else ("", ""))
+                        if (await asyncio.to_thread(self.journal.has_pending_work, identity)
+                                or await asyncio.to_thread(
+                                    self.journal.has_pending_command_conflict,
+                                    identity,
+                                    allowed,
+                                )):
+                            raise ValueError(
+                                "Resolve unconfirmed Codex operations before signing out"
+                            )
+                        tasks = await candidate.list_background_tasks()
+                        if not isinstance(tasks, dict) or tasks.get("data") != []:
+                            raise ValueError(
+                                "Stop background work in every Codex conversation before signing out"
+                            )
+                    for _, candidate in owners:
+                        logged_out = await candidate.logout_account()
+                        if logged_out != {"loggedOut": True}:
+                            raise ValueError("Codex account logout was not confirmed")
+                    result = {"loggedOut": True, "sessionCount": len(owners)}
                 elif action == "account_token_usage":
                     if provider != "codex" or payload not in ({}, {"scope": "session"}):
                         raise ValueError("Usage requires Codex and an exact account or session scope")

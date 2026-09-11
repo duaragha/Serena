@@ -37,6 +37,7 @@ controls.accountRateLimits = () => connection.command('account_rate_limits',{});
 controls.accountTokenUsage = scope => connection.command('account_token_usage',scope==='session'?{scope:'session'}:{});
 controls.accountLogin = () => connection.command('account_login',{});
 controls.cancelAccountLogin = loginId => connection.command('account_login_cancel',{loginId});
+controls.accountLogout = () => connection.command('account_logout',{confirmed:true});
 controls.resetSavedSetting = failureId => connection.command('reset_saved_setting',{failure_id:failureId,confirmed:true});
 controls.listSessions = (query, offset=0, archived=false) => connection.request('/sessions?' + new URLSearchParams({provider:boot.provider.toLowerCase(),q:query,offset,archived}));
 if(boot.provider==='Codex')controls.restoreArchive=async(sid,reconcile=false,requestId=null)=>{

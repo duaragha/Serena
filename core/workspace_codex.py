@@ -68,22 +68,64 @@ class CodexWorkspace:
         self._account_login = None
         self._account_login_lease = None
         self._early_login_completions = {}
+        self._account_update = None
+        self._account_updated = asyncio.Event()
+
+    @staticmethod
+    def _safe_account_status(result):
+        if not isinstance(result, dict) or type(result.get("requiresOpenaiAuth")) is not bool:
+            raise WorkspaceRpcError("Codex returned invalid account status")
+        account = result.get("account")
+        if account is not None and (not isinstance(account, dict) or not isinstance(account.get("type"), str)):
+            raise WorkspaceRpcError("Codex returned invalid account identity")
+        # Never forward credentials or claim a stored login proves token validity.
+        safe = None if account is None else {
+            key: account[key]
+            for key in ("type", "email", "planType")
+            if isinstance(account.get(key), str)
+        }
+        return {
+            "account": safe,
+            "requiresOpenaiAuth": result["requiresOpenaiAuth"],
+            "credentialsVerified": False,
+        }
 
     async def account_status(self):
         async with self._control_lock:
             if self.state in {"closed", "opening", "unavailable"}:
                 raise WorkspaceRpcError("Attach the Codex session before checking its account")
             result = await self.rpc.request("account/read", {"refreshToken": False})
-            if not isinstance(result, dict) or type(result.get("requiresOpenaiAuth")) is not bool:
-                raise WorkspaceRpcError("Codex returned invalid account status")
-            account = result.get("account")
-            if account is not None and (not isinstance(account, dict) or not isinstance(account.get("type"), str)):
-                raise WorkspaceRpcError("Codex returned invalid account identity")
-            # Never forward credentials or claim a stored login proves token validity.
-            safe = None if account is None else {key: account[key] for key in ("type", "email", "planType")
-                                                if isinstance(account.get(key), str)}
-            return {"account": safe, "requiresOpenaiAuth": result["requiresOpenaiAuth"],
-                    "credentialsVerified": False, "login": deepcopy(self._account_login)}
+            return {**self._safe_account_status(result), "login": deepcopy(self._account_login)}
+
+    async def logout_account(self, *, notification_timeout=5):
+        async with self._control_lock:
+            if self.state != "ready" or self.active_turn or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Finish Codex work before signing out")
+            if (self._account_login
+                    and self._account_login.get("status") in {"pending", "uncertain"}):
+                raise WorkspaceRpcError("Finish or cancel browser sign-in before signing out")
+            if (type(notification_timeout) not in {int, float}
+                    or not 0 < notification_timeout <= 30):
+                raise ValueError("A bounded account notification timeout is required")
+            self._account_update = None
+            self._account_updated.clear()
+            result = await self.rpc.request("account/logout", None)
+            if result != {}:
+                raise WorkspaceRpcError("Codex did not confirm account logout")
+            try:
+                await asyncio.wait_for(self._account_updated.wait(), notification_timeout)
+            except TimeoutError as error:
+                raise WorkspaceRpcError("Codex did not report the completed account logout") from error
+            if self._account_update != {"authMode": None, "planType": None}:
+                raise WorkspaceRpcError("Codex reported an unexpected account after logout")
+            status = self._safe_account_status(
+                await self.rpc.request("account/read", {"refreshToken": False})
+            )
+            if status["account"] is not None:
+                raise WorkspaceRpcError("Codex still reports a signed-in account")
+            self._account_login = None
+            self._early_login_completions.clear()
+            return {"loggedOut": True}
 
     async def account_rate_limits(self):
         async with self._control_lock:
@@ -1512,6 +1554,13 @@ class CodexWorkspace:
                     continue
                 if method == "account/login/completed":
                     self._finish_account_login(params)
+                elif method == "account/updated":
+                    auth_mode, plan_type = params.get("authMode"), params.get("planType")
+                    if ((auth_mode is not None and (not isinstance(auth_mode, str) or len(auth_mode) > 64))
+                            or (plan_type is not None and (not isinstance(plan_type, str) or len(plan_type) > 64))):
+                        raise WorkspaceRpcError("Codex returned invalid account update metadata")
+                    self._account_update = {"authMode": auth_mode, "planType": plan_type}
+                    self._account_updated.set()
                 elif method == "thread/settings/updated":
                     settings = params.get("threadSettings")
                     if not isinstance(settings, dict):
@@ -1582,6 +1631,8 @@ class CodexWorkspace:
         self._mcp_logins.clear()
         self._account_login = None
         self._early_login_completions.clear()
+        self._account_update = None
+        self._account_updated.clear()
         self.questions.clear()
         self._completed.clear()
         self.history_cursor = None

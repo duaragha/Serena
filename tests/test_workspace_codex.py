@@ -771,6 +771,61 @@ def test_browser_login_is_single_owner_subscription_only_and_exact(tmp_path, out
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "repeat", "busy", "pending_login", "bad_response", "bad_event", "still_signed_in", "missing_event"],
+)
+def test_account_logout_requires_idle_owner_and_native_confirmation(tmp_path, outcome):
+    async def run():
+        owner, rpc, events = await make(tmp_path)
+        await owner.open(binary="codex")
+        calls = []
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "account/logout":
+                if outcome != "missing_event":
+                    await rpc.events.put({
+                        "method": "account/updated",
+                        "params": {
+                            "authMode": "chatgpt" if outcome == "bad_event" else None,
+                            "planType": "pro" if outcome == "bad_event" else None,
+                        },
+                    })
+                return None if outcome == "bad_response" else {}
+            assert method == "account/read" and params == {"refreshToken": False}
+            return {
+                "account": {"type": "chatgpt"} if outcome == "still_signed_in" else None,
+                "requiresOpenaiAuth": True,
+            }
+
+        rpc.request = request
+        if outcome == "busy":
+            owner.state, owner.active_turn = "running", "turn"
+        elif outcome == "pending_login":
+            owner._account_login = {"status": "pending", "loginId": "login"}
+        try:
+            if outcome in {"success", "repeat"}:
+                assert await owner.logout_account() == {"loggedOut": True}
+                if outcome == "repeat":
+                    assert await owner.logout_account() == {"loggedOut": True}
+                assert calls.count(("account/logout", None)) == (2 if outcome == "repeat" else 1)
+                assert owner._account_login is None
+                assert any(event.get("method") == "account/updated" for event in events)
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await owner.logout_account(
+                        notification_timeout=0.01 if outcome == "missing_event" else 5
+                    )
+                if outcome in {"busy", "pending_login"}:
+                    assert calls == []
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await owner.close()
+
+    asyncio.run(run())
+
+
 def test_project_identity_accepts_alias_spelling_not_other_directory(tmp_path):
     async def run():
         client, _, _ = await make(tmp_path)

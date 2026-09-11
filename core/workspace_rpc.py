@@ -132,7 +132,7 @@ class WorkspaceRpc:
     def windows_gated(self):
         return self._windows_job is not None
 
-    async def request(self, method: str, params: dict, *, timeout: float = 30) -> Any:
+    async def request(self, method: str, params: dict | None, *, timeout: float = 30) -> Any:
         self._next_id += 1
         request_id = self._next_id
         future = asyncio.get_running_loop().create_future()

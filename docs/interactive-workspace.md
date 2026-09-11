@@ -2,6 +2,27 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Confirmed All-Owner Codex Logout (2026-09-10)
+
+The account dialog and `/logout` now expose a native sign-out flow with explicit
+confirmation. The host locks attachment and every live Codex owner, verifies all
+work is idle, and sends `account/logout` to each cached app-server process. This
+prevents a second open pane from silently retaining authentication. Active work,
+background tasks, pending operations or coding reservations refuse the logout;
+no conversation, process or draft is cancelled merely to make it succeed.
+
+The native adapter requires the empty logout response, null `account/updated`
+notification and a subsequent unsigned `account/read`. Account limits are then
+removed from browser state. The success dialog reports the exact owner count and
+fits at 390px and 1600px. A disposable two-owner proof used only a fake API key,
+sent no model turn and removed both processes and its temporary profile.
+
+Final receipts: 194 Codex tests, 168 host tests, eight account/browser tests and
+17 event-model tests passed; native logout proof, Ruff, JavaScript syntax and
+diff checks exited 0. The source remains uninstalled and unreleased. Existing
+owners do not yet inherit a login completed in another process; that is the next
+account lifecycle gap.
+
 ## Native Conversation Deletion (2026-09-10)
 
 The rich Codex workspace now deletes current, active-saved and archived-saved

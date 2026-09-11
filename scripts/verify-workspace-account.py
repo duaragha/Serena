@@ -17,7 +17,7 @@ from core.workspace_lease import SessionLease
 from scripts.workspace_proof_auth import read_test_auth
 
 
-async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False, signed_apps=False, auth_home=None, usage=False):
+async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False, signed_apps=False, auth_home=None, usage=False, logout=False):
     auth = read_test_auth(auth_home) if signed_limits or signed_apps else None
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
@@ -45,6 +45,8 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
         owner = CodexWorkspace(session_id="new:" + str(uuid4()), cwd=project, publish=publish,
                                lease_factory=lambda sid: SessionLease(sid, directory=root / "leases"))
         process = None
+        secondary = None
+        secondary_process = None
         wake_ms = None
         try:
             await owner.create(checkpoint=checkpoint, binary=binary, env=env)
@@ -157,12 +159,38 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
                 assert await owner.login_account() == login
                 assert (await owner.cancel_account_login(login["loginId"]))["status"] == "cancelled"
                 assert (await owner.account_status())["account"] is None
+            if logout:
+                fake_key = "sk-test-serena-disposable-only"
+                assert await owner.rpc.request(
+                    "account/login/start", {"type": "apiKey", "apiKey": fake_key}
+                ) == {"type": "apiKey"}
+                assert (await owner.account_status())["account"] == {"type": "apiKey"}
+                secondary = CodexWorkspace(
+                    session_id="new:" + str(uuid4()),
+                    cwd=project,
+                    publish=publish,
+                    lease_factory=lambda identity: SessionLease(
+                        identity, directory=root / "leases"
+                    ),
+                )
+                await secondary.create(checkpoint=checkpoint, binary=binary, env=env)
+                secondary_process = secondary.rpc.process
+                assert (await secondary.account_status())["account"] == {"type": "apiKey"}
+                assert await owner.logout_account() == {"loggedOut": True}
+                assert (await owner.account_status())["account"] is None
+                assert (await secondary.account_status())["account"] == {"type": "apiKey"}
+                assert await secondary.logout_account() == {"loggedOut": True}
+                assert (await secondary.account_status())["account"] is None
+                assert await owner.logout_account() == {"loggedOut": True}
             assert owner.session_id == sid and owner.rpc.process is process and process.returncode is None
             assert owner.state == "ready" and owner.active_turn is None
             assert not any(event.get("method") == "turn/started" for event in events)
         finally:
+            if secondary is not None:
+                await secondary.close()
             await owner.close()
         assert process is not None and process.returncode is not None
+        assert secondary_process is None or secondary_process.returncode is not None
     assert not root.exists()
     print(json.dumps({"ok": True, "nativeAccountRead": True, "sameOwner": True,
                       "signedIn": signed_limits or signed_apps, "loginStarted": browser_login, "loginCancelled": browser_login,
@@ -174,6 +202,9 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
                       "nativeSignedLimitsRead": signed_limits,
                       "nativeUnsignedTokenUsageRefused": usage,
                       "nativeUnsignedSessionUsageRefused": usage,
+                      "nativeAllOwnerLogoutConfirmed": logout,
+                      "repeatLogoutIdempotent": logout,
+                      "fakeDisposableApiKeyOnly": logout,
                       "nativeEmptyHookCatalogRead": hooks,
                       "nativeAppCatalogRead": signed_apps,
                       "appsEnabledOnlyInDisposableProfile": signed_apps,
@@ -196,11 +227,14 @@ if __name__ == "__main__":
     parser.add_argument("--command-guard", action="store_true", help="Reject unsupported slash input on a disposable native owner")
     parser.add_argument("--signed-apps", action="store_true", help="Read apps with an isolated subscription login copy; no tool calls or inference")
     parser.add_argument("--auth-home", type=Path, help="Separate disposable ChatGPT test profile; never the normal or active login")
+    parser.add_argument("--logout", action="store_true", help="Sign out two disposable native owners carrying a fake local API key")
     args = parser.parse_args()
-    if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks or args.command_guard or args.usage):
+    if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks or args.command_guard or args.usage or args.logout):
         parser.error("--signed-limits must run alone")
     if args.signed_apps and any(value for key, value in vars(args).items() if key not in {'signed_apps', 'auth_home'}):
         parser.error("--signed-apps must run alone")
     if bool(args.auth_home) != bool(args.signed_limits or args.signed_apps):
         parser.error("--auth-home is required only with --signed-limits or --signed-apps")
-    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard, args.signed_apps, args.auth_home, args.usage))
+    if args.logout and any(value for key, value in vars(args).items() if key != "logout"):
+        parser.error("--logout must run alone")
+    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard, args.signed_apps, args.auth_home, args.usage, args.logout))

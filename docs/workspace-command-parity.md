@@ -3,6 +3,45 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Native Codex Account Logout (2026-09-10)
+
+Codex `/logout` and the account dialog now open the same explicit checkbox
+confirmation. No native request is sent when the dialog opens or closes. A
+confirmed action is serialized against attachment and signs out every live,
+idle Codex app-server owner in Serena. This is required because a two-process
+native probe proved that already-running app servers cache authentication
+independently: removing credentials through one process does not clear the
+other process's in-memory account. Any active turn, agent, question, background
+task, coding reservation, queue or unconfirmed operation blocks the whole action;
+nothing is cancelled.
+
+Each owner must return the empty native `account/logout` response, emit
+`account/updated` with null auth and then report no account through
+`account/read`. Repeating logout is natively idempotent. Serena clears stale
+account-limit UI only after confirmation, retains every conversation and draft,
+and keeps the durable command receipt from duplicating a successful request.
+A partial/native failure is explicitly retryable because another logout has the
+same terminal state and cannot create work.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q --tb=short
+# exit 0: 194 passed in 1.23s.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 168 passed in 35.52s.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_account_status_is_explicit_honest_and_preserves_draft tests/test_workspace_pane.py::test_codex_logout_requires_confirmation_preserves_draft_and_clears_limits tests/test_workspace_pane.py::test_account_connection_check_is_explicit_and_recovers_from_expired_login tests/test_workspace_pane.py::test_browser_login_requires_click_and_closing_does_not_cancel -q --tb=short
+# exit 0: 8 passed in 10.92s.
+node --test tests/workspace-events.test.mjs
+# final exit 0: 17 passed; initial exit 1 found and fixed one test-only bracket.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --logout
+# exit 0: two native owners loaded one fake disposable API key, both explicitly
+# logged out, repeat logout confirmed, children/profile removed, no inference.
+```
+
+Ruff, JavaScript syntax and `git diff --check` passed. Screenshots at 390px and
+1600px were inspected without overflow. Source: [official App Server account API](https://learn.chatgpt.com/docs/app-server),
+accessed 2026-09-10. This does not claim that signing in one already-running
+owner refreshes every other owner; that separate synchronization gap remains.
+
 ## Recoverable Native Codex Deletion (2026-09-10)
 
 Codex `/delete`, the current-pane trash control and saved-conversation trash

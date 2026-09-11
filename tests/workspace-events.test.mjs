@@ -149,6 +149,17 @@ test('provider usage is retained without deriving invented context percentages',
   assert.deepEqual(model.metadata.accountLimits,limits);
 });
 
+test('native account logout clears stale limits without changing the conversation', () => {
+  const model = new WorkspaceConversation('exact');
+  model.apply(wrap(1,history));
+  model.apply(wrap(2,{method:'workspace/accountLimits',params:{limits:[{id:'codex'}],observedAt:'2026-09-10T12:00:00Z'}}));
+  model.apply(wrap(3,{method:'account/updated',params:{authMode:null,planType:null}}));
+  assert.deepEqual(model.metadata.account,{authMode:null,planType:null});
+  assert.equal(model.metadata.accountLimits,undefined);
+  assert.equal(model.status,'ready');
+  assert.throws(()=>model.apply(wrap(4,{method:'account/updated',params:{authMode:{},planType:null}})),/Invalid account update/);
+});
+
 test('history, streaming and completion update one real item', () => {
   const model = new WorkspaceConversation('exact');
   model.apply(wrap(1,history));
