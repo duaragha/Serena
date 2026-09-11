@@ -1,5 +1,18 @@
 # Native Workspace Packaged QA
 
+## Windows Proof Cleanup Correction (2026-09-11)
+
+The 0.2.46 Linux release published successfully. Its Windows job built the
+frozen sidecar, then stopped before Electron packaging because Windows retained
+the disposable proof cwd briefly after the owned process tree reached zero.
+This was a proof teardown race, not a provider or installer failure.
+
+The 0.2.47 proof closes each `Popen` context before removing the directory and
+retries that dedicated cleanup for at most five seconds. Exhaustion still raises
+the original error. Focused packaging/proof verification exited 0 with 29 passed
+and one native-Windows-only skip; Ruff exited 0. The tagged Windows runner is the
+required live validation for the actual handle-release behavior.
+
 ## Superseding 0.2.46 Linux Candidate (2026-09-11)
 
 The merged 0.2.46 tree rebuilt the frozen sidecar and AppImage after integrating

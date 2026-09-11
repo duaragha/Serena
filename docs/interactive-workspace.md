@@ -1,6 +1,6 @@
 # Interactive Workspace Delivery Contract
 
-Status: Claude and Codex release candidate 0.2.46. The structured workspace is
+Status: Claude and Codex release candidate 0.2.47. The structured workspace is
 the default code-pane path; set `SERENA_STRUCTURED_WORKSPACE=0` only for an
 explicit rollback. Gemini remains deferred by user direction. Historical
 checkpoint notes below are retained, but this status supersedes their earlier
@@ -36,10 +36,13 @@ npm run smoke:appimage
 # exit 0: Serena-0.2.46-x86_64.AppImage started its sidecar and shut down cleanly
 ```
 
-The AppImage SHA-256 is
+The equivalent 0.2.46 Linux candidate AppImage SHA-256 is
 `84b247bfdc3dfc7d3e6b735b1522c92d367d6b5112f885e07287a8bcdc12830f`.
-Windows source and packaging contracts pass on Linux; native Windows build and
-release validation remain owned by the tagged GitHub Actions runner.
+The first 0.2.46 tagged Windows job built its frozen executable but exposed a
+transient Windows cwd-handle race while the proof removed its temporary folder.
+0.2.47 closes all `Popen` handles before cleanup and bounds retries without
+hiding a persistent failure. Native Windows release validation remains owned by
+the tagged GitHub Actions runner.
 
 ## Native Codex Command Controls (2026-09-11)
 
