@@ -252,6 +252,40 @@ def test_clear_checkpoint_requires_claim_and_preserves_exact_identity(tmp_path):
         journal.complete_clear("source", "clear")
 
 
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_named_clear_checkpoint_matches_exact_command_and_keeps_title_outcome(tmp_path, confirmed):
+    journal = WorkspaceJournal(tmp_path / "named-clear.db")
+    target = {
+        "session_id": "11111111-2222-4333-8444-555555555555",
+        "provider": "codex",
+        "cwd": str(tmp_path),
+        "requestedName": "Next work",
+        "nameConfirmed": confirmed,
+        **({} if confirmed else {"nameError": "Native rename unavailable"}),
+    }
+    payload = {"action": "clear_session", "payload": {"confirmed": True, "name": "Next work"}}
+    journal.claim_command("source", "clear", payload)
+    journal.prepare_clear("source", "clear", target)
+    assert journal.complete_clear("source", "clear") == {"ok": True, "result": target}
+    assert journal.clear_target(target["session_id"])["requestedName"] == "Next work"
+
+
+def test_named_clear_checkpoint_rejects_unconfirmed_or_mismatched_title_metadata(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "bad-named-clear.db")
+    base = {"session_id": "11111111-2222-4333-8444-555555555555", "provider": "codex", "cwd": str(tmp_path)}
+    journal.claim_command("source", "clear", {
+        "action": "clear_session", "payload": {"confirmed": True, "name": "Expected"},
+    })
+    for target in [
+        {**base, "requestedName": "Different", "nameConfirmed": True},
+        {**base, "requestedName": "Expected", "nameConfirmed": False},
+        {**base, "requestedName": "Expected", "nameConfirmed": True, "nameError": "contradiction"},
+        {**base, "requestedName": "Expected", "nameConfirmed": "yes"},
+    ]:
+        with pytest.raises(ValueError):
+            journal.prepare_clear("source", "clear", target)
+
+
 def test_fork_checkpoint_survives_reopen_and_requires_exact_source_request(tmp_path):
     path = tmp_path / "fork.db"
     journal = WorkspaceJournal(path)

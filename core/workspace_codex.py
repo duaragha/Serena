@@ -1655,12 +1655,18 @@ class CodexWorkspace:
                 notice = "Saved in Codex user settings; another configuration layer overrides this setting."
             return {**inventory, "effectiveEnabled": current["enabled"], "notice": notice}
 
-    async def list_mcp_servers(self) -> dict:
+    async def list_mcp_servers(self, verbose=False) -> dict:
         if self.state in {"closed", "opening", "unavailable"}:
             raise WorkspaceRpcError("Session is not connected")
+        if type(verbose) is not bool:
+            raise ValueError("MCP detail mode must be a boolean")
         data, cursors, names, cursor = [], set(), set(), None
         while True:
-            params = {"threadId": self.session_id, "limit": 100, "detail": "toolsAndAuthOnly"}
+            params = {
+                "threadId": self.session_id,
+                "limit": 100,
+                "detail": "full" if verbose else "toolsAndAuthOnly",
+            }
             if cursor:
                 params["cursor"] = cursor
             page = await self.rpc.request("mcpServerStatus/list", params)
@@ -1673,17 +1679,63 @@ class CodexWorkspace:
                     or not server["name"]
                     or server["name"] in names
                     or not isinstance(server.get("tools"), dict)
+                    or len(server["tools"]) > 5000
                 ):
                     raise WorkspaceRpcError("Codex returned an invalid MCP server")
                 names.add(server["name"])
                 status = server.get("runtimeStatus")
                 if status not in {None, "notStarted", "starting", "connected", "authenticationRequired", "failed", "cancelled", "disabled"}:
                     raise WorkspaceRpcError("Codex returned an unknown MCP connection state")
+                auth = server.get("authStatus", "unknown")
+                if auth not in {"unknown", "unsupported", "notLoggedIn", "bearerToken", "oAuth"}:
+                    raise WorkspaceRpcError("Codex returned an unknown MCP authentication state")
                 # Auth state or a nonempty tool catalog does not prove a live connection.
-                data.append({"name": server["name"], "status": status or "unknown",
-                             "authStatus": server.get("authStatus", "unknown"),
-                             "toolCount": len(server["tools"]),
-                             **({"login": deepcopy(self._mcp_logins[server["name"]])} if server["name"] in self._mcp_logins else {})})
+                item = {"name": server["name"], "status": status or "unknown",
+                        "authStatus": auth, "toolCount": len(server["tools"]),
+                        **({"login": deepcopy(self._mcp_logins[server["name"]])}
+                           if server["name"] in self._mcp_logins else {})}
+                if verbose:
+                    resources = server.get("resources")
+                    templates = server.get("resourceTemplates")
+                    info = server.get("serverInfo")
+                    tools_error = server.get("toolsError")
+                    if (not isinstance(resources, list) or len(resources) > 10000
+                            or not isinstance(templates, list) or len(templates) > 10000
+                            or (info is not None and not isinstance(info, dict))
+                            or (tools_error is not None and
+                                (not isinstance(tools_error, str) or len(tools_error) > 10000))):
+                        raise WorkspaceRpcError("Codex returned invalid MCP diagnostics")
+
+                    def optional_text(value, limit=4096):
+                        if value is None:
+                            return None
+                        if not isinstance(value, str) or len(value) > limit or "\0" in value:
+                            raise WorkspaceRpcError("Codex returned invalid MCP diagnostic text")
+                        return value
+
+                    safe_info = None
+                    if info is not None:
+                        if not isinstance(info.get("name"), str) or not isinstance(info.get("version"), str):
+                            raise WorkspaceRpcError("Codex returned invalid MCP server metadata")
+                        safe_info = {key: optional_text(info.get(key)) for key in
+                                     ("name", "version", "title", "description", "websiteUrl")}
+                    tools = []
+                    for key, tool in list(server["tools"].items())[:1000]:
+                        if (not isinstance(key, str) or not key or not isinstance(tool, dict)
+                                or not isinstance(tool.get("name"), str) or not tool["name"]):
+                            raise WorkspaceRpcError("Codex returned invalid MCP tool diagnostics")
+                        tools.append({"name": optional_text(tool["name"]),
+                                      "title": optional_text(tool.get("title")),
+                                      "description": optional_text(tool.get("description"), 10000)})
+                    item["details"] = {
+                        "serverInfo": safe_info,
+                        "tools": tools,
+                        "toolsOmitted": len(server["tools"]) - len(tools),
+                        "resourceCount": len(resources),
+                        "resourceTemplateCount": len(templates),
+                        "toolsError": tools_error,
+                    }
+                data.append(item)
             cursor = page.get("nextCursor")
             if not cursor:
                 break

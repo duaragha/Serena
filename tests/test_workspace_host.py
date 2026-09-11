@@ -1613,6 +1613,69 @@ def test_codex_clear_releases_writer_before_durable_creation(tmp_path, monkeypat
         host.shutdown()
 
 
+@pytest.mark.parametrize("rename_failure", [False, True])
+def test_codex_named_clear_renames_exact_created_owner_without_repeating_creation(tmp_path, rename_failure):
+    from uuid import uuid4
+
+    target = str(uuid4())
+    calls = []
+
+    class NamedClearOwner(Owner):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.questions = {}
+            self.active_agent_threads = set()
+
+        @property
+        def session_id(self):
+            return self.sid
+
+        async def list_background_tasks(self):
+            return {"data": []}
+
+        async def close(self):
+            calls.append(("close", self.sid))
+            self.state = "closed"
+
+        def can_retry_attachment(self):
+            return self.state == "closed"
+
+        async def create(self, *, checkpoint):
+            calls.append(("create", self.sid))
+            await checkpoint({"session_id": target, "provider": "codex", "cwd": str(tmp_path)})
+            self.sid = target
+            self.state = "ready"
+
+        async def rename(self, name):
+            calls.append(("rename", self.sid, name))
+            if rename_failure:
+                raise RuntimeError("rename offline")
+            return {"session_id": self.sid, "name": name}
+
+    host = WorkspaceHost(
+        journal=WorkspaceJournal(tmp_path / "named-clear.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+        factories={"codex": NamedClearOwner},
+    )
+    payload = {"confirmed": True, "name": "Next work"}
+    try:
+        host.attach("source")
+        result = host.command("source", "named", "clear_session", payload)
+        assert result["ok"]
+        assert result["result"]["session_id"] == target
+        assert result["result"]["requestedName"] == "Next work"
+        assert result["result"]["nameConfirmed"] is (not rename_failure)
+        assert ("nameError" in result["result"]) is rename_failure
+        before = list(calls)
+        assert host.command("source", "named", "clear_session", payload) == result
+        assert calls == before
+        assert [call[0] for call in calls] == ["close", "create", "rename"]
+        pending = host.describe_pending_session(target)
+        assert pending["title"] == ("New Codex conversation" if rename_failure else "Next work")
+    finally:
+        host.shutdown()
+
+
 def test_clear_requires_confirmation_idle_owner_and_no_queued_bridge(tmp_path):
     value = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "clear.db"),
                           resolve=lambda sid: {"session_id": sid, "provider": "claude", "cwd": str(tmp_path)},
@@ -1983,11 +2046,16 @@ def test_host_routes_skill_steering_to_exact_existing_owner(host):
 def test_codex_mcp_discovery_uses_attached_owner_without_claude_mutations(host):
     host.attach("exact")
     owner = Owner.instances[-1]
-    async def inventory():
+    calls = []
+    async def inventory(verbose=False):
+        calls.append(verbose)
         return {"data": [{"name": "local", "status": "unknown"}]}
     owner.list_mcp_servers = inventory
     assert host.command("exact", "list-mcp", "mcp_servers", {})["result"] == {"data": [{"name": "local", "status": "unknown"}]}
+    assert host.command("exact", "verbose-mcp", "mcp_servers", {"verbose": True})["result"] == {"data": [{"name": "local", "status": "unknown"}]}
+    assert not host.command("exact", "bad-verbose", "mcp_servers", {"verbose": 1})["ok"]
     assert not host.command("exact", "bad-mutation", "mcp_server_control", {"name": "local", "action": "disable"})["ok"]
+    assert calls == [False, True]
     assert not owner.sent
 
 

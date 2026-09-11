@@ -1538,9 +1538,14 @@ class WorkspaceHost:
                         raise ValueError("Context breakdown requires a Claude session and no payload")
                     result = await owner.context_usage()
                 elif action == "mcp_servers":
-                    if provider not in {"codex", "claude"} or payload:
-                        raise ValueError("MCP discovery requires a supported session and no payload")
-                    result = await owner.list_mcp_servers()
+                    if (provider not in {"codex", "claude"}
+                            or (provider == "claude" and payload)
+                            or (provider == "codex" and
+                                (set(payload) - {"verbose"}
+                                 or ("verbose" in payload and type(payload["verbose"]) is not bool)))):
+                        raise ValueError("MCP discovery requires a supported session and an optional Codex detail flag")
+                    result = await (owner.list_mcp_servers(True)
+                                    if provider == "codex" and payload.get("verbose") else owner.list_mcp_servers())
                 elif action == "set_skill_enabled":
                     if provider != "codex" or set(payload) != {"path", "enabled"}:
                         raise ValueError("An exact Codex skill path and enabled state are required")
@@ -1601,12 +1606,19 @@ class WorkspaceHost:
                     await self._publish(sid, {"method": "workspace/transportClosed", "params": {"reason": "Session disconnected"}})
                     result = {"disconnected": True, "session_id": sid}
                 elif action == "clear_session":
-                    if provider not in {"claude", "codex"} or payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
+                    name = payload.get("name")
+                    if (provider not in {"claude", "codex"}
+                            or set(payload) not in ({"confirmed"}, {"confirmed", "name"})
+                            or payload.get("confirmed") is not True
+                            or (name is not None and
+                                (provider != "codex" or not isinstance(name, str)
+                                 or not name.strip() or name != name.strip() or len(name) > 1000
+                                 or any(ord(char) < 32 or ord(char) == 127 for char in name)))):
                         raise ValueError("Explicit confirmation for a supported session clear is required")
                     if owner.state != "ready" or self._bridge_queues.get(sid):
                         retryable = True
                         raise ValueError("Finish active and queued work before clearing")
-                    return await self._clear_session(sid, request_id, owner)
+                    return await self._clear_session(sid, request_id, owner, name=name)
                 elif action == "fork_session":
                     if provider not in {"claude", "codex"} or payload or self.register_fork is None:
                         raise ValueError("Native fork requires a supported session, no payload and an available catalog")
@@ -2065,7 +2077,7 @@ class WorkspaceHost:
             return {**target, "indexed": False, "error": str(error),
                     **({"retryable": True} if isinstance(error, NativeTranscriptPending) else {})}
 
-    async def _clear_session(self, sid, request_id, owner):
+    async def _clear_session(self, sid, request_id, owner, *, name=None):
         if self._sessions[sid][1] == "codex":
             if owner.active_turn or owner.questions or owner.active_agent_threads:
                 raise ValueError("Finish active work before clearing Codex")
@@ -2082,7 +2094,21 @@ class WorkspaceHost:
             created = await self._create(creation_id, "codex", str(owner.cwd))
             if not created.get("ok"):
                 raise ValueError("New Codex session is unconfirmed; creation will not be repeated: " + str(created.get("error", "unknown")))
-            await asyncio.to_thread(self.journal.prepare_clear, sid, request_id, created["result"])
+            target = dict(created["result"])
+            if name is not None:
+                target.update(requestedName=name, nameConfirmed=False)
+                try:
+                    target_owner = self._sessions.get(target["session_id"])
+                    if target_owner is None or target_owner[1] != "codex":
+                        raise ValueError("New Codex owner is unavailable for naming")
+                    renamed = await target_owner[0].rename(name)
+                    if renamed.get("session_id") != target["session_id"] or renamed.get("name") != name:
+                        raise ValueError("New Codex title was not confirmed")
+                    target["nameConfirmed"] = True
+                except Exception as error:
+                    message = " ".join(str(error).splitlines()).strip()[:1000]
+                    target["nameError"] = message or "Native title confirmation failed"
+            await asyncio.to_thread(self.journal.prepare_clear, sid, request_id, target)
             return await asyncio.to_thread(self.journal.complete_clear, sid, request_id)
         transitioned = False
         try:
@@ -2116,8 +2142,10 @@ class WorkspaceHost:
         target = self.journal.pending_target(sid)
         if target is None:
             return None
+        title = (target.get("requestedName") if target.get("nameConfirmed") is True
+                 else f"New {target['provider'].title()} conversation")
         return {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],
-                "title": f"New {target['provider'].title()} conversation", "native_persistence_pending": True}
+                "title": title, "native_persistence_pending": True}
 
     def delete_pending_session(self, sid, *, source):
         """Explicit deletion only; retain journal history and a recovery manifest."""
@@ -2174,7 +2202,8 @@ class WorkspaceHost:
             project = claude_project_dir_for(target["cwd"])
             if projects and not any(value in project for value in projects):
                 continue
-            title = f"New {target['provider'].title()} conversation"
+            title = (target.get("requestedName") if target.get("nameConfirmed") is True
+                     else f"New {target['provider'].title()} conversation")
             result.insert(0, {"session_id": sid, "agent": target["provider"], "cwd": target["cwd"],
                               "project_dir": project, "display_title": title,
                               "title": title, "created_at": target["created_at"],

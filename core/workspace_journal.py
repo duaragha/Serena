@@ -240,17 +240,34 @@ class WorkspaceJournal:
 
     def prepare_clear(self, source_id: str, request_id: str, target: dict) -> None:
         sid = target.get("session_id")
+        requested_name = target.get("requestedName")
+        name_confirmed = target.get("nameConfirmed")
+        name_error = target.get("nameError")
+        identity_keys = {"session_id", "provider", "cwd"}
+        name_keys = {"requestedName", "nameConfirmed"} | ({"nameError"} if name_error is not None else set())
+        named = requested_name is not None
         if (not isinstance(sid, str) or str(UUID(sid)) != sid or sid == source_id
                 or target.get("provider") not in {"claude", "codex"} or not isinstance(target.get("cwd"), str)
                 or not Path(target["cwd"]).is_absolute()
-                or set(target) != {"session_id", "provider", "cwd"}):
+                or set(target) != identity_keys | (name_keys if named else set())
+                or (named and
+                    (target.get("provider") != "codex" or not isinstance(requested_name, str)
+                     or not requested_name or requested_name != requested_name.strip()
+                     or len(requested_name) > 1000
+                     or any(ord(char) < 32 or ord(char) == 127 for char in requested_name)
+                     or type(name_confirmed) is not bool
+                     or (name_confirmed and name_error is not None)
+                     or (not name_confirmed and
+                         (not isinstance(name_error, str) or not name_error or len(name_error) > 1000
+                          or any(ord(char) < 32 or ord(char) == 127 for char in name_error)))))):
             raise ValueError("Exact native clear target required")
         encoded = json.dumps(target, sort_keys=True, allow_nan=False)
         with closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             command = conn.execute("SELECT payload, result FROM workspace_commands WHERE session_id=? AND request_id=?",
                                    (source_id, request_id)).fetchone()
-            if not command or json.loads(command[0]) != {"action": "clear_session", "payload": {"confirmed": True}} or command[1] is not None:
+            payload = {"confirmed": True, **({"name": requested_name} if named else {})}
+            if not command or json.loads(command[0]) != {"action": "clear_session", "payload": payload} or command[1] is not None:
                 raise ValueError("An unfinished explicit clear command is required")
             row = conn.execute("SELECT target FROM workspace_clears WHERE source_id=? AND request_id=?",
                                (source_id, request_id)).fetchone()

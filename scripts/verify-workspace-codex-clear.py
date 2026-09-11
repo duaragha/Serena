@@ -69,15 +69,18 @@ def main():
             pid = owner.rpc.process.pid
             before = host.events(source)
             assert not host.command(source, "unconfirmed", "clear_session", {})["ok"]
-            result = host.command(source, "clear-once", "clear_session", {"confirmed": True})
+            clear_payload = {"confirmed": True, "name": "Named clear proof"}
+            result = host.command(source, "clear-once", "clear_session", clear_payload)
             assert result["ok"], result
             target = result["result"]["session_id"]
+            assert result["result"]["requestedName"] == "Named clear proof"
+            assert result["result"]["nameConfirmed"] is True
             assert target != source and owner.state == 'closed'
             owner = host._sessions[target][0]
             assert host._sessions[target][1] == "codex" and owner.rpc.process.pid != pid
             pid = owner.rpc.process.pid
-            assert owner.thread["turns"] == [] and owner.state == "ready"
-            assert host.command(source, "clear-once", "clear_session", {"confirmed": True}) == result
+            assert owner.thread["turns"] == [] and owner.thread["name"] == "Named clear proof" and owner.state == "ready"
+            assert host.command(source, "clear-once", "clear_session", clear_payload) == result
             assert host.attach(target)["ok"] and owner.rpc.process.pid == pid
             source_history = host.events(source)
             assert source_history["events"][:len(before["events"])] == before["events"]
@@ -102,6 +105,7 @@ def main():
         print(json.dumps({"ok": True, "idleProcessReplaced": True, "newExactSession": True,
                           "receiptDeduplicated": True, "oldHistoryResumable": True,
                           "newOutputNeverReachedSource": True, "processesReaped": 4,
+                          "exactCreatedThreadNamed": True,
                           "inference": False, "credentialsUsed": False}))
     print("PASS: temporary profile removed; project unchanged")
 

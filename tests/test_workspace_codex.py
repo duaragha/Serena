@@ -1791,6 +1791,59 @@ def test_mcp_inventory_paginates_exact_thread_without_inventing_connection_statu
     asyncio.run(run())
 
 
+def test_mcp_verbose_inventory_uses_full_native_detail_and_bounds_forwarded_data(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "config/read":
+                return {"config": {}}
+            return {
+                "data": [{
+                    "name": "proof",
+                    "tools": {"native-key": {"name": "proof_tool", "title": "Proof tool",
+                                               "description": "Native diagnostic", "inputSchema": {"secret": True}}},
+                    "resources": [{"uri": "private://resource"}],
+                    "resourceTemplates": [{"uriTemplate": "private://{id}"}],
+                    "serverInfo": {"name": "proof-server", "version": "1.2.3", "title": "Proof",
+                                   "description": "Local server", "websiteUrl": "https://example.test",
+                                   "private": "not-forwarded"},
+                    "toolsError": None,
+                    "authStatus": "oAuth",
+                    "runtimeStatus": "connected",
+                }],
+                "nextCursor": None,
+            }
+
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match="boolean"):
+                await client.list_mcp_servers(1)
+            result = await client.list_mcp_servers(True)
+            assert calls[0] == ("mcpServerStatus/list", {
+                "threadId": "exact-session", "limit": 100, "detail": "full",
+            })
+            server = result["data"][0]
+            assert server["status"] == "connected" and server["toolCount"] == 1
+            assert server["details"] == {
+                "serverInfo": {"name": "proof-server", "version": "1.2.3", "title": "Proof",
+                               "description": "Local server", "websiteUrl": "https://example.test"},
+                "tools": [{"name": "proof_tool", "title": "Proof tool", "description": "Native diagnostic"}],
+                "toolsOmitted": 0,
+                "resourceCount": 1,
+                "resourceTemplateCount": 1,
+                "toolsError": None,
+            }
+            assert "private" not in str(result) and "inputSchema" not in str(result)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("overridden", [False, True])
 def test_mcp_setting_uses_native_versioned_write_and_effective_state(tmp_path, overridden):
     async def run():

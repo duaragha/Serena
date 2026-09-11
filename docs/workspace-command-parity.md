@@ -1111,6 +1111,61 @@ node --check ui/static/workspace-pane.mjs
 # exit 0.
 ```
 
+## Typed Codex Command Arguments (2026-09-11)
+
+Source: [official developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
+accessed 2026-09-11. Serena maps the documented argument forms below to exact
+app-server controls. Unsupported arguments remain in the composer with a visible
+error and never become inference input.
+
+- `/mcp verbose` requests `mcpServerStatus/list` with `detail: "full"` for the
+  attached thread. The pane shows bounded server metadata, tool names and
+  descriptions, resource counts, and discovery errors. Schemas, resource
+  contents, icons, `_meta`, and unknown fields are not forwarded.
+- `/usage daily|weekly|cumulative` uses the native account token-activity
+  snapshot. Weekly values are deterministic Monday-start UTC sums of native
+  daily buckets; cumulative renders only the native summary. Neither view
+  estimates missing data.
+- `/plan [prompt]` first confirms native Plan mode, then submits the optional
+  prompt, files, and selected skills through the same owner. A mode failure sends
+  nothing. A later submit failure reports that Plan mode changed and retains the
+  exact draft and uploads for receipt recovery.
+- `/goal`, `/goal edit`, `/goal <objective>`, `/goal pause`, `/goal resume`, and
+  `/goal clear` read the exact native goal before mutation and pass that state as
+  the optimistic concurrency guard. Missing and changed goals fail without a
+  model turn.
+- `/clear [name]` remains confirmation-gated. Codex releases the old idle writer,
+  creates exactly one durable new thread, and renames that exact new owner. A
+  rename failure is recorded on the successful clear receipt and never causes a
+  second creation. The new pane does not open automatically.
+
+Verification:
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q --tb=short
+# exit 0: 203 passed in 0.75s.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 177 passed in 31.04s.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_journal.py -q --tb=short
+# exit 0: 18 passed in 1.08s.
+node --test tests/workspace-connection.test.mjs
+# exit 0: 66 passed in 198.88ms.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q --tb=short
+# exit 0: 298 passed in 222.28s.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-mcp.py --inventory-only
+# exit 0: exact-thread full native MCP diagnostics; one live tool, no inference,
+# copied authentication, user session, or project mutation.
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-clear.py
+# exit 0: one exact created thread renamed, receipt deduplicated, four disposable
+# processes reaped, no inference, credentials, or project mutation.
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_codex.py core/workspace_host.py core/workspace_journal.py scripts/verify-workspace-mcp.py scripts/verify-workspace-codex-clear.py tests/test_workspace_codex.py tests/test_workspace_host.py tests/test_workspace_journal.py tests/test_workspace_pane.py
+# exit 0: All checks passed!
+node --check ui/static/workspace-pane.mjs
+# exit 0.
+git diff --check
+# exit 0.
+```
+
 Inspected mobile screenshot `apps/desktop/build/workspace-proof/personality-390.png`.
 Not packaged, released, or default enabled; broader command parity is incomplete.
 

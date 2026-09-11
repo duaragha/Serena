@@ -217,6 +217,45 @@ def test_native_token_usage_has_explicit_refresh_and_preserves_draft(pane, width
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_typed_usage_views_aggregate_native_daily_buckets_without_inference(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.accountTokenUsage=async scope=>{calls.push(['usage',scope]);return {
+        summary:{lifetimeTokens:'15',peakDailyTokens:'7'},observedAt:'2026-09-10T12:00:00Z',
+        dailyUsageBuckets:[{startDate:'2026-09-08',tokens:'7'},{startDate:'2026-09-07',tokens:'5'},{startDate:'2026-09-06',tokens:'3'}]};};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/usage weekly';pane.render();
+    }""")
+    composer = page.locator('#left textarea')
+    composer.press('Enter')
+    dialog = page.get_by_role('dialog', name='Account token usage', exact=True)
+    table = dialog.get_by_role('table', name='Weekly token activity')
+    table.wait_for()
+    assert dialog.get_by_role('radio', name='Weekly', exact=True).is_checked()
+    assert table.locator('tbody tr').evaluate_all("rows=>rows.map(row=>[...row.cells].map(cell=>cell.textContent))") == [
+        ['2026-09-07', '12'], ['2026-08-31', '3'],
+    ]
+    assert page.evaluate('calls') == [['usage', 'account']]
+    page.keyboard.press('Escape')
+    composer.fill('/usage cumulative')
+    composer.press('Enter')
+    dialog = page.get_by_role('dialog', name='Account token usage', exact=True)
+    dialog.get_by_text('Cumulative account snapshot:', exact=False).wait_for()
+    assert dialog.get_by_role('radio', name='Cumulative', exact=True).is_checked()
+    assert dialog.get_by_role('table').count() == 0
+    assert 'Lifetime tokens' in dialog.inner_text() and '15' in dialog.inner_text()
+    page.keyboard.press('Escape')
+    composer.fill('/usage monthly')
+    composer.press('Enter')
+    page.get_by_text('Use /usage daily, /usage weekly or /usage cumulative; nothing was sent', exact=True).wait_for()
+    assert page.evaluate('calls') == [['usage', 'account'], ['usage', 'account']]
+    assert composer.input_value() == '/usage monthly'
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_saved_setting_recovery_requires_confirmation_without_reconnect(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})
@@ -424,6 +463,47 @@ def test_goal_requires_confirmation_preserves_draft_and_recovers_failure(pane, w
     assert page.evaluate('calls.at(-1)[1].status') == 'paused'
     dialog.get_by_role('button', name='Close goal', exact=True).click()
     assert page.evaluate('pane.input.value') == '/goal'
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_typed_goal_commands_use_exact_native_state_and_never_become_prompts(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      window.goal={threadId:'exact',objective:'Ship it',status:'active',tokenBudget:null,tokensUsed:2,timeUsedSeconds:1};
+      controls.goal=async()=>{calls.push(['read']);return {goal};};
+      controls.updateGoal=async(changes,expected)=>{calls.push(['update',changes,expected]);goal={...(goal || {threadId:'exact',status:'active',tokenBudget:null,tokensUsed:0,timeUsedSeconds:0}),...changes};return {goal};};
+      controls.clearGoal=async expected=>{calls.push(['clear',expected]);goal=null;return {goal:null};};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.render();
+    }""")
+    composer = page.locator('#left textarea')
+    composer.fill('/goal pause')
+    composer.press('Enter')
+    page.wait_for_function("calls.length===2")
+    assert page.evaluate("calls.slice(0,2).map(call=>call[0])") == ['read', 'update']
+    assert page.evaluate("calls[1][1]") == {'status': 'paused'}
+    assert composer.input_value() == ''
+    composer.fill('/goal resume')
+    composer.press('Enter')
+    page.wait_for_function("calls.length===4")
+    assert page.evaluate("calls[3][1]") == {'status': 'active'}
+    composer.fill('/goal clear')
+    composer.press('Enter')
+    page.wait_for_function("calls.length===6")
+    assert page.evaluate("calls[5][0]") == 'clear'
+    composer.fill('/goal Build the exact native pane')
+    composer.press('Enter')
+    page.wait_for_function("calls.length===8")
+    assert page.evaluate("calls[7][1]") == {'objective': 'Build the exact native pane'}
+    assert page.evaluate("calls.some(call=>call[0]==='submit')") is False
+    composer.fill('/goal pause')
+    page.evaluate("goal=null")
+    composer.press('Enter')
+    page.get_by_text('There is no goal to pause', exact=True).wait_for()
+    assert composer.input_value() == '/goal pause'
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
     assert not errors
 
 
@@ -2307,6 +2387,36 @@ def test_codex_mcp_inventory_shows_unknown_state_without_unsupported_mutations(p
     assert not errors
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_codex_mcp_verbose_uses_native_diagnostics_and_rejects_other_arguments(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.mcpServers=async verbose=>{calls.push(['mcp',verbose===true]);return {data:[{name:'proof',status:'connected',authStatus:'oAuth',toolCount:1,
+        details:{serverInfo:{name:'proof-server',version:'1.2.3',title:'Proof',description:'<img onerror=alert(1)>',websiteUrl:'https://example.test'},
+        tools:[{name:'proof_tool',title:'Proof tool',description:'Native diagnostic'}],toolsOmitted:0,resourceCount:2,resourceTemplateCount:1,toolsError:null}}]};};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/mcp verbose';pane.render();
+    }""")
+    composer = page.locator('#left textarea')
+    composer.press('Enter')
+    dialog = page.get_by_role('dialog', name='MCP connections', exact=True)
+    dialog.get_by_text('Server diagnostics', exact=True).click()
+    assert dialog.get_by_text('proof-server', exact=True).is_visible()
+    assert dialog.get_by_text('Proof tool', exact=True).is_visible()
+    assert dialog.get_by_text('<img onerror=alert(1)>', exact=True).is_visible()
+    assert dialog.locator('img').count() == 0
+    assert page.evaluate('calls') == [['mcp', True]]
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.keyboard.press('Escape')
+    composer.fill('/mcp broken')
+    composer.press('Enter')
+    page.get_by_text('Use /mcp or /mcp verbose; nothing was sent', exact=True).wait_for()
+    assert page.evaluate('calls') == [['mcp', True]]
+    assert composer.input_value() == '/mcp broken'
+    assert not errors
+
+
 def test_mcp_connections_explicit_controls_and_failure_state(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})
@@ -2511,7 +2621,7 @@ def test_codex_local_commands_use_controls_not_model_prompts(pane, command):
     assert not errors
 
 
-@pytest.mark.parametrize("command", ["fork", "review", "compact", "mcp", "permissions", "skills", "model", "reasoning", "status", "ps"])
+@pytest.mark.parametrize("command", ["fork", "review", "compact", "permissions", "skills", "model", "reasoning", "status", "ps"])
 def test_codex_unavailable_or_argument_commands_do_not_submit(pane, command):
     page, errors = pane
     page.evaluate("""command=>{pane.provider='Codex';pane.input.value='/'+command+' extra';pane.render();}""", command)
@@ -2634,7 +2744,7 @@ def test_codex_limits_refresh_is_explicit_and_missing_windows_are_not_zero(pane,
 
 
 @pytest.mark.parametrize('width', [390, 1600])
-def test_codex_plan_picker_is_explicit_and_preserves_draft(pane, width):
+def test_codex_plan_picker_action_is_explicit_and_preserves_draft(pane, width):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})
     page.evaluate("""()=>{
@@ -2642,9 +2752,11 @@ def test_codex_plan_picker_is_explicit_and_preserves_draft(pane, width):
       const options=[{name:'Plan',value:'plan'},{name:'Default',value:'default'}];
       controls.sessionModes=async()=>({currentValue:null,options});
       controls.setSessionMode=async mode=>{calls.push(['mode',mode]);return {currentValue:mode,options};};
-      pane.input.value='/plan';pane.render();
+      pane.input.value='keep draft';pane.render();
     }""")
-    page.locator('#left').get_by_role('button', name='Send message', exact=True).click()
+    if not page.locator('#left').get_by_role('button', name='Session mode', exact=True).is_visible():
+        page.locator('#left').get_by_role('button', name='Session actions', exact=True).click()
+    page.locator('#left').get_by_role('button', name='Session mode', exact=True).click()
     dialog = page.get_by_role('dialog', name='Session mode', exact=True)
     assert dialog.get_by_role('button', name='Apply', exact=True).is_disabled()
     assert page.evaluate('calls') == []
@@ -2653,8 +2765,50 @@ def test_codex_plan_picker_is_explicit_and_preserves_draft(pane, width):
     page.wait_for_function("calls.length===1")
     assert dialog.get_by_role('status').inner_text() == 'Last confirmed: Plan'
     assert page.evaluate('calls') == [['mode', 'plan']]
-    assert page.evaluate('pane.input.value') == '/plan'
+    assert page.evaluate('pane.input.value') == 'keep draft'
     assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_codex_plan_command_sets_mode_before_exact_prompt_and_upload(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      controls.setSessionMode=async mode=>{calls.push(['mode',mode]);return {currentValue:mode,options:[]};};
+      controls.submit=async value=>calls.push(['submit',{text:value.text,files:value.files.map(file=>file.name),options:value.options}]);
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      pane.sessionModeButton.hidden=false;pane.files=[new File(['proof'],'proof.png',{type:'image/png'})];
+      pane.selectedSkills=[{name:'Proof',path:'/project/SKILL.md'}];pane.input.value='/plan inspect this';pane.renderAttachments();pane.render();
+    }""")
+    composer = page.locator('#left textarea')
+    composer.press('Enter')
+    page.wait_for_function('calls.length===2')
+    assert page.evaluate('calls') == [
+        ['mode', 'plan'],
+        ['submit', {'text': 'inspect this', 'files': ['proof.png'], 'options': {'skills': ['/project/SKILL.md']}}],
+    ]
+    assert composer.input_value() == ''
+    assert page.evaluate('[pane.files.length,pane.selectedSkills.length]') == [0, 0]
+    page.evaluate("""()=>{
+      calls.length=0;pane.files=[new File(['keep'],'keep.png',{type:'image/png'})];pane.input.value='/plan keep this';pane.renderAttachments();
+      controls.setSessionMode=async()=>{throw Error('Task is still running');};
+    }""")
+    composer.press('Enter')
+    page.get_by_text('Task is still running', exact=True).wait_for()
+    assert page.evaluate('calls') == []
+    assert composer.input_value() == '/plan keep this'
+    assert page.evaluate('pane.files.map(file=>file.name)') == ['keep.png']
+    page.evaluate("""()=>{
+      controls.setSessionMode=async mode=>{calls.push(['mode',mode]);return {currentValue:mode,options:[]};};
+      controls.submit=async()=>{throw Error('response lost');};
+    }""")
+    composer.press('Enter')
+    page.get_by_text('Plan mode changed, but the prompt was not submitted: response lost', exact=True).wait_for()
+    assert page.evaluate('calls') == [['mode', 'plan']]
+    assert composer.input_value() == '/plan keep this'
+    assert page.evaluate('pane.files.map(file=>file.name)') == ['keep.png']
     assert not errors
 
 
@@ -2692,7 +2846,7 @@ def test_codex_picker_lists_local_actions_and_preserves_draft(pane):
     assert not errors
 
 
-@pytest.mark.parametrize("invalid", ["/clear extra", "/fork other"])
+@pytest.mark.parametrize("invalid", ["/fork other"])
 def test_session_command_arguments_never_reach_native_submit(pane, invalid):
     page, errors = pane
     page.evaluate("text=>{pane.input.value=text;pane.render();}", invalid)
@@ -2700,6 +2854,28 @@ def test_session_command_arguments_never_reach_native_submit(pane, invalid):
     page.get_by_text("Session commands do not accept arguments, attachments or skills", exact=True).wait_for()
     assert page.evaluate("calls") == []
     assert page.evaluate("pane.input.value") == invalid
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
+def test_codex_named_clear_confirms_exact_title_without_auto_opening(pane, width):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""()=>{
+      controls.clearSession=async name=>{calls.push(['clear',name]);return {session_id:'11111111-1111-4111-8111-111111111111',provider:'codex',requestedName:name,nameConfirmed:true};};
+      controls.openCleared=async sid=>calls.push(['open',sid]);
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/clear Next work';pane.render();
+    }""")
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role('dialog', name='Clear context', exact=True)
+    assert 'named "Next work"' in dialog.inner_text()
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('button', name='Confirm clear context', exact=True).click()
+    dialog.get_by_text('Context cleared as "Next work"', exact=True).wait_for()
+    assert page.evaluate('calls') == [['clear', 'Next work']]
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert page.evaluate("calls.some(call=>call[0]==='open')") is False
     assert not errors
 
 

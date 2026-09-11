@@ -410,12 +410,16 @@ export class WorkspacePane {
     this.root.append(dialog);dialog.showModal();cancel.focus();
   }
 
-  openClear() {
+  openClear(initialName='') {
     if(this.clearDialog?.open || this.clearing)return;
+    if(typeof initialName!=='string' || initialName.length>1000 || /[\u0000-\u001f\u007f]/.test(initialName)){
+      this.error(Error('Conversation title must contain at most 1000 characters without control characters'));return;
+    }
+    const requestedName=initialName.trim();
     try{this.clearedSession ??= this.controls.lastClear?.();}
     catch(error){this.error(error);return;}
     const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Clear context');
-    const status=node('p','',`Start a new ${this.provider} conversation? Current history will be kept.`);status.setAttribute('role','status');
+    const status=node('p','',`Start a new ${this.provider} conversation${requestedName?` named "${requestedName}"`:''}? Current history will be kept.`);status.setAttribute('role','status');
     const identity=node('code');identity.style.overflowWrap='anywhere';
     const close=this.button('Close clear context','x',()=>dialog.close());
     const open=this.button('Open new conversation','arrow-up-right',async()=>{
@@ -424,12 +428,17 @@ export class WorkspacePane {
     });
     const render=()=>{
       open.hidden=!this.clearedSession;confirm.hidden=Boolean(this.clearedSession);
-      if(this.clearedSession){status.textContent='Context cleared';identity.textContent=this.clearedSession.session_id;}
+      if(this.clearedSession){
+        status.textContent=this.clearedSession.nameError
+          ? `Context cleared, but the title was not confirmed: ${this.clearedSession.nameError}`
+          : this.clearedSession.nameConfirmed ? `Context cleared as "${this.clearedSession.requestedName}"` : 'Context cleared';
+        identity.textContent=this.clearedSession.session_id;
+      }
     };
     const confirm=this.button('Confirm clear context','eraser',async()=>{
       this.clearing=true;confirm.disabled=true;status.textContent='Clearing context...';this.render();
       try{
-        const result=await this.controls.clearSession();
+        const result=await this.controls.clearSession(requestedName);
         if(typeof result?.session_id!=='string' || !/^[a-f0-9-]{36}$/.test(result.session_id) || result.session_id===this.conversation.sessionId)throw Error('Clear identity is unavailable');
         this.clearedSession=result;
         this.conversation.status='unavailable';
@@ -766,23 +775,31 @@ export class WorkspacePane {
     this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
   }
 
-  async openAccountUsage() {
+  async openAccountUsage(initialView='daily') {
     if(this.accountUsageDialog?.open)return;
+    if(!['daily','weekly','cumulative'].includes(initialView))throw Error('Unknown account usage view');
     const dialog=node('dialog','aw-review-dialog aw-session-status-dialog aw-account-usage');dialog.setAttribute('aria-label','Account token usage');
     const status=node('p');status.setAttribute('role','status');
     const list=node('dl');
     const daily=node('div');
     const scope=node('fieldset','aw-usage-scope');scope.append(node('legend','','Usage scope'));
-    let selectedScope='account';
+    const activity=node('fieldset','aw-usage-scope');activity.append(node('legend','','Token activity'));
+    let selectedScope='account',selectedView=initialView;
     const groupName=`usage-scope-${++usageScopeSequence}`;
     for(const [value,text] of [['account','Account'],['session','This session']]){
       const input=node('input');input.type='radio';input.name=groupName;input.value=value;input.checked=value==='account';
       const label=node('label');label.append(input,document.createTextNode(text));scope.append(label);
-      input.addEventListener('change',()=>{if(input.checked){selectedScope=value;refresh.click();}});
+      input.addEventListener('change',()=>{if(input.checked){selectedScope=value;activity.hidden=value==='session';refresh.click();}});
+    }
+    const activityName=`usage-activity-${++usageScopeSequence}`;
+    for(const [value,text] of [['daily','Daily'],['weekly','Weekly'],['cumulative','Cumulative']]){
+      const input=node('input');input.type='radio';input.name=activityName;input.value=value;input.checked=value===selectedView;
+      const label=node('label');label.append(input,document.createTextNode(text));activity.append(label);
+      input.addEventListener('change',()=>{if(input.checked){selectedView=value;refresh.click();}});
     }
     let busy=false;
     const refresh=this.button('Refresh token usage','refresh-cw',async()=>{
-      if(busy)return;busy=true;refresh.disabled=true;scope.disabled=true;status.textContent='Checking token usage...';list.replaceChildren();daily.replaceChildren();
+      if(busy)return;busy=true;refresh.disabled=true;scope.disabled=activity.disabled=true;status.textContent='Checking token usage...';list.replaceChildren();daily.replaceChildren();
       try{
         const result=await this.controls.accountTokenUsage(selectedScope);
         if(!dialog.open || this.disposed)return;
@@ -822,29 +839,41 @@ export class WorkspacePane {
           const value=result.summary[key];list.append(node('dt','',label),node('dd','',format(value)+(value==null?'':suffix)));
         }
         const buckets=result.dailyUsageBuckets;
-        if(buckets==null)daily.append(node('p','','Daily activity unavailable'));
-        else if(!buckets.length)daily.append(node('p','','No daily activity returned'));
-        else{
-          const table=node('table');table.setAttribute('aria-label','Daily token activity');
-          const header=node('tr');for(const text of ['Date','Tokens']){const th=node('th','',text);th.scope='col';header.append(th);}
+        if(selectedView!=='cumulative' && buckets==null)daily.append(node('p','',`${selectedView==='daily'?'Daily':'Weekly'} activity unavailable`));
+        else if(selectedView!=='cumulative' && !buckets.length)daily.append(node('p','',`No ${selectedView} activity returned`));
+        else if(selectedView!=='cumulative'){
+          let rows=buckets,label='Date',tableLabel='Daily token activity',pageSize=31;
+          if(selectedView==='weekly'){
+            const totals=new Map();
+            for(const bucket of buckets){
+              const date=new Date(`${bucket.startDate}T00:00:00Z`);
+              date.setUTCDate(date.getUTCDate()-((date.getUTCDay()+6)%7));
+              const startDate=date.toISOString().slice(0,10);
+              totals.set(startDate,(totals.get(startDate) || 0n)+BigInt(bucket.tokens));
+            }
+            rows=[...totals].map(([startDate,tokens])=>({startDate,tokens:String(tokens)})).sort((a,b)=>b.startDate.localeCompare(a.startDate));
+            label='Week starting';tableLabel='Weekly token activity';pageSize=26;
+          }
+          const table=node('table');table.setAttribute('aria-label',tableLabel);
+          const header=node('tr');for(const text of [label,'Tokens']){const th=node('th','',text);th.scope='col';header.append(th);}
           const head=node('thead');head.append(header);table.append(head);
           const body=node('tbody');table.append(body);daily.append(table);
           let shown=0;
-          const more=this.button('Load more daily activity','chevrons-down',()=>load());
+          const more=this.button(`Load more ${selectedView} activity`,'chevrons-down',()=>load());
           const load=()=>{
-            for(const bucket of buckets.slice(shown,shown+31)){
+            for(const bucket of rows.slice(shown,shown+pageSize)){
               const row=node('tr');row.append(node('td','',bucket.startDate),node('td','',format(bucket.tokens)));body.append(row);
             }
-            shown+=31;more.hidden=shown>=buckets.length;
+            shown+=pageSize;more.hidden=shown>=rows.length;
           };
           daily.append(more);load();this.refreshIcons();
         }
-        status.textContent=`Account-wide snapshot: ${new Date(result.observedAt).toLocaleString()}`;
+        status.textContent=`${selectedView[0].toUpperCase()+selectedView.slice(1)} account snapshot: ${new Date(result.observedAt).toLocaleString()}`;
       }catch(error){if(dialog.open && !this.disposed){list.replaceChildren();daily.replaceChildren();status.textContent=`Token usage unavailable: ${error.message}`;}}
-      finally{busy=false;refresh.disabled=false;scope.disabled=false;}
+      finally{busy=false;refresh.disabled=false;scope.disabled=activity.disabled=false;}
     });
     const close=this.button('Close token usage','x',()=>dialog.close());
-    dialog.append(node('h3','','Account token usage'),close,scope,refresh,status,list,daily);
+    dialog.append(node('h3','','Account token usage'),close,scope,activity,refresh,status,list,daily);
     dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
     this.accountUsageDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();refresh.click();
   }
@@ -1913,8 +1942,9 @@ export class WorkspacePane {
     dialog.addEventListener('close',()=>dialog.remove());this.contextDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();load();
   }
 
-  openMcpServers() {
+  openMcpServers(verbose=false) {
     if(this.mcpDialog?.open)return;
+    const detailed=verbose===true;
     const dialog=node('dialog','aw-review-dialog aw-mcp-dialog');dialog.setAttribute('aria-label','MCP connections');
     const list=node('div');const status=node('p');status.setAttribute('role','status');
     const close=this.button('Close MCP connections','x',()=>dialog.close());
@@ -1929,16 +1959,42 @@ export class WorkspacePane {
       status.textContent='Loading...';
       try{
         let result;
-        if(action==='login') {await this.controls.mcpLogin(name);result=await this.controls.mcpServers();}
+        if(action==='login') {await this.controls.mcpLogin(name);result=await this.controls.mcpServers(detailed);}
         else if(action==='reload')result=await this.controls.mcpReload();
         else if(this.provider==='Codex' && ['enable','disable'].includes(action))result=await this.controls.setMcpEnabled(name,action==='enable');
-        else result=action ? await this.controls.mcpServerControl(name,action) : await this.controls.mcpServers();
+        else result=action ? await this.controls.mcpServerControl(name,action) : await this.controls.mcpServers(detailed);
+        if(detailed && action && action!=='login')result=await this.controls.mcpServers(true);
         if(!dialog.open || this.disposed)return;
         list.replaceChildren();
         for(const server of result.data){
           const row=node('div','aw-background-task aw-mcp-server');row.append(node('strong','',server.name),node('p','',server.status));
           if(this.provider==='Codex'){
             row.append(node('p','',`Authentication: ${server.authStatus || 'unknown'}`),node('p','',`${server.toolCount ?? 0} tools`));
+            if(detailed && server.details){
+              const diagnostics=node('details');diagnostics.append(node('summary','','Server diagnostics'));
+              const info=server.details.serverInfo;
+              if(info){
+                const metadata=node('dl');
+                for(const [label,value] of [['Name',info.name],['Version',info.version],['Title',info.title],['Description',info.description],['Website',info.websiteUrl]]){
+                  if(value)metadata.append(node('dt','',label),node('dd','',value));
+                }
+                diagnostics.append(metadata);
+              }
+              diagnostics.append(node('p','',`${server.details.resourceCount ?? 0} resources · ${server.details.resourceTemplateCount ?? 0} templates`));
+              if(server.details.toolsError)diagnostics.append(node('p','',`Tool discovery: ${server.details.toolsError}`));
+              if(Array.isArray(server.details.tools) && server.details.tools.length){
+                const tools=node('ul');
+                for(const tool of server.details.tools){
+                  const item=node('li');item.append(node('strong','',tool.title || tool.name));
+                  if(tool.title && tool.name!==tool.title)item.append(node('code','',tool.name));
+                  if(tool.description)item.append(node('span','',tool.description));
+                  tools.append(item);
+                }
+                diagnostics.append(tools);
+              }
+              if(server.details.toolsOmitted)diagnostics.append(node('p','',`${server.details.toolsOmitted} additional tools omitted`));
+              row.append(diagnostics);
+            }
             if(typeof server.enabled==='boolean'){
               const label=node('label','','Enabled in Codex user settings');const toggle=node('input');toggle.type='checkbox';toggle.checked=server.enabled;
               toggle.setAttribute('aria-label',`Enable ${server.name}`);toggle.disabled=!server.settingsWritable || !this.controls.setMcpEnabled;
@@ -2332,7 +2388,7 @@ export class WorkspacePane {
       pets:'Terminal pets require terminal image protocols and do not apply to Serena.',
       pet:'Terminal pets require terminal image protocols and do not apply to Serena.',
     };
-    const hints={new:'[name]',rename:'[name]',mention:'[query]'};
+    const hints={new:'[name]',clear:'[name]',rename:'[name]',mention:'[query]',mcp:'[verbose]',usage:'[daily|weekly|cumulative]',plan:'[prompt]',goal:'[objective|edit|pause|resume|clear]'};
     return Object.fromEntries(Object.keys(descriptions).map(name=>[name,{description:descriptions[name],argumentHint:hints[name] || '',control:controls[name] || null,unavailableReason:unavailable[name] || ''}]));
   }
 
@@ -2360,6 +2416,65 @@ export class WorkspacePane {
     }else control.click();
   }
 
+  turnOptions(skills,apps=[]) {
+    const options={};
+    if(apps.length)options.apps=apps.map(app=>app.id);
+    if(skills.length)options.skills=skills.map(skill=>skill.path);
+    if(this.modelSelect.value)options.model=this.modelSelect.value;
+    if(this.effortSelect.value)options.effort=this.effortSelect.value;
+    if(this.tierSelect.value)options.serviceTier=this.tierSelect.value==='__default'?null:this.tierSelect.value;
+    return options;
+  }
+
+  consumeComposer(text,files,skills,apps=[]) {
+    if(this.input.value===text){this.input.value='';this.persistDraft();}
+    this.files=this.files.filter(file=>!files.includes(file));
+    this.selectedSkills=this.selectedSkills.filter(skill=>!skills.includes(skill));this.persistSkills();
+    this.selectedApps=this.selectedApps.filter(app=>!apps.includes(app));this.persistApps();
+    this.renderAttachments();
+  }
+
+  async submitPlanCommand(original) {
+    const prompt=original.trim().slice('/plan'.length).trim();
+    const files=[...this.files],skills=[...this.selectedSkills];
+    this.sending=true;this.send.disabled=true;this.alert.hidden=true;
+    let modeChanged=false;
+    try{
+      const mode=await this.controls.setSessionMode('plan');
+      if(mode?.currentValue!=='plan')throw Error('Codex did not confirm Plan mode');
+      modeChanged=true;
+      if(prompt || files.length || skills.length)await this.controls.submit({text:prompt,files,options:this.turnOptions(skills)});
+      this.consumeComposer(original,files,skills);
+    }catch(error){
+      this.error(modeChanged?Error(`Plan mode changed, but the prompt was not submitted: ${error.message}`):error);
+    }finally{this.sending=false;if(!this.disposed)this.render();}
+  }
+
+  async applyGoalCommand(argument,original) {
+    const value=argument.trim();
+    if(!value || value==='edit'){await this.openGoal();return;}
+    if(this.files.length || this.selectedSkills.length){this.error(Error('Goal commands do not accept attachments or skills'));return;}
+    if(value.length>4000){this.error(Error('Goal objective is limited to 4000 characters'));return;}
+    this.sending=true;this.send.disabled=true;this.alert.hidden=true;
+    try{
+      const current=(await this.controls.goal()).goal;
+      let result;
+      if(value==='clear'){
+        if(!current)throw Error('There is no goal to clear');
+        result=await this.controls.clearGoal(current);
+      }else if(value==='pause' || value==='resume'){
+        if(!current)throw Error(`There is no goal to ${value}`);
+        const status=value==='pause'?'paused':'active';
+        result=current.status===status?{goal:current}:await this.controls.updateGoal({status},current);
+      }else{
+        result=current?.objective===value?{goal:current}:await this.controls.updateGoal({objective:value},current);
+      }
+      if(!result || !Object.hasOwn(result,'goal'))throw Error('Codex did not confirm the goal change');
+      this.consumeComposer(original,[],[]);
+    }catch(error){this.error(error);}
+    finally{this.sending=false;if(!this.disposed)this.render();}
+  }
+
   async submit() {
     const text = this.input.value;
     if(this.provider==='Codex' && /^\/copy(?:\s|$)/.test(text.trim())){
@@ -2367,7 +2482,7 @@ export class WorkspacePane {
       await this.copyLatestOutput();return;
     }
     if(this.provider==='Codex' && /^\/[A-Za-z]/.test(text.trim()) && this.selectedApps.length){this.error(Error('Remove selected apps before running a session command'));return;}
-    const readOnlyCommand=this.provider==='Codex' && /^\/(status|usage|agent|subagents|goal|new|ps|stop|clean|mention|hooks|diff|apps|debug-config|experimental|memories|approve|import)(?:\s|$)/.test(text.trim());
+    const readOnlyCommand=this.provider==='Codex' && /^\/(status|usage|agent|subagents|goal|new|ps|stop|clean|mention|hooks|diff|apps|debug-config|experimental|memories|approve|import|mcp|plan)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
@@ -2389,6 +2504,34 @@ export class WorkspacePane {
     if(codexSpec?.unavailableReason){this.error(Error(`${codexSpec.unavailableReason} nothing was sent.`));return;}
     if(codexCommand && !codexControl){this.error(Error(`/${codexCommand[1]} has no native pane control; nothing was sent`));return;}
     if(codexControl){
+      const name=codexCommand[1],argument=text.trim().slice(name.length+1).trim();
+      if(['mcp','usage','goal','clear'].includes(name) && (this.files.length || this.selectedSkills.length)){
+        this.error(Error('Session commands do not accept attachments or skills'));return;
+      }
+      if(name==='mcp'){
+        if(argument && argument!=='verbose'){this.error(Error('Use /mcp or /mcp verbose; nothing was sent'));return;}
+        if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
+        await this.openMcpServers(argument==='verbose');return;
+      }
+      if(name==='usage'){
+        const view=argument || 'daily';
+        if(!['daily','weekly','cumulative'].includes(view)){this.error(Error('Use /usage daily, /usage weekly or /usage cumulative; nothing was sent'));return;}
+        if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
+        await this.openAccountUsage(view);return;
+      }
+      if(name==='goal'){
+        if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
+        await this.applyGoalCommand(argument,text);return;
+      }
+      if(name==='plan'){
+        if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
+        await this.submitPlanCommand(text);return;
+      }
+      if(name==='clear'){
+        if(argument.length>1000 || /[\u0000-\u001f\u007f]/.test(argument)){this.error(Error('Conversation title must contain at most 1000 characters without control characters'));return;}
+        if(codexControl.hidden || codexControl.disabled){this.error(Error('Session action is not available right now'));return;}
+        this.openClear(argument);return;
+      }
       if(codexCommand[1]==='new' && !this.files.length && !this.selectedSkills.length){
         if(codexControl.hidden){this.error(Error('New conversation is unavailable outside the app'));return;}
         this.activateCommandControl(codexControl);return;
@@ -2420,14 +2563,7 @@ export class WorkspacePane {
     this.sending = true; this.send.disabled = true; this.alert.hidden = true;
     try {
       // Uploads and text are submitted through one session-owner operation.
-      const options = {};
-      if(apps.length)options.apps=apps.map(a=>a.id);
-      if(skills.length){
-        options.skills=skills.map(s=>s.path);
-      }
-      if (this.modelSelect.value) options.model = this.modelSelect.value;
-      if (this.effortSelect.value) options.effort = this.effortSelect.value;
-      if (this.tierSelect.value) options.serviceTier = this.tierSelect.value === '__default' ? null : this.tierSelect.value;
+      const options=this.turnOptions(skills,apps);
       if (this.provider === 'Codex' && text.trim() === '/compact') {
         if (files.length || skills.length || !this.controls.compact) throw Error('Compaction does not accept attachments or skills');
         await this.controls.compact();
@@ -2436,11 +2572,7 @@ export class WorkspacePane {
       else if (this.canQueue()) await this.controls.queueInput({text, files,
         expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else await this.controls.submit({text, files, options});
-      if (this.input.value === text) { this.input.value = ''; this.persistDraft(); }
-      this.files = this.files.filter(file => !files.includes(file));
-      this.selectedSkills=this.selectedSkills.filter(skill=>!skills.includes(skill));this.persistSkills();
-      this.selectedApps=this.selectedApps.filter(app=>!apps.includes(app));this.persistApps();
-      this.renderAttachments();
+      this.consumeComposer(text,files,skills,apps);
     } catch (error) { this.error(error); }
     finally { this.sending = false; if (!this.disposed) this.render(); }
   }

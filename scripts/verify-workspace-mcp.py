@@ -95,11 +95,17 @@ async def main(inventory_only=False, auth_home=None):
                 owner.state = "ready"
                 async with asyncio.timeout(25):
                     while True:
-                        inventory = await owner.list_mcp_servers()
-                        if any(server["name"] == "form_proof" and server["status"] == "connected" and server["toolCount"] == 1 for server in inventory["data"]):
+                        inventory = await owner.list_mcp_servers(True)
+                        proof = next((server for server in inventory["data"] if server["name"] == "form_proof"), None)
+                        if proof and proof["status"] == "connected" and proof["toolCount"] == 1:
                             break
                         await asyncio.sleep(0.1)
+                assert proof["details"]["resourceCount"] == 0
+                assert proof["details"]["resourceTemplateCount"] == 0
+                assert [tool["name"] for tool in proof["details"]["tools"]] == ["ask"]
+                assert proof["details"]["toolsError"] is None
                 print("PASS: adapter reads exact-thread native MCP inventory and live connection status")
+                print("PASS: full native MCP diagnostics include the exact bounded tool catalog")
                 profiles = await owner.permissions()
                 assert any(profile["id"] == ":read-only" and profile["allowed"] for profile in profiles["profiles"])
                 changed = await owner.set_permissions(":read-only", True)

@@ -61,7 +61,8 @@
 .aw-question fieldset{min-width:0}.aw-question pre{white-space:pre-wrap;overflow-wrap:anywhere}.aw-question select{display:block;background:#080808;color:inherit;border:1px solid #63455d;padding:7px;margin-top:6px;max-width:100%;font:inherit}
 .aw-background-task > button{grid-column:2;justify-self:end}
 .aw-context-dialog{max-height:80vh;overflow:auto}.aw-context-dialog dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}.aw-context-dialog dt{overflow-wrap:anywhere}.aw-context-dialog dd{margin:0;text-align:right}.aw-context-dialog progress{width:100%;accent-color:#ff85cb}
-.aw-mcp-dialog{max-height:80vh;overflow:auto}.aw-mcp-server > strong,.aw-mcp-server > p{grid-column:1/-1;overflow-wrap:anywhere;margin:0}.aw-mcp-server label{margin:8px 0}.aw-mcp-server input{accent-color:#ff85cb;margin-right:8px}
+.aw-mcp-dialog{max-height:80vh;overflow:auto}.aw-mcp-server > strong,.aw-mcp-server > p,.aw-mcp-server > details{grid-column:1/-1;min-width:0;overflow-wrap:anywhere;margin:0}.aw-mcp-server label{margin:8px 0}.aw-mcp-server input{accent-color:#ff85cb;margin-right:8px}
+.aw-mcp-server details{border-top:1px solid #302730;padding-top:8px}.aw-mcp-server summary{cursor:pointer;color:#e5c4db}.aw-mcp-server details dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px}.aw-mcp-server details dd{margin:0;overflow-wrap:anywhere}.aw-mcp-server details ul{padding-left:20px}.aw-mcp-server details li{margin:8px 0}.aw-mcp-server details code,.aw-mcp-server details span{display:block;overflow-wrap:anywhere}
 .aw-question a,.aw-mcp-server a{overflow-wrap:anywhere;color:#ff85cb}.aw-mcp-server a{grid-column:1/-1}.aw-question small{display:block;color:#b7a6b4;margin-top:5px}
 .aw-message{white-space:normal;overflow-wrap:anywhere}.aw-message p{margin:0 0 12px}.aw-message p:last-child{margin-bottom:0}
 .aw-history-image{display:block;max-width:100%;max-height:320px;width:auto;height:auto;object-fit:contain;margin:8px 0}

@@ -370,7 +370,7 @@ export class WorkspaceConnection {
       loadEarlier: cursor => this.command('load_earlier', {cursor}),
       shellCommand: (command,confirmed) => this.command('shell_command', {command,confirmed}),
       forkSession: () => this.command('fork_session', {}),
-      clearSession: () => this.command('clear_session', {confirmed:true}),
+      clearSession: (name='') => this.command('clear_session', name?{confirmed:true,name}:{confirmed:true}),
       archiveSession: options => this.archiveSession(options),
       pendingArchive: () => {
         this.requireReceipts();
@@ -406,7 +406,7 @@ export class WorkspaceConnection {
       sessionModes: () => this.command('session_modes', {}),
       setSessionMode: mode => this.command('set_session_mode', {mode}),
       setPermissions: (mode, confirmed) => this.command('set_permissions', {mode, confirmed}),
-      mcpServers: () => this.command('mcp_servers', {}),
+      mcpServers: (verbose=false) => this.command('mcp_servers', verbose?{verbose:true}:{}),
       mcpLogin: name => this.command('mcp_login', {name}),
       mcpReload: () => this.command('mcp_reload', {}),
       setMcpEnabled: (name, enabled) => this.command('set_mcp_enabled', {name, enabled}),

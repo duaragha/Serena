@@ -492,6 +492,20 @@ test('clear is explicit, response loss reuses its receipt, and reload preserves 
   assert.deepEqual(conn.controls().lastClear(),target);assert.equal(calls.length,2);conn.dispose();
 });
 
+test('named clear binds the requested title to the same durable command receipt',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'source',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    return response({ok:true,result:{session_id:'11111111-1111-4111-8111-111111111111',provider:'codex',requestedName:'Next work',nameConfirmed:true}});
+  }});
+  const result=await conn.controls().clearSession('Next work');
+  assert.equal(result.requestedName,'Next work');
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].action,'clear_session');
+  assert.deepEqual(calls[0].payload,{confirmed:true,name:'Next work'});
+  conn.dispose();
+});
+
 test('plugin reload is explicit and retains its receipt after response loss',async()=>{
   const calls=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
@@ -753,10 +767,12 @@ test('MCP controls target only the selected session and never run on disposal',a
   }});
   assert.deepEqual(calls,[]);
   await conn.controls().mcpServers();
+  await conn.controls().mcpServers(true);
   await conn.controls().mcpServerControl('local','disable');
   conn.dispose();
   assert.deepEqual(calls.map(([url,body])=>[url,body.action,body.payload]),[
     ['/api/workspace/claude-exact/commands','mcp_servers',{}],
+    ['/api/workspace/claude-exact/commands','mcp_servers',{verbose:true}],
     ['/api/workspace/claude-exact/commands','mcp_server_control',{name:'local',action:'disable'}],
   ]);
 });
