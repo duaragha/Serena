@@ -25,6 +25,9 @@ class ClaudeTypeScriptClient:
     def owned_pid(self):
         return self.transport.owned_pid
 
+    def observe_runtime(self, callback):
+        self.transport.on_process_started = callback
+
     async def connect(self):
         self.info = await self.transport.open(env=self.options.env)
 

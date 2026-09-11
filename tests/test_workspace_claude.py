@@ -92,6 +92,22 @@ def make(tmp_path):
     return owner, events
 
 
+def test_runtime_observer_is_installed_before_client_connect(tmp_path):
+    async def run():
+        owner, _ = make(tmp_path)
+        callbacks = []
+        class ObservedClient(Client):
+            def observe_runtime(self, callback):
+                callbacks.append(callback)
+            async def connect(self):
+                assert callbacks == [owner._lease.bind]
+                await super().connect()
+        owner.client_factory = ObservedClient
+        await owner.open()
+        await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("failed", [False, True])
 def test_rename_catalog_signal_requires_exact_successful_turn(tmp_path, failed):
     async def run():

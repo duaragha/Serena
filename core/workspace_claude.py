@@ -135,6 +135,8 @@ class ClaudeWorkspace:
                 env=env,
             )
             self.client = self.client_factory(options=options)
+            if callable(getattr(self.client, "observe_runtime", None)):
+                self.client.observe_runtime(self._lease.bind)
             if checkpoint is not None:
                 if not callable(getattr(self.client, "create", None)):
                     raise RuntimeError("This Claude client cannot create a reserved native session")
