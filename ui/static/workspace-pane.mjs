@@ -1490,7 +1490,7 @@ export class WorkspacePane {
     if(this.effortDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Claude reasoning effort');
     const status=node('p','','Loading...');status.setAttribute('role','status');
-    const form=node('form');const label=node('label','','Effort');const select=node('select');select.setAttribute('aria-label','Claude effort level');label.append(select);
+    const form=node('form');const label=node('label','','Effort');const select=node('select');select.disabled=true;select.setAttribute('aria-label','Claude effort level');label.append(select);
     const apply=node('button','','Apply');apply.type='submit';apply.disabled=true;
     const close=this.button('Close reasoning effort','x',()=>dialog.close());
     let levels=[];
@@ -1507,7 +1507,8 @@ export class WorkspacePane {
       } catch(error){if(dialog.open)status.textContent=error.message;}
       finally{this.sending=false;apply.disabled=false;this.render();}
     });
-    form.append(label,apply);dialog.append(node('h3','','Reasoning effort'),close,status,form);
+    const header=node('header','aw-dialog-header');header.append(node('h3','','Reasoning effort'),close);
+    form.append(label,apply);dialog.append(header,status,form);
     dialog.addEventListener('close',()=>dialog.remove());this.effortDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();
     try {
       const commands=await this.controls.commands();
@@ -1515,14 +1516,18 @@ export class WorkspacePane {
       if(!command || command.unavailableReason)throw Error(command?.unavailableReason || 'Claude did not advertise an effort command');
       const catalog=await this.controls.models();if(!dialog.open || this.disposed)return;
       const current=this.conversation.metadata.model;
-      const model=catalog.data.find(m=>m.model===current || m.claudeCapabilities?.resolvedModel===current) || (!current && catalog.data.find(m=>m.model==='default'));
+      // Native response model IDs omit the catalog's context-window suffix.
+      const baseModel=value=>typeof value==='string'?value.replace(/\[\d+[km]\]$/i,''):value;
+      const model=catalog.data.find(m=>m.model===current || m.claudeCapabilities?.resolvedModel===current)
+        || (current && catalog.data.find(m=>baseModel(m.model)===baseModel(current) || baseModel(m.claudeCapabilities?.resolvedModel)===baseModel(current)))
+        || (!current && catalog.data.find(m=>m.model==='default'));
       levels=(model?.claudeCapabilities?.supportedEffortLevels || []).filter(level=>['low','medium','high','xhigh','max'].includes(level));
       if(!model?.claudeCapabilities?.supportsEffort || !levels.length)throw Error('Effort choices are unavailable for the current model');
       for(const level of levels){const option=node('option','',level);option.value=level;select.append(option);}
       const choose=node('option','','Select effort');choose.value='';choose.disabled=true;select.prepend(choose);select.value='';
       select.addEventListener('change',()=>{apply.disabled=!levels.includes(select.value);});
-      status.textContent='';select.focus();
-    }catch(error){if(dialog.open)status.textContent=error.message;}
+      status.textContent='';select.disabled=false;select.focus();
+    }catch(error){if(dialog.open){status.textContent=error.message;form.hidden=true;}}
   }
 
   async openAgents() {

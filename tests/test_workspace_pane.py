@@ -10,6 +10,25 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_composer_grows_with_text_and_shrinks_after_clear(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    box = page.locator('#left textarea').first
+    box.fill('short')
+    initial = box.bounding_box()['height']
+    box.fill('More context for the agent.\n' * 8)
+    assert box.bounding_box()['height'] > initial + 50
+    box.fill('Long pasted context.\n' * 100)
+    assert box.bounding_box()['height'] <= 320
+    assert box.evaluate('el=>el.scrollHeight>el.clientHeight')
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    page.screenshot(path=str(tmp_path / f'composer-expanded-{width}.png'))
+    box.fill('')
+    assert box.bounding_box()['height'] == initial
+    assert not errors
+
+
 @pytest.mark.parametrize('kind', ['claudeToolCall', 'commandExecution'])
 @pytest.mark.parametrize('width', [390, 1400])
 def test_running_tool_status_is_visible_until_native_completion(pane, kind, width, tmp_path):
@@ -2187,6 +2206,20 @@ def test_claude_tools_show_readable_native_output_and_requested_edits(pane, tmp_
     assert not errors
 
 
+def test_claude_effort_does_not_borrow_levels_from_an_unrelated_model(pane):
+    page, errors = pane
+    page.evaluate("""()=>{
+      controls.commands=async()=>({data:[{name:'effort'}]});
+      controls.models=async()=>({data:[{model:'default',claudeCapabilities:{resolvedModel:'claude-other[1m]',supportsEffort:true,supportedEffortLevels:['high']}}]});
+      emit({method:'workspace/settings',params:{model:'claude-unknown'}});
+      pane.openClaudeEffort();
+    }""")
+    dialog = page.get_by_role('dialog', name='Claude reasoning effort')
+    playwright.expect(dialog.get_by_text('Effort choices are unavailable for the current model')).to_be_visible()
+    assert dialog.locator('form').is_hidden()
+    assert not errors
+
+
 @pytest.mark.parametrize("width", [390, 1600])
 def test_claude_effort_uses_native_command_without_consuming_draft(pane, tmp_path, width):
     page, errors = pane
@@ -2194,7 +2227,7 @@ def test_claude_effort_uses_native_command_without_consuming_draft(pane, tmp_pat
     page.evaluate("""() => {
       const root=pane.root;const Constructor=pane.constructor;pane.dispose();root.replaceChildren();
       controls.commands=async()=>({data:[{name:'effort'}]});
-      controls.models=async()=>({data:[{model:'default',claudeCapabilities:{resolvedModel:'claude-proof',supportsEffort:true,supportedEffortLevels:['low','high','xhigh']}}]});
+      controls.models=async()=>({data:[{model:'default',claudeCapabilities:{resolvedModel:'claude-proof[1m]',supportsEffort:true,supportedEffortLevels:['low','high','xhigh']}}]});
       window.pane=new Constructor(root,{sessionId:'exact',provider:'Claude',controls});window.seq=0;
       emit({method:'workspace/history',params:{thread:{id:'exact',model:'claude-proof',turns:[]}}});
       emit({method:'workspace/settings',params:{model:'claude-proof'}});
@@ -2203,6 +2236,10 @@ def test_claude_effort_uses_native_command_without_consuming_draft(pane, tmp_pat
     draft.fill("Keep this draft")
     page.get_by_role("button", name="Claude reasoning effort", exact=True).click()
     dialog = page.get_by_role("dialog", name="Claude reasoning effort")
+    close_box = dialog.get_by_role('button', name='Close reasoning effort').bounding_box()
+    title_box = dialog.get_by_role('heading', name='Reasoning effort').bounding_box()
+    assert abs(close_box['y'] + close_box['height']/2 - title_box['y'] - title_box['height']/2) < 2
+    assert close_box['x'] > title_box['x'] + title_box['width']
     select = dialog.get_by_role("combobox", name="Claude effort level")
     select.select_option("xhigh")
     assert page.evaluate("calls") == []

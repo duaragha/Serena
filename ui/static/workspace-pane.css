@@ -50,7 +50,7 @@
 .aw-mentions [role=status]{font-size:10px;color:#b7a6b4;padding:4px}
 .aw-mentions [role=option]{padding:6px;cursor:pointer}
 .aw-mentions [aria-selected=true]{background:#30202c;color:#ffb4d8}
-.aw-composer textarea{display:block;width:100%;resize:vertical;min-height:38px;max-height:180px;border:0;background:transparent;line-height:1.6;outline-offset:3px}
+.aw-composer textarea{display:block;box-sizing:border-box;width:100%;field-sizing:content;resize:none;min-height:38px;max-height:min(320px,40vh);overflow-y:auto;border:0;background:transparent;line-height:1.6;outline-offset:3px}
 .aw-composer-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:7px}.aw-composer-tools button{display:flex;align-items:center;justify-content:center;width:28px;height:28px;flex-shrink:0}
 .aw-composer-tools select{min-width:0;max-width:180px;height:28px;border:1px solid #50354a;border-radius:4px;background:#140e17;color:#c9bdd0;font-size:11px;padding:2px 4px}.aw-model-select{flex:1 0 140px}.aw-effort-select{max-width:110px!important}
 .aw-composer-tools button[type=submit]{margin-left:auto;background:#ff80bf;color:#260d1c}
