@@ -22,6 +22,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from core.process_probe import probe_process
 
 CLAUDE_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
@@ -37,7 +38,7 @@ def _pid_alive(pid: int | None) -> bool:
     if not pid:
         return False
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
         return True
     except (ProcessLookupError, OSError):
         return False

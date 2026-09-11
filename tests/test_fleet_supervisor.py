@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import os
 import subprocess
@@ -12,7 +11,7 @@ import pytest
 
 from core import fleet_supervisor as supervisor
 from core import metadata
-from core.fleet_completion import CompletionVerdict
+from core.fleet_completion import CompletionVerdict, UnitVerdict
 from core.fleet_isolation import FleetIsolationStore, ensure_workspace
 from core.fleet_policy import build_policy, builtin_config
 from core.fleet_workers import WorkerRequest, WorkerResult
@@ -1020,6 +1019,91 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
     assert "finalize:claude:functional-fixer" in result["result_text"]
     assert "[claude / hardening-fixer]" in result["result_text"]
     assert "finalize:claude:hardening-fixer" in result["result_text"]
+
+
+@pytest.mark.parametrize("worker_count", [2, 3])
+@pytest.mark.parametrize("legacy_park", [False, True])
+def test_input_blocked_writer_can_review_peer_and_peer_can_finish(fleet_env, monkeypatch, worker_count, legacy_park):
+    calls = []
+    successful = _successful_fake([])
+    blocker = "authenticated checkout evidence is unavailable"
+    healthy = "agent:b" if worker_count == 2 else "agent:c"
+    reviewer = "agent:a" if worker_count == 2 else "agent:b"
+
+    def worker(request, **kwargs):
+        calls.append((request.worker_key, request.phase))
+        return successful(request, **kwargs)
+
+    def verdict(store, run, leg, attempt, output_text, **kwargs):
+        if leg["worker_key"] != healthy and leg["access_mode"] == "write":
+            return CompletionVerdict(
+                enforced=True, accepted=True, envelope_present=True, reason=blocker,
+                units=tuple(UnitVerdict(unit_id=unit, claimed_status="blocked",
+                                       accepted=True, stop_condition=blocker)
+                            for unit in leg["assignment_ids"]),
+            )
+        return None
+
+    monkeypatch.setattr(supervisor, "run_worker", worker)
+    monkeypatch.setattr(supervisor, "_completion_verdict", verdict)
+    current_ordering = supervisor._prior_turn_blocks_dispatch
+    if legacy_park:
+        monkeypatch.setattr(supervisor, "_prior_turn_blocks_dispatch", lambda candidate, prior: prior["state"] != "completed")
+    run = supervisor.start_run(
+        "Implement independent workstreams:\n1. Alpha feature\n2. Beta feature"
+        + ("\n3. Gamma feature" if worker_count == 3 else ""), activity="coding",
+        provider_mode="codex", worker_count=worker_count, cwd=str(fleet_env),
+    )
+    parked = supervisor.run_supervisor(run["run_id"])
+    if legacy_park:
+        from fleet.ready_resume import resume_ready_input_runs
+        from fleet.store import FleetStore
+
+        assert (reviewer, "verify") not in calls
+        before = parked["phases"][1]["legs"][0]["current_attempt"]
+        # v0.2.31 parked the logical input leg only after marking its DAG
+        # execution failed; reproduce that older persisted projection too.
+        legacy = supervisor._store()
+        with legacy._connect() as db:
+            db.execute("UPDATE fleet_work_unit_phases SET state='failed' WHERE leg_id IN (SELECT leg_id FROM fleet_legs WHERE run_id=? AND state='waiting_for_input')", (run["run_id"],))
+        legacy.prepare_phase_runnable(run["run_id"], 2)
+        legacy.prepare_phase_runnable(run["run_id"], 3)
+        monkeypatch.setattr(supervisor, "_prior_turn_blocks_dispatch", current_ordering)
+        restarted = FleetStore(supervisor._store().path)
+        assert resume_ready_input_runs(restarted) == [run["run_id"]]
+        assert resume_ready_input_runs(restarted) == []
+        assert restarted.get_run(run["run_id"])["phases"][1]["legs"][0]["current_attempt"] == before
+        parked = supervisor.run_supervisor(run["run_id"])
+        assert resume_ready_input_runs(restarted) == []
+        assert calls.count(("agent:a", "execute")) == 1
+        assert restarted.has_event(run["run_id"], "run.ready_work_resumed")
+    assert (reviewer, "verify") in calls
+    assert (healthy, "finalize") in calls
+    assert (healthy, "verify") not in calls
+    assert ("agent:a", "finalize") not in calls
+    assert parked["state"] == "waiting_for_input"
+    blocked = parked["phases"][1]["legs"][0]
+    assert blocked["state"] == "waiting_for_input"
+    assert blocked["attempt_count"] == 1
+    assert blocked["current_attempt"]["state"] == "failed"
+    assert blocker in blocked["current_attempt"]["error"]
+    assert parked["phases"][3]["legs"][-1]["state"] == "completed"
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "failed", "cancelled", "waiting_for_input"])
+@pytest.mark.parametrize("overlap", [False, True])
+def test_review_turn_bypass_requires_parked_disjoint_work(state, overlap):
+    candidate = {"access_mode": "review", "review_target_ids": ["ws-2"]}
+    prior = {"access_mode": "write", "state": state,
+             "assignment_ids": ["ws-2" if overlap else "ws-1"]}
+    assert supervisor._prior_turn_blocks_dispatch(candidate, prior) == (
+        state != "waiting_for_input" or overlap
+    )
+    # Missing ownership and unfinished Research must never be inferred safe.
+    prior["assignment_ids"] = []
+    assert supervisor._prior_turn_blocks_dispatch(candidate, prior)
+    prior.update(access_mode="read", assignment_ids=["ws-1"])
+    assert supervisor._prior_turn_blocks_dispatch(candidate, prior)
 
 
 def test_four_agent_team_uses_four_readers_but_two_writer_waves(
@@ -2125,6 +2209,7 @@ def test_balanced_run_hands_a_parked_worker_to_the_first_recovered_provider(
 
 
 def test_coding_lock_wait_is_polled_and_cancellable(fleet_env, monkeypatch):
+    fcntl = pytest.importorskip("fcntl", reason="POSIX lock-contention fixture")
     monkeypatch.setattr(
         supervisor,
         "run_worker",

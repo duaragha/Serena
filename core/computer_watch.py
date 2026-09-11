@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import subprocess
 import time
 
 from PIL import Image, ImageChops, ImageDraw
@@ -20,13 +21,13 @@ def sample(frame):
         return image.convert("RGB").resize((320, 180))
 
 
-def changed(previous, current, old_image, new_image):
+def changed(previous, current, old_image, new_image, *, threshold=0.005):
     if previous["rect"] != current["rect"]:
         return True
     old_context, new_context = previous["context"], current["context"]
-    if old_context.get("id") == new_context.get("id") and old_context.get(
-        "title"
-    ) != new_context.get("title"):
+    if (old_context.get("id"), old_context.get("title")) != (
+        new_context.get("id"), new_context.get("title")
+    ):
         return True  # A browser tab/title transition can change very few pixels.
     difference = ImageChops.difference(old_image, new_image).convert("L")
     try:
@@ -48,7 +49,7 @@ def changed(previous, current, old_image, new_image):
                 )
         histogram = difference.histogram()
         # Ignore JPEG noise, a blinking caret and tiny clock/spinner changes.
-        return sum(histogram[20:]) >= difference.width * difference.height * 0.0015
+        return sum(histogram[20:]) >= difference.width * difference.height * threshold
     finally:
         difference.close()
 
@@ -61,6 +62,17 @@ class WatchFrames:
         self.changed_at = 0.0
         self.error = None
         self.task = None
+        self.inspection_frame = None
+        self.inspection_image = None
+        self.superseded = False
+        self.settle_seconds = WATCH_SETTLE_SECONDS
+
+    def begin_inspection(self, frame):
+        if self.inspection_image is not None:
+            self.inspection_image.close()
+        self.inspection_frame = frame
+        self.inspection_image = sample(frame)
+        self.superseded = False
 
     def start(self):
         self.task = asyncio.create_task(self.run())
@@ -73,7 +85,8 @@ class WatchFrames:
                 started = time.monotonic()
                 try:
                     frame = await asyncio.to_thread(self.controller.observe, self.session.id)
-                except ComputerTransientError:
+                except (ComputerTransientError, subprocess.TimeoutExpired):
+                    # A busy X server can overrun a probe timeout; that is not a dead session.
                     transient_since = transient_since or time.monotonic()
                     if time.monotonic() - transient_since > 5:
                         raise
@@ -81,6 +94,12 @@ class WatchFrames:
                     continue
                 transient_since = None
                 current = sample(frame)
+                # Compare against the actual model input, not the previous sample:
+                # many small changes must not conceal a cumulative page transition.
+                if self.inspection_frame is not None and changed(
+                    self.inspection_frame, frame, self.inspection_image, current, threshold=0.05
+                ):
+                    self.superseded = True
                 different = previous is None or changed(previous, frame, old_image, current)
                 self.latest = frame
                 if different:
@@ -88,9 +107,16 @@ class WatchFrames:
                         old_image.close()
                     previous, old_image = frame, current
                     self.revision += 1
-                    self.changed_at = time.monotonic()
-                    self.session.observation = ""
-                    self.session.observation_state = "screen_changed"
+                    now = time.monotonic()
+                    gap = now - self.changed_at
+                    self.settle_seconds = max(WATCH_SETTLE_SECONDS, min(1.0, 2 * gap))
+                    if not self.changed_at or gap > 2:
+                        self.settle_seconds = WATCH_SETTLE_SECONDS
+                    self.changed_at = now
+                    if self.inspection_frame is None or self.superseded:
+                        self.session.observation = ""
+                        self.session.observation_preview = ""
+                        self.session.observation_state = "screen_changed"
                     self.controller.event(
                         "screen_changed",
                         session_id=self.session.id,
@@ -113,3 +139,6 @@ class WatchFrames:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
         self.latest = None
+        if self.inspection_image is not None:
+            self.inspection_image.close()
+            self.inspection_image = None

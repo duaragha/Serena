@@ -1251,7 +1251,7 @@ def test_account_status_is_explicit_honest_and_preserves_draft(pane, width):
     assert page.evaluate('calls') == ['account']
     page.keyboard.press('Escape')
     assert page.evaluate('pane.input.value') == 'keep my draft'
-    assert page.evaluate('document.activeElement===pane.input')
+    playwright.expect(page.locator('#left .aw-composer textarea')).to_be_focused()
     assert not errors
 
 

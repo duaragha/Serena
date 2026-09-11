@@ -11,9 +11,11 @@ import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.work_jobs import process_start_token
+from core.process_probe import probe_process
+from core.sqlite_connection import connect_database
 from fleet.context import redact_text, redact_value
 from fleet.contracts import derive_work_unit_views
 from fleet.dag import (
@@ -49,7 +51,7 @@ from fleet.dag import (
 
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "fleet.sqlite3"
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled", "planned"})
-WAITING_RUN_STATES = frozenset({"waiting_for_capacity"})
+WAITING_RUN_STATES = frozenset({"waiting_for_capacity", "waiting_for_resources", "waiting_for_input"})
 TERMINAL_ATTEMPT_STATES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 MAX_OUTPUT_CHARS = 256_000
 MAX_EVENT_CHARS = 64_000
@@ -84,6 +86,9 @@ class FleetStore:
         safe_policy, _policy_redactions = redact_value(policy)
         if not isinstance(safe_policy, dict):
             raise ValueError("Fleet policy must be an object")
+        from fleet.checkout import checkout_path, requested_baseline
+
+        baseline = requested_baseline(safe_task, Path(cwd))
         clean_key = str(idempotency_key or "").strip() or None
         initial_state = "planned" if dry_run else "queued"
         with self._connect() as connection:
@@ -119,6 +124,13 @@ class FleetStore:
                     now,
                 ),
             )
+            if baseline:
+                connection.execute(
+                    "INSERT INTO fleet_run_checkouts(run_id, source_cwd, baseline, path, state) "
+                    "VALUES (?, ?, ?, ?, 'pending')",
+                    (run_id, str(Path(cwd).resolve()), baseline,
+                     str(checkout_path(self.path, Path(cwd), run_id))),
+                )
             leg_state = "planned" if dry_run else "queued"
             for phase in safe_policy["phases"]:
                 for ordinal, worker in enumerate(phase["workers"]):
@@ -466,7 +478,39 @@ class FleetStore:
                 )
             return result
 
-    def begin_attempt(self, leg_id: str) -> dict[str, Any]:
+    def resume_ready_input_work(self, run_id: str, select_ready: Callable[[dict[str, Any]], str | None]) -> bool:
+        """Wake a ready peer review, never retry or clear an input-blocked leg.
+
+        Selection and wakeup share the cancellation/dispatch transaction. The
+        selector is an internal pure scheduler predicate, not a provider callback.
+        """
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = self._require_run(connection, run_id)
+            if run["state"] != "waiting_for_input" or run["cancel_requested"]:
+                return False
+            if connection.execute("SELECT 1 FROM fleet_legs WHERE run_id=? AND state='running'", (run_id,)).fetchone():
+                return False
+            for phase in connection.execute("SELECT phase_index FROM fleet_legs WHERE run_id=? GROUP BY phase_index ORDER BY phase_index", (run_id,)).fetchall():
+                prepare_work_unit_phase(connection, run_id=run_id, phase_index=int(phase[0]))
+            snapshot = self._snapshot(connection, run_id)
+            leg_id = select_ready(snapshot)
+            if not leg_id:
+                connection.rollback()
+                return False
+            leg = connection.execute("SELECT state,access_mode FROM fleet_legs WHERE run_id=? AND leg_id=?", (run_id, leg_id)).fetchone()
+            if not leg or leg["state"] != "queued" or leg["access_mode"] != "review":
+                connection.rollback()
+                return False
+            now = time.time()
+            connection.execute("UPDATE fleet_runs SET state='queued', owner_pid=NULL, owner_token=NULL, error=NULL, completed_at=NULL, updated_at=? WHERE run_id=?", (now, run_id))
+            self._insert_event(connection, run_id=run_id, leg_id=leg_id,
+                               event_type="run.ready_work_resumed",
+                               payload={"reason": "independent peer review is ready; input blockers preserved"})
+            return True
+
+    def begin_attempt(self, leg_id: str, *, integration_replay_source: str | None = None,
+                      expected_attempt_id: str | None = None) -> dict[str, Any]:
         now = time.time()
         attempt_id = str(uuid.uuid4())
         with self._connect() as connection:
@@ -493,6 +537,19 @@ class FleetStore:
                 "ORDER BY attempt_number DESC LIMIT 1",
                 (leg_id,),
             ).fetchone()
+            if integration_replay_source is not None:
+                if not previous or previous["attempt_id"] != expected_attempt_id or leg["state"] != "queued":
+                    raise RuntimeError("saved integration replay generation changed before dispatch")
+                source = connection.execute(
+                    "SELECT 1 FROM fleet_attempts WHERE attempt_id=? AND leg_id=? AND state='failed' AND exit_code=0",
+                    (integration_replay_source, leg_id),
+                ).fetchone()
+                queued = connection.execute(
+                    "SELECT payload_json FROM fleet_events WHERE leg_id=? AND type='leg.integration_replay_queued' "
+                    "ORDER BY event_seq DESC LIMIT 1", (leg_id,),
+                ).fetchone()
+                if not source or not queued or json.loads(queued[0]).get("source_attempt_id") != integration_replay_source:
+                    raise RuntimeError("saved integration replay has no matching durable source")
             number = int(previous["attempt_number"] or 0) + 1 if previous else 1
             resume_sid = ""
             resume_kind: str | None = None
@@ -620,6 +677,12 @@ class FleetStore:
                     ),
                 },
             )
+            if integration_replay_source is not None:
+                self._insert_event(
+                    connection, run_id=str(leg["run_id"]), leg_id=leg_id, attempt_id=attempt_id,
+                    event_type="worker.integration_replay_dispatched",
+                    payload={"source_attempt_id": integration_replay_source, "native_turn": False},
+                )
             return {
                 "attempt_id": attempt_id,
                 "attempt_number": number,
@@ -808,6 +871,9 @@ class FleetStore:
         actual_model: str | None = None,
         actual_effort: str | None = None,
         exit_code: int | None = None,
+        completion_repair_reason: str | None = None,
+        input_blocker_reason: str | None = None,
+        helper_outcome_missing: bool = False,
     ) -> None:
         if state not in {"completed", "failed", "cancelled", "interrupted"}:
             raise ValueError("invalid Fleet attempt terminal state")
@@ -824,6 +890,21 @@ class FleetStore:
             if attempt is None:
                 raise KeyError(f"unknown Fleet attempt {attempt_id}")
             run = self._require_run(connection, str(attempt["run_id"]))
+            latest = connection.execute(
+                "SELECT attempt_id FROM fleet_attempts WHERE leg_id = ? "
+                "ORDER BY attempt_number DESC LIMIT 1", (attempt["leg_id"],),
+            ).fetchone()
+            if (attempt["state"] in TERMINAL_ATTEMPT_STATES
+                    or latest["attempt_id"] != attempt_id):
+                # A duplicate callback or old process generation has no authority
+                # over a replacement attempt's leg/DAG state.
+                self._insert_event(
+                    connection, run_id=str(attempt["run_id"]),
+                    leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                    event_type="attempt.late_result_ignored",
+                    payload={"reported_state": state, "preserved_state": attempt["state"]},
+                )
+                return
             if state == "completed" and bool(run["cancel_requested"]):
                 state = "cancelled"
                 clean_error = clean_error or "cancelled by user"
@@ -850,18 +931,125 @@ class FleetStore:
                 ),
             )
             leg_state = "completed" if state == "completed" else state
+            from fleet.resources import is_disk_exhaustion, is_process_crash, is_transient_transport_error
+
+            recovery_allowed = (
+                state == "failed" and not run["cancel_requested"]
+                and run["state"] not in TERMINAL_RUN_STATES
+            )
+            missing_helper = False
+            if helper_outcome_missing and recovery_allowed and attempt["pid"]:
+                dispatched = connection.execute(
+                    "SELECT payload_json FROM fleet_events WHERE attempt_id=? AND leg_id=? AND run_id=? "
+                    "AND type='worker.integration_replay_dispatched' ORDER BY event_seq DESC LIMIT 1",
+                    (attempt_id, attempt["leg_id"], attempt["run_id"]),
+                ).fetchone()
+                if dispatched:
+                    provenance = json.loads(dispatched[0])
+                    missing_helper = provenance.get("native_turn") is False and bool(provenance.get("source_attempt_id"))
+                if missing_helper:
+                    self._insert_event(
+                        connection, run_id=str(attempt["run_id"]), leg_id=str(attempt["leg_id"]),
+                        attempt_id=attempt_id, event_type="worker.integration_replay_outcome_missing",
+                        payload={"exit_code": exit_code, "source_attempt_id": provenance["source_attempt_id"],
+                                 "native_turn": False, "reason": clean_error},
+                    )
+            input_action = (
+                "resolve the recorded authority/evidence blocker, then resume the affected worker"
+                if recovery_allowed and input_blocker_reason and not missing_helper else ""
+            )
+            resource = "disk" if not input_action and is_disk_exhaustion(clean_error or "") else ""
+            retries = 0
+            retry_kind = (
+                "process" if missing_helper else
+                "transport" if is_transient_transport_error(clean_error or "") else
+                "process" if is_process_crash(exit_code) and attempt["pid"] else ""
+            )
+            if not input_action and not resource and retry_kind:
+                retries = connection.execute(
+                    "SELECT COUNT(*) FROM fleet_events WHERE leg_id = ? "
+                    "AND type = ?", (attempt["leg_id"], f"leg.{retry_kind}_retry_scheduled"),
+                ).fetchone()[0]
+                if retries < 2:
+                    resource = retry_kind
+                elif recovery_allowed:
+                    input_action = "verify provider/runtime health before resuming this worker"
+                    self._insert_event(
+                        connection, run_id=str(attempt["run_id"]),
+                        leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                        event_type=f"leg.{retry_kind}_retry_exhausted",
+                        payload={"retries": retries, "reason": clean_error, "exit_code": exit_code,
+                                 "next_action": "verify provider/runtime health before resuming this worker"},
+                    )
+            resource_wait = recovery_allowed and bool(resource) and not input_action
+            if resource_wait:
+                leg_state = "waiting_for_resources"
+                required_bytes = 2 * 1024**3 if resource == "disk" else 0
+                not_before = now + 30 * (2 ** retries)
+                connection.execute(
+                    "INSERT OR REPLACE INTO fleet_resource_waits "
+                    "(leg_id, run_id, attempt_id, resource, reason, required_bytes, not_before) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (attempt["leg_id"], attempt["run_id"], attempt_id, resource, clean_error,
+                     required_bytes, not_before),
+                )
+                self._insert_event(
+                    connection, run_id=str(attempt["run_id"]),
+                    leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                    event_type=f"leg.{resource}_retry_scheduled" if resource != "disk" else "leg.waiting_for_resources",
+                    payload={"resource": resource, "reason": clean_error, "exit_code": exit_code,
+                             "not_before": not_before, "required_bytes": required_bytes,
+                             "retry_number": retries + 1 if resource != "disk" else None},
+                )
+            if recovery_allowed and completion_repair_reason and not resource_wait and not input_action:
+                prior_repair = connection.execute(
+                    "SELECT 1 FROM fleet_events WHERE leg_id = ? "
+                    "AND type = 'leg.completion_repair_requested' LIMIT 1",
+                    (attempt["leg_id"],),
+                ).fetchone()
+                reason = redact_text(completion_repair_reason)[0][:400]
+                if prior_repair:
+                    input_action = "resolve the recorded evidence blocker, then resume the affected worker"
+                    self._insert_event(
+                        connection, run_id=str(attempt["run_id"]),
+                        leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                        event_type="leg.completion_repair_exhausted",
+                        payload={"reason": reason, "retries": 1,
+                                 "next_action": "resolve the recorded evidence blocker, then resume the affected worker"},
+                    )
+                else:
+                    # The failed attempt, bounded repair and queued DAG state
+                    # commit together. A crash cannot strand a repair between
+                    # finish_attempt and a later supervisor callback.
+                    leg_state = "queued"
+                    self._insert_event(
+                        connection, run_id=str(attempt["run_id"]),
+                        leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                        event_type="leg.completion_repair_requested",
+                        payload={"reason": reason, "attempt_number": attempt["attempt_number"],
+                                 "resume_session_id": session_id or attempt["session_id"],
+                                 "state": "queued"},
+                    )
+            if input_action:
+                leg_state = "waiting_for_input"
+                self._insert_event(
+                    connection, run_id=str(attempt["run_id"]),
+                    leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                    event_type="leg.waiting_for_input",
+                    payload={"state": leg_state,
+                             "reason": redact_text(input_blocker_reason or clean_error or "unresolved blocker")[0][:4000],
+                             "next_action": input_action},
+                )
             connection.execute(
                 "UPDATE fleet_legs SET state = ?, updated_at = ? WHERE leg_id = ?",
                 (leg_state, now, str(attempt["leg_id"])),
             )
             mark_work_unit_leg_finished(
-                connection,
-                leg_id=str(attempt["leg_id"]),
-                attempt_id=attempt_id,
-                state=state,
-                error=clean_error,
-                now=now,
+                connection, leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                state=leg_state, error=clean_error, now=now,
             )
+            if leg_state == "queued":
+                reset_work_unit_leg_for_retry(connection, leg_id=str(attempt["leg_id"]), now=now)
             self._insert_event(
                 connection,
                 run_id=str(attempt["run_id"]),
@@ -946,7 +1134,7 @@ class FleetStore:
             state = str(row["state"])
             if state in TERMINAL_RUN_STATES:
                 return self._snapshot(connection, run_id)
-            if state in {"queued", "waiting_for_capacity"}:
+            if state in {"queued", "waiting_for_capacity", "waiting_for_resources", "waiting_for_input"}:
                 connection.execute(
                     "UPDATE fleet_runs SET state = 'cancelled', cancel_requested = 1, "
                     "error = 'cancelled by user', completed_at = ?, updated_at = ? WHERE run_id = ?",
@@ -955,7 +1143,7 @@ class FleetStore:
                 connection.execute(
                     "UPDATE fleet_legs SET state = 'cancelled', updated_at = ? "
                     "WHERE run_id = ? AND state IN "
-                    "('queued', 'waiting_for_capacity', 'waiting_for_dependencies')",
+                    "('queued', 'waiting_for_capacity', 'waiting_for_resources', 'waiting_for_input', 'waiting_for_dependencies')",
                     (now, run_id),
                 )
                 cancel_unfinished_work_units(
@@ -989,7 +1177,7 @@ class FleetStore:
                 payload={
                     "state": (
                         "cancelled"
-                        if state in {"queued", "waiting_for_capacity"}
+                        if state in {"queued", "waiting_for_capacity", "waiting_for_resources", "waiting_for_input"}
                         else "stopping"
                     )
                 },
@@ -1003,7 +1191,7 @@ class FleetStore:
             row = self._require_run(connection, run_id)
             if row["dry_run"]:
                 raise ValueError("a dry-run plan cannot be retried")
-            if row["state"] not in {"failed", "cancelled"}:
+            if row["state"] not in {"failed", "cancelled", "waiting_for_input"}:
                 raise ValueError("only failed or cancelled Fleet runs can be retried")
             running_attempts = connection.execute(
                 "SELECT a.pid, a.process_token FROM fleet_attempts a "
@@ -1296,7 +1484,7 @@ class FleetStore:
             run = self._require_run(connection, run_id)
             if bool(run["dry_run"]):
                 raise ValueError("a dry-run worker cannot be retried")
-            if run["state"] not in {"queued", "running", "failed", "waiting_for_capacity"}:
+            if run["state"] not in {"queued", "running", "failed", "waiting_for_capacity", "waiting_for_resources", "waiting_for_input"}:
                 raise RuntimeError(
                     "a failed worker can be retried only while its run is active or failed"
                 )
@@ -1306,10 +1494,10 @@ class FleetStore:
             ).fetchone()
             if leg is None:
                 raise KeyError(f"unknown Fleet worker {leg_id}")
-            if leg["state"] not in {"failed", "waiting_for_capacity"}:
+            if leg["state"] not in {"failed", "waiting_for_capacity", "waiting_for_input"}:
                 raise ValueError("only a failed or capacity-waiting Fleet worker can be retried")
 
-            if run["state"] in {"failed", "waiting_for_capacity"}:
+            if run["state"] in {"failed", "waiting_for_capacity", "waiting_for_resources", "waiting_for_input"}:
                 connection.execute(
                     """
                     UPDATE fleet_runs SET state = 'queued', cancel_requested = 0,
@@ -1964,24 +2152,36 @@ class FleetStore:
                 snapshot = self._snapshot(connection, run_id)
                 snapshot["retry_activated"] = False
                 return snapshot
-            incomplete = connection.execute(
-                "SELECT leg_id, state FROM fleet_legs WHERE run_id = ? AND phase = ? "
-                "AND state != 'completed' ORDER BY ordinal",
-                (run_id, phase),
-            ).fetchall()
+            # Any recoverable lane keeps its receipt, even when an earlier phase
+            # or independent sibling has a different failure. Capacity takes
+            # run-state precedence; resource probes also support that state.
             capacity_rows = connection.execute(
                 "SELECT w.leg_id, w.reason, w.not_before, w.resets_at, "
                 "w.eligible_providers_json FROM fleet_capacity_waits w "
                 "JOIN fleet_legs l ON l.leg_id = w.leg_id "
-                "WHERE w.run_id = ? AND l.phase = ? ORDER BY l.ordinal",
-                (run_id, phase),
+                "WHERE w.run_id = ? AND l.state = 'waiting_for_capacity' ORDER BY l.ordinal",
+                (run_id,),
             ).fetchall()
-            waiting_ids = {str(row["leg_id"]) for row in capacity_rows}
-            if incomplete and all(
-                str(row["state"]) == "waiting_for_capacity"
-                and str(row["leg_id"]) in waiting_ids
-                for row in incomplete
-            ):
+            resource_wait = connection.execute(
+                "SELECT w.reason FROM fleet_resource_waits w "
+                "JOIN fleet_legs l ON l.leg_id = w.leg_id "
+                "WHERE w.run_id = ? AND l.state = 'waiting_for_resources' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if resource_wait is not None and not capacity_rows:
+                connection.execute(
+                    "UPDATE fleet_runs SET state = 'waiting_for_resources', error = ?, "
+                    "owner_pid = NULL, owner_token = NULL, completed_at = NULL, updated_at = ? "
+                    "WHERE run_id = ?", (resource_wait["reason"], now, run_id),
+                )
+                self._insert_event(
+                    connection, run_id=run_id, event_type="run.waiting_for_resources",
+                    payload={"state": "waiting_for_resources", "reason": resource_wait["reason"]},
+                )
+                snapshot = self._snapshot(connection, run_id)
+                snapshot["resource_waiting"] = True
+                return snapshot
+            if capacity_rows:
                 earliest = min(float(row["not_before"]) for row in capacity_rows)
                 reset_values = [
                     float(row["resets_at"])
@@ -2061,6 +2261,46 @@ class FleetStore:
                 snapshot["retry_activated"] = True
                 return snapshot
 
+            honest_stop = "work stopped before completion" in clean_error.lower()
+            input_wait = connection.execute(
+                "SELECT a.error FROM fleet_legs l JOIN fleet_attempts a ON a.leg_id = l.leg_id "
+                "AND a.attempt_number = l.current_attempt WHERE l.run_id = ? "
+                "AND l.state = 'waiting_for_input' ORDER BY l.phase_index, l.ordinal LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            exhausted_transport = connection.execute(
+                "SELECT e.type FROM fleet_events e JOIN fleet_legs l ON l.leg_id = e.leg_id "
+                "WHERE e.run_id = ? AND e.type IN ('leg.transport_retry_exhausted','leg.process_retry_exhausted',"
+                "'leg.completion_repair_exhausted') "
+                "AND l.state = 'failed' LIMIT 1", (run_id,),
+            ).fetchone()
+            if honest_stop or exhausted_transport or input_wait:
+                if input_wait and input_wait["error"]:
+                    clean_error = str(input_wait["error"])
+                next_action = (
+                    "resolve the recorded blocker, then resume the affected worker" if input_wait else
+                    "resolve the recorded authority/evidence blocker, add steering, then resume the affected worker"
+                    if honest_stop or (exhausted_transport and exhausted_transport["type"] == "leg.completion_repair_exhausted")
+                    else "verify provider/runtime health, then resume the affected worker"
+                )
+                connection.execute(
+                    "UPDATE fleet_runs SET state = 'waiting_for_input', error = ?, owner_pid = NULL, "
+                    "owner_token = NULL, completed_at = NULL, updated_at = ? WHERE run_id = ?",
+                    (clean_error, now, run_id),
+                )
+                connection.execute(
+                    "UPDATE fleet_legs SET state = 'waiting_for_input', updated_at = ? "
+                    "WHERE run_id = ? AND phase = ? AND state = 'failed'",
+                    (now, run_id, phase),
+                )
+                self._insert_event(
+                    connection, run_id=run_id, event_type="run.waiting_for_input",
+                    payload={"state": "waiting_for_input", "reason": clean_error,
+                             "next_action": next_action, "phase": phase},
+                )
+                snapshot = self._snapshot(connection, run_id)
+                snapshot["input_waiting"] = True
+                return snapshot
             connection.execute(
                 """
                 UPDATE fleet_runs SET state = 'failed', result_text = NULL, error = ?,
@@ -2840,11 +3080,16 @@ class FleetStore:
         work_units = project_work_unit_run(connection, run_id)
         if not work_units:
             work_units = derive_work_unit_views(policy, phases, str(run["state"]))
+        checkout = connection.execute(
+            "SELECT * FROM fleet_run_checkouts WHERE run_id = ?", (run_id,),
+        ).fetchone()
         return {
             "run_id": str(run["run_id"]),
             "task": str(run["task"]),
             "activity": str(run["activity"]),
-            "cwd": str(run["cwd"]),
+            "cwd": str(checkout["path"] if checkout and checkout["state"] == "ready" else run["cwd"]),
+            "source_cwd": str(run["cwd"]),
+            "checkout": dict(checkout) if checkout else None,
             "origin_session_id": run["origin_session_id"],
             "origin_agent": run["origin_agent"],
             "worker_group_id": run["worker_group_id"],
@@ -2860,6 +3105,12 @@ class FleetStore:
             "phases": phases,
             "work_units": work_units,
             "capacity_waits": list(capacity_waiting.values()),
+            "resource_waits": [dict(row) for row in connection.execute(
+                "SELECT w.* FROM fleet_resource_waits w "
+                "JOIN fleet_legs l ON l.leg_id = w.leg_id "
+                "WHERE w.run_id = ? AND l.state = 'waiting_for_resources'",
+                (run_id,),
+            )],
             "result_text": run["result_text"],
             "result_truncated": bool(run["result_truncated"]),
             "error": run["error"],
@@ -3003,16 +3254,14 @@ class FleetStore:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_database(self.path, foreign_keys=True)
 
     def _initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode = WAL")
+            from fleet.sqlite_support import enable_wal
+
+            enable_wal(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS fleet_runs (
@@ -3146,6 +3395,24 @@ class FleetStore:
                 CREATE INDEX IF NOT EXISTS fleet_capacity_waits_run_idx
                     ON fleet_capacity_waits(run_id, not_before);
 
+                CREATE TABLE IF NOT EXISTS fleet_run_checkouts (
+                    run_id TEXT PRIMARY KEY REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
+                    source_cwd TEXT NOT NULL,
+                    baseline TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    state TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS fleet_resource_waits (
+                    leg_id TEXT PRIMARY KEY REFERENCES fleet_legs(leg_id) ON DELETE CASCADE,
+                    run_id TEXT NOT NULL REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
+                    attempt_id TEXT NOT NULL REFERENCES fleet_attempts(attempt_id) ON DELETE CASCADE,
+                    resource TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    required_bytes INTEGER NOT NULL,
+                    not_before REAL NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS fleet_context_receipts (
                     attempt_id TEXT PRIMARY KEY
                         REFERENCES fleet_attempts(attempt_id) ON DELETE CASCADE,
@@ -3163,6 +3430,8 @@ class FleetStore:
                 """
             )
             ensure_work_unit_schema(connection)
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
             columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(fleet_attempts)").fetchall()
@@ -3305,6 +3574,10 @@ def _phase_state(states: list[str]) -> str:
         return "completed"
     if any(state == "running" for state in states):
         return "running"
+    if any(state == "waiting_for_resources" for state in states):
+        return "waiting_for_resources"
+    if any(state == "waiting_for_input" for state in states):
+        return "waiting_for_input"
     if any(state == "waiting_for_capacity" for state in states):
         return "waiting_for_capacity"
     if any(state == "failed" for state in states):
@@ -3380,7 +3653,7 @@ def _process_alive(pid: object, token: object = None) -> bool:
     if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
         return False
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -3434,7 +3707,7 @@ def _terminate_owned_process(pid: object, token: object) -> bool:
 
 def _pid_exists(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
     except ProcessLookupError:
         return False
     except PermissionError:

@@ -345,7 +345,7 @@ button { font: inherit; }
   background: var(--dim); }
 .dot.running, .dot.queued, .dot.pending { background: var(--green);
   box-shadow: 0 0 7px rgba(63,185,80,.72); animation: pulse 1.6s ease-in-out infinite; }
-.dot.waiting_for_capacity { background: var(--amber);
+.dot.waiting_for_capacity, .dot.waiting_for_resources, .dot.waiting_for_input { background: var(--amber);
   box-shadow: 0 0 7px rgba(210,153,34,.55); animation: pulse 2.4s ease-in-out infinite; }
 .dot.complete, .dot.completed, .dot.succeeded, .dot.done { background: var(--green); }
 .dot.failed, .dot.error { background: var(--red); }
@@ -375,7 +375,7 @@ button { font: inherit; }
   text-transform: uppercase; letter-spacing: .45px; }
 .status.running, .status.queued, .status.pending { color: var(--green);
   border-color: rgba(63,185,80,.35); background: var(--green-dim); }
-.status.waiting_for_capacity { color: var(--amber);
+.status.waiting_for_capacity, .status.waiting_for_resources, .status.waiting_for_input { color: var(--amber);
   border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.1); }
 .status.waiting_for_dependencies { color: var(--amber);
   border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.1); }
@@ -477,10 +477,10 @@ button { font: inherit; }
   </main>
 </div>
 <script>
-const ACTIVE_STATES = new Set(['created','pending','queued','running','stopping','waiting_for_capacity']);
+const ACTIVE_STATES = new Set(['created','pending','queued','running','stopping','waiting_for_capacity','waiting_for_resources','waiting_for_input']);
 const DELETABLE_STATES = new Set(['completed','failed','cancelled','planned']);
-const RETRY_STATES = new Set(['failed','error','stopped','cancelled','canceled']);
-const LEG_RETRY_RUN_STATES = new Set(['queued','running','failed','waiting_for_capacity']);
+const RETRY_STATES = new Set(['failed','error','stopped','cancelled','canceled','waiting_for_input']);
+const LEG_RETRY_RUN_STATES = new Set(['queued','running','failed','waiting_for_capacity','waiting_for_resources','waiting_for_input']);
 const LEG_HANDOFF_RUN_STATES = new Set(['queued','running','failed','waiting_for_capacity']);
 const state = { runs: [], selectedId: null, detail: null, visible: false,
   timer: null, loading: false, detailSeq: 0, pendingLegRetries: new Set(),
@@ -729,7 +729,7 @@ function legState(leg) {
   if (leg && leg.retry_requested) return 'retry-queued';
   const stored = norm(leg && leg.state);
   const attempted = norm(attempt.state);
-  if (stored === 'waiting_for_capacity') return stored;
+  if (['waiting_for_capacity','waiting_for_resources','waiting_for_input'].includes(stored)) return stored;
   if (stored === 'queued' && ['failed','error','cancelled','interrupted'].includes(attempted)) {
     return 'queued';
   }
@@ -824,7 +824,7 @@ function renderLeg(run, phase, leg) {
   const requestPending = state.pendingLegRetries.has(retryKey);
   const canRetry = LEG_RETRY_RUN_STATES.has(runState(run));
   if (leg.retry_requested || requestPending ||
-      (canRetry && ['failed','error','waiting_for_capacity'].includes(storedStatus))) {
+      (canRetry && ['failed','error','waiting_for_capacity','waiting_for_input'].includes(storedStatus))) {
     const retry = button(
       requestPending ? 'queueing…' : leg.retry_requested ? 'retry queued' : 'retry agent',
       'action retry',
@@ -874,7 +874,10 @@ function renderLeg(run, phase, leg) {
     row.append(el('div', 'leg-context', contextBits.join(' · ')));
   }
   const error = text(attempt.error || leg.error || '');
-  if (error && !waitingForControl) row.append(el('div', 'leg-error', error));
+  if (error && !waitingForControl) row.append(el(
+    'div', status === 'waiting_for_input' ? 'leg-wait' : 'leg-error',
+    status === 'waiting_for_input' ? 'needs attention: ' + error +
+      ' · resolve this blocker, then retry this worker; no automatic retry is running' : error));
   return row;
 }
 
@@ -1180,9 +1183,23 @@ function renderDetail() {
   root.append(head);
   if (run.error) root.append(el(
     'div',
-    status === 'waiting_for_capacity' ? 'capacity-banner' : 'error-banner',
+    ['waiting_for_capacity','waiting_for_resources','waiting_for_input'].includes(status) ? 'capacity-banner' : 'error-banner',
     run.error,
   ));
+  for (const wait of (run.resource_waits || [])) {
+    const next = new Date(Number(wait.not_before) * 1000).toLocaleTimeString();
+    root.append(el('div', 'capacity-banner',
+      `resource recovery: ${wait.resource} · next check ${next} · ` +
+      (wait.resource !== 'disk' ? 'bounded same-provider retry; recovery not yet verified · ' :
+        `requires ${(Number(wait.required_bytes) / 1024 ** 3).toFixed(1)} GiB free · `) +
+      `worker ${wait.leg_id} · completed work is preserved`));
+  }
+  if (status === 'waiting_for_input') root.append(el('div', 'capacity-banner',
+    'needs attention: resolve the recorded blocker, add steering, then retry the affected worker. ' +
+    'completed work is preserved; no success is claimed and no retry is running.'));
+  if (run.checkout) root.append(el('div', 'capacity-banner',
+    `baseline ${run.checkout.baseline} · ${run.checkout.state} · ` +
+    `work is retained at ${run.checkout.path} · original checkout: ${run.source_cwd}`));
   const workPlan = renderWorkUnits(
     run,
     panelState.has('work-units') ? panelState.get('work-units') : true,

@@ -489,6 +489,26 @@ def test_modal_dialog_is_in_scope_only_when_owned(controller):
         c.observe(sid)
 
 
+def test_display_watch_uses_its_visible_app_when_chat_focus_is_on_other_monitor(controller):
+    from core.computer_watch import changed, sample
+
+    controller.desktop.windows = [
+        {
+            "id": "aws",
+            "app": "browser",
+            "title": "AWS Console",
+            "rect": {"x": 0, "y": 0, "width": 2000, "height": 1100},
+        }
+    ]
+    sid, first = begin(controller, mode="watch", target="display:right")
+    assert first["context"]["id"] == "aws"
+    controller.desktop.focus = "another-chat-on-left"
+    second = controller.observe(sid)
+    assert controller.status()["session"]["focused_window"]["title"] == "AWS Console"
+    with sample(first) as old, sample(second) as new:
+        assert not changed(first, second, old, new)
+
+
 @pytest.mark.parametrize("entry", ["legacy_begin", "mcp_default"])
 def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path, entry):
     from test_computer_conversation import write_chat
@@ -504,7 +524,14 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
     monkeypatch.setattr(computer_mcp, "origin_arguments", lambda *args: source)
 
     options = []
+    model_events = []
     real_agent = computer_agent.ComputerAgent
+
+    monkeypatch.setattr(
+        computer_agent,
+        "build_task_pack",
+        lambda request: "\n--- saved aws runbook ---\nverify the current account before proceeding.",
+    )
 
     class Model:
         active_turn_id = None
@@ -512,9 +539,14 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
         def __init__(self, **kwargs):
             options.append(kwargs)
 
+        async def start(self):
+            model_events.append("start")
+
         async def turn(self, message, **kwargs):
+            model_events.append(message)
             assert kwargs["images"][0]["data"]
             assert all(f"prior-message-{i}:" in message for i in range(30))
+            assert "saved aws runbook" in message
             return {"text": "open the next setup step", "tool_calls": []}
 
         async def close(self):
@@ -566,6 +598,8 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
         assert options[0]["model"] == "gpt-6-astra" and options[0]["effort"] == "medium"
         assert options[0]["service_tier"] == "fast"
         assert options[0]["allow_user_hooks"] is False
+        assert model_events[0] == "start"
+        assert isinstance(model_events[1], str)
         assert store.coaching(parent)[0]["text"] == controller.session.observation
     finally:
         controller.stop()
@@ -604,8 +638,9 @@ def test_explicit_sharing_and_legacy_single_capture_do_not_start_worker(
         server.server_close()
 
 
+@pytest.mark.parametrize("failed_interrupt", [False, True])
 def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
-    controller, monkeypatch
+    controller, monkeypatch, failed_interrupt
 ):
     from core import computer_agent
     from core.computer_service import ComputerServer
@@ -615,6 +650,9 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
     controller.desktop.capture = lambda rect: Image.new("RGB", (rect.width, rect.height), page[0])
     second_started = threading.Event()
     interrupted = threading.Event()
+    preview_started = threading.Event()
+    release_preview = threading.Event()
+    resets = []
 
     class Model:
         active_turn_id = None
@@ -628,6 +666,13 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
             turn = self.turns
             self.active_turn_id = str(turn)
             try:
+                if turn == 1:
+                    assert "Do not reply UNCHANGED for this initial check" in message
+                    on_delta("red-page ")
+                    on_delta("advice")
+                    preview_started.set()
+                    while not release_preview.is_set():
+                        await asyncio.sleep(0.01)
                 if turn == 2:
                     self.release = asyncio.Event()
                     second_started.set()
@@ -635,16 +680,26 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
                     on_delta("obsolete green-page advice")
                     return {"text": "obsolete green-page advice"}
                 await asyncio.sleep(0.1)
-                return {"text": "red-page advice" if turn == 1 else "blue-page advice"}
+                return {
+                    "text": "UNCHANGED"
+                    if turn == 4
+                    else ("red-page advice" if turn == 1 else "blue-page advice")
+                }
             finally:
                 self.active_turn_id = None
 
         async def interrupt(self):
             interrupted.set()
+            if failed_interrupt:
+                raise RuntimeError("interrupt transport failed")
             self.release.set()
 
+        async def reset_thread(self):
+            assert self.active_turn_id is None
+            resets.append(True)
+
         async def close(self):
-            pass
+            assert controller.session.cancelled.is_set(), "warm process closed during recovery"
 
     monkeypatch.setattr(
         computer_agent,
@@ -669,7 +724,13 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
             },
             operator=True,
         )
+        until(lambda: preview_started.is_set())
+        assert controller.status()["session"]["observation_preview"] == "red-page advice"
+        assert controller.session.observation == ""  # Preview precedes completed advice.
+        release_preview.set()
         until(lambda: controller.session.observation == "red-page advice")
+        assert controller.session.observation_preview == ""
+        assert any(e["type"] == "inspection_completed" for e in controller.events)
         page[0] = "green"
         until(lambda: second_started.is_set())
         assert controller.session.observation == ""
@@ -680,7 +741,16 @@ def test_live_watch_detects_changes_during_reasoning_and_discards_old_answers(
         until(lambda: controller.session.observation == "blue-page advice")
         assert not any("obsolete" in e.get("text", "") for e in controller.events)
         assert any(e["type"] == "superseded" for e in controller.events)
+        assert bool(resets) == failed_interrupt
+        page[0] = "gold"
+        until(
+            lambda: any(
+                e["type"] == "inspection_completed" and e["unchanged"] for e in controller.events
+            )
+        )
+        assert controller.session.observation == "blue-page advice"
     finally:
+        release_preview.set()
         controller.stop()
         if controller.agent:
             controller.agent.thread.join(timeout=3)
@@ -725,12 +795,16 @@ def test_watch_changes_ignore_overlay_resize_and_caret_but_detect_page_content()
             draw.rectangle((5, 5, 135, 50), fill="white")  # Popup resized.
             draw.line((250, 100, 250, 110), fill="white")  # Blinking caret.
             assert not changed(previous, current, old, new)
+            draw.rectangle((240, 110, 252, 122), fill="white")  # Small animated badge.
+            assert not changed(previous, current, old, new)
             draw.rectangle((160, 90, 180, 110), fill="white")  # Page content.
             assert changed(previous, current, old, new)
         with Image.new("RGB", (320, 180), (3, 3, 3)) as noise:
             assert not changed(previous, previous, old, noise)
         title_change = {**previous, "context": {"id": "browser", "title": "next step"}}
         assert changed(previous, title_change, old, old)
+        focus_change = {**previous, "context": {"id": "another-browser", "title": "setup"}}
+        assert changed(previous, focus_change, old, old)
 
 
 def test_supervisor_allows_first_indicator_handshake_but_stops_lost_heartbeat(controller):
@@ -748,11 +822,71 @@ def test_supervisor_allows_first_indicator_handshake_but_stops_lost_heartbeat(co
         # The supervisor must not mistake its initial zero timestamp for a loss.
         time.sleep(0.15)
         assert controller.session.state == "active"
+        # A late heartbeat from a live HUD is a stall, not a disconnect.
         server.indicator_seen = time.monotonic() - 4
+        time.sleep(0.3)
+        assert controller.session.state == "active"
+        server.indicator_seen = time.monotonic() - (server.INDICATOR_STALE_SECONDS + 1)
         deadline = time.monotonic() + 1
         while controller.session.state == "active" and time.monotonic() < deadline:
             time.sleep(0.01)
         assert controller.session.reason == "visible indicator disconnected"
+    finally:
+        controller.shutdown.set()
+        worker.join(timeout=2)
+        server.server_close()
+
+
+def test_supervisor_stops_at_once_when_indicator_process_exits(controller):
+    from types import SimpleNamespace
+
+    from core.computer_service import ComputerServer
+
+    server = ComputerServer(controller)
+    server.indicator_process = SimpleNamespace(poll=lambda: 1)
+    begin(controller, mode="watch")
+    worker = threading.Thread(target=server.supervise, daemon=True)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 1
+        while controller.session.state == "active" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller.session.reason == "visible indicator disconnected"
+    finally:
+        controller.shutdown.set()
+        worker.join(timeout=2)
+        server.server_close()
+
+
+def test_supervisor_tolerates_transient_lock_probe_failures(controller, monkeypatch):
+    from core.computer_service import ComputerServer
+
+    server = ComputerServer(controller)
+    server.LOCK_PROBE_GRACE_SECONDS = 0.6
+    begin(controller, mode="watch")
+    failing = {"value": True}
+
+    def locked():
+        if failing["value"]:
+            raise ComputerError("cannot verify desktop lock state")
+        return False
+
+    monkeypatch.setattr(controller.desktop, "locked", locked)
+    worker = threading.Thread(target=server.supervise, daemon=True)
+    worker.start()
+    try:
+        # One or two failed probes inside the grace window keep the session alive.
+        time.sleep(0.3)
+        assert controller.session.state == "active"
+        failing["value"] = False
+        time.sleep(0.6)
+        assert controller.session.state == "active"
+        # A probe that keeps failing past the grace window still fails closed.
+        failing["value"] = True
+        deadline = time.monotonic() + 2
+        while controller.session.state == "active" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller.session.reason == "desktop lock state unavailable"
     finally:
         controller.shutdown.set()
         worker.join(timeout=2)

@@ -24,8 +24,6 @@ import uuid
 from contextlib import suppress
 from pathlib import Path
 
-import websockets
-
 from core.image_input import MAX_IMAGE_WIRE_BYTES, clean_image_input
 
 STATE_FILE = Path.home() / ".config" / "serena" / "voice_state"
@@ -308,7 +306,7 @@ def parse_local_event(raw: bytes):
             or not run_id
             or len(run_id) > 100
             or not all(char.isalnum() or char == "-" for char in run_id)
-            or notice_state not in {"completed", "failed"}
+            or notice_state not in {"completed", "failed", "waiting_for_input"}
             or not isinstance(token, str)
             or not token
             or len(token) > 160
@@ -447,6 +445,7 @@ async def apply_code_control(message: dict) -> dict:
 
 
 async def handler(ws):
+    import websockets
     clients.add(ws)
     try:
         await ws.send(json.dumps({"type": "state_change", "state": state}))
@@ -718,7 +717,7 @@ def _record_fleet_notice(
     from core.fleet_store import FleetStore
 
     payload = {
-        "token": notice["token"],
+        "notice_id": notice["token"],
         "state": notice["state"],
         "channel": "voice",
     }
@@ -731,7 +730,8 @@ def _fallback_fleet_notice(notice: dict) -> None:
     """Use the phone only when local speech genuinely failed."""
 
     from core.fleet_store import FleetStore
-    from core.fleet_supervisor import _send_raghav_text
+    from core.fleet_supervisor import _terminal_notification_authority
+    from core.notification_authority import NotificationRequest
 
     store = FleetStore()
     if store.terminal_notice_delivered(
@@ -740,14 +740,35 @@ def _fallback_fleet_notice(notice: dict) -> None:
         channel="telegram",
     ):
         return
-    delivered = _send_raghav_text(notice["text"])
+    run = store.get_run(notice["run_id"])
+    if not run or run.get("cancel_requested") or run.get("state") == "cancelled":
+        return
+    if notice["state"] == "waiting_for_input" and not any(
+        leg.get("state") == "waiting_for_input"
+        for phase in run.get("phases", []) for leg in phase.get("legs", [])
+    ):
+        return
+    authority = _terminal_notification_authority(run, notice["token"])
+    result = authority.request(NotificationRequest(
+        kind=f"fleet.run.{notice['state']}", summary=notice["text"], channel="telegram",
+        urgency="normal", dedupe_key=f"fleet:{notice['run_id']}:{notice['token']}:telegram",
+        source_surface="fleet", job_id=notice["run_id"],
+        metadata={"fleet_notice_id": notice["token"], "fleet_state": notice["state"]},
+    ))
+    if result.sent and store.terminal_notice_delivered(notice["run_id"], notice["token"], channel="telegram"):
+        return
+    event_type = {"sent": "run.notification.delivered", "failed": "run.notification.failed",
+                  "pending_approval": "run.notification.pending_approval"}.get(
+                      result.decision, "run.notification.deferred")
     store.append_event(
         notice["run_id"],
-        "run.notification.delivered" if delivered else "run.notification.failed",
+        event_type,
         {
-            "token": notice["token"],
+            "notice_id": notice["token"],
             "state": notice["state"],
             "channel": "telegram",
+            "notification_id": result.notification_id,
+            "authority_decision": result.decision,
         },
     )
 
@@ -828,6 +849,7 @@ async def warm_voice() -> None:
 
 
 async def main():
+    import websockets
     event_socket = open_event_socket()
     try:
         async with websockets.serve(handler, HOST, PORT, max_size=MAX_IMAGE_WIRE_BYTES):

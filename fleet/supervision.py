@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from core.work_jobs import process_start_token
+from core.sqlite_connection import connect_database
 from fleet.store import _terminate_owned_process
 
 DEFAULT_LEASE_SECONDS = 30.0
@@ -569,11 +570,7 @@ class FleetSupervisionStore:
         return _lease_from_row(row)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_database(self.path, foreign_keys=True)
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -614,6 +611,7 @@ class FleetSupervisionStore:
                 );
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
             columns = {row[1] for row in connection.execute("PRAGMA table_info(fleet_worker_leases)")}
             for name, definition in (("progress_stage", "TEXT NOT NULL DEFAULT 'healthy'"), ("turn_deadline", "REAL")):
                 if name not in columns:

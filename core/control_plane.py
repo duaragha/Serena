@@ -18,6 +18,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from core.sqlite_connection import connect_database
+
 DEFAULT_CONTROL_DB_PATH = Path.home() / ".local" / "state" / "serena" / "control-plane.sqlite3"
 SCHEMA_VERSION = 1
 MAX_PAYLOAD_CHARS = 64_000
@@ -545,10 +547,7 @@ class ControlPlaneStore:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_database(self.path)
 
     def _initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -704,10 +703,7 @@ class SurfaceOutbox:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_database(self.path)
 
     def _initialize(self) -> None:
         with self._connect() as connection:

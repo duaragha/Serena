@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from core import codex_records
+from core.process_probe import probe_process
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
@@ -41,7 +42,7 @@ def _pid_alive(pid: int | None) -> bool:
     if not pid:
         return False
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
         return True
     except (ProcessLookupError, OSError):
         return False

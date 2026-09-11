@@ -615,21 +615,32 @@ def _stream_process(
     parse_stdout: Callable[[str], None],
     cancel_requested: CancelCallback,
     on_event: EventCallback,
+    cleanup_exited_group: bool = False,
 ) -> _ProcessResult:
     log_path = _event_log_path(request)
     log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    process = subprocess.Popen(
-        command,
-        cwd=request.cwd,
-        env=_worker_environment(request),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        start_new_session=True,
-    )
+    windows_owned = os.name == "nt"
+    if windows_owned:
+        from fleet.windows_process import WindowsProcess
+
+        process = WindowsProcess(command, cwd=request.cwd, env=_worker_environment(request))
+    else:
+        process = subprocess.Popen(
+            command,
+            cwd=request.cwd,
+            env=_worker_environment(request),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
     readers: list[threading.Thread] = []
+    from core.work_jobs import process_start_token
+    # Every POSIX worker owns its session, not only integration helpers.
+    # Private-pipe descendants cannot be detected through output EOF.
+    start_token = process_start_token(process.pid) if os.name != "nt" else None
     try:
         # Claude waits only briefly for piped input. Start draining output and
         # deliver the prompt before any callback that may refresh Serena's
@@ -672,6 +683,7 @@ def _stream_process(
             ),
         )
         exit_seen_at: float | None = None
+        exit_backlog: int | None = None
         open_pipes = len(readers)
         stderr_parts: list[str] = []
         captured_bytes = 0
@@ -689,11 +701,17 @@ def _stream_process(
                     _terminate_process_group(process)
                 if process.poll() is not None:
                     exit_seen_at = exit_seen_at or time.monotonic()
-                    if time.monotonic() - exit_seen_at >= exit_drain_seconds:
+                    if exit_backlog is None and time.monotonic() - exit_seen_at >= exit_drain_seconds:
                         # A crashed worker can leave a browser or other grandchild
                         # holding stdout/stderr open. Do not let inherited pipe FDs
                         # pin the whole Fleet run after the owned process is gone.
                         _terminate_process_group(process)
+                        # The grace period bounds inherited-pipe waiting, not
+                        # metadata callback latency. Preserve the finite set of
+                        # events already read, including model/final receipts.
+                        # A still-writing descendant cannot extend this budget.
+                        exit_backlog = output_queue.qsize()
+                    if exit_backlog == 0:
                         break
                 try:
                     source, line = output_queue.get(timeout=0.25)
@@ -703,6 +721,8 @@ def _stream_process(
                     ):
                         break
                     continue
+                if exit_backlog is not None:
+                    exit_backlog -= 1
                 if line is None:
                     open_pipes -= 1
                     continue
@@ -772,6 +792,10 @@ def _stream_process(
     finally:
         if process.poll() is None:
             _terminate_process_group(process)
+        if windows_owned:
+            process.close_job()
+        if not windows_owned:
+            _cleanup_exited_group(process, start_token)
         with suppress(subprocess.TimeoutExpired):
             process.wait(timeout=5)
         for pipe in (process.stdin, process.stdout, process.stderr):
@@ -780,6 +804,20 @@ def _stream_process(
                     pipe.close()
         for reader in readers:
             reader.join(timeout=1)
+        if windows_owned:
+            process.close()
+
+
+def _cleanup_exited_group(process, start_token):
+    """A worker's private-pipe descendants must not survive its owned turn."""
+    if os.name == "nt" or not start_token:
+        return
+    from core.work_jobs import process_start_token
+    observed = process_start_token(process.pid)
+    if observed and observed != start_token:
+        # The original group is gone and its numeric ID has been reused.
+        return
+    _terminate_process_group(process)
 
 
 def _terminate_process_group(process: subprocess.Popen[str]) -> None:
@@ -789,6 +827,11 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> None:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
         if process.poll() is not None:
+            # The leader may be gone while a descendant ignores SIGTERM and
+            # retains an output pipe. Escalate only this owned process group;
+            # otherwise closing the reader can wait indefinitely for EOF.
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
             return
         try:
             process.wait(timeout=3)
@@ -797,6 +840,9 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> None:
             with suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
     else:
+        if hasattr(process, "terminate_tree"):
+            process.terminate_tree()
+            return
         if process.poll() is not None:
             return
         with suppress(OSError):

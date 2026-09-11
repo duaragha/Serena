@@ -52,6 +52,34 @@ Write-Host "[windows] running the mocked ConPTY contract tests"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_windows_pty_backend.py") -q
 Assert-LastExitCode "Windows PTY tests"
 
+Write-Host "[windows] testing native Fleet locks and patch transport"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_file_lock.py") (Join-Path $RepoRoot "tests\test_fleet_patch_transport.py") -q
+Assert-LastExitCode "Native Fleet lock and patch tests"
+
+Write-Host "[windows] testing Fleet database connection lifetime"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_connection_lifetime.py") (Join-Path $RepoRoot "tests\test_process_probe.py") -q
+Assert-LastExitCode "Fleet database lifetime tests"
+
+Write-Host "[windows] testing blocked-work notices and cross-process delivery ownership"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_notification_delivery_ownership.py") (Join-Path $RepoRoot "tests\test_fleet_attention.py") -q
+Assert-LastExitCode "Fleet notification delivery tests"
+
+Write-Host "[windows] testing atomic native worker ownership"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_process.py") -q
+Assert-LastExitCode "Atomic native worker ownership tests"
+
+Write-Host "[windows] testing native Fleet helper process ownership"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_windows_job.py") (Join-Path $RepoRoot "tests\test_fleet_helper_crash.py") (Join-Path $RepoRoot "tests\test_fleet_resident_timer.py") -q
+Assert-LastExitCode "Native Fleet helper job tests"
+
+Write-Host "[windows] testing unrecorded Fleet helper exit recovery"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_integration_recovery.py") -k "killed_helper or repeated_helper or unrecorded_helper" -q
+Assert-LastExitCode "Native Fleet helper exit recovery tests"
+
+Write-Host "[windows] testing native worker crash status recovery"
+& $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_process_recovery.py") (Join-Path $RepoRoot "tests\test_fleet_windows_status.py") -q
+Assert-LastExitCode "Native Fleet worker crash status recovery"
+
 if (Test-Path -LiteralPath $SidecarDist) {
     Remove-Item -LiteralPath $SidecarDist -Recurse -Force
 }
@@ -84,6 +112,20 @@ Assert-LastExitCode "Frozen Fleet peer MCP smoke test"
 Write-Host "[windows] smoke-testing the frozen workspace gate"
 & $Python (Join-Path $RepoRoot "scripts\verify-workspace-frozen-windows.py") $SidecarExe
 Assert-LastExitCode "Frozen workspace gate and process ownership smoke test"
+
+Write-Host "[windows] smoke-testing the frozen Fleet integration replay"
+$PreviousReplayBinary = $env:SERENA_FLEET_TEST_REPLAY_BINARY
+try {
+    $env:SERENA_FLEET_TEST_REPLAY_BINARY = $SidecarExe
+    & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_packaged_replay.py") -q
+    Assert-LastExitCode "Frozen Fleet integration replay smoke test"
+} finally {
+    if ($null -eq $PreviousReplayBinary) {
+        Remove-Item Env:SERENA_FLEET_TEST_REPLAY_BINARY -ErrorAction SilentlyContinue
+    } else {
+        $env:SERENA_FLEET_TEST_REPLAY_BINARY = $PreviousReplayBinary
+    }
+}
 
 Write-Host "[windows] smoke-testing the frozen PTY backend"
 $PtySmoke = Start-Process -FilePath $SidecarExe `

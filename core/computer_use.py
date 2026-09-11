@@ -40,6 +40,9 @@ class Session:
     last_signature: str = ""
     last_inspected_at: float | None = None
     observation: str = ""
+    observation_preview: str = ""
+    inspection_started_at: float | None = None
+    last_model_ms: int | None = None
     driver: str = "connected_chat"
     observation_state: str = "ready"
     source_session_id: str = ""
@@ -91,6 +94,18 @@ class ComputerController:
     def status(self):
         with self.lock:
             s = self.session
+            latest = next(reversed(s.frames.values()), None) if s else None
+            focused = None
+            if latest and s.state == "active" and self.clock() < latest["expires_at"]:
+                context = latest["context"]
+                window, capture = context.get("rect"), latest["rect"]
+                if window and (
+                    max(window["x"], capture["x"])
+                    < min(window["x"] + window["width"], capture["x"] + capture["width"])
+                    and max(window["y"], capture["y"])
+                    < min(window["y"] + window["height"], capture["y"] + capture["height"])
+                ):
+                    focused = {key: context.get(key, "") for key in ("id", "app", "title")}
             info = (
                 None
                 if s is None
@@ -105,6 +120,9 @@ class ComputerController:
                     "expires_at": s.expires_at,
                     "last_inspected_at": s.last_inspected_at,
                     "observation": s.observation,
+                    "observation_preview": s.observation_preview,
+                    "inspection_started_at": s.inspection_started_at,
+                    "last_model_ms": s.last_model_ms,
                     "driver": s.driver,
                     "observation_state": s.observation_state,
                     "source_session_id": s.source_session_id or None,
@@ -112,6 +130,7 @@ class ComputerController:
                     "context_message_count": s.context_message_count,
                     "service_tier": "fast" if s.driver == "astra" else None,
                     "latest_frame": next(reversed(s.frames), None),
+                    "focused_window": focused,
                 }
             )
         return {
@@ -301,7 +320,29 @@ class ComputerController:
                 self.stop("desktop locked")
                 raise ComputerError("desktop locked")
             rect, _, geometry = self.geometry(s.target)
-            context = self.desktop.context()
+            foreground = self.desktop.context()
+            context = foreground
+            if s.mode == "watch" and s.target.startswith("display:"):
+                # The user may type in a chat on another monitor. Describe the
+                # selected display's visible app, not that unrelated foreground.
+                window = foreground.get("rect")
+                overlaps = window and (
+                    rect.x < window["x"] + window["width"]
+                    and window["x"] < rect.x + rect.width
+                    and rect.y < window["y"] + window["height"]
+                    and window["y"] < rect.y + rect.height
+                )
+                if not overlaps:
+                    context = next(
+                        (
+                            item
+                            for item in reversed(self.desktop.visible_windows())
+                            if Rect(**item["rect"]).contains(
+                                rect.x + rect.width // 2, rect.y + rect.height // 2
+                            )
+                        ),
+                        {"id": "", "app": "", "title": ""},
+                    )
             self._assert_public(context)
             self._assert_public_region(rect)
             if s.target.startswith("window:"):
@@ -317,7 +358,7 @@ class ComputerController:
                 capture_ms = round((time.perf_counter() - started) * 1000, 2)
                 # Recheck before pixels can leave the helper after focus/geometry changes.
                 if (
-                    self.desktop.context().get("id") != context.get("id")
+                    self.desktop.context().get("id") != foreground.get("id")
                     or self.geometry(s.target)[2] != geometry
                 ):
                     raise ComputerTransientError(

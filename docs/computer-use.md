@@ -19,16 +19,53 @@ a terminal, use `window:ID` or `display:NAME` for the intended application.
 X11 window IDs. A window's owned modal dialogs remain in scope. Unrelated
 windows do not. Monitor coordinates and scaling are read again before input.
 
+For coaching in one app on a multi-monitor desktop, select its display. A
+desktop-wide watch also reacts to chat output on the other screen. Display watch
+continues identifying the app visible at that display's center when keyboard
+focus moves to another monitor, so typing in the chat does not invalidate the
+watched app's image. It still captures the entire selected display.
+
 Both `watch` and `run` stream text updates in the terminal. `--detach` leaves
 the task running with a visible desktop indicator; `chats computer events`
 reattaches to its updates. `--speak` sends completed observations through
 Serena's existing local voice output. `chats computer steer "new instruction"`
 steers the active Astra turn without starting a second controller.
 
-The desktop indicator shows the complete latest observation, wraps text and
-grows to fit. Long updates scroll within the popup while the stop button stays
-visible. The screenshot mask follows the popup's size so advice is not fed back
-into the next visual observation.
+The desktop indicator is a compact, movable HUD card. Drag its header to move it
+out of the way; its current position and size are sent back to the helper so the
+card stays masked from screenshots. The header shows whether Astra is starting,
+thinking, watching, or has seen a changed screen. The context row identifies the
+focused application and window title from the latest captured frame (in a
+browser this normally includes the selected tab) and the selected display or
+window scope. The footer shows model/timing metadata, copies the latest guidance,
+and keeps the stop control visible.
+
+Use the chevron in the header to collapse the guidance body while keeping the
+current app, state, timing, copy, and stop controls available. The card refreshes
+while the model is thinking, without waiting for another coaching reply. Missing
+or expired frame details show a waiting label. Long updates scroll inside the
+card, and the screenshot mask follows its size so advice is not fed back into
+the next visual observation.
+
+Watch replies stream into the popup as a labelled draft before completion. A
+major page change clears the draft, and only completed advice enters conversation
+history. The initial check asks for a useful step or visible blocker even when
+the parent chat already contains related advice. Later `UNCHANGED` replies show
+that the screen was checked rather than leaving a reading message. Active checks
+display elapsed seconds; `inspection_completed` events expose model and first
+token timings, including checks that produce no new advice.
+When a fresh check returns `UNCHANGED`, the last complete guidance is restored:
+the model has confirmed it remains applicable, rather than leaving a blank popup.
+
+Watch tolerates small repaint changes during inference. A window/title or scope
+change, or at least 5% changed sampled pixels relative to the actual inspected
+frame, invalidates the turn immediately. Smaller changes queue a fresh inspection
+after the current answer finishes; they do not discard its draft. This is a pixel
+heuristic, not a guarantee of semantic equivalence. Settling adapts between 0.2
+and 1 second during repeated paints, with a one-second maximum wait. Failed
+interrupt recovery cancels the local turn, resets the model thread, and reloads
+the full conversation/task pack while preserving the app-server process.
+See the [latency research](../knowledge/openai-computer-use/astra-watch-latency-2026-09-10.md).
 
 Sessions default to five minutes and allow at most thirty minutes using
 `--seconds`. The resident brain can start five-minute sessions from a matching
@@ -79,6 +116,14 @@ Worker context is passed verbatim up to a 700 KB per-request guard; exceeding it
 produces a visible error instead of silently dropping earlier messages. Native
 parent-chat compaction still applies to very long chats. Stored text remains
 available for retrieval; this is not an unlimited model context window.
+
+Before the first screenshot turn, the worker warms the local Codex app-server
+connection and builds a small read-only task pack from Serena's knowledge store
+plus shallow project `it/` and `docs/` folders. It ranks files against the task,
+strips HTML noise, caps the pack at 18 KB, and redacts obvious credentials. A
+matching AWS runbook therefore reaches Astra with the linked chat and current
+screenshot; the worker does not need to rediscover that saved setup research.
+The pack is sent once per visual thread and is reloaded after history rotation.
 
 Use `background=false` only for deliberate interactive MCP sessions handled
 by the connected chat's own model. This shares the screen but does not start
@@ -145,7 +190,9 @@ There is no API-key requirement. Each visual thread is ephemeral and rotates
 after eight watch turns. Model choice does not silently fall back to another
 model. Missing access or an unaccepted fast tier is returned as a visible error.
 Fast mode is scoped to computer workers and does not change the parent chat's
-model or effort. [Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
+model or effort. The worker keeps its app-server process warm when it rotates
+the visual thread, so the next screenshot does not pay initialization again.
+[Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
 uses 2.5 times standard Codex credits where available. It does not remove
 model inference latency.
 
@@ -218,6 +265,12 @@ animation can repeatedly interrupt reasoning. Fresh medium-effort guidance
 still takes model inference time. This is not continuous video or 120 Hz
 perception. `screen_changed`, `superseded` and timestamped `observation` events
 separate local detection from model latency.
+
+To reduce restarts from animated badges and small desktop updates, pixel-only
+changes must cover 0.5% of the sampled image (previously 0.15%). Window identity
+and tab/title transitions still trigger a fresh check regardless of pixel area.
+This does not remove inference latency or make continuously changing pages
+instantaneous.
 
 The updated loop was verified with real X11 fixture screenshots and Astra at
 medium on an isolated 1600×1000 display: three page changes were detected in

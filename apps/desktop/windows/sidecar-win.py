@@ -96,6 +96,12 @@ if __name__ == "__main__" and sys.argv[1:] == ["--workspace-child"]:
 
     raise SystemExit(workspace_child())
 
+if __name__ == "__main__" and sys.argv[1:] == ["--fleet-integration-replay"]:
+    _restore_peer_streams()
+    from fleet.integration_recovery import main as replay_integration
+
+    raise SystemExit(replay_integration())
+
 if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
     _restore_peer_streams()
     from fleet.peer_mcp import mcp

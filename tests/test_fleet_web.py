@@ -287,6 +287,53 @@ def test_autonomy_panel_renders_real_states_without_html_injection(fleet_client)
     subprocess.run(["node", "-e", script], input=page, text=True, check=True, capture_output=True)
 
 
+def test_resource_wait_remains_active_and_overrides_failed_attempt(fleet_client):
+    client, _ = fleet_client
+    page = client.get("/fleet/view").get_data(as_text=True)
+    script = r"""
+      const html = require('node:fs').readFileSync(0, 'utf8');
+      const active = html.split('const ACTIVE_STATES = ')[1].split(';')[0];
+      if (!new Function('return ' + active)().has('waiting_for_resources')) throw Error('not active');
+      const body = html.split('function legState')[1].split('function legRetryPending')[0];
+      const legState = new Function('attemptFor', 'norm', 'return function legState' + body)(
+        leg => leg.current_attempt || {}, value => String(value || '').toLowerCase());
+      if (legState({state:'waiting_for_resources', current_attempt:{state:'failed'}}) !== 'waiting_for_resources')
+        throw Error('parked worker rendered dead');
+      if (legState({state:'queued', current_attempt:{state:'failed'}}) !== 'queued') throw Error('retry regression');
+      const detail = html.split('function renderDetail')[1].split('async function')[0];
+      if (!detail.includes('run.resource_waits') || !detail.includes('run.checkout')) throw Error('missing receipts');
+    """
+    subprocess.run(["node", "-e", script], input=page, text=True, check=True, capture_output=True)
+
+
+def test_input_blocker_renders_amber_inside_a_running_fleet(fleet_client):
+    client, _ = fleet_client
+    page = client.get("/fleet/view").get_data(as_text=True)
+    script = r"""
+      const html = require('node:fs').readFileSync(0, 'utf8');
+      const body = html.split('function renderLeg(')[1].split('function renderPhase(')[0];
+      const el = (tag, cls, text='') => ({tag, cls, text, children:[], append(...xs){this.children.push(...xs);}});
+      const ctx = {el, text:x=>String(x??''), norm:x=>String(x??'').toLowerCase(),
+        attemptFor:l=>l.current_attempt, providerFor:()=> 'codex', legState:l=>l.state,
+        displayModel:()=> 'gpt-6-astra', actualModelConfirmed:()=>false,
+        document:{createTextNode:x=>({text:x})}, legRetryPending:()=>false, duration:()=>'',
+        button:label=>el('button','',label), runId:r=>r.run_id, runState:r=>r.state,
+        state:{pendingLegRetries:new Set(),pendingHandoffs:new Set(),focus:null},
+        LEG_RETRY_RUN_STATES:new Set(), LEG_HANDOFF_RUN_STATES:new Set()};
+      const render = new Function(...Object.keys(ctx), 'return function renderLeg(' + body)(...Object.values(ctx));
+      const attack = '<img src=x onerror=alert(1)>';
+      const row = render({run_id:'run',state:'running'}, {name:'execute'},
+        {leg_id:'leg',worker_key:'agent:a',state:'waiting_for_input',current_attempt:{state:'failed',error:attack}});
+      if (row.children.some(x=>x.cls==='leg-error')) throw Error('blocker rendered as dead worker');
+      const notice = row.children.find(x=>x.cls==='leg-wait');
+      if (!notice || !notice.text.includes('needs attention: '+attack) ||
+          !notice.text.includes('no automatic retry is running')) throw Error('missing actionable blocker');
+      if (body.includes('innerHTML')) throw Error('unsafe error renderer');
+    """
+    result = subprocess.run(["node", "-e", script], input=page, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_gemini_provider_badge_is_not_claude(fleet_client):
     client, _ = fleet_client
     page = client.get("/fleet/view").get_data(as_text=True)

@@ -334,6 +334,9 @@ def delete_run(run_id: str) -> dict[str, Any]:
                 f"Fleet deletion stopped because worktree cleanup failed: {workspace.path}"
             )
     isolation.delete_run_records(clean_id)
+    from fleet.checkout import cleanup_run_checkout
+
+    cleanup_run_checkout(run)
     deleted = store.delete_run(clean_id)
 
     state_root = Path(
@@ -366,6 +369,9 @@ def preflight_delete_run(
         raise KeyError(f"unknown Fleet run {clean_id}")
     if run["state"] not in TERMINAL_RUN_STATES:
         raise RuntimeError("stop this Fleet and wait for it to finish before deleting it")
+    from fleet.checkout import check_checkout_deletable
+
+    check_checkout_deletable(run)
     from fleet.isolation import FleetIsolationStore, unrecovered_workspaces
 
     blockers = unrecovered_workspaces(FleetIsolationStore(), clean_id)
@@ -815,6 +821,10 @@ def resume_ready_capacity_waits(
     current = time.time() if now is None else float(now)
     resumed: list[str] = []
     for wait in waits:
+        # Resuming the first lane queues the run. Its remaining capacity waits
+        # survive for the next parked pass; do not resume a stale run snapshot.
+        if str(wait["run_id"]) in resumed:
+            continue
         if wait.get("run_state") != "waiting_for_capacity":
             continue
         if current < float(wait.get("not_before") or 0.0):
@@ -949,6 +959,9 @@ def run_supervisor(run_id: str) -> dict[str, Any]:
     policy = policy_from_snapshot(run["policy"])
     try:
         with _coding_run_lock(run):
+            from fleet.checkout import ensure_run_checkout
+
+            ensure_run_checkout(store, clean_id)
             interrupted = _run_work_unit_scheduler(store, clean_id, policy)
             if interrupted is not None:
                 return interrupted
@@ -1170,13 +1183,15 @@ def _run_work_unit_scheduler(
                 phase_index = int(leg["phase_index"])
                 worker_key = _worker_key(leg)
                 # Rotated Review advances the target unit, but it is still the
-                # reviewer's next turn. Keep each durable worker in phase order
-                # and never let two turns for the same worker run concurrently.
+                # reviewer's next turn. Keep live turns in phase order and
+                # never run two turns for the same worker concurrently.
+                # A parked, unrelated assignment is not an active turn: the
+                # DAG still owns target readiness, not worker phase order.
                 # Without both checks a fast target could launch Agent A's
                 # Review before Agent A had finished Research or Code.
                 if worker_key in running_worker_keys or any(
                     _worker_key(prior_leg) == worker_key
-                    and str(prior_leg.get("state") or "") != "completed"
+                    and _prior_turn_blocks_dispatch(leg, prior_leg)
                     for prior_phase in snapshot["phases"]
                     if int(prior_phase["index"]) < phase_index
                     for prior_leg in prior_phase["legs"]
@@ -1245,7 +1260,7 @@ def _run_work_unit_scheduler(
             errors = [
                 leg.get("current_attempt", {}).get("error")
                 for leg in unresolved["legs"]
-                if leg.get("current_attempt") and leg["state"] == "failed"
+                if leg.get("current_attempt") and leg["state"] in {"failed", "waiting_for_input"}
             ]
             detail = next((str(error) for error in errors if error), "phase did not complete")
             resolution = store.resolve_phase_failure(
@@ -1255,7 +1270,8 @@ def _run_work_unit_scheduler(
             )
             if resolution.pop("retry_activated", False):
                 continue
-            if resolution.pop("capacity_waiting", False):
+            if (resolution.pop("capacity_waiting", False) or resolution.pop("resource_waiting", False)
+                    or resolution.pop("input_waiting", False)):
                 return resolution
             return _terminal_outcome(store, resolution)
 
@@ -1311,6 +1327,8 @@ def _terminal_spoken_text(run: dict[str, Any]) -> str:
     short = str(run.get("run_id") or "")[:8]
     state = str(run.get("state") or "unknown")
     project = Path(str(run.get("cwd") or "")).name or "your project"
+    if state == "waiting_for_input":
+        return f"Fleet {short} in {project}: {_notice_summary(run.get('error'), limit=400)}"
     if state == "completed":
         return (
             f"Fleet {short} finished the {project} run successfully. "
@@ -1685,8 +1703,21 @@ def serve_forever(
                 store.flush_control_outbox()
             next_control_flush = monotonic_now + CONTROL_PLANE_FLUSH_SECONDS
         if monotonic_now >= next_capacity_probe:
+            from fleet.resources import resume_ready_resource_waits
+            from fleet.ready_resume import resume_ready_input_runs
+            from fleet.integration_recovery import resume_saved_integrations
+
+            with suppress(Exception):
+                resume_ready_resource_waits(store)
             with suppress(Exception):
                 resume_ready_capacity_waits(store)
+            with suppress(Exception):
+                resume_ready_input_runs(store)
+            with suppress(Exception):
+                resume_saved_integrations(store)
+            from fleet.attention import notify_blocked_runs
+            with suppress(Exception):
+                notify_blocked_runs(store, _terminal_notification_authority)
             next_capacity_probe = monotonic_now + CAPACITY_POLL_SECONDS
         launched = False
         while not stopper.is_set():
@@ -1907,6 +1938,9 @@ def _leg_working_directory(
     if not assessment.safe:
         raise IsolationError(assessment.reason)
     isolation = FleetIsolationStore()
+    from fleet.checkout import requested_worker_branch
+
+    task_branch = requested_worker_branch(run["task"], _worker_key(leg), int(run["agent_count"]))
     if attempt is not None and int(attempt.get("attempt_number") or 0) > 1:
         workspace, recovery = refresh_workspace_for_retry(
             isolation,
@@ -1914,6 +1948,7 @@ def _leg_working_directory(
             worker_key=_worker_key(leg),
             cwd=base,
             assessment=assessment,
+            requested_branch=task_branch,
         )
         attempt["workspace_recovery"] = recovery
     else:
@@ -1923,7 +1958,10 @@ def _leg_working_directory(
             worker_key=_worker_key(leg),
             cwd=base,
             assessment=assessment,
+            requested_branch=task_branch,
         )
+    if attempt is not None:
+        attempt["workspace_branch"] = workspace.branch
     claims = _effective_write_paths(run, leg)
     decision = isolation.claim_paths(
         run_id=str(run["run_id"]),
@@ -2376,13 +2414,17 @@ def _skip_finalize_leg(
         state="completed",
         output_text=output_text,
         session_id=attempt.get("resume_session_id"),
-        actual_model=str(leg.get("model") or ""),
         exit_code=0,
     )
     return WorkerResult(True, output_text, attempt.get("resume_session_id"), None, None, 0)
 
 
 def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerResult:
+    from fleet.integration_recovery import execute_saved_integration
+
+    replayed = execute_saved_integration(store, run_id, leg)
+    if replayed is not None:
+        return replayed
     skipped = _skip_finalize_leg(store, run_id, leg)
     if skipped is not None:
         return skipped
@@ -2726,6 +2768,12 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
             actual_model=result.actual_model,
             actual_effort=result.actual_effort,
             exit_code=result.exit_code,
+            completion_repair_reason=(
+                verdict.summary()
+                if evidence_blocked and verdict is not None and _should_auto_repair_completion(verdict)
+                else None
+            ),
+            input_blocker_reason=verdict.summary() if verdict is not None and verdict.terminal_stop else None,
         )
         _wake_pending_integrations_after_terminal(store, snapshot, leg)
     finally:
@@ -2783,40 +2831,6 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
                     run_id, "leg.difficult_retry_failed", {"error": str(exc)[:1_000]},
                     leg_id=str(leg["leg_id"]), attempt_id=str(attempt["attempt_id"]),
                 )
-    if (
-        evidence_blocked
-        and verdict is not None
-        and _should_auto_repair_completion(verdict)
-        and not store.has_event(
-            run_id,
-            "leg.completion_repair_requested",
-            leg_id=str(leg["leg_id"]),
-        )
-    ):
-        try:
-            store.request_leg_retry(run_id, str(leg["leg_id"]))
-            store.append_event(
-                run_id,
-                "leg.completion_repair_requested",
-                {
-                    "reason": (
-                        redact_text(verdict.summary())[0][:400]
-                        or "completion evidence rejected"
-                    ),
-                    "attempt_number": int(attempt.get("attempt_number") or 0),
-                    "resume_session_id": str(result.session_id or "") or None,
-                },
-                leg_id=str(leg["leg_id"]),
-                attempt_id=str(attempt["attempt_id"]),
-            )
-        except Exception as exc:
-            store.append_event(
-                run_id,
-                "leg.completion_repair_failed",
-                {"error": str(exc)[:1_000]},
-                leg_id=str(leg["leg_id"]),
-                attempt_id=str(attempt["attempt_id"]),
-            )
     # A rejected contract is not provider exhaustion, so it must never be read
     # as a reason to hand this slot to the other provider.
     if state == "failed" and not evidence_blocked and not integration_blocked:
@@ -2839,8 +2853,8 @@ def _should_auto_repair_completion(verdict: CompletionVerdict) -> bool:
     The retried attempt resumes the same durable session and its prompt now
     carries the rejection reasons, so a worker can fix a reporting defect (bad
     envelope shape, missing exit codes, an unverifiable command) instead of the
-    run dying on it. The once-per-leg event guard at the call site prevents
-    repair loops; a second rejection stays failed.
+    run dying on it. The store atomically enforces the once-per-leg budget;
+    a second rejection remains failed evidence and becomes a resumable blocker.
     """
 
     return verdict.enforced and not verdict.accepted
@@ -3009,6 +3023,28 @@ def _assignment_text(value: object) -> str:
         parts = [_assignment_text(item) for item in value]
         return "; ".join(part for part in parts if part)
     return _clean_inline(value, limit=800)
+
+
+def _prior_turn_blocks_dispatch(candidate: dict[str, Any], prior: dict[str, Any]) -> bool:
+    """Only bypass a quiescent, disjoint assignment; never bypass target DAG gates."""
+    state = str(prior.get("state") or "")
+    if state == "completed":
+        return False
+    if candidate.get("access_mode") == "review" and prior.get("access_mode") == "write":
+        targets = set(candidate.get("review_target_ids") or ())
+        prior_targets = set(prior.get("assignment_ids") or ())
+        return not (
+            state == "waiting_for_input" and targets and prior_targets
+            and targets.isdisjoint(prior_targets)
+        )
+    if candidate.get("access_mode") == "write" and prior.get("access_mode") == "review":
+        targets = set(candidate.get("assignment_ids") or ())
+        prior_targets = set(prior.get("review_target_ids") or ())
+        return not (
+            state in {"waiting_for_input", "waiting_for_dependencies"}
+            and targets and prior_targets and targets.isdisjoint(prior_targets)
+        )
+    return True
 
 
 def _worker_key(leg: dict[str, Any]) -> str:
@@ -3585,6 +3621,12 @@ def _worker_prompt(
         resume = "This is a native retry of your interrupted phase turn. Continue from its durable session."
     else:
         resume = "This is a fresh independent worker session."
+    if attempt.get("workspace_branch"):
+        resume += (
+            f"\nFleet already provisioned your task branch `{attempt['workspace_branch']}` "
+            "in this worker checkout. Use that existing branch; do not recreate or force-reset it. "
+            "Local completion does not require a push or PR, and the task's external-write limits still apply."
+        )
     workspace_recovery = attempt.get("workspace_recovery")
     if isinstance(workspace_recovery, dict):
         recovery_action = str(workspace_recovery.get("action") or "")

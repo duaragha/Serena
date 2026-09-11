@@ -208,7 +208,9 @@ def test_windows_and_linux_publish_to_one_feed(builder):
 
 
 def test_builder_ships_the_frozen_sidecar_where_the_build_puts_it(builder):
-    resource = builder["extraResources"][0]
+    resource = next(
+        item for item in builder["extraResources"] if item.get("to") == "sidecar"
+    )
     # Paths in an electron-builder config resolve against the project dir
     # (desktop-electron/), which is also where build-win.ps1 writes the freeze.
     assert resource["from"] == f"build/windows-sidecar/{SIDECAR_NAME}"
@@ -268,6 +270,15 @@ def test_build_checks_frozen_workspace_before_packaging():
     assert script.index(command) < script.index('& npx --no-install electron-builder')
 
 
+def test_build_checks_frozen_fleet_replay_before_packaging():
+    script = BUILD_SCRIPT.read_text(encoding="utf-8")
+    command = '& $Python -m pytest (Join-Path $RepoRoot "tests\\test_fleet_packaged_replay.py") -q'
+    assert "$env:SERENA_FLEET_TEST_REPLAY_BINARY = $SidecarExe" in script
+    assert command in script
+    assert "Remove-Item Env:SERENA_FLEET_TEST_REPLAY_BINARY" in script
+    assert script.index(command) < script.index('& npx --no-install electron-builder')
+
+
 def test_build_script_defaults_to_not_publishing():
     script = BUILD_SCRIPT.read_text(encoding="utf-8")
     assert '"always" } else { "never" }' in script
@@ -299,6 +310,28 @@ def test_entrypoint_dispatches_pty_smoke_before_loading_the_web_runtime():
 
     assert rendered.index("if args.pty_smoke") < rendered.index("_web_runtime().run_web")
     assert "raise SystemExit(_pty_smoke())" in rendered
+
+
+def test_entrypoint_dispatches_fleet_replay_before_normal_startup():
+    tree = ast.parse(ENTRYPOINT.read_text(encoding="utf-8"), filename=str(ENTRYPOINT))
+    dispatch = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and "--fleet-integration-replay" in ast.unparse(node.test)
+    )
+    rendered = ast.unparse(dispatch)
+    startup = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Expr)
+        and ast.unparse(node) == "_repair_standard_streams()"
+    )
+
+    assert "_restore_peer_streams()" in rendered
+    assert "from fleet.integration_recovery import main as replay_integration" in rendered
+    assert "raise SystemExit(replay_integration())" in rendered
+    assert dispatch.lineno < startup.lineno
 
 
 def test_entrypoint_does_not_redeclare_routes_ui_web_owns():

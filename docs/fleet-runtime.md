@@ -1,5 +1,67 @@
 # Fleet runtime and recovery
 
+## Atomic Windows worker ownership
+
+`fleet.windows_process.WindowsProcess` creates every Windows Fleet worker,
+including integration helpers, directly inside a noninheritable, parent-owned
+kill-on-close Job Object. `STARTUPINFOEX` supplies `JOB_LIST` and an explicit
+three-handle stdio `HANDLE_LIST` to `CreateProcessW`. The worker cannot execute
+or spawn venv/frozen/native children before ownership takes effect. There is no
+suspended-unowned interval, post-launch assignment or global API monkeypatch.
+Microsoft documents the [job-at-creation guarantee](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812).
+
+The adapter exposes only Fleet's required text-pipe, poll, wait and terminate
+operations. It retains the exact process handle and unsigned Windows exit code;
+tree cancellation uses the owned job, never a broad PID/name search. Final
+cleanup closes the job even when the primary process exited normally and a
+private-pipe descendant is still alive. Parent death closes its noninherited
+job handle. Job admission failure refuses launch and closes allocated handles.
+The previous `HelperJob(process)` remains for legacy stdin-gated test helpers,
+but production transport uses atomic creation for helpers and native workers.
+
+Native tests cover immediate pre-stdin spawning, normal/nonzero exit, timeout,
+cancellation, exact job membership, owner death, command/environment quoting,
+repeated handle lifetimes and rejected startup. Source tests alone do not prove
+these Windows-only behaviors; native and packaged acceptance are required.
+
+## Read-only process liveness
+
+Native process retry recognizes explicit Windows crash statuses (access
+violation, illegal/privileged instruction, integer divide-by-zero, stack/heap
+failure, control-C termination, fail-fast and fatal application exit), in both
+unsigned DWORD and signed int32 form, alongside the existing POSIX signals.
+The [Microsoft NTSTATUS reference](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55)
+defines these codes. Ordinary exit1, unknown codes, launch failures and missing
+DLL/configuration statuses are not treated as proven process crashes. A recorded
+worker PID remains required. Cancellation and authority/evidence blockers still
+win, and the same two process retries (30/60-second cooldowns) remain bounded.
+Scheduled/exhausted receipts retain the actual exit code. The native Windows
+writer test terminates only its own disposable process with an access-violation
+status, then verifies the saved patch and completed Research survive retry;
+it simulates the OS exit, not an actual illegal-memory-access fault.
+
+Fleet, work jobs, external-session leases and shared process owners use
+`core.process_probe.probe_process` for existence checks. On Windows it uses
+psutil's read-only PID query; `os.kill(pid, 0)` sends `CTRL_C_EVENT` there and
+is not a safe existence query. POSIX retains signal-zero semantics. Existing
+birth-token fencing and each caller's permission-denial policy remain intact.
+`tests/test_process_probe.py` checks both no-signal routing and a real private
+child’s continued survival, then confirms its absence after owned cleanup.
+
+## Resident helper crash regression
+
+`tests/test_fleet_resident_timer.py` boots the real resident service loop against
+private databases and a disposable Git fixture. It kills only a helper verified
+by its lease, birth token and process ancestry after its patch was applied, then
+observes the normal 30-second timer and persisted cooldown recover that patch.
+No parent retry/resume call or clock adjustment is permitted. The test asserts
+exactly one process retry after its deadline, retained sibling attempts, passing
+integration/evidence gates, and no native model calls. It cancels the disposable
+run only after Code recovers, before unrelated Review; this is helper-recovery
+proof, not a claim of whole-run or business-task completion. Catalog, session
+projection and notification adapters are disabled; scheduling and recovery are
+real. Source acceptance and native Windows packaging both run this regression.
+
 ## Opt-in Gemini research pilot
 
 For a matched research comparison, use `activity: research`, `provider_mode: balanced`,
@@ -33,6 +95,26 @@ not use Hermes as a dependency, replace Serena's identity, or route through a ge
 
 ## Run ownership and deletion
 
+Fleet, isolation, worker-lease, control-plane and outbox operation scopes close
+their SQLite connection immediately after commit or rollback, including commit
+failure. Resource probes and guarded activation use the same owned-connection
+contract. This prevents finished reads from retaining descriptors until cyclic
+garbage collection happens. Raw callers can still explicitly manage transactions
+and close; a connection must not be nested or reused after its owning scope exits.
+Connection-configuration failure also closes the new handle. Tests cover real
+commit, body-error rollback, deferred-constraint commit failure, explicit manual
+ownership, all five store factories and descriptor counts with GC disabled.
+
+The Linux service starts through `scripts/serena-fleet-service.sh`. When NVM is
+installed, it selects the operator's already-installed `default` alias rather
+than pinning a versioned Node directory in the unit. It does not source login
+profiles or install runtimes. An unavailable configured default refuses startup
+with an explicit error instead of silently using another Node. Without NVM,
+the inherited service PATH is preserved. `--check` reports runtime resolution
+without starting Fleet. This honours the operator default; per-project engine
+compatibility still requires separate validation. Unit changes require a
+systemd daemon reload and a safe Fleet-only restart, never an active-worker kill.
+
 `serena-fleet.service` claims every queued run and supervises each in its own thread. There is no
 numeric cap on simultaneous Fleet runs. Provider availability still controls whether a native turn
 can start, and coding runs targeting the same repository retain the per-checkout lock so integration
@@ -43,9 +125,9 @@ removes the Fleet database graph, its worker chats, event logs, and private work
 launched the Fleet is origin context rather than Fleet-owned data and is never deleted with the run.
 
 Before a real run is persisted, Fleet checks free space on the checkout and control-database
-filesystems. Coding runs reserve 1 GiB of control-plane headroom plus 1 GiB per selected worker;
-research reserves 1 GiB. This prevents isolated dependency installs from consuming the final bytes
-and leaving a run that cannot record its own failure. `SERENA_FLEET_MIN_FREE_BYTES` is the explicit
+filesystems. Coding runs require 1 GiB of control-plane headroom plus 1 GiB per selected worker;
+research requires 1 GiB. This is a point-in-time admission check, not a reservation: later writes
+can still exhaust storage. `SERENA_FLEET_MIN_FREE_BYTES` is the explicit
 operator override, including `0` to disable the check. A refusal happens before any worker is
 dispatched and tells the operator to reclaim disposable cache or inactive-worktree dependencies.
 
@@ -55,7 +137,237 @@ lease setup. Other SQLite failures are never retried or hidden. A run already in
 stays on its original run id. Proven orphaned owners are recovered boundedly after storage returns;
 an already terminal failed run still requires explicit `fleet_retry`.
 
+Store initialization serializes check-then-ALTER schema migrations with an immediate SQLite
+transaction. This prevents simultaneous worker startup from adding the same migration column twice.
+Concurrent WAL-mode switches can return SQLITE_BUSY/SQLITE_LOCKED before that transaction;
+Fleet and isolation stores retry only those codes up to five times with bounded backoff.
+Exhaustion and non-lock errors remain visible; disk-full and corruption are not hidden.
+
+## Durable resource recovery and actionable stops
+
+The resident poll also checks workers parked for input, including blocked legs
+whose siblings are still running. A notice identifies the blocked workers without
+claiming the whole run failed. Its identity binds the set of blocked legs to their
+attempts; completed deliveries remain deduplicated beyond the recent event window.
+Quiet hours, approval and delivery budgets remain owned by NotificationAuthority.
+Failed delivery retries reuse the same notification record; cancellation and
+resolved blockers are excluded from subsequent Fleet polls. Notifications describe
+the observed blocker and direct the operator to current state, since a deferred
+notice can outlive that observation. This does not authorize an unsafe retry or
+resolve the blocker itself.
+
+Notification delivery owns a portable per-notice process lock across the sender
+and committed result. Competing resident/generic delivery loops recheck durable
+status under that lock; contention defers rather than triggering another channel.
+Notification transaction scopes release SQLite handles immediately. Tests use
+fake transports across real threads/processes and retain closed connections with
+GC disabled. A sender accepted externally just before owner death is still an
+ambiguous delivery outcome without transport-level idempotency; this is not an
+exactly-once external-delivery guarantee.
+
+Declared integration test sequences have one narrow generated-type preparation
+pass: when `npm run typecheck` exits 1 or 2 with TS2307 naming a `.generated` or
+`/generated` module, and the combined checkout declares a `codegen` script,
+Fleet invokes that script with npm lifecycle hooks disabled and rechecks the
+same typecheck once. The gate retains the original failure, preparation result
+and recheck result. Ordinary missing packages and unrelated TypeScript errors
+do not trigger this path; preparation or recheck failure still rejects the
+integration. This repairs checkout-local generated state without another model
+turn or copying unverified generated files from a peer. It does not repair
+unsupported runtime versions.
+
+The resident recovery poll can queue one supervisor-only integration replay per
+leg for saved failures in this exact class. Admission requires the current failed
+zero-exit writer attempt, previously accepted completion evidence, a rejected
+local integration receipt, and its saved patch. Cancellation and queueing share
+a transaction; live attempts prevent admission. Other input blockers remain
+untouched. A dedicated Python helper owns the replay's process group and normal
+worker lease; the resident service must never become the worker PID for recovery
+or termination. The parent uses Fleet's bounded process/output transport and
+tracks cancellation. The helper takes the write claim and revalidates
+completion evidence, and requires an exact saved-patch SHA-256 match inside the
+integration lock before applying. It neither refreshes the worker checkout nor
+spends a native model turn. Its new attempt has no observed model identity; the
+original failed attempt retains provider provenance. A refused replay parks for
+input rather than repeatedly spending attempts.
+
+Local patch integration now commits an immutable intent in the isolation database
+before Git changes the combined checkout. The intent binds the canonical checkout,
+target branch, worker workspace incarnation/base, and exact patch SHA-256 to full
+pre/post file images and the original rollback reference. A restarted integration
+under the repository lock may recheck an exact postimage without applying it twice;
+a mixture of whole-file pre/postimages is restored to the original preimage before
+applying again. Every affected path is checked before restoration, and each write
+boundary is checked again. Binary bytes, symlinks, executable modes and original
+rollback permissions are preserved. The journal never bypasses current claims,
+patch fingerprints, completion evidence, or integration tests. Test receipts expose
+the intent ID and whether a postimage or mixed-image recovery occurred.
+Saved patch files use unique exclusive names and are flushed, along with their
+containing directory on POSIX, before any receipt can reference them. Two attempts
+in the same second cannot overwrite each other's recovery evidence.
+
+Foreign bytes, within-file partial writes, redirected parent directories, malformed
+or corrupt intents, and changed patch identities are not guessed away. They refuse
+integration and preserve surviving work. Preview does not perform pending recovery.
+Older applied patches without an intent remain unproven; this is not retroactive
+reconstruction. Run deletion removes that run's private journal images. This covers
+same-patch local integration reconciliation, not published-branch deliveries,
+arbitrary external effects of gate commands, or unrecordable database/filesystem loss.
+
+Replay attempt creation and its verification-only dispatch marker commit in one
+transaction. If the helper dies by a supported POSIX signal before recording its
+outcome, the parent retains the real signal exit status and uses the existing
+two-retry process budget and 30/60-second delays. The next attempt remains a
+verification helper tied to the original saved result, not a native model turn.
+Cancellation remains cancelled; exhausted budgets park for input. Newer unrelated
+attempts cannot be mistaken for a replay. Real SIGKILL tests cover death after
+application, after the successful integration receipt but before attempt completion,
+and during rollback; exact-file journal recovery retains normal verification gates.
+All workers also clean up their POSIX process group after direct-process
+exit, even when a descendant uses private pipes and does not keep the worker's output
+open. A captured process birth identity protects against signalling a reused
+leader PID. Tests cover native workers and helpers on normal exit and SIGKILL
+with a SIGTERM-ignoring descendant.
+Descendants that escape the owned POSIX process group remain a coverage gap.
+The separate Windows helper ownership contract is described below.
+
+The Windows sidecar dispatches `--fleet-integration-replay` before GUI startup
+and restores inherited standard pipes for the windowed executable. Repository
+integration uses a portable process lock: POSIX flock or Windows byte-range
+locking at offset zero. The Windows lock retries contention explicitly rather
+than relying on the CRT's ten-attempt blocking mode; see the
+[Python locking contract](https://docs.python.org/3/library/msvcrt.html#msvcrt.locking).
+Canonical Windows lock identities are case-normalized. Tests prove cross-process
+exclusion and release on owner death on actual Windows, not just mocked imports.
+
+Git patch application and explicit rollback use byte-mode stdin and lossless
+patch-file reads. No platform text-mode conversion may rewrite LF, CRLF or
+binary patch payloads. The Windows installer build runs native lock/patch tests
+and a saved-integration replay against its actual frozen executable, with real
+completion validation and Git gates. Native Windows source replay has been
+verified; the build smoke is required evidence for each packaged candidate.
+The dedicated Windows replay helper is assigned to an unnamed, non-inheritable
+Job Object before receiving its stdin request. Assignment failure refuses to
+release that request. Closing the owner handle kills associated descendants,
+including gates with private pipes, on normal helper return or owner death.
+This uses the [Windows Job Object contract](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects);
+it does not enable breakaway. Native tests cover helper return, cancellation,
+owner death and assignment refusal. The Windows build requires those tests.
+This is helper-specific: ordinary provider programs are not stdin-gated and
+cannot safely use this post-launch assignment without a separate launch design.
+If a launched replay helper exits while its current attempt is still running,
+the parent records an unrecorded-helper outcome and uses the existing process
+retry budget. Admission requires that exact attempt's durable helper dispatch
+marker and observed process, inside the attempt-finalization transaction.
+Zero, ordinary nonzero and Windows NTSTATUS exits preserve their actual codes;
+none are fabricated into POSIX signals. Native model failures cannot opt into
+this class without helper provenance. Cancellation, superseded attempts and
+already-recorded verifier rejections do not schedule this recovery. These tests
+exercise real helper subprocess exits and ordinary completion/Git gates on retry;
+they do not claim that Windows model-worker crash classification is solved.
+
+The frozen replay build smoke also runs an external process-kill probe after
+Git application. It checks the attempt PID, lease owner and process birth token
+before killing that disposable helper, verifies its gate process is gone, then
+requires journal postimage recovery and real completion/Git checks on replay.
+The same probe runs against source. Retry cooldown is advanced in the temporary
+test database; this does not prove the resident service timer or a live business
+run recovered unattended.
+
+When an ENOSPC outcome can be committed, the failed attempt and its resource-wait receipt are
+recorded atomically. The logical leg becomes `waiting_for_resources`, preserving the failed
+attempt as evidence. Independent ready work continues; a run with only parked work releases its
+owner and waits durably. Every 30 seconds the resident service checks the source and database
+filesystems plus recorded integration, worker checkout and event-log locations. A disk wait resumes
+only when every checked location has the required free bytes (normally at least 2 GiB), positive
+unprivileged inode availability where fixed inode accounting exists, and no read-only filesystem flag.
+Dynamic-inode filesystems and platforms without statvfs retain byte checks without inventing inode
+measurements. Unreadable locations remain parked. The wait reason exposes the failed check and
+the resume event retains observed filesystem checks. These read-only, point-in-time measurements
+do not reserve capacity or prove quota/write permission; a database too full to commit the initial
+receipt is still a separate failure class.
+
+Mixed failures do not delete a sibling's recovery receipt. A remaining capacity wait takes
+run-state precedence over a resource wait, but resource probes support both states so disk recovery
+need not wait for provider recovery. Either recovered lane can queue the run while the other wait
+and any unchanged authority blocker remain intact. Each capacity-probe pass wakes at most one lane
+per run, avoiding a second resume against the now-queued run's stale parked snapshot.
+
+Narrow transient transport failures and recorded POSIX worker deaths by signals 6, 9, 11, 13 or 15
+have separate per-leg budgets of two same-provider, same-model retries with 30/60-second backoff.
+Transport classification excludes authority, authentication, identity, quota and acceptance errors.
+Cooldown expiry is a diagnostic retry, not evidence that a connection or process has recovered.
+Retry counts survive restart. Cancellation prevents wakeup, and terminal or superseded attempt
+callbacks are fenced before they can overwrite the current leg.
+
+An accepted honest stop or exhausted transport/process budget immediately parks its leg in
+`waiting_for_input`, even while healthy siblings run. The scheduler parks the whole run only when
+no independent work can advance. The failed attempt remains failed; the unfinished phase/run has no
+completion timestamp and does not automatically redispatch an unchanged blocker. The durable event and UI expose
+the reason and next action. Steering and explicit whole-run or targeted-leg retry preserve valid
+completed work. A targeted input-blocker retry can also wake a resource-parked run without waking
+or removing the sibling's resource wait. Other unclassified failures still fail closed; these mechanisms are not a universal
+recovery guarantee. Autonomy shows scheduled retries, resource wakeups, ignored late callbacks and
+actionable stops separately from successful completion.
+
+A worker whose Code is durably waiting for input may still perform a rotated Review
+of a disjoint, ready peer unit. Likewise, a ready Fix is not held behind that worker's
+unrelated Review waiting on dependencies or input. Research must still complete;
+active or queued turns are never bypassed, unknown/overlapping assignments fail closed,
+and the target's DAG dependencies and one-live-turn-per-worker rule remain mandatory.
+Neither exception marks the parked assignment complete or retries its unchanged blocker.
+
+The resident service also checks durable input waits on its recovery poll. If an older
+scheduler parked a run despite a now-ready independent peer Review, Fleet atomically
+reconciles the DAG and requeues the run with `run.ready_work_resumed`. The blocked Code
+attempt is not retried, reset or marked complete. A run with no eligible review stays
+unchanged; cancellation wins under the same writer transaction. One malformed run cannot
+prevent another run's readiness probe. This restores eligible peer work after a service
+upgrade without requiring the chat orchestrator to babysit or retry authority blockers.
+
+## Activating repairs without cancelling parked runs
+
+The ordinary acceptance gate still refuses active runs. For durable input/resource/capacity
+waits, `python -m fleet.activation --repo <repo> --receipt <receipt> --fleet-db <database>`
+is an explicit Fleet-only restart operation, not a read-only diagnostic. It requires
+current passing source acceptance, takes SQLite's immediate writer lock, then refuses
+queued/running/stopping/unknown run states and any live or unverified owner, worker,
+helper or lesson-review execution. It holds that lock across the fixed systemd restart,
+so another dispatcher cannot claim work between inspection and restart. Missing schema
+or unverifiable process/service identity fails closed. It requires the service's exact
+repository, active state and Type=simple, which can start without waiting for DB access.
+No run, attempt, wait or saved work is deleted or marked complete; no chat host is restarted.
+After return the lock is released. A restart command failure is reported as unconfirmed,
+not proof the old process survived; inspect service health before any further action.
+
+## Explicit run baseline and local task branches
+
+`Fleet baseline: <local-ref>` or the task directive `MANDATORY start point: branch ... at commit
+<40-character SHA>` selects a frozen, locally resolvable commit before dispatch. Missing or conflicting
+explicit baselines refuse dispatch. Arbitrary commit citations do not change the starting point.
+Before Research, Fleet creates a detached run-owned integration checkout; every phase uses it instead
+of the unrelated source checkout. Status retains the original `source_cwd`, effective `cwd`, and the
+checkout receipt. Projects-based checkout artifacts live in the synced
+`Projects/_artifacts/fleet-checkouts/<run-id>/` tree. The source branch, index and dirty files remain
+untouched. Deleting a run refuses to discard modified or committed delivered work in that checkout.
+
+Legacy runs can adopt an explicit baseline only when no writer is running and no write result or
+integration has been accepted. Completed Research is retained. Clean stale worker checkouts refresh
+when ancestry or the base tree changed; modified ones retain the preserved-patch/reapply path.
+
+An explicit `own task branch named ...0N` directive provisions ordinal branches `...01` through
+`...04`; one worker may name a literal branch. Fleet validates the name and refuses pre-existing
+branches it does not own. The recorded branch survives retries and Fix. Local task-branch integration
+requires neither a push nor a PR; switching away from that reserved branch still uses the separate
+published stacked-PR delivery gate below.
+
 ## Continuous orphan recovery and progress budgets
+
+After a native process exits, the pipe-drain grace period bounds inherited output
+handles, not metadata callback latency. On expiry Fleet terminates the owned process
+group and parses the finite event backlog already received before returning. A slow
+session/event callback therefore cannot discard queued model identity or the final answer;
+new output from a descendant cannot extend that captured backlog indefinitely.
 
 The resident service reconciles dead process owners every 30 seconds, not only on boot. Its own
 thread registry also identifies a per-run supervisor thread that exited while the service PID stayed
@@ -362,7 +674,8 @@ bisect. A write leg fails closed when isolation cannot be proven. The previous s
 is available only through the explicit emergency override `SERENA_FLEET_ISOLATION=off`.
 
 Only write-access coding legs are isolated. Review and verify legs read the combined result in the
-real checkout, and research legs never write. One logical worker keeps one durable workspace identity
+integration checkout (the source checkout when no explicit baseline was selected), and research legs
+never write. One logical worker keeps one durable workspace identity
 across phases. After each accepted integration the worktree is refreshed from the combined base, so
 later write phases see peer integrations as well as their own earlier work. A provider handoff keeps
 the same worker identity and claims rather than forking a competing workspace.
@@ -550,7 +863,8 @@ contradicts itself. The enforced rules are:
 
 - a unit reported `completed` alongside a triggered stop condition is a contradiction;
 - `blocked` or `stopped` must name the stop condition that actually triggered. The evidence is
-  accepted as truthful, but the leg is recorded failed and no downstream phase is allowed to run;
+  accepted as truthful, but the attempt is recorded failed and no downstream phase is allowed to run;
+  phase failure resolution parks the affected work in `waiting_for_input`;
 - `completed` requires the exact contract acceptance criteria, with no substitutions or duplicates,
   answered `met: true` with concrete evidence, and `constraints_respected: true`;
 - `completed` is refused while a declared dependency is incomplete or its state is unavailable;
@@ -582,6 +896,15 @@ existing retry path. It is never counted as success. Because a rejected contract
 exhaustion, it deliberately does not trigger automatic capacity handoff. If the gate itself raises,
 the leg fails closed and a retryable `leg.completion_gate_failed` event distinguishes evidence
 infrastructure failure from contradictory worker evidence.
+
+The first enforced rejection receives one same-model corrective turn. Its failed attempt,
+queued leg/DAG state and `leg.completion_repair_requested` receipt commit in one transaction;
+there is no post-failure callback window in which an interruption can lose the repair.
+The budget survives restart and duplicate callbacks. Repeated rejection records
+`leg.completion_repair_exhausted` and immediately parks its leg in `waiting_for_input`,
+retaining the failed attempt and rejection reasons. An unchanged blocker does not spin.
+Disk exhaustion takes precedence and waits for storage readiness without spending this budget.
+Cancellation never schedules correction, and an accepted honest stop is not a format repair.
 
 An honest stop emits `leg.completion_evidence_stopped` with `accepted: true` and
 `completion_allowed: false`; it is not auto-retried as though the worker merely formatted its
@@ -640,6 +963,13 @@ scheduler ticks. The resident automation service registers only the reviewed act
 quiet hours, limits, deduplication, retry, and the voice-to-Telegram fallback share one decision.
 
 ## Deployment and checks
+
+POSIX terminal reads use `poll()` rather than descriptor-limited `select()`.
+Acceptance includes a real PTY duplicated to descriptor1024: output remains
+readable, detached reserved work stays alive, and releasing the reservation lets
+cleanup finish. Invalid/closed descriptors return the terminal-gone result;
+the Windows ConPTY read path is unchanged. Timeout conversion follows the
+[Python poll contract](https://docs.python.org/3/library/select.html#polling-objects).
 
 ### Visual resilience lab
 

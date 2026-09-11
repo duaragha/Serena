@@ -16,18 +16,23 @@ reports the conflict instead of resolving it.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
 import re
 import sqlite3
 import subprocess
+import tempfile
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from core.sqlite_connection import connect_database
+
+from fleet.integration_journal import IntegrationJournal, JournalError
+from fleet.file_lock import exclusive_lock
 
 from core.coding_job_contract import (
     GitSnapshotError,
@@ -689,6 +694,7 @@ class FleetIsolationStore:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("DELETE FROM fleet_path_claims WHERE run_id = ?", (clean_id,))
             connection.execute("DELETE FROM fleet_integrations WHERE run_id = ?", (clean_id,))
+            connection.execute("DELETE FROM fleet_integration_intents WHERE run_id = ?", (clean_id,))
             connection.execute("DELETE FROM fleet_workspaces WHERE run_id = ?", (clean_id,))
 
     @staticmethod
@@ -705,15 +711,14 @@ class FleetIsolationStore:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_database(self.path)
 
     def _initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode = WAL")
+            from fleet.sqlite_support import enable_wal
+
+            enable_wal(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS fleet_path_claims (
@@ -769,8 +774,15 @@ class FleetIsolationStore:
                 );
                 CREATE INDEX IF NOT EXISTS fleet_integrations_run_idx
                     ON fleet_integrations(run_id, created_at);
+                CREATE TABLE IF NOT EXISTS fleet_integration_intents (
+                    intent_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    document TEXT NOT NULL,
+                    digest TEXT NOT NULL
+                );
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
             columns = {
                 str(row["name"])
                 for row in connection.execute(
@@ -801,6 +813,7 @@ def ensure_workspace(
     worker_key: str,
     cwd: str | Path,
     assessment: IsolationAssessment | None = None,
+    requested_branch: str | None = None,
 ) -> Workspace:
     """Create or reuse this logical worker's isolated worktree.
 
@@ -814,12 +827,20 @@ def ensure_workspace(
         raise IsolationError(check.reason)
     root = Path(check.repo_root)
     existing = store.get_workspace(run_id, worker_key)
+    branch = requested_branch or (existing.branch if existing else branch_name(run_id, worker_key))
+    if branch in {"main", "master"} or _git(root, "check-ref-format", "--branch", branch, check=False).returncode:
+        raise IsolationError("invalid or protected Fleet task branch")
+    branch_exists = _git(root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode == 0
+    if branch_exists and (existing is None or existing.branch != branch):
+        raise IsolationError("requested task branch already exists outside this worker's ownership")
     existing_usable = existing is not None and _workspace_is_usable(existing)
     if (
         existing is not None
         and existing.state in {"active", "delivered"}
         and existing_usable
     ):
+        if branch != existing.branch:
+            raise IsolationError("changing an active worker branch requires preserved retry refork")
         _share_base_venv(root, Path(existing.path))
         return existing
     if existing is not None and existing.state == "blocked" and existing_usable:
@@ -836,7 +857,6 @@ def ensure_workspace(
                 f"blocked workspace for {worker_key} has unrecovered changes and cannot be reforked"
             )
 
-    branch = branch_name(run_id, worker_key)
     target = store.workspace_root / _BRANCH_TOKEN.sub("-", str(run_id)).strip("-") / (
         _BRANCH_TOKEN.sub("-", str(worker_key)).strip("-") or "worker"
     )
@@ -901,6 +921,7 @@ def refresh_workspace_for_retry(
     worker_key: str,
     cwd: str | Path,
     assessment: IsolationAssessment | None = None,
+    requested_branch: str | None = None,
 ) -> tuple[Workspace, dict[str, Any]]:
     """Resume a retry on the latest combined base without losing its patch.
 
@@ -925,6 +946,7 @@ def refresh_workspace_for_retry(
             worker_key=worker_key,
             cwd=root,
             assessment=check,
+            requested_branch=requested_branch,
         )
         return workspace, {"action": "created", "changed_paths": []}
 
@@ -935,11 +957,12 @@ def refresh_workspace_for_retry(
             worker_key=worker_key,
             cwd=root,
             assessment=check,
+            requested_branch=requested_branch,
         )
         return workspace, {"action": "refreshed", "changed_paths": []}
 
     changed = workspace_changed_paths(existing)
-    if not changed:
+    if not changed and existing.state == "delivered" and requested_branch in {None, existing.branch}:
         return existing, {"action": "reused", "changed_paths": []}
     protected = [path for path in changed if is_protected_path(path)]
     if protected:
@@ -962,9 +985,25 @@ def refresh_workspace_for_retry(
         previous_tree.returncode == 0
         and current_tree.returncode == 0
         and previous_tree.stdout.strip() == current_tree.stdout.strip()
+        and _git(root, "merge-base", "--is-ancestor", check.head, existing.base_head,
+                 check=False).returncode == 0
         and existing.state == "active"
+        and requested_branch in {None, existing.branch}
     ):
         return existing, {"action": "reused", "changed_paths": changed}
+
+    if not changed:
+        # A failed worker can be perfectly clean and still have the wrong
+        # baseline. Clean is not evidence that its checkout is current.
+        store.mark_workspace(
+            run_id=run_id, worker_key=worker_key, state="blocked",
+            reason="clean retry workspace needs the current integration baseline",
+        )
+        workspace = ensure_workspace(
+            store, run_id=run_id, worker_key=worker_key, cwd=root, assessment=check,
+            requested_branch=requested_branch,
+        )
+        return workspace, {"action": "refreshed", "changed_paths": []}
 
     patch = _workspace_patch(existing, changed)
     if patch is None:
@@ -999,6 +1038,7 @@ def refresh_workspace_for_retry(
         worker_key=worker_key,
         cwd=root,
         assessment=check,
+        requested_branch=requested_branch,
     )
 
     checked = subprocess.run(
@@ -1537,6 +1577,39 @@ def run_test_gate(
     }
 
 
+def _generated_types_preparation(
+    root: Path | str, command: list[str], failure: dict[str, Any]
+) -> list[str] | None:
+    """Recognise a missing generated-type prerequisite, not arbitrary TS errors.
+
+    Rebuild only through the checkout's declared codegen script, using the
+    already selected npm executable. Never install packages or copy generated
+    files from another worker. Lifecycle hooks are deliberately disabled.
+    """
+
+    if failure.get("ok") or failure.get("exit_code") not in (1, 2):
+        return None
+    if len(command) != 3 or command[1:] != ["run", "typecheck"]:
+        return None
+    if Path(command[0]).name not in {"npm", "npm.cmd"}:
+        return None
+    if not re.search(
+        r"error TS2307: Cannot find module ['\"][^'\"\n]*[./]generated(?:[./][^'\"\n]*)?['\"]",
+        str(failure.get("output_tail") or ""),
+    ):
+        return None
+    try:
+        manifest = json.loads((Path(root) / "package.json").read_text())
+    except (OSError, ValueError):
+        return None
+    scripts = manifest.get("scripts") if isinstance(manifest, dict) else None
+    if not isinstance(scripts, dict) or not isinstance(scripts.get("codegen"), str):
+        return None
+    if not scripts["codegen"].strip():
+        return None
+    return [command[0], "--ignore-scripts", "run", "codegen"]
+
+
 def run_test_gates(
     root: Path | str, commands: list[list[str]] | None, *, timeout: int = 900
 ) -> dict[str, Any]:
@@ -1554,6 +1627,20 @@ def run_test_gates(
     results: list[dict[str, Any]] = []
     for command in commands:
         result = run_test_gate(root, command, timeout=timeout)
+        preparation = _generated_types_preparation(root, command, result)
+        if preparation:
+            original = result
+            prepared = run_test_gate(root, preparation, timeout=timeout)
+            result = (
+                run_test_gate(root, command, timeout=timeout)
+                if prepared.get("ok")
+                else dict(original)
+            )
+            result["prerequisite_recovery"] = {
+                "original_failure": original,
+                "preparation": prepared,
+                "rechecked": bool(prepared.get("ok")),
+            }
         results.append(result)
         if not result.get("ok", False):
             return {
@@ -1649,14 +1736,25 @@ def repository_integration_lock(cwd: str | Path):
         or (Path(state_root) / "integration-locks" if state_root else DEFAULT_INTEGRATION_LOCK_ROOT)
     ).expanduser()
     lock_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()
     lock_path = lock_root / f"{digest}.lock"
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with lock_path.open("a+b") as handle, exclusive_lock(handle):
+        yield
+
+
+def _git_apply_patch(root: Path, patch: str, *options: str) -> subprocess.CompletedProcess[str]:
+    """Patch bytes are a data contract, never a platform text stream."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "apply", *options, "-"],
+        input=patch.encode("utf-8", errors="surrogateescape"),
+        capture_output=True,
+        check=False,
+    )
+    return subprocess.CompletedProcess(
+        result.args, result.returncode,
+        result.stdout.decode("utf-8", errors="replace"),
+        result.stderr.decode("utf-8", errors="replace"),
+    )
 
 
 def integrate_workspace(
@@ -1669,6 +1767,7 @@ def integrate_workspace(
     declared_tests: list[list[str]] | None = None,
     declared_paths: list[str] | tuple[str, ...] | None = None,
     apply_changes: bool = True,
+    expected_patch_sha256: str | None = None,
 ) -> IntegrationResult:
     """Run the entire integration transaction under the repository mutex."""
 
@@ -1683,8 +1782,9 @@ def integrate_workspace(
                 declared_tests=declared_tests,
                 declared_paths=declared_paths,
                 apply_changes=apply_changes,
+                expected_patch_sha256=expected_patch_sha256,
             )
-    except RepositoryResolutionError as error:
+    except (RepositoryResolutionError, JournalError) as error:
         return IntegrationResult(
             ok=False, run_id=run_id, worker_key=worker_key, reason=str(error)
         )
@@ -1700,6 +1800,7 @@ def _integrate_workspace_locked(
     declared_tests: list[list[str]] | None = None,
     declared_paths: list[str] | tuple[str, ...] | None = None,
     apply_changes: bool = True,
+    expected_patch_sha256: str | None = None,
 ) -> IntegrationResult:
     """Merge one worker's isolated work back, or refuse and say exactly why.
 
@@ -1723,6 +1824,9 @@ def _integrate_workspace_locked(
 
     current_branch = _workspace_branch(workspace)
     if current_branch and current_branch != workspace.branch:
+        if expected_patch_sha256 is not None:
+            return IntegrationResult(False, run_id, worker_key,
+                                     "saved integration replay refuses a switched branch")
         try:
             delivery = published_branch_delivery(workspace, declared_paths)
         except IsolationError as error:
@@ -1762,6 +1866,9 @@ def _integrate_workspace_locked(
 
     changed = workspace_changed_paths(workspace)
     if not changed:
+        if expected_patch_sha256 is not None:
+            return IntegrationResult(False, run_id, worker_key,
+                                     "saved integration replay patch is no longer present")
         result = IntegrationResult(
             ok=True,
             run_id=run_id,
@@ -1809,6 +1916,12 @@ def _integrate_workspace_locked(
         return result
 
     patch = _workspace_patch(workspace, changed)
+    if expected_patch_sha256 is not None and (
+        patch is None or hashlib.sha256(patch.encode("utf-8", errors="surrogateescape")).hexdigest()
+        != expected_patch_sha256
+    ):
+        return IntegrationResult(False, run_id, worker_key,
+                                 "saved integration replay patch fingerprint changed")
     if patch is None:
         result = IntegrationResult(
             ok=False,
@@ -1857,7 +1970,17 @@ def _integrate_workspace_locked(
         )
         return result
 
-    drift = base_drift_paths(root, workspace, changed)
+    journal = IntegrationJournal(store, root, workspace, patch)
+    journal_exists = journal.load()
+    recovery_state = journal.state() if journal_exists else "pre"
+    if journal_exists and set(journal.document["pre"]) != set(changed):
+        raise JournalError("integration journal path set no longer matches the patch")
+    if recovery_state != "pre" and not apply_changes:
+        raise JournalError("integration preview requires pending crash recovery; nothing changed")
+    if recovery_state == "mixed":
+        journal.restore_pre()
+    already_applied = recovery_state == "post"
+    drift = [] if already_applied else base_drift_paths(root, workspace, changed)
     if drift:
         result = IntegrationResult(
             ok=False,
@@ -1880,14 +2003,8 @@ def _integrate_workspace_locked(
     # Plain apply, never --3way. A three-way apply can leave conflict markers
     # in the working tree, which is a corrupted checkout rather than a refused
     # merge. Plain apply is all-or-nothing and fails without touching a file.
-    check = subprocess.run(
-        ["git", "-C", str(root), "apply", "--check", "-"],
-        input=patch,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if check.returncode != 0:
+    check = None if already_applied else _git_apply_patch(root, patch, "--check")
+    if check is not None and check.returncode != 0:
         result = IntegrationResult(
             ok=False,
             run_id=run_id,
@@ -1915,26 +2032,21 @@ def _integrate_workspace_locked(
         return result
 
     # Rollback evidence is captured before the tree moves, never after.
-    rollback_ref = ""
-    with suppress(GitSnapshotError, RepositoryResolutionError, OSError):
-        snapshot = capture_git_snapshot(
-            root,
-            item_id=f"fleet-{run_id}-{worker_key}",
-            label="pre-integration",
-        )
-        rollback_ref = snapshot.ref
-    # Byte-exact safety net. Even an atomic apply gets verified, because a
-    # half-written checkout is the one outcome this module may never produce.
-    captured = _capture_paths(root, changed)
-    applied = subprocess.run(
-        ["git", "-C", str(root), "apply", "-"],
-        input=patch,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if applied.returncode != 0:
-        _restore_paths(root, captured)
+    rollback_ref = journal.document.get("rollback_ref", "") if journal_exists else ""
+    if not journal_exists:
+        with suppress(GitSnapshotError, RepositoryResolutionError, OSError):
+            snapshot = capture_git_snapshot(
+                root,
+                item_id=f"fleet-{run_id}-{worker_key}",
+                label="pre-integration",
+            )
+            rollback_ref = snapshot.ref
+        journal.prepare(workspace.path, changed, rollback_ref=rollback_ref)
+    # The immutable pre/post intent is durable before the first checkout write.
+    # An exact surviving postimage is verified again, never double-applied.
+    applied = None if already_applied else _git_apply_patch(root, patch)
+    if applied is not None and applied.returncode != 0:
+        journal.restore_pre()
         result = IntegrationResult(
             ok=False,
             run_id=run_id,
@@ -1949,6 +2061,9 @@ def _integrate_workspace_locked(
             run_id=run_id, worker_key=worker_key, state="blocked", reason=result.reason
         )
         return result
+
+    if journal.state() != "post":
+        raise JournalError("applied patch did not match its journal postimage; files preserved")
 
     dependency_sync = run_dependency_sync(root, changed)
     # An explicitly configured repository gate outranks everything. Otherwise
@@ -1972,15 +2087,7 @@ def _integrate_workspace_locked(
         gate = run_test_gate(root, ["git", "diff", "--check", "--", *changed])
     gate["dependency_sync"] = dependency_sync
     if not gate.get("ok", False):
-        reverted = subprocess.run(
-            ["git", "-C", str(root), "apply", "-R", "-"],
-            input=patch,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if reverted.returncode != 0:
-            _restore_paths(root, captured)
+        journal.restore_pre()
         # The install may have replaced node_modules before a later check
         # failed. Restore the dependency tree to the now-restored manifest and
         # lockfile so the combined checkout cannot poison the next worker.
@@ -1989,11 +2096,7 @@ def _integrate_workspace_locked(
             ok=False,
             run_id=run_id,
             worker_key=worker_key,
-            reason=(
-                "test gate failed after integration; changes were rolled back"
-                if reverted.returncode == 0
-                else "test gate failed; changes were restored from the pre-integration capture"
-            ),
+            reason="test gate failed after integration; changes were rolled back",
             changed_paths=changed,
             rollback_ref=rollback_ref,
             patch_path=patch_path,
@@ -2005,6 +2108,11 @@ def _integrate_workspace_locked(
         )
         return result
 
+    if journal.state() != "post":
+        raise JournalError("integration gates changed owned files; completion refused")
+    gate["integration_journal"] = {"intent_id": journal.key,
+                                   "recovered_postimage": already_applied,
+                                   "restored_mixed_preimage": recovery_state == "mixed"}
     result = IntegrationResult(
         ok=True,
         run_id=run_id,
@@ -2202,14 +2310,8 @@ def rollback_integration(
         root = validate_repository_root(cwd)
     except RepositoryResolutionError as error:
         return {"ok": False, "reason": str(error)}
-    patch = patch_path.read_text(encoding="utf-8", errors="surrogateescape")
-    reverted = subprocess.run(
-        ["git", "-C", str(root), "apply", "-R", "-"],
-        input=patch,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    patch = patch_path.read_bytes().decode("utf-8", errors="surrogateescape")
+    reverted = _git_apply_patch(root, patch, "-R")
     if reverted.returncode != 0:
         return {
             "ok": False,
@@ -2301,14 +2403,27 @@ def _persist_patch(
     directory = store.workspace_root / "patches" / (
         _BRANCH_TOKEN.sub("-", str(run_id)).strip("-") or "run"
     )
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    target = directory / f"{_BRANCH_TOKEN.sub('-', str(worker_key)).strip('-')}-{int(time.time())}.patch"
+    target = None
     try:
-        target.write_text(patch, encoding="utf-8", errors="surrogateescape")
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, filename = tempfile.mkstemp(
+            prefix=f"{_BRANCH_TOKEN.sub('-', str(worker_key)).strip('-')}-", suffix=".patch", dir=directory,
+        )
+        target = Path(filename)
+        with os.fdopen(descriptor, "w", encoding="utf-8", errors="surrogateescape", newline="") as handle:
+            handle.write(patch)
+            handle.flush()
+            os.fsync(handle.fileno())
         if os.name != "nt":
-            with suppress(OSError):
-                target.chmod(0o600)
+            descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     except OSError:
+        if target is not None:
+            with suppress(OSError):
+                target.unlink()
         return ""
     return str(target)
 

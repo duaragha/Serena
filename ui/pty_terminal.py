@@ -4,13 +4,14 @@ Each spawned terminal is tracked by a uuid. The web UI opens a WebSocket to
 stream input/output; lifecycle is owned by the browser — close the tab or
 hit the terminate endpoint and the child is SIGTERM'd.
 
-POSIX uses ptyprocess + select on the master fd. Windows uses pywinpty's
+POSIX uses ptyprocess + poll on the master fd. Windows uses pywinpty's
 ConPTY-backed PtyProcess plus a per-terminal reader thread feeding a queue,
 because the Windows handle is not selectable.
 """
 
 import errno
 import glob
+import math
 import os
 import re
 import select
@@ -25,6 +26,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 
 from core.process_launch import windows_launch_argv
+from core.process_probe import probe_process
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -380,7 +382,7 @@ _SCOPE_UNIT = re.compile(r"^serena-pty-(\d+)-[0-9a-f]+(?:\.scope)?$")
 
 def _process_alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -1439,7 +1441,11 @@ def read_available(tid: str, max_bytes: int = 4096, timeout: float = 0.05) -> by
 
     try:
         fd = term.proc.fd
-        ready, _, _ = select.select([fd], [], [], timeout)
+        # select() rejects valid descriptors >= FD_SETSIZE (usually 1024).
+        # A busy host must keep reading and reaping these terminals too.
+        poller = select.poll()
+        poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        ready = poller.poll(math.ceil(timeout * 1000))
         if not ready:
             return b""
         chunk = os.read(fd, max_bytes)
@@ -1449,7 +1455,7 @@ def read_available(tid: str, max_bytes: int = 4096, timeout: float = 0.05) -> by
             # even while the user is reading a different pane.
             term.last_activity = time.monotonic()
         return chunk
-    except (OSError, EOFError):
+    except (OSError, EOFError, ValueError):
         return None
 
 
