@@ -98,7 +98,9 @@ def test_corrupt_creation_record_cannot_launch_replacement(tmp_path, saved):
 
 
 @pytest.mark.parametrize("width", [1440, 390])
-def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_path, width):
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("retry", [False, True])
+def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_path, width, provider, retry):
     from urllib.parse import urlencode
     playwright = pytest.importorskip("playwright.sync_api")
     app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
@@ -113,7 +115,7 @@ def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_
     host.create = create
     @app.get("/parent")
     def parent():
-        return '<iframe style="width:100%;height:700px;border:0" src="/workspace/new?' + urlencode({"source": "seed-ui", "provider": "claude", "cwd": str(tmp_path), "seeded": "1"}) + '"></iframe>'
+        return '<iframe style="width:100%;height:700px;border:0" src="/workspace/new?' + urlencode({"source": "seed-ui", "provider": provider, "cwd": str(tmp_path), "seeded": "1"}) + '"></iframe>'
     server = make_server("127.0.0.1", 0, app, threaded=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -134,14 +136,38 @@ def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_
                 page.frames[1].wait_for_function("() => !document.querySelector('#creation-submit').disabled")
                 assert frame.get_by_role("textbox", name="Initial context").input_value() == seed
                 assert not calls and host._loop is None
+                context = frame.get_by_role("textbox", name="Initial context")
+                playwright.expect(context).to_be_editable()
+                context.fill('')
+                assert button.is_disabled()
+                edited = seed + '\nMy changes before sending.'
+                context.fill(edited)
+                page.evaluate("seed => document.querySelector('iframe').contentWindow.postMessage({type:'serena-workspace-seed',sid:'seed-ui',seed},location.origin)", seed)
+                page.reload()
+                context = frame.get_by_role("textbox", name="Initial context")
+                playwright.expect(context).to_have_value(edited)
+                playwright.expect(context).to_be_editable()
+                if retry:
+                    page.route('**/api/workspace/create', lambda route: route.fulfill(status=503, content_type='application/json', body='{"error":"temporary failure"}'), times=1)
+                    button.click()
+                    playwright.expect(frame.get_by_role('status')).to_have_text('temporary failure')
+                    assert context.evaluate('el=>el.readOnly')
+                    saved = page.frames[1].evaluate("JSON.parse(sessionStorage.getItem('serena-workspace-create:seed-ui'))")
+                    page.reload()
+                    assert frame.get_by_role('textbox', name='Initial context').evaluate('el=>el.readOnly')
+                    assert page.frames[1].evaluate("JSON.parse(sessionStorage.getItem('serena-workspace-create:seed-ui'))") == saved
+                    button = frame.get_by_role('button', name='Check creation', exact=True)
                 button.click()
                 frame.get_by_role("button", name="Open conversation", exact=True).wait_for()
-                assert len(calls) == 1 and calls[0][1:] == ("claude", str(tmp_path), True, seed)
+                assert len(calls) == 1 and calls[0][1:] == (provider, str(tmp_path), True, edited)
+                if retry:
+                    assert calls[0][0] == saved['request_id']
+                assert context.evaluate('el=>el.readOnly')
                 assert frame.get_by_role("alert").inner_text() == "Native delivery unconfirmed"
                 page.reload()
                 frame.get_by_role("button", name="Open conversation", exact=True).wait_for()
                 assert frame.get_by_role("alert").inner_text() == "Native delivery unconfirmed"
-                assert frame.get_by_role("textbox", name="Initial context").input_value() == seed
+                assert frame.get_by_role("textbox", name="Initial context").input_value() == edited
                 assert len(calls) == 1 and host._loop is None
                 assert page.frames[1].evaluate("document.documentElement.scrollWidth <= innerWidth")
             finally:
