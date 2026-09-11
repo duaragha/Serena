@@ -44,6 +44,7 @@ class ClaudeEvents:
         self.tools = {}
         self.streaming_tools = {}
         self.streaming_thinking = {}
+        self.streamed_blocks = {}
         self.capabilities = {}
         self.tasks = {}
         self.last_root_text = None
@@ -208,6 +209,16 @@ class ClaudeEvents:
                 self.streaming_thinking = {key: value for key, value in self.streaming_thinking.items() if key[0] != parent}
             message_id = self.message_ids.get(parent)
             key = (parent, event.get("index"))
+            if message_id:
+                blocks = self.streamed_blocks.setdefault((parent, message_id), {})
+                if event["type"] == "content_block_start":
+                    blocks[event["index"]] = deepcopy(event.get("content_block", {}))
+                elif event["type"] == "content_block_delta":
+                    delta = event.get("delta", {})
+                    field = {"text_delta": "text", "thinking_delta": "thinking"}.get(delta.get("type"))
+                    if field:
+                        block = blocks.setdefault(event["index"], {"type": field})
+                        block[field] = block.get(field, "") + delta.get(field, "")
             if message_id and event["type"] == "content_block_start" and event.get("content_block", {}).get("type") == "thinking":
                 item = {"id": f"{message_id}:{event['index']}", "type": "claudeThinking",
                         "text": event["content_block"].get("thinking", ""), **origin}
@@ -269,6 +280,19 @@ class ClaudeEvents:
             message_id = data.get("message_id") or data.get("uuid") or self.message_ids.get(parent)
             if message_id:
                 items = self.blocks(data["content"], message_id, user=kind == "UserMessage")
+                if kind == "AssistantMessage":
+                    # SDK finals can omit thinking blocks, renumbering text.
+                    # Reconcile only within this exact message, never across replies.
+                    streamed = self.streamed_blocks.get((parent, message_id), {})
+                    reconciled = set()
+                    for item in items:
+                        field = {"agentMessage": "text", "claudeThinking": "thinking"}.get(item["type"])
+                        if field:
+                            matches = [index for index, block in streamed.items()
+                                       if block.get("type") == field and block.get(field, "") == item["text"]]
+                            if len(matches) == 1 and matches[0] not in reconciled:
+                                item["id"] = f"{message_id}:{matches[0]}"
+                                reconciled.add(matches[0])
                 if kind == "AssistantMessage" and parent == "root":
                     self.last_root_text = (self.turn, "".join(
                         item["text"] for item in items if item["type"] == "agentMessage"
@@ -346,4 +370,5 @@ class ClaudeEvents:
             self.turn = self.pending_inputs[0] if self.pending_inputs else None
             self.last_root_text = None
             self.streaming_tools.clear()
+            self.streamed_blocks.clear()
         return events
