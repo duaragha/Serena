@@ -43,7 +43,7 @@ $env:PYTHONUTF8 = "1"
 $env:PYTHONDONTWRITEBYTECODE = "1"
 
 Write-Host "[windows] installing the Serena and build dependencies"
-& $Python -m pip install --disable-pip-version-check -e "${RepoRoot}[dev]"
+& $Python -m pip install --disable-pip-version-check -e "${RepoRoot}[dev,workspace]"
 Assert-LastExitCode "Serena dependency installation"
 & $Python -m pip install --disable-pip-version-check -r $Requirements "pyinstaller==6.21.0"
 Assert-LastExitCode "Windows dependency installation"
@@ -128,6 +128,8 @@ try {
 }
 
 Write-Host "[windows] smoke-testing the frozen PTY backend"
+& $Python -c "import subprocess, sys; sys.exit(subprocess.run([sys.argv[1], '--workspace-runtime-check'], timeout=30).returncode)" $SidecarExe
+Assert-LastExitCode "Frozen Claude and Codex runtime imports"
 $PtySmoke = Start-Process -FilePath $SidecarExe `
     -ArgumentList @("--pty-smoke") `
     -WindowStyle Hidden `

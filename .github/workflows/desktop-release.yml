@@ -45,7 +45,7 @@ jobs:
       - name: Build the Python environment the sidecar is frozen from
         run: |
           python -m venv .venv
-          ./.venv/bin/python -m pip install --disable-pip-version-check -e ".[dev]"
+          ./.venv/bin/python -m pip install --disable-pip-version-check -e ".[dev,workspace]"
           ./.venv/bin/python -m pip install --disable-pip-version-check pyinstaller
 
       - name: Prove the update surface before shipping it

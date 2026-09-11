@@ -87,10 +87,14 @@ winpty_datas, winpty_binaries, winpty_modules = collect_all("winpty")
 hiddenimports = sorted(set(hiddenimports) | set(winpty_modules))
 datas += winpty_datas
 
+claude_datas, claude_binaries, claude_modules = collect_all("claude_agent_sdk")
+hiddenimports = sorted(set(hiddenimports) | set(claude_modules))
+datas += claude_datas
+
 a = Analysis(
     [str(ENTRYPOINT)],
     pathex=[str(REPO_ROOT)],
-    binaries=numpy_binaries + winpty_binaries,
+    binaries=numpy_binaries + winpty_binaries + claude_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

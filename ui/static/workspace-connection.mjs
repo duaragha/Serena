@@ -59,7 +59,12 @@ export class WorkspaceConnection {
       headers: {'X-Serena-Workspace-Token': this.token, ...(body === undefined || multipart ? {} : {'Content-Type': 'application/json'})},
       ...(body === undefined ? {} : {body: multipart ? body : JSON.stringify(body)}),
     });
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw Error(`Workspace request failed (${response.status}): the backend returned an invalid response. Your request has not been automatically retried.`);
+    }
     if (!response.ok) throw Error(data.error || `Workspace request failed (${response.status})`);
     return data;
   }

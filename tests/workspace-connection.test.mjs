@@ -11,6 +11,17 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('HTML failures are reported without retrying either provider request', async () => {
+  for (const sessionId of ['claude-session', 'codex-session']) {
+    let calls = 0;
+    const conn = new WorkspaceConnection({sessionId, token:'token', storage:storage(), receive:()=>{}, error:()=>{},
+      fetcher:async()=>{calls++; return {ok:false,status:500,json:async()=>{throw new SyntaxError("Unexpected token '<'");}};}});
+    await assert.rejects(conn.connect(), /500.*invalid response/);
+    assert.equal(calls, 1);
+    conn.dispose();
+  }
+});
+
 test('catalog recovery uses original server receipt even with empty browser storage',async()=>{
   const calls=[],requestId=crypto.randomUUID();
   const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},
