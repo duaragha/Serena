@@ -11,6 +11,40 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('streamed initial replay accepts split UTF-8 frames then switches to live polling',async()=>{
+  const received=[],urls=[],states=[];
+  const payload=new TextEncoder().encode(JSON.stringify({events:[{sequence:1,event:{method:'note',params:{text:'caf\u00e9'}}}]})+'\n{"complete":true}\n');
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),streamReplay:true,
+    receive:e=>received.push(e),error:()=>{},replaying:value=>states.push(value),
+    fetcher:async url=>{urls.push(url);return url.includes('/replay?')
+      ?new Response(new ReadableStream({start(controller){for(const byte of payload)controller.enqueue(Uint8Array.of(byte));controller.close();}}),{headers:{'Content-Type':'application/x-ndjson'}})
+      :response({events:[],has_more:false});}});
+  try{
+    await conn.poll({required:true});
+    await conn.poll({required:true});
+    assert.equal(received[0].event.params.text,'caf\u00e9');
+    assert.deepEqual(states,[true,false]);
+    assert.deepEqual(urls,['/api/workspace/exact/replay?after=0','/api/workspace/exact/events?after=1','/api/workspace/exact/events?after=1']);
+  }finally{conn.dispose();}
+});
+
+test('truncated replay retains only accepted events and retries without duplicating them',async()=>{
+  let count=0;const received=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),streamReplay:true,
+    receive:e=>received.push(e.sequence),error:()=>{},fetcher:async url=>{
+      if(!url.includes('/replay?'))return response({events:[],has_more:false});
+      count++;
+      return new Response(count===1?'{"events":[{"sequence":1}]}\n': '{"events":[{"sequence":2}]}\n{"complete":true}\n',
+        {headers:{'Content-Type':'application/x-ndjson'}});
+    }});
+  try{
+    await assert.rejects(conn.poll({required:true}),/interrupted/);
+    assert.equal(conn.cursor,1);
+    await conn.poll({required:true});
+    assert.deepEqual(received,[1,2]);
+  }finally{conn.dispose();}
+});
+
 test('initial replay brackets all pages once and leaves live polling incremental', async () => {
   const seen=[];
   let page=0;

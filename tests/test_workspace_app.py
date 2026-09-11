@@ -14,6 +14,65 @@ from werkzeug.serving import make_server
 from ui.workspace_app import install_workspace
 
 
+@pytest.mark.parametrize('compress', [False, True])
+def test_replay_stream_requires_auth_and_retains_all_events(tmp_path, compress):
+    import gzip
+    import json
+    from core.workspace_host import WorkspaceHost
+    from core.workspace_journal import WorkspaceJournal
+    from ui.workspace_web import workspace_blueprint
+    app = Flask(__name__)
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'replay.db'), resolve=lambda sid: None)
+    app.register_blueprint(workspace_blueprint(host, token='x'*32))
+    expected = [host.journal.append('exact', {'method':'note','params':{'text':'hello'*100}}) for _ in range(405)]
+    client = app.test_client()
+    assert client.get('/api/workspace/exact/replay').status_code == 403
+    headers = {'X-Serena-Workspace-Token':'x'*32, 'Accept-Encoding':'gzip' if compress else 'identity'}
+    result = client.get('/api/workspace/exact/replay?after=2', headers=headers)
+    assert result.status_code == 200
+    raw = gzip.decompress(result.data) if compress else result.data
+    frames = [json.loads(line) for line in raw.splitlines()]
+    assert frames[-1] == {'complete':True}
+    assert [event for frame in frames[:-1] for event in frame['events']] == expected[2:]
+    assert host._loop is None
+    assert client.get('/api/workspace/exact/replay?after=-1', headers=headers).status_code == 400
+
+
+def test_browser_consumes_compressed_replay_without_attaching_provider(tmp_path):
+    playwright = pytest.importorskip('playwright.sync_api')
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / 'ui/static'))
+    host = install_workspace(app, tmp_path / 'browser-stream.db',
+        describe=lambda sid: {'session_id':sid,'agent':'claude'})
+    host.observe = lambda sid: {'observing':True,'session_id':sid}
+    host.journal.append('exact', {'id':'stale','method':'workspace/claudeApproval',
+        'params':{'threadId':'exact','tool':'Bash','input':{'command':'pwd'}}})
+    for _ in range(401):
+        host.journal.append('exact', {'method':'native/record','params':{'text':'saved '*100}})
+    host.journal.append('exact', {'method':'workspace/history','params':{'thread':{'id':'exact','turns':[
+        {'id':'done','status':'completed','items':[{'id':'reply','type':'agentMessage','text':'Latest saved reply'}]}]}}})
+    server = make_server('127.0.0.1', 0, app, threaded=True)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with playwright.sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                requests, errors = [], []
+                page.on('request', lambda req: requests.append(req.url))
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.goto(f'http://127.0.0.1:{server.server_port}/workspace/exact')
+                page.get_by_text('Latest saved reply', exact=True).wait_for()
+                assert page.get_by_role('button',name='Allow once',exact=True).count() == 0
+                assert sum('/replay?' in url for url in requests) == 1
+                assert not any('/attach' in url for url in requests)
+                assert not errors
+            finally:
+                browser.close()
+    finally:
+        server.shutdown();server.server_close();worker.join(5);host.shutdown()
+
+
 @pytest.mark.parametrize("width", [1440, 390])
 def test_corrupt_receipts_keep_page_viewable_without_sending_commands(tmp_path, width):
     playwright = pytest.importorskip("playwright.sync_api")
@@ -33,6 +92,9 @@ def test_corrupt_receipts_keep_page_viewable_without_sending_commands(tmp_path, 
 
                 def api(route):
                     calls.append(route.request.url)
+                    if '/replay?' in route.request.url:
+                        route.fulfill(content_type='application/x-ndjson', body='{"complete":true}\n')
+                        return
                     if route.request.url.endswith('/view-context'):
                         contexts.append(route.request.post_data_json)
                     route.fulfill(json={"session_id": "exact", "observing": False} if route.request.url.endswith("/observe")

@@ -8,6 +8,19 @@ import pytest
 from core.workspace_journal import WorkspaceJournal
 
 
+def test_streamed_replay_is_exact_finite_and_does_not_drop_native_data(tmp_path):
+    journal = WorkspaceJournal(tmp_path / 'stream.db')
+    expected = [journal.append('exact', {'method':'example','params':{'text':'hello ' * 100}}) for _ in range(405)]
+    stream = journal.replay('exact', after=2)
+    first = next(stream)
+    journal.append('exact', {'method':'later'})
+    frames = [json.loads(raw) for raw in [first, *stream]]
+    assert [event for frame in frames for event in frame['events']] == expected[2:]
+    assert list(journal.replay('other')) == []
+    with pytest.raises(ValueError):
+        list(journal.replay('exact', after=-1))
+
+
 def _delete_checkpoint(tmp_path, root, child=None):
     identities = [root, *([child] if child else [])]
     recovery = tmp_path / "delete-recovery"

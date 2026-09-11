@@ -1044,6 +1044,8 @@ def test_clarifying_answers_preserve_question_contract_and_reject_empty_approval
         assert events[-1]["method"] == "serverRequest/resolved"
         with pytest.raises(ValueError, match="no longer pending"):
             await owner.answer("question", {"answers": {"Which database?": "SQLite"}})
+        assert events[-1]['method'] == 'serverRequest/resolved'
+        assert events[-1]['params']['requestId'] == 'question'
 
     asyncio.run(run())
 

@@ -5,6 +5,17 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('fresh native history drops old approvals but accepts new requests',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,{id:'old',method:'workspace/claudeApproval',params:{threadId:'exact'}}));
+  model.apply(wrap(2,history));
+  assert.equal(model.questions.size,0);
+  model.apply(wrap(3,{id:'current',method:'workspace/claudeApproval',params:{threadId:'exact'}}));
+  assert.equal(model.questions.size,1);
+  model.apply(wrap(4,{method:'serverRequest/resolved',params:{requestId:'old'}}));
+  assert.equal(model.questions.has('current'),true);
+});
+
 test('child lifecycle updates never complete or replace the parent turn',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,history));

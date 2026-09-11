@@ -1189,6 +1189,12 @@ class WorkspaceHost:
                if owner.state in {"closed", "unavailable"} else {}),
         }
 
+    def replay(self, session_id: str, *, after=0):
+        self._validate_session(session_id)
+        if type(after) is not int or after < 0:
+            raise ValueError("Invalid replay cursor")
+        return self.journal.replay(session_id, after=after)
+
     def events(self, session_id: str, *, after=0):
         self._validate_session(session_id)
         # Reading a journal must never resume a process or create the loop.

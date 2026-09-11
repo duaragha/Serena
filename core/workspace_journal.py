@@ -1015,6 +1015,21 @@ class WorkspaceJournal:
                 (session_id,),
             ).fetchone()[0]
 
+    def replay(self, session_id: str, *, after=0):
+        """Stream a finite journal snapshot without per-page HTTP round trips."""
+        if type(after) is not int or after < 0:
+            raise ValueError("Invalid replay cursor")
+        with closing(self._connect()) as conn:
+            through = conn.execute("SELECT COALESCE(MAX(sequence), 0) FROM workspace_events WHERE session_id=?",
+                                   (session_id,)).fetchone()[0]
+            cursor = conn.execute("SELECT sequence,event FROM workspace_events WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence",
+                                  (session_id, after, through))
+            while rows := cursor.fetchmany(200):
+                # Events are validated JSON on insertion; avoid decoding and
+                # re-encoding large native history records just for transport.
+                yield ('{"events":[' + ','.join('{"sequence":' + str(seq) + ',"event":' + raw + '}'
+                       for seq, raw in rows) + ']}\n').encode('utf-8')
+
     def read(self, session_id: str, *, after: int = 0, limit: int = 200) -> dict:
         if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("Invalid replay cursor or page size")

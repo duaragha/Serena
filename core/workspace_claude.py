@@ -722,6 +722,7 @@ class ClaudeWorkspace:
             return
         future = self.questions.get(request_id)
         if future is None or future.done():
+            await self.publish(self.events.event("serverRequest/resolved", {"requestId": request_id}))
             raise ValueError("Claude request is no longer pending")
         tool, inputs = self.question_inputs[request_id]
         if tool == "AskUserQuestion" and isinstance(answer, dict) and set(answer) == {"answers"}:

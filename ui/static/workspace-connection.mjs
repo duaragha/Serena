@@ -1,12 +1,13 @@
 /** Browser transport for a persistent owner. Disposal never closes the owner. */
 export class WorkspaceConnection {
-  constructor({sessionId, token, receive, error, runtime = () => {}, replaying = () => {}, fetcher = fetch, storage = sessionStorage}) {
+  constructor({sessionId, token, receive, error, runtime = () => {}, replaying = () => {}, streamReplay = false, fetcher = fetch, storage = sessionStorage}) {
     this.sessionId = sessionId;
     this.token = token;
     this.receive = receive;
     this.runtime = runtime;
     this.replaying = replaying;
     this.initialReplayComplete = false;
+    this.streamReplay = streamReplay;
     this.error = error;
     this.fetcher = fetcher;
     this.storage = storage;
@@ -98,6 +99,39 @@ export class WorkspaceConnection {
     return true;
   }
 
+  async replayStream() {
+    const fetcher = this.fetcher;
+    const response = await fetcher(this.base + `/replay?after=${this.cursor}`, {
+      credentials:'same-origin',headers:{'X-Serena-Workspace-Token':this.token},
+    });
+    if(!response.ok || !response.body || !response.headers.get('Content-Type')?.includes('application/x-ndjson'))
+      throw Error(`Session replay failed (${response.status})`);
+    const reader=response.body.getReader(), decoder=new TextDecoder();
+    let buffer='',complete=false;
+    const accept=line=>{
+      const frame=JSON.parse(line);
+      if(complete)throw Error('Unexpected data after session replay');
+      if(frame.complete===true){complete=true;return;}
+      if(!Array.isArray(frame.events))throw Error('Invalid session replay frame');
+      for(const envelope of frame.events){
+        if(envelope.sequence!==this.cursor+1)throw Error('Session event replay has a gap');
+        if(this.receive(envelope)===false)throw Error('Session event was not accepted by the view');
+        this.cursor=envelope.sequence;
+      }
+    };
+    try {
+      while(!this.stopped){
+        const {done,value}=await reader.read();
+        if(this.stopped)return;
+        buffer+=decoder.decode(value,{stream:!done});
+        let end;
+        while((end=buffer.indexOf('\n'))!==-1){accept(buffer.slice(0,end));buffer=buffer.slice(end+1);}
+        if(done)break;
+      }
+      if(!this.stopped && (!complete || buffer))throw Error('Session replay was interrupted; retry will continue from the last received event');
+    } finally {await reader.cancel();reader.releaseLock();}
+  }
+
   async poll({required = false} = {}) {
     if (this.polling || this.stopped) return;
     this.observing = true;
@@ -107,6 +141,7 @@ export class WorkspaceConnection {
     const initialReplay = !this.initialReplayComplete;
     try {
       if (initialReplay) this.replaying(true);
+      if (initialReplay && this.streamReplay) await this.replayStream();
       let page;
       do {
         page = await this.request(`/events?after=${this.cursor}`);
