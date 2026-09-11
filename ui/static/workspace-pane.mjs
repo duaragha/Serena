@@ -550,8 +550,9 @@ export class WorkspacePane {
         for(const session of result.data){
           const button=node('button','aw-command');button.type='button';
           button.append(node('strong','',session.title),node('small','',session.session_id),node('span','',session.cwd || ''));
-          button.disabled=!archived && session.session_id===this.conversation.sessionId;
-          const isArchive=archived;
+          const isArchive=archived || Boolean(session.archive_restore_request_id);
+          button.disabled=!isArchive && session.session_id===this.conversation.sessionId;
+          if(session.archive_restore_request_id)button.append(node('span','','Restore outcome unconfirmed'));
           button.addEventListener('click',async()=>{
             if(isArchive){this.openArchiveRestore(session,()=>load(search.value));return;}
             button.disabled=true;
@@ -588,15 +589,19 @@ export class WorkspacePane {
       if(busy)return;
       busy=true;confirm.disabled=true;check.disabled=true;status.textContent=reconcile?'Checking native archive state...':'Restoring conversation...';
       try{
-        const restored=await this.controls.restoreArchive(session.session_id,reconcile);
+        const restored=await this.controls.restoreArchive(session.session_id,reconcile,reconcile?(session.archive_restore_request_id || null):null);
         if(restored?.session_id!==session.session_id || restored?.archived!==false)throw Error('Restored session identity is unconfirmed');
         if(dialog.open && !this.disposed){status.textContent='Conversation restored';confirm.hidden=true;check.hidden=true;open.hidden=false;}
         if(this.sessionsDialog?.open && !this.disposed)await refresh();
-      }catch(error){if(dialog.open && !this.disposed){status.textContent=error.message;confirm.disabled=false;check.hidden=false;}}
+      }catch(error){if(dialog.open && !this.disposed){
+        status.textContent=error.message;confirm.disabled=false;check.hidden=false;
+        if(error.archiveRestoreRetryable===true){session.archive_restore_request_id=null;confirm.hidden=false;check.hidden=true;}
+      }}
       finally{busy=false;check.disabled=false;}
     };
     const confirm=this.button('Confirm restore conversation','archive-restore',()=>run());
     const check=this.button('Check restore outcome','refresh-cw',()=>run(true));check.hidden=true;
+    if(session.archive_restore_request_id){confirm.hidden=true;check.hidden=false;status.textContent='Previous restoration outcome is unconfirmed';}
     dialog.append(node('h3','','Restore archived conversation'),close,status,identity,confirm,check,open);
     dialog.addEventListener('close',()=>dialog.remove());this.archiveRestoreDialog=dialog;
     this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();

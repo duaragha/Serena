@@ -356,6 +356,22 @@ class WorkspaceJournal:
                 "AND json_extract(payload, '$.action')='restore_archive' LIMIT 1", (session_id,)
             ).fetchone() is not None
 
+    def pending_archive_restores(self, session_ids):
+        if not isinstance(session_ids, list) or len(session_ids) > 50 or not all(isinstance(sid, str) for sid in session_ids):
+            raise ValueError('Expected one bounded catalog page')
+        if not session_ids:
+            return {}
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT session_id,request_id FROM workspace_commands WHERE session_id IN ({','.join('?' for _ in session_ids)}) "
+                "AND result IS NULL AND json_extract(payload, '$.action')='restore_archive'", session_ids).fetchall()
+        result = {}
+        for sid, request_id in rows:
+            if sid in result:
+                raise ValueError('Multiple pending archive restorations require manual inspection')
+            result[sid] = request_id
+        return result
+
     def claim_archive_restore(self, session_id: str, request_id: str):
         payload = json.dumps({'action': 'restore_archive', 'payload': {'confirmed': True}}, sort_keys=True)
         with closing(self._connect()) as conn, conn:

@@ -544,6 +544,11 @@ class WorkspaceHost:
                 # creation or its acknowledgement was lost. Never auto-replay it.
                 return {"ok": False, "pending": True, "error": str(error)}
 
+    def decorate_archive_restores(self, page):
+        pending = self.journal.pending_archive_restores([row['session_id'] for row in page['data']])
+        return {**page, 'data': [{**row, **({'archive_restore_request_id': pending[row['session_id']]}
+                                         if row['session_id'] in pending else {})} for row in page['data']]}
+
     def restore_archive(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
         if (type(reconcile) is not bool or confirmed is not True or not isinstance(sid, str) or str(UUID(sid)) != sid
                 or not isinstance(request_id, str) or str(UUID(request_id)) != request_id):

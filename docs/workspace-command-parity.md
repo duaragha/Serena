@@ -3,6 +3,39 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Restore Recovery After Reload (2026-09-10)
+
+Active and archived catalog pages now carry the exact outstanding restore request
+ID from the durable journal. The bounded read does not start the host loop or
+resolve/attach a runtime. A pending row opens Check restore outcome instead of
+normal navigation or another restore, including when it is the current session.
+The target transport can recover that server receipt with empty browser storage;
+a conflicting locally saved receipt is refused rather than overwritten. A
+confirmed unapplied restoration exposes a new explicit attempt, never auto-retry.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_archive_host.py tests/test_workspace_catalog.py -q --tb=short
+node --test tests/workspace-connection.test.mjs
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_archived_picker_restores_only_on_confirmation_and_opens_separately tests/test_workspace_pane.py::test_saved_session_picker_does_not_submit_or_stop_running_work -q --tb=short
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py --browser-width 390 --lose-final-receipt
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py --browser-width 1600 --lose-final-receipt
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check core/workspace_journal.py core/workspace_host.py ui/workspace_web.py tests/test_workspace_archive_host.py tests/test_workspace_catalog.py scripts/verify-workspace-archive-contract.py
+node --check ui/static/workspace-pane.mjs
+node --check ui/static/workspace-page.mjs
+```
+
+All commands separately executed, exit 0: 57 backend tests in 11.87s, 59 transport
+tests, six browser regressions in 6.11s, Ruff/syntax checks passed. Both native
+browser proofs deliberately fail the final receipt write after catalog registration,
+remove the browser's pending receipt and reload. The active row still exposes the
+original request; read-only reconciliation completes it. Exactly one unarchive,
+four native processes reaped, no attachment/turn calls, no browser errors, draft
+preserved and no user data or credentials touched. Mobile restored screenshot
+inspected with the full UUID and controls fitting. The desktop proof additionally
+prints the explicit rediscovery receipt. This closes the reload-discovery gap
+described below for sessions present in the catalog; it does not establish packaged
+parity or complete the broader authenticated-provider delivery gates.
+
 ## Explicit Restore Outcome Recovery (2026-09-10)
 
 The restore dialog now offers Check restore outcome after an error. This uses

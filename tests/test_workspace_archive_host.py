@@ -11,6 +11,25 @@ from core.workspace_journal import WorkspaceJournal
 from ui.workspace_web import workspace_blueprint
 
 
+def test_pending_restore_catalog_annotation_is_read_only_and_exact(tmp_path):
+    sid, other, request = str(uuid4()), str(uuid4()), str(uuid4())
+    journal = WorkspaceJournal(tmp_path / 'journal.db')
+    journal.claim_archive_restore(sid, request)
+    host = WorkspaceHost(journal=journal, resolve=lambda _: pytest.fail('No resolution'), factories={})
+    try:
+        for archived in (0, 1):
+            page = {'data': [{'session_id': sid, 'is_archived': archived, 'title': 'Custom'}, {'session_id': other}], 'nextOffset': 50}
+            result = host.decorate_archive_restores(page)
+            assert result['data'][0] == {**page['data'][0], 'archive_restore_request_id': request}
+            assert result['data'][1] == page['data'][1]
+            assert 'archive_restore_request_id' not in page['data'][0]
+            assert result['nextOffset'] == 50 and host._loop is None
+        journal.finish_command(sid, request, {'ok': True})
+        assert host.decorate_archive_restores(page) == page
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize('failure', [None, 'native', 'catalog', 'receipt'])
 def test_restore_receipt_survives_concurrent_clicks_and_restart(tmp_path, monkeypatch, failure):
     sid, request = str(uuid4()), str(uuid4())

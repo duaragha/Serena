@@ -125,17 +125,23 @@ export class WorkspaceConnection {
     }
   }
 
-  async restoreArchive({reconcile=false}={}) {
+  async restoreArchive({reconcile=false,requestId=null}={}) {
     this.requireReceipts();
     const signature=JSON.stringify({action:'restore_archive',payload:{confirmed:true}});
+    if(requestId!==null){
+      if(!reconcile || typeof requestId!=='string' || !/^[a-f0-9-]{36}$/.test(requestId))throw Error('Invalid restoration recovery receipt');
+      if(this.pending[signature] && this.pending[signature]!==requestId)throw Error('Saved restoration receipt differs from the catalog');
+      this.pending[signature]=requestId;
+    }
     if(reconcile && !this.pending[signature])throw Error('No pending archive restoration receipt');
     const request_id=this.pending[signature] || crypto.randomUUID();
     this.pending[signature]=request_id;
     this.storage.setItem(this.key,JSON.stringify(this.pending));
     const receipt=await this.request(reconcile?'/reconcile-archive':'/restore-archive',{request_id,confirmed:true});
     if(!receipt.ok){
-      if(receipt.retryable===true && receipt.result?.session_id===this.sessionId && receipt.result?.archived===true)this.forgetPending(signature);
-      throw Error(receipt.error || 'Archive restoration is unconfirmed');
+      const retryable=receipt.retryable===true && receipt.result?.session_id===this.sessionId && receipt.result?.archived===true;
+      if(retryable)this.forgetPending(signature);
+      const error=Error(receipt.error || 'Archive restoration is unconfirmed');error.archiveRestoreRetryable=retryable;throw error;
     }
     if(receipt.result?.session_id!==this.sessionId || receipt.result?.archived!==false)throw Error('Restored session identity is unconfirmed');
     this.forgetPending(signature);

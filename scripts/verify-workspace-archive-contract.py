@@ -27,7 +27,7 @@ from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
 
 
-def browser_restore(root, sid, target, width, lose_ack=False):
+def browser_restore(root, sid, target, width, lose_ack=False, lose_receipt=False):
     from playwright.sync_api import expect, sync_playwright
     from werkzeug.serving import WSGIRequestHandler, make_server
 
@@ -37,6 +37,16 @@ def browser_restore(root, sid, target, width, lose_ack=False):
     app = Flask(__name__, static_folder=str(repo / 'ui/static'))
     host = install_workspace(app, root / 'workspace.db', factories={},
                              resolve=lambda identity: target if identity == sid else None)
+    if lose_receipt:
+        finish = host.journal.finish_command
+        failed = []
+
+        def lose_first_finish(*args):
+            if not failed:
+                failed.append(True)
+                raise RuntimeError('Proof-injected lost final receipt after catalog registration')
+            return finish(*args)
+        host.journal.finish_command = lose_first_finish
 
     class QuietHandler(WSGIRequestHandler):
         def log_request(self, *args, **kwargs): pass
@@ -73,15 +83,34 @@ def browser_restore(root, sid, target, width, lose_ack=False):
                 response = received.value
                 result = response.json()
                 request_id = response.request.post_data_json['request_id']
-                if lose_ack:
+                if lose_ack or lose_receipt:
                     assert result.get('uncertain') and not result['ok'], result
+                    if lose_receipt:
+                        assert indexer.get_session(sid)['is_archived'] == 0
+                        page.evaluate("sid=>sessionStorage.removeItem('serena-workspace-pending:'+sid)", sid)
+                        page.reload()
+                        button = page.get_by_role('button', name='Open saved conversation', exact=True)
+                        if not button.is_visible():
+                            page.get_by_role('button', name='Session actions', exact=True).click()
+                        button.click()
+                        saved = page.get_by_role('dialog', name='Saved conversations', exact=True)
+                        expect(saved.get_by_role('radio', name='Active', exact=True)).to_be_checked()
+                        row = saved.locator('.aw-command').filter(has_text=sid)
+                        expect(row).to_contain_text('Restore outcome unconfirmed')
+                        row.click()
+                        dialog = page.get_by_role('dialog', name='Restore archived conversation', exact=True)
+                        expect(dialog.get_by_role('button', name='Confirm restore conversation', exact=True)).to_be_hidden()
                     with page.expect_response(lambda response: response.url.endswith('/reconcile-archive')) as checked:
                         dialog.get_by_role('button', name='Check restore outcome', exact=True).click()
                     result = checked.value.json()
                     assert checked.value.request.post_data_json['request_id'] == request_id
                 assert result['ok'], result
                 expect(dialog.get_by_role('status')).to_have_text('Conversation restored')
-                expect(saved.locator('.aw-command')).to_have_count(0)
+                if lose_receipt:
+                    expect(saved.locator('.aw-command')).to_have_count(1)
+                    expect(saved.locator('.aw-command')).not_to_contain_text('Restore outcome unconfirmed')
+                else:
+                    expect(saved.locator('.aw-command')).to_have_count(0)
                 assert not host._sessions
                 assert page.locator('.aw-composer textarea').input_value() == 'Keep this archive draft'
                 assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
@@ -93,6 +122,8 @@ def browser_restore(root, sid, target, width, lose_ack=False):
                 assert not host._sessions
                 assert not any(url.endswith('/attach') or url.endswith('/commands') for url in requests)
                 assert not errors, errors
+                if lose_receipt:
+                    print('PASS: pending restore rediscovered in active catalog after reload with browser receipt removed; original durable request reconciled')
                 print(f'PASS: {width}px browser confirmed exact native restoration over HTTP; separate navigation, retained draft, zero attachment/turn calls or browser errors')
                 return result, request_id
             finally:
@@ -104,7 +135,7 @@ def browser_restore(root, sid, target, width, lose_ack=False):
         assert not thread.is_alive()
 
 
-async def main(browser_width=None, lose_ack=False):
+async def main(browser_width=None, lose_ack=False, lose_receipt=False):
     with tempfile.TemporaryDirectory(prefix="workspace-archive-contract-") as directory, ExitStack() as patches:
         root = Path(directory)
         home = root / "codex"
@@ -127,7 +158,8 @@ async def main(browser_width=None, lose_ack=False):
                                lease_factory=lambda sid: SessionLease(sid, directory=root / "leases"))
         processes = []
         app = Flask(__name__)
-        app.register_blueprint(workspace_blueprint(object(), token='a' * 40))
+        catalog_host = WorkspaceHost(journal=WorkspaceJournal(root / 'workspace.db'), resolve=lambda _: None, factories={})
+        app.register_blueprint(workspace_blueprint(catalog_host, token='a' * 40))
         client = app.test_client()
 
         def catalog(archived):
@@ -210,7 +242,7 @@ async def main(browser_width=None, lose_ack=False):
             with patch('core.workspace_archive.restore_codex_archive', isolated_restore):
                 try:
                     if browser_width:
-                        result, request_id = await asyncio.to_thread(browser_restore, root, sid, target, browser_width, lose_ack)
+                        result, request_id = await asyncio.to_thread(browser_restore, root, sid, target, browser_width, lose_ack, lose_receipt)
                     else:
                         result = await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True)
                     assert result['ok'], result
@@ -253,7 +285,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--browser-width', type=int, choices=(390, 1600))
     parser.add_argument('--lose-restore-ack', action='store_true')
+    parser.add_argument('--lose-final-receipt', action='store_true')
     args = parser.parse_args()
-    if args.lose_restore_ack and not args.browser_width:
-        parser.error('--lose-restore-ack requires --browser-width')
-    asyncio.run(main(args.browser_width, args.lose_restore_ack))
+    if (args.lose_restore_ack or args.lose_final_receipt) and not args.browser_width:
+        parser.error('Failure injection requires --browser-width')
+    if args.lose_restore_ack and args.lose_final_receipt:
+        parser.error('Choose one failure injection per proof')
+    asyncio.run(main(args.browser_width, args.lose_restore_ack, args.lose_final_receipt))

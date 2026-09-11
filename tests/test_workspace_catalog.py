@@ -148,7 +148,7 @@ def test_saved_session_route_requires_auth_without_calling_owner(monkeypatch, ar
     calls = []
     monkeypatch.setattr("core.workspace_catalog.list_saved_sessions", lambda *args, **kwargs: calls.append((args, kwargs)) or {"data": [], "nextOffset": None})
     app = Flask(__name__)
-    app.register_blueprint(workspace_blueprint(object(), token="s" * 40))
+    app.register_blueprint(workspace_blueprint(SimpleNamespace(decorate_archive_restores=lambda page: page), token="s" * 40))
     client = app.test_client()
     path = "/api/workspace/exact/sessions?provider=codex&q=custom&offset=50" + archive_query
     assert client.get(path).status_code == 403

@@ -11,6 +11,16 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('catalog recovery uses original server receipt even with empty browser storage',async()=>{
+  const calls=[],requestId=crypto.randomUUID();
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},
+    fetcher:async(url,request)=>{calls.push([url,JSON.parse(request.body)]);return response({ok:true,result:{session_id:'exact',archived:false}});}});
+  assert.deepEqual(calls,[]);
+  await conn.restoreArchive({reconcile:true,requestId});
+  assert.deepEqual(calls,[['/api/workspace/exact/reconcile-archive',{request_id:requestId,confirmed:true}]]);
+  conn.dispose();
+});
+
 test('archive restore persists exact request before delivery and reuses it after reload',async()=>{
   const saved=storage(),calls=[];
   const options={sessionId:'archived',token:'token',storage:saved,receive:()=>{},error:()=>{},
