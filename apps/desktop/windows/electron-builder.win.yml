@@ -2,6 +2,7 @@ appId: ai.serena.desktop
 productName: Serena
 copyright: Copyright © 2026 Raghav
 asar: true
+afterPack: ./scripts/verify-packed-workspace.cjs
 electronUpdaterCompatibility: ">=2.16"
 
 extraMetadata:
@@ -29,8 +30,11 @@ extraResources:
     to: runtimes/claude-sdk
     filter:
       - "package.json"
-      - "node_modules/**/*"
-      - "!node_modules/.bin/**/*"
+  - from: ../../runtimes/claude-sdk/node_modules
+    to: runtimes/claude-sdk/node_modules
+    filter:
+      - "**/*"
+      - "!.bin/**/*"
   - from: build/windows-sidecar/serena-web-sidecar
     to: sidecar
     filter:
