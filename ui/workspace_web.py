@@ -87,8 +87,11 @@ def workspace_blueprint(host, *, token: str):
     def sessions(sid):
         from core.workspace_catalog import list_saved_sessions
 
+        archived = request.args.getlist("archived")
+        if archived and archived not in (["true"], ["false"]):
+            raise ValueError("Expected one boolean archived filter")
         return jsonify(list_saved_sessions(request.args.get("provider"), request.args.get("q", ""),
-                                          int(request.args.get("offset", "0"))))
+                                          int(request.args.get("offset", "0")), archived=archived == ["true"]))
 
     @bp.post("/create")
     def create():

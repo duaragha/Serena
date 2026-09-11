@@ -10,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+from flask import Flask
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core import indexer, metadata
@@ -18,6 +20,7 @@ from core.workspace_catalog import list_saved_sessions, register_fork
 from core.workspace_codex import CodexWorkspace
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc
+from ui.workspace_web import workspace_blueprint
 
 
 async def main():
@@ -42,6 +45,16 @@ async def main():
         owner = CodexWorkspace(session_id="new:" + str(uuid4()), cwd=project, publish=publish,
                                lease_factory=lambda sid: SessionLease(sid, directory=root / "leases"))
         processes = []
+        app = Flask(__name__)
+        app.register_blueprint(workspace_blueprint(object(), token='a' * 40))
+        client = app.test_client()
+
+        def catalog(archived):
+            response = client.get('/api/workspace/proof/sessions?provider=codex&archived=' + str(archived).lower(),
+                                  headers={'X-Serena-Workspace-Token': 'a' * 40})
+            assert response.status_code == 200, response.json
+            return response.json['data']
+
         try:
             await owner.create(binary=binary, env=env, checkpoint=checkpoint)
             processes.append(owner.rpc.process)
@@ -70,6 +83,9 @@ async def main():
             assert list_saved_sessions('codex', archived=True)['data'][0]['session_id'] == sid
             assert indexer.get_session(sid)['is_done'] == 0
             assert metadata.get_meta(sid) == saved_meta
+            assert not catalog(False)
+            assert [row['session_id'] for row in catalog(True)] == [sid]
+            assert catalog(True)[0]['title'] == 'Retained archive title'
             print("PASS: native archive confirmed exact ID and moved, rather than deleted, its real transcript")
         finally:
             await owner.close()
@@ -101,6 +117,8 @@ async def main():
             assert list_saved_sessions('codex')['data'][0]['session_id'] == sid
             assert not list_saved_sessions('codex', archived=True)['data']
             assert metadata.get_meta(sid) == saved_meta
+            assert [row['session_id'] for row in catalog(False)] == [sid]
+            assert not catalog(True)
             print("PASS: archived history read and exact restore require no resumed writer or model turn")
         finally:
             await rpc.close()
@@ -109,6 +127,7 @@ async def main():
         print(json.dumps({"ok": True, "processesReaped": len(processes), "credentialsUsed": False,
                           "inference": False, "archiveNotificationConfirmed": True, "restoreDoesNotResume": True}))
         print('PASS: real archive/restore reindexed exact session; custom title, done and group metadata unchanged')
+        print('PASS: authenticated catalog route separates real active/archive rows without a runtime host')
     print("PASS: disposable profile removed; no user sessions or project files changed")
 
 

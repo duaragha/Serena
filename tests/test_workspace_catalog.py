@@ -139,22 +139,41 @@ def test_saved_session_search_rejects_invalid_arguments(provider, query, offset)
         list_saved_sessions(provider, query, offset)
 
 
-def test_saved_session_route_requires_auth_without_calling_owner(monkeypatch):
+@pytest.mark.parametrize('archive_query,expected', [('', False), ('&archived=false', False), ('&archived=true', True)])
+def test_saved_session_route_requires_auth_without_calling_owner(monkeypatch, archive_query, expected):
     from flask import Flask
 
     from ui.workspace_web import workspace_blueprint
 
     calls = []
-    monkeypatch.setattr("core.workspace_catalog.list_saved_sessions", lambda *args: calls.append(args) or {"data": [], "nextOffset": None})
+    monkeypatch.setattr("core.workspace_catalog.list_saved_sessions", lambda *args, **kwargs: calls.append((args, kwargs)) or {"data": [], "nextOffset": None})
     app = Flask(__name__)
     app.register_blueprint(workspace_blueprint(object(), token="s" * 40))
     client = app.test_client()
-    path = "/api/workspace/exact/sessions?provider=codex&q=custom&offset=50"
+    path = "/api/workspace/exact/sessions?provider=codex&q=custom&offset=50" + archive_query
     assert client.get(path).status_code == 403
     assert client.get(path, headers={"X-Serena-Workspace-Token": "s" * 40, "Origin": "https://other.test"}).status_code == 403
     assert not calls
     assert client.get(path, headers={"X-Serena-Workspace-Token": "s" * 40}).json == {"data": [], "nextOffset": None}
-    assert calls == [("codex", "custom", 50)]
+    assert calls == [(("codex", "custom", 50), {"archived": expected})]
+
+
+@pytest.mark.parametrize('query', ['archived=', 'archived=1', 'archived=True', 'archived=null',
+                                  'archived=true&archived=false', 'archived=true&archived=true'])
+def test_saved_session_route_rejects_ambiguous_archive_filter(monkeypatch, query):
+    from flask import Flask
+
+    from ui.workspace_web import workspace_blueprint
+
+    def unexpected(*args, **kwargs):
+        pytest.fail('Invalid archive filter reached the catalog')
+    monkeypatch.setattr('core.workspace_catalog.list_saved_sessions', unexpected)
+    app = Flask(__name__)
+    app.register_blueprint(workspace_blueprint(object(), token='s' * 40))
+    response = app.test_client().get('/api/workspace/exact/sessions?provider=codex&' + query,
+                                     headers={'X-Serena-Workspace-Token': 's' * 40})
+    assert response.status_code == 400
+    assert response.json == {'ok': False, 'error': 'Expected one boolean archived filter'}
 
 
 def test_explicit_handoff_uses_exact_owner_and_refuses_failed_attachment():

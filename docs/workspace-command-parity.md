@@ -3,6 +3,29 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Authenticated Archive Catalog Endpoint (2026-09-10)
+
+The saved-session endpoint now accepts exactly one `archived=true` or
+`archived=false` query parameter; omission still selects active sessions. Invalid
+or repeated values fail before catalog access. Existing loopback, origin and
+token checks also protect archived queries. The endpoint is read-only and needs
+no runtime owner. The picker and durable restore action remain pending; this does
+not expose an unsafe archived-session Resume button.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_catalog.py tests/test_workspace_archive.py -q --tb=short
+env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check ui/workspace_web.py tests/test_workspace_catalog.py scripts/verify-workspace-archive-contract.py
+```
+
+All commands ran separately and exited 0: 47 tests passed in 1.05s; Ruff passed.
+The native probe now exercises the real authenticated Flask route against its
+disposable real index before and after restoration, proving exact-ID active/archive
+separation and the retained custom title. Its host is deliberately an inert object,
+so catalog reads cannot attach a session. Three native processes reaped, no
+credentials or inference, no user data changed. This is endpoint/runtime proof,
+not browser or packaged-application verification.
+
 ## Exclusive Archive Restoration Primitive (2026-09-10)
 
 `core/workspace_archive.py::restore_codex_archive` now performs native restoration
