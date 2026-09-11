@@ -1,4 +1,4 @@
-"""Development opt-in mount for the real pane; default app remains unchanged."""
+"""Mount the structured conversation workspace without starting provider owners."""
 
 import json
 import secrets

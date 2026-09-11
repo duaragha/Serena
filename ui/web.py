@@ -63,7 +63,9 @@ app.register_blueprint(fleet_bp)
 app.register_blueprint(operator_bp)
 app.register_blueprint(webhook_bp)
 
-if os.environ.get("SERENA_STRUCTURED_WORKSPACE") == "1":
+_STRUCTURED_WORKSPACE_ENABLED = os.environ.get("SERENA_STRUCTURED_WORKSPACE", "1") != "0"
+
+if _STRUCTURED_WORKSPACE_ENABLED:
     from ui.workspace_app import install_workspace
 
     install_workspace(app, DATA_DIR / "workspace-events.db")
@@ -11247,7 +11249,7 @@ def index():
                 "home": home,
                 "homeSlug": home_slug,
                 "platform": sys.platform,
-                "structuredWorkspace": os.environ.get("SERENA_STRUCTURED_WORKSPACE") == "1",
+                "structuredWorkspace": _STRUCTURED_WORKSPACE_ENABLED,
                 # Which box this window is actually running on. Agents already
                 # get this through the SessionStart hook; the header shows the
                 # same answer so a glance settles it too.
