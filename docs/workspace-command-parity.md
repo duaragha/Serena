@@ -3,6 +3,35 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Unapplied Restore Native Proof (2026-09-10)
+
+The verifier now covers failure before native restoration, completing the
+previously unit-only still-archived reconciliation case. It injects a transport
+failure before the native operation, clicks Check in the real browser, verifies
+that native inspection still reports the exact archived transcript, and checks
+that the original pending claim is finished without an automatic retry. Only a
+second explicit confirmation sends a new durable request and performs restoration.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_archive.py tests/test_workspace_archive_host.py -q --tb=short
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py --browser-width 390 --fail-before-restore
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=/home/raghav/.local/lib/python3.12/site-packages SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-archive-contract.py --browser-width 1600 --fail-before-restore
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check scripts/verify-workspace-archive-contract.py
+```
+
+Each separately executed, exit 0: 43 tests passed in 1.02s; both native browser
+proofs passed; Ruff passed. Exactly one `thread/unarchive`, four disposable
+processes reaped per proof, no attach/turn calls, no browser errors, unchanged
+custom title/draft and no credentials/inference or user data writes. Mobile
+`archive-native-unapplied-390.png` inspected: failure wording wraps and the UUID
+and explicit action remain visible. Native restore success, lost acknowledgement,
+lost final receipt with reload, and confirmed unapplied retry now have source
+browser coverage. Packaged and broader provider parity gates are not implied.
+
+Read-only browser discovery was also rechecked: no connected browser was returned,
+so the separate authenticated model-workflow gate remains unavailable. No personal
+credentials were read, copied or refreshed.
+
 ## Restore Recovery After Reload (2026-09-10)
 
 Active and archived catalog pages now carry the exact outstanding restore request

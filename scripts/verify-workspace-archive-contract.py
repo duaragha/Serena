@@ -27,7 +27,7 @@ from core.workspace_rpc import WorkspaceRpc
 from ui.workspace_web import workspace_blueprint
 
 
-def browser_restore(root, sid, target, width, lose_ack=False, lose_receipt=False):
+def browser_restore(root, sid, target, width, lose_ack=False, lose_receipt=False, fail_before=False):
     from playwright.sync_api import expect, sync_playwright
     from werkzeug.serving import WSGIRequestHandler, make_server
 
@@ -83,7 +83,7 @@ def browser_restore(root, sid, target, width, lose_ack=False, lose_receipt=False
                 response = received.value
                 result = response.json()
                 request_id = response.request.post_data_json['request_id']
-                if lose_ack or lose_receipt:
+                if lose_ack or lose_receipt or fail_before:
                     assert result.get('uncertain') and not result['ok'], result
                     if lose_receipt:
                         assert indexer.get_session(sid)['is_archived'] == 0
@@ -104,6 +104,19 @@ def browser_restore(root, sid, target, width, lose_ack=False, lose_receipt=False
                         dialog.get_by_role('button', name='Check restore outcome', exact=True).click()
                     result = checked.value.json()
                     assert checked.value.request.post_data_json['request_id'] == request_id
+                    if fail_before:
+                        assert result.get('retryable') and not result['ok'], result
+                        assert result['result']['archived'] is True
+                        assert indexer.get_session(sid)['is_archived'] == 1
+                        assert not host.journal.has_pending_archive_restore(sid)
+                        expect(dialog.get_by_role('button', name='Confirm restore conversation', exact=True)).to_be_visible()
+                        assert len([url for url in requests if url.endswith('/restore-archive')]) == 1
+                        page.screenshot(path=str(shots / f'archive-native-unapplied-{width}.png'))
+                        with page.expect_response(lambda response: response.url.endswith('/restore-archive')) as retried:
+                            dialog.get_by_role('button', name='Confirm restore conversation', exact=True).click()
+                        assert retried.value.request.post_data_json['request_id'] != request_id
+                        request_id = retried.value.request.post_data_json['request_id']
+                        result = retried.value.json()
                 assert result['ok'], result
                 expect(dialog.get_by_role('status')).to_have_text('Conversation restored')
                 if lose_receipt:
@@ -124,6 +137,8 @@ def browser_restore(root, sid, target, width, lose_ack=False, lose_receipt=False
                 assert not errors, errors
                 if lose_receipt:
                     print('PASS: pending restore rediscovered in active catalog after reload with browser receipt removed; original durable request reconciled')
+                if fail_before:
+                    print('PASS: native read confirmed unapplied restore; no automatic retry, new explicit attempt used a new durable request ID')
                 print(f'PASS: {width}px browser confirmed exact native restoration over HTTP; separate navigation, retained draft, zero attachment/turn calls or browser errors')
                 return result, request_id
             finally:
@@ -135,7 +150,7 @@ def browser_restore(root, sid, target, width, lose_ack=False, lose_receipt=False
         assert not thread.is_alive()
 
 
-async def main(browser_width=None, lose_ack=False, lose_receipt=False):
+async def main(browser_width=None, lose_ack=False, lose_receipt=False, fail_before=False):
     with tempfile.TemporaryDirectory(prefix="workspace-archive-contract-") as directory, ExitStack() as patches:
         root = Path(directory)
         home = root / "codex"
@@ -228,7 +243,12 @@ async def main(browser_width=None, lose_ack=False, lose_receipt=False):
                         mutations.append(params)
                     return await super().request(method, params, **kwargs)
 
+            before_failure = []
+
             async def isolated_restore(identity, cwd, *, confirmed, inspect_only=False):
+                if fail_before and not inspect_only and not before_failure:
+                    before_failure.append(True)
+                    raise RuntimeError('Proof-injected transport failure before native restoration')
                 restored = await restore_codex_archive(identity, cwd, confirmed=confirmed, binary=binary, env=env, inspect_only=inspect_only,
                     rpc_factory=TrackedRpc, lease_factory=lambda identity: SessionLease(identity, directory=root / 'leases'))
                 if lose_ack and not inspect_only:
@@ -242,7 +262,7 @@ async def main(browser_width=None, lose_ack=False, lose_receipt=False):
             with patch('core.workspace_archive.restore_codex_archive', isolated_restore):
                 try:
                     if browser_width:
-                        result, request_id = await asyncio.to_thread(browser_restore, root, sid, target, browser_width, lose_ack, lose_receipt)
+                        result, request_id = await asyncio.to_thread(browser_restore, root, sid, target, browser_width, lose_ack, lose_receipt, fail_before)
                     else:
                         result = await asyncio.to_thread(host.restore_archive, sid, request_id, confirmed=True)
                     assert result['ok'], result
@@ -286,9 +306,11 @@ if __name__ == "__main__":
     parser.add_argument('--browser-width', type=int, choices=(390, 1600))
     parser.add_argument('--lose-restore-ack', action='store_true')
     parser.add_argument('--lose-final-receipt', action='store_true')
+    parser.add_argument('--fail-before-restore', action='store_true')
     args = parser.parse_args()
-    if (args.lose_restore_ack or args.lose_final_receipt) and not args.browser_width:
+    failures = [args.lose_restore_ack, args.lose_final_receipt, args.fail_before_restore]
+    if any(failures) and not args.browser_width:
         parser.error('Failure injection requires --browser-width')
-    if args.lose_restore_ack and args.lose_final_receipt:
+    if sum(failures) > 1:
         parser.error('Choose one failure injection per proof')
-    asyncio.run(main(args.browser_width, args.lose_restore_ack, args.lose_final_receipt))
+    asyncio.run(main(args.browser_width, *failures))
