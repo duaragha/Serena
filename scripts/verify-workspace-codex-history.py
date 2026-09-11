@@ -269,11 +269,14 @@ def frozen_browser_proof(sid, root, project, env, frozen):
     entry = Path(frozen).resolve()
     backend_mode = 'source' if entry.suffix == '.py' else 'frozen'
     argv = [sys.executable, str(entry)] if backend_mode == 'source' else [str(entry)]
-    env = {**env, "CHATS_DATA_DIR": str(root / "frozen-data"), "SERENA_STRUCTURED_WORKSPACE": "1",
+    env = {**env, "CHATS_DATA_DIR": str(root / "frozen-data"),
            "SERENA_PROOF_BACKEND_MODE": backend_mode,
            "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
            "SERENA_CALL_RUNTIME": "lazy", "SERENA_RUNTIME_LEASE_DIR": str(root / "frozen-leases"),
            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={root}/unavailable-bus", "XDG_RUNTIME_DIR": str(root / "xdg")}
+    # This is the release-path proof: the shared backend must mount structured
+    # panes by default, without relying on an Electron-only opt-in variable.
+    env.pop("SERENA_STRUCTURED_WORKSPACE", None)
     if os.environ.get("SERENA_PROOF_ELECTRON"):
         resources = root / "desktop-resources"
         shutil.copytree(repo / "runtimes" / "claude-sdk", resources / "runtimes" / "claude-sdk")
