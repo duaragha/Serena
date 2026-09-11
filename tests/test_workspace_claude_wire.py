@@ -143,6 +143,36 @@ def test_native_stream_and_canonical_message_share_item_identity():
     assert event(final, "workspace/settings")["model"] == "parent-model"
 
 
+@pytest.mark.parametrize("parent", [None, "child-tool"])
+@pytest.mark.parametrize("include_thinking", [False, True])
+def test_final_text_keeps_stream_identity_when_sdk_omits_thinking(parent, include_thinking):
+    adapter = ClaudeEvents("exact")
+    adapter.begin_input("turn")
+    def stream(value):
+        return adapter.receive({"type": "stream_event", "parent_tool_use_id": parent, "event": value})
+    for message_id in ["first", "second"]:
+        stream({"type": "message_start", "message": {"id": message_id}})
+        for index, kind, value in [(0, "thinking", "Checking"), (1, "text", "Same reply")]:
+            stream({"type": "content_block_start", "index": index, "content_block": {"type": kind, kind: ""}})
+            stream({"type": "content_block_delta", "index": index, "delta": {"type": kind + "_delta", kind: value}})
+            stream({"type": "content_block_stop", "index": index})
+        content = ([{"type": "thinking", "thinking": "Checking"}] if include_thinking else [])
+        content += [{"type": "text", "text": "Same reply"}]
+        final = {"type": "assistant", "parent_tool_use_id": parent,
+                 "message": {"id": message_id, "content": content}}
+        original = deepcopy(final)
+        for _ in range(2):
+            output = adapter.receive(final)
+            items = [entry["params"]["item"] for entry in output if entry["method"] == "item/completed"]
+            text = next(item for item in items if item["type"] == "agentMessage")
+            assert text["id"] == message_id + ":1"
+            assert text["text"] == "Same reply"
+            assert event(output, "workspace/claude")["record"] == original
+        assert final == original
+    adapter.receive({"type": "result", "is_error": False})
+    assert adapter.streamed_blocks == {}
+
+
 def test_native_subagent_model_never_changes_parent_model():
     converter = ClaudeEvents("exact")
     converter.turn = "turn"
