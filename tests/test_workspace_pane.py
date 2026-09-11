@@ -2179,7 +2179,7 @@ def test_claude_tools_show_readable_native_output_and_requested_edits(pane, tmp_
     edit = page.locator('[data-item-id="edit-native"]')
     assert edit.get_by_text("Requested edit", exact=True).is_visible()
     assert edit.locator(".aw-diff").inner_text() == "-old_value\n+new_value\n"
-    assert edit.get_by_text("failed", exact=True).is_visible()
+    assert edit.get_by_text("Failed", exact=True).is_visible()
     assert edit.locator(".aw-tool-output").inner_text() == "Edit rejected by tool"
     assert page.locator('[data-item-id="write-native"] img').count() == 0
     assert page.evaluate("window.compromised === undefined")
