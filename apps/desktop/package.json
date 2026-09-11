@@ -1,6 +1,6 @@
 {
   "name": "serena-desktop",
-  "version": "0.2.51",
+  "version": "0.2.52",
   "description": "Serena desktop shell",
   "main": "main.js",
   "author": "Raghav",
@@ -25,6 +25,7 @@
     "js-yaml": "^4.1.0"
   },
   "build": {
+    "afterPack": "./scripts/verify-packed-workspace.cjs",
     "appId": "ai.serena.desktop",
     "productName": "Serena",
     "asar": true,
@@ -53,7 +54,12 @@
       {
         "from": "../../runtimes/claude-sdk",
         "to": "runtimes/claude-sdk",
-        "filter": ["package.json", "node_modules/**/*", "!node_modules/.bin/**/*"]
+        "filter": ["package.json"]
+      },
+      {
+        "from": "../../runtimes/claude-sdk/node_modules",
+        "to": "runtimes/claude-sdk/node_modules",
+        "filter": ["**/*", "!.bin/**/*"]
       }
     ],
     "linux": {

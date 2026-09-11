@@ -158,7 +158,11 @@ test('both desktop builds provision SDK resources and native worker modules', ()
   const packageJson=JSON.parse(fs.readFileSync(path.join(desktopDir,'package.json'),'utf8'));
   const sdk=packageJson.build.extraResources.find(resource=>resource.to==='runtimes/claude-sdk');
   assert.equal(sdk.from,'../../runtimes/claude-sdk');
-  assert.ok(sdk.filter.includes('node_modules/**/*'));
+  assert.deepEqual(sdk.filter,['package.json']);
+  const modules=packageJson.build.extraResources.find(resource=>resource.to==='runtimes/claude-sdk/node_modules');
+  assert.equal(modules.from,'../../runtimes/claude-sdk/node_modules');
+  assert.ok(modules.filter.includes('**/*'));
+  assert.equal(packageJson.build.afterPack,'./scripts/verify-packed-workspace.cjs');
   const linux=fs.readFileSync(path.join(desktopDir,'scripts/build-sidecar.sh'),'utf8');
   const windows=fs.readFileSync(path.join(desktopDir,'windows/build-win.ps1'),'utf8');
   const spec=fs.readFileSync(path.join(desktopDir,'windows/sidecar-win.spec'),'utf8');
