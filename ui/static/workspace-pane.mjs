@@ -34,6 +34,7 @@ export class WorkspacePane {
     this.historyImageUrls = new Set();
     this.sending = false;
     this.interrupting = false;
+    this.archiving = false;
     this.disposed = false;
     this.frame = 0;
     try{this.clearedSession=controls.lastClear?.();}catch{this.clearedSession=null;}
@@ -81,6 +82,9 @@ export class WorkspacePane {
     this.clearButton=this.button('Clear context','eraser',()=>this.openClear());
     this.clearButton.hidden=!['Claude','Codex'].includes(provider) || !controls.clearSession || !controls.openCleared;
     this.clearButton.disabled=true;head.append(this.clearButton);
+    this.archiveButton=this.button('Archive conversation','archive',()=>this.openArchive());
+    this.archiveButton.hidden=provider!=='Codex' || !controls.archiveSession;
+    this.archiveButton.disabled=true;head.append(this.archiveButton);
     this.newConversationButton=this.button('New conversation','square-pen',()=>{
       const title=/^\/new(?:\s+(.*))?$/.exec(this.input.value.trim())?.[1] || '';
       this.controls.newConversation(title);
@@ -419,6 +423,44 @@ export class WorkspacePane {
     this.clearDialog=dialog;this.root.append(dialog);render();dialog.showModal();this.refreshIcons();
   }
 
+  openArchive() {
+    if(this.archiveDialog?.open || this.archiving)return;
+    let pending;
+    try{pending=this.controls.pendingArchive?.() || null;}
+    catch(error){this.error(error);return;}
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Archive conversation');
+    const status=node('p','',pending
+      ? 'A previous archive outcome is unconfirmed. Check native state without repeating it.'
+      : 'Archive this Codex conversation and all of its spawned agent chats? History is kept and no session will open automatically.');
+    status.setAttribute('role','status');
+    const close=this.button('Close archive conversation','x',()=>dialog.close());
+    const confirm=this.button('Confirm archive conversation','archive',()=>run(false));
+    const check=this.button('Check archive outcome','refresh-cw',()=>run(true));check.hidden=!pending;
+    const run=async(reconcile)=>{
+      if(this.archiving)return;
+      this.archiving=true;confirm.disabled=true;check.disabled=true;
+      status.textContent=reconcile?'Checking native archive state...':'Archiving conversation...';this.render();
+      try{
+        const result=await this.controls.archiveSession({reconcile,requestId:reconcile?pending:null});
+        if(result?.session_id!==this.conversation.sessionId || result?.archived!==true)throw Error('Archived session identity is unconfirmed');
+        this.conversation.status='unavailable';
+        status.textContent=`Archived ${result.thread_count} conversation${result.thread_count===1?'':'s'}.`;
+        confirm.hidden=true;check.hidden=true;
+      }catch(error){
+        if(dialog.open && !this.disposed){
+          status.textContent=error.message;
+          if(error.archiveRetryable===true){pending=null;confirm.hidden=false;check.hidden=true;}
+          else if(error.archiveUncertain===true){pending=this.controls.pendingArchive?.() || pending;confirm.hidden=true;check.hidden=false;}
+          confirm.disabled=false;check.disabled=false;
+        }
+      }finally{this.archiving=false;if(!this.disposed)this.render();}
+    };
+    confirm.hidden=Boolean(pending);
+    dialog.append(node('h3','','Archive conversation'),close,status,confirm,check);
+    dialog.addEventListener('close',()=>dialog.remove());this.archiveDialog=dialog;
+    this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
+  }
+
   openFork() {
     if(this.forkDialog?.open || this.forkCreating)return;
     try{this.createdFork ??= this.controls.lastFork?.();}
@@ -550,10 +592,13 @@ export class WorkspacePane {
         for(const session of result.data){
           const button=node('button','aw-command');button.type='button';
           button.append(node('strong','',session.title),node('small','',session.session_id),node('span','',session.cwd || ''));
+          const pendingArchive=Boolean(session.archive_request_id);
           const isArchive=archived || Boolean(session.archive_restore_request_id);
-          button.disabled=!isArchive && session.session_id===this.conversation.sessionId;
+          button.disabled=!pendingArchive && !isArchive && session.session_id===this.conversation.sessionId;
           if(session.archive_restore_request_id)button.append(node('span','','Restore outcome unconfirmed'));
+          if(pendingArchive)button.append(node('span','','Archive outcome unconfirmed'));
           button.addEventListener('click',async()=>{
+            if(pendingArchive){this.openArchiveReconcile(session,()=>load(search.value));return;}
             if(isArchive){this.openArchiveRestore(session,()=>load(search.value));return;}
             button.disabled=true;
             try{await this.controls.openSession(session.session_id);dialog.close();}
@@ -604,6 +649,32 @@ export class WorkspacePane {
     if(session.archive_restore_request_id){confirm.hidden=true;check.hidden=false;status.textContent='Previous restoration outcome is unconfirmed';}
     dialog.append(node('h3','','Restore archived conversation'),close,status,identity,confirm,check,open);
     dialog.addEventListener('close',()=>dialog.remove());this.archiveRestoreDialog=dialog;
+    this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
+  }
+
+  openArchiveReconcile(session,refresh) {
+    if(this.archiveReconcileDialog?.open || !this.controls.reconcileArchive)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Check archive outcome');
+    const status=node('p','','A previous archive outcome is unconfirmed. This check will not repeat the archive operation.');
+    status.setAttribute('role','status');
+    const close=this.button('Close archive outcome','x',()=>dialog.close());
+    let busy=false;
+    const check=this.button('Check native archive state','refresh-cw',async()=>{
+      if(busy)return;busy=true;check.disabled=true;status.textContent='Checking native archive state...';
+      try{
+        const source=session.archive_source_id || session.session_id;
+        const result=await this.controls.reconcileArchive(source,session.archive_request_id);
+        if(result?.session_id!==source || result?.archived!==true)throw Error('Archived session identity is unconfirmed');
+        if(dialog.open && !this.disposed){status.textContent=`Archive confirmed for ${result.thread_count} conversation${result.thread_count===1?'':'s'}.`;check.hidden=true;}
+        if(this.sessionsDialog?.open && !this.disposed)await refresh();
+      }catch(error){if(dialog.open && !this.disposed){
+        status.textContent=error.message;
+        if(error.archiveRetryable===true){check.hidden=true;if(this.sessionsDialog?.open)await refresh();}
+        else check.disabled=false;
+      }}finally{busy=false;}
+    });
+    dialog.append(node('h3','','Check archive outcome'),close,status,check);
+    dialog.addEventListener('close',()=>dialog.remove());this.archiveReconcileDialog=dialog;
     this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
   }
 
@@ -1844,7 +1915,7 @@ export class WorkspacePane {
   }
 
   codexCommandControls() {
-    return {clear:this.clearButton,exit:this.disconnectButton,quit:this.disconnectButton,resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
+    return {clear:this.clearButton,archive:this.archiveButton,exit:this.disconnectButton,quit:this.disconnectButton,resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
       agent:this.agentsButton,subagents:this.agentsButton,fast:this.speedButton,usage:this.accountUsageButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
   }
@@ -2481,9 +2552,10 @@ export class WorkspacePane {
     this.modelSelect.disabled=queueing;
     this.send.title = steering ? 'Steer running turn' : queueing ? 'Queue message' : 'Send message';
     this.send.setAttribute('aria-label', this.send.title);
-    this.send.disabled = this.sending || this.clearing || Boolean(this.clearedSession) || (!steering && !queueing && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
+    this.send.disabled = this.sending || this.clearing || this.archiving || Boolean(this.clearedSession) || (!steering && !queueing && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.forkButton.disabled=this.forkCreating || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.clearButton.disabled=this.clearing || this.sending || (!this.clearedSession && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
+    this.archiveButton.disabled=this.archiving || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.disconnectButton.disabled=this.clearing || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.shellButton.disabled=this.shellSubmitting || !['ready','running','completed','interrupted'].includes(this.conversation.status);
     if (this.conversation.error) this.error(this.conversation.error);

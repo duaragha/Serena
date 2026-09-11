@@ -42,7 +42,12 @@ controls.listSessions = (query, offset=0, archived=false) => connection.request(
 if(boot.provider==='Codex')controls.restoreArchive=async(sid,reconcile=false,requestId=null)=>{
   if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid))throw Error('Invalid session identity');
   const target=new WorkspaceConnection({sessionId:sid,token:boot.token,receive:()=>{},error:()=>{}});
-  return target.restoreArchive({reconcile,requestId});
+  try{return await target.restoreArchive({reconcile,requestId});}finally{target.dispose();}
+};
+if(boot.provider==='Codex')controls.reconcileArchive=async(sid,requestId)=>{
+  if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid) || typeof requestId!=='string')throw Error('Invalid archive recovery identity');
+  const target=new WorkspaceConnection({sessionId:sid,token:boot.token,receive:()=>{},error:()=>{}});
+  try{return await target.archiveSession({reconcile:true,requestId});}finally{target.dispose();}
 };
 controls.openSession = sid => {
   if(typeof sid!=='string' || !/^[a-f0-9-]{36}$/.test(sid))throw Error('Invalid session identity');

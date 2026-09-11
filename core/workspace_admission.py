@@ -12,7 +12,7 @@ def reject_unregistered_codex(sid: str, cwd: Path, transcript: Path) -> None:
     reject_unregistered_provider(sid, cwd, transcript, "codex")
 
 
-def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider: str) -> None:
+def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider: str, *, exclude_pids=()) -> None:
     """Detect older/manual owners that do not participate in shared leases.
 
     A process with an explicit different resume ID is unrelated. An unidentified
@@ -22,8 +22,11 @@ def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider
     # Google's native harness may outlive the agy parent. Linux may truncate
     # its process name, so match the stable prefix as well as its argv.
     names = ("agy", "localharness") if provider == "agy" else (provider,)
+    excluded = {os.getpid(), *exclude_pids}
+    if not all(type(pid) is int and pid > 0 for pid in excluded):
+        raise ValueError("Excluded process identities must be positive integers")
     for process in psutil.process_iter(["pid", "name"]):
-        if process.pid == os.getpid():
+        if process.pid in excluded:
             continue
         candidate = any(name in (process.info.get("name") or "").lower() for name in names)
         label = provider.capitalize()
@@ -88,4 +91,5 @@ def resolve_workspace_session(sid: str) -> dict:
         raise ValueError("Session project or native transcript is unavailable on this machine")
     cwd, transcript = cwd.resolve(), transcript.resolve()
     reject_unregistered_provider(sid, cwd, transcript, provider)
-    return {"session_id": sid, "provider": provider, "cwd": str(cwd)}
+    return {"session_id": sid, "provider": provider, "cwd": str(cwd),
+            "archived": bool(session.get("is_archived"))}

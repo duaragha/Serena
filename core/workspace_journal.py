@@ -356,6 +356,198 @@ class WorkspaceJournal:
                 "AND json_extract(payload, '$.action')='restore_archive' LIMIT 1", (session_id,)
             ).fetchone() is not None
 
+    @staticmethod
+    def _pending_archive_row(conn, session_id):
+        rows = conn.execute(
+            "SELECT c.session_id,c.request_id FROM workspace_commands AS c "
+            "LEFT JOIN workspace_events AS e ON e.session_id=c.session_id "
+            "AND json_extract(e.event, '$.method')='workspace/archivePrepared' "
+            "AND json_extract(e.event, '$.params.requestId')=c.request_id "
+            "WHERE c.result IS NULL AND json_extract(c.payload, '$.action')='archive_session' "
+            "AND (c.session_id=? OR EXISTS (SELECT 1 FROM json_each(e.event, '$.params.archive.targets') AS target "
+            "WHERE json_extract(target.value, '$.session_id')=?)) LIMIT 2",
+            (session_id, session_id),
+        ).fetchall()
+        if len(rows) > 1:
+            raise ValueError("Multiple pending archives require manual inspection")
+        return rows[0] if rows else None
+
+    def pending_archive_operation(self, session_id: str) -> dict | None:
+        with closing(self._connect()) as conn:
+            row = self._pending_archive_row(conn, session_id)
+        return None if row is None else {"session_id": row[0], "request_id": row[1]}
+
+    def has_pending_archive(self, session_id: str) -> bool:
+        return self.pending_archive_operation(session_id) is not None
+
+    def claim_archive(self, session_id: str, request_id: str):
+        payload = json.dumps(
+            {"action": "archive_session", "payload": {"confirmed": True}}, sort_keys=True
+        )
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT payload,result FROM workspace_commands WHERE session_id=? AND request_id=?",
+                (session_id, request_id),
+            ).fetchone()
+            if row:
+                if row[0] != payload:
+                    raise ValueError("Request ID was already used with different content")
+                return False, json.loads(row[1]) if row[1] is not None else None
+            if self._pending_archive_row(conn, session_id):
+                raise ValueError("Previous archive outcome is unconfirmed; it will not be repeated")
+            if conn.execute(
+                "SELECT 1 FROM workspace_commands WHERE session_id=? AND result IS NULL "
+                "AND json_extract(payload, '$.action')='restore_archive' LIMIT 1", (session_id,)
+            ).fetchone():
+                raise ValueError("Archive restoration is unconfirmed")
+            conn.execute(
+                "INSERT INTO workspace_commands VALUES (?, ?, ?, NULL)",
+                (session_id, request_id, payload),
+            )
+            return True, None
+
+    @staticmethod
+    def _validate_archive_checkpoint(source_id, checkpoint):
+        targets = checkpoint.get("targets") if isinstance(checkpoint, dict) else None
+        if (not isinstance(source_id, str) or str(UUID(source_id)) != source_id
+                or not isinstance(checkpoint, dict)
+                or set(checkpoint) != {"session_id", "provider", "cwd", "targets"}
+                or checkpoint.get("session_id") != source_id or checkpoint.get("provider") != "codex"
+                or not isinstance(checkpoint.get("cwd"), str) or not Path(checkpoint["cwd"]).is_absolute()
+                or not isinstance(targets, list) or not 1 <= len(targets) <= 4150
+                or any(not isinstance(target, dict)
+                       or set(target) != {"session_id", "provider", "cwd"}
+                       or target.get("provider") != "codex"
+                       or not isinstance(target.get("session_id"), str)
+                       or str(UUID(target["session_id"])) != target["session_id"]
+                       or not isinstance(target.get("cwd"), str) or not Path(target["cwd"]).is_absolute()
+                       for target in targets)
+                or targets[0]["session_id"] != source_id
+                or Path(targets[0]["cwd"]).resolve() != Path(checkpoint["cwd"]).resolve()
+                or len({target["session_id"] for target in targets}) != len(targets)):
+            raise ValueError("Exact native archive checkpoint required")
+
+    def prepare_archive(self, source_id: str, request_id: str, checkpoint: dict) -> None:
+        self._validate_archive_checkpoint(source_id, checkpoint)
+        targets = checkpoint["targets"]
+        encoded = json.dumps(checkpoint, sort_keys=True, allow_nan=False)
+        payload = {"action": "archive_session", "payload": {"confirmed": True}}
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            command = conn.execute(
+                "SELECT payload,result FROM workspace_commands WHERE session_id=? AND request_id=?",
+                (source_id, request_id),
+            ).fetchone()
+            if not command or json.loads(command[0]) != payload or command[1] is not None:
+                raise ValueError("An unfinished explicit archive command is required")
+            expected_operation = (source_id, request_id)
+            target_ids = [target["session_id"] for target in targets]
+            for identity in target_ids:
+                pending = self._pending_archive_row(conn, identity)
+                if pending is not None and tuple(pending) != expected_operation:
+                    raise ValueError("An archive descendant has another unconfirmed archive")
+            placeholders = ",".join("?" for _ in target_ids)
+            if conn.execute(
+                f"SELECT 1 FROM workspace_commands WHERE session_id IN ({placeholders}) AND result IS NULL "
+                "AND json_extract(payload, '$.action')='restore_archive' LIMIT 1",
+                target_ids,
+            ).fetchone():
+                raise ValueError("An archive descendant has an unconfirmed restoration")
+            pending_commands = conn.execute(
+                f"SELECT session_id,request_id FROM workspace_commands WHERE session_id IN ({placeholders}) "
+                "AND result IS NULL",
+                target_ids,
+            ).fetchall()
+            if any(tuple(row) != expected_operation for row in pending_commands):
+                raise ValueError("An archive descendant has another unconfirmed operation")
+            rows = conn.execute(
+                "SELECT event FROM workspace_events WHERE session_id=? "
+                "AND json_extract(event, '$.method')='workspace/archivePrepared' "
+                "AND json_extract(event, '$.params.requestId')=? LIMIT 2",
+                (source_id, request_id),
+            ).fetchall()
+            if rows:
+                if len(rows) != 1 or json.dumps(json.loads(rows[0][0])["params"]["archive"], sort_keys=True) != encoded:
+                    raise ValueError("Archive already recorded a different native family")
+                return
+            sequence = (conn.execute(
+                "SELECT MAX(sequence) FROM workspace_events WHERE session_id=?", (source_id,)
+            ).fetchone()[0] or 0) + 1
+            event = {"method": "workspace/archivePrepared", "params": {
+                "threadId": source_id, "requestId": request_id, "archive": checkpoint,
+            }}
+            conn.execute(
+                "INSERT INTO workspace_events VALUES (?, ?, ?)",
+                (source_id, sequence, json.dumps(event, allow_nan=False)),
+            )
+
+    def archive_checkpoint(self, session_id: str, request_id: str) -> dict | None:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT event FROM workspace_events WHERE session_id=? "
+                "AND json_extract(event, '$.method')='workspace/archivePrepared' "
+                "AND json_extract(event, '$.params.requestId')=? LIMIT 2",
+                (session_id, request_id),
+            ).fetchall()
+        if len(rows) > 1:
+            raise ValueError("Archive checkpoint is ambiguous")
+        if not rows:
+            return None
+        checkpoint = json.loads(rows[0][0])["params"]["archive"]
+        self._validate_archive_checkpoint(session_id, checkpoint)
+        return checkpoint
+
+    def complete_archive(self, session_id: str, request_id: str, receipt: dict) -> dict:
+        result = receipt.get("result") if isinstance(receipt, dict) else None
+        thread_ids = result.get("thread_ids") if isinstance(result, dict) else None
+        if (not isinstance(receipt, dict) or set(receipt) != {"ok", "result"} or receipt.get("ok") is not True
+                or not isinstance(result, dict) or result.get("session_id") != session_id
+                or result.get("provider") != "codex" or result.get("archived") is not True
+                or result.get("cataloged") is not True
+                or not isinstance(thread_ids, list) or not thread_ids
+                or result.get("thread_count") != len(thread_ids)):
+            raise ValueError("Exact completed archive receipt required")
+        encoded = json.dumps(receipt, allow_nan=False)
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            command = conn.execute(
+                "SELECT payload,result FROM workspace_commands WHERE session_id=? AND request_id=?",
+                (session_id, request_id),
+            ).fetchone()
+            expected = {"action": "archive_session", "payload": {"confirmed": True}}
+            if not command or json.loads(command[0]) != expected or command[1] is not None:
+                raise ValueError("Archive command is missing or already finished")
+            rows = conn.execute(
+                "SELECT event FROM workspace_events WHERE session_id=? "
+                "AND json_extract(event, '$.method')='workspace/archivePrepared' "
+                "AND json_extract(event, '$.params.requestId')=? LIMIT 2",
+                (session_id, request_id),
+            ).fetchall()
+            if len(rows) != 1:
+                raise ValueError("Exact native archive checkpoint required")
+            checkpoint = json.loads(rows[0][0])["params"]["archive"]
+            self._validate_archive_checkpoint(session_id, checkpoint)
+            if [target["session_id"] for target in checkpoint["targets"]] != thread_ids:
+                raise ValueError("Completed archive family differs from its checkpoint")
+            sequence = (conn.execute(
+                "SELECT MAX(sequence) FROM workspace_events WHERE session_id=?", (session_id,)
+            ).fetchone()[0] or 0) + 1
+            event = {"method": "workspace/archived", "params": {
+                "threadId": session_id, "threadIds": thread_ids, "count": len(thread_ids),
+            }}
+            changed = conn.execute(
+                "UPDATE workspace_commands SET result=? WHERE session_id=? AND request_id=? AND result IS NULL",
+                (encoded, session_id, request_id),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("Archive command is missing or already finished")
+            conn.execute(
+                "INSERT INTO workspace_events VALUES (?, ?, ?)",
+                (session_id, sequence, json.dumps(event, allow_nan=False)),
+            )
+        return receipt
+
     def pending_archive_restores(self, session_ids):
         if not isinstance(session_ids, list) or len(session_ids) > 50 or not all(isinstance(sid, str) for sid in session_ids):
             raise ValueError('Expected one bounded catalog page')
@@ -372,6 +564,19 @@ class WorkspaceJournal:
             result[sid] = request_id
         return result
 
+    def pending_archives(self, session_ids):
+        if (not isinstance(session_ids, list) or len(session_ids) > 50
+                or not all(isinstance(sid, str) for sid in session_ids)):
+            raise ValueError("Expected one bounded catalog page")
+        if not session_ids:
+            return {}
+        with closing(self._connect()) as conn:
+            return {
+                sid: {"session_id": row[0], "request_id": row[1]}
+                for sid in session_ids
+                if (row := self._pending_archive_row(conn, sid)) is not None
+            }
+
     def claim_archive_restore(self, session_id: str, request_id: str):
         payload = json.dumps({'action': 'restore_archive', 'payload': {'confirmed': True}}, sort_keys=True)
         with closing(self._connect()) as conn, conn:
@@ -385,6 +590,8 @@ class WorkspaceJournal:
             if conn.execute("SELECT 1 FROM workspace_commands WHERE session_id=? AND result IS NULL "
                             "AND json_extract(payload, '$.action')='restore_archive' LIMIT 1", (session_id,)).fetchone():
                 raise ValueError('Previous archive restoration is unconfirmed; it will not be repeated')
+            if self._pending_archive_row(conn, session_id):
+                raise ValueError("Archive outcome is unconfirmed; restoration is unavailable")
             conn.execute('INSERT INTO workspace_commands VALUES (?, ?, ?, NULL)', (session_id, request_id, payload))
             return True, None
 

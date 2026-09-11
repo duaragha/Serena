@@ -148,6 +148,41 @@ export class WorkspaceConnection {
     return receipt.result;
   }
 
+  async archiveSession({reconcile=false,requestId=null}={}) {
+    this.requireReceipts();
+    const signature=JSON.stringify({action:'archive_session',payload:{confirmed:true}});
+    if(requestId!==null){
+      if(!reconcile || typeof requestId!=='string' || !/^[a-f0-9-]{36}$/.test(requestId))throw Error('Invalid archive recovery receipt');
+      if(this.pending[signature] && this.pending[signature]!==requestId)throw Error('Saved archive receipt differs from the durable record');
+      this.pending[signature]=requestId;
+    }
+    if(reconcile && !this.pending[signature])throw Error('No pending archive receipt');
+    const request_id=this.pending[signature] || crypto.randomUUID();
+    this.pending[signature]=request_id;
+    this.storage.setItem(this.key,JSON.stringify(this.pending));
+    let receipt;
+    try{
+      receipt=await this.request(reconcile?'/reconcile-archive-session':'/archive-session',{request_id,confirmed:true});
+    }catch(error){error.archiveUncertain=true;throw error;}
+    if(!receipt || typeof receipt!=='object' || Array.isArray(receipt)){
+      const error=Error('Archive outcome is unconfirmed');error.archiveUncertain=true;throw error;
+    }
+    if(receipt.ok!==true){
+      const retryable=receipt.retryable===true && receipt.result?.session_id===this.sessionId
+        && receipt.result?.archived===false;
+      if(retryable)this.forgetPending(signature);
+      const error=Error(receipt.error || 'Archive outcome is unconfirmed');
+      error.archiveRetryable=retryable;error.archiveUncertain=!retryable;
+      throw error;
+    }
+    if(receipt.result?.session_id!==this.sessionId || receipt.result?.archived!==true
+      || !Number.isSafeInteger(receipt.result?.thread_count) || receipt.result.thread_count<1){
+      const error=Error('Archived session identity is unconfirmed');error.archiveUncertain=true;throw error;
+    }
+    this.forgetPending(signature);
+    return receipt.result;
+  }
+
   async command(action, payload) {
     this.requireReceipts();
     const encoded = JSON.stringify({action, payload});
@@ -286,6 +321,11 @@ export class WorkspaceConnection {
       shellCommand: (command,confirmed) => this.command('shell_command', {command,confirmed}),
       forkSession: () => this.command('fork_session', {}),
       clearSession: () => this.command('clear_session', {confirmed:true}),
+      archiveSession: options => this.archiveSession(options),
+      pendingArchive: () => {
+        this.requireReceipts();
+        return this.pending[JSON.stringify({action:'archive_session',payload:{confirmed:true}})] || null;
+      },
       personality: () => this.command('personality', {}),
       setPersonality: value => this.command('set_personality', {value}),
       goal: () => this.command('goal', {}),

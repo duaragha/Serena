@@ -73,6 +73,15 @@ test('fresh exact history clears stale disconnection error but older pages do no
   assert.equal(model.error,null);assert.equal(model.status,'ready');
 });
 
+test('durable archive completion makes the exact pane unavailable',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,history));
+  model.apply(wrap(2,{method:'workspace/archived',params:{threadId:'exact',threadIds:['exact'],count:1}}));
+  assert.equal(model.status,'unavailable');
+  assert.equal(model.error,'Conversation archived');
+  assert.throws(()=>model.apply(wrap(3,{method:'workspace/archived',params:{threadId:'foreign'}})),/another session/);
+});
+
 test('older pages prepend without overwriting live turns or changing working status',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,{method:'workspace/history',params:{historyCursor:'older',thread:{id:'exact',turns:[{id:'live',status:'inProgress',items:[{id:'a',type:'agentMessage',text:'current'}]}]}}}));

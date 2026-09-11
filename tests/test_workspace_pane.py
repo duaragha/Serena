@@ -1266,6 +1266,37 @@ def test_archived_picker_restores_only_on_confirmation_and_opens_separately(pane
     assert not errors
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_saved_picker_recovers_durable_archive_receipt_without_browser_state_or_replay(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 1000})
+    page.evaluate("""()=>{
+      const Pane=pane.constructor;pane.dispose();window.calls=[];window.reconciled=false;
+      pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,
+        listSessions:async(q,offset,archived)=>({data:archived?[{session_id:'019de3ff-997e-76e3-9e51-2eeff93b0318',
+          title:'Pending archive child',cwd:'/project',...(reconciled?{}:{archive_request_id:'11111111-1111-4111-8111-111111111111',
+            archive_source_id:'22222222-2222-4222-8222-222222222222'})}]:[],nextOffset:null}),
+        reconcileArchive:async(sid,requestId)=>{calls.push(['check',sid,requestId]);reconciled=true;
+          return {session_id:sid,archived:true,thread_count:3};},
+        restoreArchive:async()=>{throw Error('must not restore')},openSession:async()=>{throw Error('must not open')}}});
+      pane.input.value='Draft stays';
+    }""")
+    page.evaluate('pane.openSessions()')
+    saved = page.get_by_role('dialog', name='Saved conversations', exact=True)
+    saved.get_by_role('radio', name='Archived', exact=True).check()
+    saved.locator('.aw-command').filter(has_text='Pending archive child').click()
+    dialog = page.get_by_role('dialog', name='Check archive outcome', exact=True)
+    assert page.evaluate('calls') == []
+    dialog.get_by_role('button', name='Check native archive state', exact=True).click()
+    dialog.get_by_text('Archive confirmed for 3 conversations.', exact=True).wait_for()
+    assert page.evaluate('calls') == [['check','22222222-2222-4222-8222-222222222222',
+                                       '11111111-1111-4111-8111-111111111111']]
+    assert page.evaluate('pane.input.value') == 'Draft stays'
+    assert saved.locator('.aw-command').filter(has_text='Archive outcome unconfirmed').count() == 0
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    assert not errors
+
+
 @pytest.mark.parametrize("width", [390, 1600])
 def test_grouped_reply_marks_queued_input_without_duplicate_duration(pane, width, tmp_path):
     page, errors = pane
@@ -2523,6 +2554,47 @@ def test_clear_requires_confirmation_and_recovers_exact_target_without_repeating
     page.screenshot(path=str(tmp_path / f"clear-{width}.png"))
     dialog.get_by_role("button", name="Open new conversation", exact=True).click()
     assert page.evaluate("calls") == ["clear", ["open", "11111111-1111-4111-8111-111111111111"]]
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1600])
+def test_codex_archive_requires_confirmation_and_reconciles_without_repeating(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({"width": width, "height": 900})
+    page.evaluate("""()=>{
+      window.archivePending=null;
+      controls.pendingArchive=()=>archivePending;
+      controls.archiveSession=async options=>{
+        calls.push(['archive',options]);
+        if(calls.length===1){
+          archivePending='11111111-1111-4111-8111-111111111111';
+          const error=Error('Archive outcome is unconfirmed');error.archiveUncertain=true;throw error;
+        }
+        archivePending=null;
+        return {session_id:'exact',archived:true,thread_count:2};
+      };
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      pane.conversation.status='ready';pane.input.value='/archive';pane.render();
+    }""")
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role("dialog", name="Archive conversation", exact=True)
+    assert page.evaluate("calls") == []
+    assert "spawned agent chats" in dialog.get_by_role("status").inner_text()
+    dialog.get_by_role("button", name="Confirm archive conversation", exact=True).click()
+    dialog.get_by_text("Archive outcome is unconfirmed", exact=True).wait_for()
+    assert page.evaluate("calls") == [["archive", {"reconcile": False, "requestId": None}]]
+    assert dialog.get_by_role("button", name="Check archive outcome", exact=True).is_visible()
+    assert page.evaluate("pane.input.value") == "/archive"
+    dialog.get_by_role("button", name="Check archive outcome", exact=True).click()
+    dialog.get_by_text("Archived 2 conversations.", exact=True).wait_for()
+    assert page.evaluate("calls") == [
+        ["archive", {"reconcile": False, "requestId": None}],
+        ["archive", {"reconcile": True, "requestId": "11111111-1111-4111-8111-111111111111"}],
+    ]
+    assert page.evaluate("pane.conversation.status") == "unavailable"
+    assert page.locator('#left').get_by_role("button", name="Send message", exact=True).is_disabled()
+    assert dialog.evaluate("el=>el.scrollWidth<=el.clientWidth")
+    page.screenshot(path=str(tmp_path / f"archive-{width}.png"))
     assert not errors
 
 

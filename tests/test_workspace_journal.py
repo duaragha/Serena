@@ -1,10 +1,87 @@
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 
 import pytest
 
 from core.workspace_journal import WorkspaceJournal
+
+
+def test_archive_checkpoint_blocks_root_and_descendant_until_exact_receipt(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "archive.db")
+    root, child, request = str(uuid4()), str(uuid4()), str(uuid4())
+    checkpoint = {"session_id": root, "provider": "codex", "cwd": str(tmp_path), "targets": [
+        {"session_id": root, "provider": "codex", "cwd": str(tmp_path)},
+        {"session_id": child, "provider": "codex", "cwd": str(tmp_path / "child")},
+    ]}
+    assert journal.claim_archive(root, request) == (True, None)
+    assert journal.has_pending_archive(root) and not journal.has_pending_archive(child)
+    journal.prepare_archive(root, request, checkpoint)
+    journal.prepare_archive(root, request, checkpoint)
+    reopened = WorkspaceJournal(journal.path)
+    assert reopened.archive_checkpoint(root, request) == checkpoint
+    assert reopened.has_pending_archive(root) and reopened.has_pending_archive(child)
+    with pytest.raises(ValueError, match="unconfirmed"):
+        reopened.claim_archive(child, str(uuid4()))
+    with pytest.raises(ValueError, match="restoration is unavailable"):
+        reopened.claim_archive_restore(child, str(uuid4()))
+    with pytest.raises(ValueError, match="different native family"):
+        reopened.prepare_archive(root, request, {**checkpoint, "targets": checkpoint["targets"][:1]})
+    receipt = {"ok": True, "result": {"session_id": root, "archived": True}}
+    reopened.finish_command(root, request, receipt)
+    assert not journal.has_pending_archive(root) and not journal.has_pending_archive(child)
+    assert journal.claim_archive(root, request) == (False, receipt)
+
+
+def test_archive_claim_rejects_pending_restore_and_requires_exact_checkpoint(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "archive-guard.db")
+    root, child, request = str(uuid4()), str(uuid4()), str(uuid4())
+    journal.claim_archive_restore(root, str(uuid4()))
+    with pytest.raises(ValueError, match="restoration"):
+        journal.claim_archive(root, request)
+    other = str(uuid4())
+    journal.claim_archive(other, request)
+    with pytest.raises(ValueError, match="checkpoint"):
+        journal.prepare_archive(other, request, {
+            "session_id": other, "provider": "codex", "cwd": "relative", "targets": [],
+        })
+    second_root, second_request = str(uuid4()), str(uuid4())
+    journal.claim_archive(second_root, second_request)
+    journal.claim_archive_restore(child, str(uuid4()))
+    with pytest.raises(ValueError, match="unconfirmed restoration"):
+        journal.prepare_archive(second_root, second_request, {
+            "session_id": second_root, "provider": "codex", "cwd": str(tmp_path), "targets": [
+                {"session_id": second_root, "provider": "codex", "cwd": str(tmp_path)},
+                {"session_id": child, "provider": "codex", "cwd": str(tmp_path)},
+            ],
+        })
+
+
+def test_archive_completion_commits_receipt_and_event_atomically(tmp_path):
+    journal = WorkspaceJournal(tmp_path / "archive-completion.db")
+    root, request = str(uuid4()), str(uuid4())
+    target = {"session_id": root, "provider": "codex", "cwd": str(tmp_path)}
+    journal.claim_archive(root, request)
+    journal.prepare_archive(root, request, {**target, "targets": [target]})
+    receipt = {"ok": True, "result": {
+        **target, "archived": True, "thread_ids": [root], "cataloged": True, "thread_count": 1,
+    }}
+    with sqlite3.connect(journal.path) as conn:
+        conn.execute("""CREATE TRIGGER reject_archive_event BEFORE INSERT ON workspace_events
+                     WHEN json_extract(NEW.event, '$.method')='workspace/archived'
+                     BEGIN SELECT RAISE(ABORT, 'simulated disk failure'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="simulated disk failure"):
+        journal.complete_archive(root, request, receipt)
+    assert journal.command_receipt(
+        root, request, {"action": "archive_session", "payload": {"confirmed": True}}
+    ) == (True, None)
+    with sqlite3.connect(journal.path) as conn:
+        conn.execute("DROP TRIGGER reject_archive_event")
+    assert journal.complete_archive(root, request, receipt) == receipt
+    assert [row["event"]["method"] for row in journal.read(root)["events"]][-2:] == [
+        "workspace/archivePrepared", "workspace/archived",
+    ]
 
 
 def test_saved_mode_is_exact_session_and_survives_unrelated_events(tmp_path):

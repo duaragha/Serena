@@ -32,6 +32,7 @@ def test_exact_session_only_no_cwd_guess_or_provider_substitution(session):
         "session_id": "exact",
         "provider": "codex",
         "cwd": session["cwd"],
+        "archived": False,
     }
     with pytest.raises(ValueError, match="Exact"):
         admission.resolve_workspace_session("prefix")
@@ -42,6 +43,11 @@ def test_exact_session_only_no_cwd_guess_or_provider_substitution(session):
     session["cwd"] = "/missing-workspace-directory"
     with pytest.raises(ValueError, match="unavailable"):
         admission.resolve_workspace_session("exact")
+
+
+def test_archive_state_is_preserved_for_host_admission(session):
+    session["is_archived"] = 1
+    assert admission.resolve_workspace_session("exact")["archived"] is True
 
 
 def test_existing_pty_and_external_owner_rejected(session, monkeypatch):

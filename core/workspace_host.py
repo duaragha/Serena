@@ -545,9 +545,170 @@ class WorkspaceHost:
                 return {"ok": False, "pending": True, "error": str(error)}
 
     def decorate_archive_restores(self, page):
-        pending = self.journal.pending_archive_restores([row['session_id'] for row in page['data']])
-        return {**page, 'data': [{**row, **({'archive_restore_request_id': pending[row['session_id']]}
-                                         if row['session_id'] in pending else {})} for row in page['data']]}
+        session_ids = [row["session_id"] for row in page["data"]]
+        restores = self.journal.pending_archive_restores(session_ids)
+        archives = self.journal.pending_archives(session_ids)
+        return {**page, "data": [{
+            **row,
+            **({"archive_restore_request_id": restores[row["session_id"]]}
+               if row["session_id"] in restores else {}),
+            **({
+                "archive_request_id": archives[row["session_id"]]["request_id"],
+                "archive_source_id": archives[row["session_id"]]["session_id"],
+            } if row["session_id"] in archives else {}),
+        } for row in page["data"]]}
+
+    def archive_session(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
+        if (type(reconcile) is not bool or confirmed is not True
+                or not isinstance(sid, str) or str(UUID(sid)) != sid
+                or not isinstance(request_id, str) or str(UUID(request_id)) != request_id):
+            raise ValueError("Explicit confirmation and exact session/request UUIDs are required")
+        return self._dispatch(self._archive_session(sid, request_id, reconcile=reconcile), timeout)
+
+    def _archive_family_guard(self, threads, archive_operation):
+        for thread in threads:
+            identity = thread["id"]
+            entry = self._sessions.get(identity)
+            if entry and (entry[0].state != "closed"
+                          or not getattr(entry[0], "can_retry_attachment", lambda: False)()):
+                raise RuntimeError("An archive descendant still has a workspace writer")
+            if self._work_reservations.get(identity) or self._bridge_queues.get(identity):
+                raise RuntimeError("An archive descendant is reserved by background work")
+            if (self.journal.has_pending_work(identity) or self.journal.has_pending_clear(identity)
+                    or self.journal.has_pending_archive_restore(identity)):
+                raise RuntimeError("An archive descendant has an unconfirmed durable operation")
+            pending_archive = self.journal.pending_archive_operation(identity)
+            if pending_archive is not None and pending_archive != archive_operation:
+                raise RuntimeError("An archive descendant has another unconfirmed archive")
+
+    async def _finish_archive(self, sid, request_id, archived):
+        catalogs = []
+        for target in archived["targets"]:
+            catalog = await self._register_created_fork(target)
+            if catalog.get("session_id") != target["session_id"] or catalog.get("indexed") is not True:
+                raise RuntimeError(
+                    f"Archived session catalog registration failed for {target['session_id']}: "
+                    + str(catalog.get("error", "catalog unavailable"))
+                )
+            catalogs.append(catalog)
+        result = {key: archived[key] for key in ("session_id", "provider", "cwd", "archived", "thread_ids")}
+        result.update(cataloged=True, thread_count=len(catalogs))
+        receipt = {"ok": True, "result": result}
+        await asyncio.to_thread(self.journal.complete_archive, sid, request_id, receipt)
+        for identity in archived["thread_ids"]:
+            entry = self._sessions.get(identity)
+            if entry and entry[0].state == "closed":
+                self._sessions.pop(identity, None)
+        return receipt
+
+    async def _archive_session(self, sid, request_id, *, reconcile=False):
+        from core.workspace_archive import archive_codex_tree, inspect_codex_archive_tree
+
+        payload = {"action": "archive_session", "payload": {"confirmed": True}}
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            found, receipt = await asyncio.to_thread(
+                self.journal.command_receipt, sid, request_id, payload
+            )
+            if found and (receipt is not None or not reconcile):
+                return receipt or {
+                    "ok": False, "uncertain": True,
+                    "error": "Archive outcome is unconfirmed; it will not be repeated",
+                }
+            if reconcile:
+                if not found:
+                    raise ValueError("No matching archive receipt exists")
+                checkpoint = await asyncio.to_thread(
+                    self.journal.archive_checkpoint, sid, request_id
+                )
+                if checkpoint is None:
+                    receipt = {
+                        "ok": False, "retryable": True,
+                        "error": "Archive did not reach its native mutation checkpoint; a new explicit attempt is available",
+                        "result": {"session_id": sid, "provider": "codex", "cwd": "", "archived": False,
+                                   "thread_ids": [sid]},
+                    }
+                    await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                    return receipt
+                try:
+                    inspected = await inspect_codex_archive_tree(
+                        sid, checkpoint["cwd"], checkpoint["targets"],
+                        family_guard=lambda threads: self._archive_family_guard(
+                            threads, {"session_id": sid, "request_id": request_id}
+                        ),
+                    )
+                    if inspected["archived"]:
+                        return await self._finish_archive(sid, request_id, inspected)
+                    receipt = {
+                        "ok": False, "retryable": True,
+                        "error": "Archive was not applied; a new explicit attempt is available",
+                        "result": {key: inspected[key] for key in (
+                            "session_id", "provider", "cwd", "archived", "thread_ids"
+                        )},
+                    }
+                    await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                    return receipt
+                except Exception as error:
+                    return {"ok": False, "uncertain": True, "error": str(error)}
+
+            if (self._work_reservations.get(sid) or self._bridge_queues.get(sid)
+                    or await asyncio.to_thread(self.journal.has_pending_work, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_clear, sid)
+                    or await asyncio.to_thread(self.journal.has_pending_archive_restore, sid)):
+                raise ValueError("Session has active or unconfirmed background work")
+            entry = self._sessions.get(sid)
+            if entry is None or entry[1] != "codex":
+                raise ValueError("Explicitly open this Codex session before archiving")
+            owner = entry[0]
+            if owner.state not in {"ready", "closed"}:
+                raise ValueError("Finish the current Codex turn before archiving")
+            if owner.state == "closed" and not owner.can_retry_attachment():
+                raise ValueError("Prior runtime cleanup is unconfirmed")
+            target = {"session_id": sid, "provider": "codex", "cwd": str(owner.cwd)}
+            if not Path(target["cwd"]).is_absolute():
+                raise ValueError("Exact active Codex project is required")
+            if self.register_fork is None:
+                raise ValueError("Native session catalog is unavailable")
+            if owner.state == "ready":
+                if (getattr(owner, "active_turn", None) or getattr(owner, "questions", {})
+                        or getattr(owner, "elicitations", {}) or getattr(owner, "active_agent_threads", set())):
+                    raise ValueError("Finish active Codex work before archiving")
+                tasks = await owner.list_background_tasks()
+                native_tasks = getattr(getattr(owner, "events", None), "tasks", {})
+                if (not isinstance(tasks, dict) or tasks.get("data") != []
+                        or any(task.get("status") not in {"completed", "failed", "stopped"}
+                               for task in native_tasks.values())):
+                    raise ValueError("Stop background tasks before archiving")
+            claimed, prior = await asyncio.to_thread(self.journal.claim_archive, sid, request_id)
+            if not claimed:
+                return prior or {
+                    "ok": False, "uncertain": True,
+                    "error": "Archive outcome is unconfirmed; it will not be repeated",
+                }
+            try:
+                if owner.state != "closed":
+                    await owner.close()
+                if not owner.can_retry_attachment():
+                    raise RuntimeError("Runtime cleanup is unconfirmed")
+                archived = await archive_codex_tree(
+                    sid, target["cwd"], confirmed=True,
+                    family_guard=lambda threads: self._archive_family_guard(
+                        threads, {"session_id": sid, "request_id": request_id}
+                    ),
+                    checkpoint=lambda value: self.journal.prepare_archive(sid, request_id, value),
+                )
+                return await self._finish_archive(sid, request_id, archived)
+            except Exception as error:
+                checkpoint = await asyncio.to_thread(
+                    self.journal.archive_checkpoint, sid, request_id
+                )
+                if checkpoint is not None:
+                    return {"ok": False, "uncertain": True, "error": str(error)}
+                receipt = {"ok": False, "retryable": True, "error": str(error), "result": {
+                    "session_id": sid, "provider": "codex", "cwd": target["cwd"],
+                    "archived": False, "thread_ids": [sid],
+                }}
+                await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
+                return receipt
 
     def restore_archive(self, sid, request_id, *, confirmed=False, reconcile=False, timeout=35):
         if (type(reconcile) is not bool or confirmed is not True or not isinstance(sid, str) or str(UUID(sid)) != sid
@@ -597,6 +758,8 @@ class WorkspaceHost:
 
     async def _attach(self, sid):
         async with self._locks.setdefault(sid, asyncio.Lock()):
+            if await asyncio.to_thread(self.journal.has_pending_archive, sid):
+                raise ValueError("Archive outcome is unconfirmed; attachment is unavailable")
             if await asyncio.to_thread(self.journal.has_pending_archive_restore, sid):
                 raise ValueError('Archive restoration is unconfirmed; attachment is unavailable')
             if self._work_reservations.get(sid):
@@ -614,6 +777,10 @@ class WorkspaceHost:
             target = await asyncio.to_thread(self.resolve, sid)
             if target.get("session_id") != sid:
                 raise ValueError("Resolver returned a different session")
+            if target.get("archived") is True:
+                raise ValueError("Restore this archived conversation before opening it")
+            if target.get("archived") not in {None, False}:
+                raise ValueError("Resolver returned an invalid archive state")
             factory = self.factories.get(target.get("provider"))
             if factory is None:
                 raise ValueError("This provider has no verified structured adapter yet")

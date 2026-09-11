@@ -74,6 +74,44 @@ test('archive reconciliation only checks an existing request and releases confir
   conn.dispose();
 });
 
+test('conversation archive persists one request and reconciles without replay after a lost response',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},
+    fetcher:async(url,request)=>{
+      calls.push([url,JSON.parse(request.body)]);
+      if(calls.length===1)throw Error('lost archive response');
+      return response({ok:true,result:{session_id:'exact',archived:true,thread_count:2}});
+    }};
+  let conn=new WorkspaceConnection(options);
+  await assert.rejects(conn.controls().archiveSession(),/lost archive response/);
+  const pending=conn.controls().pendingArchive();
+  assert.match(pending,/^[a-f0-9-]{36}$/);
+  conn.dispose();conn=new WorkspaceConnection(options);
+  assert.equal(conn.controls().pendingArchive(),pending);
+  assert.deepEqual(await conn.controls().archiveSession({reconcile:true,requestId:pending}),
+    {session_id:'exact',archived:true,thread_count:2});
+  assert.equal(calls[0][0],'/api/workspace/exact/archive-session');
+  assert.equal(calls[1][0],'/api/workspace/exact/reconcile-archive-session');
+  assert.deepEqual(calls[0][1],calls[1][1]);
+  assert.equal(conn.controls().pendingArchive(),null);
+  conn.dispose();
+});
+
+test('confirmed unapplied archive clears its receipt but ambiguous identity remains uncertain',async()=>{
+  for(const [result,cleared,uncertain] of [
+    [{ok:false,retryable:true,error:'not applied',result:{session_id:'exact',archived:false}},true,false],
+    [{ok:true,result:{session_id:'foreign',archived:true,thread_count:1}},false,true],
+    [null,false,true],
+  ]){
+    const saved=storage();
+    const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},
+      fetcher:async()=>response(result)});
+    await assert.rejects(conn.controls().archiveSession(),error=>error.archiveUncertain===uncertain);
+    assert.equal(conn.controls().pendingArchive()===null,cleared);
+    conn.dispose();
+  }
+});
+
 test('failed attach exposes recovery only for the exact requested session',async()=>{
   for(const sid of ['exact','foreign']){
     const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),receive:()=>{},error:()=>{},
