@@ -102,6 +102,7 @@
 .aw-agent-composer .aw-attachment span{min-width:0}
 .aw-agent-composer .aw-attachment button{flex-shrink:0}
 .aw-review-dialog h2{font-size:16px;margin:0 0 16px}.aw-review-dialog label{display:block;margin-bottom:14px}.aw-review-dialog label[hidden]{display:none}.aw-review-dialog select,.aw-review-dialog textarea{box-sizing:border-box;display:block;width:100%;margin-top:6px;background:#000;color:inherit;border:1px solid #63455d;padding:8px}.aw-review-dialog button{margin-right:8px}
+.aw-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.aw-dialog-header h3{margin:0;font-size:14px}.aw-review-dialog .aw-dialog-header button{margin:0;width:32px;height:32px;padding:6px;flex-shrink:0}
 .aw-tasks-dialog{max-height:80vh;overflow:auto}.aw-tasks-dialog h3{font-size:16px;margin:0 0 12px}.aw-background-task{border-top:1px solid #392b36;padding:12px 0;display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:8px}.aw-background-task pre{grid-column:1/-1;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:inherit}.aw-background-task small{overflow-wrap:anywhere;color:#b7a6b4}.aw-tasks-dialog svg{width:16px;height:16px}
 .aw-message h1,.aw-message h2,.aw-message h3{font-size:15px;line-height:1.5;margin:16px 0 8px}
 .aw-message pre{position:relative;white-space:pre;overflow:auto;background:#151217;padding:14px 42px 14px 12px;border:1px solid #302730;border-radius:4px}

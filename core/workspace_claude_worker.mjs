@@ -23,7 +23,7 @@ async function reap() {
   } finally {clearTimeout(terminate);clearTimeout(kill);}
 }
 const channel=new ClaudeSdkChannel({write,
-  sessionOptions:{sdk,sessionId,cwd,
+  sessionOptions:{sdk,sessionId,cwd,sessionDirectory:process.env.SERENA_CLAUDE_SESSION_DIRECTORY || cwd,
     options:{pathToClaudeCodeExecutable:resolve(cliPath),env:{...process.env,ELECTRON_RUN_AS_NODE:''},
       settingSources:['user','project','local'],systemPrompt:{type:'preset',preset:'claude_code'},
       includePartialMessages:true},

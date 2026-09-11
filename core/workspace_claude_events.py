@@ -43,6 +43,7 @@ class ClaudeEvents:
         self.message_ids = {}
         self.tools = {}
         self.streaming_tools = {}
+        self.streaming_thinking = {}
         self.capabilities = {}
         self.tasks = {}
         self.last_root_text = None
@@ -68,7 +69,7 @@ class ClaudeEvents:
             item = {"id": f"{message_id}:{index}", "providerOriginal": deepcopy(block)}
             # asdict(SDK content blocks) does not carry a wire 'type'.
             kind = block.get("type") or (
-                "text"
+                "thinking" if "thinking" in block else "text"
                 if "text" in block
                 else "tool_result"
                 if "tool_use_id" in block
@@ -78,6 +79,8 @@ class ClaudeEvents:
             )
             if kind == "text":
                 item.update(type="agentMessage", text=block.get("text", ""))
+            elif kind == "thinking":
+                item.update(type="claudeThinking", text=block.get("thinking", ""))
             elif kind == "tool_use":
                 item.update(
                     id=block["id"],
@@ -202,8 +205,22 @@ class ClaudeEvents:
             if event["type"] == "message_start":
                 self.message_ids[parent] = event["message"]["id"]
                 self.streaming_tools = {key: value for key, value in self.streaming_tools.items() if key[0] != parent}
+                self.streaming_thinking = {key: value for key, value in self.streaming_thinking.items() if key[0] != parent}
             message_id = self.message_ids.get(parent)
             key = (parent, event.get("index"))
+            if message_id and event["type"] == "content_block_start" and event.get("content_block", {}).get("type") == "thinking":
+                item = {"id": f"{message_id}:{event['index']}", "type": "claudeThinking",
+                        "text": event["content_block"].get("thinking", ""), **origin}
+                self.streaming_thinking[key] = item
+                events.append(self.event("item/started", {"turnId": self.turn, "item": deepcopy(item)}))
+            elif key in self.streaming_thinking:
+                item = self.streaming_thinking[key]
+                if event["type"] == "content_block_delta" and event.get("delta", {}).get("type") == "thinking_delta":
+                    item["text"] += event["delta"].get("thinking", "")
+                    events.append(self.event("item/started", {"turnId": self.turn, "item": deepcopy(item)}))
+                elif event["type"] == "content_block_stop":
+                    self.streaming_thinking.pop(key)
+                    events.append(self.event("item/completed", {"turnId": self.turn, "item": deepcopy(item)}))
             if message_id and event["type"] == "content_block_start" and event.get("content_block", {}).get("type") == "tool_use":
                 block = event["content_block"]
                 item = self.blocks([block], message_id)[0]

@@ -1886,7 +1886,8 @@ export class WorkspacePane {
       catch(error){if(dialog.open)status.textContent=error.message;}
       finally{busy=false;apply.disabled=false;select.disabled=false;}
     });
-    form.append(label,confirmLabel,apply);dialog.append(node('h3','','Permission mode'),close,status,form);
+    const header=node('header','aw-dialog-header');header.append(node('h3','','Permission mode'),close);
+    form.append(label,confirmLabel,apply);dialog.append(header,status,form);
     dialog.addEventListener('close',()=>dialog.remove());this.permissionsDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();
     try{
       const result=await this.controls.permissions();if(!dialog.open || this.disposed)return;
@@ -2722,6 +2723,10 @@ export class WorkspacePane {
         block.append(copy);
       }
       entry.append(message);
+    } else if (item.type === 'claudeThinking') {
+      const detail=node('details','aw-tool');detail.open=true;
+      detail.append(node('summary','','Thinking'),node('pre','aw-thinking',item.text || ''));
+      entry.append(detail);
     } else if (item.type === 'acpPlan') {
       entry.append(node('div','aw-author','Plan'));
       const list=node('ol','aw-plan');list.setAttribute('aria-label','Agent plan');
@@ -2736,6 +2741,7 @@ export class WorkspacePane {
       entry.append(list);
     } else if (['claudeToolCall','acpToolCall'].includes(item.type)) {
       const detail=node('details','aw-tool');
+      detail.open=item.type==='claudeToolCall';
       const summary=node('summary');summary.append(node('span','',item.input?.description || item.tool || 'Tool'));
       if(item.status)summary.append(node('small','',item.status));detail.append(summary);
       const input=item.input || {};
@@ -3061,7 +3067,7 @@ export class WorkspacePane {
         const element = this.renderItem(item);
         if (prior) {
           const details=element.querySelectorAll('details');
-          prior.element.querySelectorAll('details').forEach((old,index)=>{if(old.open && details[index])details[index].open=true;});
+          prior.element.querySelectorAll('details').forEach((old,index)=>{if(details[index])details[index].open=old.open;});
           this.releaseHistoryImages(prior.element);
           prior.element.replaceWith(element);
         } else this.log.append(element);

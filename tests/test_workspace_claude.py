@@ -793,6 +793,26 @@ def test_exact_resume_configuration_and_billing_overlay(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_interrupt_denies_pending_requests_without_claiming_turn_finished(tmp_path):
+    async def run():
+        owner, _ = make(tmp_path)
+        try:
+            await owner.open()
+            await owner.submit([{"type": "text", "text": "hello"}])
+            permission = asyncio.get_running_loop().create_future()
+            elicitation = asyncio.get_running_loop().create_future()
+            owner.questions["pending"] = permission
+            owner.elicitations["mcp"] = (elicitation, {})
+            await owner.interrupt()
+            assert permission.result().behavior == "deny"
+            assert permission.result().interrupt is True
+            assert elicitation.result() == {"action": "cancel"}
+            assert owner.state == "running"
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("native_id", [None, "different"])
 def test_missing_or_mismatched_native_session_never_launches(tmp_path, native_id):
     async def run():

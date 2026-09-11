@@ -13,11 +13,12 @@ async function sameProject(candidate, owned) {
 }
 
 export class ClaudeSdkSession {
-  constructor({sdk, sessionId, cwd, options, spawnOwned, publish, request}) {
+  constructor({sdk, sessionId, cwd, sessionDirectory=cwd, options, spawnOwned, publish, request}) {
     if (!sessionId || typeof spawnOwned !== 'function' || typeof request !== 'function') {
       throw new Error('Exact session, owned spawn and interactive request handler required');
     }
     Object.assign(this, {sdk, sessionId, cwd:resolve(cwd), options, spawnOwned, publish, request});
+    this.sessionDirectory=resolve(sessionDirectory);
     this.state='closed';
     this.pending=[];
     this.started=false;
@@ -43,9 +44,9 @@ export class ClaudeSdkSession {
     this.started=true;
     this.state='opening';
     try {
-      const info=await this.sdk.getSessionInfo(this.sessionId,{dir:this.cwd});
+      const info=await this.sdk.getSessionInfo(this.sessionId,{dir:this.sessionDirectory});
       if (create && info) throw new Error('Creation identity already exists; refusing overwrite');
-      if (!create && (!info || info.sessionId!==this.sessionId || (info.cwd && !await sameProject(info.cwd,this.cwd)))) {
+      if (!create && (!info || info.sessionId!==this.sessionId || (info.cwd && !await sameProject(info.cwd,this.sessionDirectory)))) {
         throw new Error('Exact persisted session is unavailable in this project');
       }
       if (this.state!=='opening') throw new Error('Session opening was cancelled');
