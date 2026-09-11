@@ -1836,7 +1836,7 @@ export class WorkspacePane {
       await this.copyLatestOutput();return;
     }
     if(this.provider==='Codex' && /^\/[A-Za-z]/.test(text.trim()) && this.selectedApps.length){this.error(Error('Remove selected apps before running a session command'));return;}
-    const readOnlyCommand=this.provider==='Codex' && /^\/(agent|subagents|goal|new|ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
+    const readOnlyCommand=this.provider==='Codex' && /^\/(status|usage|agent|subagents|goal|new|ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){

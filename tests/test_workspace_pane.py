@@ -62,6 +62,41 @@ def test_session_actions_keep_headers_aligned_and_support_keyboard(pane, width):
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+@pytest.mark.parametrize('state', ['unavailable', 'reconciling'])
+def test_codex_readonly_commands_work_without_enabling_message_submission(pane, width, state):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""state=>{
+      controls.accountTokenUsage=async()=>{calls.push('usage');throw Error('Session unavailable');};
+      const Pane=pane.constructor;pane.dispose();window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});
+      pane.conversation.status=state;pane.render();
+    }""", state)
+    composer = page.locator('#left textarea')
+    send = page.locator('#left').get_by_role('button', name='Send message', exact=True)
+    assert send.is_disabled()
+    composer.fill('/status')
+    composer.press('Enter')
+    dialog = page.get_by_role('dialog', name='Session status', exact=True)
+    dialog.wait_for()
+    assert page.evaluate('calls') == []
+    page.keyboard.press('Escape')
+    assert composer.input_value() == '/status'
+    composer.fill('/usage')
+    composer.press('Enter')
+    dialog = page.get_by_role('dialog', name='Account token usage', exact=True)
+    dialog.get_by_text('Token usage unavailable: Session unavailable', exact=True).wait_for()
+    assert page.evaluate('calls') == ['usage']
+    page.keyboard.press('Escape')
+    assert composer.input_value() == '/usage' and send.is_disabled()
+    composer.fill('do not submit while unavailable')
+    composer.press('Enter')
+    assert page.evaluate('calls') == ['usage']
+    assert composer.input_value() == 'do not submit while unavailable'
+    assert page.evaluate('pane.conversation.status') == state
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 @pytest.mark.parametrize('command', ['exit', 'quit'])
 def test_codex_exit_requires_confirmation_and_preserves_failed_draft(pane, width, command):
     page, errors = pane

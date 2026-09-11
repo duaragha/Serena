@@ -3,6 +3,30 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Read-Only Inspection During Recovery (2026-09-10)
+
+`/status` and `/usage` no longer silently stop at the disabled message-send gate
+during reconnection or history reconciliation. They open their existing read-only
+dialogs; status can display local state before attachment, and unavailable native
+usage remains an explicit error. This does not enable normal message submission,
+resume a session, answer approvals or change its runtime state. Inspection during
+a normal running turn was already supported; this fixes the disconnected states.
+
+```sh
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_codex_readonly_commands_work_without_enabling_message_submission tests/test_workspace_pane.py::test_native_token_usage_has_explicit_refresh_and_preserves_draft tests/test_workspace_pane.py::test_codex_status_is_read_only_updates_and_does_not_invent_values -q --tb=short
+env SERENA_EVIDENCE_KIND=live SERENA_PROOF_BROWSER_EXECUTABLE=/usr/bin/microsoft-edge /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-codex-history.py
+/home/raghav/Documents/Projects/serena/.venv/bin/ruff check tests/test_workspace_pane.py scripts/verify-workspace-codex-history.py
+node --check ui/static/workspace-pane.mjs
+```
+
+Each command ran separately, exit 0. Tests: 8 passed in 14.79s, including 390px
+and 1600px unavailable/reconciling states, preserved drafts and disabled normal
+submission. Native browser proof confirmed `/status` before attachment with zero
+owners and no submitted draft, then passed existing history, command output,
+exit/clear and same-session restore scenarios on desktop/mobile. Visibility
+refresh: 117ms/80ms. Native processes reaped, temporary project untouched, no
+credentials/inference. Ruff passed; Node no syntax errors. No new release claim.
+
 ## Native Archive Contract Research (2026-09-10)
 
 Archive is still unimplemented in the rich pane. The disposable native probe

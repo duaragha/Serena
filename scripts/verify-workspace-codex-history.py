@@ -83,6 +83,14 @@ def browser_roundtrip(base, sid, owners, prefix, verify_forks=False, verify_disc
                     page.goto(f"{base}/workspace/{sid}")
                     if pid is None:
                         assert not owners(), "Page load launched an owner"
+                        composer = page.get_by_role('textbox', name='Message Codex', exact=True)
+                        composer.fill('/status')
+                        composer.press('Enter')
+                        page.get_by_role('dialog', name='Session status', exact=True).wait_for()
+                        assert not owners(), "Read-only status launched an owner"
+                        page.keyboard.press('Escape')
+                        assert composer.input_value() == '/status'
+                        print(f'PASS: {prefix} disconnected /status opened without launching a writer or submitting its draft')
                         page.get_by_role("button", name="Resume session", exact=True).click()
                     else:
                         expect(page.locator('#workspace-connect')).to_be_hidden()
