@@ -19,6 +19,7 @@ const connection = new WorkspaceConnection({
   },
   error: error => connectionFailed(error),
   runtime: runtime => pane.setSleeping(runtime?.sleeping === true),
+  replaying: active => pane.setReplaying(active),
 });
 const controls = connection.controls();
 if(parent!==window)controls.newConversation=title=>{

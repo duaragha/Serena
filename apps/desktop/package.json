@@ -1,6 +1,6 @@
 {
   "name": "serena-desktop",
-  "version": "0.2.60",
+  "version": "0.2.61",
   "description": "Serena desktop shell",
   "main": "main.js",
   "author": "Raghav",

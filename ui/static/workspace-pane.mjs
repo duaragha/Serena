@@ -2356,6 +2356,17 @@ export class WorkspacePane {
     this.refreshSessionStatus?.();
   }
 
+  setReplaying(active) {
+    if (this.disposed || this.replaying === active) return;
+    this.replaying = active;
+    this.log.setAttribute('aria-busy', String(active));
+    if (this.frame) { cancelAnimationFrame(this.frame); this.frame = 0; }
+    if (!active) {
+      this.render();
+      this.log.scrollTo({top:this.log.scrollHeight, behavior:'instant'});
+    }
+  }
+
   receive(envelope) {
     if (this.disposed) return false;
     const previousError=this.conversation.error;
@@ -2376,6 +2387,7 @@ export class WorkspacePane {
     if(envelope.event?.method==='account/updated')this.refreshAccount?.();
     if(envelope.event?.method==='workspace/agentEvent')this.notifyAgentChange?.(envelope.event.params);
     if(envelope.event?.method==='workspace/importProgress')this.refreshImport?.(envelope.event.params);
+    if(this.replaying) return true;
     if(older){
       if(this.frame){cancelAnimationFrame(this.frame);this.frame=0;}
       const count=[...this.conversation.turns.values()].reduce((n,t)=>n+t.items.size,0);
@@ -3079,6 +3091,7 @@ export class WorkspacePane {
   }
 
   render() {
+    if (this.replaying) return;
     this.copyOutputButton.disabled = this.conversation.copyUnavailableAfterRevert;
     this.rewindButton.disabled = !['ready','completed','interrupted','failed'].includes(this.conversation.status) || !this.conversation.turns.size;
     if (this.disposed) return;

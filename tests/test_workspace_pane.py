@@ -10,6 +10,40 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_initial_replay_renders_once_at_bottom_then_preserves_reader_scroll(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("pane.setReplaying(true)")
+    before = page.locator('#left .aw-item').count()
+    for batch in range(3):
+        page.evaluate("""batch=>{
+          for(let i=0;i<10;i++){
+            const id=`saved-${batch}-${i}`;
+            emit({method:'turn/started',params:{turn:{id,status:'inProgress'}}});
+            emit({method:'item/completed',params:{turnId:id,item:{id,type:'agentMessage',text:('Saved response '+id+' ').repeat(30)}}});
+            emit({method:'turn/completed',params:{turn:{id,status:'completed'}}});
+          }
+          pane.render();
+        }""", batch)
+        page.evaluate('()=>new Promise(requestAnimationFrame)')
+        assert page.locator('#left .aw-item').count() == before
+    page.evaluate('pane.setReplaying(false)')
+    assert page.evaluate('pane.log.scrollHeight>pane.log.clientHeight')
+    assert page.evaluate('Math.abs(pane.log.scrollHeight-pane.log.scrollTop-pane.log.clientHeight)<2')
+    page.screenshot(path=str(tmp_path / f'resume-bottom-{width}.png'))
+    page.evaluate('pane.log.scrollTop=300')
+    page.evaluate('()=>new Promise(requestAnimationFrame)')
+    before = page.evaluate('pane.log.scrollTop')
+    page.evaluate("""()=>{
+      emit({method:'turn/started',params:{turn:{id:'live',status:'inProgress'}}});
+      emit({method:'item/agentMessage/delta',params:{turnId:'live',itemId:'live-text',delta:'New live output'}});
+      pane.render();
+    }""")
+    assert abs(page.evaluate('pane.log.scrollTop') - before) < 2
+    assert not errors
+
+
 @pytest.mark.parametrize('width', [390,1600])
 def test_active_turn_elapsed_timer_ticks_and_stops(pane, width, tmp_path):
     page, errors = pane
