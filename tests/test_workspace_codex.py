@@ -934,6 +934,517 @@ def test_skill_configuration_is_exact_explicit_and_uses_effective_native_state(t
     asyncio.run(run())
 
 
+def test_config_diagnostics_are_sanitized_read_only_and_project_scoped(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        config_path = str(tmp_path / "config.toml")
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "config/read":
+                assert params == {"includeLayers": True, "cwd": str(tmp_path)}
+                return {
+                    "config": {
+                        "model": "gpt-proof",
+                        "features": {"memories": True},
+                        "mcp_servers": {
+                            "private": {"env": {"TOKEN": "never-return-this"}}
+                        },
+                    },
+                    "origins": {},
+                    "layers": [
+                        {
+                            "name": {"type": "user", "file": config_path},
+                            "version": "version-one",
+                            "config": {"secret": "never-return-this"},
+                        },
+                        {
+                            "name": {
+                                "type": "project",
+                                "dotCodexFolder": str(tmp_path / ".codex"),
+                            },
+                            "version": "version-two",
+                            "config": {},
+                            "disabledReason": "managed",
+                        },
+                    ],
+                }
+            assert method == "configRequirements/read" and params is None
+            return {
+                "requirements": {
+                    "allowedSandboxModes": ["workspace-write"],
+                    "featureRequirements": {"memories": True},
+                    "network": {
+                        "enabled": True,
+                        "domains": {"private.example": "allow"},
+                        "unixSockets": {"/private/socket": "deny"},
+                    },
+                    "feedback": {"enabled": False},
+                }
+            }
+
+        rpc.request = request
+        try:
+            result = await client.config_diagnostics()
+            assert result == {
+                "layers": [
+                    {"type": "user", "enabled": True, "file": config_path},
+                    {
+                        "type": "project",
+                        "enabled": False,
+                        "dotCodexFolder": str(tmp_path / ".codex"),
+                        "disabledReason": "managed",
+                    },
+                ],
+                "effective": {
+                    "model": "gpt-proof",
+                    "features": {"memories": True},
+                    "mcpServerCount": 1,
+                },
+                "requirements": {
+                    "configured": True,
+                    "allowedSandboxModes": ["workspace-write"],
+                    "featureRequirements": {"memories": True},
+                    "network": {
+                        "enabled": True,
+                        "domainRuleCount": 1,
+                        "unixSocketRuleCount": 1,
+                    },
+                    "feedbackEnabled": False,
+                },
+                "settingsWritable": True,
+            }
+            assert "never-return-this" not in str(result)
+            assert "private.example" not in str(result)
+            assert all(method != "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_experimental_features_paginate_and_change_exact_versioned_setting(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        config_path = str(tmp_path / "config.toml")
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "experimentalFeature/list":
+                assert params["threadId"] == client.session_id
+                assert params["limit"] == 100
+                if params.get("cursor") is None:
+                    return {
+                        "data": [
+                            {
+                                "name": "proof",
+                                "displayName": "Proof feature",
+                                "description": "A test feature",
+                                "enabled": True,
+                                "defaultEnabled": False,
+                                "stage": "beta",
+                            }
+                        ],
+                        "nextCursor": "next",
+                    }
+                assert params["cursor"] == "next"
+                return {
+                    "data": [
+                        {
+                            "name": "stable_feature",
+                            "enabled": True,
+                            "defaultEnabled": True,
+                            "stage": "stable",
+                        }
+                    ],
+                    "nextCursor": None,
+                }
+            if method == "config/read":
+                return {
+                    "config": {"features": {"proof": True}},
+                    "origins": {},
+                    "layers": [
+                        {
+                            "name": {"type": "user", "file": config_path},
+                            "version": "version-one",
+                            "config": {},
+                        }
+                    ],
+                }
+            if method == "config/value/write":
+                assert params == {
+                    "keyPath": "features.proof",
+                    "value": False,
+                    "mergeStrategy": "replace",
+                    "filePath": config_path,
+                    "expectedVersion": "version-one",
+                }
+                return {
+                    "filePath": config_path,
+                    "status": "ok",
+                    "version": "version-two",
+                }
+            assert method == "experimentalFeature/enablement/set"
+            assert params == {"enablement": {"proof": False}}
+            return {"enablement": {"proof": False}}
+
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match="confirmed"):
+                await client.set_experimental_feature("proof", False, False)
+            assert calls == []
+            result = await client.set_experimental_feature("proof", False, True)
+            assert result == {
+                "name": "proof",
+                "enabled": False,
+                "saved": True,
+                "applied": True,
+                "restartRequired": False,
+                "notice": "",
+            }
+            assert [
+                params.get("cursor") for method, params in calls
+                if method == "experimentalFeature/list"
+            ] == [None, "next"]
+            assert not any(method == "turn/start" for method, _ in calls)
+            before = len(calls)
+            client.state = "running"
+            with pytest.raises(WorkspaceRpcError, match="Finish"):
+                await client.set_experimental_feature("proof", True, True)
+            assert len(calls) == before
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_memory_controls_separate_chat_mode_from_global_defaults(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        config_path = str(tmp_path / "config.toml")
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "config/read":
+                return {
+                    "config": {
+                        "features": {"memories": True},
+                        "memories": {
+                            "use_memories": True,
+                            "generate_memories": False,
+                        },
+                    },
+                    "origins": {},
+                    "layers": [
+                        {
+                            "name": {"type": "user", "file": config_path},
+                            "version": "version-one",
+                            "config": {},
+                        }
+                    ],
+                }
+            if method == "thread/memoryMode/set":
+                assert params == {"threadId": client.session_id, "mode": "disabled"}
+                return {}
+            assert method == "config/batchWrite"
+            assert params == {
+                "edits": [
+                    {
+                        "keyPath": "features.memories",
+                        "value": True,
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "memories.use_memories",
+                        "value": False,
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "memories.generate_memories",
+                        "value": True,
+                        "mergeStrategy": "replace",
+                    },
+                ],
+                "filePath": config_path,
+                "expectedVersion": "version-one",
+                "reloadUserConfig": True,
+            }
+            return {
+                "filePath": config_path,
+                "status": "ok",
+                "version": "version-two",
+            }
+
+        rpc.request = request
+        try:
+            assert await client.memory_settings() == {
+                "featureEnabled": True,
+                "useMemories": True,
+                "generateMemories": False,
+                "currentChatMode": None,
+                "settingsWritable": True,
+            }
+            with pytest.raises(ValueError, match="confirmed"):
+                await client.set_memory_mode("disabled", False)
+            assert (await client.set_memory_mode("disabled", True))["currentChatMode"] == "disabled"
+            assert events[-1]["params"]["memoryMode"] == "disabled"
+            with pytest.raises(ValueError, match="confirmed"):
+                await client.set_memory_defaults(False, True, False)
+            assert await client.set_memory_defaults(False, True, True) == {
+                "featureEnabled": True,
+                "useMemories": False,
+                "generateMemories": True,
+                "notice": "",
+            }
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_guardian_denial_is_exact_explicit_and_one_shot(tmp_path):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        event = {
+            "method": "item/autoApprovalReview/completed",
+            "params": {
+                "threadId": client.session_id,
+                "turnId": "turn-one",
+                "targetItemId": "item-one",
+                "reviewId": "review-one",
+                "action": {
+                    "type": "command",
+                    "command": "rm proof.txt",
+                    "cwd": str(tmp_path),
+                    "source": "agent",
+                },
+                "review": {
+                    "status": "denied",
+                    "riskLevel": "high",
+                    "rationale": "Needs explicit approval",
+                },
+                "decisionSource": "agent",
+                "startedAtMs": 1,
+                "completedAtMs": 2,
+            },
+        }
+
+        async def request(method, params):
+            calls.append((method, params))
+            assert method == "thread/approveGuardianDeniedAction"
+            assert params == {"threadId": client.session_id, "event": event["params"]}
+            return {}
+
+        rpc.request = request
+        try:
+            await rpc.events.put(event)
+            async with asyncio.timeout(2):
+                while client.guardian_denial()["denial"] is None:
+                    await asyncio.sleep(0.01)
+            assert client.guardian_denial() == {
+                "denial": {
+                    "reviewId": "review-one",
+                    "turnId": "turn-one",
+                    "actionType": "command",
+                    "summary": "rm proof.txt",
+                    "riskLevel": "high",
+                    "rationale": "Needs explicit approval",
+                }
+            }
+            for review_id, confirmed in (("other", True), ("review-one", False)):
+                with pytest.raises(ValueError, match="exact latest"):
+                    await client.approve_guardian_denial(review_id, confirmed)
+            assert calls == []
+            assert await client.approve_guardian_denial("review-one", True) == {
+                "approved": True,
+                "reviewId": "review-one",
+            }
+            with pytest.raises(ValueError, match="exact latest"):
+                await client.approve_guardian_denial("review-one", True)
+            assert len(calls) == 1
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("policy", ["enabled", "disabled", "malformed"])
+def test_feedback_is_confirmed_policy_checked_and_bound_to_exact_thread(tmp_path, policy):
+    async def run():
+        client, rpc, _ = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "configRequirements/read":
+                feedback = {"enabled": policy == "enabled"}
+                return {"requirements": {"feedback": "bad" if policy == "malformed" else feedback}}
+            assert method == "feedback/upload"
+            assert params == {
+                "classification": "bug",
+                "reason": "broken behavior",
+                "includeLogs": False,
+                "extraLogFiles": None,
+                "tags": {"client": "serena-workspace"},
+                "threadId": client.session_id,
+            }
+            return {"threadId": client.session_id}
+
+        rpc.request = request
+        try:
+            with pytest.raises(ValueError, match="confirmed"):
+                await client.submit_feedback("bug", "broken behavior", False, False)
+            assert calls == []
+            if policy == "enabled":
+                assert await client.submit_feedback(
+                    "bug", " broken behavior ", False, True
+                ) == {"submitted": True, "threadId": client.session_id}
+                assert [method for method, _ in calls] == [
+                    "configRequirements/read",
+                    "feedback/upload",
+                ]
+            else:
+                with pytest.raises((ValueError, WorkspaceRpcError)):
+                    await client.submit_feedback("bug", "broken behavior", False, True)
+                assert [method for method, _ in calls] == ["configRequirements/read"]
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_external_import_uses_only_confirmed_detected_items_and_sanitizes_progress(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        await client.open(binary="codex")
+        calls = []
+        raw_item = {
+            "itemType": "SESSIONS",
+            "description": "One compatible session",
+            "cwd": str(tmp_path),
+            "details": {
+                "sessions": [
+                    {
+                        "cwd": str(tmp_path),
+                        "path": "/private/transcript.jsonl",
+                        "title": "Private title",
+                    }
+                ]
+            },
+        }
+
+        async def request(method, params):
+            calls.append((method, params))
+            if method == "externalAgentConfig/detect":
+                assert params == {
+                    "includeHome": True,
+                    "cwds": [str(tmp_path)],
+                    "maxSessionAgeDays": 30,
+                    "maxSessions": 50,
+                }
+                return {
+                    "items": [raw_item],
+                    "connectors": [
+                        {
+                            "name": "calendar",
+                            "sessionCount": 2,
+                            "source": "sessionToolUse",
+                        }
+                    ],
+                }
+            assert method == "externalAgentConfig/import"
+            assert params == {
+                "migrationItems": [raw_item],
+                "source": "serena-workspace",
+            }
+            return {"importId": "import-one"}
+
+        rpc.request = request
+        try:
+            detected = await client.detect_external_imports()
+            assert detected["connectors"] == [
+                {"name": "calendar", "sessionCount": 2, "source": "sessionToolUse"}
+            ]
+            assert detected["items"][0]["itemType"] == "SESSIONS"
+            assert detected["items"][0]["detailCounts"] == {"sessions": 1}
+            assert "/private/transcript.jsonl" not in str(detected)
+            candidate = detected["items"][0]["id"]
+            with pytest.raises(ValueError, match="confirm"):
+                await client.import_external_items([candidate], False)
+            assert [method for method, _ in calls] == ["externalAgentConfig/detect"]
+            assert await client.import_external_items([candidate], True) == {
+                "importId": "import-one",
+                "itemCount": 1,
+            }
+            await rpc.events.put(
+                {
+                    "method": "externalAgentConfig/import/completed",
+                    "params": {
+                        "importId": "import-one",
+                        "itemTypeResults": [
+                            {
+                                "itemType": "SESSIONS",
+                                "successes": [
+                                    {
+                                        "itemType": "SESSIONS",
+                                        "target": "/private/imported.jsonl",
+                                    }
+                                ],
+                                "failures": [
+                                    {
+                                        "itemType": "SESSIONS",
+                                        "failureStage": "write",
+                                        "message": "One item was skipped",
+                                        "source": "/private/source.jsonl",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                }
+            )
+            async with asyncio.timeout(2):
+                while not any(
+                    event["method"] == "workspace/importProgress" for event in events
+                ):
+                    await asyncio.sleep(0.01)
+            progress = next(
+                event["params"]
+                for event in events
+                if event["method"] == "workspace/importProgress"
+            )
+            assert progress == {
+                "importId": "import-one",
+                "completed": True,
+                "results": [
+                    {
+                        "itemType": "SESSIONS",
+                        "successCount": 1,
+                        "failureCount": 1,
+                        "failures": ["One item was skipped"],
+                    }
+                ],
+            }
+            assert "/private/" not in str(progress)
+            assert not any(method == "turn/start" for method, _ in calls)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
 def test_native_file_search_is_bound_to_owned_project(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)

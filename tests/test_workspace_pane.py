@@ -824,7 +824,7 @@ def test_project_diff_is_explicit_read_only_and_text_safe(pane, width):
     assert not errors
 
 
-@pytest.mark.parametrize('command', ['/plugins', '/debug-config', '/prompts:custom', '/unknown arg'])
+@pytest.mark.parametrize('command', ['/plugins', '/prompts:custom', '/unknown arg'])
 def test_unknown_codex_command_stays_in_draft_without_model_call(pane, command):
     page, errors = pane
     page.evaluate("command=>{pane.provider='Codex';pane.input.value=command;pane.render();}", command)
@@ -832,6 +832,139 @@ def test_unknown_codex_command_stays_in_draft_without_model_call(pane, command):
     assert 'nothing was sent' in page.locator('#left [role=alert]').inner_text()
     assert page.evaluate('calls') == []
     assert page.evaluate('pane.input.value') == command
+    assert not errors
+
+
+def test_codex_command_catalog_is_complete_and_terminal_boundaries_are_honest(pane):
+    page, errors = pane
+    page.evaluate("""()=>{
+      const Pane=pane.constructor;pane.dispose();window.calls=[];
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,commands:async()=>({data:[]})}});
+      pane.conversation.status='ready';pane.input.value='keep draft';pane.render();
+    }""")
+    page.locator('#left').get_by_role('button', name='Commands and skills', exact=True).click()
+    dialog=page.get_by_role('dialog',name='Commands and skills',exact=True)
+    dialog.get_by_role('button',name='/debug-config',exact=False).wait_for()
+    names=page.evaluate("Object.keys(pane.codexCommandCatalog())")
+    assert len(names) >= 50
+    for command in ['permissions','experimental','memories','approve','feedback','import','debug-config','usage','goal','plan']:
+        assert command in names
+    for command in ['plugins','ide','keymap','vim','app','side','btw','raw','statusline','title','theme','pets','pet']:
+        button=next(button for button in dialog.locator('button.aw-command').all() if button.inner_text().splitlines()[0] == f'/{command}')
+        assert button.is_disabled()
+        assert button.get_attribute('title')
+    dialog.get_by_role('button',name='Close commands').click()
+    for command in ['/plugins','/side','/theme','/pets']:
+        page.evaluate("command=>{pane.input.value=command;pane.render();}",command)
+        page.locator('#left').get_by_role('button',name='Send message',exact=True).click()
+        assert 'nothing was sent' in page.locator('#left [role=alert]').inner_text()
+    assert page.evaluate('calls') == []
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_codex_configuration_experiments_and_memories_are_native_confirmed_controls(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.evaluate("""()=>{
+      const Pane=pane.constructor;pane.dispose();window.calls=[];
+      const native={
+        configDiagnostics:async()=>{calls.push(['config']);return {layers:[{type:'user',enabled:true,file:'/home/person/.codex/config.toml'}],effective:{model:'gpt-proof',features:{memories:true},mcpServerCount:1},requirements:{configured:true,network:{enabled:true,domainRuleCount:2,unixSocketRuleCount:0}},settingsWritable:true};},
+        experimentalFeatures:async()=>{calls.push(['features']);return {settingsWritable:true,data:[{name:'proof',displayName:'Proof feature',description:'Native beta',stage:'beta',enabled:true,defaultEnabled:false}]};},
+        setExperimentalFeature:async(name,enabled)=>{calls.push(['set-feature',name,enabled]);return {name,enabled,saved:true,applied:true,notice:''};},
+        memorySettings:async()=>{calls.push(['memories']);return {featureEnabled:true,useMemories:true,generateMemories:false,currentChatMode:null,settingsWritable:true};},
+        setMemoryMode:async mode=>{calls.push(['mode',mode]);return {currentChatMode:mode};},
+        setMemoryDefaults:async(use,generate)=>{calls.push(['defaults',use,generate]);return {useMemories:use,generateMemories:generate,notice:''};},
+      };
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,...native}});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/debug-config';pane.render();
+    }""")
+    composer=page.locator('#left textarea')
+    composer.press('Enter')
+    dialog=page.get_by_role('dialog',name='Codex configuration',exact=True)
+    dialog.get_by_text('Codex user settings are writable',exact=True).wait_for()
+    assert 'gpt-proof' in dialog.inner_text() and '/home/person/.codex/config.toml' in dialog.inner_text()
+    page.keyboard.press('Escape')
+    composer.fill('/experimental')
+    composer.press('Enter')
+    dialog=page.get_by_role('dialog',name='Experimental features',exact=True)
+    dialog.get_by_text('1 native features',exact=True).wait_for()
+    toggle=dialog.get_by_role('checkbox',name='Enabled',exact=True)
+    toggle.uncheck()
+    assert dialog.get_by_role('button',name='Apply feature change').is_disabled()
+    dialog.get_by_role('checkbox',name='Confirm this feature change.').check()
+    dialog.get_by_role('button',name='Apply feature change').click()
+    dialog.get_by_text('Feature disabled',exact=True).wait_for()
+    page.keyboard.press('Escape')
+    composer.fill('/memories')
+    composer.press('Enter')
+    dialog=page.get_by_role('dialog',name='Codex memories',exact=True)
+    dialog.get_by_text('Conversation: inherited or unknown · defaults: on',exact=True).wait_for()
+    dialog.get_by_role('combobox',name='Conversation memory mode').select_option('disabled')
+    dialog.get_by_role('checkbox',name='Confirm conversation memory mode.').check()
+    dialog.get_by_role('button',name='Apply conversation mode').click()
+    dialog.get_by_text('Conversation memory mode: disabled',exact=True).wait_for()
+    dialog.get_by_role('checkbox',name='Use saved memories').uncheck()
+    dialog.get_by_role('checkbox',name='Generate memories').check()
+    dialog.get_by_role('checkbox',name='Confirm global memory defaults.').check()
+    dialog.get_by_role('button',name='Save memory defaults').click()
+    dialog.get_by_text('Global memory defaults saved',exact=True).wait_for()
+    assert page.evaluate('calls') == [['config'],['features'],['set-feature','proof',False],['memories'],['mode','disabled'],['defaults',False,True]]
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.screenshot(path=str(tmp_path/f'codex-settings-{width}.png'))
+    assert page.evaluate('pane.input.value') == '/memories'
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_codex_guardian_feedback_and_import_require_explicit_consent(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.evaluate("""()=>{
+      const Pane=pane.constructor;pane.dispose();window.calls=[];
+      const native={
+        guardianDenial:async()=>{calls.push(['denial']);return {denial:{reviewId:'review-one',turnId:'turn-one',actionType:'command',summary:'rm proof.txt',riskLevel:'high',rationale:'Needs approval'}};},
+        approveGuardianDenial:async id=>{calls.push(['approve',id]);return {approved:true,reviewId:id};},
+        submitFeedback:async(classification,reason,logs)=>{calls.push(['feedback',classification,reason,logs]);return {submitted:true};},
+        detectExternalImports:async()=>{calls.push(['detect']);return {items:[{id:'candidate-one',itemType:'SESSIONS',description:'One compatible session',scope:'/project',detailCounts:{sessions:1}}],connectors:[]};},
+        importExternalItems:async ids=>{calls.push(['import',ids]);return {importId:'import-one',itemCount:ids.length};},
+      };
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls:{...controls,...native}});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/approve';pane.render();
+    }""")
+    composer=page.locator('#left textarea')
+    composer.press('Enter')
+    dialog=page.get_by_role('dialog',name='Approve denied action',exact=True)
+    dialog.get_by_text('rm proof.txt',exact=True).wait_for()
+    assert dialog.get_by_role('button',name='Approve and retry').is_disabled()
+    dialog.get_by_role('checkbox',name='Confirm retrying this exact denied action.').check()
+    dialog.get_by_role('button',name='Approve and retry').click()
+    dialog.get_by_text('Denied action approved for one retry',exact=True).wait_for()
+    page.keyboard.press('Escape')
+    composer.fill('/feedback')
+    composer.press('Enter')
+    dialog=page.get_by_role('dialog',name='Send Codex feedback',exact=True)
+    dialog.get_by_role('textbox',name='Feedback details').fill('Exact feedback')
+    assert dialog.get_by_role('button',name='Send feedback').is_disabled()
+    dialog.get_by_role('checkbox',name='Confirm sending this feedback to OpenAI.').check()
+    dialog.get_by_role('button',name='Send feedback').click()
+    dialog.get_by_text('Feedback sent for this Codex session',exact=True).wait_for()
+    page.keyboard.press('Escape')
+    composer.fill('/import')
+    composer.press('Enter')
+    dialog=page.get_by_role('dialog',name='Import external agent settings',exact=True)
+    dialog.get_by_text('1 importable item detected',exact=True).wait_for()
+    dialog.get_by_role('checkbox',name='Import SESSIONS').check()
+    assert dialog.get_by_role('button',name='Import selected items').is_disabled()
+    dialog.get_by_role('checkbox',name='Confirm importing the selected items into Codex.').check()
+    dialog.get_by_role('button',name='Import selected items').click()
+    dialog.get_by_text('Import import-one started for 1 item',exact=True).wait_for()
+    page.evaluate("emit({method:'workspace/importProgress',params:{importId:'import-one',completed:true,results:[{itemType:'SESSIONS',successCount:1,failureCount:0,failures:[]}]}})")
+    dialog.get_by_text('Import completed',exact=True).wait_for()
+    assert page.evaluate('calls') == [['denial'],['approve','review-one'],['feedback','bug','Exact feedback',False],['detect'],['import',['candidate-one']]]
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.screenshot(path=str(tmp_path/f'codex-import-{width}.png'))
+    assert page.evaluate('pane.input.value') == '/import'
     assert not errors
 
 

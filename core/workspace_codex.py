@@ -8,6 +8,7 @@ thread when resumption fails. Raw protocol events are retained for the renderer.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,20 @@ from core.billing import strip_metered_auth_env
 from core.workspace_codex_auth import CodexLoginLease
 from core.workspace_lease import SessionLease
 from core.workspace_rpc import WorkspaceRpc, WorkspaceRpcError
+
+_FEATURE_STAGES = {"beta", "underDevelopment", "stable", "deprecated", "removed"}
+_IMPORT_ITEM_TYPES = {
+    "AGENTS_MD",
+    "CONFIG",
+    "SKILLS",
+    "PLUGINS",
+    "MCP_SERVER_CONFIG",
+    "SUBAGENTS",
+    "HOOKS",
+    "COMMANDS",
+    "MEMORY",
+    "SESSIONS",
+}
 
 
 class CodexWorkspace:
@@ -70,6 +85,8 @@ class CodexWorkspace:
         self._early_login_completions = {}
         self._account_update = None
         self._account_updated = asyncio.Event()
+        self._guardian_denial: dict | None = None
+        self._import_candidates: dict[str, dict] = {}
 
     @staticmethod
     def _safe_account_status(result):
@@ -1054,23 +1071,560 @@ class CodexWorkspace:
             await self.publish({"method": "workspace/commands", "params": deepcopy(catalog)})
             return {**catalog, "path": path, "effectiveEnabled": result["effectiveEnabled"]}
 
-    async def _mcp_config(self):
-        result = await self.rpc.request("config/read", {"includeLayers": True, "cwd": str(self.cwd)})
+    async def _config_snapshot(self):
+        result = await self.rpc.request(
+            "config/read", {"includeLayers": True, "cwd": str(self.cwd)}
+        )
         if not isinstance(result, dict) or not isinstance(result.get("config"), dict):
-            raise WorkspaceRpcError("Codex returned invalid MCP configuration")
+            raise WorkspaceRpcError("Codex returned invalid configuration")
+        layers = result.get("layers")
+        if layers is not None and (
+            not isinstance(layers, list)
+            or len(layers) > 100
+            or any(not isinstance(layer, dict) for layer in layers)
+        ):
+            raise WorkspaceRpcError("Codex returned invalid configuration layers")
+        origins = result.get("origins")
+        if origins is not None and not isinstance(origins, dict):
+            raise WorkspaceRpcError("Codex returned invalid configuration origins")
+        return result
+
+    @staticmethod
+    def _writable_user_layer(snapshot):
+        users = [
+            layer
+            for layer in snapshot.get("layers") or []
+            if isinstance(layer.get("name"), dict)
+            and layer["name"].get("type") == "user"
+            and not layer["name"].get("profile")
+        ]
+        if len(users) != 1:
+            return None
+        user = users[0]
+        source = user["name"]
+        if (
+            not isinstance(user.get("version"), str)
+            or not user["version"]
+            or not isinstance(source.get("file"), str)
+            or not Path(source["file"]).is_absolute()
+        ):
+            return None
+        return user
+
+    @staticmethod
+    def _safe_config_layer(layer):
+        source = layer.get("name")
+        if not isinstance(source, dict) or not isinstance(source.get("type"), str):
+            raise WorkspaceRpcError("Codex returned an invalid configuration layer")
+        safe = {"type": source["type"], "enabled": layer.get("disabledReason") is None}
+        for field in ("file", "dotCodexFolder", "profile", "domain", "key", "id", "name"):
+            value = source.get(field)
+            if value is not None:
+                if not isinstance(value, str) or len(value) > 8192:
+                    raise WorkspaceRpcError("Codex returned invalid configuration source metadata")
+                safe[field] = value
+        reason = layer.get("disabledReason")
+        if reason is not None:
+            if not isinstance(reason, str) or len(reason) > 8192:
+                raise WorkspaceRpcError("Codex returned an invalid disabled configuration layer")
+            safe["disabledReason"] = reason
+        return safe
+
+    async def config_diagnostics(self):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        snapshot = await self._config_snapshot()
+        requirements_result = await self.rpc.request("configRequirements/read", None)
+        if not isinstance(requirements_result, dict):
+            raise WorkspaceRpcError("Codex returned invalid configuration requirements")
+        requirements = requirements_result.get("requirements")
+        if requirements is not None and not isinstance(requirements, dict):
+            raise WorkspaceRpcError("Codex returned invalid configuration requirements")
+        config = snapshot["config"]
+        effective = {}
+        for key in (
+            "model",
+            "model_provider",
+            "model_reasoning_effort",
+            "service_tier",
+            "approval_policy",
+            "sandbox_mode",
+            "web_search",
+        ):
+            value = config.get(key)
+            if value is not None:
+                encoded = json.dumps(value, ensure_ascii=False)
+                if len(encoded) > 16384:
+                    raise WorkspaceRpcError("Codex returned oversized effective configuration")
+                effective[key] = deepcopy(value)
+        features = config.get("features")
+        if features is not None:
+            if (
+                not isinstance(features, dict)
+                or len(features) > 1000
+                or any(
+                    not isinstance(key, str) or type(value) is not bool
+                    for key, value in features.items()
+                )
+            ):
+                raise WorkspaceRpcError("Codex returned invalid feature configuration")
+            effective["features"] = dict(features)
+        servers = config.get("mcp_servers")
+        if servers is not None:
+            if not isinstance(servers, dict):
+                raise WorkspaceRpcError("Codex returned invalid MCP configuration")
+            effective["mcpServerCount"] = len(servers)
+
+        safe_requirements = {"configured": requirements is not None}
+        if requirements is not None:
+            for key in (
+                "allowedApprovalPolicies",
+                "allowedApprovalsReviewers",
+                "allowedPermissionProfiles",
+                "allowedSandboxModes",
+                "allowedWebSearchModes",
+                "allowedWindowsSandboxImplementations",
+                "allowManagedHooksOnly",
+                "featureRequirements",
+            ):
+                value = requirements.get(key)
+                if value is not None:
+                    encoded = json.dumps(value, ensure_ascii=False)
+                    if len(encoded) > 16384:
+                        raise WorkspaceRpcError("Codex returned oversized configuration requirements")
+                    safe_requirements[key] = deepcopy(value)
+            network = requirements.get("network")
+            if network is not None:
+                if not isinstance(network, dict):
+                    raise WorkspaceRpcError("Codex returned invalid network requirements")
+                domains, sockets = network.get("domains") or {}, network.get("unixSockets") or {}
+                if not isinstance(domains, dict) or not isinstance(sockets, dict):
+                    raise WorkspaceRpcError("Codex returned invalid network requirement rules")
+                safe_requirements["network"] = {
+                    "enabled": network.get("enabled"),
+                    "domainRuleCount": len(domains),
+                    "unixSocketRuleCount": len(sockets),
+                }
+            feedback = requirements.get("feedback")
+            if feedback is not None:
+                if (
+                    not isinstance(feedback, dict)
+                    or feedback.get("enabled") not in {None, True, False}
+                ):
+                    raise WorkspaceRpcError("Codex returned invalid feedback requirements")
+                safe_requirements["feedbackEnabled"] = feedback.get("enabled")
+        return {
+            "layers": [
+                self._safe_config_layer(layer) for layer in snapshot.get("layers") or []
+            ],
+            "effective": effective,
+            "requirements": safe_requirements,
+            "settingsWritable": self._writable_user_layer(snapshot) is not None,
+        }
+
+    async def experimental_features(self):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        data, names, cursors, cursor = [], set(), set(), None
+        while True:
+            params = {"threadId": self.session_id, "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            page = await self.rpc.request("experimentalFeature/list", params)
+            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+                raise WorkspaceRpcError("Codex returned an invalid feature catalog")
+            for feature in page["data"]:
+                if (
+                    not isinstance(feature, dict)
+                    or not isinstance(feature.get("name"), str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", feature["name"])
+                    or feature["name"] in names
+                    or type(feature.get("enabled")) is not bool
+                    or type(feature.get("defaultEnabled")) is not bool
+                    or feature.get("stage") not in _FEATURE_STAGES
+                ):
+                    raise WorkspaceRpcError("Codex returned an invalid experimental feature")
+                item = {
+                    key: feature[key]
+                    for key in ("name", "enabled", "defaultEnabled", "stage")
+                }
+                for key in ("displayName", "description", "announcement"):
+                    value = feature.get(key)
+                    if value is not None:
+                        if not isinstance(value, str) or len(value) > 8192:
+                            raise WorkspaceRpcError(
+                                "Codex returned invalid experimental feature text"
+                            )
+                        item[key] = value
+                names.add(feature["name"])
+                data.append(item)
+            cursor = page.get("nextCursor")
+            if not cursor:
+                break
+            if not isinstance(cursor, str) or cursor in cursors or len(cursors) >= 100:
+                raise WorkspaceRpcError("Feature catalog pagination did not advance")
+            cursors.add(cursor)
+        snapshot = await self._config_snapshot()
+        return {
+            "data": data,
+            "settingsWritable": self._writable_user_layer(snapshot) is not None,
+        }
+
+    async def set_experimental_feature(self, name, enabled, confirmed):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Finish current Codex work before changing features")
+            if (
+                not isinstance(name, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name)
+                or type(enabled) is not bool
+                or confirmed is not True
+            ):
+                raise ValueError("An exact confirmed experimental feature change is required")
+            catalog = await self.experimental_features()
+            feature = next((item for item in catalog["data"] if item["name"] == name), None)
+            if feature is None or feature["stage"] == "removed":
+                raise ValueError("Feature is unavailable in this Codex version")
+            snapshot = await self._config_snapshot()
+            user = self._writable_user_layer(snapshot)
+            if user is None:
+                raise ValueError("Codex user configuration is not safely writable")
+            if self.state != "ready" or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Session changed during feature lookup")
+            written = await self.rpc.request(
+                "config/value/write",
+                {
+                    "keyPath": f"features.{name}",
+                    "value": enabled,
+                    "mergeStrategy": "replace",
+                    "filePath": user["name"]["file"],
+                    "expectedVersion": user["version"],
+                },
+            )
+            if (
+                not isinstance(written, dict)
+                or written.get("status") not in {"ok", "okOverridden"}
+            ):
+                raise WorkspaceRpcError("Feature setting was not confirmed on disk")
+            applied, runtime_error = True, ""
+            try:
+                runtime = await self.rpc.request(
+                    "experimentalFeature/enablement/set", {"enablement": {name: enabled}}
+                )
+                if not isinstance(runtime, dict) or runtime.get("enablement") != {
+                    name: enabled
+                }:
+                    raise WorkspaceRpcError("Codex did not confirm runtime feature enablement")
+            except Exception as error:
+                applied, runtime_error = False, str(error)
+            notice = ""
+            if written["status"] == "okOverridden":
+                notice = "Saved, but another configuration layer overrides this feature."
+            elif not applied:
+                notice = f"Saved for restart; this process could not apply it: {runtime_error}"
+            return {
+                "name": name,
+                "enabled": enabled,
+                "saved": True,
+                "applied": applied,
+                "restartRequired": not applied,
+                "notice": notice,
+            }
+
+    async def memory_settings(self):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        snapshot = await self._config_snapshot()
+        config = snapshot["config"]
+        features, memories = config.get("features") or {}, config.get("memories") or {}
+        if not isinstance(features, dict) or not isinstance(memories, dict):
+            raise WorkspaceRpcError("Codex returned invalid memory settings")
+        values = {
+            "featureEnabled": features.get("memories"),
+            "useMemories": memories.get("use_memories"),
+            "generateMemories": memories.get("generate_memories"),
+        }
+        if any(value is not None and type(value) is not bool for value in values.values()):
+            raise WorkspaceRpcError("Codex returned invalid memory settings")
+        return {
+            **values,
+            "currentChatMode": self.settings.get("memoryMode"),
+            "settingsWritable": self._writable_user_layer(snapshot) is not None,
+        }
+
+    async def set_memory_mode(self, mode, confirmed):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Finish current Codex work before changing memory mode")
+            if mode not in {"enabled", "disabled"} or confirmed is not True:
+                raise ValueError("An exact confirmed chat memory mode is required")
+            result = await self.rpc.request(
+                "thread/memoryMode/set", {"threadId": self.session_id, "mode": mode}
+            )
+            if result != {}:
+                raise WorkspaceRpcError("Codex did not confirm the chat memory mode")
+            self.settings["memoryMode"] = mode
+            await self.publish(
+                {"method": "workspace/settings", "params": deepcopy(self.settings)}
+            )
+            return {"currentChatMode": mode}
+
+    async def set_memory_defaults(self, use_memories, generate_memories, confirmed):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Finish current Codex work before changing memory defaults")
+            if (
+                type(use_memories) is not bool
+                or type(generate_memories) is not bool
+                or confirmed is not True
+            ):
+                raise ValueError("Exact confirmed memory defaults are required")
+            snapshot = await self._config_snapshot()
+            user = self._writable_user_layer(snapshot)
+            if user is None:
+                raise ValueError("Codex user configuration is not safely writable")
+            if self.state != "ready" or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Session changed during memory settings lookup")
+            result = await self.rpc.request(
+                "config/batchWrite",
+                {
+                    "edits": [
+                        {
+                            "keyPath": "features.memories",
+                            "value": use_memories or generate_memories,
+                            "mergeStrategy": "replace",
+                        },
+                        {
+                            "keyPath": "memories.use_memories",
+                            "value": use_memories,
+                            "mergeStrategy": "replace",
+                        },
+                        {
+                            "keyPath": "memories.generate_memories",
+                            "value": generate_memories,
+                            "mergeStrategy": "replace",
+                        },
+                    ],
+                    "filePath": user["name"]["file"],
+                    "expectedVersion": user["version"],
+                    "reloadUserConfig": True,
+                },
+            )
+            if (
+                not isinstance(result, dict)
+                or result.get("status") not in {"ok", "okOverridden"}
+            ):
+                raise WorkspaceRpcError("Memory defaults were not confirmed on disk")
+            return {
+                "featureEnabled": use_memories or generate_memories,
+                "useMemories": use_memories,
+                "generateMemories": generate_memories,
+                "notice": (
+                    "Saved, but another configuration layer overrides one or more settings."
+                    if result["status"] == "okOverridden"
+                    else ""
+                ),
+            }
+
+    def guardian_denial(self):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        event = self._guardian_denial
+        if event is None:
+            return {"denial": None}
+        review, action = event["review"], event["action"]
+        summary = (
+            action.get("command")
+            or action.get("program")
+            or action.get("toolTitle")
+            or action.get("toolName")
+            or action.get("target")
+            or action.get("type")
+        )
+        if not isinstance(summary, str) or len(summary) > 8192:
+            raise WorkspaceRpcError("Codex returned an invalid denied action")
+        return {
+            "denial": {
+                "reviewId": event["reviewId"],
+                "turnId": event["turnId"],
+                "actionType": action.get("type"),
+                "summary": summary,
+                "riskLevel": review.get("riskLevel"),
+                "rationale": review.get("rationale"),
+            }
+        }
+
+    async def approve_guardian_denial(self, review_id, confirmed):
+        async with self._control_lock:
+            event = self._guardian_denial
+            if (
+                not isinstance(review_id, str)
+                or confirmed is not True
+                or event is None
+                or event.get("reviewId") != review_id
+            ):
+                raise ValueError("Confirm the exact latest auto-review denial")
+            if self.state not in {"ready", "running"} or self.questions:
+                raise WorkspaceRpcError(
+                    "Resolve current Codex questions before approving a denial"
+                )
+            result = await self.rpc.request(
+                "thread/approveGuardianDeniedAction",
+                {"threadId": self.session_id, "event": deepcopy(event)},
+            )
+            if result != {}:
+                raise WorkspaceRpcError("Codex did not confirm the denied action retry")
+            self._guardian_denial = None
+            return {"approved": True, "reviewId": review_id}
+
+    async def submit_feedback(self, classification, reason, include_logs, confirmed):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError("Finish current Codex work before sending feedback")
+            if (
+                not isinstance(classification, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", classification)
+                or not isinstance(reason, str)
+                or len(reason) > 10000
+                or type(include_logs) is not bool
+                or confirmed is not True
+            ):
+                raise ValueError("Exact confirmed feedback details are required")
+            requirements = await self.rpc.request("configRequirements/read", None)
+            if not isinstance(requirements, dict):
+                raise WorkspaceRpcError("Codex returned invalid feedback requirements")
+            policy = requirements.get("requirements")
+            if policy is not None and not isinstance(policy, dict):
+                raise WorkspaceRpcError("Codex returned invalid feedback requirements")
+            feedback = (policy or {}).get("feedback")
+            if feedback is not None and not isinstance(feedback, dict):
+                raise WorkspaceRpcError("Codex returned invalid feedback requirements")
+            if isinstance(feedback, dict) and feedback.get("enabled") is False:
+                raise ValueError("Feedback is disabled by Codex policy")
+            result = await self.rpc.request(
+                "feedback/upload",
+                {
+                    "classification": classification,
+                    "reason": reason.strip() or None,
+                    "includeLogs": include_logs,
+                    "extraLogFiles": None,
+                    "tags": {"client": "serena-workspace"},
+                    "threadId": self.session_id,
+                },
+            )
+            if not isinstance(result, dict) or result.get("threadId") != self.session_id:
+                raise WorkspaceRpcError("Codex did not confirm feedback for this session")
+            return {"submitted": True, "threadId": self.session_id}
+
+    async def detect_external_imports(self):
+        if self.state in {"closed", "opening", "unavailable"}:
+            raise WorkspaceRpcError("Session is not connected")
+        result = await self.rpc.request(
+            "externalAgentConfig/detect",
+            {
+                "includeHome": True,
+                "cwds": [str(self.cwd)],
+                "maxSessionAgeDays": 30,
+                "maxSessions": 50,
+            },
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+            raise WorkspaceRpcError("Codex returned invalid import candidates")
+        candidates = {}
+        safe_items = []
+        for item in result["items"]:
+            if (
+                not isinstance(item, dict)
+                or item.get("itemType") not in _IMPORT_ITEM_TYPES
+                or not isinstance(item.get("description"), str)
+                or not item["description"]
+                or len(item["description"]) > 10000
+                or item.get("cwd") not in {None, "", str(self.cwd)}
+                or (
+                    item.get("details") is not None
+                    and not isinstance(item.get("details"), dict)
+                )
+            ):
+                raise WorkspaceRpcError("Codex returned an invalid import candidate")
+            encoded = json.dumps(
+                item, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            candidate_id = hashlib.sha256(encoded.encode()).hexdigest()[:24]
+            if candidate_id in candidates:
+                raise WorkspaceRpcError("Codex returned duplicate import candidates")
+            candidates[candidate_id] = deepcopy(item)
+            details = item.get("details") or {}
+            counts = {
+                key: len(value)
+                for key, value in details.items()
+                if isinstance(value, list) and len(value)
+            }
+            safe_items.append(
+                {
+                    "id": candidate_id,
+                    "itemType": item["itemType"],
+                    "description": item["description"],
+                    "scope": "home" if not item.get("cwd") else str(self.cwd),
+                    "detailCounts": counts,
+                }
+            )
+        connectors = result.get("connectors") or []
+        if not isinstance(connectors, list) or len(connectors) > 100:
+            raise WorkspaceRpcError("Codex returned invalid import connectors")
+        safe_connectors = []
+        for connector in connectors:
+            if (
+                not isinstance(connector, dict)
+                or not isinstance(connector.get("name"), str)
+                or type(connector.get("sessionCount")) is not int
+                or connector["sessionCount"] < 0
+                or connector.get("source")
+                not in {"remoteMcpServersConfig", "sessionToolUse"}
+            ):
+                raise WorkspaceRpcError("Codex returned an invalid import connector")
+            safe_connectors.append(
+                {key: connector[key] for key in ("name", "sessionCount", "source")}
+            )
+        self._import_candidates = candidates
+        return {"items": safe_items, "connectors": safe_connectors}
+
+    async def import_external_items(self, candidate_ids, confirmed):
+        async with self._control_lock:
+            if self.state != "ready" or self.questions or self.active_agent_threads:
+                raise WorkspaceRpcError(
+                    "Finish current Codex work before importing configuration"
+                )
+            if (
+                not isinstance(candidate_ids, list)
+                or not 1 <= len(candidate_ids) <= 100
+                or len(set(candidate_ids)) != len(candidate_ids)
+                or any(
+                    not isinstance(value, str) or value not in self._import_candidates
+                    for value in candidate_ids
+                )
+                or confirmed is not True
+            ):
+                raise ValueError("Select and confirm exact detected import items")
+            items = [deepcopy(self._import_candidates[value]) for value in candidate_ids]
+            result = await self.rpc.request(
+                "externalAgentConfig/import",
+                {"migrationItems": items, "source": "serena-workspace"},
+            )
+            import_id = result.get("importId") if isinstance(result, dict) else None
+            if not isinstance(import_id, str) or not 1 <= len(import_id) <= 128:
+                raise WorkspaceRpcError("Codex did not confirm the import")
+            self._import_candidates = {}
+            return {"importId": import_id, "itemCount": len(items)}
+
+    async def _mcp_config(self):
+        result = await self._config_snapshot()
         servers = result["config"].get("mcp_servers", {})
         if not isinstance(servers, dict) or any(
             not isinstance(name, str) or not name or not isinstance(value, dict)
             or type(value.get("enabled", True)) is not bool for name, value in servers.items()
         ):
             raise WorkspaceRpcError("Codex returned invalid MCP settings")
-        users = [layer for layer in result.get("layers") or [] if isinstance(layer, dict)
-                 and isinstance(layer.get("name"), dict) and layer["name"].get("type") == "user"
-                 and not layer["name"].get("profile")]
-        user = users[0] if len(users) == 1 else None
-        if user and (not isinstance(user.get("version"), str) or not user["version"]
-                     or not isinstance(user["name"].get("file"), str) or not Path(user["name"]["file"]).is_absolute()):
-            user = None
+        user = self._writable_user_layer(result)
         return servers, user
 
     async def set_mcp_enabled(self, name, enabled):
@@ -1584,6 +2138,77 @@ class CodexWorkspace:
                         login.update({"status": "succeeded" if params["success"] else "failed"})
                         if not params["success"]:
                             login["error"] = str(params.get("error") or "MCP login failed")
+                elif method == "item/autoApprovalReview/completed":
+                    review, action = params.get("review"), params.get("action")
+                    if (
+                        params.get("threadId") != self.session_id
+                        or not isinstance(params.get("reviewId"), str)
+                        or not isinstance(params.get("turnId"), str)
+                        or not isinstance(review, dict)
+                        or review.get("status")
+                        not in {"inProgress", "approved", "denied", "timedOut", "aborted"}
+                        or not isinstance(action, dict)
+                        or not isinstance(action.get("type"), str)
+                        or review.get("riskLevel")
+                        not in {None, "low", "medium", "high", "critical"}
+                        or (
+                            review.get("rationale") is not None
+                            and (
+                                not isinstance(review.get("rationale"), str)
+                                or len(review["rationale"]) > 10000
+                            )
+                        )
+                    ):
+                        raise WorkspaceRpcError("Codex returned an invalid auto-review result")
+                    self._guardian_denial = (
+                        deepcopy(params) if review["status"] == "denied" else None
+                    )
+                elif method in {
+                    "externalAgentConfig/import/progress",
+                    "externalAgentConfig/import/completed",
+                }:
+                    import_id, results = params.get("importId"), params.get("itemTypeResults")
+                    if (
+                        not isinstance(import_id, str)
+                        or not isinstance(results, list)
+                        or len(results) > len(_IMPORT_ITEM_TYPES)
+                    ):
+                        raise WorkspaceRpcError("Codex returned invalid import progress")
+                    safe_results = []
+                    for item in results:
+                        if (
+                            not isinstance(item, dict)
+                            or item.get("itemType") not in _IMPORT_ITEM_TYPES
+                            or not isinstance(item.get("successes"), list)
+                            or not isinstance(item.get("failures"), list)
+                            or len(item["successes"]) > 10000
+                            or len(item["failures"]) > 10000
+                        ):
+                            raise WorkspaceRpcError("Codex returned invalid import results")
+                        failures = []
+                        for failure in item["failures"][:20]:
+                            message = failure.get("message") if isinstance(failure, dict) else None
+                            if not isinstance(message, str) or len(message) > 10000:
+                                raise WorkspaceRpcError("Codex returned invalid import failure")
+                            failures.append(message)
+                        safe_results.append(
+                            {
+                                "itemType": item["itemType"],
+                                "successCount": len(item["successes"]),
+                                "failureCount": len(item["failures"]),
+                                "failures": failures,
+                            }
+                        )
+                    await self.publish(
+                        {
+                            "method": "workspace/importProgress",
+                            "params": {
+                                "importId": import_id,
+                                "completed": method.endswith("/completed"),
+                                "results": safe_results,
+                            },
+                        }
+                    )
                 elif method == "turn/started":
                     self.active_turn = params["turn"]["id"]
                     self.state = "running"
@@ -1633,6 +2258,8 @@ class CodexWorkspace:
         self._early_login_completions.clear()
         self._account_update = None
         self._account_updated.clear()
+        self._guardian_denial = None
+        self._import_candidates.clear()
         self.questions.clear()
         self._completed.clear()
         self.history_cursor = None

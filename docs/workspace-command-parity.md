@@ -3,6 +3,43 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Native Codex Extended Controls (2026-09-11)
+
+The Codex pane now accounts for the current official CLI command catalog instead
+of treating unknown slash text as a model prompt. Stable app-server operations
+have native controls for effective config diagnostics, experimental features,
+per-conversation and global memory behavior, one-shot retry of the latest
+auto-review denial, explicit feedback upload, and supported external-agent
+imports. Every write is routed to the exact owned session and requires an
+explicit user action; opening or closing a dialog sends no mutation or model
+turn. Coding reservations allow read-only inspection and reject every mutation.
+
+The adapter validates pagination, current config versions, exact native response
+shapes, import candidates and progress events. It exposes only bounded diagnostic
+metadata and never returns config secrets or raw imported payloads to the browser.
+Plugin management remains disabled because the official app-server documentation
+marks that API as under development and not for production clients. TUI-only
+presentation commands such as keymap, vim, raw output, status line, title, theme
+and pets are listed with an exact unavailable reason rather than simulated.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q --tb=short
+# exit 0: 202 passed in 1.05s.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 175 passed in 35.75s.
+node --test tests/workspace-connection.test.mjs
+# exit 0: 65 passed in 240.99ms.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py -q -k 'unknown_codex_command or codex_command_catalog_is_complete or codex_configuration_experiments_and_memories or codex_guardian_feedback_and_import'
+# exit 0: 8 passed, 282 deselected in 15.02s.
+```
+
+Ruff, JavaScript syntax and `git diff --check` passed. Browser coverage exercises
+390px and 1600px dialogs, confirmation gates, preserved drafts, exact control
+payloads and no horizontal overflow. Sources: [official developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+and [official App Server reference](https://learn.chatgpt.com/docs/app-server),
+accessed 2026-09-11. Typed argument parity for plan, goal, usage, MCP and named
+clear remains a separate slice; this section does not claim packaged parity.
+
 ## Synchronized Native Codex Login (2026-09-10)
 
 Codex app-server authentication is process-local after startup. A disposable

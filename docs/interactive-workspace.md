@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Native Codex Command Controls (2026-09-11)
+
+The structured pane now exposes stable native app-server controls for effective
+configuration diagnostics, experimental features, memories, guardian-denial
+retry, feedback and external-agent import. The current official command catalog
+is visible in the picker; unsupported TUI presentation commands and the unstable
+plugin API are disabled with specific reasons and can never fall through into a
+model turn. Every mutation is confirmed, exact-session routed and blocked while
+a durable coding reservation owns the conversation.
+
+Final source receipts for this slice: 202 Codex adapter tests, 175 host tests,
+65 browser-transport tests and eight responsive pane tests passed. Ruff,
+JavaScript syntax and diff checks passed. The browser cases cover 390px and
+1600px layouts, preserved drafts, consent gates and overflow. This source remains
+uninstalled and unreleased; typed argument parity and packaged provider QA are
+still open. Full evidence and boundaries are in
+[workspace-command-parity.md](workspace-command-parity.md).
+
 ## Synchronized Native Codex Login (2026-09-10)
 
 A native disposable proof confirmed that an already-open Codex app-server does

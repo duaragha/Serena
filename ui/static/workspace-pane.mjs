@@ -61,6 +61,18 @@ export class WorkspacePane {
     this.accountButton=this.button('Codex account','user-round',()=>this.openAccount());
     this.accountButton.hidden=provider!=='Codex' || !controls.accountStatus;
     head.append(this.accountButton);
+    this.configDiagnosticsButton=this.button('Codex configuration','file-cog',()=>this.openConfigDiagnostics());
+    this.configDiagnosticsButton.hidden=provider!=='Codex' || !controls.configDiagnostics;
+    this.experimentalButton=this.button('Experimental features','flask-conical',()=>this.openExperimentalFeatures());
+    this.experimentalButton.hidden=provider!=='Codex' || !controls.experimentalFeatures || !controls.setExperimentalFeature;
+    this.memoriesButton=this.button('Codex memories','brain',()=>this.openMemories());
+    this.memoriesButton.hidden=provider!=='Codex' || !controls.memorySettings || !controls.setMemoryMode || !controls.setMemoryDefaults;
+    this.guardianButton=this.button('Approve denied action','shield-check',()=>this.openGuardianDenial());
+    this.guardianButton.hidden=provider!=='Codex' || !controls.guardianDenial || !controls.approveGuardianDenial;
+    this.feedbackButton=this.button('Send Codex feedback','message-square-warning',()=>this.openFeedback());
+    this.feedbackButton.hidden=provider!=='Codex' || !controls.submitFeedback;
+    this.importButton=this.button('Import external agent settings','import',()=>this.openExternalImport());
+    this.importButton.hidden=provider!=='Codex' || !controls.detectExternalImports || !controls.importExternalItems;
     this.logoutCommandButton=this.button('Sign out of Codex','log-out',()=>this.openLogout());
     this.logoutCommandButton.hidden=provider!=='Codex' || !controls.accountLogout;
     this.sessionStatusButton=this.button('Session status','info',()=>this.openSessionStatus());
@@ -966,6 +978,263 @@ export class WorkspacePane {
     this.diagnosticsDialog=dialog;this.root.append(dialog);dialog.showModal();run.focus();window.lucide?.createIcons();
   }
 
+  async openConfigDiagnostics() {
+    if(this.configDiagnosticsDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Codex configuration');
+    const status=node('p','','Loading effective configuration...');status.setAttribute('role','status');
+    const output=node('div');
+    const refresh=this.button('Refresh Codex configuration','refresh-cw',()=>load());
+    const close=this.button('Close Codex configuration','x',()=>dialog.close());
+    let busy=false;
+    const value=input=>input==null?'Unavailable':typeof input==='object'?JSON.stringify(input,null,2):String(input);
+    const load=async()=>{
+      if(busy || !dialog.open)return;
+      busy=true;refresh.disabled=true;output.replaceChildren();status.textContent='Loading effective configuration...';
+      try{
+        const result=await this.controls.configDiagnostics();
+        if(!dialog.open || this.disposed)return;
+        if(!Array.isArray(result?.layers) || typeof result.effective!=='object' || typeof result.requirements!=='object')throw Error('Codex returned invalid configuration diagnostics');
+        const effective=node('dl');
+        for(const [key,current] of Object.entries(result.effective))effective.append(node('dt','',key),node('dd','',value(current)));
+        const requirements=node('pre','',value(result.requirements));requirements.style.whiteSpace='pre-wrap';requirements.style.overflowWrap='anywhere';
+        const layers=node('div');
+        for(const layer of result.layers){
+          const row=node('div','aw-background-task');row.append(node('strong','',layer.type || 'Unknown layer'),node('p','',layer.enabled===false?'Disabled':'Enabled'));
+          const source=layer.file || layer.dotCodexFolder || layer.name || layer.id || layer.domain;
+          if(source)row.append(node('code','',source));
+          if(layer.disabledReason)row.append(node('p','',layer.disabledReason));
+          layers.append(row);
+        }
+        output.append(node('h4','','Effective settings'),effective,node('h4','','Requirements'),requirements,node('h4','','Layers'),layers);
+        status.textContent=result.settingsWritable?'Codex user settings are writable':'Codex user settings are read-only or ambiguous';
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;refresh.disabled=false;}
+    };
+    dialog.append(node('h3','','Codex configuration'),close,refresh,status,output);
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.configDiagnosticsDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();load();
+  }
+
+  async openExperimentalFeatures() {
+    if(this.experimentalDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Experimental features');
+    const status=node('p','','Loading features...');status.setAttribute('role','status');
+    const select=node('select');select.setAttribute('aria-label','Experimental feature');select.disabled=true;
+    const description=node('p');
+    const enabled=node('input');enabled.type='checkbox';enabled.disabled=true;
+    const enabledLabel=node('label');enabledLabel.append(enabled,document.createTextNode(' Enabled'));
+    const confirm=node('input');confirm.type='checkbox';confirm.disabled=true;
+    const confirmLabel=node('label');confirmLabel.append(confirm,document.createTextNode(' Confirm this feature change.'));
+    const apply=node('button','','Apply feature change');apply.type='button';apply.disabled=true;
+    const refresh=this.button('Refresh experimental features','refresh-cw',()=>load());
+    const close=this.button('Close experimental features','x',()=>dialog.close());
+    let features=[],writable=false,busy=false;
+    const selected=()=>features.find(feature=>feature.name===select.value);
+    const update=()=>{
+      const feature=selected();
+      if(!feature){description.textContent='';enabled.disabled=confirm.disabled=apply.disabled=true;return;}
+      enabled.checked=feature.enabled;enabled.disabled=busy || feature.stage==='removed' || !writable;
+      confirm.checked=false;confirm.disabled=enabled.disabled;apply.disabled=true;
+      description.textContent=[feature.displayName || feature.name,feature.stage,feature.description,feature.announcement].filter(Boolean).join(' · ');
+    };
+    enabled.addEventListener('change',()=>{confirm.checked=false;apply.disabled=true;});
+    confirm.addEventListener('change',()=>{apply.disabled=busy || !confirm.checked || !selected() || enabled.checked===selected().enabled;});
+    select.addEventListener('change',update);
+    const load=async()=>{
+      if(busy || !dialog.open)return;
+      busy=true;refresh.disabled=true;apply.disabled=true;status.textContent='Loading features...';
+      try{
+        const result=await this.controls.experimentalFeatures();
+        if(!dialog.open || this.disposed)return;
+        if(!Array.isArray(result?.data))throw Error('Codex returned an invalid feature catalog');
+        features=result.data;writable=result.settingsWritable===true;select.replaceChildren();
+        for(const feature of features){const option=node('option','',feature.displayName || feature.name);option.value=feature.name;option.disabled=feature.stage==='removed';select.append(option);}
+        select.disabled=!features.length;status.textContent=features.length?`${features.length} native features${writable?'':' · settings are read-only'}`:'No features returned';update();
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;refresh.disabled=false;if(features.length)update();}
+    };
+    apply.addEventListener('click',async()=>{
+      const feature=selected();if(busy || !feature || !confirm.checked || enabled.checked===feature.enabled)return;
+      busy=true;select.disabled=enabled.disabled=confirm.disabled=apply.disabled=refresh.disabled=close.disabled=true;status.textContent='Saving feature setting...';
+      try{
+        const result=await this.controls.setExperimentalFeature(feature.name,enabled.checked);
+        if(!dialog.open || this.disposed)return;
+        feature.enabled=result.enabled;
+        status.textContent=result.notice || `Feature ${result.enabled?'enabled':'disabled'}${result.applied?'':' for the next Codex restart'}`;
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;close.disabled=false;refresh.disabled=false;select.disabled=!features.length;update();}
+    });
+    dialog.append(node('h3','','Experimental features'),close,refresh,status,select,description,enabledLabel,confirmLabel,apply);
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.experimentalDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();load();
+  }
+
+  async openMemories() {
+    if(this.memoriesDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Codex memories');
+    const status=node('p','','Loading memory settings...');status.setAttribute('role','status');
+    const chat=node('fieldset');chat.append(node('legend','','This conversation'));
+    const mode=node('select');mode.setAttribute('aria-label','Conversation memory mode');
+    for(const [value,label] of [['','Inherited or unknown'],['enabled','Use memories'],['disabled','Do not use memories']]){const option=node('option','',label);option.value=value;mode.append(option);}
+    const confirmMode=node('input');confirmMode.type='checkbox';const confirmModeLabel=node('label');confirmModeLabel.append(confirmMode,document.createTextNode(' Confirm conversation memory mode.'));
+    const applyMode=node('button','','Apply conversation mode');applyMode.type='button';
+    chat.append(mode,confirmModeLabel,applyMode);
+    const defaults=node('fieldset');defaults.append(node('legend','','Global Codex defaults'));
+    const use=node('input');use.type='checkbox';const useLabel=node('label');useLabel.append(use,document.createTextNode(' Use saved memories'));
+    const generate=node('input');generate.type='checkbox';const generateLabel=node('label');generateLabel.append(generate,document.createTextNode(' Generate memories'));
+    const confirmDefaults=node('input');confirmDefaults.type='checkbox';const confirmDefaultsLabel=node('label');confirmDefaultsLabel.append(confirmDefaults,document.createTextNode(' Confirm global memory defaults.'));
+    const saveDefaults=node('button','','Save memory defaults');saveDefaults.type='button';defaults.append(useLabel,generateLabel,confirmDefaultsLabel,saveDefaults);
+    const refresh=this.button('Refresh memory settings','refresh-cw',()=>load());
+    const close=this.button('Close memories','x',()=>dialog.close());
+    let busy=false,writable=false,currentMode=null;
+    const enable=()=>{
+      mode.disabled=busy;use.disabled=generate.disabled=busy || !writable;confirmMode.disabled=busy || !mode.value || mode.value===currentMode;
+      confirmDefaults.disabled=busy || !writable;applyMode.disabled=confirmMode.disabled || !confirmMode.checked;saveDefaults.disabled=confirmDefaults.disabled || !confirmDefaults.checked;
+      refresh.disabled=close.disabled=busy;
+    };
+    mode.addEventListener('change',()=>{confirmMode.checked=false;enable();});
+    for(const control of [use,generate])control.addEventListener('change',()=>{confirmDefaults.checked=false;control.indeterminate=false;enable();});
+    confirmMode.addEventListener('change',enable);confirmDefaults.addEventListener('change',enable);
+    const load=async()=>{
+      if(busy || !dialog.open)return;
+      busy=true;enable();status.textContent='Loading memory settings...';
+      try{
+        const result=await this.controls.memorySettings();if(!dialog.open || this.disposed)return;
+        currentMode=result.currentChatMode || '';mode.value=currentMode;writable=result.settingsWritable===true;
+        use.checked=result.useMemories===true;use.indeterminate=result.useMemories==null;
+        generate.checked=result.generateMemories===true;generate.indeterminate=result.generateMemories==null;
+        confirmMode.checked=confirmDefaults.checked=false;
+        status.textContent=`Conversation: ${currentMode || 'inherited or unknown'} · defaults: ${result.featureEnabled===false?'off':result.featureEnabled===true?'on':'not configured'}${writable?'':' · read-only'}`;
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;enable();}
+    };
+    applyMode.addEventListener('click',async()=>{
+      if(busy || !confirmMode.checked || !mode.value || mode.value===currentMode)return;
+      busy=true;enable();status.textContent='Applying conversation memory mode...';
+      try{const result=await this.controls.setMemoryMode(mode.value);currentMode=result.currentChatMode;confirmMode.checked=false;status.textContent=`Conversation memory mode: ${currentMode}`;}
+      catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;enable();}
+    });
+    saveDefaults.addEventListener('click',async()=>{
+      if(busy || !confirmDefaults.checked || !writable)return;
+      busy=true;enable();status.textContent='Saving global memory defaults...';
+      try{const result=await this.controls.setMemoryDefaults(use.checked,generate.checked);confirmDefaults.checked=false;status.textContent=result.notice || 'Global memory defaults saved';}
+      catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;enable();}
+    });
+    dialog.append(node('h3','','Codex memories'),close,refresh,status,chat,defaults);
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.memoriesDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();enable();load();
+  }
+
+  async openGuardianDenial() {
+    if(this.guardianDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Approve denied action');
+    const status=node('p','','Checking latest auto-review...');status.setAttribute('role','status');
+    const details=node('dl');
+    const confirm=node('input');confirm.type='checkbox';confirm.disabled=true;
+    const label=node('label');label.append(confirm,document.createTextNode(' Confirm retrying this exact denied action.'));
+    const approve=node('button','','Approve and retry');approve.type='button';approve.disabled=true;
+    const refresh=this.button('Refresh denied action','refresh-cw',()=>load());
+    const close=this.button('Close denied action','x',()=>dialog.close());
+    let denial=null,busy=false;
+    confirm.addEventListener('change',()=>{approve.disabled=busy || !denial || !confirm.checked;});
+    const load=async()=>{
+      if(busy || !dialog.open)return;busy=true;refresh.disabled=true;details.replaceChildren();confirm.checked=false;confirm.disabled=approve.disabled=true;
+      try{
+        const result=await this.controls.guardianDenial();if(!dialog.open || this.disposed)return;
+        denial=result.denial;if(!denial){status.textContent='No recent denied action is available';return;}
+        for(const [name,value] of [['Action',denial.summary],['Type',denial.actionType],['Risk',denial.riskLevel],['Reason',denial.rationale]])details.append(node('dt','',name),node('dd','',value || 'Unavailable'));
+        status.textContent='Review the exact denied action before retrying it';confirm.disabled=false;
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;refresh.disabled=false;approve.disabled=!denial || !confirm.checked;}
+    };
+    approve.addEventListener('click',async()=>{
+      if(busy || !denial || !confirm.checked)return;busy=true;approve.disabled=confirm.disabled=refresh.disabled=close.disabled=true;status.textContent='Retrying denied action...';
+      try{await this.controls.approveGuardianDenial(denial.reviewId);denial=null;details.replaceChildren();label.hidden=true;approve.hidden=true;status.textContent='Denied action approved for one retry';}
+      catch(error){if(dialog.open){status.textContent=error.message;confirm.disabled=false;approve.disabled=!confirm.checked;}}
+      finally{busy=false;refresh.disabled=false;close.disabled=false;}
+    });
+    dialog.append(node('h3','','Approve denied action'),close,refresh,status,details,label,approve);
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.guardianDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();load();
+  }
+
+  openFeedback() {
+    if(this.feedbackDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog');dialog.setAttribute('aria-label','Send Codex feedback');
+    const form=node('form');
+    const classification=node('select');classification.setAttribute('aria-label','Feedback classification');
+    for(const [value,label] of [['bug','Bug'],['bad_result','Bad result'],['good_result','Good result'],['other','Other']]){const option=node('option','',label);option.value=value;classification.append(option);}
+    const reason=node('textarea');reason.maxLength=10000;reason.rows=5;reason.setAttribute('aria-label','Feedback details');
+    const logs=node('input');logs.type='checkbox';const logsLabel=node('label');logsLabel.append(logs,document.createTextNode(' Include Codex logs'));
+    const confirm=node('input');confirm.type='checkbox';const confirmLabel=node('label');confirmLabel.append(confirm,document.createTextNode(' Confirm sending this feedback to OpenAI.'));
+    const status=node('p');status.setAttribute('role','status');
+    const send=node('button','','Send feedback');send.type='submit';send.disabled=true;
+    const close=this.button('Close feedback','x',()=>dialog.close());
+    let busy=false;confirm.addEventListener('change',()=>{send.disabled=busy || !confirm.checked;});
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(busy || !confirm.checked)return;busy=true;send.disabled=classification.disabled=reason.disabled=logs.disabled=confirm.disabled=close.disabled=true;status.textContent='Sending feedback...';
+      try{await this.controls.submitFeedback(classification.value,reason.value,logs.checked);if(dialog.open){busy=false;status.textContent='Feedback sent for this Codex session';send.hidden=confirmLabel.hidden=true;classification.disabled=reason.disabled=logs.disabled=true;close.disabled=false;}}
+      catch(error){if(dialog.open){status.textContent=error.message;classification.disabled=reason.disabled=logs.disabled=confirm.disabled=false;close.disabled=false;send.disabled=!confirm.checked;}}
+      finally{busy=false;}
+    });
+    form.append(classification,reason,logsLabel,confirmLabel,send);dialog.append(node('h3','','Send Codex feedback'),close,status,form);
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    dialog.addEventListener('close',()=>{dialog.remove();this.input.focus();});
+    this.feedbackDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
+  }
+
+  async openExternalImport() {
+    if(this.externalImportDialog?.open)return;
+    const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Import external agent settings');
+    const status=node('p','','Detecting supported external settings...');status.setAttribute('role','status');
+    const connectors=node('p');const list=node('div');const progress=node('div');
+    const confirm=node('input');confirm.type='checkbox';confirm.disabled=true;
+    const label=node('label');label.append(confirm,document.createTextNode(' Confirm importing the selected items into Codex.'));
+    const run=node('button','','Import selected items');run.type='button';run.disabled=true;
+    const refresh=this.button('Detect external settings','refresh-cw',()=>load());
+    const close=this.button('Close external import','x',()=>dialog.close());
+    let busy=false,items=[];
+    const selected=()=>[...list.querySelectorAll('input:checked')].map(input=>input.value);
+    const enable=()=>{const count=selected().length;confirm.disabled=busy || !count;run.disabled=busy || !count || !confirm.checked;refresh.disabled=close.disabled=busy;};
+    confirm.addEventListener('change',enable);
+    const load=async()=>{
+      if(busy || !dialog.open)return;busy=true;enable();status.textContent='Detecting supported external settings...';list.replaceChildren();progress.replaceChildren();confirm.checked=false;
+      try{
+        const result=await this.controls.detectExternalImports();if(!dialog.open || this.disposed)return;
+        if(!Array.isArray(result?.items) || !Array.isArray(result?.connectors))throw Error('Codex returned invalid import candidates');
+        items=result.items;
+        for(const item of items){
+          const input=node('input');input.type='checkbox';input.value=item.id;input.setAttribute('aria-label',`Import ${item.itemType}`);input.addEventListener('change',()=>{confirm.checked=false;enable();});
+          const row=node('label','aw-background-task aw-import-row');row.append(input,node('strong','',item.itemType),node('span','',item.description),node('small','',item.scope));
+          const counts=Object.entries(item.detailCounts || {}).map(([name,count])=>`${count} ${name}`).join(' · ');if(counts)row.append(node('small','',counts));list.append(row);
+        }
+        connectors.textContent=result.connectors.length?`Detected connector history: ${result.connectors.map(item=>`${item.name} (${item.sessionCount})`).join(', ')}`:'';
+        status.textContent=items.length?`${items.length} importable item${items.length===1?'':'s'} detected`:'No supported external settings detected';
+      }catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;enable();}
+    };
+    run.addEventListener('click',async()=>{
+      const ids=selected();if(busy || !ids.length || !confirm.checked)return;busy=true;enable();status.textContent='Starting native Codex import...';
+      try{const result=await this.controls.importExternalItems(ids);if(dialog.open){status.textContent=`Import ${result.importId} started for ${result.itemCount} item${result.itemCount===1?'':'s'}`;run.hidden=label.hidden=true;for(const input of list.querySelectorAll('input'))input.disabled=true;}}
+      catch(error){if(dialog.open)status.textContent=error.message;}
+      finally{busy=false;refresh.disabled=close.disabled=false;enable();}
+    });
+    this.refreshImport=params=>{
+      if(!dialog.open || !params || !Array.isArray(params.results))return;
+      progress.replaceChildren();
+      for(const result of params.results){const row=node('div','aw-background-task aw-import-result');row.append(node('strong','',result.itemType),node('span','',`${result.successCount} imported · ${result.failureCount} failed`));for(const failure of result.failures || [])row.append(node('p','',failure));progress.append(row);}
+      status.textContent=params.completed?'Import completed':'Import in progress';
+    };
+    dialog.append(node('h3','','Import external agent settings'),close,refresh,status,connectors,list,label,run,progress);
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    dialog.addEventListener('close',()=>{this.refreshImport=null;dialog.remove();this.input.focus();});
+    this.externalImportDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();load();
+  }
+
   setPromptColor(value) {
     if(!Object.hasOwn(promptColors,value))throw Error('Choose one of the available prompt colors');
     if(value==='default')this.draftStorage.removeItem(`${this.draftKey}:color`);
@@ -1005,7 +1274,7 @@ export class WorkspacePane {
     const render = () => {
       list.replaceChildren();
       const query=search.value.toLowerCase();
-      const localCommands=this.provider==='Codex'?Object.entries(this.codexCommandControls()).map(([name,control])=>({name,kind:'command',description:control.getAttribute('aria-label'),paneControl:control})):[];
+      const localCommands=this.provider==='Codex'?Object.entries(this.codexCommandCatalog()).map(([name,spec])=>({name,kind:'command',description:spec.description,argumentHint:spec.argumentHint || '',paneControl:spec.control,unavailableReason:spec.unavailableReason || ''})):[];
       const matching=[...localCommands,...commands].filter(c => [c.name,c.description,...(c.aliases||[])].join(' ').toLowerCase().includes(query));
       for (const command of matching) {
         const button=node('button','aw-command'); button.type='button';
@@ -2013,6 +2282,7 @@ export class WorkspacePane {
     if(['mcpServer/oauthLogin/completed','mcpServer/startupStatus/updated'].includes(envelope.event?.method))this.refreshMcp?.();
     if(envelope.event?.method==='account/updated')this.refreshAccount?.();
     if(envelope.event?.method==='workspace/agentEvent')this.notifyAgentChange?.(envelope.event.params);
+    if(envelope.event?.method==='workspace/importProgress')this.refreshImport?.(envelope.event.params);
     if(older){
       if(this.frame){cancelAnimationFrame(this.frame);this.frame=0;}
       const count=[...this.conversation.turns.values()].reduce((n,t)=>n+t.items.size,0);
@@ -2035,7 +2305,35 @@ export class WorkspacePane {
   codexCommandControls() {
     return {clear:this.clearButton,archive:this.archiveButton,delete:this.deleteButton,exit:this.disconnectButton,quit:this.disconnectButton,logout:this.logoutCommandButton,resume:this.resumeButton,fork:this.forkButton,review:this.reviewButton,compact:this.compactButton,
       mcp:this.mcpButton,permissions:this.permissionsButton,skills:this.commandsButton,ps:this.tasksButton,stop:this.tasksButton,clean:this.tasksButton,mention:this.mentionButton,hooks:this.hooksButton,diff:this.diffButton,apps:this.appsButton,
-      agent:this.agentsButton,subagents:this.agentsButton,fast:this.speedButton,usage:this.accountUsageButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton};
+      agent:this.agentsButton,subagents:this.agentsButton,fast:this.speedButton,usage:this.accountUsageButton,model:this.modelSelect,reasoning:this.effortSelect,status:this.sessionStatusButton,plan:this.sessionModeButton,goal:this.goalButton,personality:this.personalityButton,copy:this.copyOutputButton,rename:this.renameButton,new:this.newConversationButton,
+      experimental:this.experimentalButton,memories:this.memoriesButton,approve:this.guardianButton,feedback:this.feedbackButton,import:this.importButton,'debug-config':this.configDiagnosticsButton};
+  }
+
+  codexCommandCatalog() {
+    const controls=this.codexCommandControls();
+    const descriptions={
+      permissions:'Choose the native permission profile',ide:'Inspect external IDE context',keymap:'Configure terminal key bindings',vim:'Toggle terminal vim mode','setup-default-sandbox':'Configure the Windows default sandbox','sandbox-add-read-dir':'Add a terminal sandbox read directory',
+      agent:'Inspect delegated agents',subagents:'Inspect delegated agents',apps:'Choose native apps and connectors',plugins:'Manage Codex plugins',hooks:'Inspect lifecycle hooks',clear:'Start a new conversation without deleting this one',rename:'Rename this conversation',archive:'Archive this conversation',delete:'Delete this conversation with local recovery',compact:'Compact conversation context',copy:'Copy the latest completed answer',diff:'Inspect the project diff',exit:'Disconnect this view safely',quit:'Disconnect this view safely',experimental:'Inspect and change experimental features',approve:'Retry the latest auto-review denial',memories:'Manage per-chat and global memories',skills:'Choose and configure native skills',import:'Import supported external agent settings',feedback:'Send explicit feedback to OpenAI',init:'Generate project AGENTS.md instructions',logout:'Sign out every open Codex owner',mcp:'Inspect and manage MCP connections',mention:'Mention a project file',model:'Choose the native model',reasoning:'Choose reasoning effort',fast:'Choose the native speed tier',plan:'Choose Plan or Default mode',goal:'Inspect and manage the session goal',personality:'Choose the native personality',ps:'Inspect background tasks',stop:'Inspect and stop background tasks',clean:'Inspect and clean background tasks',fork:'Fork this exact conversation',app:'Open this conversation in the ChatGPT desktop app',side:'Start an ephemeral side conversation',btw:'Start an ephemeral side conversation',raw:'Show raw terminal output',resume:'Open a saved conversation',new:'Create a new conversation',review:'Start a native code review',status:'Inspect native session status',usage:'Inspect account or session usage','debug-config':'Inspect effective Codex configuration',statusline:'Configure the terminal status line',title:'Configure the terminal window title',theme:'Choose a terminal theme',pets:'Configure terminal pets',pet:'Configure terminal pets'};
+    const unavailable={
+      ide:'Serena has no external IDE context attached; project file mentions remain available.',
+      keymap:'Terminal keymap settings do not apply to Serena text controls.',
+      vim:'Terminal vim mode does not apply to Serena text controls.',
+      'setup-default-sandbox':'This Windows terminal bootstrap command is unavailable in Serena on this platform.',
+      'sandbox-add-read-dir':'One-off terminal sandbox read-directory flags are not persisted by this pane.',
+      plugins:'Codex marks the app-server plugin management API as under development and not for production clients.',
+      init:'Codex app-server has no native /init operation; ask Codex in a normal message to create AGENTS.md.',
+      app:'This conversation is already open in Serena; ChatGPT desktop handoff does not apply.',
+      side:'Codex app-server exposes no exact ephemeral side-chat operation for this pane.',
+      btw:'Codex app-server exposes no exact ephemeral side-chat operation for this pane.',
+      raw:'Raw terminal presentation does not apply to the structured Serena pane.',
+      statusline:'Terminal status-line configuration does not apply to Serena.',
+      title:'Terminal window-title configuration does not apply to Serena.',
+      theme:'Serena uses its own application theme; Codex terminal themes do not apply.',
+      pets:'Terminal pets require terminal image protocols and do not apply to Serena.',
+      pet:'Terminal pets require terminal image protocols and do not apply to Serena.',
+    };
+    const hints={new:'[name]',rename:'[name]',mention:'[query]'};
+    return Object.fromEntries(Object.keys(descriptions).map(name=>[name,{description:descriptions[name],argumentHint:hints[name] || '',control:controls[name] || null,unavailableReason:unavailable[name] || ''}]));
   }
 
   async copyLatestOutput() {
@@ -2069,7 +2367,7 @@ export class WorkspacePane {
       await this.copyLatestOutput();return;
     }
     if(this.provider==='Codex' && /^\/[A-Za-z]/.test(text.trim()) && this.selectedApps.length){this.error(Error('Remove selected apps before running a session command'));return;}
-    const readOnlyCommand=this.provider==='Codex' && /^\/(status|usage|agent|subagents|goal|new|ps|stop|clean|mention|hooks|diff|apps)(?:\s|$)/.test(text.trim());
+    const readOnlyCommand=this.provider==='Codex' && /^\/(status|usage|agent|subagents|goal|new|ps|stop|clean|mention|hooks|diff|apps|debug-config|experimental|memories|approve|import)(?:\s|$)/.test(text.trim());
     if (this.sending || (this.send.disabled && !readOnlyCommand) || (!text.trim() && !this.files.length && !this.selectedSkills.length)) return;
     const colorCommand=this.provider==='Claude' && /^\/color(?:\s+(.*))?$/.exec(text.trim());
     if(colorCommand){
@@ -2085,8 +2383,11 @@ export class WorkspacePane {
       await this.openCommands(reloadCommand[1]);return;
     }
     const codexCommand=this.provider==='Codex' && /^\/([A-Za-z][A-Za-z0-9_:-]*)(?:\s|$)/.exec(text.trim());
-    const codexControl=codexCommand && this.codexCommandControls()[codexCommand[1]];
-    if(codexCommand && !codexControl){this.error(Error(`/${codexCommand[1]} is not implemented in this pane; nothing was sent`));return;}
+    const codexSpec=codexCommand && this.codexCommandCatalog()[codexCommand[1]];
+    const codexControl=codexSpec?.control;
+    if(codexCommand && !codexSpec){this.error(Error(`/${codexCommand[1]} is not implemented in this pane; nothing was sent`));return;}
+    if(codexSpec?.unavailableReason){this.error(Error(`${codexSpec.unavailableReason} nothing was sent.`));return;}
+    if(codexCommand && !codexControl){this.error(Error(`/${codexCommand[1]} has no native pane control; nothing was sent`));return;}
     if(codexControl){
       if(codexCommand[1]==='new' && !this.files.length && !this.selectedSkills.length){
         if(codexControl.hidden){this.error(Error('New conversation is unavailable outside the app'));return;}
@@ -2697,6 +2998,12 @@ export class WorkspacePane {
     this.commandsDialog?.close();
     this.colorDialog?.close();
     this.diagnosticsDialog?.close();
+    this.configDiagnosticsDialog?.close();
+    this.experimentalDialog?.close();
+    this.memoriesDialog?.close();
+    this.guardianDialog?.close();
+    this.feedbackDialog?.close();
+    this.externalImportDialog?.close();
     this.accountDialog?.close();
     this.logoutDialog?.close();
     this.accountUsageDialog?.close();

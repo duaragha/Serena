@@ -2053,6 +2053,115 @@ def test_codex_skill_setting_requires_exact_payload_and_reuses_receipt(host):
     assert calls == [("/native/SKILL.md", False)]
 
 
+def test_codex_extended_controls_route_exact_owner_and_respect_reservation(host):
+    host.attach("exact")
+    owner = Owner.instances[-1]
+    calls = []
+
+    async def read(name):
+        calls.append((name, {}))
+        return {"kind": name}
+
+    owner.config_diagnostics = lambda: read("config_diagnostics")
+    owner.experimental_features = lambda: read("experimental_features")
+    owner.memory_settings = lambda: read("memory_settings")
+    owner.guardian_denial = lambda: calls.append(("guardian_denial", {})) or {
+        "denial": None
+    }
+    owner.detect_external_imports = lambda: read("detect_external_imports")
+
+    async def mutation(action_name, **payload):
+        calls.append((action_name, payload))
+        return {"kind": action_name}
+
+    owner.set_experimental_feature = lambda **payload: mutation(
+        "set_experimental_feature", **payload
+    )
+    owner.set_memory_mode = lambda **payload: mutation("set_memory_mode", **payload)
+    owner.set_memory_defaults = lambda **payload: mutation(
+        "set_memory_defaults", **payload
+    )
+    owner.approve_guardian_denial = lambda **payload: mutation(
+        "approve_guardian_denial", **payload
+    )
+    owner.submit_feedback = lambda **payload: mutation("submit_feedback", **payload)
+    owner.import_external_items = lambda **payload: mutation(
+        "import_external_items", **payload
+    )
+
+    reads = (
+        "config_diagnostics",
+        "experimental_features",
+        "memory_settings",
+        "guardian_denial",
+        "detect_external_imports",
+    )
+    host._work_reservations["exact"] = "job"
+    for index, action in enumerate(reads):
+        result = host.command("exact", f"reserved-read-{index}", action, {})
+        assert result["ok"]
+    assert [name for name, _ in calls] == list(reads)
+
+    mutations = [
+        (
+            "set_experimental_feature",
+            {"name": "proof", "enabled": True, "confirmed": True},
+        ),
+        ("set_memory_mode", {"mode": "disabled", "confirmed": True}),
+        (
+            "set_memory_defaults",
+            {
+                "use_memories": True,
+                "generate_memories": False,
+                "confirmed": True,
+            },
+        ),
+        (
+            "approve_guardian_denial",
+            {"review_id": "review", "confirmed": True},
+        ),
+        (
+            "submit_feedback",
+            {
+                "classification": "bug",
+                "reason": "reason",
+                "include_logs": False,
+                "confirmed": True,
+            },
+        ),
+        (
+            "import_external_items",
+            {"candidate_ids": ["candidate"], "confirmed": True},
+        ),
+    ]
+    for index, (action, payload) in enumerate(mutations):
+        result = host.command("exact", f"reserved-write-{index}", action, payload)
+        assert not result["ok"] and result["retryable"]
+    assert [name for name, _ in calls] == list(reads)
+
+    host._work_reservations.clear()
+    for index, (action, payload) in enumerate(mutations):
+        result = host.command("exact", f"write-{index}", action, payload)
+        assert result["ok"] and result["result"] == {"kind": action}
+        assert host.command("exact", f"write-{index}", action, payload) == result
+    assert [name for name, _ in calls] == list(reads) + [
+        action for action, _ in mutations
+    ]
+    assert not host.command(
+        "exact",
+        "bad-feature",
+        "set_experimental_feature",
+        {"name": "proof", "enabled": "true", "confirmed": True},
+    )["ok"]
+    assert not host.command(
+        "exact",
+        "bad-import",
+        "import_external_items",
+        {"candidate_ids": "candidate", "confirmed": True},
+    )["ok"]
+    assert not owner.sent
+
+
 def test_mcp_controls_require_attach_and_replay_without_repeating(tmp_path):
     calls = []
     class McpOwner(Owner):

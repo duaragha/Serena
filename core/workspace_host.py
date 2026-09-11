@@ -1383,6 +1383,17 @@ class WorkspaceHost:
             "set_skill_enabled",
             "reload_plugins",
             "diagnostics",
+            "config_diagnostics",
+            "experimental_features",
+            "set_experimental_feature",
+            "memory_settings",
+            "set_memory_mode",
+            "set_memory_defaults",
+            "guardian_denial",
+            "approve_guardian_denial",
+            "submit_feedback",
+            "detect_external_imports",
+            "import_external_items",
             "account_status",
             "account_rate_limits",
             "account_token_usage",
@@ -1436,6 +1447,7 @@ class WorkspaceHost:
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "interrupt_agent", "models", "permissions", "context_usage", "background_tasks",
                 "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "account_token_usage", "mcp_servers", "session_modes", "personality", "speed_tiers", "goal", "agents", "inspect_agent",
+                "config_diagnostics", "experimental_features", "memory_settings", "guardian_denial", "detect_external_imports",
             }:
                 return {"ok": False, "retryable": True, "error": "Native session is reserved by a coding job"}
             recorded_payload = payload
@@ -1726,6 +1738,86 @@ class WorkspaceHost:
                         raise ValueError("Installation diagnostics requires a Claude session and no payload")
                     retryable = True
                     result = await owner.diagnostics()
+                elif action == "config_diagnostics":
+                    if provider != "codex" or payload:
+                        raise ValueError("Configuration diagnostics require a Codex session")
+                    retryable = True
+                    result = await owner.config_diagnostics()
+                elif action == "experimental_features":
+                    if provider != "codex" or payload:
+                        raise ValueError("Experimental feature discovery requires a Codex session")
+                    retryable = True
+                    result = await owner.experimental_features()
+                elif action == "set_experimental_feature":
+                    if (
+                        provider != "codex"
+                        or set(payload) != {"name", "enabled", "confirmed"}
+                        or type(payload["enabled"]) is not bool
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("An exact confirmed Codex feature change is required")
+                    result = await owner.set_experimental_feature(**payload)
+                elif action == "memory_settings":
+                    if provider != "codex" or payload:
+                        raise ValueError("Memory settings require a Codex session")
+                    retryable = True
+                    result = await owner.memory_settings()
+                elif action == "set_memory_mode":
+                    if (
+                        provider != "codex"
+                        or set(payload) != {"mode", "confirmed"}
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("An exact confirmed Codex chat memory mode is required")
+                    result = await owner.set_memory_mode(**payload)
+                elif action == "set_memory_defaults":
+                    if (
+                        provider != "codex"
+                        or set(payload)
+                        != {"use_memories", "generate_memories", "confirmed"}
+                        or type(payload["use_memories"]) is not bool
+                        or type(payload["generate_memories"]) is not bool
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("Exact confirmed Codex memory defaults are required")
+                    result = await owner.set_memory_defaults(**payload)
+                elif action == "guardian_denial":
+                    if provider != "codex" or payload:
+                        raise ValueError("Auto-review status requires a Codex session")
+                    retryable = True
+                    result = owner.guardian_denial()
+                elif action == "approve_guardian_denial":
+                    if (
+                        provider != "codex"
+                        or set(payload) != {"review_id", "confirmed"}
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("An exact confirmed Codex auto-review denial is required")
+                    result = await owner.approve_guardian_denial(**payload)
+                elif action == "submit_feedback":
+                    if (
+                        provider != "codex"
+                        or set(payload)
+                        != {"classification", "reason", "include_logs", "confirmed"}
+                        or type(payload["include_logs"]) is not bool
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("Exact confirmed Codex feedback is required")
+                    result = await owner.submit_feedback(**payload)
+                elif action == "detect_external_imports":
+                    if provider != "codex" or payload:
+                        raise ValueError("External import discovery requires a Codex session")
+                    retryable = True
+                    result = await owner.detect_external_imports()
+                elif action == "import_external_items":
+                    if (
+                        provider != "codex"
+                        or set(payload) != {"candidate_ids", "confirmed"}
+                        or not isinstance(payload["candidate_ids"], list)
+                        or type(payload["confirmed"]) is not bool
+                    ):
+                        raise ValueError("Exact confirmed Codex import items are required")
+                    result = await owner.import_external_items(**payload)
                 elif action == "reload_skills":
                     if provider != "claude" or payload:
                         raise ValueError("Skill reload requires a Claude session and no payload")

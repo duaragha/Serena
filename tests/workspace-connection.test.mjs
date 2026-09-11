@@ -820,6 +820,40 @@ test('skill settings are explicit exact-path commands with stable retry identity
   assert.equal(calls[0][1].action,'set_skill_enabled');
 });
 
+test('extended Codex controls preserve exact payloads and never submit a model turn',async()=>{
+  const calls=[];
+  const conn=new WorkspaceConnection({sessionId:'codex-exact',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    const body=JSON.parse(options.body);calls.push([url,body]);return response({ok:true,result:{action:body.action}});
+  }});
+  const controls=conn.controls();
+  await controls.configDiagnostics();
+  await controls.experimentalFeatures();
+  await controls.setExperimentalFeature('proof',false);
+  await controls.memorySettings();
+  await controls.setMemoryMode('disabled');
+  await controls.setMemoryDefaults(true,false);
+  await controls.guardianDenial();
+  await controls.approveGuardianDenial('review-one');
+  await controls.submitFeedback('bug','reason',false);
+  await controls.detectExternalImports();
+  await controls.importExternalItems(['candidate-one']);
+  conn.dispose();
+  assert.deepEqual(calls.map(([url,body])=>[url,body.action,body.payload]),[
+    ['/api/workspace/codex-exact/commands','config_diagnostics',{}],
+    ['/api/workspace/codex-exact/commands','experimental_features',{}],
+    ['/api/workspace/codex-exact/commands','set_experimental_feature',{name:'proof',enabled:false,confirmed:true}],
+    ['/api/workspace/codex-exact/commands','memory_settings',{}],
+    ['/api/workspace/codex-exact/commands','set_memory_mode',{mode:'disabled',confirmed:true}],
+    ['/api/workspace/codex-exact/commands','set_memory_defaults',{use_memories:true,generate_memories:false,confirmed:true}],
+    ['/api/workspace/codex-exact/commands','guardian_denial',{}],
+    ['/api/workspace/codex-exact/commands','approve_guardian_denial',{review_id:'review-one',confirmed:true}],
+    ['/api/workspace/codex-exact/commands','submit_feedback',{classification:'bug',reason:'reason',include_logs:false,confirmed:true}],
+    ['/api/workspace/codex-exact/commands','detect_external_imports',{}],
+    ['/api/workspace/codex-exact/commands','import_external_items',{candidate_ids:['candidate-one'],confirmed:true}],
+  ]);
+  assert.ok(calls.every(([,body])=>body.action!=='submit' && typeof body.request_id==='string'));
+});
+
 test('answer receipts persist only a fingerprint while preserving retry identity',async()=>{
   const saved=storage(), ids=[];
   const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
