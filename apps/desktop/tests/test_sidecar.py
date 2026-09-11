@@ -17,4 +17,10 @@ def test_health_route_identifies_the_live_sidecar_process():
     response = sidecar.app.test_client().get("/api/health")
 
     assert response.status_code == 200
-    assert response.get_json() == {"ok": True, "pid": os.getpid()}
+    assert response.get_json() == {
+        "ok": True,
+        "pid": os.getpid(),
+        "capabilities": {
+            "structuredWorkspace": int("workspace_host" in sidecar.app.extensions),
+        },
+    }
