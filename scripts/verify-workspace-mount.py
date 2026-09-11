@@ -32,6 +32,8 @@ def main():
         if host:
             assert host._loop is None
         with app.test_client() as client:
+            health = client.get("/api/health").get_json()
+            assert health["capabilities"]["structuredWorkspace"] == int(expected_enabled)
             response = client.get("/api/workspace/no-session/events", base_url="http://127.0.0.1")
             assert response.status_code == (403 if expected_enabled else 404)
             root = client.get("/", base_url="http://127.0.0.1")

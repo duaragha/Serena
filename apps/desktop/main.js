@@ -391,6 +391,7 @@ async function startBackend() {
     // rather than running a second copy of the same Flask UI.
     const shared = await findExistingBackend({
       enabled: process.env.SERENA_DESKTOP_SHARE_BACKEND !== '0',
+      requireStructuredWorkspace: process.env.SERENA_STRUCTURED_WORKSPACE !== '0',
     });
     if (shared && !quitting) {
       backend = null;
