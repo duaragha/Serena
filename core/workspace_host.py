@@ -68,12 +68,80 @@ class WorkspaceHost:
         self._work_turns = {}
         self._restore_failures = {}
         self._account_mutation_lock = None
+        self._codex_account_login = None
 
     def _account_mutex(self):
         # Construct on the resident owner loop, not in the Flask caller thread.
         if self._account_mutation_lock is None:
             self._account_mutation_lock = asyncio.Lock()
         return self._account_mutation_lock
+
+    def _codex_login_error(self, sid):
+        login = self._codex_account_login
+        if login is None:
+            return ""
+        location = "this conversation" if login["sid"] == sid else "another conversation"
+        return f"Finish or cancel the Codex browser sign-in in {location} before continuing"
+
+    async def _account_change_owners(self, stack, sid, request_id, action):
+        other_ids = sorted(
+            identity
+            for identity, (candidate, provider) in self._sessions.items()
+            if identity != sid and provider == "codex"
+            and candidate.state not in {"closed", "unavailable"}
+        )
+        for identity in other_ids:
+            await stack.enter_async_context(self._locks.setdefault(identity, asyncio.Lock()))
+        owners = [(identity, self._sessions[identity][0]) for identity in [sid, *other_ids]]
+        for identity, candidate in owners:
+            if (candidate.state != "ready" or candidate.active_turn
+                    or getattr(candidate, "questions", None)
+                    or getattr(candidate, "elicitations", None)
+                    or getattr(candidate, "active_agent_threads", None)):
+                raise ValueError(
+                    f"Finish work in every open Codex conversation before {action}"
+                )
+            if (self._bridge_queues.get(identity)
+                    or self._work_reservations.get(identity)
+                    or self._work_turns.get(identity)):
+                raise ValueError(
+                    f"Resolve queued or reserved Codex work before {action}"
+                )
+            allowed = ((sid, request_id) if identity == sid else ("", ""))
+            if (await asyncio.to_thread(self.journal.has_pending_work, identity)
+                    or await asyncio.to_thread(
+                        self.journal.has_pending_command_conflict,
+                        identity,
+                        allowed,
+                    )):
+                raise ValueError(
+                    f"Resolve unconfirmed Codex operations before {action}"
+                )
+            tasks = await candidate.list_background_tasks()
+            if not isinstance(tasks, dict) or tasks.get("data") != []:
+                raise ValueError(
+                    f"Stop background work in every Codex conversation before {action}"
+                )
+        return owners
+
+    async def _settle_codex_account_login(self, sid, params):
+        login = self._codex_account_login
+        if (login is None or login["sid"] != sid
+                or not isinstance(params.get("loginId"), str)
+                or type(params.get("success")) is not bool):
+            return
+        async with self._account_mutex():
+            current = self._codex_account_login
+            if (current is not None and current["sid"] == sid
+                    and current.get("login_id") == params["loginId"]):
+                self._codex_account_login = None
+
+    async def _abandon_codex_account_login(self, sid):
+        if self._codex_account_login is None or self._codex_account_login["sid"] != sid:
+            return
+        async with self._account_mutex():
+            if self._codex_account_login is not None and self._codex_account_login["sid"] == sid:
+                self._codex_account_login = None
 
     async def _run(self, coroutine):
         task = asyncio.current_task()
@@ -344,6 +412,9 @@ class WorkspaceHost:
         entry = self._sessions.get(sid)
         if entry is None or entry[1] != "codex":
             return "No existing native Codex owner"
+        login_error = self._codex_login_error(sid)
+        if login_error:
+            return login_error
         owner = entry[0]
         if owner.state != "ready" or owner.active_turn or getattr(owner, "questions", None):
             return "Native session has active work or pending questions"
@@ -524,6 +595,16 @@ class WorkspaceHost:
         return self._dispatch(self._create(request_id, provider, str(Path(cwd).resolve()), seed), timeout)
 
     async def _create(self, request_id, provider, cwd, seed=""):
+        if provider == "codex":
+            async with self._account_mutex():
+                if self._codex_account_login is not None:
+                    raise ValueError(
+                        "Finish or cancel Codex browser sign-in before creating a conversation"
+                    )
+                return await self._create_locked(request_id, provider, cwd, seed)
+        return await self._create_locked(request_id, provider, cwd, seed)
+
+    async def _create_locked(self, request_id, provider, cwd, seed=""):
         reservation = "new:" + request_id
         payload = {"action": "create_session", "payload": {"provider": provider, "cwd": cwd, "confirmed": True}}
         if seed:
@@ -1010,6 +1091,10 @@ class WorkspaceHost:
                 raise ValueError("Restore this archived conversation before opening it")
             if target.get("archived") not in {None, False}:
                 raise ValueError("Resolver returned an invalid archive state")
+            if target.get("provider") == "codex" and self._codex_account_login is not None:
+                raise ValueError(
+                    "Finish or cancel Codex browser sign-in before reconnecting this conversation"
+                )
             factory = self.factories.get(target.get("provider"))
             if factory is None:
                 raise ValueError("This provider has no verified structured adapter yet")
@@ -1147,6 +1232,9 @@ class WorkspaceHost:
                     "response": "",
                     "message": "Target belongs to another provider",
                 }
+            login_error = self._codex_login_error(sid) if provider == "codex" else ""
+            if login_error:
+                return {"ok": False, "response": "", "message": login_error}
             claimed, prior = await asyncio.to_thread(
                 self.journal.claim_command, sid, key, {"provider": provider, "prompt": prompt}
             )
@@ -1336,6 +1424,15 @@ class WorkspaceHost:
                                      "error": "Clear outcome is unconfirmed; it will not be repeated"}
             if sid not in self._sessions:
                 raise ValueError("Explicitly attach this session before sending controls")
+            current_provider = self._sessions[sid][1]
+            login_error = self._codex_login_error(sid) if current_provider == "codex" else ""
+            allowed_during_login = (
+                action == "account_status"
+                or (action in {"account_login", "account_login_cancel"}
+                    and self._codex_account_login["sid"] == sid)
+            ) if login_error else True
+            if login_error and not allowed_during_login:
+                return {"ok": False, "retryable": True, "error": login_error}
             if self._work_reservations.get(sid) and action not in {
                 "answer", "interrupt", "interrupt_agent", "models", "permissions", "context_usage", "background_tasks",
                 "commands", "hooks", "apps", "project_diff", "search_files", "load_earlier", "account_status", "account_rate_limits", "account_token_usage", "mcp_servers", "session_modes", "personality", "speed_tiers", "goal", "agents", "inspect_agent",
@@ -1536,8 +1633,58 @@ class WorkspaceHost:
                     expected = {"loginId"} if action == "account_login_cancel" else set()
                     if provider != "codex" or set(payload) != expected:
                         raise ValueError("Browser login requires a Codex session and exact payload")
-                    result = (await owner.login_account() if action == "account_login"
-                              else await owner.cancel_account_login(payload["loginId"]))
+                    retryable = True
+                    if action == "account_login":
+                        login = self._codex_account_login
+                        if login is None:
+                            owners = await self._account_change_owners(
+                                stack, sid, request_id, "signing in"
+                            )
+                            disconnected = []
+                            for identity, candidate in owners[1:]:
+                                await candidate.close()
+                                if not candidate.can_retry_attachment():
+                                    raise ValueError(
+                                        "A Codex owner did not confirm clean account-switch shutdown"
+                                    )
+                                disconnected.append(identity)
+                                await self._publish(identity, {
+                                    "method": "workspace/transportClosed",
+                                    "params": {
+                                        "reason": (
+                                            "Codex sign-in started in another conversation. "
+                                            "Reconnect after sign-in finishes to use the selected account."
+                                        )
+                                    },
+                                })
+                            self._codex_account_login = {
+                                "sid": sid,
+                                "login_id": None,
+                                "disconnected": tuple(disconnected),
+                            }
+                            try:
+                                result = await owner.login_account()
+                            except BaseException:
+                                pending = getattr(owner, "_account_login", None)
+                                if not isinstance(pending, dict) or pending.get("status") not in {
+                                    "pending", "uncertain"
+                                }:
+                                    self._codex_account_login = None
+                                raise
+                            self._codex_account_login["login_id"] = result.get("loginId")
+                            if result.get("status") not in {"pending", "uncertain", "succeeded"}:
+                                self._codex_account_login = None
+                        else:
+                            disconnected = list(login["disconnected"])
+                            result = await owner.login_account()
+                        result = {
+                            **result,
+                            "disconnectedSessionCount": len(disconnected),
+                        }
+                    else:
+                        result = await owner.cancel_account_login(payload["loginId"])
+                        if result.get("status") in {"cancelled", "failed"}:
+                            self._codex_account_login = None
                 elif action == "account_logout":
                     if provider != "codex" or payload != {"confirmed": True}:
                         raise ValueError("Account logout requires exact confirmation from a Codex session")
@@ -1545,49 +1692,9 @@ class WorkspaceHost:
                     # Lock and sign out every live Codex owner so one pane cannot
                     # retain credentials after another confirms a global logout.
                     retryable = True
-                    other_ids = sorted(
-                        identity
-                        for identity, (candidate, candidate_provider) in self._sessions.items()
-                        if identity != sid and candidate_provider == "codex"
-                        and candidate.state not in {"closed", "unavailable"}
+                    owners = await self._account_change_owners(
+                        stack, sid, request_id, "signing out"
                     )
-                    for identity in other_ids:
-                        await stack.enter_async_context(
-                            self._locks.setdefault(identity, asyncio.Lock())
-                        )
-                    owners = [
-                        (identity, self._sessions[identity][0])
-                        for identity in [sid, *other_ids]
-                    ]
-                    for identity, candidate in owners:
-                        if (candidate.state != "ready" or candidate.active_turn
-                                or getattr(candidate, "questions", None)
-                                or getattr(candidate, "elicitations", None)
-                                or getattr(candidate, "active_agent_threads", None)):
-                            raise ValueError(
-                                "Finish work in every open Codex conversation before signing out"
-                            )
-                        if (self._bridge_queues.get(identity)
-                                or self._work_reservations.get(identity)
-                                or self._work_turns.get(identity)):
-                            raise ValueError(
-                                "Resolve queued or reserved Codex work before signing out"
-                            )
-                        allowed = ((sid, request_id) if identity == sid else ("", ""))
-                        if (await asyncio.to_thread(self.journal.has_pending_work, identity)
-                                or await asyncio.to_thread(
-                                    self.journal.has_pending_command_conflict,
-                                    identity,
-                                    allowed,
-                                )):
-                            raise ValueError(
-                                "Resolve unconfirmed Codex operations before signing out"
-                            )
-                        tasks = await candidate.list_background_tasks()
-                        if not isinstance(tasks, dict) or tasks.get("data") != []:
-                            raise ValueError(
-                                "Stop background work in every Codex conversation before signing out"
-                            )
                     for _, candidate in owners:
                         logged_out = await candidate.logout_account()
                         if logged_out != {"loggedOut": True}:
@@ -1608,6 +1715,12 @@ class WorkspaceHost:
                         raise ValueError("Account status requires a Codex session and no payload")
                     retryable = True
                     result = await owner.account_status()
+                    login = self._codex_account_login
+                    if login is not None and login["sid"] == sid and isinstance(result.get("login"), dict):
+                        result["login"] = {
+                            **result["login"],
+                            "disconnectedSessionCount": len(login["disconnected"]),
+                        }
                 elif action == "diagnostics":
                     if provider != "claude" or payload:
                         raise ValueError("Installation diagnostics requires a Claude session and no payload")
@@ -1804,6 +1917,11 @@ class WorkspaceHost:
     async def _publish(self, sid, event):
         decorated = await asyncio.to_thread(self.uploads.decorate_event, sid, event)
         await asyncio.to_thread(self.journal.append, sid, decorated)
+        method = event.get("method")
+        if method == "account/login/completed":
+            await self._settle_codex_account_login(sid, event.get("params", {}))
+        elif method == "workspace/transportClosed":
+            await self._abandon_codex_account_login(sid)
         if event.get("method") == "workspace/renameCompleted" and self.register_fork is not None:
             entry = self._sessions.get(sid)
             title = event.get("params", {}).get("title")

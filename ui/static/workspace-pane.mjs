@@ -842,6 +842,7 @@ export class WorkspacePane {
     const dialog=node('dialog','aw-review-dialog aw-commands-dialog');dialog.setAttribute('aria-label','Codex account');
     const status=node('p');status.setAttribute('role','status');
     const details=node('p');details.style.overflowWrap='anywhere';
+    const accountScope=node('p','','Sign-in applies to Codex across Serena. It starts only when every open Codex conversation is idle; other idle runtimes disconnect and can be reconnected after it finishes. Conversations and drafts stay intact.');
     const loginStatus=node('p');loginStatus.setAttribute('aria-live','polite');
     const connectionStatus=node('p');connectionStatus.setAttribute('aria-live','polite');connectionStatus.style.overflowWrap='anywhere';
     const link=node('a','','Continue browser sign-in');link.target='_blank';link.rel='noopener noreferrer';link.hidden=true;
@@ -851,7 +852,10 @@ export class WorkspacePane {
       const pending=['pending','uncertain'].includes(login?.status);
       signIn.disabled=busy || pending;cancel.hidden=!pending || !login?.loginId;cancel.disabled=busy;
       verify.disabled=busy || pending;
-      loginStatus.textContent=login ? `Sign-in: ${login.status}` : '';
+      const disconnected=Number.isSafeInteger(login?.disconnectedSessionCount) && login.disconnectedSessionCount>0
+        ? ` · ${login.disconnectedSessionCount} other Codex session${login.disconnectedSessionCount===1?'':'s'} disconnected until sign-in finishes`
+        : '';
+      loginStatus.textContent=login ? `Sign-in: ${login.status}${disconnected}` : '';
       if(login?.status==='pending' && login.authUrl){
         try{
           const url=new URL(login.authUrl);
@@ -905,9 +909,12 @@ export class WorkspacePane {
     });
     verify.hidden=!this.controls.accountRateLimits;
     const close=this.button('Close account','x',()=>dialog.close());
-    dialog.append(node('h3','','Codex account'),close,status,details,loginStatus,link,signIn,signOut,cancel,refresh,verify,connectionStatus);
+    dialog.append(node('h3','','Codex account'),close,status,details,accountScope,loginStatus,link,signIn,signOut,cancel,refresh,verify,connectionStatus);
     this.refreshAccount=()=>{if(dialog.open && !busy)refresh.click();};
-    dialog.addEventListener('close',()=>{clearTimeout(timer);if(this.refreshAccount)this.refreshAccount=null;dialog.remove();this.input.focus();});
+    dialog.addEventListener('close',()=>{
+      clearTimeout(timer);if(this.refreshAccount)this.refreshAccount=null;dialog.remove();this.input.focus();
+      queueMicrotask(()=>{if(!this.disposed)this.input.focus();});
+    });
     this.accountDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();window.lucide?.createIcons();refresh.click();
   }
 

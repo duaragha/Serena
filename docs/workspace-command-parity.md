@@ -3,6 +3,44 @@
 Status: incomplete. Catalog presence and generic input forwarding are not proof
 that a command's full behavior works. Gemini is deferred.
 
+## Synchronized Native Codex Login (2026-09-10)
+
+Codex app-server authentication is process-local after startup. A disposable
+two-owner native proof confirmed that one owner can persist a login while the
+other continues reporting no account; neither `account/read` mode reloads it.
+Serena therefore serializes sign-in against owner attachment and account
+mutation, requires every live Codex owner to be idle, and cleanly closes the
+other owners before starting the explicit browser login. Active turns, agents,
+questions, background tasks, queues, coding reservations and unconfirmed
+operations refuse the whole action without cancelling anything.
+
+While native login is pending, new Codex owners, reconnects, direct turns,
+bridges and coding-job reservations are blocked. The originating owner remains
+available for account status and explicit cancellation. A matching native
+`account/login/completed` event releases the block; other conversations remain
+closed until the user explicitly reconnects them, at which point their exact
+persisted session opens in a fresh app-server process and loads the shared
+account. No conversation or draft is recreated, submitted or discarded.
+
+```sh
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -k 'browser_login or account_logout' -q
+# exit 0: 12 passed, 162 deselected.
+env SERENA_PROOF_BROWSER=/usr/bin/microsoft-edge SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_host.py -q --tb=short
+# exit 0: 174 passed in 29.30s.
+/home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_codex.py -q --tb=short
+# exit 0: 194 passed in 0.82s.
+env SERENA_PROOF_BROWSER_CHANNEL=msedge /home/raghav/Documents/Projects/serena/.venv/bin/python -m pytest tests/test_workspace_pane.py::test_browser_login_requires_click_and_closing_does_not_cancel -q
+# exit 0: 2 passed; 390px and 1600px account dialogs fit without overflow.
+env SERENA_EVIDENCE_KIND=live PYTHONPATH=. /home/raghav/Documents/Projects/serena/.venv/bin/python scripts/verify-workspace-account.py --login-sync
+# exit 0: native stale cache confirmed; exact persisted-session reconnect loaded
+# the fake disposable API key; no inference, browser launch or duplicate thread.
+```
+
+The native proof uses `thread/inject_items` only to persist a disposable fixture
+without inference, then reopens the same thread ID. Children and the temporary
+profile are removed. Source: [official App Server account API](https://learn.chatgpt.com/docs/app-server),
+accessed 2026-09-10.
+
 ## Native Codex Account Logout (2026-09-10)
 
 Codex `/logout` and the account dialog now open the same explicit checkbox
@@ -39,8 +77,7 @@ env SERENA_EVIDENCE_KIND=live /home/raghav/Documents/Projects/serena/.venv/bin/p
 
 Ruff, JavaScript syntax and `git diff --check` passed. Screenshots at 390px and
 1600px were inspected without overflow. Source: [official App Server account API](https://learn.chatgpt.com/docs/app-server),
-accessed 2026-09-10. This does not claim that signing in one already-running
-owner refreshes every other owner; that separate synchronization gap remains.
+accessed 2026-09-10. Login synchronization is covered by the preceding section.
 
 ## Recoverable Native Codex Deletion (2026-09-10)
 

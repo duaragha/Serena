@@ -1140,7 +1140,7 @@ def test_browser_login_requires_click_and_closing_does_not_cancel(pane, width):
     page.evaluate("""() => {
       window.login=null;
       controls.accountStatus=async()=>({account:null,login});
-      controls.accountLogin=async()=>{calls.push('login');return window.login={status:'pending',loginId:'native-one',authUrl:'https://auth.openai.com/authorize?state=proof'};};
+      controls.accountLogin=async()=>{calls.push('login');return window.login={status:'pending',loginId:'native-one',authUrl:'https://auth.openai.com/authorize?state=proof',disconnectedSessionCount:2};};
       controls.cancelAccountLogin=async id=>{calls.push(['cancel',id]);return window.login={status:'cancelled'};};
       controls.accountRateLimits=async()=>{throw Error('Must not check during pending login');};
       pane.accountButton.hidden=false;pane.input.value='draft';
@@ -1154,8 +1154,13 @@ def test_browser_login_requires_click_and_closing_does_not_cancel(pane, width):
     page.wait_for_function("calls.length===1")
     assert dialog.get_by_role('button', name='Sign in with ChatGPT', exact=True).is_disabled()
     assert dialog.get_by_role('button', name='Check account connection', exact=True).is_disabled()
+    assert '2 other Codex sessions disconnected until sign-in finishes' in dialog.inner_text()
+    assert 'Conversations and drafts stay intact.' in dialog.inner_text()
     assert dialog.get_by_role('link', name='Continue browser sign-in').get_attribute('href').startswith('https://auth.openai.com/')
     assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'account-login-sync-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
     page.keyboard.press('Escape')
     assert page.evaluate('calls') == ['login']
     assert page.evaluate('pane.input.value') == 'draft'

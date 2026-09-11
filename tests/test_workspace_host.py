@@ -697,6 +697,9 @@ def test_pending_work_receipt_blocks_restart_and_new_dispatch(tmp_path):
 def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
     calls = []
     class AccountOwner(Owner):
+        async def list_background_tasks(self):
+            return {"data": []}
+
         async def login_account(self):
             calls.append((self.sid, "login"))
             return {"loginId": "one", "status": "pending"}
@@ -715,7 +718,184 @@ def test_browser_login_controls_are_receipted_and_subscription_only(tmp_path):
         assert not host.command("exact", "bad", "account_login", {"apiKey": "forbidden"})["ok"]
         assert host.command("exact", "cancel-once", "account_login_cancel", {"loginId": "one"})["ok"]
         assert calls == [("exact", "login"), ("exact", "one")]
+        assert host._codex_account_login is None
         assert not host._sessions["exact"][0].sent
+    finally:
+        host.shutdown()
+
+
+def test_browser_login_retires_stale_owners_blocks_writes_and_reconnects_after_completion(tmp_path):
+    calls = []
+    instances = []
+
+    class AccountOwner(Owner):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.questions = {}
+            self.active_agent_threads = set()
+            instances.append(self)
+
+        async def list_background_tasks(self):
+            return {"data": []}
+
+        async def login_account(self):
+            calls.append((self.sid, "login"))
+            return {"loginId": "native-login", "status": "pending",
+                    "authUrl": "https://auth.openai.com/authorize?state=test"}
+
+        async def account_status(self):
+            return {"account": None, "login": {"loginId": "native-login", "status": "pending"}}
+
+        async def close(self):
+            await super().close()
+            self.state = "closed"
+
+        def can_retry_attachment(self):
+            return self.state == "closed" and self.closed
+
+    host = WorkspaceHost(
+        journal=WorkspaceJournal(tmp_path / "login-sync.db"),
+        resolve=lambda sid: {
+            "session_id": sid,
+            "provider": "codex",
+            "cwd": str(tmp_path),
+        },
+        factories={"codex": AccountOwner},
+    )
+    try:
+        host.attach("exact")
+        host.attach("other")
+        original_other = host._sessions["other"][0]
+        result = host.command("exact", "login", "account_login", {})
+        assert result == {
+            "ok": True,
+            "result": {
+                "loginId": "native-login",
+                "status": "pending",
+                "authUrl": "https://auth.openai.com/authorize?state=test",
+                "disconnectedSessionCount": 1,
+            },
+        }
+        assert original_other.closed and original_other.state == "closed"
+        assert not host.observe("other")["observing"]
+        with pytest.raises(ValueError, match="browser sign-in"):
+            host.attach("other")
+        with pytest.raises(ValueError, match="browser sign-in"):
+            host.create(
+                "11111111-1111-4111-8111-111111111111",
+                "codex",
+                str(tmp_path),
+                confirmed=True,
+            )
+        assert len(instances) == 2
+        methods = [item["event"]["method"] for item in host.events("other")["events"]]
+        assert methods[-1] == "workspace/transportClosed"
+        blocked = host.command(
+            "exact", "blocked-submit", "submit", {"inputs": [{"type": "text", "text": "do not send"}]}
+        )
+        assert not blocked["ok"] and blocked["retryable"]
+        assert "browser sign-in" in blocked["error"] and not host._sessions["exact"][0].sent
+        assert "browser sign-in" in host.bridge("exact", "codex", "do not bridge", "blocked")["message"]
+        assert "browser sign-in" in host._work_admission_error("exact")
+        assert host._codex_account_login == {
+            "sid": "exact", "login_id": "native-login", "disconnected": ("other",)
+        }
+        status = host.command("exact", "status", "account_status", {})
+        assert status["result"]["login"]["disconnectedSessionCount"] == 1
+        host._dispatch(host._publish("exact", {
+            "method": "workspace/error", "params": {"reason": "Unrelated event error"}
+        }), 5)
+        host._dispatch(host._publish("exact", {
+            "method": "account/login/completed",
+            "params": {"loginId": "another-login", "success": True},
+        }), 5)
+        assert host._codex_account_login is not None
+        host._dispatch(host._publish("exact", {
+            "method": "account/login/completed",
+            "params": {"loginId": "native-login", "success": True},
+        }), 5)
+        assert host._codex_account_login is None
+        assert host._sessions["other"][0] is original_other
+        assert not original_other.sent
+        reconnected = host.attach("other")
+        assert reconnected["ok"] and host._sessions["other"][0] is not original_other
+        assert len(instances) == 3
+        assert calls == [("exact", "login")]
+    finally:
+        host.shutdown()
+
+
+def test_browser_login_early_completion_settles_after_command_releases_account_lock(tmp_path):
+    class AccountOwner(Owner):
+        async def list_background_tasks(self):
+            return {"data": []}
+
+        async def login_account(self):
+            asyncio.create_task(self.publish({
+                "method": "account/login/completed",
+                "params": {"loginId": "early", "success": True},
+            }))
+            await asyncio.sleep(0)
+            return {"loginId": "early", "status": "succeeded"}
+
+    host = WorkspaceHost(
+        journal=WorkspaceJournal(tmp_path / "early-login.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+        factories={"codex": AccountOwner},
+    )
+    try:
+        host.attach("exact")
+        result = host.command("exact", "login", "account_login", {})
+        assert result["ok"] and result["result"]["status"] == "succeeded"
+
+        async def settled():
+            async with asyncio.timeout(2):
+                while host._codex_account_login is not None:
+                    await asyncio.sleep(0.01)
+
+        host._dispatch(settled(), 5)
+        assert host._codex_account_login is None
+    finally:
+        host.shutdown()
+
+
+@pytest.mark.parametrize("blocker", ["running", "background", "reserved", "pending"])
+def test_browser_login_refuses_busy_codex_owners_without_closing_them(tmp_path, blocker):
+    calls = []
+
+    class AccountOwner(Owner):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.questions = {}
+            self.active_agent_threads = set()
+
+        async def list_background_tasks(self):
+            return {"data": ([{"processId": "work"}]
+                             if blocker == "background" and self.sid == "other" else [])}
+
+        async def login_account(self):
+            calls.append(self.sid)
+            return {"loginId": "must-not-start", "status": "pending"}
+
+    host = WorkspaceHost(
+        journal=WorkspaceJournal(tmp_path / f"login-{blocker}.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": "codex", "cwd": str(tmp_path)},
+        factories={"codex": AccountOwner},
+    )
+    try:
+        host.attach("exact")
+        host.attach("other")
+        if blocker == "running":
+            host._sessions["other"][0].state = "running"
+        elif blocker == "reserved":
+            host._work_reservations["other"] = "job"
+        elif blocker == "pending":
+            host.journal.claim_command("other", "unfinished", {"action": "submit", "payload": {}})
+        result = host.command("exact", "login", "account_login", {})
+        assert not result["ok"] and result["retryable"]
+        assert not calls and host._codex_account_login is None
+        assert not host._sessions["exact"][0].closed
+        assert not host._sessions["other"][0].closed
     finally:
         host.shutdown()
 

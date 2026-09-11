@@ -17,7 +17,7 @@ from core.workspace_lease import SessionLease
 from scripts.workspace_proof_auth import read_test_auth
 
 
-async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False, signed_apps=False, auth_home=None, usage=False, logout=False):
+async def main(browser_login=False, pause=False, modes=False, limits=False, signed_limits=False, hooks=False, command_guard=False, signed_apps=False, auth_home=None, usage=False, logout=False, login_sync=False):
     auth = read_test_auth(auth_home) if signed_limits or signed_apps else None
     binary = shutil.which("codex")
     assert binary, "Codex is not installed"
@@ -47,6 +47,9 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
         process = None
         secondary = None
         secondary_process = None
+        reconnected = None
+        reconnected_process = None
+        stale_login_cache = None
         wake_ms = None
         try:
             await owner.create(checkpoint=checkpoint, binary=binary, env=env)
@@ -182,15 +185,71 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
                 assert await secondary.logout_account() == {"loggedOut": True}
                 assert (await secondary.account_status())["account"] is None
                 assert await owner.logout_account() == {"loggedOut": True}
+            if login_sync:
+                secondary = CodexWorkspace(
+                    session_id="new:" + str(uuid4()),
+                    cwd=project,
+                    publish=publish,
+                    lease_factory=lambda identity: SessionLease(
+                        identity, directory=root / "leases"
+                    ),
+                )
+                await secondary.create(checkpoint=checkpoint, binary=binary, env=env)
+                secondary_process = secondary.rpc.process
+                secondary_sid = secondary.session_id
+                assert (await secondary.account_status())["account"] is None
+                await secondary.rpc.request(
+                    "thread/inject_items",
+                    {
+                        "threadId": secondary_sid,
+                        "items": [{
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_text",
+                                "text": "SERENA_ACCOUNT_RECONNECT_FIXTURE",
+                            }],
+                        }],
+                    },
+                )
+                assert await owner.rpc.request(
+                    "account/login/start",
+                    {"type": "apiKey", "apiKey": "sk-test-serena-disposable-only"},
+                ) == {"type": "apiKey"}
+                assert (await owner.account_status())["account"] == {"type": "apiKey"}
+                stale_login_cache = (await secondary.account_status())["account"] is None
+                assert stale_login_cache
+                refreshed = await secondary.rpc.request(
+                    "account/read", {"refreshToken": True}
+                )
+                assert refreshed.get("account") is None
+                await secondary.close()
+                assert secondary_process.returncode is not None
+                secondary = None
+                reconnected = CodexWorkspace(
+                    session_id=secondary_sid,
+                    cwd=project,
+                    publish=publish,
+                    lease_factory=lambda identity: SessionLease(
+                        identity, directory=root / "leases"
+                    ),
+                )
+                await reconnected.open(binary=binary, env=env)
+                reconnected_process = reconnected.rpc.process
+                assert reconnected.session_id == secondary_sid
+                assert (await reconnected.account_status())["account"] == {"type": "apiKey"}
             assert owner.session_id == sid and owner.rpc.process is process and process.returncode is None
             assert owner.state == "ready" and owner.active_turn is None
             assert not any(event.get("method") == "turn/started" for event in events)
         finally:
+            if reconnected is not None:
+                await reconnected.close()
             if secondary is not None:
                 await secondary.close()
             await owner.close()
         assert process is not None and process.returncode is not None
         assert secondary_process is None or secondary_process.returncode is not None
+        assert reconnected_process is None or reconnected_process.returncode is not None
     assert not root.exists()
     print(json.dumps({"ok": True, "nativeAccountRead": True, "sameOwner": True,
                       "signedIn": signed_limits or signed_apps, "loginStarted": browser_login, "loginCancelled": browser_login,
@@ -204,7 +263,11 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
                       "nativeUnsignedSessionUsageRefused": usage,
                       "nativeAllOwnerLogoutConfirmed": logout,
                       "repeatLogoutIdempotent": logout,
-                      "fakeDisposableApiKeyOnly": logout,
+                      "nativeStaleLoginCacheConfirmed": stale_login_cache,
+                      "exactPersistedSessionReloadedAccount": login_sync,
+                      "persistedWithoutInference": login_sync,
+                      "duplicateConversationCreated": False,
+                      "fakeDisposableApiKeyOnly": logout or login_sync,
                       "nativeEmptyHookCatalogRead": hooks,
                       "nativeAppCatalogRead": signed_apps,
                       "appsEnabledOnlyInDisposableProfile": signed_apps,
@@ -228,8 +291,9 @@ if __name__ == "__main__":
     parser.add_argument("--signed-apps", action="store_true", help="Read apps with an isolated subscription login copy; no tool calls or inference")
     parser.add_argument("--auth-home", type=Path, help="Separate disposable ChatGPT test profile; never the normal or active login")
     parser.add_argument("--logout", action="store_true", help="Sign out two disposable native owners carrying a fake local API key")
+    parser.add_argument("--login-sync", action="store_true", help="Prove exact-session reconnect reloads login cached by an old owner")
     args = parser.parse_args()
-    if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks or args.command_guard or args.usage or args.logout):
+    if args.signed_limits and (args.browser_login or args.pause or args.modes or args.limits or args.hooks or args.command_guard or args.usage or args.logout or args.login_sync):
         parser.error("--signed-limits must run alone")
     if args.signed_apps and any(value for key, value in vars(args).items() if key not in {'signed_apps', 'auth_home'}):
         parser.error("--signed-apps must run alone")
@@ -237,4 +301,6 @@ if __name__ == "__main__":
         parser.error("--auth-home is required only with --signed-limits or --signed-apps")
     if args.logout and any(value for key, value in vars(args).items() if key != "logout"):
         parser.error("--logout must run alone")
-    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard, args.signed_apps, args.auth_home, args.usage, args.logout))
+    if args.login_sync and any(value for key, value in vars(args).items() if key != "login_sync"):
+        parser.error("--login-sync must run alone")
+    asyncio.run(main(args.browser_login, args.pause, args.modes, args.limits, args.signed_limits, args.hooks, args.command_guard, args.signed_apps, args.auth_home, args.usage, args.logout, args.login_sync))

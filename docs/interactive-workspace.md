@@ -2,6 +2,24 @@
 
 Status: implementation in progress. Not a delivered replacement.
 
+## Synchronized Native Codex Login (2026-09-10)
+
+A native disposable proof confirmed that an already-open Codex app-server does
+not reload credentials written by another owner, including when
+`account/read` requests token refresh. Sign-in is now a serialized all-owner
+operation: all Codex work must be idle, the other owners close cleanly, and
+their panes show an honest reconnect state before the exact initiating owner
+starts browser login. Nothing opens or submits automatically.
+
+New Codex owners, reconnects, messages, bridges and coding reservations stay
+blocked until the matching native completion event or an explicit cancellation.
+Other conversations then remain closed until explicitly reconnected, which
+starts a fresh owner for the same persisted thread ID and loads the shared
+account. Drafts and conversation identity remain untouched. Focused host tests
+passed 12 cases, responsive browser tests passed at 390px and 1600px, and the
+native fake-key proof confirmed stale-cache detection plus exact-session reload
+without inference, duplicate creation or residual child processes.
+
 ## Confirmed All-Owner Codex Logout (2026-09-10)
 
 The account dialog and `/logout` now expose a native sign-out flow with explicit
@@ -19,9 +37,8 @@ sent no model turn and removed both processes and its temporary profile.
 
 Final receipts: 194 Codex tests, 168 host tests, eight account/browser tests and
 17 event-model tests passed; native logout proof, Ruff, JavaScript syntax and
-diff checks exited 0. The source remains uninstalled and unreleased. Existing
-owners do not yet inherit a login completed in another process; that is the next
-account lifecycle gap.
+diff checks exited 0. The source remains uninstalled and unreleased. Login now
+uses the synchronized reconnect lifecycle documented above.
 
 ## Native Conversation Deletion (2026-09-10)
 
