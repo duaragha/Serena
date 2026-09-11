@@ -11077,16 +11077,6 @@ _HTML_CLOSE = '</html>"""'
 _html_disk_cache: dict[str, object] = {"mtime": None, "html": None}
 
 
-# Where a packaged build looks for the live interface. The bundled copy is
-# frozen inside the executable, so without this the installed app can never
-# show an edit and every UI tweak costs a full rebuild. When the checkout is
-# present on this machine, the installed app serves the page from it.
-_UI_SOURCE_CANDIDATES = (
-    Path.home() / "Documents" / "Projects" / "serena" / "ui" / "web.py",
-    Path.home() / "Projects" / "serena" / "ui" / "web.py",
-)
-
-
 def _ui_source_path() -> Path | None:
     """The on-disk page source, or None when only the bundled copy exists."""
 
@@ -11097,9 +11087,8 @@ def _ui_source_path() -> Path | None:
     if not getattr(sys, "frozen", False):
         here = Path(__file__).resolve()
         return here if here.is_file() else None
-    for candidate in _UI_SOURCE_CANDIDATES:
-        if candidate.is_file():
-            return candidate
+    # Installed releases must keep their page and backend contracts together.
+    # A local checkout is only used through explicit SERENA_UI_SOURCE opt-in.
     return None
 
 

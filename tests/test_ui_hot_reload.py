@@ -61,7 +61,7 @@ def test_a_broken_slice_falls_back_to_the_imported_page(source_backup):
     assert web._live_html() == web.HTML
 
 
-def test_a_packaged_build_serves_the_checkout_when_one_is_present(monkeypatch):
+def test_a_packaged_build_serves_an_explicit_source_override(monkeypatch):
     """The installed app is the one that matters, so it must reload too.
 
     Gating this to unpackaged runs meant every UI tweak cost a full rebuild,
@@ -75,6 +75,23 @@ def test_a_packaged_build_serves_the_checkout_when_one_is_present(monkeypatch):
     assert web._live_html() == web.HTML
     body = web.app.test_client().get("/").get_data(as_text=True)
     assert "/api/ui-version" in body
+
+
+def test_packaged_build_ignores_old_checkout_even_when_present(monkeypatch, tmp_path):
+    monkeypatch.setattr(web.sys, "frozen", True, raising=False)
+    monkeypatch.delenv("SERENA_UI_SOURCE", raising=False)
+    monkeypatch.delenv("SERENA_UI_HOTRELOAD", raising=False)
+    monkeypatch.setattr(web.Path, "home", lambda: tmp_path)
+    for folder in ("Documents/Projects", "Projects"):
+        source = tmp_path / folder / "serena/ui/web.py"
+        source.parent.mkdir(parents=True)
+        source.write_text('HTML = r"""<!DOCTYPE html><html>old terminal</html>"""')
+    assert web._ui_source_path() is None
+    assert web.ui_hot_reload_enabled() is False
+    body = web.app.test_client().get("/").get_data(as_text=True)
+    assert "function _startStructuredPane" in body
+    assert "old terminal" not in body
+    assert "/api/ui-version" not in body
 
 
 def test_a_build_with_no_checkout_falls_back_to_the_bundled_page(monkeypatch, tmp_path):
