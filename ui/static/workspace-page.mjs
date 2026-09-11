@@ -14,12 +14,13 @@ const connection = new WorkspaceConnection({
         ? {type:'serena-workspace-title-changed',sid:boot.sessionId}
         : {type:'serena-workspace-catalog',sid:boot.sessionId,title:catalog.params.display_title},location.origin);
     }
-    if (accepted) reportState();
+    if (accepted && !pane.replaying) reportState();
     return accepted;
   },
   error: error => connectionFailed(error),
   runtime: runtime => pane.setSleeping(runtime?.sleeping === true),
-  replaying: active => pane.setReplaying(active),
+  replaying: active => {pane.setReplaying(active);if(!active)reportState();},
+  streamReplay: true,
 });
 const controls = connection.controls();
 if(parent!==window)controls.newConversation=title=>{

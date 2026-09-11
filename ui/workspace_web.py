@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import ipaddress
 import secrets
+import zlib
 from urllib.parse import urlsplit
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, Response, jsonify, request, send_file
 
 
 def local_workspace_request():
@@ -156,6 +157,24 @@ def workspace_blueprint(host, *, token: str):
     @bp.get("/<sid>/events")
     def events(sid):
         return jsonify(host.events(sid, after=int(request.args.get("after", "0"))))
+
+    @bp.get("/<sid>/replay")
+    def replay(sid):
+        frames = host.replay(sid, after=int(request.args.get("after", "0")))
+        compressed = request.accept_encodings['gzip'] > 0
+        def stream():
+            encoder = zlib.compressobj(wbits=31) if compressed else None
+            try:
+                for frame in frames:
+                    yield encoder.compress(frame) + encoder.flush(zlib.Z_SYNC_FLUSH) if encoder else frame
+                final = b'{"complete":true}\n'
+                yield encoder.compress(final) + encoder.flush() if encoder else final
+            finally:
+                frames.close()
+        headers = {'Cache-Control': 'no-store', 'Vary': 'Accept-Encoding'}
+        if compressed:
+            headers['Content-Encoding'] = 'gzip'
+        return Response(stream(), mimetype='application/x-ndjson', headers=headers)
 
     @bp.get("/<sid>/attachments/<attachment_id>")
     def attachment(sid, attachment_id):

@@ -10,6 +10,16 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+def test_stale_permission_card_disappears_on_fresh_history(pane):
+    page, errors = pane
+    page.evaluate("emit({id:'stale',method:'workspace/claudeApproval',params:{threadId:'exact',tool:'Bash',input:{command:'pwd'}}})")
+    page.get_by_role('button',name='Allow once',exact=True).wait_for()
+    page.evaluate("emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}})")
+    playwright.expect(page.get_by_role('button',name='Allow once',exact=True)).to_have_count(0)
+    assert page.evaluate('calls') == []
+    assert not errors
+
+
 @pytest.mark.parametrize('provider', ['Claude', 'Codex'])
 @pytest.mark.parametrize('width', [390, 1600])
 def test_inline_model_effort_speed_and_no_duplicate_current_model(pane, provider, width, tmp_path):
