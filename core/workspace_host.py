@@ -69,6 +69,18 @@ class WorkspaceHost:
         self._restore_failures = {}
         self._account_mutation_lock = None
         self._codex_account_login = None
+        from core.workspace_usage import WorkspaceUsage
+        self._usage = WorkspaceUsage()
+
+    def live_usage_snapshot(self):
+        with self._guard:
+            if self._stopped or self._loop is None:
+                return {}
+            future = asyncio.run_coroutine_threadsafe(self._usage_snapshot(), self._loop)
+        return future.result(timeout=1)
+
+    async def _usage_snapshot(self):
+        return self._usage.snapshot(self._sessions)
 
     def _account_mutex(self):
         # Construct on the resident owner loop, not in the Flask caller thread.
@@ -2019,6 +2031,9 @@ class WorkspaceHost:
             return receipt
 
     async def _publish(self, sid, event):
+        if event.get('method') == 'turn/started':
+            event = deepcopy(event)
+            event['params']['turn'].setdefault('startedAtMs', int(time.time()*1000))
         decorated = await asyncio.to_thread(self.uploads.decorate_event, sid, event)
         await asyncio.to_thread(self.journal.append, sid, decorated)
         method = event.get("method")
@@ -2224,6 +2239,9 @@ class WorkspaceHost:
             return
 
         async def close_owners():
+            if self._usage.task is not None:
+                self._usage.task.cancel()
+                await asyncio.gather(self._usage.task, return_exceptions=True)
             # An attach that was already admitted must finish before taking the
             # owner snapshot, otherwise it could launch after shutdown's sweep.
             await asyncio.gather(*list(self._operations), return_exceptions=True)

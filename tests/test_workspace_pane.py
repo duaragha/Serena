@@ -10,6 +10,22 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('width', [390,1600])
+def test_active_turn_elapsed_timer_ticks_and_stops(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.clock.install()
+    page.evaluate("()=>{pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Claude',controls});window.seq=0;}")
+    page.evaluate("""()=>emit({method:'turn/started',params:{turn:{id:'timed',status:'inProgress',startedAtMs:Date.now()-65000}}})""")
+    timer=page.locator('#left .aw-elapsed')
+    playwright.expect(timer).to_have_text('1m 5s')
+    page.clock.fast_forward(2000)
+    playwright.expect(timer).to_have_text('1m 7s')
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    page.screenshot(path=str(tmp_path / f'elapsed-{width}.png'))
+    page.evaluate("emit({method:'turn/completed',params:{turn:{id:'timed',status:'completed'}}})")
+    playwright.expect(timer).to_be_hidden()
+    assert not errors
 def test_inline_suggestions_ignore_stale_lookup_and_never_send_while_loading(pane):
     page, errors = pane
     page.evaluate("""()=>{controls.commands=()=>new Promise(resolve=>window.resolveCommands=resolve);}""")

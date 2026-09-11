@@ -11410,7 +11410,9 @@ def _mark_usage_freshness(service: dict, fallback_updated_at, now: float) -> dic
     age = max(0.0, now - float(updated_at))
     service["updated_at"] = updated_at
     service["age_seconds"] = age
-    service["stale"] = age > _LIVE_USAGE_STALE_AFTER
+    source = service.get("source", "")
+    threshold = 330 if source == "gemini-cli-usage" else 60 if source in {"claude-workspace", "codex-workspace"} else _LIVE_USAGE_STALE_AFTER
+    service["stale"] = age > threshold
     return service
 
 
@@ -11459,6 +11461,14 @@ def _live_usage_payload() -> dict:
             return _LIVE_USAGE_CACHE["data"]
 
         state = _read_live_usage_state()
+        workspace = app.extensions.get("workspace_host")
+        try:
+            native_usage = workspace.live_usage_snapshot() if workspace else {}
+        except Exception:
+            native_usage = {}
+        for provider, observation in native_usage.items():
+            if observation.get("updated_at", 0) > (state.get(provider) or {}).get("updated_at", 0):
+                state[provider] = observation
         state_updated_at = state.get("updated_at")
         claude = _mark_usage_freshness(
             _normalize_usage_service(state.get("claude"), now),
@@ -11472,7 +11482,7 @@ def _live_usage_payload() -> dict:
         )
         codex = _normalize_usage_service(_latest_codex_usage(), now)
         codex = _mark_usage_freshness(codex, codex.get("updated_at"), now)
-        if not codex.get("available") and codex_state:
+        if codex_state and (not codex.get("available") or codex_state.get("updated_at", 0) > codex.get("updated_at", 0)):
             codex = codex_state
 
         # Antigravity keeps quota in memory and prints it on request, so unlike

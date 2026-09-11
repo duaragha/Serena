@@ -59,6 +59,8 @@ export class WorkspacePane {
     this.status = node('span', 'aw-state', 'Connecting');
     this.status.setAttribute('role', 'status');
     head.append(this.status);
+    this.elapsed=node('span','aw-elapsed');this.elapsed.setAttribute('aria-label','Current turn elapsed time');head.append(this.elapsed);
+    this.elapsedTimer=setInterval(()=>this.updateElapsed(),1000);
     this.resumeButton=this.button('Open saved conversation','history',()=>this.openSessions());
     this.resumeButton.hidden=!['Claude','Codex'].includes(provider) || !controls.listSessions || !controls.openSession;
     head.append(this.resumeButton);
@@ -325,6 +327,14 @@ export class WorkspacePane {
     dialog.append(node('h3','','Recover saved setting'),close,label,
       node('p','','History, drafts and Plan mode stay unchanged. Reconnection uses the native setting instead of this saved override.'),status,apply);
     this.settingRecoveryDialog=dialog;this.root.append(dialog);dialog.showModal();close.focus();this.refreshIcons();
+  }
+
+  updateElapsed() {
+    const turn=[...this.conversation.turns.values()].find(turn=>turn.status==='inProgress' && Number.isFinite(turn.startedAtMs));
+    this.elapsed.hidden=!turn;
+    if(!turn)return;
+    const seconds=Math.max(0,Math.floor((Date.now()-turn.startedAtMs)/1000));
+    this.elapsed.textContent=`${Math.floor(seconds/60)}m ${seconds%60}s`;
   }
 
   persistDraft() {
@@ -2340,6 +2350,7 @@ export class WorkspacePane {
 
   renderStatus() {
     this.status.textContent = this.sleeping ? 'sleeping' : this.conversation.status;
+    this.updateElapsed();
     if(this.conversation.metadata.activeAgentCount>0)this.status.textContent+=` / ${this.conversation.metadata.activeAgentCount} agents working`;
     if (this.conversation.metadata.bridgeQueueCount > 0) this.status.textContent += ` / ${this.conversation.metadata.bridgeQueueCount} queued`;
     this.refreshSessionStatus?.();
@@ -3168,6 +3179,7 @@ export class WorkspacePane {
     this.sessionStatusDialog?.close();
     this.imageDialog?.close();
     this.disposeMentions?.();
+    clearInterval(this.elapsedTimer);
     this.commandSuggestions?.dispose();
     this.reviewDialog?.close();
     this.tasksDialog?.close();
