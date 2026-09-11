@@ -25,6 +25,7 @@ if ! "$python_bin" -c 'import hjson' 2>/dev/null; then
   exit 1
 fi
 
+"$python_bin" -c 'from claude_agent_sdk import ClaudeSDKClient, get_session_info, get_session_messages; import jsonschema'
 npm --prefix "$repo_root/runtimes/claude-sdk" ci --ignore-scripts --omit=optional --no-audit --no-fund
 rm -rf "$pyinstaller_work" "$sidecar_dist"
 mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
@@ -42,6 +43,7 @@ mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
   --specpath "$pyinstaller_work" \
   --paths "$repo_root" \
   --hidden-import core.workspace_gemini \
+  --collect-all claude_agent_sdk \
   --collect-all numpy \
   --collect-submodules Xlib \
   --add-data "$repo_root/ui/static:ui/static" \
@@ -52,5 +54,6 @@ mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
   "$desktop_dir/sidecar.py"
 
 test -x "$sidecar_dist/serena-web-sidecar/serena-web-sidecar"
+"$sidecar_dist/serena-web-sidecar/serena-web-sidecar" --workspace-runtime-check
 "$python_bin" "$repo_root/scripts/fleet_peer_smoke.py" \
   --binary "$sidecar_dist/serena-web-sidecar/serena-web-sidecar"

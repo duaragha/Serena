@@ -45,6 +45,13 @@ def workspace_blueprint(host, *, token: str):
     def unavailable(error):
         return jsonify(ok=False, error=str(error)), 409
 
+    @bp.errorhandler(ImportError)
+    def missing_runtime(error):
+        from flask import current_app
+
+        current_app.logger.exception("Workspace runtime dependency is unavailable")
+        return jsonify(ok=False, error="The installed app is missing a required coding runtime. Update Serena to a corrected release."), 503
+
     @bp.post("/<sid>/attach")
     def attach(sid):
         return jsonify(host.attach(sid))

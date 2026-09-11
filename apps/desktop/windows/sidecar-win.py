@@ -20,6 +20,13 @@ from pathlib import Path
 if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+if __name__ == "__main__" and sys.argv[1:] == ["--workspace-runtime-check"]:
+    from core.workspace_claude import ClaudeWorkspace  # noqa: F401
+    from core.workspace_codex import CodexWorkspace  # noqa: F401
+    import jsonschema  # noqa: F401
+
+    raise SystemExit(0)
+
 os.environ.setdefault("SERENA_CALL_RUNTIME", "lazy")
 
 
