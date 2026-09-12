@@ -49,6 +49,31 @@ def test_claude_resolved_names_and_saved_effort_survive_history(pane):
     assert not errors
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_gemini_native_workspace_composer_and_tool_output(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width, 'height':900})
+    page.evaluate("""()=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Gemini',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      emit({method:'workspace/models',params:{settings:{model:'gemini-flash-high'},data:[{model:'gemini-flash-high',displayName:'Gemini Flash (High)'}]}});
+      emit({method:'turn/started',params:{turn:{id:'work',status:'inProgress'}}});
+      emit({method:'item/completed',params:{turnId:'work',item:{id:'user',type:'userMessage',content:[{type:'text',text:'Check the command output.'}]}}});
+      emit({method:'item/completed',params:{turnId:'work',item:{id:'tool',type:'acpToolCall',tool:'run_command',input:{CommandLine:'printf proof'},output:'proof',status:'completed'}}});
+      emit({method:'item/completed',params:{turnId:'work',item:{id:'reply',type:'agentMessage',text:'Verified the command output.'}}});
+      emit({method:'turn/completed',params:{turn:{id:'work',status:'completed'}}});
+    }""")
+    page.locator('#left').get_by_text('Verified the command output.', exact=True).wait_for()
+    assert page.locator('#left').get_by_text('Check the command output.', exact=True).is_visible()
+    page.locator('#left summary').filter(has_text='run_command').click()
+    assert page.locator('#left').get_by_text('proof', exact=True).is_visible()
+    assert page.locator('#left').get_by_role('button', name='Commands and skills', exact=True).is_hidden()
+    page.get_by_role('textbox', name='Message Gemini').fill('Continue with the saved context.')
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    page.screenshot(path=str(tmp_path / f'gemini-workspace-{width}.png'))
+    assert not errors
+
+
 def test_stale_permission_card_disappears_on_fresh_history(pane):
     page, errors = pane
     page.evaluate("emit({id:'stale',method:'workspace/claudeApproval',params:{threadId:'exact',tool:'Bash',input:{command:'pwd'}}})")

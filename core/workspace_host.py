@@ -33,6 +33,11 @@ def _claude_owner(**kwargs):
     return ClaudeWorkspace(client_factory=client_factory(), **kwargs)
 
 
+def _gemini_owner(**kwargs):
+    from core.workspace_antigravity import AntigravityWorkspace
+    return AntigravityWorkspace(**kwargs)
+
+
 class WorkspaceHost:
     def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None, register_fork=None,
                  delete_catalog=None):
@@ -51,6 +56,7 @@ class WorkspaceHost:
             else {
                 "codex": CodexWorkspace,
                 "claude": _claude_owner,
+                "gemini": _gemini_owner,
             }
         )
         self._guard = threading.Lock()
@@ -598,7 +604,7 @@ class WorkspaceHost:
     def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
             raise ValueError("Creation requires an exact request UUID")
-        if confirmed is not True or provider not in {"codex", "claude"} or provider not in self.factories:
+        if confirmed is not True or provider not in {"codex", "claude", "gemini"} or provider not in self.factories:
             raise ValueError("Explicit supported-provider creation is required")
         if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
             raise ValueError("An existing absolute project directory is required")
@@ -1983,7 +1989,7 @@ class WorkspaceHost:
                     mapper = {
                         "codex": self.uploads.codex_inputs,
                         "claude": self.uploads.claude_inputs,
-                        "gemini": self.uploads.acp_inputs,
+                        "gemini": (self.uploads.gemini_inputs if getattr(owner, 'native_stream', False) else self.uploads.acp_inputs),
                     }.get(provider)
                     if mapper is None:
                         raise ValueError("Provider input mapping is not implemented")

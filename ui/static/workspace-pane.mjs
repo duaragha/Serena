@@ -207,8 +207,8 @@ export class WorkspacePane {
     this.tasksButton = this.button('Background tasks', 'list-tree', () => this.openBackgroundTasks());
     this.tasksButton.hidden = !['Codex','Claude'].includes(provider) || !controls.backgroundTasks;
     footer.insertBefore(this.tasksButton, this.stop);
-    this.commandsButton = this.button('Commands and skills', 'slash', () => this.provider==='Gemini'?this.openCommands():this.commandSuggestions.open());
-    this.commandsButton.hidden = provider !== 'Gemini' || !controls.commands;
+    this.commandsButton = this.button('Commands and skills', 'slash', () => this.commandSuggestions.open());
+    this.commandsButton.hidden = true;
     footer.insertBefore(this.commandsButton, this.stop);
     this.mcpButton = this.button('MCP connections', 'plug', () => this.openMcpServers());
     this.mcpButton.hidden = !['Claude','Codex'].includes(provider) || !controls.mcpServers;
@@ -2787,6 +2787,7 @@ export class WorkspacePane {
         detail.append(node('div','aw-author',item.inputStreaming?'Receiving tool input':'Tool input incomplete'),node('pre','aw-tool-input',item.inputJson || ''));
       }
       if(item.tool==='Bash' && typeof input.command==='string')detail.append(node('pre','aw-command',input.command));
+      else if(item.tool==='run_command' && typeof input.CommandLine==='string')detail.append(node('pre','aw-command',input.CommandLine));
       else if(item.tool==='Edit' && typeof input.old_string==='string' && typeof input.new_string==='string'){
         detail.append(node('div','aw-author','Requested edit'));
         const diff=node('pre','aw-diff');

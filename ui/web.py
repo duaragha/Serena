@@ -7260,7 +7260,7 @@ async function startLiveTerminal(sid, opts) {
     return null;
   }
   const provider = opts.agent || localSession?.agent;
-  if (window.SERENA?.structuredWorkspace && ['claude', 'codex'].includes(provider)) return _startStructuredPane(sid, opts);
+  if (window.SERENA?.structuredWorkspace && ['claude', 'codex', 'gemini'].includes(provider)) return _startStructuredPane(sid, opts);
   // A missing CLI/session in one pane must not block the rest of the group.
   if (!opts.background && !opts.isNew) _startLinkedTerminals(sid);
   // Already alive? Just bring its pane to front.
