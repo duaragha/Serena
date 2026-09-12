@@ -2690,6 +2690,7 @@ export class WorkspacePane {
     const unchanged = node('option', '', this.modelSelect.value ? `Default (${model?.defaultReasoningEffort || 'provider'})` : (this.conversation.metadata.reasoningEffort || 'Session effort'));
     unchanged.value = ''; this.effortSelect.append(unchanged);
     for (const effort of model?.supportedReasoningEfforts || []) {
+      if (!this.modelSelect.value && effort.reasoningEffort === this.conversation.metadata.reasoningEffort) continue;
       const option = node('option', '', effort.reasoningEffort);
       option.value = effort.reasoningEffort; option.title = effort.description || '';
       this.effortSelect.append(option);

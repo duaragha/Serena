@@ -10,6 +10,26 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('provider', ['Claude', 'Codex'])
+def test_current_effort_is_not_duplicated_and_can_be_restored(pane, provider):
+    page, errors = pane
+    page.evaluate("""provider=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider,controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]},model:'test-model',reasoningEffort:'medium'}});
+      emit({method:'workspace/models',params:{data:[{model:'test-model',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'}]}]}});
+      pane.render();
+    }""", provider)
+    effort = page.locator('#left').get_by_role('combobox', name='Reasoning effort', exact=True)
+    assert effort.locator('option').all_text_contents() == ['medium', 'low', 'high']
+    effort.select_option('high')
+    assert page.evaluate('pane.turnOptions([]).effort') == 'high'
+    page.evaluate('pane.renderEfforts(false)')
+    assert effort.input_value() == 'high'
+    effort.select_option(label='medium')
+    assert page.evaluate('pane.turnOptions([])') == {}
+    assert not errors
+
+
 def test_stale_permission_card_disappears_on_fresh_history(pane):
     page, errors = pane
     page.evaluate("emit({id:'stale',method:'workspace/claudeApproval',params:{threadId:'exact',tool:'Bash',input:{command:'pwd'}}})")
