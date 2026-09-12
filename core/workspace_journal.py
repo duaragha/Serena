@@ -185,7 +185,7 @@ class WorkspaceJournal:
     def prepare_creation(self, request_id: str, target: dict) -> None:
         sid = target.get("session_id")
         if (not isinstance(sid, str) or str(UUID(sid)) != sid
-                or target.get("provider") not in {"codex", "claude"} or set(target) != {"session_id", "provider", "cwd"}
+                or target.get("provider") not in {"codex", "claude", "gemini"} or set(target) != {"session_id", "provider", "cwd"}
                 or not isinstance(target.get("cwd"), str) or not Path(target["cwd"]).is_absolute()):
             raise ValueError("Exact native creation target required")
         encoded = json.dumps(target, sort_keys=True, allow_nan=False)

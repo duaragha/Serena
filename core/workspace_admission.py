@@ -35,12 +35,12 @@ def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider
             candidate = candidate or any(name in Path(value).name.lower() for value in argv[:3] for name in names)
             if not candidate:
                 continue
-            if sid in argv or f"--resume={sid}" in argv:
+            if sid in argv or f"--resume={sid}" in argv or (provider == 'agy' and f'--conversation={sid}' in argv):
                 raise RuntimeError(f"This session already has a {label} process")
             paths = {Path(f.path) for f in process.open_files()}
             if transcript in paths:
                 raise RuntimeError(f"This session transcript is already open by a {label} process")
-            switches = ("resume",) if provider == "codex" else ("--resume", "-r")
+            switches = ("resume",) if provider == "codex" else (("--conversation",) if provider == "agy" else ("--resume", "-r"))
             explicit = next((value for value in switches if value in argv), None)
             if explicit:
                 index = argv.index(explicit) + 1
@@ -68,14 +68,7 @@ def resolve_workspace_session(sid: str) -> dict:
     if not session or session.get("session_id") != sid:
         raise ValueError("Exact persisted session was not found")
     provider = str(session.get("agent") or "").lower()
-    if provider == "gemini":
-        raise ValueError(
-            "Gemini's ACP integration is not ready for this saved session. "
-            "The ACP server uses a separate session store from the CLI; "
-            "exact-session compatibility has not been verified. "
-            "This session has not been opened or changed."
-        )
-    if provider not in {"codex", "claude"}:
+    if provider not in {"codex", "claude", "gemini"}:
         raise ValueError("This provider's structured workspace is not implemented yet")
     meta = metadata.get_meta(sid)
     if meta.get("fleet_worker") or metadata.external_runtime_active(sid):
@@ -90,6 +83,12 @@ def resolve_workspace_session(sid: str) -> dict:
     if not cwd.is_dir() or not transcript.is_file():
         raise ValueError("Session project or native transcript is unavailable on this machine")
     cwd, transcript = cwd.resolve(), transcript.resolve()
-    reject_unregistered_provider(sid, cwd, transcript, provider)
+    if provider == 'gemini':
+        from core.gemini_scanner import resumable_conversation_path
+        native = resumable_conversation_path(sid)
+        if native is None:
+            raise ValueError('Exact native Gemini conversation is unavailable')
+        transcript = native.resolve()
+    reject_unregistered_provider(sid, cwd, transcript, 'agy' if provider == 'gemini' else provider)
     return {"session_id": sid, "provider": provider, "cwd": str(cwd),
             "archived": bool(session.get("is_archived"))}

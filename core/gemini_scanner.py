@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterator
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -256,6 +257,19 @@ def parse_gemini_metadata(file_path: Path) -> SessionMeta | None:
         if cwd:
             break
 
+    if not cwd:
+        from core.metadata import get_meta
+        cwd = get_meta(conversation_id).get('gemini_workspace') or ''
+    native_turns = []
+    if not typed:
+        native_transcript = transcript_path(conversation_id)
+        if native_transcript:
+            native_turns = [turn for turn in read_turns(native_transcript) if turn['role'] == 'user']
+            if native_turns:
+                first_message = native_turns[0]['text'][:500]
+                with suppress(ValueError):
+                    first_timestamp = datetime.fromisoformat(native_turns[0]['timestamp'].replace('Z', '+00:00'))
+
     from core.config import claude_project_dir_for
     from core.codex_scanner import _current_device_tag
 
@@ -273,8 +287,8 @@ def parse_gemini_metadata(file_path: Path) -> SessionMeta | None:
         # Prompts are all history.jsonl records, so this counts what the user
         # said, not the assistant's replies. Reporting only the half we can
         # actually see beats inventing the other one.
-        message_count=len(typed),
-        raw_message_count=len(mine),
+        message_count=len(typed) or len(native_turns),
+        raw_message_count=len(mine) or len(native_turns),
         model="gemini",
         slug=claude_project_dir_for(cwd) if cwd else "gemini",
         file_path=str(file_path),

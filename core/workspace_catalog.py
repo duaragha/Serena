@@ -40,9 +40,14 @@ def register_fork(target):
 
     sid = target["session_id"]
     provider = target.get("provider")
-    if provider not in {"claude", "codex"} or str(UUID(sid)) != sid:
+    if provider not in {"claude", "codex", "gemini"} or str(UUID(sid)) != sid:
         raise ValueError("An exact native fork is required")
-    if provider == "claude":
+    if provider == 'gemini':
+        from core.gemini_scanner import GEMINI_ROOT, resumable_conversation_path
+        projects = GEMINI_ROOT
+        native = resumable_conversation_path(sid)
+        candidates = [native] if native else []
+    elif provider == "claude":
         projects = Path(os.environ.get("CLAUDE_CONFIG_DIR") or CLAUDE_DIR) / "projects"
         candidates = list(projects.glob(f"*/{sid}.jsonl"))
     else:
@@ -68,7 +73,10 @@ def register_fork(target):
                     found = True
         if not found:
             raise NativeTranscriptPending("Completed prompt is not persisted yet")
-    if provider == "claude":
+    if provider == 'gemini':
+        from core.gemini_scanner import parse_gemini_metadata
+        meta = parse_gemini_metadata(path)
+    elif provider == "claude":
         meta = parse_metadata(path, path.parent.name)
     else:
         from core.codex_records import iter_records

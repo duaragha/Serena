@@ -37,7 +37,7 @@ def test_exact_session_only_no_cwd_guess_or_provider_substitution(session):
     with pytest.raises(ValueError, match="Exact"):
         admission.resolve_workspace_session("prefix")
     session["agent"] = "gemini"
-    with pytest.raises(ValueError, match="exact-session compatibility"):
+    with pytest.raises(ValueError, match="native Gemini conversation"):
         admission.resolve_workspace_session("exact")
     session["agent"] = "codex"
     session["cwd"] = "/missing-workspace-directory"
@@ -124,17 +124,11 @@ def test_surviving_google_harness_blocks_ambiguous_session_attachment(session, m
         admission.reject_unregistered_provider("exact", cwd, transcript, "agy")
 
 
-def test_gemini_fidelity_rejection_precedes_runtime_side_effects(session, monkeypatch):
-    from core import metadata
-
+def test_gemini_native_store_is_admitted_without_acp_migration(session, monkeypatch):
+    from core import gemini_scanner
     session["agent"] = "gemini"
-
-    def unexpected(*args):
-        raise AssertionError("Unsupported provider must not enter runtime admission")
-
-    monkeypatch.setattr(metadata, "get_meta", unexpected)
-    with pytest.raises(ValueError, match="has not been opened or changed"):
-        admission.resolve_workspace_session("exact")
+    monkeypatch.setattr(gemini_scanner, 'resumable_conversation_path', lambda sid: Path(session['file_path']))
+    assert admission.resolve_workspace_session('exact')['provider'] == 'gemini'
 
 
 @pytest.mark.parametrize("switch", ["-r", "--resume", "--resume=exact"])

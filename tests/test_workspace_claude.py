@@ -927,6 +927,24 @@ def test_diagnostics_keep_exact_owner_and_refuse_a_running_turn(tmp_path, monkey
     asyncio.run(run())
 
 
+def test_model_catalog_reports_configured_effort(tmp_path, monkeypatch):
+    from pathlib import Path
+    async def run():
+        owner, events = make(tmp_path)
+        try:
+            await owner.open()
+            monkeypatch.setattr(Path, 'home', staticmethod(lambda: tmp_path / 'home'))
+            folder = owner.cwd / '.claude'
+            folder.mkdir(exist_ok=True)
+            (folder / 'settings.json').write_text('{"effortLevel":"high"}')
+            (folder / 'settings.local.json').write_text('{"effortLevel":"xhigh"}')
+            result = await owner.list_models()
+            assert result['settings']['reasoningEffort'] == 'xhigh'
+        finally:
+            await owner.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('speed', [None, 'fast', 'invalid'])
 def test_inline_effort_and_speed_preserve_current_claude_model(tmp_path, speed):
     async def run():

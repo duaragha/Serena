@@ -130,6 +130,16 @@ def set_custom_title(session_id: str, title: str) -> None:
     _save_one(session_id, entry)
 
 
+def set_gemini_workspace(session_id: str, cwd: str) -> None:
+    """Persist the workspace confirmed by a new native Gemini init event."""
+    path = Path(cwd)
+    if not path.is_absolute() or not path.is_dir():
+        raise ValueError('An existing absolute Gemini workspace is required')
+    entry = _load_one(session_id)
+    entry['gemini_workspace'] = str(path.resolve())
+    _save_one(session_id, entry)
+
+
 def set_resident_work(session_id: str, resident: bool = True) -> None:
     """Mark a Codex exec session as user-visible Serena-owned work."""
 

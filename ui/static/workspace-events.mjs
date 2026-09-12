@@ -56,7 +56,9 @@ export class WorkspaceConversation {
       if (!p.thread || p.thread.id !== this.sessionId) throw new Error('History identity mismatch');
       this.questions.clear();
       this.error = null;
+      const lastEffort = this.metadata.reasoningEffort;
       this.metadata = p;
+      if (!this.metadata.reasoningEffort && lastEffort) this.metadata.reasoningEffort = lastEffort;
       this.copyUnavailableAfterRevert = p.copyUnavailableAfterRevert === true;
       this.historyRevision = p.historyRevision ?? 0;
       if (!this.metadata.model && typeof p.thread.model === 'string') this.metadata.model = p.thread.model;
@@ -112,7 +114,9 @@ export class WorkspaceConversation {
       this.commands = p.data || [];
     } else if (method === 'workspace/models') {
       this.models = p.data || [];
+      const lastEffort = this.metadata.reasoningEffort;
       Object.assign(this.metadata, p.settings || {});
+      if (lastEffort) this.metadata.reasoningEffort = lastEffort;
     } else if (method === 'workspace/settings') {
       Object.assign(this.metadata, p);
     } else if (method === 'turn/started' || method === 'turn/completed') {

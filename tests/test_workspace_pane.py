@@ -10,6 +10,70 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('provider', ['Claude', 'Codex'])
+def test_current_effort_is_not_duplicated_and_can_be_restored(pane, provider):
+    page, errors = pane
+    page.evaluate("""provider=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider,controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]},model:'test-model',reasoningEffort:'medium'}});
+      emit({method:'workspace/models',params:{data:[{model:'test-model',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'}]}]}});
+      pane.render();
+    }""", provider)
+    effort = page.locator('#left').get_by_role('combobox', name='Reasoning effort', exact=True)
+    assert effort.locator('option').all_text_contents() == ['medium', 'low', 'high']
+    effort.select_option('high')
+    assert page.evaluate('pane.turnOptions([]).effort') == 'high'
+    page.evaluate('pane.renderEfforts(false)')
+    assert effort.input_value() == 'high'
+    effort.select_option(label='medium')
+    assert page.evaluate('pane.turnOptions([])') == {}
+    assert not errors
+
+
+def test_claude_resolved_names_and_saved_effort_survive_history(pane):
+    page, errors = pane
+    page.evaluate("""()=>{
+      emit({method:'workspace/settings',params:{model:'claude-opus-5[1m]',reasoningEffort:'xhigh'}});
+      emit({method:'workspace/history',params:{thread:{id:'exact',model:'claude-opus-5[1m]',turns:[]}}});
+      emit({method:'workspace/models',params:{settings:{reasoningEffort:'medium'},data:[
+        {model:'default',displayName:'Default (recommended)',claudeCapabilities:{resolvedModel:'claude-opus-5[1m]'},supportedReasoningEfforts:[{reasoningEffort:'medium'},{reasoningEffort:'xhigh'}]},
+        {model:'opus[1m]',displayName:'Opus',claudeCapabilities:{resolvedModel:'claude-opus-5[1m]'}},
+        {model:'fable',displayName:'Fable',claudeCapabilities:{resolvedModel:'claude-fable-5-1'}}
+      ]}});
+      pane.render();
+    }""")
+    model = page.locator('#left').get_by_role('combobox', name='Model', exact=True)
+    assert model.locator('option').all_text_contents() == ['Opus 5', 'Fable 5.1']
+    effort = page.locator('#left').get_by_role('combobox', name='Reasoning effort', exact=True)
+    assert effort.locator('option:checked').inner_text() == 'xhigh'
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_gemini_native_workspace_composer_and_tool_output(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width, 'height':900})
+    page.evaluate("""()=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Gemini',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      emit({method:'workspace/models',params:{settings:{model:'gemini-flash-high'},data:[{model:'gemini-flash-high',displayName:'Gemini Flash (High)'}]}});
+      emit({method:'turn/started',params:{turn:{id:'work',status:'inProgress'}}});
+      emit({method:'item/completed',params:{turnId:'work',item:{id:'user',type:'userMessage',content:[{type:'text',text:'Check the command output.'}]}}});
+      emit({method:'item/completed',params:{turnId:'work',item:{id:'tool',type:'acpToolCall',tool:'run_command',input:{CommandLine:'printf proof'},output:'proof',status:'completed'}}});
+      emit({method:'item/completed',params:{turnId:'work',item:{id:'reply',type:'agentMessage',text:'Verified the command output.'}}});
+      emit({method:'turn/completed',params:{turn:{id:'work',status:'completed'}}});
+    }""")
+    page.locator('#left').get_by_text('Verified the command output.', exact=True).wait_for()
+    assert page.locator('#left').get_by_text('Check the command output.', exact=True).is_visible()
+    page.locator('#left summary').filter(has_text='run_command').click()
+    assert page.locator('#left').get_by_text('proof', exact=True).is_visible()
+    assert page.locator('#left').get_by_role('button', name='Commands and skills', exact=True).is_hidden()
+    page.get_by_role('textbox', name='Message Gemini').fill('Continue with the saved context.')
+    assert page.locator('body').evaluate('el=>el.scrollWidth<=innerWidth')
+    page.screenshot(path=str(tmp_path / f'gemini-workspace-{width}.png'))
+    assert not errors
+
+
 def test_stale_permission_card_disappears_on_fresh_history(pane):
     page, errors = pane
     page.evaluate("emit({id:'stale',method:'workspace/claudeApproval',params:{threadId:'exact',tool:'Bash',input:{command:'pwd'}}})")
@@ -3605,8 +3669,8 @@ def test_advertised_model_effort_selection_reaches_submit_and_header(pane, tmp_p
     }""")
     page.get_by_role("combobox", name="Model", exact=True).first.select_option("chosen")
     effort = page.get_by_role("combobox", name="Reasoning effort").first
-    assert effort.input_value() == "low"
-    assert effort.locator("option").all_text_contents() == ["Default (low)", "low", "xhigh"]
+    assert effort.input_value() == ""
+    assert effort.locator("option").all_text_contents() == ["low", "xhigh"]
     effort.select_option("xhigh")
     page.get_by_role("combobox", name="Speed tier").first.select_option("fast")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")

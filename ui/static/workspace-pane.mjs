@@ -207,8 +207,8 @@ export class WorkspacePane {
     this.tasksButton = this.button('Background tasks', 'list-tree', () => this.openBackgroundTasks());
     this.tasksButton.hidden = !['Codex','Claude'].includes(provider) || !controls.backgroundTasks;
     footer.insertBefore(this.tasksButton, this.stop);
-    this.commandsButton = this.button('Commands and skills', 'slash', () => this.provider==='Gemini'?this.openCommands():this.commandSuggestions.open());
-    this.commandsButton.hidden = provider !== 'Gemini' || !controls.commands;
+    this.commandsButton = this.button('Commands and skills', 'slash', () => this.commandSuggestions.open());
+    this.commandsButton.hidden = true;
     footer.insertBefore(this.commandsButton, this.stop);
     this.mcpButton = this.button('MCP connections', 'plug', () => this.openMcpServers());
     this.mcpButton.hidden = !['Claude','Codex'].includes(provider) || !controls.mcpServers;
@@ -2664,11 +2664,12 @@ export class WorkspacePane {
     const selected = this.modelSelect.value;
     this.modelSelect.replaceChildren();
     const current = this.catalogModel(this.conversation.metadata.model);
-    const unchanged = node('option', '', current?.displayName || this.conversation.metadata.model || 'Session model');
+    const unchanged = node('option', '', this.modelName(current) || this.conversation.metadata.model || '');
     unchanged.value = ''; this.modelSelect.append(unchanged);
     for (const model of models) {
       if (model.hidden || !model.model || model === current) continue;
-      const option = node('option', '', model.displayName || model.model);
+      if (current && this.modelName(model) === this.modelName(current)) continue;
+      const option = node('option', '', this.modelName(model));
       option.value = model.model; this.modelSelect.append(option);
     }
     this.modelSelect.value = [...this.modelSelect.options].some(o => o.value === selected) ? selected : '';
@@ -2683,19 +2684,29 @@ export class WorkspacePane {
         [model.model,model.claudeCapabilities?.resolvedModel].some(id=>id && normalize(id)===normalize(value))) : null);
   }
 
+  modelName(model) {
+    if (!model) return '';
+    const id = model.claudeCapabilities?.resolvedModel || model.model;
+    const match = this.provider === 'Claude' && /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?/.exec(id || '');
+    return match ? `${match[1][0].toUpperCase()}${match[1].slice(1)} ${match[2]}${match[3] ? '.' + match[3] : ''}` : (model.displayName || model.model);
+  }
+
   renderEfforts(changedModel) {
     const selected = this.effortSelect.value;
     const model = this.catalogModel(this.modelSelect.value || this.conversation.metadata.model);
     this.effortSelect.replaceChildren();
-    const unchanged = node('option', '', this.modelSelect.value ? `Default (${model?.defaultReasoningEffort || 'provider'})` : (this.conversation.metadata.reasoningEffort || 'Session effort'));
+    const currentEffort = this.modelSelect.value ? model?.defaultReasoningEffort : this.conversation.metadata.reasoningEffort;
+    const unchanged = node('option', '', currentEffort || '');
+    unchanged.hidden = !currentEffort;
     unchanged.value = ''; this.effortSelect.append(unchanged);
     for (const effort of model?.supportedReasoningEfforts || []) {
+      if (effort.reasoningEffort === currentEffort) continue;
       const option = node('option', '', effort.reasoningEffort);
       option.value = effort.reasoningEffort; option.title = effort.description || '';
       this.effortSelect.append(option);
     }
     const value = changedModel ? (this.modelSelect.value ? model?.defaultReasoningEffort : '') : selected;
-    this.effortSelect.value = [...this.effortSelect.options].some(o => o.value === value) ? value : '';
+    this.effortSelect.value = value === currentEffort ? '' : ([...this.effortSelect.options].some(o => o.value === value) ? value : '');
     this.effortSelect.hidden = !(model?.supportedReasoningEfforts?.length);
     const tier = this.tierSelect.value;
     this.tierSelect.replaceChildren();
@@ -2776,6 +2787,7 @@ export class WorkspacePane {
         detail.append(node('div','aw-author',item.inputStreaming?'Receiving tool input':'Tool input incomplete'),node('pre','aw-tool-input',item.inputJson || ''));
       }
       if(item.tool==='Bash' && typeof input.command==='string')detail.append(node('pre','aw-command',input.command));
+      else if(item.tool==='run_command' && typeof input.CommandLine==='string')detail.append(node('pre','aw-command',input.CommandLine));
       else if(item.tool==='Edit' && typeof input.old_string==='string' && typeof input.new_string==='string'){
         detail.append(node('div','aw-author','Requested edit'));
         const diff=node('pre','aw-diff');
