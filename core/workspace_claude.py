@@ -8,6 +8,7 @@ with a second CLI. Missing process identity fails attachment closed.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import re
@@ -240,6 +241,18 @@ class ClaudeWorkspace:
                 for model in self.model_catalog
             ]
         }
+        # The SDK loads these setting sources in the same order at launch.
+        effort = None
+        for path in (Path.home() / '.claude/settings.json', self.cwd / '.claude/settings.json',
+                     self.cwd / '.claude/settings.local.json'):
+            try:
+                settings = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            if isinstance(settings, dict) and isinstance(settings.get('effortLevel'), str):
+                effort = settings['effortLevel']
+        if effort in {'low', 'medium', 'high', 'xhigh', 'max'}:
+            result['settings'] = {'reasoningEffort': effort}
         await self.publish(self.events.event("workspace/models", result))
         return result
 

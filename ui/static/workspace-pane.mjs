@@ -2664,11 +2664,12 @@ export class WorkspacePane {
     const selected = this.modelSelect.value;
     this.modelSelect.replaceChildren();
     const current = this.catalogModel(this.conversation.metadata.model);
-    const unchanged = node('option', '', current?.displayName || this.conversation.metadata.model || 'Session model');
+    const unchanged = node('option', '', this.modelName(current) || this.conversation.metadata.model || '');
     unchanged.value = ''; this.modelSelect.append(unchanged);
     for (const model of models) {
       if (model.hidden || !model.model || model === current) continue;
-      const option = node('option', '', model.displayName || model.model);
+      if (current && this.modelName(model) === this.modelName(current)) continue;
+      const option = node('option', '', this.modelName(model));
       option.value = model.model; this.modelSelect.append(option);
     }
     this.modelSelect.value = [...this.modelSelect.options].some(o => o.value === selected) ? selected : '';
@@ -2683,20 +2684,29 @@ export class WorkspacePane {
         [model.model,model.claudeCapabilities?.resolvedModel].some(id=>id && normalize(id)===normalize(value))) : null);
   }
 
+  modelName(model) {
+    if (!model) return '';
+    const id = model.claudeCapabilities?.resolvedModel || model.model;
+    const match = this.provider === 'Claude' && /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?/.exec(id || '');
+    return match ? `${match[1][0].toUpperCase()}${match[1].slice(1)} ${match[2]}${match[3] ? '.' + match[3] : ''}` : (model.displayName || model.model);
+  }
+
   renderEfforts(changedModel) {
     const selected = this.effortSelect.value;
     const model = this.catalogModel(this.modelSelect.value || this.conversation.metadata.model);
     this.effortSelect.replaceChildren();
-    const unchanged = node('option', '', this.modelSelect.value ? `Default (${model?.defaultReasoningEffort || 'provider'})` : (this.conversation.metadata.reasoningEffort || 'Session effort'));
+    const currentEffort = this.modelSelect.value ? model?.defaultReasoningEffort : this.conversation.metadata.reasoningEffort;
+    const unchanged = node('option', '', currentEffort || '');
+    unchanged.hidden = !currentEffort;
     unchanged.value = ''; this.effortSelect.append(unchanged);
     for (const effort of model?.supportedReasoningEfforts || []) {
-      if (!this.modelSelect.value && effort.reasoningEffort === this.conversation.metadata.reasoningEffort) continue;
+      if (effort.reasoningEffort === currentEffort) continue;
       const option = node('option', '', effort.reasoningEffort);
       option.value = effort.reasoningEffort; option.title = effort.description || '';
       this.effortSelect.append(option);
     }
     const value = changedModel ? (this.modelSelect.value ? model?.defaultReasoningEffort : '') : selected;
-    this.effortSelect.value = [...this.effortSelect.options].some(o => o.value === value) ? value : '';
+    this.effortSelect.value = value === currentEffort ? '' : ([...this.effortSelect.options].some(o => o.value === value) ? value : '');
     this.effortSelect.hidden = !(model?.supportedReasoningEfforts?.length);
     const tier = this.tierSelect.value;
     this.tierSelect.replaceChildren();
