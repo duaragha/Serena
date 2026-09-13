@@ -97,6 +97,28 @@ test('waiting returns as soon as the new server answers', async () => {
   assert.equal(calls, 3);
 });
 
+test('a queued restart waits past the old healthy process', async () => {
+  let calls = 0;
+  const result = await control.waitForBackend('http://127.0.0.1:8767', async () => {
+    calls += 1;
+    return { ok: true, pid: calls < 3 ? 7 : 8 };
+  }, { previousPid: 7, sleep: async () => {} });
+  assert.deepEqual(result, { ok: true, pid: 8 });
+  assert.equal(calls, 3);
+});
+
+test('a restart that leaves the old process alive cannot report success', async () => {
+  let clock = 0;
+  const result = await control.waitForBackend('http://127.0.0.1:8767', server({ ok: true, pid: 7 }), {
+    previousPid: 7,
+    timeoutMs: 1000,
+    sleep: async () => { clock += 400; },
+    now: () => clock,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /previous backend pid=7 is still running/);
+});
+
 test('waiting gives up rather than hanging the menu forever', async () => {
   let clock = 0;
   const result = await control.waitForBackend('http://127.0.0.1:8767', dead('ECONNREFUSED'), {
@@ -108,4 +130,35 @@ test('waiting gives up rather than hanging the menu forever', async () => {
 
   assert.equal(result.ok, false);
   assert.match(result.reason, /ECONNREFUSED/);
+});
+
+test('backend refresh clears cached assets and awaits a fresh root navigation', async () => {
+  const calls = [];
+  let finishLoad;
+  const window = {
+    webContents: { session: { async clearCache() { calls.push('cache'); } } },
+    async loadURL(url, options) {
+      calls.push({ url, options });
+      await new Promise(resolve => { finishLoad = resolve; });
+    },
+  };
+  let finished = false;
+  const refreshing = control.loadBackendWindow(window, 'http://127.0.0.1:8767')
+    .then(() => { finished = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['cache', {
+    url: 'http://127.0.0.1:8767', options: { extraHeaders: 'Cache-Control: no-cache\n' },
+  }]);
+  assert.equal(finished, false);
+  finishLoad();
+  await refreshing;
+  assert.equal(finished, true);
+});
+
+test('a failed renderer refresh is not a successful restart', async () => {
+  const window = {
+    webContents: { session: { async clearCache() {} } },
+    async loadURL() { throw new Error('ERR_CONNECTION_REFUSED'); },
+  };
+  await assert.rejects(control.loadBackendWindow(window, 'http://127.0.0.1:8767'), /ERR_CONNECTION_REFUSED/);
 });
