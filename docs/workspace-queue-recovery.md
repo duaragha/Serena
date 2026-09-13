@@ -26,3 +26,10 @@ Verification covers provider queue order, edit/cancel, receipt deduplication,
 attachment retries, restart restoration, terminal compaction states, and real
 Chromium views at 390px and 1600px. Provider network outages themselves are not
 prevented by these changes.
+
+Admission also recognizes live, birth-time-verified leases for other sessions in
+the same project, including the Codex Node wrapper and native child. Claude's
+explicit worker session and equals-form resume argument identify unrelated
+sessions. Exact session arguments and open target transcripts are checked first.
+Stale leases, reused PIDs, dead hosts and unknown project runtimes still block
+attachment. Shell command text mentioning a provider is not a provider process.
