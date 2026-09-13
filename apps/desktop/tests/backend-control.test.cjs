@@ -97,6 +97,28 @@ test('waiting returns as soon as the new server answers', async () => {
   assert.equal(calls, 3);
 });
 
+test('a queued restart waits past the old healthy process', async () => {
+  let calls = 0;
+  const result = await control.waitForBackend('http://127.0.0.1:8767', async () => {
+    calls += 1;
+    return { ok: true, pid: calls < 3 ? 7 : 8 };
+  }, { previousPid: 7, sleep: async () => {} });
+  assert.deepEqual(result, { ok: true, pid: 8 });
+  assert.equal(calls, 3);
+});
+
+test('a restart that leaves the old process alive cannot report success', async () => {
+  let clock = 0;
+  const result = await control.waitForBackend('http://127.0.0.1:8767', server({ ok: true, pid: 7 }), {
+    previousPid: 7,
+    timeoutMs: 1000,
+    sleep: async () => { clock += 400; },
+    now: () => clock,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /previous backend pid=7 is still running/);
+});
+
 test('waiting gives up rather than hanging the menu forever', async () => {
   let clock = 0;
   const result = await control.waitForBackend('http://127.0.0.1:8767', dead('ECONNREFUSED'), {

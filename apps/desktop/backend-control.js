@@ -75,7 +75,7 @@ function sharedRestartCommand(sourceRoot) {
  *
  * @param {string} baseUrl
  * @param {(url: string) => Promise<any>} getJson
- * @param {{timeoutMs?: number, intervalMs?: number, sleep?: Function}} [options]
+ * @param {{timeoutMs?: number, intervalMs?: number, sleep?: Function, previousPid?: number}} [options]
  */
 async function waitForBackend(baseUrl, getJson, options = {}) {
   const timeoutMs = options.timeoutMs ?? 60000;
@@ -88,7 +88,11 @@ async function waitForBackend(baseUrl, getJson, options = {}) {
   while (now() < deadline) {
     try {
       const body = await getJson(`${baseUrl}/api/health`);
-      if (body && body.ok) return { ok: true, pid: body.pid };
+      if (body && body.ok && Number.isInteger(body.pid) && body.pid > 0) {
+        if (body.pid !== options.previousPid) return { ok: true, pid: body.pid };
+        // The detached helper waits before restarting; the old server still answers.
+        lastError = `previous backend pid=${body.pid} is still running`;
+      }
     } catch (error) {
       lastError = error.message;
     }

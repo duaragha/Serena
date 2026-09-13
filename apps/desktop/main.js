@@ -277,6 +277,10 @@ async function restartBackend() {
       return { ok: true, owned: true };
     }
 
+    const before = await getJson(`${url}/api/health`);
+    if (!Number.isInteger(before.pid) || before.pid <= 0) {
+      throw new Error('cannot identify the backend being restarted');
+    }
     const root = backendFreshness.sourceRoot || (await refreshBackendFreshness()).sourceRoot;
     const launch = backendControl.sharedRestartCommand(root);
     logging.note(`restarting ${backendControl.SHARED_UNIT} via ${launch.args[0]}`);
@@ -292,7 +296,7 @@ async function restartBackend() {
       child.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(`helper exited ${code}`))));
     });
 
-    const back = await backendControl.waitForBackend(url, getJson);
+    const back = await backendControl.waitForBackend(url, getJson, { previousPid: before.pid });
     if (!back.ok) throw new Error(`server did not come back: ${back.reason}`);
     logging.note(`backend restarted, now pid=${back.pid}`);
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
