@@ -30,22 +30,28 @@ def test_current_effort_is_not_duplicated_and_can_be_restored(pane, provider):
     assert not errors
 
 
-def test_claude_resolved_names_and_saved_effort_survive_history(pane):
+@pytest.mark.parametrize('current', ['claude-opus-5[1m]', 'Opus 5', 'claude-fable-5-1', ''])
+def test_claude_resolved_names_and_saved_effort_survive_history(pane, current):
     page, errors = pane
-    page.evaluate("""()=>{
-      emit({method:'workspace/settings',params:{model:'claude-opus-5[1m]',reasoningEffort:'xhigh'}});
-      emit({method:'workspace/history',params:{thread:{id:'exact',model:'claude-opus-5[1m]',turns:[]}}});
+    page.evaluate("""current=>{
+      emit({method:'workspace/settings',params:{model:current,reasoningEffort:'xhigh'}});
+      emit({method:'workspace/history',params:{thread:{id:'exact',model:current,turns:[]}}});
       emit({method:'workspace/models',params:{settings:{reasoningEffort:'medium'},data:[
         {model:'default',displayName:'Default (recommended)',claudeCapabilities:{resolvedModel:'claude-opus-5[1m]'},supportedReasoningEfforts:[{reasoningEffort:'medium'},{reasoningEffort:'xhigh'}]},
         {model:'opus[1m]',displayName:'Opus',claudeCapabilities:{resolvedModel:'claude-opus-5[1m]'}},
         {model:'fable',displayName:'Fable',claudeCapabilities:{resolvedModel:'claude-fable-5-1'}}
       ]}});
       pane.render();
-    }""")
+    }""", current)
     model = page.locator('#left').get_by_role('combobox', name='Model', exact=True)
-    assert model.locator('option').all_text_contents() == ['Opus 5', 'Fable 5.1']
-    effort = page.locator('#left').get_by_role('combobox', name='Reasoning effort', exact=True)
-    assert effort.locator('option:checked').inner_text() == 'xhigh'
+    labels = model.locator('option').all_text_contents()
+    assert labels.count('Opus 5') == labels.count('Fable 5.1') == 1
+    assert page.evaluate('pane.conversation.metadata.reasoningEffort') == 'xhigh'
+    if current == 'claude-opus-5[1m]':
+        effort = page.locator('#left').get_by_role('combobox', name='Reasoning effort', exact=True)
+        assert effort.locator('option:checked').inner_text() == 'xhigh'
+    model.select_option(label='Opus 5')
+    assert page.evaluate("pane.modelSelect.value === '' || pane.catalogModel(pane.modelSelect.value).claudeCapabilities.resolvedModel === 'claude-opus-5[1m]'")
     assert not errors
 
 

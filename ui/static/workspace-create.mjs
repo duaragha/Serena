@@ -20,9 +20,15 @@ function validSeed(seed) {
 }
 function showTarget() {
   submit.hidden = true;
-  open.hidden = false;
+  open.hidden = !record.initial_error;
   status.textContent = 'Session ' + record.target;
   warning.textContent = record.initial_error || '';
+  if (!record.initial_error) openTarget();
+}
+function openTarget() {
+  if (!record?.target) return;
+  if (window.parent === window) location.replace('/workspace/' + record.target);
+  else window.parent.postMessage({type:'serena-workspace-open-created', sid:boot.source, target:record.target}, location.origin);
 }
 try {
   const saved = sessionStorage.getItem(key);
@@ -69,7 +75,7 @@ context.addEventListener('input', () => {
   try { save(); submit.disabled = !seedReady; }
   catch(error) { submit.disabled = true; warning.textContent = error.message; }
 });
-submit.addEventListener('click', async () => {
+async function createSession() {
   if (invalidRecord || busy || submit.disabled || !seedReady) return;
   busy = true;
   submit.disabled = true;
@@ -96,10 +102,12 @@ submit.addEventListener('click', async () => {
   } catch (error) {
     status.textContent = error.message;
     submit.textContent = 'Check creation';
+    submit.hidden = false;
   } finally { busy = false; submit.disabled = false; }
-});
-open.addEventListener('click', () => {
-  if (!record?.target) return;
-  if (window.parent === window) location.assign('/workspace/' + record.target);
-  else window.parent.postMessage({type:'serena-workspace-open-created', sid:boot.source, target:record.target}, location.origin);
-});
+}
+submit.addEventListener('click', createSession);
+open.addEventListener('click', openTarget);
+if (!seeded && !invalidRecord && !record?.target) {
+  submit.hidden = true;
+  createSession();
+}

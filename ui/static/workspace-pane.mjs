@@ -2665,14 +2665,21 @@ export class WorkspacePane {
     this.modelSelect.replaceChildren();
     const current = this.catalogModel(this.conversation.metadata.model);
     const unchanged = node('option', '', this.modelName(current) || this.conversation.metadata.model || '');
+    unchanged.hidden = !unchanged.textContent;
     unchanged.value = ''; this.modelSelect.append(unchanged);
+    const labelKey = label => label.trim().toLowerCase();
+    const choices = new Map([[labelKey(unchanged.textContent), '']]);
     for (const model of models) {
       if (model.hidden || !model.model || model === current) continue;
-      if (current && this.modelName(model) === this.modelName(current)) continue;
-      const option = node('option', '', this.modelName(model));
+      const name = this.modelName(model);
+      if (choices.has(labelKey(name))) continue;
+      choices.set(labelKey(name), model.model);
+      const option = node('option', '', name);
       option.value = model.model; this.modelSelect.append(option);
     }
-    this.modelSelect.value = [...this.modelSelect.options].some(o => o.value === selected) ? selected : '';
+    const selectedName = this.modelName(this.catalogModel(selected));
+    this.modelSelect.value = [...this.modelSelect.options].some(o => o.value === selected)
+      ? selected : (choices.get(labelKey(selectedName)) ?? '');
     this.modelSelect.hidden = !models.length;
     this.renderEfforts(false);
   }
