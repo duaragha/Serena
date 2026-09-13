@@ -35,6 +35,14 @@ test('a terminal failure replaces the retry warning with its real cause', () => 
   assert.equal(model.status,'failed');
 });
 
+test('transport closure stops compaction without claiming success',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,{method:'item/started',params:{turnId:'t',item:{id:'c',type:'contextCompaction'}}}));
+  model.apply(wrap(2,{method:'workspace/transportClosed',params:{reason:'Process exited'}}));
+  assert.equal(model.turns.get('t').items.get('c').status,'interrupted');
+  assert.equal(model.status,'unavailable');
+});
+
 test('Codex reasoning summaries stream by item and part without duplicating completion', () => {
   const model = new WorkspaceConversation('exact');
   let seq = 0;

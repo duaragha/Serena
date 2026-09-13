@@ -2643,7 +2643,7 @@ export class WorkspacePane {
 
   canEnqueue() {
     return typeof this.controls.enqueue === 'function' && (['running','compacting'].includes(this.conversation.status)
-      || (this.conversation.metadata.bridgeQueueCount > 0 && ['ready','completed'].includes(this.conversation.status)));
+      || (this.conversation.metadata.bridgeQueueCount > 0 && ['ready','completed','failed','interrupted'].includes(this.conversation.status)));
   }
 
   canQueue() {

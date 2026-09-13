@@ -173,6 +173,9 @@ export class WorkspaceConversation {
     } else if (method === 'workspace/transportClosed' || method === 'workspace/error'
       || method === 'workspace/archived' || method === 'workspace/deleted') {
       this.status = 'unavailable';
+      for(const turn of this.turns.values())for(const item of turn.items.values()){
+        if(item.type==='contextCompaction' && item.status==='inProgress')item.status='interrupted';
+      }
       this.error = p.reason || (method === 'workspace/archived' ? 'Conversation archived'
         : method === 'workspace/deleted' ? 'Conversation deleted' : 'Session connection unavailable');
       this.questions.clear();
