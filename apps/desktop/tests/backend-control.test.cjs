@@ -131,3 +131,34 @@ test('waiting gives up rather than hanging the menu forever', async () => {
   assert.equal(result.ok, false);
   assert.match(result.reason, /ECONNREFUSED/);
 });
+
+test('backend refresh clears cached assets and awaits a fresh root navigation', async () => {
+  const calls = [];
+  let finishLoad;
+  const window = {
+    webContents: { session: { async clearCache() { calls.push('cache'); } } },
+    async loadURL(url, options) {
+      calls.push({ url, options });
+      await new Promise(resolve => { finishLoad = resolve; });
+    },
+  };
+  let finished = false;
+  const refreshing = control.loadBackendWindow(window, 'http://127.0.0.1:8767')
+    .then(() => { finished = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['cache', {
+    url: 'http://127.0.0.1:8767', options: { extraHeaders: 'Cache-Control: no-cache\n' },
+  }]);
+  assert.equal(finished, false);
+  finishLoad();
+  await refreshing;
+  assert.equal(finished, true);
+});
+
+test('a failed renderer refresh is not a successful restart', async () => {
+  const window = {
+    webContents: { session: { async clearCache() {} } },
+    async loadURL() { throw new Error('ERR_CONNECTION_REFUSED'); },
+  };
+  await assert.rejects(control.loadBackendWindow(window, 'http://127.0.0.1:8767'), /ERR_CONNECTION_REFUSED/);
+});

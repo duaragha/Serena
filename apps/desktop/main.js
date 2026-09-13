@@ -194,7 +194,7 @@ function createWindow(url) {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
-  mainWindow.loadURL(url);
+  return mainWindow.loadURL(url);
 }
 
 /*
@@ -299,7 +299,9 @@ async function restartBackend() {
     const back = await backendControl.waitForBackend(url, getJson, { previousPid: before.pid });
     if (!back.ok) throw new Error(`server did not come back: ${back.reason}`);
     logging.note(`backend restarted, now pid=${back.pid}`);
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      await backendControl.loadBackendWindow(mainWindow, url);
+    }
     return { ok: true, owned: false, pid: back.pid };
   } catch (error) {
     logging.note(`backend restart failed: ${error.message}`);
@@ -403,8 +405,8 @@ async function startBackend() {
       logging.note(`attached to a shared backend at ${shared.url} pid=${shared.pid}`);
       console.log(`SERENA_BACKEND_SHARED ${shared.url} pid=${shared.pid}`);
       if (!SMOKE_TEST) {
-        if (!mainWindow) createWindow(shared.url);
-        else mainWindow.loadURL(shared.url);
+        if (!mainWindow) await createWindow(shared.url);
+        else await backendControl.loadBackendWindow(mainWindow, shared.url);
         if (!tray) createTray();
       }
       return;
@@ -444,8 +446,8 @@ async function startBackend() {
     logging.note(`backend ready at ${url} pid=${health.pid}`);
     console.log(`SERENA_BACKEND_READY ${url} pid=${health.pid}`);
     if (!SMOKE_TEST) {
-      if (!mainWindow) createWindow(url);
-      else mainWindow.loadURL(url);
+      if (!mainWindow) await createWindow(url);
+      else await backendControl.loadBackendWindow(mainWindow, url);
       if (!tray) createTray();
     }
   } catch (error) {

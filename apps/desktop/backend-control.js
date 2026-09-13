@@ -101,10 +101,18 @@ async function waitForBackend(baseUrl, getJson, options = {}) {
   return { ok: false, reason: lastError };
 }
 
+async function loadBackendWindow(window, url) {
+  // Preserve chat selection/drafts in storage, but never reuse old runtime assets
+  // or an iframe document carrying the previous backend's control token.
+  await window.webContents.session.clearCache();
+  await window.loadURL(url, { extraHeaders: 'Cache-Control: no-cache\n' });
+}
+
 module.exports = {
   HELPER,
   SHARED_UNIT,
   freshness,
+  loadBackendWindow,
   sharedRestartCommand,
   staleLabel,
   waitForBackend,
