@@ -7,6 +7,7 @@ export class WorkspaceConversation {
     this.sequence = 0;
     this.status = 'connecting';
     this.error = null;
+    this.retryError = null;
     this.copyUnavailableAfterRevert = false;
     this.historyRevision = 0;
     this.metadata = {};
@@ -52,10 +53,19 @@ export class WorkspaceConversation {
     const sid = params.threadId || (method === 'workspace/history' ? params.thread?.id : null);
     if (sid && sid !== this.sessionId) throw new Error('Event belongs to another session');
     const p = structuredClone(params);
+    const progressTurn = p.turnId || p.turn?.id;
+    if(this.retryError && progressTurn === this.retryError.turnId
+      && ['item/started','item/completed','item/agentMessage/delta','item/plan/delta',
+        'item/reasoning/summaryTextDelta','item/reasoning/textDelta','item/commandExecution/outputDelta',
+        'turn/completed'].includes(method)) {
+      if(this.error === this.retryError.message)this.error = null;
+      this.retryError = null;
+    }
     if (method === 'workspace/history') {
       if (!p.thread || p.thread.id !== this.sessionId) throw new Error('History identity mismatch');
       this.questions.clear();
       this.error = null;
+      this.retryError = null;
       const lastEffort = this.metadata.reasoningEffort;
       this.metadata = p;
       if (!this.metadata.reasoningEffort && lastEffort) this.metadata.reasoningEffort = lastEffort;
@@ -128,11 +138,17 @@ export class WorkspaceConversation {
         ['agentMessage','plan'].includes(item.type) && !item.parentToolUseId && typeof item.text === 'string' && item.text.length)) {
         this.copyUnavailableAfterRevert = false;
       }
+      if(method === 'turn/completed' && turn.status === 'failed' && turn.error?.message) {
+        this.error = turn.error.message;
+      }
+      if(method === 'turn/completed')for(const item of items.values()){
+        if(item.type === 'contextCompaction' && item.status === 'inProgress')item.status=turn.status;
+      }
       this.status = method === 'turn/started' || [...this.turns.values()].some(item => item.status === 'inProgress')
         ? 'running' : (p.turn.status || 'completed');
     } else if (method === 'item/started' || method === 'item/completed') {
       if (!p.item?.id) throw new Error('Missing provider item');
-      if (p.item.type === 'contextCompaction') p.item.status = method === 'item/completed' ? 'completed' : 'inProgress';
+      if (p.item.type === 'contextCompaction' && !p.item.status) p.item.status = method === 'item/completed' ? 'completed' : 'inProgress';
       this.turn(p.turnId).items.set(p.item.id, p.item);
     } else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
       const item = this.item(p.turnId, p.itemId, method.includes('/plan/') ? 'plan' : 'agentMessage');
@@ -157,11 +173,16 @@ export class WorkspaceConversation {
     } else if (method === 'workspace/transportClosed' || method === 'workspace/error'
       || method === 'workspace/archived' || method === 'workspace/deleted') {
       this.status = 'unavailable';
+      for(const turn of this.turns.values())for(const item of turn.items.values()){
+        if(item.type==='contextCompaction' && item.status==='inProgress')item.status='interrupted';
+      }
       this.error = p.reason || (method === 'workspace/archived' ? 'Conversation archived'
         : method === 'workspace/deleted' ? 'Conversation deleted' : 'Session connection unavailable');
       this.questions.clear();
     } else if (method === 'error') {
       this.error = p.error?.message || p.message || 'Agent reported an error';
+      this.retryError = p.willRetry === true && typeof p.turnId === 'string'
+        ? {turnId:p.turnId,message:this.error} : null;
       this.rememberEvent(event);
     } else if ('id' in event) {
       this.questions.set(event.id, structuredClone(event));

@@ -195,6 +195,60 @@ def test_native_sleep_admission_and_focus_wake(tmp_path, provider, blocker):
         host.shutdown()
 
 
+@pytest.mark.parametrize('provider', ['codex', 'claude', 'gemini'])
+def test_composer_queue_is_fifo_editable_cancellable_and_deduplicated(tmp_path, provider):
+    calls = []
+
+    class QueuedOwner(Owner):
+        async def open(self):
+            await super().open()
+            self.state, self.active_turn = 'running', 'existing'
+
+        async def submit(self, inputs, options=None):
+            assert self.state == 'ready'
+            self.state, self.active_turn = 'running', f'turn-{len(calls)}'
+            calls.append((inputs, options))
+            await self.publish({'method': 'turn/completed', 'params': {
+                'turn': {'id': self.active_turn, 'status': 'completed'}}})
+            turn = self.active_turn
+            self.state, self.active_turn = 'ready', None
+            return {'turn': {'id': turn}}
+
+    journal = WorkspaceJournal(tmp_path / 'queue.db')
+    host = WorkspaceHost(journal=journal,
+        resolve=lambda sid: {'session_id': sid, 'provider': provider, 'cwd': str(tmp_path)},
+        factories={provider: QueuedOwner})
+    try:
+        host.attach('exact')
+        payload = {'inputs': [{'type': 'text', 'text': 'first'}], 'options': {'model': 'selected'}}
+        first = host.command('exact', 'first', 'enqueue', payload)
+        assert first['ok'] and first['result']['queued']
+        assert host.command('exact', 'first', 'enqueue', payload) == first
+        second = host.command('exact', 'second', 'enqueue', {'inputs': [{'type': 'text', 'text': 'second'}]})
+        third = host.command('exact', 'third', 'enqueue', {'inputs': [{'type': 'text', 'text': 'third'}]})
+        assert second['ok'] and third['ok'] and calls == []
+        assert host.command('exact', 'edit', 'edit_queued_bridge', {
+            'request_id': first['result']['id'], 'expected_prompt': 'first', 'prompt': 'edited'})['ok']
+        assert host.command('exact', 'cancel', 'cancel_queued_bridge', {'request_id': second['result']['id']})['ok']
+        recovered = journal.recoverable_bridge_queue('exact', provider)
+        assert [r['prompt'] for r in recovered] == ['edited', 'third']
+        assert recovered[0]['message'] == {'inputs': [{'type': 'text', 'text': 'edited'}], 'options': {'model': 'selected'}}
+
+        async def finish():
+            owner = host._sessions['exact'][0]
+            owner.state, owner.active_turn = 'ready', None
+
+        host._dispatch(finish(), 5)
+        deadline = time.monotonic() + 5
+        while len(calls) < 2 and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert calls == [([{'type': 'text', 'text': 'edited'}], {'model': 'selected'}),
+                         ([{'type': 'text', 'text': 'third'}], None)]
+        assert journal.recoverable_bridge_queue('exact', provider) == []
+    finally:
+        host.shutdown()
+
+
 def test_claude_queued_input_is_session_bound_and_deduplicated(tmp_path):
     calls = []
 

@@ -372,28 +372,28 @@ export class WorkspaceConnection {
         this.requireReceipts();
         if (['steer','queue_input'].includes(action) && !expectedTurnId) throw Error('Running turn identity is unavailable');
         const inputs = await this.messageInputs(text, files, options.skills?.length || options.apps?.length);
-        if(['queue_input','submit'].includes(action)){
+        if(['queue_input','submit','enqueue'].includes(action)){
           const queued=this.pendingQueuedInputs();
           if(queued.length){
             const prior=queued.find(value=>JSON.stringify(value.payload.inputs)===JSON.stringify(inputs));
             if(!prior)throw Error('Resolve the unconfirmed queued message before sending different input');
-            return this.command('queue_input',prior.payload);
+            return this.command(prior.action,prior.payload);
           }
         }
-        return this.command(action, {inputs, ...(['steer','queue_input'].includes(action) ? {expectedTurnId, ...(action === 'steer' && options.skills?.length ? {skills:options.skills} : {}), ...(action === 'steer' && options.apps?.length ? {apps:options.apps} : {})} : {}), ...(action === 'submit' && Object.keys(options).length ? {options} : {})});
+        return this.command(action, {inputs, ...(['steer','queue_input'].includes(action) ? {expectedTurnId, ...(action === 'steer' && options.skills?.length ? {skills:options.skills} : {}), ...(action === 'steer' && options.apps?.length ? {apps:options.apps} : {})} : {}), ...(['submit','enqueue'].includes(action) && Object.keys(options).length ? {options} : {})});
   }
 
   pendingQueuedInputs() {
     return Object.entries(this.pending).filter(([key])=>key.startsWith('{')).map(([key,requestId])=>{
       const value=JSON.parse(key);
       return {...value,requestId};
-    }).filter(value=>value.action==='queue_input');
+    }).filter(value=>['queue_input','enqueue'].includes(value.action));
   }
 
   async retryQueuedInput(requestId) {
     const matches=this.pendingQueuedInputs().filter(value=>value.requestId===requestId);
     if(matches.length!==1)throw Error('Queued receipt is no longer pending');
-    return this.command('queue_input',matches[0].payload);
+    return this.command(matches[0].action,matches[0].payload);
   }
 
   controls() {
@@ -484,6 +484,7 @@ export class WorkspaceConnection {
       submit: message => this.sendMessage('submit', message),
       steer: message => this.sendMessage('steer', message),
       queueInput: message => this.sendMessage('queue_input', message),
+      enqueue: message => this.sendMessage('enqueue', message),
       pendingQueuedInputs: () => this.pendingQueuedInputs(),
       retryQueuedInput: requestId => this.retryQueuedInput(requestId),
       interrupt: expectedTurnId => this.command('interrupt', expectedTurnId === undefined ? {} : {expectedTurnId}),

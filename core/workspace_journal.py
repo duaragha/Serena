@@ -158,10 +158,16 @@ class WorkspaceJournal:
                 raise ValueError("Saved bridge queue is invalid")
             recovered, seen = [], set()
             for item in requests:
-                if (not isinstance(item, dict) or set(item) != {"id", "prompt"}
+                if (not isinstance(item, dict) or set(item) - {"id", "prompt", "message"} or not {"id", "prompt"} <= set(item)
                         or not isinstance(item["id"], str) or not 1 <= len(item["id"]) <= 100
                         or item["id"] in seen or not isinstance(item["prompt"], str) or not item["prompt"].strip()):
                     raise ValueError("Saved bridge request is invalid")
+                if "message" in item and (not isinstance(item["message"], dict)
+                        or set(item["message"]) - {"inputs", "options"}
+                        or not isinstance(item["message"].get("inputs"), list)
+                        or not item["message"]["inputs"]
+                        or not isinstance(item["message"].get("options", {}), dict)):
+                    raise ValueError("Saved queued message is invalid")
                 seen.add(item["id"])
                 command = conn.execute("SELECT payload, result FROM workspace_commands WHERE session_id=? AND request_id=?",
                                        (session_id, "bridge:" + item["id"])).fetchone()

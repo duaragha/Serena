@@ -6,6 +6,16 @@
 .agent-workspace-pane button:disabled{opacity:.45;cursor:default}
 .agent-workspace-pane :focus-visible{outline:2px solid #ff80bf;outline-offset:2px}
 .agent-workspace-pane [hidden]{display:none!important}
+.aw-inline-queue{flex-shrink:0;max-height:160px;overflow:auto;padding:0 24px;border-top:1px solid #302730}
+.aw-queued-message{display:flex;align-items:center;gap:8px;min-height:36px;border-bottom:1px solid #302730}
+.aw-queued-message>small{color:#a89aab}.aw-queued-message>button{flex:0 0 30px}
+.aw-queued-text{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:72px;overflow:auto}
+.aw-compaction-progress{display:block;width:240px;max-width:100%;height:6px;margin-top:8px;accent-color:#77d99b;border:0;border-radius:3px;overflow:hidden}
+.aw-compaction-progress::-webkit-progress-bar{background:#302730}.aw-compaction-progress::-webkit-progress-value{background:#77d99b}
+.aw-compaction-progress:indeterminate{appearance:none;background:linear-gradient(90deg,#302730 0%,#302730 30%,#77d99b 50%,#302730 70%,#302730 100%);background-size:250% 100%;animation:aw-compacting 1.5s linear infinite}
+.aw-compaction-progress:indeterminate::-webkit-progress-bar{background:transparent}
+@keyframes aw-compacting{from{background-position:100% 0}to{background-position:0 0}}
+@media(prefers-reduced-motion:reduce){.aw-compaction-progress:indeterminate{animation:none}}
 .agent-workspace-pane svg{width:14px;height:14px;flex-shrink:0}
 .aw-head{height:48px;box-sizing:border-box;flex-shrink:0;border-bottom:1px solid #2c252f;display:flex;align-items:center;gap:8px;padding:8px 24px;font:12px 'Segoe UI',Arial,sans-serif}
 .aw-head>button{flex:0 0 30px;width:30px}.aw-head small{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.aw-head .aw-badge,.aw-head strong,.aw-state{flex-shrink:0}

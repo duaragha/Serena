@@ -10,13 +10,58 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('provider', ['Claude', 'Codex', 'Gemini'])
+@pytest.mark.parametrize('width', [390, 1600])
+def test_composer_queue_and_compaction_progress(pane, provider, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""provider=>{
+      controls.enqueue=async message=>calls.push(['enqueue',message.text,message.files.length]);
+      controls.steer=async message=>calls.push(['steer',message.text]);
+      controls.cancelQueuedBridge=async id=>calls.push(['cancel',id]);
+      controls.editQueuedBridge=async()=>{};
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider,controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      emit({method:'turn/started',params:{turn:{id:'busy',status:'inProgress'}}});
+      emit({method:'item/started',params:{turnId:'busy',item:{id:'compact',type:'contextCompaction'}}});
+    }""", provider)
+    progress = page.locator('#left progress')
+    playwright.expect(progress).to_be_visible()
+    assert progress.get_attribute('value') is None
+    start = progress.evaluate('el=>getComputedStyle(el).backgroundPosition')
+    page.wait_for_timeout(180)
+    assert progress.evaluate('el=>getComputedStyle(el).backgroundPosition') != start
+    page.locator('#left textarea').first.fill('follow up after this turn')
+    page.get_by_role('button', name='Queue message', exact=True).click()
+    assert page.evaluate('calls') == [['enqueue', 'follow up after this turn', 0]]
+    page.evaluate("""()=>{
+      emit({method:'workspace/bridgeQueue',params:{count:1,requests:[{id:'q1',prompt:'follow up after this turn'}]}});
+      emit({method:'error',params:{turnId:'busy',willRetry:true,error:{message:'Reconnecting... 5/5'}}});
+    }""")
+    playwright.expect(page.locator('#left .aw-error')).to_have_text('Reconnecting... 5/5')
+    page.evaluate("emit({method:'item/agentMessage/delta',params:{turnId:'busy',itemId:'answer',delta:'Back online'}})")
+    playwright.expect(page.locator('#left .aw-error')).to_be_hidden()
+    playwright.expect(page.locator('#left .aw-inline-queue')).to_contain_text('follow up after this turn')
+    if provider == 'Codex':
+        page.locator('#left textarea').first.fill('change direction now')
+        page.get_by_role('button', name='Send now', exact=True).click()
+        assert page.evaluate('calls.at(-1)') == ['steer', 'change direction now']
+    page.get_by_role('button', name='Remove queued message', exact=True).click()
+    assert page.evaluate('calls.at(-1)') == ['cancel', 'q1']
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path=str(tmp_path / f'queue-compaction-{provider}-{width}.png'))
+    page.evaluate("emit({method:'item/completed',params:{turnId:'busy',item:{id:'compact',type:'contextCompaction'}}})")
+    playwright.expect(progress).to_have_attribute('value', '1')
+    assert not errors
+
+
 def test_recovered_transport_error_does_not_clear_later_command_failure(pane):
     page, errors = pane
     page.evaluate("""()=>{
       window.offline=Error('Connection lost');pane.error(offline);
       pane.clearError(offline);
     }""")
-    assert page.locator('#left .aw-alert').is_hidden()
+    assert page.locator('#left .aw-error').is_hidden()
     page.evaluate("""()=>{
       pane.error(offline);pane.error(Error('Send outcome unconfirmed'));
       pane.clearError(offline);
@@ -2336,9 +2381,9 @@ def test_escape_interrupts_only_focused_running_turn_not_dialog_or_draft(pane):
       emit({method:'turn/started',params:{turn:{id:'running-exact',status:'inProgress'}}});
       emit({method:'workspace/bridgeQueue',params:{count:1,requests:[{id:'q',prompt:'queued'}]}});
     }""")
-    page.get_by_role("button", name="Queued sibling messages").click()
+    page.get_by_role("button", name="Queued messages").click()
     page.keyboard.press("Escape")
-    page.get_by_role("dialog", name="Queued sibling messages").wait_for(state="hidden")
+    page.get_by_role("dialog", name="Queued messages").wait_for(state="hidden")
     assert page.evaluate("calls") == []
     draft.press("Escape")
     draft.press("Escape")
@@ -2363,7 +2408,7 @@ def test_queue_edit_keeps_draft_and_targets_original_message(pane, tmp_path, wid
     }""")
     draft = page.get_by_role("textbox", name="Message Claude")
     draft.fill("Main draft")
-    page.get_by_role("button", name="Queued sibling messages").click()
+    page.get_by_role("button", name="Queued messages").click()
     page.get_by_role("button", name="Edit queued message q", exact=True).click()
     dialog = page.get_by_role("dialog", name="Edit queued message", exact=True)
     editor = dialog.get_by_role("textbox", name="Queued message text")
@@ -3601,8 +3646,8 @@ def test_queue_dialog_cancels_only_selected_request_and_waits_for_host(pane, tmp
       controls.cancelQueuedBridge=async id=>calls.push(['cancel',id]);
       emit({method:'workspace/bridgeQueue',params:{threadId:'exact',count:1,requests:[{id:'queued-1',prompt:'<img src=x onerror=alert(1)> Please review the change.'}]}});
     }""")
-    page.get_by_role("button", name="Queued sibling messages", exact=True).click()
-    dialog = page.get_by_role("dialog", name="Queued sibling messages", exact=True)
+    page.get_by_role("button", name="Queued messages", exact=True).click()
+    dialog = page.get_by_role("dialog", name="Queued messages", exact=True)
     assert dialog.locator("img").count() == 0
     assert page.evaluate("calls") == []
     page.screenshot(path=str(tmp_path / "queued-message-mobile.png"))
