@@ -142,4 +142,5 @@ def resolve_workspace_session(sid: str) -> dict:
         transcript = native.resolve()
     reject_unregistered_provider(sid, cwd, transcript, 'agy' if provider == 'gemini' else provider)
     return {"session_id": sid, "provider": provider, "cwd": str(cwd),
+            **({"session_directory": str(Path(session.get("cwd") or cwd).resolve())} if provider == "claude" else {}),
             "archived": bool(session.get("is_archived"))}

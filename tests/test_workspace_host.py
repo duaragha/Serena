@@ -281,6 +281,23 @@ def test_claude_queued_input_is_session_bound_and_deduplicated(tmp_path):
         host.shutdown()
 
 
+def test_claude_attach_passes_storage_directory_separately(tmp_path):
+    directories = []
+    class DirectoryOwner(Owner):
+        def __init__(self, *, session_directory, **kwargs):
+            directories.append((kwargs['cwd'], session_directory))
+            super().__init__(**kwargs)
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / 'directory.db'),
+        resolve=lambda sid: {'session_id': sid, 'provider': 'claude',
+                             'cwd': str(tmp_path / 'latest'), 'session_directory': str(tmp_path / 'original')},
+        factories={'claude': DirectoryOwner})
+    try:
+        assert host.attach('exact')['ok']
+        assert directories == [(tmp_path / 'latest', str(tmp_path / 'original'))]
+    finally:
+        host.shutdown()
+
+
 class Owner:
     instances = []
 
