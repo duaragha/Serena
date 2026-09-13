@@ -1451,6 +1451,7 @@ class WorkspaceHost:
             "fork_session",
             "clear_session",
             "disconnect_session",
+            "close_session",
             "register_fork",
             "context_usage",
             "permissions",
@@ -1652,6 +1653,19 @@ class WorkspaceHost:
                     retryable = True  # Registration is idempotent and cannot create a native fork.
                     await asyncio.to_thread(self.register_fork, result)
                     result["indexed"] = True
+                elif action == "close_session":
+                    if payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
+                        raise ValueError("Explicit session close confirmation is required")
+                    retryable = True  # Closing the same owner again cannot launch or replay work.
+                    turn = owner.active_turn
+                    await owner.close()
+                    if not owner.can_retry_attachment():
+                        raise ValueError("Runtime cleanup is unconfirmed; the chat has not been closed")
+                    if turn:
+                        await self._publish(sid, {"method": "turn/completed", "params": {
+                            "turn": {"id": turn, "status": "interrupted"}}})
+                    await self._publish(sid, {"method": "workspace/transportClosed", "params": {"reason": "Session closed"}})
+                    result = {"closed": True, "session_id": sid}
                 elif action == "disconnect_session":
                     if payload != {"confirmed": True} or type(payload.get("confirmed")) is not bool:
                         raise ValueError("Explicit session disconnect confirmation is required")
