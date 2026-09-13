@@ -242,15 +242,19 @@ def test_the_menu_offers_the_move_for_any_chat() -> None:
     assert "async function moveChatToFolderFlow(sid)" in page
 
 
-def test_the_picker_offers_existing_folders_without_requiring_one() -> None:
-    """The point of the feature is filing a chat somewhere new."""
+def test_the_picker_browses_the_tree_and_can_still_reach_a_new_folder() -> None:
+    """The destination used to be typed, with the existing folder names printed
+    into the prompt as a hint. It is browsed now, so this pins the two things
+    that survived the change: somewhere new is still reachable (the explorer
+    creates folders), and the sidebar still reflects the move."""
     page = WEB_SOURCE.read_text(encoding="utf-8")
     start = page.index("async function moveChatToFolderFlow(sid)")
     body = page[start : page.index("\nasync function linkChatPickerFlow", start)]
 
-    assert "/api/chat-folders" in body, "no existing folders are suggested"
-    assert "showPrompt(" in body, "the destination must be typeable"
+    assert "showFolderExplorer({" in body, "the destination is no longer browsable"
+    assert "showPrompt(" not in body, "the destination is being typed again"
     assert "loadSessions(currentProject" in body, "the sidebar would not show the move"
+    assert "/api/folder-create" in page, "a folder that does not exist yet is unreachable"
 
 
 def test_the_endpoint_exists_and_clears_on_an_empty_folder() -> None:

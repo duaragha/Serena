@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import re
+from contextlib import suppress
 from pathlib import Path
 
 from core import metadata
@@ -316,6 +317,82 @@ def _remirror(session_id: str, agent: str, file_path: str | None) -> dict:
     return result
 
 
+# Directories that are never a home for a chat, and never worth showing in a
+# picker: build output, dependency trees, and version-control plumbing.
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+
+
+def _listing(directory: Path) -> list[Path]:
+    """Sub-directories of one directory, in the order a person reads them."""
+    try:
+        entries = sorted(directory.iterdir(), key=lambda item: item.name.lower())
+    except OSError:
+        return []
+    return [
+        entry
+        for entry in entries
+        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in SKIP_DIRS
+    ]
+
+
+def browse_folders(relative: str = "") -> dict:
+    """One level of the projects tree, for a picker that browses rather than types.
+
+    A flat list of every folder is fine as a search index and useless as a
+    place to look around, so this answers the question a file explorer asks:
+    where am I, what is above me, and what is directly inside.
+
+    The path is always interpreted against the projects root and is not allowed
+    to leave it. ``..`` in the request is not an error to report back -- it is
+    simply not somewhere this picker goes, so it lands at the root.
+    """
+    root = projects_root().resolve()
+    wanted = str(relative or "").strip().strip("/\\")
+
+    here = root
+    if wanted:
+        candidate = Path(os.path.normpath(str(root / wanted)))
+        with suppress(OSError):
+            candidate = candidate.resolve()
+        # Containment is checked after resolving, so a symlink pointing out of
+        # the tree is caught as well as a literal "..".
+        if candidate == root or root in candidate.parents:
+            here = candidate
+
+    if not here.is_dir():
+        here = root
+
+    inside = here.relative_to(root).as_posix() if here != root else ""
+    crumbs = [{"name": root.name or "Projects", "relative": ""}]
+    walked: list[str] = []
+    for part in (inside.split("/") if inside else []):
+        walked.append(part)
+        crumbs.append({"name": part, "relative": "/".join(walked)})
+
+    entries = []
+    for entry in _listing(here):
+        child = entry.relative_to(root).as_posix()
+        entries.append(
+            {
+                "name": entry.name,
+                "relative": child,
+                "path": str(entry),
+                # Whether descending would show anything, so the row can say so
+                # instead of opening on an empty list.
+                "has_children": bool(_listing(entry)),
+            }
+        )
+
+    return {
+        "root": str(root),
+        "relative": inside,
+        "absolute": str(here),
+        "parent": None if here == root else "/".join(inside.split("/")[:-1]),
+        "crumbs": crumbs,
+        "entries": entries,
+    }
+
+
 def list_folders(*, depth: int = 3) -> list[dict]:
     """Folders under the projects root, for a picker to offer.
 
@@ -327,9 +404,6 @@ def list_folders(*, depth: int = 3) -> list[dict]:
     if not root.is_dir():
         return []
 
-    # Directories that are never a home for a chat.
-    skip = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
-
     found: list[dict] = []
 
     def walk(directory: Path, level: int) -> None:
@@ -340,7 +414,7 @@ def list_folders(*, depth: int = 3) -> list[dict]:
         except OSError:
             return
         for entry in entries:
-            if not entry.is_dir() or entry.name.startswith(".") or entry.name in skip:
+            if not entry.is_dir() or entry.name.startswith(".") or entry.name in SKIP_DIRS:
                 continue
             found.append(
                 {

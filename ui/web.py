@@ -1365,6 +1365,59 @@ body.pane-dragging * {
 }
 .link-picker-search:focus { outline: none; border-color: var(--accent); }
 .link-picker-empty { padding: 16px; text-align: center; color: var(--text-dim); font-size: 11px; }
+.fx-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.fx-crumb {
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+}
+.fx-crumb:hover { color: var(--text); border-color: var(--border-bright); }
+.fx-crumb.here { color: var(--accent); cursor: default; }
+.fx-crumb.here:hover { border-color: transparent; }
+.fx-sep { color: var(--text-dim); opacity: 0.5; }
+.fx-row .fx-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-row .fx-icon { width: 14px; text-align: center; opacity: 0.75; }
+.fx-row .fx-into { color: var(--text-dim); font-size: 11px; opacity: 0.6; }
+.fx-row.is-current { border-color: var(--accent); }
+.fx-row .fx-tag {
+  font-size: 10px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.fx-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 11px;
+}
+.fx-action {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--text-dim);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.fx-action:hover { color: var(--text); }
+.fx-action.danger:hover { color: var(--accent); }
+.fx-hint { margin-left: auto; color: var(--text-dim); opacity: 0.7; font-size: 10px; }
+.fx-newrow { display: flex; gap: 6px; margin-bottom: 8px; }
+.fx-newrow input { flex: 1; margin-bottom: 0; }
 /* === GROUP FEATURE END === */
 .session-title {
   flex: 1;
@@ -9403,27 +9456,264 @@ function showLinkPicker(srcSid) {
   });
 }
 
-async function moveChatToFolderFlow(sid) {
-  // Existing folders are offered as a hint rather than a closed list: the
-  // point of the feature is to file a chat somewhere that does not exist yet.
-  let known = [];
-  try {
-    const r = await fetch('/api/chat-folders');
-    if (r.ok) known = await r.json();
-  } catch(e) {}
-  const current = _findClientSession(sid);
-  const hint = known.length
-    ? 'Existing: ' + known.slice(0, 8).map(f => f.relative).join(', ')
-    : '';
+/**
+ * Browse the projects tree and pick a folder.
+ *
+ * This replaces a text box that printed the existing folder names into its
+ * prompt and asked the user to retype one. The tree is already on disk, so
+ * looking through it is the interface: breadcrumbs for where you are, a list
+ * of what is inside, and a click to go deeper.
+ *
+ * Navigating and choosing are deliberately separate. Clicking a folder opens
+ * it, and the confirm button files the chat wherever you are standing -- the
+ * same contract every folder chooser uses, and the reason a folder with no
+ * children is still a place you can put something.
+ *
+ * Resolves to the absolute path of the chosen folder, '' to unfile the chat,
+ * or null when the user backs out. Absolute, because a relative path is put
+ * through name normalisation on the way in -- it is lowercased and its spaces
+ * become dashes -- so browsing to a folder that is really called "MyFolder"
+ * and sending its relative path would file the chat into a freshly created
+ * "myfolder" beside it. An absolute path is taken as given.
+ */
+function showFolderExplorer({ currentPath, chatTitle }) {
+  return new Promise((resolve) => {
+    const bd = document.getElementById('modalBackdrop');
+    const titleEl = document.getElementById('modalTitle');
+    const bodyEl = document.getElementById('modalBody');
+    const input = document.getElementById('modalInput');
+    const okBtn = document.getElementById('modalConfirmBtn');
+    const cancelBtn = document.getElementById('modalCancelBtn');
+    const picker = document.getElementById('modalAgentPicker');
 
-  const folder = await showPrompt({
-    title: 'Move chat to folder',
-    body: (current && current.display_title ? _menuLabel(current.display_title, 60) + '\n' : '')
-      + 'Path under your Projects root, e.g. frameworth/it. '
-      + 'The folder is created if it does not exist.'
-      + (hint ? '\n\n' + hint : ''),
-    placeholder: 'frameworth/it',
-    confirm: 'Move',
+    titleEl.textContent = 'Move chat to folder';
+    bodyEl.innerHTML = '';
+    input.style.display = 'none';
+    if (picker) { picker.style.display = 'none'; picker.innerHTML = ''; }
+    okBtn.style.display = '';
+    okBtn.textContent = 'Move here';
+    cancelBtn.textContent = 'Cancel';
+
+    const wrap = document.createElement('div');
+    wrap.innerHTML =
+      (chatTitle ? '<div class="link-picker-empty" style="text-align:left;padding:0 0 8px">'
+        + esc(chatTitle) + '</div>' : '')
+      + '<div class="fx-crumbs" id="fxCrumbs"></div>'
+      + '<div id="fxNew"></div>'
+      + '<input class="link-picker-search" id="fxFilter" placeholder="Filter this folder…" />'
+      + '<div class="link-picker" id="fxList"></div>'
+      + '<div class="fx-actions">'
+        + '<button type="button" class="fx-action" id="fxNewBtn">+ New folder here</button>'
+        + (currentPath ? '<button type="button" class="fx-action danger" id="fxClearBtn">Unfile this chat</button>' : '')
+        + '<span class="fx-hint">enter opens &middot; backspace goes up</span>'
+      + '</div>';
+    bodyEl.appendChild(wrap);
+    const crumbsEl = wrap.querySelector('#fxCrumbs');
+    const listEl = wrap.querySelector('#fxList');
+    const filterEl = wrap.querySelector('#fxFilter');
+    const newHost = wrap.querySelector('#fxNew');
+
+    let view = null;      // the level currently shown
+    let rows = [];        // what is rendered, after filtering
+    let focusedIdx = 0;
+
+    const visible = () => {
+      const q = filterEl.value.trim().toLowerCase();
+      const entries = (view && view.entries ? view.entries : [])
+        .filter(e => !q || e.name.toLowerCase().includes(q));
+      const out = entries.map(e => ({ kind: 'folder', entry: e }));
+      // Going up is a row rather than a button so the keyboard reaches it.
+      if (view && view.parent !== null && view.parent !== undefined) {
+        out.unshift({ kind: 'up', relative: view.parent });
+      }
+      return out;
+    };
+
+    function renderCrumbs() {
+      if (!view) { crumbsEl.innerHTML = ''; return; }
+      crumbsEl.innerHTML = view.crumbs.map((c, i) => {
+        const here = i === view.crumbs.length - 1;
+        return '<span class="fx-crumb' + (here ? ' here' : '') + '" data-rel="' + esc(c.relative) + '">'
+          + esc(c.name) + '</span>'
+          + (here ? '' : '<span class="fx-sep">/</span>');
+      }).join('');
+      crumbsEl.querySelectorAll('.fx-crumb').forEach(el => {
+        if (el.classList.contains('here')) return;
+        el.addEventListener('click', () => open(el.getAttribute('data-rel')));
+      });
+    }
+
+    function render() {
+      renderCrumbs();
+      okBtn.textContent = view && view.relative
+        ? 'Move to ' + view.relative.split('/').pop()
+        : 'Move to Projects root';
+      rows = visible();
+      if (!rows.length) {
+        listEl.innerHTML = '<div class="link-picker-empty">'
+          + (filterEl.value.trim() ? 'Nothing here matches.' : 'No folders inside. "Move here" files it in this one.')
+          + '</div>';
+        return;
+      }
+      listEl.innerHTML = rows.map((row, i) => {
+        const focused = i === focusedIdx ? ' focused' : '';
+        if (row.kind === 'up') {
+          return '<div class="link-picker-row fx-row' + focused + '" data-i="' + i + '">'
+            + '<span class="fx-icon">&#8593;</span><span class="fx-name">..</span></div>';
+        }
+        const isCurrent = currentPath && row.entry.path === currentPath;
+        return '<div class="link-picker-row fx-row' + (isCurrent ? ' is-current' : '') + focused + '" data-i="' + i + '">'
+          + '<span class="fx-icon">&#128193;</span>'
+          + '<span class="fx-name">' + esc(row.entry.name) + '</span>'
+          + (isCurrent ? '<span class="fx-tag">current</span>' : '')
+          + (row.entry.has_children ? '<span class="fx-into">&#8250;</span>' : '')
+        + '</div>';
+      }).join('');
+      listEl.querySelectorAll('.fx-row').forEach(el => {
+        el.addEventListener('click', () => {
+          const i = parseInt(el.getAttribute('data-i'), 10);
+          if (rows[i]) enter(rows[i]);
+        });
+      });
+      const focusedEl = listEl.querySelector('.fx-row.focused');
+      if (focusedEl && focusedEl.scrollIntoView) focusedEl.scrollIntoView({ block: 'nearest' });
+    }
+
+    function enter(row) {
+      if (!row) return;
+      open(row.kind === 'up' ? row.relative : row.entry.relative);
+    }
+
+    async function open(relative) {
+      try {
+        const r = await fetch('/api/folder-browse?path=' + encodeURIComponent(relative || ''));
+        if (!r.ok) throw new Error('browse failed');
+        view = await r.json();
+      } catch (e) {
+        listEl.innerHTML = '<div class="link-picker-empty">Could not read that folder.</div>';
+        return;
+      }
+      filterEl.value = '';
+      focusedIdx = 0;
+      render();
+    }
+
+    function showNewFolderInput() {
+      if (newHost.firstChild) { newHost.querySelector('input').focus(); return; }
+      const row = document.createElement('div');
+      row.className = 'fx-newrow';
+      row.innerHTML = '<input class="link-picker-search" placeholder="New folder name…" />'
+        + '<button type="button" class="fx-action" data-make>Create</button>';
+      newHost.appendChild(row);
+      const nameEl = row.querySelector('input');
+      const make = async () => {
+        const name = nameEl.value.trim();
+        if (!name) { newHost.innerHTML = ''; return; }
+        try {
+          const r = await fetch('/api/folder-create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parent: (view && view.relative) || '', name }),
+          });
+          const resp = await r.json();
+          if (!r.ok || !resp.ok) throw new Error(resp.error || 'could not create');
+          newHost.innerHTML = '';
+          // Land inside what was just made, which is almost always where the
+          // chat is going.
+          await open(resp.relative);
+        } catch (e) {
+          nameEl.value = '';
+          nameEl.placeholder = e.message || 'could not create';
+        }
+      };
+      row.querySelector('[data-make]').addEventListener('click', make);
+      nameEl.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') { ev.preventDefault(); make(); }
+        if (ev.key === 'Escape') { ev.preventDefault(); newHost.innerHTML = ''; filterEl.focus(); }
+      });
+      nameEl.focus();
+    }
+
+    const close = (result) => {
+      bd.classList.remove('visible');
+      bd.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey, true);
+      cancelBtn.removeEventListener('click', onCancel);
+      okBtn.removeEventListener('click', onOk);
+      bodyEl.innerHTML = '';
+      okBtn.textContent = 'OK';
+      _modalRestoreTerminal();
+      resolve(result);
+    };
+    const onBackdrop = (e) => { if (e.target === bd) close(null); };
+    const onOk = () => close(view ? view.absolute : '');
+    const onCancel = () => close(null);
+    const onKey = (e) => {
+      if (newHost.firstChild) return;  // the create field owns the keyboard
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
+      else if (e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation();
+        // Enter opens what is focused; the button is how you commit, so a
+        // stray Enter can never file a chat somewhere unseen.
+        if (e.ctrlKey || e.metaKey) close(view ? view.absolute : '');
+        else enter(rows[focusedIdx]);
+      }
+      else if (e.key === 'Backspace' && !filterEl.value) {
+        if (view && view.parent !== null && view.parent !== undefined) {
+          e.preventDefault(); open(view.parent);
+        }
+      }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); focusedIdx = Math.min(rows.length - 1, focusedIdx + 1); render(); }
+      else if (e.key === 'ArrowUp')   { e.preventDefault(); focusedIdx = Math.max(0, focusedIdx - 1); render(); }
+      else if (e.key === 'ArrowRight' && rows[focusedIdx]) { e.preventDefault(); enter(rows[focusedIdx]); }
+      else if (e.key === 'ArrowLeft' && view && view.parent !== null && view.parent !== undefined) {
+        e.preventDefault(); open(view.parent);
+      }
+    };
+
+    filterEl.addEventListener('input', () => { focusedIdx = 0; render(); });
+    wrap.querySelector('#fxNewBtn').addEventListener('click', showNewFolderInput);
+    const clearBtn = wrap.querySelector('#fxClearBtn');
+    if (clearBtn) clearBtn.addEventListener('click', () => close(''));
+
+    bd.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey, true);
+    cancelBtn.addEventListener('click', onCancel);
+    okBtn.addEventListener('click', onOk);
+
+    _modalHideTerminal();
+    bd.classList.add('visible');
+    // Open where the chat already lives, so "move it one folder over" starts
+    // beside it rather than at the top of the tree.
+    open(_relativeToProjects(currentPath)).then(() => setTimeout(() => filterEl.focus(), 10));
+  });
+}
+
+/** A path under the projects root, as the browse endpoint wants it. */
+function _relativeToProjects(absolute) {
+  if (!absolute || !_projectsRoot) return '';
+  const root = _projectsRoot.replace(/[\/]+$/, '');
+  const path = String(absolute).replace(/[\/]+$/, '');
+  if (path === root) return '';
+  return path.startsWith(root + '/') ? path.slice(root.length + 1) : '';
+}
+
+let _projectsRoot = '';
+
+async function moveChatToFolderFlow(sid) {
+  const current = _findClientSession(sid);
+  // The root is needed to turn the chat's absolute home into a browse path.
+  if (!_projectsRoot) {
+    try {
+      const r = await fetch('/api/folder-browse');
+      if (r.ok) _projectsRoot = (await r.json()).root || '';
+    } catch(e) {}
+  }
+
+  const folder = await showFolderExplorer({
+    currentPath: (current && current.cwd) || '',
+    chatTitle: current && current.display_title ? _menuLabel(current.display_title, 60) : '',
   });
   if (folder === null) return;
 
@@ -13786,6 +14076,47 @@ def api_chat_folder():
         return jsonify({"ok": False, "error": str(exc)}), 400
     except OSError as exc:
         return jsonify({"ok": False, "error": f"could not create the folder: {exc}"}), 500
+
+
+@app.route("/api/folder-browse")
+def api_folder_browse():
+    """One level of the projects tree, so the picker can browse it."""
+    from core.chat_folders import browse_folders
+
+    return jsonify(browse_folders(request.args.get("path") or ""))
+
+
+@app.route("/api/folder-create", methods=["POST"])
+def api_folder_create():
+    """Create a folder the picker is standing in, without filing anything yet.
+
+    Making the folder and moving the chat are separate acts: the user may want
+    somewhere new to put this chat and then keep browsing, and a picker that
+    only creates as a side effect of moving cannot offer that.
+    """
+    from core.chat_folders import browse_folders, normalize_segment, projects_root
+
+    data = request.get_json(silent=True) or {}
+    parent = str(data.get("parent") or "").strip().strip("/\\")
+    name = normalize_segment(data.get("name") or "")
+    if not name:
+        return jsonify({"ok": False, "error": "that name has no usable folder name in it"}), 400
+
+    root = projects_root().resolve()
+    # Resolve the parent through the browser so the same containment rule
+    # applies to creating as to looking.
+    base = Path(browse_folders(parent)["absolute"])
+    target = base / name
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"could not create the folder: {exc}"}), 500
+    return jsonify({
+        "ok": True,
+        "name": name,
+        "relative": target.resolve().relative_to(root).as_posix(),
+        "path": str(target),
+    })
 
 
 @app.route("/api/chat-folders")
