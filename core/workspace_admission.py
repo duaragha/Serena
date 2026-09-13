@@ -2,10 +2,48 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 
 import psutil
+
+
+def _registered_other_runtime(process, sid: str) -> bool:
+    """Recognize leased runtime wrappers and their native child, not tool trees."""
+    root = Path(os.environ.get("SERENA_RUNTIME_LEASE_DIR") or Path.home() / ".config/serena/runtime-leases")
+    target = hashlib.sha256(sid.encode()).hexdigest() + ".json"
+    try:
+        identities = {(process.pid, process.create_time())}
+        parent = process.parent()
+        if parent is not None:
+            parent_argv = parent.cmdline()
+            wrapper = (len(parent_argv) > 1 and Path(parent_argv[0]).name.lower() in {"node", "node.exe"}
+                       and Path(parent_argv[1]).name in {"codex", "codex.js", "workspace_claude_worker.mjs"})
+            if wrapper:
+                identities.add((parent.pid, parent.create_time()))
+            if (process.info.get("name") or "").lower() == "codex-code-mode-host":
+                identities.add((parent.pid, parent.create_time()))
+                grandparent = parent.parent()
+                if grandparent is not None:
+                    identities.add((grandparent.pid, grandparent.create_time()))
+        for path in root.glob("*.json"):
+            if path.name == target:
+                continue
+            try:
+                record = json.loads(path.read_text())
+                child, owner = record.get("child", {}), record.get("owner", {})
+                if record.get("phase") != "bound" or (child.get("pid"), child.get("born")) not in identities:
+                    continue
+                host = psutil.Process(owner["pid"])
+                if host.create_time() == owner["born"] and host.status() != psutil.STATUS_ZOMBIE:
+                    return True
+            except (OSError, ValueError, TypeError, KeyError, psutil.Error):
+                continue
+    except (OSError, psutil.Error, AttributeError):
+        pass
+    return False
 
 
 def reject_unregistered_codex(sid: str, cwd: Path, transcript: Path) -> None:
@@ -16,7 +54,8 @@ def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider
     """Detect older/manual owners that do not participate in shared leases.
 
     A process with an explicit different resume ID is unrelated. An unidentified
-    Codex runtime in this project is ambiguous and blocks migration. This check
+    runtime in this project is ambiguous and blocks migration. Verified leased
+    owners of other sessions are not ambiguous. This check
     complements leases; it cannot constrain manually launched future processes.
     """
     # Google's native harness may outlive the agy parent. Linux may truncate
@@ -32,7 +71,10 @@ def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider
         label = provider.capitalize()
         try:
             argv = process.cmdline()
-            candidate = candidate or any(name in Path(value).name.lower() for value in argv[:3] for name in names)
+            candidate = candidate or any(name in Path(value).name.lower()
+                for index, value in enumerate(argv[:3])
+                if index == 0 or argv[index - 1] not in {"-c", "-lc", "-ic", "-e", "--eval"}
+                for name in names)
             if not candidate:
                 continue
             if sid in argv or f"--resume={sid}" in argv or (provider == 'agy' and f'--conversation={sid}' in argv):
@@ -40,8 +82,17 @@ def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider
             paths = {Path(f.path) for f in process.open_files()}
             if transcript in paths:
                 raise RuntimeError(f"This session transcript is already open by a {label} process")
+            if (provider == "claude" and len(argv) >= 6
+                    and Path(argv[1]).resolve() == Path(__file__).with_name("workspace_claude_worker.mjs").resolve()
+                    and argv[4] and argv[4] != sid):
+                continue
+            if _registered_other_runtime(process, sid):
+                continue
             switches = ("resume",) if provider == "codex" else (("--conversation",) if provider == "agy" else ("--resume", "-r"))
             explicit = next((value for value in switches if value in argv), None)
+            if any(value.startswith(switch + "=") and value.split("=", 1)[1]
+                   for value in argv for switch in switches if switch.startswith("-")):
+                continue
             if explicit:
                 index = argv.index(explicit) + 1
                 if index < len(argv) and not argv[index].startswith("-"):

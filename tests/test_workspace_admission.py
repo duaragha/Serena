@@ -1,9 +1,61 @@
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from core import workspace_admission as admission
+
+
+@pytest.mark.parametrize('kind', ['root', 'child', 'helper'])
+@pytest.mark.parametrize('lease_state', ['other', 'same', 'reused', 'dead_host'])
+def test_registered_runtime_identity_does_not_block_unrelated_chat(session, monkeypatch, tmp_path, kind, lease_state):
+    root = SimpleNamespace(pid=321, create_time=lambda: 1.0, parent=lambda: None, cmdline=lambda: ['node', '/bin/codex'])
+    child = SimpleNamespace(pid=322, create_time=lambda: 2.0, parent=lambda: root, cmdline=lambda: ['codex', 'app-server'])
+    process = root if kind == 'root' else child if kind == 'child' else SimpleNamespace(
+        pid=323, create_time=lambda: 3.0, parent=lambda: child)
+    process.info = {'name': 'codex-code-mode-host' if kind == 'helper' else 'codex'}
+    if kind == 'helper':
+        process.cmdline = lambda: ['codex-code-mode-host']
+    process.cwd = lambda: session['cwd']
+    process.open_files = lambda: []
+    monkeypatch.setattr(admission.psutil, 'process_iter', lambda attrs: [process])
+    monkeypatch.setattr(admission.psutil, 'Process', lambda pid: SimpleNamespace(
+        create_time=lambda: 4.0, status=lambda: admission.psutil.STATUS_ZOMBIE if lease_state == 'dead_host' else 'running'))
+    monkeypatch.setenv('SERENA_RUNTIME_LEASE_DIR', str(tmp_path))
+    sid = 'exact' if lease_state == 'same' else 'other'
+    (tmp_path / (hashlib.sha256(sid.encode()).hexdigest() + '.json')).write_text(json.dumps({
+        'phase': 'bound', 'child': {'pid': 321, 'born': 9.0 if lease_state == 'reused' else 1.0},
+        'owner': {'pid': 320, 'born': 4.0}}))
+    if lease_state == 'other':
+        assert admission.resolve_workspace_session('exact')['session_id'] == 'exact'
+        process.open_files = lambda: [SimpleNamespace(path=session['file_path'])]
+        with pytest.raises(RuntimeError, match='transcript'):
+            admission.resolve_workspace_session('exact')
+    else:
+        with pytest.raises(RuntimeError, match='unregistered'):
+            admission.resolve_workspace_session('exact')
+
+
+@pytest.mark.parametrize('argv', [
+    ['claude', '--resume=different'],
+    ['node', str(Path(admission.__file__).with_name('workspace_claude_worker.mjs')), 'sdk', 'claude', 'different', '/project'],
+])
+def test_explicit_other_claude_runtime_does_not_block(session, monkeypatch, argv):
+    session['agent'] = 'claude'
+    process = SimpleNamespace(pid=12345, info={'name': 'claude'}, cmdline=lambda: argv,
+                              cwd=lambda: session['cwd'], open_files=lambda: [])
+    monkeypatch.setattr(admission.psutil, 'process_iter', lambda attrs: [process])
+    assert admission.resolve_workspace_session('exact')['provider'] == 'claude'
+
+
+def test_shell_command_mentioning_provider_is_not_a_runtime(session, monkeypatch):
+    process = SimpleNamespace(pid=12345, info={'name': 'bash'},
+                              cmdline=lambda: ['bash', '-lc', 'echo codex'],
+                              cwd=lambda: session['cwd'], open_files=lambda: [])
+    monkeypatch.setattr(admission.psutil, 'process_iter', lambda attrs: [process])
+    assert admission.resolve_workspace_session('exact')['session_id'] == 'exact'
 
 
 @pytest.fixture
