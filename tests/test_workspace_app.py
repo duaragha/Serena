@@ -186,7 +186,7 @@ def test_corrupt_creation_record_cannot_launch_replacement(tmp_path, saved):
 
 
 @pytest.mark.parametrize("width", [1440, 390])
-@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
 @pytest.mark.parametrize("retry", [False, True])
 @pytest.mark.parametrize("delivery_failed", [False, True])
 def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_path, width, provider, retry, delivery_failed):
@@ -227,6 +227,8 @@ def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_
                 assert not calls and host._loop is None
                 context = frame.get_by_role("textbox", name="Initial context")
                 playwright.expect(context).to_be_editable()
+                if provider == 'gemini':
+                    page.locator('iframe').screenshot(path=str(tmp_path / f'gemini-handoff-{width}.png'))
                 context.fill('')
                 assert button.is_disabled()
                 edited = seed + '\nMy changes before sending.'
@@ -951,12 +953,14 @@ function setTermStatus(status){window.lastStatus=status;}
             )
             assert not owners[0].closed
             assert not errors
-            page.evaluate("(cwd) => _startStructuredPane('seeded-proof', {isNew:true,agent:'codex',cwd,seed:'Required context'})", str(tmp_path))
+            page.evaluate("(cwd) => _startStructuredPane('seeded-proof', {isNew:true,agent:'gemini',cwd,seed:'Required context'})", str(tmp_path))
             seeded_frame = page.frames[-1]
+            seeded_frame.get_by_role('heading', name='New Gemini chat').wait_for(timeout=5000)
             seeded_frame.get_by_role("button", name="Create and send", exact=True).wait_for()
             assert seeded_frame.get_by_role("textbox", name="Initial context").input_value() == "Required context"
             assert "Required" not in seeded_frame.url
             assert len(owners) == 1
+            page.locator('iframe').last.screenshot(path=str(tmp_path / 'gemini-handoff-mounted.png'))
             page.evaluate("termSessions.get('seeded-proof').cancelOutput(); termSessions.get('seeded-proof').mount.remove(); termSessions.delete('seeded-proof')")
             creation_routes = []
             page.route('**/api/workspace/create', lambda route: creation_routes.append(route))

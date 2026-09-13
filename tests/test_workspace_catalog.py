@@ -209,7 +209,8 @@ def test_saved_session_route_rejects_ambiguous_archive_filter(monkeypatch, query
     assert response.json == {'ok': False, 'error': 'Expected one boolean archived filter'}
 
 
-def test_explicit_handoff_uses_exact_owner_and_refuses_failed_attachment():
+@pytest.mark.parametrize('provider', ['codex', 'claude', 'gemini'])
+def test_explicit_handoff_uses_exact_owner_and_refuses_failed_attachment(provider):
     from flask import Flask
 
     from ui.workspace_web import workspace_blueprint
@@ -222,14 +223,14 @@ def test_explicit_handoff_uses_exact_owner_and_refuses_failed_attachment():
     app = Flask(__name__)
     app.register_blueprint(workspace_blueprint(host, token="s" * 40))
     client = app.test_client()
-    payload = {"provider": "codex", "prompt": "Briefing", "request_id": "stable"}
+    payload = {"provider": provider, "prompt": "Briefing", "request_id": "stable"}
     url = "/api/workspace/exact/handoff"
     headers = {"X-Serena-Workspace-Token": "s" * 40}
     assert client.post(url, json=payload).status_code == 403
     assert client.post(url, json={**payload, "prompt": ""}, headers=headers).status_code == 400
     assert not calls
     assert client.post(url, json=payload, headers=headers).json == {"ok": True, "queued": True}
-    assert calls == [("attach", "exact"), ("bridge", ("exact", "codex", "Briefing", "stable"), {"timeout": 1})]
+    assert calls == [("attach", "exact"), ("bridge", ("exact", provider, "Briefing", "stable"), {"timeout": 1})]
     calls.clear()
     host.attach = lambda sid: {"ok": False, "error": "Already owned elsewhere"}
     assert client.post(url, json=payload, headers=headers).json["ok"] is False

@@ -76,7 +76,7 @@ def workspace_blueprint(host, *, token: str):
     def handoff(sid):
         data = request.get_json(silent=True)
         if (not isinstance(data, dict) or set(data) != {"provider", "prompt", "request_id"}
-                or data["provider"] not in {"claude", "codex"}
+                or data["provider"] not in {"claude", "codex", "gemini"}
                 or not isinstance(data["prompt"], str) or not data["prompt"].strip()
                 or len(data["prompt"].encode("utf-8")) > 1024 * 1024
                 or not isinstance(data["request_id"], str) or not 1 <= len(data["request_id"]) <= 100):

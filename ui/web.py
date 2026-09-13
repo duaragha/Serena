@@ -7108,7 +7108,7 @@ function _startStructuredPane(sid, opts) {
     const pseudo = _pseudoSessions.find(session => session.session_id === sid);
     if (pseudo) pseudo.structured_pending = true;
   }
-  if (opts.isNew && !['codex', 'claude'].includes(opts.agent)) {
+  if (opts.isNew && !['codex', 'claude', 'gemini'].includes(opts.agent)) {
     setTermStatus('New structured sessions are not available for this provider yet.', 'error');
     return null;
   }
@@ -9054,6 +9054,10 @@ async function handoffSession(srcSid, targetAgent) {
 
   if(termSessions.get(tempId)?.structured){
     toast.update('Ready to create ' + _agentLabel(targetAgent) + ' with handoff context', 'success');
+    return;
+  }
+  if(window.SERENA?.structuredWorkspace && !window.__nativeTerminalBridge){
+    toast.update('Could not open the ' + _agentLabel(targetAgent) + ' workspace. Handoff was not sent.', 'error');
     return;
   }
 
