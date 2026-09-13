@@ -11,6 +11,24 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('explicit close confirms ownership cleanup and permits a fresh retry after failure', async () => {
+  const requests=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),
+    receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+      requests.push(JSON.parse(options.body));
+      return response(requests.length===1
+        ? {ok:false,retryable:true,error:'Cleanup unconfirmed'}
+        : {ok:true,result:{closed:true,session_id:'exact'}});
+    }});
+  try {
+    await assert.rejects(conn.controls().closeSession(), /Cleanup unconfirmed/);
+    assert.deepEqual(await conn.controls().closeSession(),{closed:true,session_id:'exact'});
+    assert.equal(requests[0].action,'close_session');
+    assert.deepEqual(requests[0].payload,{confirmed:true});
+    assert.notEqual(requests[0].request_id,requests[1].request_id);
+  } finally {conn.dispose();}
+});
+
 test('poll recovery clears its own error once without retrying commands', async () => {
   const errors=[],recovered=[],requests=[];
   let offline=true;

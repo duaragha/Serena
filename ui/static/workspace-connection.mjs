@@ -460,6 +460,7 @@ export class WorkspaceConnection {
       updateGoal: (changes,expected) => this.command('update_goal', {changes,expected,confirmed:true}),
       clearGoal: expected => this.command('clear_goal', {expected,confirmed:true}),
       disconnectSession: () => this.command('disconnect_session', {confirmed:true}),
+      closeSession: () => this.command('close_session', {confirmed:true}),
       lastClear: () => this.readSaved(this.clearKey,null,value=>value===null || (typeof value==='object' && !Array.isArray(value))),
       forgetClear: () => {this.requireReceipts();this.storage.setItem(this.clearKey,'null');},
       recoverFork: fork_request_id => this.command('register_fork', {fork_request_id}),
