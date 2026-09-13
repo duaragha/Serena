@@ -10,6 +10,50 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+def test_recovered_transport_error_does_not_clear_later_command_failure(pane):
+    page, errors = pane
+    page.evaluate("""()=>{
+      window.offline=Error('Connection lost');pane.error(offline);
+      pane.clearError(offline);
+    }""")
+    assert page.locator('#left .aw-alert').is_hidden()
+    page.evaluate("""()=>{
+      pane.error(offline);pane.error(Error('Send outcome unconfirmed'));
+      pane.clearError(offline);
+    }""")
+    assert page.get_by_text('Send outcome unconfirmed', exact=True).is_visible()
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_compact_tools_preserve_full_commands_and_readable_reasoning(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      window.script='printf start\\n'+'printf details\\n'.repeat(80);
+      emit({method:'item/completed',params:{turnId:'t',item:{id:'long-command',type:'commandExecution',command:script,aggregatedOutput:'Verified',status:'completed'}}});
+      emit({method:'item/reasoning/summaryTextDelta',params:{turnId:'t',itemId:'reason',summaryIndex:0,delta:'Checking the result'}});
+      emit({method:'item/completed',params:{turnId:'t',item:{id:'prose',type:'agentMessage',text:'First line\\ncontinues in the same paragraph.\\n\\n- One\\n- Two'}}});
+    }""")
+    tool = page.locator('[data-item-id="long-command"] > details')
+    assert not tool.evaluate('el=>el.open')
+    assert len(tool.locator(':scope > summary').inner_text()) < 160
+    tool.locator(':scope > summary').click()
+    assert tool.locator('.aw-command').inner_text() == page.evaluate('script')
+    thinking = page.locator('[data-item-id="reason"] > details')
+    thinking.locator('summary').click()
+    assert 'Checking the result' in thinking.locator('pre').inner_text()
+    assert '"summary"' not in thinking.locator('pre').inner_text()
+    page.evaluate("emit({method:'item/reasoning/summaryTextDelta',params:{turnId:'t',itemId:'reason',summaryIndex:0,delta:' as it arrives'}})")
+    playwright.expect(thinking.locator('pre')).to_have_text('Checking the result as it arrives')
+    assert thinking.evaluate('el=>el.open')
+    tool.locator(':scope > summary').click()
+    assert page.locator('[data-item-id="prose"] .aw-message').evaluate('el=>getComputedStyle(el).whiteSpace') == 'normal'
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path=str(tmp_path / f'compact-tools-{width}.png'))
+    assert not errors
+
+
 @pytest.mark.parametrize('provider', ['Claude', 'Codex'])
 def test_current_effort_is_not_duplicated_and_can_be_restored(pane, provider):
     page, errors = pane
@@ -279,6 +323,8 @@ def test_claude_activity_visible_without_permission_selector(pane, tmp_path):
       emit({method:'item/started',params:{turnId:'t',item:{id:'thought',type:'claudeThinking',text:'Checking files'}}});
       emit({method:'item/started',params:{turnId:'t',item:{id:'command',type:'claudeToolCall',tool:'Bash',input:{command:'pwd'},status:'inProgress'}}});
     }""")
+    page.locator('[data-item-id="thought"] summary').click()
+    page.locator('[data-item-id="command"] > details > summary').click()
     playwright.expect(page.get_by_text('Checking files', exact=True)).to_be_visible()
     playwright.expect(page.locator('#left .aw-command', has_text='pwd')).to_be_visible()
     page.evaluate("pane.openPermissions()")
@@ -2233,7 +2279,8 @@ def test_pending_command_streams_output_without_raw_event_json(pane):
     tool.locator('summary').click()
     assert 'printf hello' in tool.inner_text()
     assert 'Running' in tool.inner_text()
-    assert tool.locator('pre').count() == 0
+    assert tool.locator('.aw-command').inner_text() == 'printf hello'
+    assert tool.locator('.aw-tool-output').count() == 0
     page.evaluate("""() => emit({method:'item/commandExecution/outputDelta',params:{
       turnId:'t',itemId:'pending-command',delta:'hello'
     }})""")
@@ -2381,6 +2428,8 @@ def test_streaming_tool_input_keeps_one_expanded_call(pane):
     page, errors = pane
     page.evaluate("emit({method:'item/started',params:{turnId:'t',item:{id:'streamed',type:'claudeToolCall',tool:'Bash',input:{},inputStreaming:true,inputJson:'{\"command\":',status:'inProgress'}}})")
     item = page.locator('[data-item-id="streamed"]')
+    assert not item.locator("details").first.evaluate("el=>el.open")
+    item.locator('details > summary').first.click()
     assert item.locator("details").first.evaluate("el=>el.open")
     assert item.get_by_text("Receiving tool input", exact=True).is_visible()
     assert item.locator(".aw-tool-input").inner_text() == '{"command":'
@@ -2406,7 +2455,10 @@ def test_claude_tools_show_readable_native_output_and_requested_edits(pane, tmp_
       ])emit({method:'item/completed',params:{turnId:'t',item}});
     }""")
     for identifier in ["bash-native", "edit-native", "write-native", "unknown-native"]:
-        assert page.locator(f'[data-item-id="{identifier}"] > details').evaluate("el=>el.open")
+        detail = page.locator(f'[data-item-id="{identifier}"] > details')
+        assert detail.evaluate("el=>el.open") is (identifier == 'edit-native')
+        if identifier != 'edit-native':
+            detail.locator(':scope > summary').click()
     command = page.locator('[data-item-id="bash-native"]')
     assert command.locator(".aw-command").inner_text() == "pytest tests/test_example.py -q"
     assert command.locator(".aw-tool-output").inner_text() == "3 passed in 0.4s"
@@ -2924,7 +2976,12 @@ def test_codex_unavailable_or_argument_commands_do_not_submit(pane, command):
     page.evaluate("""command=>{pane.provider='Codex';pane.input.value='/'+command+' extra';pane.render();}""", command)
     page.get_by_role("button", name="Send message", exact=True).first.click()
     page.get_by_text("Session commands do not accept arguments, attachments or skills", exact=True).wait_for()
-    page.evaluate("""command=>{pane.input.value='/'+command;pane.codexCommandControls()[command].hidden=true;}""", command)
+    page.evaluate("""command=>{
+      pane.input.value='/'+command;
+      const control=pane.codexCommandControls()[command];
+      if(command==='compact')control.disabled=true;
+      else control.hidden=true;
+    }""", command)
     page.get_by_role("button", name="Send message", exact=True).first.click()
     page.get_by_text("Session action is not available right now", exact=True).wait_for()
     assert page.evaluate("calls") == []

@@ -18,7 +18,7 @@ for (const agent of ['claude', 'codex', 'gemini']) {
     });
     vm.runInContext(route, context);
     for (const opts of [{}, {isNew:true,agent}]) {
-      assert.equal(await context.startLiveTerminal('exact',opts), agent==='gemini'?'terminal':'structured');
+      assert.equal(await context.startLiveTerminal('exact',opts), 'structured');
     }
   });
 }

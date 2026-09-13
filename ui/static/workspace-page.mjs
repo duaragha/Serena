@@ -18,6 +18,10 @@ const connection = new WorkspaceConnection({
     return accepted;
   },
   error: error => connectionFailed(error),
+  recovered: error => {
+    pane.clearError(error);
+    if(pane.conversation.status !== 'unavailable')button.hidden = true;
+  },
   runtime: runtime => pane.setSleeping(runtime?.sleeping === true),
   replaying: active => {pane.setReplaying(active);if(!active)reportState();},
   streamReplay: true,

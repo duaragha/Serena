@@ -25,21 +25,23 @@
 .aw-plan-step[data-status="completed"] .aw-plan-status{color:#7dd9ae}
 .aw-plan-step[data-status="in_progress"] .aw-plan-status{color:#ee8ac1}
 .aw-plan-content{overflow-wrap:anywhere;font-size:11px}.aw-plan-priority{grid-column:2;color:#a89bad;font-size:9px}
-.aw-message{white-space:pre-wrap;line-height:1.85}
+.aw-message{white-space:normal;line-height:1.7}
+.aw-message p{margin:0 0 12px}.aw-message p:last-child{margin-bottom:0}
 .aw-user-message{white-space:pre-wrap;padding:10px 13px;border-left:2px solid #ff80bf;background:#19111a}
-.aw-tool{border-top:1px solid #302730;border-bottom:1px solid #302730;font-size:10px}
+.aw-tool{border-top:1px solid #302730;border-bottom:1px solid #302730;font-size:12px}
 .aw-events-dialog{max-height:80vh;overflow:auto}.aw-event-navigation{display:flex;justify-content:space-between;margin-top:12px}.aw-events-dialog summary{overflow-wrap:anywhere}
 .aw-session-status-dialog{max-height:80vh;overflow:auto}.aw-session-status-dialog dl{display:grid;grid-template-columns:minmax(100px,1fr) minmax(0,2fr);gap:12px}.aw-session-status-dialog dt{color:#b7a6b4}.aw-session-status-dialog dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .aw-queue-actions{display:flex;flex-direction:column;gap:4px}.aw-review-dialog textarea{box-sizing:border-box;width:100%;resize:vertical;background:#080808;color:inherit;border:1px solid #63455d;padding:8px;font:inherit}
 .aw-agent-origin{font-size:10px;color:#cba9d1;margin-bottom:8px;overflow-wrap:anywhere}.aw-agent-origin summary{cursor:pointer}.aw-agent-origin code{display:block;white-space:pre-wrap;padding:6px 0}
 .aw-tool summary{display:flex;gap:8px;align-items:center;cursor:pointer;padding:10px 0;overflow-wrap:anywhere}
+.aw-tool summary>span{min-width:0;flex:1}.aw-tool>summary>span{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 .aw-tool summary:before{content:'>';color:#a89bad}.aw-tool[open] summary:before{content:'v'}
 .aw-tool small{margin-left:auto;color:#a89bad;flex-shrink:0}
 .aw-tool .aw-tool-running{color:#77d99b;font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
 .aw-tool-running:before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor}
 .aw-output-pending{color:#a89bad;font-size:12px;margin:8px 0}
 .aw-elapsed{font-size:10px;color:#b7a6b4;white-space:nowrap;font-variant-numeric:tabular-nums}
-.aw-tool pre,.aw-question pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;font:10px/1.8 monospace}
+.aw-tool pre,.aw-question pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;font:11px/1.6 monospace}
 .aw-exit{color:#a89bad;padding-bottom:9px}.aw-file-name{font-size:10px;color:#c6b4cf;padding:7px 0;overflow-wrap:anywhere}
 .aw-diff{border-left:2px solid #52735f;background:#0c1b12;padding:9px 11px;white-space:pre-wrap;font:10px/1.9 monospace;overflow-wrap:anywhere}
 .aw-add{color:#a9dfb7}.aw-remove{color:#ff969f}

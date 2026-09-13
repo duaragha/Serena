@@ -5,6 +5,24 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('Codex reasoning summaries stream by item and part without duplicating completion', () => {
+  const model = new WorkspaceConversation('exact');
+  let seq = 0;
+  const send = (method, fields) => model.apply(wrap(++seq, {method, params:{threadId:'exact',turnId:'t',itemId:'r',...fields}}));
+  send('item/reasoning/summaryPartAdded', {summaryIndex:0});
+  send('item/reasoning/summaryTextDelta', {summaryIndex:0,delta:'Checking '});
+  send('item/reasoning/summaryTextDelta', {summaryIndex:0,delta:'files'});
+  send('item/reasoning/summaryTextDelta', {summaryIndex:1,delta:'Verifying output'});
+  send('item/reasoning/textDelta', {contentIndex:0,delta:'Provider detail'});
+  assert.deepEqual(model.turns.get('t').items.get('r'), {
+    id:'r',type:'reasoning',summary:['Checking files','Verifying output'],content:['Provider detail'],
+  });
+  send('item/completed', {item:{id:'r',type:'reasoning',summary:['Checking files','Verifying output'],content:['Provider detail']}});
+  assert.equal(model.turns.get('t').items.size,1);
+  assert.equal(model.otherEvents.length,0);
+  assert.throws(() => send('item/reasoning/summaryTextDelta', {summaryIndex:-1,delta:'invalid'}), /Invalid reasoning/);
+});
+
 test('fresh native history drops old approvals but accepts new requests',()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,{id:'old',method:'workspace/claudeApproval',params:{threadId:'exact'}}));

@@ -292,6 +292,7 @@ export class WorkspacePane {
 
   refreshIcons() { window.lucide?.createIcons({root: this.root}); }
   error(error) {
+    this.lastError = error;
     this.alert.hidden = false; this.alert.textContent = error.message || String(error);
     const recovery=error.settingRecovery;
     if(this.provider==='Codex' && this.controls.resetSavedSetting && ['personality','speed'].includes(recovery?.setting)
@@ -299,6 +300,13 @@ export class WorkspacePane {
       const recover=this.button('Recover saved setting','settings-2',()=>this.openSettingRecovery(recovery));
       this.alert.append(recover);this.refreshIcons();
     }
+  }
+
+  clearError(error) {
+    if(this.lastError !== error || this.conversation.error)return;
+    this.lastError = null;
+    this.alert.hidden = true;
+    this.alert.textContent = '';
   }
 
   openSettingRecovery(recovery) {
@@ -2767,9 +2775,12 @@ export class WorkspacePane {
         block.append(copy);
       }
       entry.append(message);
-    } else if (item.type === 'claudeThinking') {
-      const detail=node('details','aw-tool');detail.open=true;
-      detail.append(node('summary','','Thinking'),node('pre','aw-thinking',item.text || ''));
+    } else if (['claudeThinking','reasoning'].includes(item.type)) {
+      const detail=node('details','aw-tool');
+      const parts = item.summary?.some(part => part) ? item.summary : item.content;
+      const text = item.type === 'claudeThinking' ? item.text :
+        (parts || []).map(part => typeof part === 'string' ? part : part?.text || '').join('\n');
+      detail.append(node('summary','','Thinking'),node('pre','aw-thinking',text || ''));
       entry.append(detail);
     } else if (item.type === 'acpPlan') {
       entry.append(node('div','aw-author','Plan'));
@@ -2785,7 +2796,7 @@ export class WorkspacePane {
       entry.append(list);
     } else if (['claudeToolCall','acpToolCall'].includes(item.type)) {
       const detail=node('details','aw-tool');
-      detail.open=item.type==='claudeToolCall';
+      detail.open=item.status==='failed';
       const summary=node('summary');summary.append(node('span','',item.input?.description || item.tool || 'Tool'));
       if(item.status)summary.append(toolStatus(item));detail.append(summary);
       const input=item.input || {};
@@ -2850,11 +2861,17 @@ export class WorkspacePane {
     } else {
       const detail = node('details', 'aw-tool');
       const summary = node('summary');
-      summary.append(node('span', '', item.command || item.tool || item.query || item.type));
+      const command = typeof item.command === 'string' ? item.command : '';
+      const title = item.type === 'commandExecution' ?
+        (command.split('\n')[0].slice(0,120) + (command.length > 120 || command.includes('\n') ? '...' : '')) :
+        (item.tool || item.query || item.type);
+      summary.append(node('span', '', title || 'Command'));
       if (item.status) summary.append(toolStatus(item));
       detail.append(summary);
       // Unknown tools remain fully inspectable, including all provider metadata.
       if (item.type === 'commandExecution') {
+        if(command)detail.append(node('pre','aw-command',command));
+        detail.open=item.status==='failed' || (typeof item.exitCode==='number' && item.exitCode!==0);
         if(toolRunning(item) && !item.aggregatedOutput)detail.append(node('p','aw-output-pending','Waiting for tool output'));
         if (item.aggregatedOutput) detail.append(node('pre', 'aw-tool-output', item.aggregatedOutput));
       } else detail.append(node('pre', '', item.aggregatedOutput ?? JSON.stringify(item, null, 2)));
