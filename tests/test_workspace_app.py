@@ -140,8 +140,9 @@ def test_corrupt_creation_record_cannot_launch_replacement(tmp_path, saved):
             try:
                 page = browser.new_page()
                 base = f"http://127.0.0.1:{server.server_port}"
+                import json
+                page.add_init_script("sessionStorage.setItem('serena-workspace-create:corrupt', " + json.dumps(saved) + ")")
                 page.goto(base + "/workspace/new?" + urlencode({"source": "corrupt", "provider": "codex", "cwd": str(tmp_path)}))
-                page.evaluate("saved => sessionStorage.setItem('serena-workspace-create:corrupt', saved)", saved)
                 page.reload()
                 button = page.locator("#creation-submit")
                 playwright.expect(button).to_be_disabled()
@@ -162,7 +163,8 @@ def test_corrupt_creation_record_cannot_launch_replacement(tmp_path, saved):
 @pytest.mark.parametrize("width", [1440, 390])
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 @pytest.mark.parametrize("retry", [False, True])
-def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_path, width, provider, retry):
+@pytest.mark.parametrize("delivery_failed", [False, True])
+def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_path, width, provider, retry, delivery_failed):
     from urllib.parse import urlencode
     playwright = pytest.importorskip("playwright.sync_api")
     app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
@@ -173,11 +175,11 @@ def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_
     def create(request, provider, cwd, *, confirmed, seed):
         calls.append((request, provider, cwd, confirmed, seed))
         return {"ok": True, "result": {"session_id": target, "provider": provider, "cwd": cwd},
-                "initial_message": {"ok": False, "error": "Native delivery unconfirmed"}}
+                "initial_message": {"ok": not delivery_failed, "error": "Native delivery unconfirmed"}}
     host.create = create
     @app.get("/parent")
     def parent():
-        return '<iframe style="width:100%;height:700px;border:0" src="/workspace/new?' + urlencode({"source": "seed-ui", "provider": provider, "cwd": str(tmp_path), "seeded": "1"}) + '"></iframe>'
+        return '<script>window.opened=[];addEventListener("message",e=>{if(e.data?.type==="serena-workspace-open-created")opened.push(e.data)});</script><iframe style="width:100%;height:700px;border:0" src="/workspace/new?' + urlencode({"source": "seed-ui", "provider": provider, "cwd": str(tmp_path), "seeded": "1"}) + '"></iframe>'
     server = make_server("127.0.0.1", 0, app, threaded=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -220,15 +222,24 @@ def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_
                     assert page.frames[1].evaluate("JSON.parse(sessionStorage.getItem('serena-workspace-create:seed-ui'))") == saved
                     button = frame.get_by_role('button', name='Check creation', exact=True)
                 button.click()
-                frame.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                if delivery_failed:
+                    frame.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                    assert page.evaluate('opened') == []
+                else:
+                    page.wait_for_function('opened.length === 1')
+                    assert page.evaluate('opened[0].target') == target
+                    assert frame.get_by_role("button", name="Open conversation", exact=True).is_hidden()
                 assert len(calls) == 1 and calls[0][1:] == (provider, str(tmp_path), True, edited)
                 if retry:
                     assert calls[0][0] == saved['request_id']
                 assert context.evaluate('el=>el.readOnly')
-                assert frame.get_by_role("alert").inner_text() == "Native delivery unconfirmed"
+                assert frame.get_by_role("alert").inner_text() == ("Native delivery unconfirmed" if delivery_failed else "")
                 page.reload()
-                frame.get_by_role("button", name="Open conversation", exact=True).wait_for()
-                assert frame.get_by_role("alert").inner_text() == "Native delivery unconfirmed"
+                if delivery_failed:
+                    frame.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                else:
+                    page.wait_for_function('opened.length === 1')
+                assert frame.get_by_role("alert").inner_text() == ("Native delivery unconfirmed" if delivery_failed else "")
                 assert frame.get_by_role("textbox", name="Initial context").input_value() == edited
                 assert len(calls) == 1 and host._loop is None
                 assert page.frames[1].evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -242,8 +253,8 @@ def test_seeded_frame_requires_context_and_explicit_click_preserves_receipt(tmp_
 
 
 @pytest.mark.parametrize("width", [1440, 390])
-@pytest.mark.parametrize("provider", ["codex", "claude"])
-def test_new_chat_ui_is_explicit_retains_request_on_reload_and_opens_exact_target(tmp_path, width, provider):
+@pytest.mark.parametrize("provider", ["codex", "claude", "gemini"])
+def test_new_chat_automatically_creates_recovers_and_opens_exact_target(tmp_path, width, provider):
     playwright = pytest.importorskip("playwright.sync_api")
     app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
     target = "11111111-2222-4333-8444-555555555555"
@@ -270,20 +281,16 @@ def test_new_chat_ui_is_explicit_retains_request_on_reload_and_opens_exact_targe
                 base = f"http://127.0.0.1:{server.server_port}"
                 page.goto(base + "/workspace/new?" + urlencode({"source": "new-" + provider, "provider": provider, "cwd": str(tmp_path)}))
                 assert page.get_by_role("textbox", name="Project").input_value() == str(tmp_path)
-                assert not calls and host._loop is None
-                page.get_by_role("button", name=f"Create {provider.title()} chat", exact=True).click()
                 page.get_by_role("status").filter(has_text="Still pending").wait_for()
                 assert len(calls) == 1
+                playwright.expect(page.get_by_role("button", name="Check creation", exact=True)).to_be_enabled()
                 page.reload()
-                page.get_by_role("button", name="Check creation", exact=True).click()
-                page.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                page.wait_for_url(base + "/workspace/" + target)
                 assert len(calls) == 2 and calls[0] == calls[1]
-                page.reload()
-                page.get_by_role("button", name="Open conversation", exact=True).wait_for()
+                page.goto(base + "/workspace/new?" + urlencode({"source": "new-" + provider, "provider": provider, "cwd": str(tmp_path)}))
+                page.wait_for_url(base + "/workspace/" + target)
                 assert len(calls) == 2
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-                page.get_by_role("button", name="Open conversation", exact=True).click()
-                page.wait_for_url(base + "/workspace/" + target)
                 assert not errors and host._loop is None
             finally:
                 browser.close()
