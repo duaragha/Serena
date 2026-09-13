@@ -52,6 +52,7 @@ class AntigravityWorkspace:
         self._items, self._settings, self._models = {}, {}, []
         self._mode = None
         self._background_possible = False
+        self._last_result_error = None
 
     async def event(self, method, params):
         await self.publish({'method': method, 'params': {'threadId': self.session_id, **params}})
@@ -224,6 +225,7 @@ class AntigravityWorkspace:
                     await self._close()
                     raise
             self.active_turn = str(uuid4())
+            self._last_result_error = None
             turn = self.active_turn
             self._items = {}
             self.state = 'running'
@@ -252,7 +254,7 @@ class AntigravityWorkspace:
             while True:
                 event = await self.rpc.events.get()
                 if event.get('event') == 'transportClosed':
-                    raise WorkspaceRpcError(event.get('reason', 'Gemini stream closed'))
+                    raise WorkspaceRpcError(self._last_result_error or event.get('reason', 'Gemini stream closed'))
                 data = event.get('step_update') if event.get('event') == 'step_update' else event.get('result')
                 if not isinstance(data, dict) or data.get('conversation_id') != self.session_id:
                     raise ValueError('Gemini event belongs to another conversation')
@@ -264,6 +266,7 @@ class AntigravityWorkspace:
                         await self.event('item/completed', {'turnId': turn, 'item': {'id': turn + '-reply',
                             'type': 'agentMessage', 'text': data['response']}})
                     status = 'completed' if data.get('status') == 'SUCCESS' else 'failed'
+                    self._last_result_error = str(data['error']) if data.get('error') else None
                     self.state, self.active_turn = 'ready', None
                     await self.event('turn/completed', {'turn': {'id': turn, 'status': status, 'providerOriginal': data,
                         **({'error': {'message': data['error']}} if data.get('error') else {})}})
@@ -292,13 +295,29 @@ class AntigravityWorkspace:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            self.state = 'unavailable'
-            await self.event('workspace/transportClosed', {'reason': str(error)})
+            reason = str(error)
+            async with self._control:
+                self.state = 'unavailable'
+                turn = self.active_turn
+                process = self.rpc.process if self.rpc else None
+                try:
+                    # EOF is not proof that descendants exited. Reap the owned
+                    # tree before releasing its lease and allowing exact resume.
+                    await self._close()
+                except Exception as cleanup_error:
+                    reason += '; Gemini cleanup is unconfirmed: ' + str(cleanup_error)
+                self.state = 'unavailable'
+                if turn:
+                    await self.event('turn/completed', {'turn': {'id': turn, 'status': 'failed',
+                        'error': {'message': reason + '; the interrupted request has not been resent'}}})
+                await self.event('workspace/transportClosed', {'reason': reason,
+                    'exitCode': getattr(process, 'returncode', None), 'retryable': self.can_retry_attachment()})
 
     async def _stop_stream(self):
         if self._reader:
-            self._reader.cancel()
-            await asyncio.gather(self._reader, return_exceptions=True)
+            if self._reader is not asyncio.current_task():
+                self._reader.cancel()
+                await asyncio.gather(self._reader, return_exceptions=True)
             self._reader = None
         if self.rpc:
             try:

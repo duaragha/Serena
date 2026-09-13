@@ -68,6 +68,7 @@ class WorkspaceHost:
         self._operations = set()
         self._bridge_queues = {}
         self._bridge_messages = {}
+        self._bridge_inputs = {}
         self._bridge_cancelled = set()
         self._views = {}
         self._work_reservations = {}
@@ -1177,6 +1178,8 @@ class WorkspaceHost:
         self._bridge_queues[sid] = queue
         for key, item in zip(queue, requests, strict=True):
             self._bridge_messages[(sid, key)] = item["prompt"]
+            if "message" in item:
+                self._bridge_inputs[(sid, key)] = item["message"]
         await self._publish_bridge_queue(sid)
         for key, item in zip(list(queue), requests, strict=True):
             asyncio.create_task(self._run(self._deliver_bridge(sid, owner, item["prompt"], key)))
@@ -1284,7 +1287,8 @@ class WorkspaceHost:
 
     async def _publish_bridge_queue(self, sid):
         requests = [
-            {"id": key.removeprefix("bridge:"), "prompt": self._bridge_messages[(sid, key)]}
+            {"id": key.removeprefix("bridge:"), "prompt": self._bridge_messages[(sid, key)],
+             **({"message": self._bridge_inputs[(sid, key)]} if (sid, key) in self._bridge_inputs else {})}
             for key in self._bridge_queues.get(sid, [])
         ]
         await asyncio.to_thread(
@@ -1309,23 +1313,33 @@ class WorkspaceHost:
                         raise RuntimeError("Session unavailable; queued bridge was not submitted")
                     if queue[0] == key and owner.state == "ready":
                         prompt = self._bridge_messages[(sid, key)]
+                        message = self._bridge_inputs.get((sid, key))
+                        inputs = [{"type": "text", "text": prompt}]
+                        if message is not None:
+                            provider = self._sessions[sid][1]
+                            inputs = await asyncio.to_thread(self._input_mapper(provider, owner), sid, message["inputs"])
                         queue.remove(key)
                         self._bridge_messages.pop((sid, key), None)
                         await self._publish_bridge_queue(sid)
                         cursor = await asyncio.to_thread(self.journal.latest_sequence, sid)
-                        result = await owner.submit([{"type": "text", "text": prompt}])
+                        result = await owner.submit(inputs, **({"options": message.get("options")} if message is not None else {}))
                         turn_id = result["turn"]["id"]
                         break
                 await asyncio.sleep(0.1)
         except Exception as error:
             receipt = {"ok": False, "response": "", "message": str(error)}
             await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
+            if (sid, key) in self._bridge_inputs and (sid, key) not in self._bridge_cancelled:
+                await asyncio.to_thread(self.journal.append, sid, {"method": "error", "params": {
+                    "threadId": sid, "error": {"message": "Queued message could not be delivered: " + str(error)},
+                    "willRetry": False}})
             return receipt
         finally:
             async with self._locks[sid]:
                 if key in queue:
                     queue.remove(key)
                 self._bridge_messages.pop((sid, key), None)
+                self._bridge_inputs.pop((sid, key), None)
                 self._bridge_cancelled.discard((sid, key))
                 await self._publish_bridge_queue(sid)
         texts = {}
@@ -1368,6 +1382,10 @@ class WorkspaceHost:
         await asyncio.to_thread(self.journal.finish_command, sid, key, receipt)
         return receipt
 
+    def _input_mapper(self, provider, owner):
+        return {"codex": self.uploads.codex_inputs, "claude": self.uploads.claude_inputs,
+                "gemini": self.uploads.gemini_inputs if getattr(owner, "native_stream", False) else self.uploads.acp_inputs}[provider]
+
     def command(self, sid: str, request_id: str, action: str, payload: dict, *, timeout=35):
         self._validate_session(sid)
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
@@ -1376,6 +1394,7 @@ class WorkspaceHost:
             "submit",
             "steer",
             "queue_input",
+            "enqueue",
             "interrupt",
             "answer",
             "models",
@@ -1520,6 +1539,24 @@ class WorkspaceHost:
                                             failure["expected"], failure["failure_id"], failure["revision"])
                     self._restore_failures.pop(sid, None)
                     result = {"setting": failure["setting"], "reset": True, "reconnectRequired": True}
+                elif action == "enqueue":
+                    if (set(payload) - {"inputs", "options"} or not isinstance(payload.get("inputs"), list)
+                            or not payload["inputs"] or not isinstance(payload.get("options", {}), dict)):
+                        raise ValueError("A queued message requires inputs and optional turn settings")
+                    if owner.state not in {"ready", "running", "submitting"}:
+                        raise ValueError("Reconnect the conversation before queuing messages")
+                    await asyncio.to_thread(self._input_mapper(provider, owner), sid, payload["inputs"])
+                    prompt = "".join(part.get("text", "") for part in payload["inputs"] if part.get("type") == "text")
+                    if not prompt.strip():
+                        prompt = "Attachments"
+                    key = "bridge:composer-" + hashlib.sha256(request_id.encode()).hexdigest()
+                    await asyncio.to_thread(self.journal.claim_command, sid, key, {"provider": provider, "prompt": prompt})
+                    self._bridge_queues.setdefault(sid, []).append(key)
+                    self._bridge_messages[(sid, key)] = prompt
+                    self._bridge_inputs[(sid, key)] = deepcopy(payload)
+                    await self._publish_bridge_queue(sid)
+                    asyncio.create_task(self._run(self._deliver_bridge(sid, owner, prompt, key)))
+                    result = {"queued": True, "id": key.removeprefix("bridge:")}
                 elif action == "edit_queued_bridge":
                     if set(payload) != {"request_id", "prompt", "expected_prompt"} or any(not isinstance(payload[field], str) for field in payload) or not payload["prompt"].strip():
                         raise ValueError("An exact queued message, original text and non-empty replacement are required")
@@ -1529,10 +1566,16 @@ class WorkspaceHost:
                     if self._bridge_messages[(sid, key)] != payload["expected_prompt"]:
                         raise ValueError("Queued message changed; reopen it before editing")
                     self._bridge_messages[(sid, key)] = payload["prompt"]
+                    message = self._bridge_inputs.get((sid, key))
+                    previous_inputs = deepcopy(message["inputs"]) if message is not None else None
+                    if message is not None:
+                        message["inputs"] = [{"type": "text", "text": payload["prompt"]}] + [part for part in message["inputs"] if part.get("type") != "text"]
                     try:
                         await self._publish_bridge_queue(sid)
                     except BaseException:
                         self._bridge_messages[(sid, key)] = payload["expected_prompt"]
+                        if message is not None:
+                            message["inputs"] = previous_inputs
                         raise
                     result = {"edited": True}
                 elif action == "cancel_queued_bridge":
@@ -1986,6 +2029,8 @@ class WorkspaceHost:
                 elif action == "submit":
                     if payload.keys() - {"inputs", "options"}:
                         raise ValueError("Unsupported submit fields")
+                    if self._bridge_queues.get(sid):
+                        raise ValueError("Messages are already queued; queue this message to preserve their order")
                     mapper = {
                         "codex": self.uploads.codex_inputs,
                         "claude": self.uploads.claude_inputs,

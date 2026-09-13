@@ -106,6 +106,55 @@ def test_creation_checkpoints_native_identity_before_publishing(build):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('result_received', [False, True])
+def test_stream_exit_releases_owner_preserves_cause_and_never_resends(build, result_received):
+    async def run():
+        owner, events = build()
+        await owner.open()
+        lease, stream = owner._lease, owner.rpc
+        await owner.submit([{'type':'text', 'text':'one request'}])
+        if result_received:
+            await stream.events.put({'event':'result', 'result': {
+                'conversation_id': SID, 'status':'ERROR', 'error':'API connection reset by peer'}})
+        await stream.events.put({'event':'transportClosed', 'reason':'Antigravity output closed'})
+        async with asyncio.timeout(2):
+            while not events or events[-1]['method'] != 'workspace/transportClosed':
+                await asyncio.sleep(0)
+        assert lease.closed and stream.process is None
+        assert owner.can_retry_attachment()
+        assert owner.state == 'unavailable' and owner.active_turn is None
+        completed = [e for e in events if e['method'] == 'turn/completed']
+        assert len(completed) == 1 and completed[0]['params']['turn']['status'] == 'failed'
+        assert events[-1]['params']['retryable']
+        if result_received:
+            assert events[-1]['params']['reason'] == 'API connection reset by peer'
+        assert len(stream.sent) == 1
+        await owner.open()
+        assert owner.rpc.args[-2:] == ['--conversation', SID]
+        assert owner.rpc.sent == []
+        await owner.close()
+    asyncio.run(run())
+
+
+def test_stream_exit_keeps_lease_when_cleanup_fails(build):
+    class Broken(Stream):
+        async def close(self):
+            raise RuntimeError('descendant still alive')
+    async def run():
+        owner, events = build(stream=Broken)
+        await owner.open()
+        stream, lease = owner.rpc, owner._lease
+        await stream.events.put({'event':'transportClosed', 'reason':'stream stopped'})
+        async with asyncio.timeout(2):
+            while not events or events[-1]['method'] != 'workspace/transportClosed':
+                await asyncio.sleep(0)
+        assert not owner.can_retry_attachment() and not lease.closed
+        assert 'cleanup is unconfirmed' in events[-1]['params']['reason']
+        stream.close = lambda: Stream.close(stream)
+        await owner.close()
+    asyncio.run(run())
+
+
 def test_wrong_identity_never_receives_prompt(build):
     async def run():
         owner, events = build('99999999-9999-4999-8999-999999999999')

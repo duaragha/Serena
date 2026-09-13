@@ -191,6 +191,9 @@ export class WorkspacePane {
     this.stop.hidden = true;
     this.send = this.button('Send message', 'arrow-up'); this.send.type = 'submit';
     footer.append(attach, this.modelSelect, this.effortSelect, this.tierSelect, this.stop, this.send);
+    this.sendNow = this.button('Send now', 'corner-up-left', () => this.submit(true));
+    this.sendNow.hidden = true;
+    footer.insertBefore(this.sendNow, this.stop);
     this.mentionButton=this.button('Mention project file','file-search',()=>this.openFileSearch());
     this.mentionButton.hidden=!['Claude','Codex'].includes(provider) || !controls.searchFiles;
     footer.insertBefore(this.mentionButton,this.modelSelect);
@@ -222,7 +225,7 @@ export class WorkspacePane {
     this.claudeEffortButton=this.button('Claude reasoning effort','gauge',()=>this.openClaudeEffort());
     this.claudeEffortButton.hidden=true;
     footer.insertBefore(this.claudeEffortButton,this.stop);
-    this.queueButton = this.button('Queued sibling messages', 'messages-square', () => this.openBridgeQueue());
+    this.queueButton = this.button('Queued messages', 'messages-square', () => this.openBridgeQueue());
     this.queueButton.hidden=true; footer.insertBefore(this.queueButton, this.stop);
     this.queueRecoveryButton=this.button('Unconfirmed queued messages','rotate-ccw',()=>this.openQueueRecovery());
     this.queueRecoveryButton.hidden=true;footer.insertBefore(this.queueRecoveryButton,this.stop);
@@ -385,8 +388,8 @@ export class WorkspacePane {
   openBridgeQueue() {
     if(this.queueDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog aw-tasks-dialog');
-    dialog.setAttribute('aria-label','Queued sibling messages');
-    dialog.append(node('h3','','Queued sibling messages'),this.button('Close queue','x',()=>dialog.close()));
+    dialog.setAttribute('aria-label','Queued messages');
+    dialog.append(node('h3','','Queued messages'),this.button('Close queue','x',()=>dialog.close()));
     this.queueList=node('div'); dialog.append(this.queueList);
     dialog.addEventListener('close',()=>dialog.remove());
     this.queueDialog=dialog; this.queueSignature=null;
@@ -394,8 +397,27 @@ export class WorkspacePane {
   }
 
   renderBridgeQueue() {
-    if(!this.queueDialog?.open)return;
     const requests=this.conversation.metadata.bridgeQueue || [];
+    if(!this.inlineQueue){
+      this.inlineQueue=node('div','aw-inline-queue');this.inlineQueue.setAttribute('aria-label','Queued messages');
+      this.form.before(this.inlineQueue);
+    }
+    this.inlineQueue.hidden=!requests.length;
+    const inlineSignature=JSON.stringify(requests);
+    if(this.inlineQueueSignature!==inlineSignature){
+      this.inlineQueueSignature=inlineSignature;this.inlineQueue.replaceChildren();
+      for(const [index,request] of requests.entries()){
+        const row=node('div','aw-queued-message');
+        row.append(node('small','',`${index+1}`),node('span','aw-queued-text',request.prompt));
+        if(this.controls.editQueuedBridge)row.append(this.button('Edit queued message','pencil',()=>this.openQueueEdit(request)));
+        if(this.controls.cancelQueuedBridge)row.append(this.button('Remove queued message','x',async()=>{
+          try{await this.controls.cancelQueuedBridge(request.id);}catch(error){this.error(error);}
+        }));
+        this.inlineQueue.append(row);
+      }
+      this.refreshIcons();
+    }
+    if(!this.queueDialog?.open)return;
     const signature=JSON.stringify(requests);
     if(signature===this.queueSignature)return;
     this.queueSignature=signature; this.queueList.replaceChildren();
@@ -2501,7 +2523,7 @@ export class WorkspacePane {
     finally{this.sending=false;if(!this.disposed)this.render();}
   }
 
-  async submit() {
+  async submit(sendNow = false) {
     const text = this.input.value;
     if(this.provider==='Codex' && /^\/copy(?:\s|$)/.test(text.trim())){
       if(text.trim()!=='/copy' || this.files.length || this.selectedSkills.length || this.selectedApps.length){this.error(Error('Copy does not accept arguments or attachments'));return;}
@@ -2605,6 +2627,7 @@ export class WorkspacePane {
         if (files.length || skills.length || !this.controls.compact) throw Error('Compaction does not accept attachments or skills');
         await this.controls.compact();
       }
+      else if (!sendNow && this.canEnqueue()) await this.controls.enqueue({text, files, options});
       else if (this.canSteer()) await this.controls.steer({text, files, ...(skills.length || apps.length?{options:{...(skills.length?{skills:options.skills}:{}),...(apps.length?{apps:options.apps}:{})}}:{}), expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
       else if (this.canQueue()) await this.controls.queueInput({text, files,
         expectedTurnId:[...this.conversation.turns.values()].find(t => t.status === 'inProgress')?.id});
@@ -2616,6 +2639,11 @@ export class WorkspacePane {
 
   canSteer() {
     return this.provider === 'Codex' && this.conversation.status === 'running' && typeof this.controls.steer === 'function';
+  }
+
+  canEnqueue() {
+    return typeof this.controls.enqueue === 'function' && (['running','compacting'].includes(this.conversation.status)
+      || (this.conversation.metadata.bridgeQueueCount > 0 && ['ready','completed'].includes(this.conversation.status)));
   }
 
   canQueue() {
@@ -2848,7 +2876,14 @@ export class WorkspacePane {
       detail.append(original);entry.append(detail);
     } else if (item.type === 'contextCompaction') {
       entry.append(node('div', 'aw-author', 'Context compaction'));
-      entry.append(node('div', '', item.status === 'completed' ? 'Completed' : 'In progress'));
+      const terminal=['completed','failed','interrupted','cancelled'].includes(item.status);
+      entry.append(node('div', '', ({completed:'Completed',failed:'Failed',interrupted:'Interrupted',cancelled:'Cancelled'}[item.status] || 'In progress')));
+      if(!terminal || item.status==='completed'){
+        const progress=node('progress','aw-compaction-progress');progress.max=1;
+        progress.setAttribute('aria-label','Context compaction');
+        if(item.status==='completed')progress.value=1;
+        entry.append(progress);
+      }
     } else if (item.type === 'fileChange') {
       for (const change of item.changes || []) {
         entry.append(node('div', 'aw-file-name', change.path));
@@ -3167,7 +3202,7 @@ export class WorkspacePane {
     this.renderStatus();
     this.queueButton.hidden = !this.controls.cancelQueuedBridge || !(this.conversation.metadata.bridgeQueueCount > 0);
     this.renderBridgeQueue();
-    this.queueRecoveryButton.hidden=this.provider!=='Claude' || !this.controls.retryQueuedInput
+    this.queueRecoveryButton.hidden=!this.controls.retryQueuedInput
       || !this.controls.pendingQueuedInputs?.().length;
     const tokens = this.conversation.metadata.tokenUsage?.last?.totalTokens;
     const usage = this.conversation.metadata.claudeUsage;
@@ -3180,9 +3215,11 @@ export class WorkspacePane {
     this.reviewButton.disabled = !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.compactButton.disabled = this.reviewButton.disabled;
     const steering = this.canSteer();
-    const queueing = this.canQueue();
-    this.modelSelect.disabled=queueing;
-    this.send.title = steering ? 'Steer running turn' : queueing ? 'Queue message' : 'Send message';
+    const queueing = this.canEnqueue() || this.canQueue();
+    this.modelSelect.disabled=this.canQueue() && !this.canEnqueue();
+    this.sendNow.hidden=!this.canEnqueue() || !(steering || this.canQueue());
+    this.sendNow.disabled=this.sending;
+    this.send.title = queueing ? 'Queue message' : steering ? 'Steer running turn' : 'Send message';
     this.send.setAttribute('aria-label', this.send.title);
     this.send.disabled = this.sending || this.clearing || this.archiving || this.deleting || Boolean(this.clearedSession) || (!steering && !queueing && !['ready','completed','interrupted','failed'].includes(this.conversation.status));
     this.forkButton.disabled=this.forkCreating || this.sending || !['ready','completed','interrupted','failed'].includes(this.conversation.status);

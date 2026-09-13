@@ -5,6 +5,36 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+for(const status of ['completed','failed','interrupted'])test(`compaction stops on terminal turn ${status}`,()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,{method:'item/started',params:{turnId:'t',item:{id:'c',type:'contextCompaction'}}}));
+  assert.equal(model.turns.get('t').items.get('c').status,'inProgress');
+  model.apply(wrap(2,{method:'turn/completed',params:{turn:{id:'t',status}}}));
+  assert.equal(model.turns.get('t').items.get('c').status,status);
+});
+
+test('retry warnings clear on same-turn progress but not unrelated events or fatal errors', () => {
+  const model=new WorkspaceConversation('exact');
+  let seq=0;
+  const send=(method,params)=>model.apply(wrap(++seq,{method,params}));
+  send('error',{turnId:'t',willRetry:true,error:{message:'Reconnecting... 5/5'}});
+  send('item/agentMessage/delta',{turnId:'other',itemId:'other',delta:'unrelated'});
+  assert.equal(model.error,'Reconnecting... 5/5');
+  send('item/agentMessage/delta',{turnId:'t',itemId:'reply',delta:'resumed'});
+  assert.equal(model.error,null);
+  send('error',{turnId:'t',willRetry:false,error:{message:'Authentication failed'}});
+  send('item/agentMessage/delta',{turnId:'t',itemId:'reply',delta:'late output'});
+  assert.equal(model.error,'Authentication failed');
+});
+
+test('a terminal failure replaces the retry warning with its real cause', () => {
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,{method:'error',params:{turnId:'t',willRetry:true,error:{message:'Reconnecting... 5/5'}}}));
+  model.apply(wrap(2,{method:'turn/completed',params:{turn:{id:'t',status:'failed',error:{message:'API connection reset'}}}}));
+  assert.equal(model.error,'API connection reset');
+  assert.equal(model.status,'failed');
+});
+
 test('Codex reasoning summaries stream by item and part without duplicating completion', () => {
   const model = new WorkspaceConversation('exact');
   let seq = 0;

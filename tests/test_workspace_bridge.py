@@ -14,15 +14,17 @@ class Owner:
         self.sid, self.publish = session_id, publish
         self.state, self.active_turn = "closed", None
         self.sent = []
+        self.options = []
         self.tasks = []
 
     async def open(self):
         self.state = "ready"
 
-    async def submit(self, inputs):
+    async def submit(self, inputs, options=None):
         if self.state != "ready":
             raise RuntimeError("Session is busy")
         self.sent.append(inputs)
+        self.options.append(options)
         self.state = "running"
 
         async def finish():
@@ -99,13 +101,17 @@ def test_bridge_exact_turn_and_timeout_retry_preserve_one_owner(host):
         value.bridge("exact", provider, "different", "r")
 
 
-def test_restarted_queue_waits_for_explicit_attach_and_preserves_fifo_edits(host):
+@pytest.mark.parametrize('composer', [False, True])
+def test_restarted_queue_waits_for_explicit_attach_and_preserves_fifo_edits(host, composer):
     value, provider = host
     for key, text in [("in-flight", "uncertain"), ("first", "original"), ("second", "second"), ("done", "done")]:
         value.journal.claim_command("exact", "bridge:" + key, {"provider": provider, "prompt": text})
     value.journal.finish_command("exact", "bridge:done", {"ok": True})
+    first_request = {"id": "first", "prompt": "edited"}
+    if composer:
+        first_request['message'] = {'inputs': [{'type': 'text', 'text': 'edited'}], 'options': {'model': 'chosen', 'effort': 'high'}}
     value.journal.append("exact", {"method": "workspace/bridgeQueue", "params": {"threadId": "exact", "count": 3,
-        "requests": [{"id": "first", "prompt": "edited"}, {"id": "second", "prompt": "second"}, {"id": "done", "prompt": "done"}]}})
+        "requests": [first_request, {"id": "second", "prompt": "second"}, {"id": "done", "prompt": "done"}]}})
     assert value.bridge("exact", provider, "original", "first")["pending"]
     assert value._loop is None and not value._sessions
     assert value.attach("exact")["ok"]
@@ -119,6 +125,7 @@ def test_restarted_queue_waits_for_explicit_attach_and_preserves_fifo_edits(host
     assert first["ok"] and second["ok"]
     owner = value._sessions["exact"][0]
     assert [message[0]["text"] for message in owner.sent] == ["edited", "second"]
+    assert owner.options == [({'model': 'chosen', 'effort': 'high'} if composer else None), None]
     assert value.bridge("exact", provider, "uncertain", "in-flight")["pending"]
     assert value.journal.recoverable_bridge_queue("exact", provider) == []
     value.attach("exact")

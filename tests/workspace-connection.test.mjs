@@ -554,6 +554,24 @@ test('queued follow-up carries active identity and reuses lost receipt after rel
   connection.dispose();
 });
 
+test('composer queue retains settings and its receipt when a completed turn changes send mode',async()=>{
+  const saved=storage(),calls=[];
+  const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    if(calls.length===1)throw Error('lost queue receipt');
+    return response({ok:true,result:{queued:true}});
+  }};
+  let connection=new WorkspaceConnection(options);
+  await assert.rejects(connection.controls().enqueue({text:'next',options:{model:'chosen',effort:'high'}}),/lost queue receipt/);
+  connection.dispose();connection=new WorkspaceConnection(options);
+  assert.equal(connection.controls().pendingQueuedInputs().length,1);
+  await connection.controls().submit({text:'next'});
+  assert.deepEqual(calls[0],calls[1]);
+  assert.equal(calls[0].action,'enqueue');
+  assert.deepEqual(calls[0].payload.options,{model:'chosen',effort:'high'});
+  connection.dispose();
+});
+
 test('explicit queue recovery uses saved payload without the current draft or uploads',async()=>{
   const saved=storage(),calls=[];
   const options={sessionId:'exact',token:'token',storage:saved,receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
@@ -766,7 +784,7 @@ test('lost send response retains request ID across view reload, confirmed next s
   assert.notEqual(ids[1],ids[2]);
 });
 
-for(const method of ['submit','queueInput'])test(`${method} files upload once and stable attachment IDs survive a lost send response`,async()=>{
+for(const method of ['submit','queueInput','enqueue'])test(`${method} files upload once and stable attachment IDs survive a lost send response`,async()=>{
   const calls=[];
   let lose=true;
   const conn=new WorkspaceConnection({sessionId:'s',token:'s',storage:storage(),receive:()=>{},error:()=>{},fetcher:async(url,options)=>{
