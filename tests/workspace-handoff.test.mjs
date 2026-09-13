@@ -8,7 +8,7 @@ const start=source.indexOf('async function handoffSession(');
 const end=source.indexOf('// === HANDOFF FEATURE END ===',start);
 assert.ok(start>=0 && end>start);
 
-for(const target of ['claude','codex'])test(`new ${target} handoff uses explicit seeded creation without terminal paste`,async()=>{
+for(const mounted of [true,false])for(const target of ['claude','codex','gemini'])test(`new ${target} handoff avoids terminal paste (mounted=${mounted})`,async()=>{
   const calls=[];
   const termSessions=new Map();
   const sourceChat={session_id:'source',agent:target==='claude'?'codex':'claude',display_title:'Named chat'};
@@ -23,7 +23,7 @@ for(const target of ['claude','codex'])test(`new ${target} handoff uses explicit
     _agentLabel:agent=>agent,
     _pseudoSessions:[],
     setSessionSource(){},_applyClientGroup(){},_markActive(){},setTermStatus(){},_startPseudoReconciler(){},
-    startLiveTerminal:async(sid,options)=>{calls.push(['create',options]);termSessions.set(sid,{structured:true});},
+    startLiveTerminal:async(sid,options)=>{calls.push(['create',options]);if(mounted)termSessions.set(sid,{structured:true});},
     _feedTerminalWhenReady:()=>{throw Error('Legacy terminal paste must not run');},
     termSessions,
   });
@@ -35,5 +35,5 @@ for(const target of ['claude','codex'])test(`new ${target} handoff uses explicit
   assert.equal(create.isNew,true);
   assert.equal(context._pseudoSessions[0].pending_rename_title,'Named chat');
   assert.equal(context._pseudoSessions[0].pending_group_link_with,'source');
-  assert.match(calls.at(-1)[1],/Ready to create/);
+  assert.match(calls.at(-1)[1],mounted?/Ready to create/:/Could not open.*Handoff was not sent/);
 });

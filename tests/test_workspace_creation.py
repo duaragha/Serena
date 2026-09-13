@@ -23,7 +23,7 @@ def test_initial_context_validation_precedes_launch_and_claim(tmp_path, seed):
         host.shutdown()
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
 @pytest.mark.parametrize("rejected", [False, True])
 def test_seeded_creation_records_context_and_delivers_once_after_checkpoint(tmp_path, provider, rejected):
     request, sid = str(uuid4()), str(uuid4())
@@ -67,7 +67,7 @@ def test_seeded_creation_records_context_and_delivers_once_after_checkpoint(tmp_
 
 
 @pytest.mark.parametrize("failure", [None, "before_checkpoint", "after_checkpoint"])
-@pytest.mark.parametrize("provider", ["codex", "claude"])
+@pytest.mark.parametrize("provider", ["codex", "claude", "gemini"])
 def test_creation_request_survives_repeats_and_restart_without_second_owner(tmp_path, failure, provider):
     calls = []
     sid, request = str(uuid4()), str(uuid4())
