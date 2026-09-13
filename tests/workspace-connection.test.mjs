@@ -11,6 +11,30 @@ const storage = () => {
 };
 const response = data => ({ok: true, json: async () => data});
 
+test('poll recovery clears its own error once without retrying commands', async () => {
+  const errors=[],recovered=[],requests=[];
+  let offline=true;
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),
+    receive:()=>{},error:e=>errors.push(e),recovered:e=>recovered.push(e),
+    fetcher:async(url,options)=>{
+      requests.push(options.method);
+      if(offline)throw Error('offline');
+      return response({events:[],has_more:false});
+    }});
+  try {
+    await conn.poll();
+    assert.equal(conn.pollFailures,1);
+    assert.equal(recovered.length,0);
+    offline=false;
+    await conn.poll();
+    await conn.poll();
+    assert.deepEqual(recovered,errors);
+    assert.equal(recovered.length,1);
+    assert.equal(conn.pollFailures,0);
+    assert.deepEqual(requests,['GET','GET','GET']);
+  } finally {conn.dispose();}
+});
+
 test('streamed initial replay accepts split UTF-8 frames then switches to live polling',async()=>{
   const received=[],urls=[],states=[];
   const payload=new TextEncoder().encode(JSON.stringify({events:[{sequence:1,event:{method:'note',params:{text:'caf\u00e9'}}}]})+'\n{"complete":true}\n');

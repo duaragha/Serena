@@ -139,6 +139,16 @@ export class WorkspaceConversation {
       if (typeof p.parentToolUseId === 'string') item.parentToolUseId = p.parentToolUseId;
       if (typeof p.sourceModel === 'string') item.sourceModel = p.sourceModel;
       item.text = (item.text || '') + (p.delta || '');
+    } else if (['item/reasoning/summaryTextDelta','item/reasoning/summaryPartAdded','item/reasoning/textDelta'].includes(method)) {
+      const field = method === 'item/reasoning/textDelta' ? 'content' : 'summary';
+      const index = field === 'summary' ? p.summaryIndex : p.contentIndex;
+      if(!Number.isSafeInteger(index) || index < 0 || index > 10000
+        || (method !== 'item/reasoning/summaryPartAdded' && typeof p.delta !== 'string')) {
+        throw Error('Invalid reasoning event');
+      }
+      const item = this.item(p.turnId, p.itemId, 'reasoning');
+      item[field] ||= [];
+      item[field][index] = (item[field][index] || '') + (p.delta || '');
     } else if (method === 'item/commandExecution/outputDelta') {
       const item = this.item(p.turnId, p.itemId, 'commandExecution');
       item.aggregatedOutput = (item.aggregatedOutput || '') + (p.delta || '');

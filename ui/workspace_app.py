@@ -1,6 +1,7 @@
 """Mount the structured conversation workspace without starting provider owners."""
 
 import json
+import mimetypes
 import secrets
 from pathlib import Path
 
@@ -23,6 +24,27 @@ def install_workspace(
     app, state_path, *, resolve=resolve_workspace_session, factories=None, describe=_describe
 ):
     token = secrets.token_urlsafe(32)
+    # A shared server can outlive a checkout update. Keep its browser code paired
+    # with this runtime until restart instead of serving half of the next build.
+    static_root = Path(app.static_folder) if app.static_folder else None
+    assets = {}
+    if static_root and static_root.is_dir():
+        paths = list(static_root.glob("workspace-*.mjs")) + list(static_root.glob("workspace-*.css"))
+        paths += list((static_root / "vendor/markdown-it").rglob("*.mjs"))
+        paths += [static_root / "vendor/lucide.min.js"]
+        assets = {path.relative_to(static_root).as_posix(): path.read_bytes() for path in paths if path.is_file()}
+
+    @app.before_request
+    def workspace_assets():
+        if request.endpoint != "static":
+            return None
+        filename = (request.view_args or {}).get("filename")
+        if filename not in assets:
+            return None
+        response = Response(assets[filename], mimetype=mimetypes.guess_type(filename)[0] or "application/octet-stream")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     host = WorkspaceHost(journal=WorkspaceJournal(state_path), resolve=resolve, factories=factories, register_fork=register_fork)
     app.register_blueprint(workspace_blueprint(host, token=token))
     pages = Blueprint("workspace_pages", __name__)

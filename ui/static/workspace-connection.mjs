@@ -1,6 +1,6 @@
 /** Browser transport for a persistent owner. Disposal never closes the owner. */
 export class WorkspaceConnection {
-  constructor({sessionId, token, receive, error, runtime = () => {}, replaying = () => {}, streamReplay = false, fetcher = fetch, storage = sessionStorage}) {
+  constructor({sessionId, token, receive, error, recovered = () => {}, runtime = () => {}, replaying = () => {}, streamReplay = false, fetcher = fetch, storage = sessionStorage}) {
     this.sessionId = sessionId;
     this.token = token;
     this.receive = receive;
@@ -9,6 +9,9 @@ export class WorkspaceConnection {
     this.initialReplayComplete = false;
     this.streamReplay = streamReplay;
     this.error = error;
+    this.recovered = recovered;
+    this.pollError = null;
+    this.pollFailures = 0;
     this.fetcher = fetcher;
     this.storage = storage;
     this.key = `serena-workspace-pending:${sessionId}`;
@@ -157,14 +160,23 @@ export class WorkspaceConnection {
       } while (page.has_more && !this.stopped);
       if(!this.stopped)this.runtime(page.runtime ?? null);
       if(!this.stopped)this.initialReplayComplete = true;
+      if(!this.stopped){
+        this.pollFailures = 0;
+        const recovered = this.pollError;
+        this.pollError = null;
+        if(recovered)this.recovered(recovered);
+      }
     } catch (error) {
       failed = true;
+      this.pollFailures += 1;
+      this.pollError = error;
       if (required) throw error;
       if (!this.stopped) this.error(error);
     } finally {
       this.polling = false;
       if (initialReplay) this.replaying(false);
-      if (!this.stopped && !(required && failed)) this.timer = setTimeout(() => this.poll(), this.visible ? 250 : 2000);
+      const delay = failed ? Math.min(10000, 500 * 2 ** Math.min(this.pollFailures - 1, 5)) : (this.visible ? 250 : 2000);
+      if (!this.stopped && !(required && failed)) this.timer = setTimeout(() => this.poll(), delay);
     }
   }
 

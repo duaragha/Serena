@@ -14,6 +14,31 @@ from werkzeug.serving import make_server
 from ui.workspace_app import install_workspace
 
 
+def test_workspace_assets_stay_paired_with_runtime_until_restart(tmp_path):
+    static = tmp_path / 'static'
+    static.mkdir()
+    asset = static / 'workspace-page.mjs'
+    asset.write_text('export const version = 1;')
+    app = Flask(__name__, static_folder=str(static))
+    host = install_workspace(app, tmp_path / 'assets.db')
+    try:
+        client = app.test_client()
+        assert client.get('/static/workspace-page.mjs').data == b'export const version = 1;'
+        asset.write_text('export const version = 2;')
+        result = client.get('/static/workspace-page.mjs')
+        assert result.data == b'export const version = 1;'
+        assert result.headers['Cache-Control'] == 'no-store'
+        assert 'javascript' in result.content_type
+        fresh = Flask(__name__, static_folder=str(static))
+        replacement = install_workspace(fresh, tmp_path / 'assets-new.db')
+        try:
+            assert fresh.test_client().get('/static/workspace-page.mjs').data == b'export const version = 2;'
+        finally:
+            replacement.shutdown()
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize('compress', [False, True])
 def test_replay_stream_requires_auth_and_retains_all_events(tmp_path, compress):
     import gzip
@@ -641,12 +666,17 @@ function setTermStatus(status){window.lastStatus=status;}
                 page.get_by_role("button", name="Resume session").click()
             page.get_by_role("button", name="Resume session").wait_for(state="hidden")
             page.route('**/api/workspace/exact/view-context', lambda route: route.fulfill(json={"ok": True}))
+            # Hold this simulated native state despite already in-flight focus
+            # telemetry; real focus-to-wake behavior has separate host tests.
+            wake = owners[0].rpc.wake
+            owners[0].rpc.wake = lambda: None
             owners[0].rpc.suspended = True
             playwright.expect(page.locator('.aw-state')).to_have_text('sleeping')
             assert owners[0].state == 'ready' and not owners[0].sent and len(owners) == 1
             assert not page.get_by_role("button", name="Send message", exact=True).is_disabled()
             owners[0].rpc.suspended = False
             playwright.expect(page.locator('.aw-state')).to_have_text('ready')
+            owners[0].rpc.wake = wake
             page.unroute('**/api/workspace/exact/view-context')
             if provider == 'codex':
                 if not page.get_by_role('button', name="Apps and connectors", exact=True).first.is_visible():
@@ -928,13 +958,20 @@ function setTermStatus(status){window.lastStatus=status;}
             assert "Required" not in seeded_frame.url
             assert len(owners) == 1
             page.evaluate("termSessions.get('seeded-proof').cancelOutput(); termSessions.get('seeded-proof').mount.remove(); termSessions.delete('seeded-proof')")
+            creation_routes = []
+            page.route('**/api/workspace/create', lambda route: creation_routes.append(route))
+            def complete_creation(agent, target):
+                route = next(route for route in creation_routes if route.request.post_data_json['provider'] == agent)
+                creation_routes.remove(route)
+                assert route.request.post_data_json['confirmed'] is True
+                route.fulfill(json={'ok': True, 'result': {'session_id': target, 'provider': agent, 'cwd': str(tmp_path)}})
             page.evaluate("(cwd) => _startStructuredPane('new-proof', {isNew:true,agent:'codex',cwd})", str(tmp_path))
             created_frame = page.frames[-1]
-            created_frame.get_by_role("button", name="Create Codex chat", exact=True).wait_for()
+            playwright.expect(created_frame.get_by_role('status')).to_have_text('Creating session...')
             assert page.evaluate("_pseudoSessions[0].structured_pending")
             assert len(owners) == 1
             page.evaluate("_freshSids.add('33333333-3333-4333-8333-333333333333')")
-            created_frame.evaluate("""() => parent.postMessage({type:'serena-workspace-open-created',sid:'new-proof',target:'33333333-3333-4333-8333-333333333333'},location.origin)""")
+            complete_creation('codex', '33333333-3333-4333-8333-333333333333')
             page.wait_for_function("() => openedForks.length === 3")
             assert page.evaluate("openedForks[2]") == "33333333-3333-4333-8333-333333333333"
             assert page.evaluate("retiredPseudo") == "new-proof"
@@ -952,14 +989,14 @@ function setTermStatus(status){window.lastStatus=status;}
               }
             }""", str(tmp_path))
             first = page.frame_locator('iframe[src*="source=linked-claude"]')
-            first.get_by_role('button', name='Create Claude chat', exact=True).wait_for()
-            first.locator('body').evaluate("""()=>parent.postMessage({type:'serena-workspace-open-created',sid:'linked-claude',target:'44444444-4444-4444-8444-444444444444'},location.origin)""")
+            playwright.expect(first.get_by_role('status')).to_have_text('Creating session...')
+            complete_creation('claude', '44444444-4444-4444-8444-444444444444')
             page.wait_for_function("openedForks.length===4")
             assert page.evaluate("_pendingPartnersOf('linked-codex')") == ['44444444-4444-4444-8444-444444444444']
             assert page.evaluate('linked') == []
             second = page.frame_locator('iframe[src*="source=linked-codex"]')
-            second.get_by_role('button', name='Create Codex chat', exact=True).wait_for()
-            second.locator('body').evaluate("""()=>parent.postMessage({type:'serena-workspace-open-created',sid:'linked-codex',target:'55555555-5555-4555-8555-555555555555'},location.origin)""")
+            playwright.expect(second.get_by_role('status')).to_have_text('Creating session...')
+            complete_creation('codex', '55555555-5555-4555-8555-555555555555')
             page.wait_for_function("openedForks.length===5")
             assert page.evaluate('linked') == [['44444444-4444-4444-8444-444444444444', '55555555-5555-4555-8555-555555555555']]
             assert page.evaluate("_pendingPartnersOf('44444444-4444-4444-8444-444444444444')") == ['55555555-5555-4555-8555-555555555555']
