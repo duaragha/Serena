@@ -38,13 +38,14 @@ class ClaudeWorkspace:
         session_id,
         cwd,
         publish,
+        session_directory=None,
         client_factory=ClaudeSDKClient,
         lease_factory=SessionLease,
         session_info=get_session_info,
         history=get_session_messages,
     ):
         self.session_id, self.cwd, self.publish = session_id, Path(cwd).resolve(), publish
-        self._session_directory = self.cwd
+        self._session_directory = Path(session_directory).resolve() if session_directory else self.cwd
         self.client_factory, self.lease_factory = client_factory, lease_factory
         self.session_info, self.history_reader = session_info, history
         self.state, self.active_turn = "closed", None
@@ -91,13 +92,12 @@ class ClaudeWorkspace:
             if self._owner_task is not None:
                 raise RuntimeError("Claude owner already exists")
             info = await asyncio.to_thread(
-                self.session_info, self.session_id, directory=str(self.cwd)
+                self.session_info, self.session_id, directory=str(self._session_directory)
             )
             if info is None or info.session_id != self.session_id:
                 raise ValueError("Exact native Claude session is unavailable in this project")
-            self._session_directory = Path(getattr(info, "cwd", None) or self.cwd).resolve()
             records = await asyncio.to_thread(
-                self.history_reader, self.session_id, directory=str(self.cwd)
+                self.history_reader, self.session_id, directory=str(self._session_directory)
             )
             history = self.events.history(records)
             self.state = "opening"

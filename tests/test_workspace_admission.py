@@ -102,6 +102,16 @@ def test_archive_state_is_preserved_for_host_admission(session):
     assert admission.resolve_workspace_session("exact")["archived"] is True
 
 
+def test_claude_storage_project_survives_working_directory_change(session, tmp_path):
+    session['agent'] = 'claude'
+    latest = tmp_path / 'nested-project'
+    latest.mkdir()
+    session['last_cwd'] = str(latest)
+    target = admission.resolve_workspace_session('exact')
+    assert target['cwd'] == str(latest)
+    assert target['session_directory'] == session['cwd']
+
+
 def test_existing_pty_and_external_owner_rejected(session, monkeypatch):
     from core import metadata
     from ui import pty_terminal

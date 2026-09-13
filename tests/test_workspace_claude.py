@@ -74,7 +74,7 @@ class Client:
         self.closed = True
 
 
-def make(tmp_path):
+def make(tmp_path, *, session_directory=None):
     events = []
     lease = SimpleNamespace(launching=lambda: None, bind=lambda pid: None, release=lambda: None)
 
@@ -84,6 +84,7 @@ def make(tmp_path):
     owner = ClaudeWorkspace(
         session_id="exact",
         cwd=tmp_path,
+        session_directory=session_directory,
         publish=publish,
         client_factory=Client,
         lease_factory=lambda sid: lease,
@@ -91,6 +92,32 @@ def make(tmp_path):
         history=lambda sid, directory: [],
     )
     return owner, events
+
+
+def test_resume_reads_original_project_but_runs_in_latest_directory(tmp_path):
+    async def run():
+        original = tmp_path / 'original'
+        original.mkdir()
+        latest = tmp_path / 'latest'
+        latest.mkdir()
+        owner, _ = make(latest, session_directory=original)
+        reads = []
+        def info(sid, directory):
+            reads.append(('info', sid, directory))
+            return SimpleNamespace(session_id=sid, cwd=str(latest))
+        def history(sid, directory):
+            reads.append(('history', sid, directory))
+            return []
+        owner.session_info, owner.history_reader = info, history
+        try:
+            await owner.open()
+            assert reads == [('info', 'exact', str(original)), ('history', 'exact', str(original))]
+            assert owner.client.options.cwd == str(latest)
+            assert owner.client.options.env['SERENA_CLAUDE_SESSION_DIRECTORY'] == str(original)
+            assert owner.client.options.resume == 'exact'
+        finally:
+            await owner.close()
+    asyncio.run(run())
 
 
 def test_runtime_observer_is_installed_before_client_connect(tmp_path):

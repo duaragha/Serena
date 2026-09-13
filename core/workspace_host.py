@@ -1121,7 +1121,9 @@ class WorkspaceHost:
             async def publish(event):
                 await self._publish(sid, event)
 
-            owner = factory(session_id=sid, cwd=Path(target["cwd"]), publish=publish)
+            owner = factory(session_id=sid, cwd=Path(target["cwd"]), publish=publish,
+                            **({"session_directory": target["session_directory"]}
+                               if target.get("provider") == "claude" and target.get("session_directory") else {}))
             # Reserve before the first awaited provider operation. Repeated
             # requests reuse this owner even if attachment fails ambiguously.
             self._sessions[sid] = (owner, target["provider"])
