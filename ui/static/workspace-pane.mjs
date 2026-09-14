@@ -284,7 +284,7 @@ export class WorkspacePane {
     this.usageLabel = node('span', 'aw-usage');
     identity.append(this.usageLabel);
     const context=this.button('Context breakdown','chart-pie',()=>this.openContext());
-    context.hidden=provider!=='Claude' || !controls.contextUsage;identity.append(context);
+    context.hidden=provider!=='Codex' && (provider!=='Claude' || !controls.contextUsage);identity.append(context);
     root.replaceChildren(head, this.log, this.questionArea, this.alert, this.form, identity);
     this.renderAttachments();
     this.refreshIcons();
@@ -1960,6 +1960,7 @@ export class WorkspacePane {
 
   openContext() {
     if(this.contextDialog?.open)return;
+    if(this.provider==='Codex')return this.openCodexContext();
     const dialog=node('dialog','aw-review-dialog aw-context-dialog');dialog.setAttribute('aria-label','Context breakdown');
     const status=node('p');status.setAttribute('role','status');const content=node('div');
     const close=this.button('Close context breakdown','x',()=>dialog.close());
@@ -1981,6 +1982,37 @@ export class WorkspacePane {
     };
     dialog.append(node('h3','','Context breakdown'),refresh,close,status,content);
     dialog.addEventListener('close',()=>dialog.remove());this.contextDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();close.focus();load();
+  }
+
+  openCodexContext() {
+    const dialog=node('dialog','aw-review-dialog aw-context-dialog');dialog.setAttribute('aria-label','Context breakdown');
+    const content=node('div');
+    const close=this.button('Close context breakdown','x',()=>dialog.close());
+    const render=()=>{
+      if(!dialog.open)return;
+      const usage=this.conversation.metadata.tokenUsage,last=usage?.last;
+      const valid=value=>Number.isSafeInteger(value) && value>=0;
+      const windowSize=usage?.modelContextWindow;
+      content.replaceChildren(node('p','',this.conversation.metadata.model || 'Codex'));
+      if(valid(last?.totalTokens) && valid(windowSize) && windowSize>0){
+        content.append(node('p','',`${last.totalTokens.toLocaleString()} / ${windowSize.toLocaleString()} tokens`));
+        const percent=last.totalTokens/windowSize*100;
+        content.append(node('p','',`${percent.toFixed(1)}% of context window (last request)`));
+        const progress=node('progress');progress.max=windowSize;progress.value=Math.min(windowSize,last.totalTokens);
+        progress.setAttribute('aria-label','Context used');content.append(progress);
+      }else content.append(node('p','',last?'Context window unavailable':'Context usage not reported yet'));
+      const list=node('dl');
+      for(const [label,value] of [['Last request tokens',last?.totalTokens],['Input tokens',last?.inputTokens],
+        ['Cached input tokens (included in input)',last?.cachedInputTokens],['Output tokens',last?.outputTokens],
+        ['Reasoning tokens (included in output)',last?.reasoningOutputTokens]]){
+        if(valid(value))list.append(node('dt','',label),node('dd','',value.toLocaleString()));
+      }
+      content.append(list,node('p','','System prompt, tools, skills and message categories are not reported by Codex.'));
+    };
+    dialog.append(node('h3','','Context breakdown'),close,content);
+    dialog.addEventListener('close',()=>{this.refreshCodexContext=null;dialog.remove();});
+    this.contextDialog=dialog;this.refreshCodexContext=render;this.root.append(dialog);
+    this.refreshIcons();dialog.showModal();close.focus();render();
   }
 
   openMcpServers(verbose=false) {
@@ -3254,6 +3286,7 @@ export class WorkspacePane {
     this.queueRecoveryButton.hidden=!this.controls.retryQueuedInput
       || !this.controls.pendingQueuedInputs?.().length;
     const tokens = this.conversation.metadata.tokenUsage?.last?.totalTokens;
+    this.refreshCodexContext?.();
     const usage = this.conversation.metadata.claudeUsage;
     const acpUsage = this.conversation.metadata.acpUsage;
     this.usageLabel.textContent = Number.isSafeInteger(acpUsage?.used) && acpUsage.used >= 0 && Number.isSafeInteger(acpUsage?.size) && acpUsage.size > 0 ? `Context: ${acpUsage.used.toLocaleString()} / ${acpUsage.size.toLocaleString()} tokens (${Math.round(acpUsage.used/acpUsage.size*100)}%)` :
