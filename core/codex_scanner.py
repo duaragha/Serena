@@ -97,6 +97,12 @@ def _is_user_initiated(file_path: Path) -> bool:
     source = _source_name(payload.get("source"))
     if source == "cli":
         return True
+    # Interactive workspace chats use the app-server's extension source. Their
+    # native identity survives missing or older synced resident_work metadata.
+    if (obj.get("type") == "session_meta" and source == "vscode"
+            and payload.get("originator") == "serena-workspace"):
+        match = _FILENAME_RE.match(file_path.name)
+        return bool(match and payload.get("id", payload.get("session_id")) == match.group(1))
     match = _FILENAME_RE.match(file_path.name)
     if match:
         return bool(meta_sync.get_meta(match.group(1)).get("resident_work"))
