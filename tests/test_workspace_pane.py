@@ -28,6 +28,12 @@ def test_activity_animation_tracks_work_and_connection(pane, provider, width, tm
     assert status.evaluate("el=>getComputedStyle(el,'::before').transform") != before
     tool = page.locator('#left .aw-tool-running')
     assert tool.evaluate("el=>getComputedStyle(el,'::before').animationName") == 'aw-working'
+    page.evaluate("emit({method:'item/started',params:{turnId:'busy',item:{id:'thought',type: pane.provider === 'Claude' ? 'claudeThinking' : 'reasoning'}}})")
+    thought = page.locator('#left summary').filter(has_text='Thinking')
+    playwright.expect(thought.locator('.aw-tool-running')).to_be_visible()
+    assert thought.locator('.aw-tool-running').evaluate("el=>getComputedStyle(el,'::before').animationName") == 'aw-working'
+    page.evaluate("emit({method:'item/completed',params:{turnId:'busy',item:{id:'thought',type: pane.provider === 'Claude' ? 'claudeThinking' : 'reasoning'}}})")
+    playwright.expect(thought.locator('.aw-tool-running')).to_have_count(0)
     page.screenshot(path=str(tmp_path / f'activity-{provider}-{width}.png'))
     page.evaluate('pane.setConnectionHealthy(false)')
     playwright.expect(page.locator('#left .aw-state')).to_contain_text('connection lost')
