@@ -2755,12 +2755,15 @@ def test_codex_context_uses_live_last_request_not_cumulative_total(pane, width, 
     playwright.expect(dialog).to_contain_text('2,000 / 10,000 tokens')
     playwright.expect(dialog).to_contain_text('20.0% of context window (last request)')
     assert dialog.locator('progress').evaluate('el=>el.value') == 2000
-    assert '999,999' not in dialog.inner_text()
+    assert dialog.locator('dt', has_text='Chat total (cumulative)').evaluate('el=>el.nextElementSibling.textContent') == '999,999'
     assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
     page.screenshot(path=str(tmp_path / f'codex-context-{width}.png'))
     page.evaluate("emit({method:'thread/tokenUsage/updated',params:{tokenUsage:{last:{totalTokens:0},modelContextWindow:null}}})")
     playwright.expect(dialog).to_contain_text('Context window unavailable')
+    assert dialog.locator('dt', has_text='Chat total (cumulative)').evaluate('el=>el.nextElementSibling.textContent') == 'Not reported'
     assert dialog.locator('progress').count() == 0
+    page.evaluate("emit({method:'thread/tokenUsage/updated',params:{tokenUsage:{last:{totalTokens:0},total:{totalTokens:0},modelContextWindow:10000}}})")
+    playwright.expect(dialog.locator('dt', has_text='Chat total (cumulative)').locator('+ dd')).to_have_text('0')
     assert page.evaluate('calls') == []
     assert not errors
 

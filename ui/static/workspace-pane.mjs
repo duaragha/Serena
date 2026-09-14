@@ -2002,12 +2002,15 @@ export class WorkspacePane {
         progress.setAttribute('aria-label','Context used');content.append(progress);
       }else content.append(node('p','',last?'Context window unavailable':'Context usage not reported yet'));
       const list=node('dl');
+      list.append(node('dt','','Chat total (cumulative)'),node('dd','',
+        valid(usage?.total?.totalTokens)?usage.total.totalTokens.toLocaleString():'Not reported'));
       for(const [label,value] of [['Last request tokens',last?.totalTokens],['Input tokens',last?.inputTokens],
         ['Cached input tokens (included in input)',last?.cachedInputTokens],['Output tokens',last?.outputTokens],
         ['Reasoning tokens (included in output)',last?.reasoningOutputTokens]]){
         if(valid(value))list.append(node('dt','',label),node('dd','',value.toLocaleString()));
       }
-      content.append(list,node('p','','System prompt, tools, skills and message categories are not reported by Codex.'));
+      content.append(list,node('p','','Cumulative usage includes repeated input across requests; it is not the size of the saved transcript.'),
+        node('p','','System prompt, tools, skills and message categories are not reported by Codex.'));
     };
     dialog.append(node('h3','','Context breakdown'),close,content);
     dialog.addEventListener('close',()=>{this.refreshCodexContext=null;dialog.remove();});
