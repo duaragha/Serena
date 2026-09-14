@@ -2,6 +2,7 @@ import {WorkspacePane} from './workspace-pane.mjs';
 import {WorkspaceConnection} from './workspace-connection.mjs';
 
 const boot = JSON.parse(document.querySelector('#workspace-boot').textContent);
+let connectionError = null;
 const connection = new WorkspaceConnection({
   ...boot,
   receive: event => {
@@ -21,6 +22,7 @@ const connection = new WorkspaceConnection({
   recovered: error => {
     pane.setConnectionHealthy(true);
     pane.clearError(error);
+    if(connectionError === error)connectionError = null;
     if(pane.conversation.status !== 'unavailable')button.hidden = true;
   },
   runtime: runtime => pane.setSleeping(runtime?.sleeping === true),
@@ -191,12 +193,14 @@ function showRetry() {
   button.textContent = 'Retry connection';
 }
 function connectionFailed(error) {
+  connectionError = error;
   pane.setConnectionHealthy(false);
   pane.error(error);
   showRetry();
 }
 button.addEventListener('click', async () => {
   button.disabled = true;
+  button.textContent = 'Connecting...';
   try {
     await connection.connect();
     pane.setConnectionHealthy(true);
@@ -204,6 +208,7 @@ button.addEventListener('click', async () => {
       showRetry();
       return;
     }
+    if(connectionError){pane.clearError(connectionError);connectionError = null;}
     button.hidden = true;
     if(pane.clearedSession){
       controls.forgetClear();
