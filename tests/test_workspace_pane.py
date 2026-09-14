@@ -12,6 +12,39 @@ STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 @pytest.mark.parametrize('provider', ['Claude', 'Codex', 'Gemini'])
 @pytest.mark.parametrize('width', [390, 1600])
+def test_activity_animation_tracks_work_and_connection(pane, provider, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""provider=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider,controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});
+      emit({method:'turn/started',params:{turn:{id:'busy',status:'inProgress'}}});
+      emit({method:'item/started',params:{turnId:'busy',item:{id:'tool',type:'commandExecution',command:'Inspect project',status:'inProgress'}}});
+    }""", provider)
+    status = page.locator('#left .aw-activity')
+    playwright.expect(status).to_be_visible()
+    before = status.evaluate("el=>getComputedStyle(el,'::before').transform")
+    page.wait_for_timeout(180)
+    assert status.evaluate("el=>getComputedStyle(el,'::before').transform") != before
+    tool = page.locator('#left .aw-tool-running')
+    assert tool.evaluate("el=>getComputedStyle(el,'::before').animationName") == 'aw-working'
+    page.screenshot(path=str(tmp_path / f'activity-{provider}-{width}.png'))
+    page.evaluate('pane.setConnectionHealthy(false)')
+    playwright.expect(page.locator('#left .aw-state')).to_contain_text('connection lost')
+    assert tool.evaluate("el=>getComputedStyle(el,'::before').animationName") == 'none'
+    page.evaluate('pane.setConnectionHealthy(true)')
+    playwright.expect(status).to_be_visible()
+    page.emulate_media(reduced_motion='reduce')
+    assert status.evaluate("el=>getComputedStyle(el,'::before').animationName") == 'none'
+    page.evaluate("emit({method:'turn/completed',params:{turn:{id:'busy',status:'completed'}}})")
+    playwright.expect(status).to_have_count(0)
+    assert tool.evaluate("el=>getComputedStyle(el,'::before').animationName") == 'none'
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    assert not errors
+
+
+@pytest.mark.parametrize('provider', ['Claude', 'Codex', 'Gemini'])
+@pytest.mark.parametrize('width', [390, 1600])
 def test_composer_queue_and_compaction_progress(pane, provider, width, tmp_path):
     page, errors = pane
     page.set_viewport_size({'width': width, 'height': 900})

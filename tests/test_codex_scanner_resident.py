@@ -52,6 +52,25 @@ def test_cli_session_remains_visible_without_metadata(tmp_path, monkeypatch) -> 
     assert codex_scanner._is_user_initiated(path)
 
 
+@pytest.mark.parametrize('originator,source,identity,expected', [
+    ('serena-workspace', 'vscode', SESSION_ID, True),
+    ('other-extension', 'vscode', SESSION_ID, False),
+    ('serena-workspace', 'exec', SESSION_ID, False),
+    ('serena-workspace', 'vscode', 'other-session', False),
+])
+def test_workspace_native_origin_survives_missing_synced_metadata(
+    tmp_path, monkeypatch, originator, source, identity, expected,
+):
+    path = _rollout(tmp_path, source)
+    record = json.loads(path.read_text())
+    record['payload'].update(originator=originator, id=identity)
+    path.write_text(json.dumps(record) + '\n')
+    monkeypatch.setattr(codex_scanner.meta_sync, 'get_meta', lambda sid: {})
+    monkeypatch.setattr(codex_scanner, 'CODEX_SESSIONS_ROOT', tmp_path)
+    assert codex_scanner._is_user_initiated(path) is expected
+    assert list(codex_scanner.scan_codex_sessions()) == ([('codex', path)] if expected else [])
+
+
 def test_resident_exec_is_visible_but_generic_exec_stays_hidden(
     tmp_path,
     monkeypatch,

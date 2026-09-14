@@ -48,7 +48,11 @@
 .aw-tool summary:before{content:'>';color:#a89bad}.aw-tool[open] summary:before{content:'v'}
 .aw-tool small{margin-left:auto;color:#a89bad;flex-shrink:0}
 .aw-tool .aw-tool-running{color:#77d99b;font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
-.aw-tool-running:before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor}
+.aw-activity{display:inline-flex;align-items:center;gap:7px}
+.aw-activity:before,.aw-tool-running:before{content:'';display:inline-block;flex:0 0 12px;width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;box-sizing:border-box}
+[data-activity="active"] .aw-activity:before,[data-activity="active"] .aw-tool-running:before{animation:aw-working .85s linear infinite}
+@keyframes aw-working{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){[data-activity="active"] .aw-activity:before,[data-activity="active"] .aw-tool-running:before{animation:none}}
 .aw-output-pending{color:#a89bad;font-size:12px;margin:8px 0}
 .aw-elapsed{font-size:10px;color:#b7a6b4;white-space:nowrap;font-variant-numeric:tabular-nums}
 .aw-tool pre,.aw-question pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;font:11px/1.6 monospace}

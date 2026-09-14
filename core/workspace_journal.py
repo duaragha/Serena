@@ -60,6 +60,17 @@ class WorkspaceJournal:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_creations)")}
             if "cataloged" not in columns:
                 conn.execute("ALTER TABLE workspace_creations ADD COLUMN cataloged INTEGER NOT NULL DEFAULT 0")
+            # Every saved-preference lookup selects one event by its method and
+            # takes the newest. Without this the only index is the primary key,
+            # so each of those reads walks the whole session and json_extracts
+            # every row on the way past -- and a session's rows are large, since
+            # a pasted image is journalled inline. Resuming one long chat spent
+            # most of a second doing that before the runtime was even opened.
+            #
+            # json_extract is deterministic, so SQLite can index the expression
+            # itself and the queries need no rewriting to use it.
+            conn.execute("""CREATE INDEX IF NOT EXISTS workspace_events_method
+                ON workspace_events(session_id, json_extract(event, '$.method'), sequence)""")
 
     def saved_codex_mode(self, session_id: str) -> str | None:
         with closing(self._connect()) as conn:
@@ -111,14 +122,24 @@ class WorkspaceJournal:
     def saved_codex_setting_revision(self, session_id, setting):
         if setting not in {"personality", "speed"}:
             raise ValueError("Unknown recoverable preference")
+        # Asked as one scan with an OR across two different methods, this could
+        # not use the method index and stayed a full walk of the session. The
+        # same answer as the newer of two single-method lookups, each of which
+        # is an index seek.
+        if setting == "speed":
+            latest = """SELECT COALESCE(MAX(sequence), 0) FROM workspace_events
+                WHERE session_id=? AND json_extract(event, '$.method')='workspace/speed'"""
+        else:
+            latest = """SELECT COALESCE(MAX(sequence), 0) FROM workspace_events
+                WHERE session_id=? AND json_extract(event, '$.method')='workspace/settings'
+                AND json_type(event, '$.params.personality') IS NOT NULL
+                AND COALESCE(json_extract(event, '$.params.personalityConfirmed'), 1) != 0"""
         with closing(self._connect()) as conn:
-            return conn.execute("""SELECT COALESCE(MAX(sequence), 0) FROM workspace_events WHERE session_id=? AND (
-                (json_extract(event, '$.method')='workspace/settingReset' AND json_extract(event, '$.params.setting')=?)
-                OR (?='speed' AND json_extract(event, '$.method')='workspace/speed')
-                OR (?='personality' AND json_extract(event, '$.method')='workspace/settings'
-                    AND json_type(event, '$.params.personality') IS NOT NULL
-                    AND COALESCE(json_extract(event, '$.params.personalityConfirmed'), 1) != 0))""",
-                                (session_id, setting, setting, setting)).fetchone()[0]
+            return conn.execute(f"""SELECT MAX(
+                COALESCE((SELECT MAX(sequence) FROM workspace_events
+                    WHERE session_id=? AND json_extract(event, '$.method')='workspace/settingReset'
+                    AND json_extract(event, '$.params.setting')=?), 0),
+                ({latest}))""", (session_id, setting, session_id)).fetchone()[0]
 
     def reset_saved_codex_setting(self, session_id, setting, expected, failure_id, expected_revision):
         if setting not in {"personality", "speed"} or not isinstance(failure_id, str) or not failure_id:
