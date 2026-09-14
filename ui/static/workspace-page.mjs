@@ -19,6 +19,7 @@ const connection = new WorkspaceConnection({
   },
   error: error => connectionFailed(error),
   recovered: error => {
+    pane.setConnectionHealthy(true);
     pane.clearError(error);
     if(pane.conversation.status !== 'unavailable')button.hidden = true;
   },
@@ -190,6 +191,7 @@ function showRetry() {
   button.textContent = 'Retry connection';
 }
 function connectionFailed(error) {
+  pane.setConnectionHealthy(false);
   pane.error(error);
   showRetry();
 }
@@ -197,6 +199,7 @@ button.addEventListener('click', async () => {
   button.disabled = true;
   try {
     await connection.connect();
+    pane.setConnectionHealthy(true);
     if (pane.conversation.status === 'unavailable') {
       showRetry();
       return;

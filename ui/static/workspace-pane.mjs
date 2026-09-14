@@ -2348,11 +2348,20 @@ export class WorkspacePane {
   }
 
   renderStatus() {
-    this.status.textContent = this.sleeping ? 'sleeping' : this.conversation.status;
+    const active = !this.sleeping && !this.connectionLost && !this.conversation.error
+      && ['running','compacting','connecting','opening'].includes(this.conversation.status);
+    this.root.dataset.activity = active ? 'active' : 'idle';
+    this.status.classList.toggle('aw-activity', active);
+    this.status.textContent = this.connectionLost ? 'connection lost' : this.sleeping ? 'sleeping' : this.conversation.status;
     this.updateElapsed();
     if(this.conversation.metadata.activeAgentCount>0)this.status.textContent+=` / ${this.conversation.metadata.activeAgentCount} agents working`;
     if (this.conversation.metadata.bridgeQueueCount > 0) this.status.textContent += ` / ${this.conversation.metadata.bridgeQueueCount} queued`;
     this.refreshSessionStatus?.();
+  }
+
+  setConnectionHealthy(healthy) {
+    this.connectionLost = !healthy;
+    this.renderStatus();
   }
 
   setReplaying(active) {
