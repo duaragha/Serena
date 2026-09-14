@@ -22,6 +22,7 @@ files:
   - releases.js
   - logging.js
   - backend-control.js
+  - backend-install.js
   - windows/main-win.js
   - package.json
 

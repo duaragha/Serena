@@ -44,7 +44,8 @@
       "about-panel.js",
       "releases.js",
       "logging.js",
-      "backend-control.js"
+      "backend-control.js",
+      "backend-install.js"
     ],
     "extraResources": [
       {

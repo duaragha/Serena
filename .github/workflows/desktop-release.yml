@@ -128,7 +128,7 @@ jobs:
         shell: pwsh
         run: |
           npm ci
-          node --test tests/updates.test.cjs tests/menu.test.cjs
+          node --test tests/updates.test.cjs tests/menu.test.cjs tests/backend-install.test.mjs
 
       - name: Build and publish the installer
         shell: pwsh

@@ -28,6 +28,7 @@ const updates = require('./updates');
 const releases = require('./releases');
 const logging = require('./logging');
 const backendControl = require('./backend-control');
+const backendInstall = require('./backend-install');
 const folderPicker = require('./folder-picker');
 
 const SMOKE_TEST = process.argv.includes('--smoke-test');
@@ -509,8 +510,18 @@ if (gotSingleInstanceLock) {
     // Cheap and local. The point is that the menu can say the server is behind
     // before a fix appears not to work.
     setInterval(() => refreshBackendFreshness().catch(() => {}), 60_000).unref();
-    startBackend().catch((error) => {
-      console.error('[desktop] initial backend start failed:', error.message);
+    // An update has to carry the server, not just the window. This runs before
+    // the app looks for a backend so the one it finds is already this build's,
+    // and it is a no-op on every launch where the version has not moved.
+    backendInstall.syncBackend({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      version: app.getVersion(),
+      log: (message) => logging.note(message),
+    }).finally(() => {
+      startBackend().catch((error) => {
+        console.error('[desktop] initial backend start failed:', error.message);
+      });
     });
   });
 }
