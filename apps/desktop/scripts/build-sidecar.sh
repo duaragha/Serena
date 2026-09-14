@@ -50,6 +50,7 @@ mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
   --add-data "$repo_root/core/workspace_claude_worker.mjs:core" \
   --add-data "$repo_root/core/workspace_claude_channel.mjs:core" \
   --add-data "$repo_root/core/workspace_claude_sdk.mjs:core" \
+  --add-data "$repo_root/runtimes/claude-sdk:runtimes/claude-sdk" \
   --add-data "$repo_root/fleet/gemini_research_agent.md:fleet" \
   "$desktop_dir/sidecar.py"
 

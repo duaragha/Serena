@@ -21,6 +21,7 @@ for source, destination in (
     (REPO_ROOT / "core" / "workspace_claude_worker.mjs", "core"),
     (REPO_ROOT / "core" / "workspace_claude_channel.mjs", "core"),
     (REPO_ROOT / "core" / "workspace_claude_sdk.mjs", "core"),
+    (REPO_ROOT / "runtimes" / "claude-sdk", "runtimes/claude-sdk"),
     (REPO_ROOT / "fleet" / "gemini_research_agent.md", "fleet"),
     (REPO_ROOT / "static", "static"),
     (REPO_ROOT / "voice" / "call" / "vocabulary.txt", "voice/call"),
