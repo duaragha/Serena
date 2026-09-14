@@ -200,7 +200,6 @@ function connectionFailed(error) {
 }
 button.addEventListener('click', async () => {
   button.disabled = true;
-  button.textContent = 'Connecting...';
   try {
     await connection.connect();
     pane.setConnectionHealthy(true);
