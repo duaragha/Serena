@@ -148,7 +148,7 @@ export class WorkspaceConversation {
         ? 'running' : (p.turn.status || 'completed');
     } else if (method === 'item/started' || method === 'item/completed') {
       if (!p.item?.id) throw new Error('Missing provider item');
-      if (p.item.type === 'contextCompaction' && !p.item.status) p.item.status = method === 'item/completed' ? 'completed' : 'inProgress';
+      if (['contextCompaction','claudeThinking','reasoning'].includes(p.item.type) && !p.item.status) p.item.status = method === 'item/completed' ? 'completed' : 'inProgress';
       this.turn(p.turnId).items.set(p.item.id, p.item);
     } else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
       const item = this.item(p.turnId, p.itemId, method.includes('/plan/') ? 'plan' : 'agentMessage');

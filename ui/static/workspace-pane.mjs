@@ -2855,7 +2855,9 @@ export class WorkspacePane {
       const parts = item.summary?.some(part => part) ? item.summary : item.content;
       const text = item.type === 'claudeThinking' ? item.text :
         (parts || []).map(part => typeof part === 'string' ? part : part?.text || '').join('\n');
-      detail.append(node('summary','','Thinking'),node('pre','aw-thinking',text || ''));
+      const summary=node('summary','','Thinking');
+      if(toolRunning(item))summary.append(toolStatus(item));
+      detail.append(summary,node('pre','aw-thinking',text || ''));
       entry.append(detail);
     } else if (item.type === 'acpPlan') {
       entry.append(node('div','aw-author','Plan'));
