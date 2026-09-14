@@ -5,6 +5,20 @@ const status = document.getElementById('creation-status');
 const context = document.getElementById('creation-context');
 const warning = document.getElementById('creation-warning');
 const seeded = boot.seeded === true;
+document.addEventListener('keydown',event=>{
+  if(parent===window || event.isComposing)return;
+  if(event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase()==='w'){
+    event.preventDefault();event.stopPropagation();
+    parent.postMessage({type:'serena-workspace-close-request',sid:boot.source},location.origin);
+  }
+},true);
+window.addEventListener('message',event=>{
+  if(event.origin!==location.origin || event.source!==parent || event.data?.type!=='serena-workspace-close'
+    || event.data.sid!==boot.source || typeof event.data.requestId!=='string')return;
+  const pending=busy || record?.submitted===true || Boolean(record?.target);
+  parent.postMessage({type:'serena-workspace-close-result',sid:boot.source,requestId:event.data.requestId,
+    result:pending?{ok:false,error:'Creation is pending or has a session. Open the conversation before closing its runtime.'}:{ok:true}},location.origin);
+});
 let seedReady = !seeded;
 context.hidden = document.getElementById('creation-context-label').hidden = !seeded;
 document.getElementById('creation-project').value = boot.cwd;

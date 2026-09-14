@@ -528,6 +528,10 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
 
         async def close(self):
             self.closed = True
+            self.state = 'closed'
+
+        def can_retry_attachment(self):
+            return self.closed
 
         async def list_models(self):
             return {"data": []}
@@ -553,6 +557,7 @@ def test_app_route_bootstrap_and_real_browser_page_do_not_auto_launch(tmp_path, 
     mount_source = HTML[start:end]
     new_chat_source = HTML[HTML.index('async function newChatInline('):HTML.index('let _lastNewChatAgent')]
     active_source = HTML[HTML.index("function _markActive("):HTML.index("function _rememberActive(")]
+    close_source = HTML[HTML.index('async function closeActiveTerminal('):HTML.index('let _externalReadTimer')]
 
     @app.get("/parent")
     def parent_page():
@@ -588,8 +593,11 @@ function renderSessionList(){}
 function _ensureActiveRefresh(){}
 function _unmarkActive(sid){window.retiredPseudo=sid;}
 function setTermStatus(status){window.lastStatus=status;}
+let currentSessionId='exact';window.closeShortcuts=[];
+window.__gtkShortcut=(action,sid)=>{window.closeShortcuts.push([action,sid]);closeActiveTerminal(sid);};
+function teardownLiveTerminal(sid){const runtime=termSessions.get(sid);runtime.cancelOutput();runtime.mount.remove();termSessions.delete(sid);_activeTerms.delete(sid);}
 """
-            + active_source + mount_source + new_chat_source
+            + active_source + mount_source + new_chat_source + close_source
             + """</script></body></html>"""
         )
 
@@ -969,6 +977,8 @@ function setTermStatus(status){window.lastStatus=status;}
             created_frame = page.frames[-1]
             playwright.expect(created_frame.get_by_role('status')).to_have_text('Creating session...')
             assert page.evaluate("_pseudoSessions[0].structured_pending")
+            pending_close = page.evaluate("termSessions.get('new-proof').close()")
+            assert pending_close['ok'] is False and 'Creation is pending' in pending_close['error']
             assert len(owners) == 1
             page.evaluate("_freshSids.add('33333333-3333-4333-8333-333333333333')")
             complete_creation('codex', '33333333-3333-4333-8333-333333333333')
@@ -1003,6 +1013,30 @@ function setTermStatus(status){window.lastStatus=status;}
             assert page.evaluate('_pseudoSessions.length') == 0
             assert renames[-2:] == [('44444444-4444-4444-8444-444444444444','Linked title'), ('55555555-5555-4555-8555-555555555555','Linked title')]
             assert len(owners) == 1 and not owners[0].closed and not errors
+            page.evaluate("termSessions.delete('exact');_startStructuredPane('exact', {})")
+            closing = page.frame_locator('iframe[src*="/workspace/exact"]')
+            closing.get_by_text('controlled provider output', exact=True).wait_for()
+            closing.locator('textarea').fill('Preserve draft on failed close')
+            page.evaluate("window.toasts=[];showToast=message=>window.toasts.push(message)")
+            def fail_close(route):
+                if route.request.post_data_json.get('action') == 'close_session':
+                    route.fulfill(json={'ok':False,'retryable':True,'error':'Cleanup unconfirmed'})
+                else:
+                    route.continue_()
+            page.route('**/api/workspace/exact/commands', fail_close)
+            closing.locator('textarea').press('Alt+w')
+            page.wait_for_function("toasts.includes('Could not close chat: Cleanup unconfirmed')")
+            assert page.evaluate('closeShortcuts') == [['close-terminal','exact']]
+            assert page.evaluate("termSessions.has('exact') && !termSessions.get('exact').closing")
+            assert closing.locator('textarea').input_value() == 'Preserve draft on failed close'
+            assert not owners[0].closed
+            page.unroute('**/api/workspace/exact/commands', fail_close)
+            # Structured close must work even when the legacy native bridge exists.
+            page.evaluate("window.__nativeTerminalBridge=true")
+            closing.locator('textarea').press('Alt+w')
+            page.wait_for_function("!termSessions.has('exact')")
+            assert owners[0].closed
+            assert not errors
             browser.close()
     finally:
         server.shutdown()

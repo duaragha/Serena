@@ -6287,8 +6287,19 @@ function _unmarkActive(sid) {
 }
 
 async function closeActiveTerminal(sid) {
-  if (!sid || !_activeTerms.has(sid)) return;
-  if (window.__nativeTerminalBridge) {
+  if (!sid || (!_activeTerms.has(sid) && !termSessions.has(sid))) return;
+  const runtime=termSessions.get(sid);
+  if(runtime?.structured){
+    if(runtime.closing)return;
+    runtime.closing=true;
+    try{
+      const result=await runtime.close();
+      if(!result?.ok)throw Error(result?.error || 'Session close is unconfirmed');
+    }catch(error){runtime.closing=false;showToast('Could not close chat: '+error.message,{variant:'error'});return;}
+  }
+  if (runtime?.structured) {
+    teardownLiveTerminal(sid);
+  } else if (window.__nativeTerminalBridge) {
     // Python's _kill_session SIGTERMs claude and fires onGtkCodeExit(sid),
     // which calls _unmarkActive and re-renders the sidebar.
     window.gtkSend({ type: 'code-close', sid });
@@ -7184,9 +7195,17 @@ function _startStructuredPane(sid, opts) {
   const runtime = {sid, mount, structured:true, state:'Ready to resume.', busy:false,
     focus:() => frame.contentWindow?.postMessage({type:'serena-workspace-focus'}, location.origin)};
   const handoffs = new Map();
+  const closes = new Map();
   let frameLoaded=false;
   let createdTarget=null,creationOpening=false;
   frame.addEventListener('load',()=>{frameLoaded=true;});
+  runtime.close = () => new Promise(resolve=>{
+    const requestId=crypto.randomUUID();
+    const timer=setTimeout(()=>{closes.delete(requestId);resolve({ok:false,error:'Session close is still unconfirmed; retry to check its receipt.'});},40000);
+    closes.set(requestId,{resolve,timer});
+    const send=()=>{if(closes.has(requestId))frame.contentWindow?.postMessage({type:'serena-workspace-close',sid,requestId},location.origin);};
+    if(frameLoaded)send();else frame.addEventListener('load',send,{once:true});
+  });
   runtime.handoff = text => new Promise(resolve => {
     const requestId=crypto.randomUUID();
     const timer=setTimeout(()=>{handoffs.delete(requestId);resolve({ok:false,pending:true,error:'Handoff acknowledgement is pending; do not resend.'});},40000);
@@ -7196,6 +7215,15 @@ function _startStructuredPane(sid, opts) {
   });
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
+    if(event.data.type==='serena-workspace-close-request'){
+      if(document.getElementById('modalBackdrop')?.classList.contains('visible') || document.activeElement!==frame)return;
+      window.__gtkShortcut('close-terminal',sid);return;
+    }
+    if(event.data.type==='serena-workspace-close-result'){
+      const pending=closes.get(event.data.requestId);
+      if(pending){clearTimeout(pending.timer);closes.delete(event.data.requestId);pending.resolve(event.data.result);}
+      return;
+    }
     if(event.data.type==='serena-workspace-new-conversation'){
       if(document.getElementById('modalBackdrop')?.classList.contains('visible'))return;
       const title=event.data.title;
@@ -7289,6 +7317,8 @@ function _startStructuredPane(sid, opts) {
     window.removeEventListener('message', receive);
     for(const pending of handoffs.values()){clearTimeout(pending.timer);pending.resolve({ok:false,pending:true,error:'View closed before handoff acknowledgement; do not resend.'});}
     handoffs.clear();
+    for(const pending of closes.values()){clearTimeout(pending.timer);pending.resolve({ok:false,error:'View closed before runtime cleanup was confirmed.'});}
+    closes.clear();
   };
   termSessions.set(sid, runtime);
   if (opts.background) {
@@ -8475,7 +8505,7 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 // Invoked from Python on Alt+<key>. Lets app shortcuts work even when VTE has focus.
-window.__gtkShortcut = function(action) {
+window.__gtkShortcut = function(action, sourceSid) {
   const focusedSid = () =>
     currentSessionId ||
     (typeof focusedIndex !== 'undefined' && focusedIndex >= 0 && sessions[focusedIndex]
@@ -8522,7 +8552,7 @@ window.__gtkShortcut = function(action) {
       return;
     }
     case 'close-terminal': {
-      const sid = currentSessionId || focusedSid();
+      const sid = sourceSid || activeTermSid || currentSessionId || focusedSid();
       if (!sid) return;
       // Close the WHOLE linked thread, not just the focused side. Otherwise the
       // row stays in Active because the linked sibling's agent is still running,
@@ -8534,7 +8564,7 @@ window.__gtkShortcut = function(action) {
         const pool = (typeof sessionSource !== 'undefined' && sessionSource.length) ? sessionSource : sessions;
         toClose = pool.filter(s => s.group === chat.group).map(s => s.session_id);
       }
-      for (const id of toClose) if (_activeTerms.has(id)) closeActiveTerminal(id);
+      for (const id of toClose) if (_activeTerms.has(id) || termSessions.has(id)) closeActiveTerminal(id);
       return;
     }
     case 'toggle-files': toggleFocusMode(); return;

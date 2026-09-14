@@ -148,6 +148,14 @@ function reportState() {
   if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:pane.conversation.status},location.origin);
 }
 window.addEventListener('message', e => {
+  if(e.origin===location.origin && e.source===parent && e.data?.type==='serena-workspace-close'
+    && e.data.sid===boot.sessionId && typeof e.data.requestId==='string'){
+    controls.closeSession().then(result=>parent.postMessage({type:'serena-workspace-close-result',sid:boot.sessionId,
+      requestId:e.data.requestId,result:{ok:result.closed===true}},location.origin))
+      .catch(error=>{pane.error(error);parent.postMessage({type:'serena-workspace-close-result',sid:boot.sessionId,
+        requestId:e.data.requestId,result:{ok:false,error:error.message}},location.origin);});
+    return;
+  }
   if(e.origin===location.origin && e.source===parent && e.data?.type==='serena-workspace-layout'
     && e.data.sid===boot.sessionId && Array.isArray(e.data.split_sids)
     && e.data.split_sids.length<=4 && e.data.split_sids.every(sid=>typeof sid==='string')){
@@ -208,6 +216,13 @@ button.addEventListener('click', async () => {
   }
 });
 // Opening Code opts into exact-session resume; plain observer URLs remain read-only.
+document.addEventListener('keydown', event=>{
+  if(parent===window || event.isComposing || document.querySelector('dialog[open]'))return;
+  if(event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase()==='w'){
+    event.preventDefault();event.stopPropagation();
+    parent.postMessage({type:'serena-workspace-close-request',sid:boot.sessionId},location.origin);
+  }
+},true);
 if(pane.clearedSession)button.disabled=false;
 else connection.open({resume:boot.autoResume===true}).then(observing=>{
   button.hidden=observing && pane.conversation.status!=='unavailable';
