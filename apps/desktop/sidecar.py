@@ -13,8 +13,10 @@ if not getattr(sys, "frozen", False):
 if __name__ == "__main__" and sys.argv[1:] == ["--workspace-runtime-check"]:
     from core.workspace_claude import ClaudeWorkspace  # noqa: F401
     from core.workspace_codex import CodexWorkspace  # noqa: F401
+    from core.workspace_claude_runtime import runtime_paths
     import jsonschema  # noqa: F401
 
+    runtime_paths()
     raise SystemExit(0)
 
 if __name__ == "__main__" and sys.argv[1:] == ["--fleet-integration-replay"]:
