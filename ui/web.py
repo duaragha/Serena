@@ -4659,6 +4659,11 @@ function _agentBadge(agent) {
 const _LINK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M6.354 5.5H4a3 3 0 0 0 0 6h3a3 3 0 0 0 2.83-4H9q-.13 0-.25.031A2 2 0 0 1 7 10.5H4a2 2 0 1 1 0-4h1.535c.218-.376.495-.714.82-1z"/><path d="M9 5.5a3 3 0 0 0-2.83 4h1.098A2 2 0 0 1 9 6.5h3a2 2 0 1 1 0 4h-1.535a4 4 0 0 1-.82 1H12a3 3 0 1 0 0-6z"/></svg>';
 
 function _sessionHasActiveRuntime(session) {
+  // A structured pane reports its own state, and that reading wins while it
+  // exists -- but only while it exists. Closing one clears the reading rather
+  // than leaving the last "ok" behind, because this used to short-circuit past
+  // _activeTerms forever: the runtime was gone, the pane was gone, and the row
+  // sat in Active until the sidebar was reloaded from the server.
   if (session.workspace_runtime) return session.workspace_runtime.ok === true;
   return _activeTerms.has(session.session_id);
 }
@@ -7216,7 +7221,13 @@ function _startStructuredPane(sid, opts) {
   const receive = async event => {
     if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.sid !== sid) return;
     if(event.data.type==='serena-workspace-close-request'){
-      if(document.getElementById('modalBackdrop')?.classList.contains('visible') || document.activeElement!==frame)return;
+      // Only a focused frame receives a keystroke, and the sender was already
+      // checked against this pane's own contentWindow above, so the request is
+      // proof enough that this pane asked. Also requiring the parent's
+      // activeElement to BE the frame made the shortcut work only when focus
+      // sat outside the chat -- click into the composer and Alt+W went quiet,
+      // which is the opposite of what the shortcut is for.
+      if(document.getElementById('modalBackdrop')?.classList.contains('visible'))return;
       window.__gtkShortcut('close-terminal',sid);return;
     }
     if(event.data.type==='serena-workspace-close-result'){
@@ -8067,6 +8078,10 @@ function _restoreWebSplitAfterTerminalOpen(sid, background) {
 }
 
 function teardownLiveTerminal(sid) {
+  // Drop the structured pane's last state report first. It outranks
+  // _activeTerms in _sessionHasActiveRuntime, so unmarking the terminal below
+  // cannot move the row out of Active on its own.
+  if (_findClientSession(sid)?.workspace_runtime) _patchClientSession(sid, {workspace_runtime: null});
   // No arg → tear down all live terminals (used on page unload).
   if (sid == null) {
     for (const id of Array.from(termSessions.keys())) teardownLiveTerminal(id);
