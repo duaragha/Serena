@@ -184,7 +184,13 @@ export class WorkspacePane {
     this.tierSelect = node('select', 'aw-effort-select');
     this.tierSelect.setAttribute('aria-label', 'Speed tier'); this.tierSelect.title = 'Speed tier'; this.tierSelect.hidden = true;
     this.modelSelect.hidden = this.effortSelect.hidden = true;
-    this.modelSelect.addEventListener('change', () => this.renderEfforts(true));
+    this.modelSelect.addEventListener('change', () => {
+      const effort=this.effortSelect.value || this.effortSelect.selectedOptions[0]?.textContent;
+      this.renderEfforts(true);
+      this.selectEffort(effort);
+      this.persistModelPreference();
+    });
+    this.effortSelect.addEventListener('change', () => this.persistModelPreference());
     this.stop = this.button('Interrupt turn', 'square', () => this.interrupt());
     this.stop.title = 'Interrupt turn (Escape)';
     this.stop.setAttribute('aria-keyshortcuts','Escape');
@@ -2517,6 +2523,8 @@ export class WorkspacePane {
     if(skills.length)options.skills=skills.map(skill=>skill.path);
     if(this.modelSelect.value)options.model=this.modelSelect.value;
     if(this.effortSelect.value)options.effort=this.effortSelect.value;
+    else if(this.modelSelect.value && !this.effortSelect.hidden && this.effortSelect.selectedOptions[0]?.textContent)
+      options.effort=this.effortSelect.selectedOptions[0].textContent;
     if(!this.tierSelect.hidden && this.tierSelect.value)options.serviceTier=this.tierSelect.value==='__default'?null:this.tierSelect.value;
     return options;
   }
@@ -2738,9 +2746,22 @@ export class WorkspacePane {
     this.refreshIcons();
   }
 
+  persistModelPreference() {
+    const model=this.catalogModel(this.modelSelect.value || this.conversation.metadata.model);
+    if(!model)return;
+    const preference={model:model.claudeCapabilities?.resolvedModel || model.model,
+      effort:this.effortSelect.value || this.effortSelect.selectedOptions[0]?.textContent || ''};
+    try{window.localStorage.setItem(`serena-workspace-model:${this.provider.toLowerCase()}`,JSON.stringify(preference));}catch{}
+  }
+
+  selectEffort(effort) {
+    const option=[...this.effortSelect.options].find(option=>(option.value || option.textContent)===effort);
+    if(option)this.effortSelect.value=option.value;
+  }
+
   renderModelControls() {
     const models = this.conversation.models;
-    const signature = JSON.stringify([models, this.conversation.metadata.model, this.conversation.metadata.reasoningEffort, this.conversation.metadata.serviceTier]);
+    const signature = JSON.stringify([models, this.conversation.metadata.model, this.conversation.metadata.reasoningEffort, this.conversation.metadata.serviceTier,!!this.conversation.metadata.thread]);
     if (this.modelSignature === signature) return;
     this.modelSignature = signature;
     if (Object.hasOwn(this.conversation.metadata, 'model')) this.modelLabel.textContent = this.conversation.metadata.model || 'Model unavailable';
@@ -2765,6 +2786,23 @@ export class WorkspacePane {
       ? selected : (choices.get(labelKey(selectedName)) ?? '');
     this.modelSelect.hidden = !models.length;
     this.renderEfforts(false);
+    if(!this.modelPreferenceLoaded && models.length && this.conversation.metadata.thread){
+      this.modelPreferenceLoaded=true;
+      if(!this.conversation.turns.size){
+        try{
+          const saved=JSON.parse(window.localStorage.getItem(`serena-workspace-model:${this.provider.toLowerCase()}`) || 'null');
+          const preferred=this.catalogModel(saved?.model);
+          if(preferred && !preferred.hidden){
+            const value=preferred===current?'':preferred.model;
+            if([...this.modelSelect.options].some(option=>option.value===value)){
+              this.modelSelect.value=value;
+              this.renderEfforts(true);
+              this.selectEffort(saved.effort);
+            }
+          }
+        }catch{}
+      }
+    }
   }
 
   catalogModel(value) {
