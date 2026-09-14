@@ -10,6 +10,35 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('provider', ['Claude', 'Codex'])
+def test_new_chats_remember_explicit_provider_model_and_effort(pane, provider):
+    page, errors = pane
+    result = page.evaluate("""provider=>{
+      const chosen=provider==='Claude'?'claude-opus-5':'gpt-6-astra';
+      const models=[{model:'configured',defaultReasoningEffort:'high'},
+        {model:chosen,defaultReasoningEffort:'medium'}].map(m=>({...m,
+          supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort}))}));
+      function open(name,turns=[]){
+        pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:name,controls});window.seq=0;
+        emit({method:'workspace/history',params:{thread:{id:'exact',turns},model:'configured',reasoningEffort:'high'}});
+        emit({method:'workspace/models',params:{data:models}});pane.render();
+      }
+      open(provider);
+      pane.modelSelect.value=chosen;pane.modelSelect.dispatchEvent(new Event('change'));
+      pane.selectEffort('medium');pane.effortSelect.dispatchEvent(new Event('change'));
+      open(provider);const next=pane.turnOptions([]);
+      open(provider==='Claude'?'Codex':'Claude');const other=pane.turnOptions([]);
+      open(provider,[{id:'old',status:'completed',items:[]}]);const existing=pane.turnOptions([]);
+      open(provider);pane.selectEffort('low');pane.effortSelect.dispatchEvent(new Event('change'));
+      open(provider);return {next,other,existing,changed:pane.turnOptions([])};
+    }""", provider)
+    model = 'claude-opus-5' if provider == 'Claude' else 'gpt-6-astra'
+    assert result['next'] == {'model': model, 'effort': 'medium'}
+    assert result['other'] == result['existing'] == {}
+    assert result['changed'] == {'model': model, 'effort': 'low'}
+    assert not errors
+
+
 @pytest.mark.parametrize('provider', ['Claude', 'Codex', 'Gemini'])
 @pytest.mark.parametrize('width', [390, 1600])
 def test_activity_animation_tracks_work_and_connection(pane, provider, width, tmp_path):
