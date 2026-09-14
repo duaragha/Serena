@@ -323,6 +323,28 @@ def test_active_turn_elapsed_timer_ticks_and_stops(pane, width, tmp_path):
     page.evaluate("emit({method:'turn/completed',params:{turn:{id:'timed',status:'completed'}}})")
     playwright.expect(timer).to_be_hidden()
     assert not errors
+def test_command_typing_shares_lookup_and_filters_cached_catalog(pane):
+    page, errors = pane
+    page.evaluate("""()=>{
+      window.lookups=0;controls.commands=()=>{lookups++;return new Promise(resolve=>window.resolveCommands=resolve);};
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Gemini',controls});
+    }""")
+    composer=page.locator('#left textarea').first
+    for value in ['/', '/u', '/us', '/usage']:
+        composer.fill(value)
+    assert page.evaluate('lookups') == 1
+    page.evaluate("resolveCommands({data:[{name:'usage',description:'Usage'},{name:'model',description:'Model'}]})")
+    choices=page.get_by_role('listbox',name='Command and skill suggestions')
+    playwright.expect(choices.get_by_role('option')).to_have_count(1)
+    composer.fill('/model')
+    playwright.expect(choices.get_by_role('option')).to_contain_text('/model')
+    assert page.evaluate('lookups') == 1
+    composer.press('Tab')
+    assert composer.input_value() == '/model '
+    assert page.evaluate('calls') == []
+    assert not errors
+
+
 def test_inline_suggestions_ignore_stale_lookup_and_never_send_while_loading(pane):
     page, errors = pane
     page.evaluate("""()=>{controls.commands=()=>new Promise(resolve=>window.resolveCommands=resolve);}""")
