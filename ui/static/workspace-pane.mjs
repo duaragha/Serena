@@ -278,7 +278,7 @@ export class WorkspacePane {
     this.usageLabel = node('span', 'aw-usage');
     identity.append(this.usageLabel);
     const context=this.button('Context breakdown','chart-pie',()=>this.openContext());
-    context.hidden=provider!=='Claude' || !controls.contextUsage;identity.append(context);
+    context.hidden=provider==='Claude' ? !controls.contextUsage : provider!=='Codex';identity.append(context);
     root.replaceChildren(head, this.log, this.questionArea, this.alert, this.form, identity);
     this.renderAttachments();
     this.refreshIcons();
@@ -1952,6 +1952,43 @@ export class WorkspacePane {
     dialog.addEventListener('close',()=>dialog.remove());this.shellDialog=dialog;this.root.append(dialog);this.refreshIcons();dialog.showModal();input.focus();
   }
 
+  /**
+   * Codex's context breakdown, read from the usage it already reports.
+   *
+   * Claude answers a request for this; Codex pushes thread/tokenUsage/updated
+   * after every turn and the pane already keeps it, so asking again would add a
+   * round trip and a second source of truth for one number.
+   *
+   * The figures describe the most recent request, which is the context the next
+   * one starts from. inputTokens already contains the cached part, so the fresh
+   * portion is the difference and the rows add up to the total instead of
+   * counting the cache twice. cacheWriteInputTokens is left out on purpose: it
+   * records what was stored for later, not space occupied in this window.
+   */
+  codexContextUsage() {
+    const usage=this.conversation.metadata.tokenUsage;
+    const window=usage?.modelContextWindow, last=usage?.last;
+    if(!last || !Number.isSafeInteger(window) || window<=0)
+      throw new Error('Codex reports context after its first reply in this session.');
+    const count=value=>Number.isSafeInteger(value) && value>0 ? value : 0;
+    const cached=count(last.cachedInputTokens), input=count(last.inputTokens);
+    const output=count(last.outputTokens), reasoning=count(last.reasoningOutputTokens);
+    const total=count(last.totalTokens) || input+output;
+    return {
+      model:this.conversation.metadata.model || 'Codex',
+      totalTokens:total, maxTokens:window,
+      percentage:Math.min(100,total/window*100),
+      caption:'Measured on the most recent request.',
+      categories:[
+        {name:'Cached input',tokens:cached},
+        {name:'New input',tokens:Math.max(0,input-cached)},
+        {name:'Reasoning',tokens:reasoning},
+        {name:'Output',tokens:Math.max(0,output-reasoning)},
+        {name:'Free space',tokens:Math.max(0,window-total)},
+      ].map(row=>({...row,isDeferred:false})),
+    };
+  }
+
   openContext() {
     if(this.contextDialog?.open)return;
     const dialog=node('dialog','aw-review-dialog aw-context-dialog');dialog.setAttribute('aria-label','Context breakdown');
@@ -1963,9 +2000,10 @@ export class WorkspacePane {
       if(busy || !dialog.open)return;
       busy=true;refresh.disabled=true;status.textContent='Loading...';
       try{
-        const usage=await this.controls.contextUsage();
+        const usage=this.provider==='Codex' ? this.codexContextUsage() : await this.controls.contextUsage();
         if(!dialog.open || this.disposed)return;
         content.replaceChildren(node('p','',usage.model),node('p','',`${usage.totalTokens.toLocaleString()} / ${usage.maxTokens.toLocaleString()} tokens`));
+        if(usage.caption)content.append(node('p','aw-context-caption',usage.caption));
         const progress=node('progress');progress.max=100;progress.value=Math.min(100,usage.percentage);progress.setAttribute('aria-label','Context used');content.append(progress);
         const list=node('dl');
         for(const category of usage.categories){list.append(node('dt','',category.name+(category.isDeferred?' (deferred)':'')),node('dd','',category.tokens.toLocaleString()));}
