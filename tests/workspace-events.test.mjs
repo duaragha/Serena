@@ -5,6 +5,17 @@ import {WorkspaceConversation} from '../ui/static/workspace-events.mjs';
 const history = {method:'workspace/history', params:{thread:{id:'exact',turns:[]}}};
 const wrap = (sequence, event) => ({sequence,event});
 
+test('Codex compaction completion without status stops progress before the turn ends',()=>{
+  const model=new WorkspaceConversation('exact');
+  model.apply(wrap(1,{method:'turn/started',params:{turn:{id:'t'}}}));
+  model.apply(wrap(2,{method:'item/started',params:{turnId:'t',item:{id:'c',type:'contextCompaction'}}}));
+  model.apply(wrap(3,{method:'item/completed',params:{turnId:'t',item:{id:'c',type:'contextCompaction'}}}));
+  assert.equal(model.turns.get('t').items.get('c').status,'completed');
+  assert.equal(model.status,'running');
+  model.apply(wrap(4,{method:'turn/completed',params:{turn:{id:'t',status:'completed',items:[],itemsView:'summary'}}}));
+  assert.equal(model.turns.get('t').items.get('c').status,'completed');
+});
+
 for(const status of ['completed','failed','interrupted'])test(`compaction stops on terminal turn ${status}`,()=>{
   const model=new WorkspaceConversation('exact');
   model.apply(wrap(1,{method:'item/started',params:{turnId:'t',item:{id:'c',type:'contextCompaction'}}}));
