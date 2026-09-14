@@ -22,6 +22,8 @@ class WorkspaceRpcError(RuntimeError):
 
 
 class WorkspaceRpc:
+    MAX_MESSAGE_BYTES = 128 * 1024 * 1024
+
     def __init__(self) -> None:
         self.process: asyncio.subprocess.Process | None = None
         self.events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -178,11 +180,32 @@ class WorkspaceRpc:
         except (BrokenPipeError, ConnectionResetError) as error:
             raise WorkspaceRpcError("Agent input pipe closed") from error
 
+    async def _read_line(self) -> bytes:
+        assert self.process and self.process.stdout
+        stream = self.process.stdout
+        chunks = bytearray()
+        # History responses can exceed asyncio's pipe buffer limit. Keep framing
+        # across buffer boundaries, with a separate bounded message budget.
+        while True:
+            try:
+                part = await stream.readuntil(b"\n")
+            except asyncio.LimitOverrunError as error:
+                if len(chunks) + error.consumed > self.MAX_MESSAGE_BYTES:
+                    raise WorkspaceRpcError("Agent response exceeds the 128 MiB message limit") from error
+                chunks.extend(await stream.readexactly(error.consumed))
+                continue
+            except asyncio.IncompleteReadError as error:
+                part = error.partial
+            if len(chunks) + len(part) > self.MAX_MESSAGE_BYTES:
+                raise WorkspaceRpcError("Agent response exceeds the 128 MiB message limit")
+            chunks.extend(part)
+            return bytes(chunks)
+
     async def _read(self) -> None:
         assert self.process and self.process.stdout
         failure = "Agent output pipe closed"
         try:
-            while line := await self.process.stdout.readline():
+            while line := await self._read_line():
                 message = json.loads(line)
                 if not isinstance(message, dict):
                     raise ValueError("Expected a JSON-RPC object")
@@ -203,6 +226,8 @@ class WorkspaceRpc:
                     raise ValueError("Missing JSON-RPC method or ID")
         except asyncio.CancelledError:
             raise
+        except WorkspaceRpcError as error:
+            failure = str(error)
         except Exception as error:
             failure = f"Invalid agent protocol: {type(error).__name__}"
         finally:

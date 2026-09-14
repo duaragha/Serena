@@ -23,6 +23,8 @@ for line in sys.stdin:
         emit({'id':msg['id'], 'result':{'turnId':'turn'}})
     elif method == 'ping':
         emit({'id':msg['id'], 'result':msg['params']})
+    elif method == 'large':
+        emit({'id':msg['id'], 'result':{'text':'x' * msg['params']['size']}})
     elif method == 'resolve':
         emit({'method':'serverRequest/resolved', 'params':{'requestId':'approval'}})
         emit({'id':msg['id'], 'result':{}})
@@ -38,6 +40,35 @@ for line in sys.stdin:
     elif 'result' in msg:
         emit({'method':'answerObserved', 'params':msg})
 """
+
+
+def test_large_history_response_preserves_framing_and_next_request(tmp_path):
+    async def run():
+        rpc = WorkspaceRpc()
+        await rpc.start([sys.executable, '-u', '-c', PEER], cwd=tmp_path, env=dict(os.environ))
+        try:
+            size = 17 * 1024 * 1024
+            result = await rpc.request('large', {'size': size})
+            assert len(result['text']) == size
+            assert result['text'] == 'x' * size
+            assert await rpc.request('ping', {'after': True}) == {'after': True}
+        finally:
+            await rpc.close()
+    asyncio.run(run())
+
+
+def test_oversized_response_reports_explicit_limit_and_closes_pending_request(tmp_path):
+    async def run():
+        rpc = WorkspaceRpc()
+        rpc.MAX_MESSAGE_BYTES = 1024
+        await rpc.start([sys.executable, '-u', '-c', PEER], cwd=tmp_path, env=dict(os.environ))
+        try:
+            with pytest.raises(WorkspaceRpcError, match='message limit'):
+                await rpc.request('large', {'size': 2048})
+            assert not rpc._pending
+        finally:
+            await rpc.close()
+    asyncio.run(run())
 
 
 def test_idle_pause_wakes_same_child_before_rpc_and_close(tmp_path):
