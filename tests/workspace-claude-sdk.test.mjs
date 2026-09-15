@@ -35,6 +35,18 @@ test('usage control reads the existing stream without spawning another process',
   }finally{await f.session.close();}
 });
 
+test('resume accepts a session whose first turn ran outside this project', async()=>{
+  // A chat that began elsewhere and later moved projects still lives in this
+  // project's transcript directory; its origin cwd must not lock it out.
+  const f=fixture({getSessionInfo:async()=>({sessionId:'exact',cwd:'/home/someone'})});
+  try {
+    await f.session.open();
+    assert.equal(f.setup.options.resume,'exact');
+    assert.equal(f.setup.options.cwd,resolve('/project'));
+    assert.deepEqual(f.calls,['spawn']);
+  } finally {f.stream.close();}
+});
+
 test('resume finds the original transcript while retaining the latest working directory', async()=>{
   const seen=[];
   const f=fixture({getSessionInfo:async(sid,options)=>{
@@ -308,7 +320,7 @@ test('explicit exact resume, one spawn, inputs and public controls',async()=>{
 });
 
 test('missing or mismatched session never spawns',async()=>{
-  for(const info of [undefined,{sessionId:'other'},{sessionId:'exact',cwd:'/wrong'}]) {
+  for(const info of [undefined,{sessionId:'other'}]) {
     const f=fixture({getSessionInfo:async()=>info});
     await assert.rejects(f.session.open(),/unavailable/);
     assert.deepEqual(f.calls,[]);

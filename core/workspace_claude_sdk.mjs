@@ -1,16 +1,6 @@
 /** Public SDK boundary. Caller owns admission, session lease and child reaping. */
-import {isAbsolute, resolve} from 'node:path';
+import {resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {realpath} from 'node:fs/promises';
-
-async function sameProject(candidate, owned) {
-  if(typeof candidate!=='string' || !isAbsolute(candidate))return false;
-  const normalized=resolve(candidate);
-  if(normalized===owned)return true;
-  if(process.platform!=='win32' || normalized.toLowerCase()!==owned.toLowerCase())return false;
-  try{return await realpath(normalized)===await realpath(owned);}
-  catch{return false;}
-}
 
 export class ClaudeSdkSession {
   constructor({sdk, sessionId, cwd, sessionDirectory=cwd, options, spawnOwned, publish, request}) {
@@ -46,7 +36,10 @@ export class ClaudeSdkSession {
     try {
       const info=await this.sdk.getSessionInfo(this.sessionId,{dir:this.sessionDirectory});
       if (create && info) throw new Error('Creation identity already exists; refusing overwrite');
-      if (!create && (!info || info.sessionId!==this.sessionId || (info.cwd && !await sameProject(info.cwd,this.sessionDirectory)))) {
+      // getSessionInfo is scoped to the owned project's transcript directory, so
+      // finding the session there is the project proof. info.cwd records where the
+      // session first ran, which a long-lived chat outlives once it moves projects.
+      if (!create && (!info || info.sessionId!==this.sessionId)) {
         throw new Error('Exact persisted session is unavailable in this project');
       }
       if (this.state!=='opening') throw new Error('Session opening was cancelled');
