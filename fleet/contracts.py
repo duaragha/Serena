@@ -118,11 +118,13 @@ def build_work_unit_contracts(
             if activity == "coding"
             else []
         )
-        dependencies = tuple(
+        dependencies = tuple(dict.fromkeys([
             candidate
             for candidate in primary_ids
             if synthetic and candidate != identifier
-        )
+        ] + list(item.get("dependency_ids") or []) + re.findall(
+            r"\bdepends\s+on\s+(ws-\d+)\b", description, re.IGNORECASE
+        )))
         file_mode = (
             "declare_before_edit"
             if declared_paths
