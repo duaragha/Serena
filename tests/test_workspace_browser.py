@@ -153,6 +153,31 @@ def test_navigation_projects_and_drafts_do_not_spawn(workspace):
     assert not errors
 
 
+def test_slow_persona_load_never_overwrites_a_draft_typed_before_it_lands(workspace):
+    """Every tab click reloads, and the first load has no dataset.saved to compare
+    against, so a response landing after the user typed used to replace the draft."""
+    page, calls, errors, _ = workspace
+    page.get_by_role("button", name="Tooling", exact=True).first.click()
+    # Let the tab's own load settle first; otherwise it, not the gated one, wins.
+    page.wait_for_function("document.getElementById('toolingText').value==='Tooling content'")
+    page.evaluate("""()=>{
+      const ta=document.getElementById('toolingText');
+      ta.value='';delete ta.dataset.saved;delete ta.dataset.loaded;
+      let open;window._release=()=>open();
+      const gate=new Promise(done=>{open=done;}),real=window.fetch;
+      window.fetch=(url,init)=>String(url).includes('/api/persona-files')
+        ? gate.then(()=>({json:async()=>({persona:'Persona content',tooling:'Tooling content',voice:'Voice content'})}))
+        : real(url,init);
+      loadPersona();
+    }""")
+    page.locator("#toolingText").fill("Unsaved tooling draft")
+    page.evaluate("window._release()")
+    page.wait_for_timeout(200)
+    assert page.locator("#toolingText").input_value() == "Unsaved tooling draft"
+    assert not any(path == "/api/spawn-terminal" for path, _ in calls)
+    assert not errors
+
+
 def test_mockup_proportions_ignore_legacy_sizes_and_keep_new_resize(workspace):
     page, calls, errors, _ = workspace
     page.evaluate("localStorage.setItem('serena.paneSizes.v1', JSON.stringify({'chats-w':'20%', 'files-w':'9%'}))")

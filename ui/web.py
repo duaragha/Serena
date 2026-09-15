@@ -3139,7 +3139,7 @@ body.pane-dragging * {
       <div class="settings-wrap">
         <div class="settings-topbar">
           <div class="settings-title">Persona &amp; Tooling</div>
-          <button class="tab-action" onclick="loadPersona()">Reload</button>
+          <button class="tab-action" onclick="loadPersona(true)">Reload</button>
         </div>
         <div class="persona-hint">
           Both files are baked into every claude chat's system prompt on spawn.
@@ -3312,14 +3312,21 @@ const _personaPanes = {
   voice:   { text: 'voiceText',   status: 'voiceStatus' },
 };
 
-function loadPersona() {
+function loadPersona(force) {
   fetch('/api/persona-files').then(r => r.json()).then(d => {
     for (const [key, ids] of Object.entries(_personaPanes)) {
       const ta = document.getElementById(ids.text);
+      // Every tab click reloads, so an already-loaded pane must keep what it has:
+      // a response still in flight would otherwise land on top of later typing.
+      // Only Reload re-applies server content.
+      if (!force && ta.dataset.loaded === '1') continue;
       // Navigating between Persona and Tooling must not discard either draft.
-      if (ta.dataset.saved !== undefined && ta.value !== ta.dataset.saved) continue;
+      // Before the first load dataset.saved is unset, so compare against the
+      // empty box the draft was typed into or a slow fetch overwrites it.
+      if (ta.value !== (ta.dataset.saved ?? '')) continue;
       ta.value = d[key] || '';
       ta.dataset.saved = ta.value;
+      ta.dataset.loaded = '1';
       document.getElementById(ids.status).textContent = '';
     }
   }).catch(e => {
