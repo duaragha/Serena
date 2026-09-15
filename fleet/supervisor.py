@@ -1703,9 +1703,9 @@ def serve_forever(
                 store.flush_control_outbox()
             next_control_flush = monotonic_now + CONTROL_PLANE_FLUSH_SECONDS
         if monotonic_now >= next_capacity_probe:
-            from fleet.resources import resume_ready_resource_waits
-            from fleet.ready_resume import resume_ready_input_runs
             from fleet.integration_recovery import resume_saved_integrations
+            from fleet.ready_resume import resume_ready_input_runs
+            from fleet.resources import resume_ready_resource_waits
 
             with suppress(Exception):
                 resume_ready_resource_waits(store)
@@ -2526,6 +2526,10 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
             peer_token=peer_token,
             fleet_db_path=str(store.path),
         )
+        from fleet.worker_runtime import preflight
+        receipt = preflight(request)
+        store.append_event(run_id, "worker.runtime_preflight", receipt,
+                           leg_id=str(leg["leg_id"]), attempt_id=str(attempt["attempt_id"]))
     except Exception as exc:
         monitor.stop()
         result = WorkerResult(
@@ -2774,6 +2778,7 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
                 else None
             ),
             input_blocker_reason=verdict.summary() if verdict is not None and verdict.terminal_stop else None,
+            dependency_verdict=verdict,
         )
         _wake_pending_integrations_after_terminal(store, snapshot, leg)
     finally:
@@ -3577,7 +3582,12 @@ def _worker_prompt(
             "Own only your assigned surface, re-read each file "
             "immediately before a narrow edit, preserve earlier team changes, and never reset, "
             "revert, checkout, or overwrite a conflict. If a safe merge is unclear, leave that file "
-            "intact and report the conflict. Implement and verify real work."
+            "intact and report the conflict. Implement and verify real work. "
+            "Fleet owns Git staging, commits, and integration in this managed worktree. "
+            "Do not git add/commit or change shared Git metadata; leave your tested patch for Fleet. "
+            "Tests use the private TMPDIR and SERENA_CONTROL_PLANE_DB_PATH / "
+            "SERENA_NOTIFICATION_DB_PATH supplied in your environment. Do not replace them with "
+            "operator database paths. Prefer .venv/bin/python -m pytest when that interpreter exists."
         ),
         "review": review_access,
         "verify": "Verify independently with relevant tests and inspection. Do not intentionally edit source files.",

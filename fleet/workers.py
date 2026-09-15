@@ -118,11 +118,17 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
             f'model_reasoning_effort="{request.effort}"',
             "-c",
             'approval_policy="never"',
-            "--sandbox",
-            _codex_sandbox(request.access_mode),
         ]
+        if request.access_mode == "write":
+            base += ["--sandbox", _codex_sandbox(request.access_mode)]
+        else:
+            from fleet.worker_runtime import read_sandbox_flags
+            base += read_sandbox_flags(request)
         if request.phase == "discover" or request.activity == "research":
             base += ["--enable", "standalone_web_search"]
+        if request.access_mode == "write":
+            from fleet.worker_runtime import runtime_directory
+            base += ["--add-dir", str(runtime_directory(request))]
         # Account gateways stay read-leg-only. Attempt-scoped peer tools are
         # separate and cannot grant filesystem or account-write authority.
         base += codex_read_mcp_flags(request.access_mode)
@@ -1185,6 +1191,9 @@ def _worker_environment(request: WorkerRequest | None = None) -> dict[str, str]:
     environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     environment["SERENA_FLEET_WORKER"] = "1"
     environment.pop("SERENA_FLEET_PEER_TOKEN", None)
+    if request is not None:
+        from fleet.worker_runtime import prepare_runtime
+        environment.update(prepare_runtime(request))
     if request and request.provider == "gemini":
         for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
                     "GEMINI_BASE_URL", "AGY_ADC_AUTH"):

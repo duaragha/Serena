@@ -75,3 +75,74 @@ def test_explicit_static_dependency_is_validated_before_dispatch():
     with pytest.raises(ValueError):
         build_policy("coding", "tasks:\n- scheduler depends on ws-2\n- queue depends on ws-1",
                      config=builtin_config(), worker_count=2)
+
+
+def _park_pair(team):
+    store, run, peers, research, _ = team
+    for attempt in research:
+        store.finish_attempt(attempt["attempt_id"], state="completed", session_id="preserved-research")
+    code = store.get_run(run["run_id"])["phases"][1]["legs"]
+    for index in (0, 1):
+        attempt = store.begin_attempt(code[index]["leg_id"])
+        token = peers.issue(run["run_id"], code[index], attempt["attempt_id"])
+        marker = declare_dependency(peers, token, f"ws-{index + 1}", "ws-3", "missing queue")["stop_condition"]
+        verdict = SimpleNamespace(terminal_stop=True, units=[SimpleNamespace(
+            unit_id=f"ws-{index + 1}", claimed_status="blocked", stop_condition=marker)])
+        store.finish_attempt(attempt["attempt_id"], state="failed", exit_code=0,
+                             input_blocker_reason=marker, dependency_verdict=verdict)
+    return code
+
+
+def test_dependency_wait_preserves_receipts_and_resumes_once(dependency_team):
+    store, run, peers, research, _ = dependency_team
+    code = _park_pair(dependency_team)
+    snapshot = store.get_run(run["run_id"])
+    assert [leg["state"] for leg in snapshot["phases"][1]["legs"][:2]] == ["waiting_for_dependencies"] * 2
+    with pytest.raises(RuntimeError, match="not yet integrated"):
+        store.begin_attempt(code[0]["leg_id"])
+    upstream = store.begin_attempt(code[2]["leg_id"])
+    store.finish_attempt(upstream["attempt_id"], state="completed")
+    ready = store.prepare_phase_runnable(run["run_id"], 1)
+    assert set(ready["runnable_leg_ids"]) == {code[0]["leg_id"], code[1]["leg_id"]}
+    retry = store.begin_attempt(code[0]["leg_id"])
+    assert retry["attempt_number"] == 2
+    token = peers.issue(run["run_id"], code[0], retry["attempt_id"])
+    marker = declare_dependency(peers, token, "ws-1", "ws-3", "still missing")["stop_condition"]
+    verdict = SimpleNamespace(terminal_stop=True, units=[SimpleNamespace(
+        unit_id="ws-1", claimed_status="blocked", stop_condition=marker)])
+    store.finish_attempt(retry["attempt_id"], state="failed", input_blocker_reason=marker, dependency_verdict=verdict)
+    final = store.get_run(run["run_id"])
+    assert final["phases"][1]["legs"][0]["state"] == "waiting_for_input"
+    assert [leg["current_attempt"]["attempt_id"] for leg in final["phases"][0]["legs"]] == [a["attempt_id"] for a in research]
+
+
+def test_cancelled_dependency_wait_never_wakes(dependency_team):
+    store, run, _, _, _ = dependency_team
+    _park_pair(dependency_team)
+    store.request_cancel(run["run_id"])
+    from fleet.ready_resume import resume_ready_input_runs
+    assert resume_ready_input_runs(store) == []
+    with pytest.raises(RuntimeError, match="cancellation"):
+        store.begin_attempt(store.get_run(run["run_id"])["phases"][1]["legs"][0]["leg_id"])
+
+
+def test_resident_probe_wakes_only_verified_dependency_work(dependency_team):
+    from fleet.ready_resume import resume_ready_input_runs
+    store, run, _, _, _ = dependency_team
+    code = _park_pair(dependency_team)
+    store.resolve_phase_failure(run["run_id"], "execute", "work stopped before completion: dependency")
+    assert resume_ready_input_runs(store) == []
+    upstream = store.begin_attempt(code[2]["leg_id"])
+    store.finish_attempt(upstream["attempt_id"], state="completed")
+    assert resume_ready_input_runs(store) == [run["run_id"]]
+    assert resume_ready_input_runs(store) == []
+    snapshot = store.get_run(run["run_id"])
+    assert snapshot["state"] == "queued"
+    assert [leg["state"] for leg in snapshot["phases"][1]["legs"]] == ["queued", "queued", "completed"]
+
+
+def test_declaration_is_idempotent_per_attempt(dependency_team):
+    store, run, peers, _, tokens = dependency_team
+    for _ in range(3):
+        declare_dependency(peers, tokens[0], "ws-1", "ws-3", "queue")
+    assert len([e for e in store.events(run["run_id"]) if e["type"] == "worker.dependency_declared"]) == 1
