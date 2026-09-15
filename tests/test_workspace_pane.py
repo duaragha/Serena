@@ -943,6 +943,37 @@ def test_goal_requires_confirmation_preserves_draft_and_recovers_failure(pane, w
     assert not errors
 
 
+def test_goal_dialog_keeps_a_status_codex_reports_but_the_pane_cannot_set(pane):
+    """Codex also reports blocked/usageLimited/budgetLimited; a select that omits
+    them silently clears its own value and dead-ends Apply on validation."""
+    page, errors = pane
+    page.evaluate("""()=>{
+      window.goal={threadId:'exact',objective:'Existing objective',status:'blocked',tokenBudget:null,tokensUsed:10,timeUsedSeconds:3};
+      controls.goal=async()=>({goal});
+      controls.updateGoal=async(changes,expected)=>{calls.push(['update',changes,expected]);return {goal:{...goal,...changes}};};
+      controls.clearGoal=async()=>({goal:null});
+      const Pane=pane.constructor;pane.dispose();
+      window.pane=new Pane(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]}}});pane.input.value='/goal';pane.render();
+    }""")
+    page.locator('#left textarea').press('Enter')
+    dialog = page.get_by_role('dialog', name='Session goal', exact=True)
+    mode = dialog.get_by_role('combobox', name='Goal status')
+    playwright.expect(mode).to_have_value('blocked')
+    apply = dialog.get_by_role('button', name='Apply', exact=True)
+    dialog.get_by_role('checkbox').check()
+    apply.click()
+    # Applying an unchanged blocked status is a no-op, not a validation dead end.
+    dialog.get_by_text('No changes', exact=True).wait_for()
+    assert page.evaluate('calls') == []
+    mode.select_option('active')
+    dialog.get_by_role('checkbox').check()
+    apply.click()
+    dialog.get_by_text('active / 10 tokens / 3s', exact=True).wait_for()
+    assert page.evaluate('calls[0][1]') == {'status': 'active'}
+    assert not errors
+
+
 @pytest.mark.parametrize('width', [390, 1600])
 def test_typed_goal_commands_use_exact_native_state_and_never_become_prompts(pane, width):
     page, errors = pane
