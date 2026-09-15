@@ -170,10 +170,14 @@ class AntigravityWorkspace:
             return result
 
     async def list_commands(self):
-        result = json.loads(await self._metadata('--print', '/help', '--output-format', 'json'))
+        help_output, skills_output = await asyncio.gather(
+            self._metadata('--print', '/help', '--output-format', 'json'),
+            self._metadata('--print', '/skills', '--output-format', 'json'),
+        )
+        result = json.loads(help_output)
         # Native CLI control commands cannot run inside stream-json. Skills can.
         commands = result.get('command', {}).get('data', {}).get('commands', [])
-        skills = json.loads(await self._metadata('--print', '/skills', '--output-format', 'json'))
+        skills = json.loads(skills_output)
         return {'data': [c for c in commands if c.get('name') in {'help', 'skills', 'usage', 'config', 'model', 'effort'}]
                 + [{'name': s['name'], 'description': s.get('description', '')}
                    for s in skills.get('command', {}).get('data', {}).get('skills', []) if isinstance(s.get('name'), str)]}

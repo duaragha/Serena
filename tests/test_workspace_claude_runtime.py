@@ -46,3 +46,14 @@ def test_explicit_runtime_location_and_node_are_honored(monkeypatch, tmp_path):
     assert calls == [("/packaged/node", "/known")]
     with pytest.raises(RuntimeError, match="Node runtime"):
         runtime_paths(root=tmp_path, env={"SERENA_WORKSPACE_NODE": "/missing"})
+
+
+def test_standalone_sidecar_builds_include_sdk_and_validate_runtime():
+    root = Path(__file__).resolve().parents[1]
+    linux = (root / 'apps/desktop/scripts/build-sidecar.sh').read_text()
+    windows = (root / 'apps/desktop/windows/sidecar-win.spec').read_text()
+    entry = (root / 'apps/desktop/sidecar.py').read_text()
+    assert '--add-data "$repo_root/runtimes/claude-sdk:runtimes/claude-sdk"' in linux
+    assert '(REPO_ROOT / "runtimes" / "claude-sdk", "runtimes/claude-sdk")' in windows
+    check = entry.split('"--workspace-runtime-check"]:', 1)[1].split('raise SystemExit(0)', 1)[0]
+    assert 'runtime_paths()' in check

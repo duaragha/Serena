@@ -10,6 +10,53 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_codex_release_context_has_cumulative_total(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.evaluate("""()=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'thread/tokenUsage/updated',params:{tokenUsage:{last:{totalTokens:2000,inputTokens:1500,outputTokens:500},total:{totalTokens:999999},modelContextWindow:10000}}});
+    }""")
+    page.locator('#left').get_by_role('button',name='Context breakdown',exact=True).click()
+    dialog=page.get_by_role('dialog',name='Context breakdown')
+    playwright.expect(dialog).to_contain_text('999,999')
+    playwright.expect(dialog).to_contain_text('20.0% used')
+    assert dialog.locator('progress').evaluate('el=>el.value') == 20
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.screenshot(path=str(tmp_path / f'release-context-{width}.png'))
+    assert not errors
+
+
+@pytest.mark.parametrize('provider', ['Claude', 'Codex'])
+def test_new_chats_remember_explicit_provider_model_and_effort(pane, provider):
+    page, errors = pane
+    result = page.evaluate("""provider=>{
+      const chosen=provider==='Claude'?'claude-opus-5':'gpt-6-astra';
+      const models=[{model:'configured',defaultReasoningEffort:'high'},
+        {model:chosen,defaultReasoningEffort:'medium'}].map(m=>({...m,
+          supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort}))}));
+      function open(name,turns=[]){
+        pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:name,controls});window.seq=0;
+        emit({method:'workspace/history',params:{thread:{id:'exact',turns},model:'configured',reasoningEffort:'high'}});
+        emit({method:'workspace/models',params:{data:models}});pane.render();
+      }
+      open(provider);
+      pane.modelSelect.value=chosen;pane.modelSelect.dispatchEvent(new Event('change'));
+      pane.selectEffort('medium');pane.effortSelect.dispatchEvent(new Event('change'));
+      open(provider);const next=pane.turnOptions([]);
+      open(provider==='Claude'?'Codex':'Claude');const other=pane.turnOptions([]);
+      open(provider,[{id:'old',status:'completed',items:[]}]);const existing=pane.turnOptions([]);
+      open(provider);pane.selectEffort('low');pane.effortSelect.dispatchEvent(new Event('change'));
+      open(provider);return {next,other,existing,changed:pane.turnOptions([])};
+    }""", provider)
+    model = 'claude-opus-5' if provider == 'Claude' else 'gpt-6-astra'
+    assert result['next'] == {'model': model, 'effort': 'medium'}
+    assert result['other'] == result['existing'] == {}
+    assert result['changed'] == {'model': model, 'effort': 'low'}
+    assert not errors
+
+
 @pytest.mark.parametrize('provider', ['Claude', 'Codex', 'Gemini'])
 @pytest.mark.parametrize('width', [390, 1600])
 def test_activity_animation_tracks_work_and_connection(pane, provider, width, tmp_path):
@@ -28,6 +75,12 @@ def test_activity_animation_tracks_work_and_connection(pane, provider, width, tm
     assert status.evaluate("el=>getComputedStyle(el,'::before').transform") != before
     tool = page.locator('#left .aw-tool-running')
     assert tool.evaluate("el=>getComputedStyle(el,'::before').animationName") == 'aw-working'
+    page.evaluate("emit({method:'item/started',params:{turnId:'busy',item:{id:'thought',type: pane.provider === 'Claude' ? 'claudeThinking' : 'reasoning'}}})")
+    thought = page.locator('#left summary').filter(has_text='Thinking')
+    playwright.expect(thought.locator('.aw-tool-running')).to_be_visible()
+    assert thought.locator('.aw-tool-running').evaluate("el=>getComputedStyle(el,'::before').animationName") == 'aw-working'
+    page.evaluate("emit({method:'item/completed',params:{turnId:'busy',item:{id:'thought',type: pane.provider === 'Claude' ? 'claudeThinking' : 'reasoning'}}})")
+    playwright.expect(thought.locator('.aw-tool-running')).to_have_count(0)
     page.screenshot(path=str(tmp_path / f'activity-{provider}-{width}.png'))
     page.evaluate('pane.setConnectionHealthy(false)')
     playwright.expect(page.locator('#left .aw-state')).to_contain_text('connection lost')
@@ -288,6 +341,28 @@ def test_active_turn_elapsed_timer_ticks_and_stops(pane, width, tmp_path):
     page.evaluate("emit({method:'turn/completed',params:{turn:{id:'timed',status:'completed'}}})")
     playwright.expect(timer).to_be_hidden()
     assert not errors
+def test_command_typing_shares_lookup_and_filters_cached_catalog(pane):
+    page, errors = pane
+    page.evaluate("""()=>{
+      window.lookups=0;controls.commands=()=>{lookups++;return new Promise(resolve=>window.resolveCommands=resolve);};
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Gemini',controls});
+    }""")
+    composer=page.locator('#left textarea').first
+    for value in ['/', '/u', '/us', '/usage']:
+        composer.fill(value)
+    assert page.evaluate('lookups') == 1
+    page.evaluate("resolveCommands({data:[{name:'usage',description:'Usage'},{name:'model',description:'Model'}]})")
+    choices=page.get_by_role('listbox',name='Command and skill suggestions')
+    playwright.expect(choices.get_by_role('option')).to_have_count(1)
+    composer.fill('/model')
+    playwright.expect(choices.get_by_role('option')).to_contain_text('/model')
+    assert page.evaluate('lookups') == 1
+    composer.press('Tab')
+    assert composer.input_value() == '/model '
+    assert page.evaluate('calls') == []
+    assert not errors
+
+
 def test_inline_suggestions_ignore_stale_lookup_and_never_send_while_loading(pane):
     page, errors = pane
     page.evaluate("""()=>{controls.commands=()=>new Promise(resolve=>window.resolveCommands=resolve);}""")

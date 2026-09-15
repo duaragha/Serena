@@ -8,6 +8,14 @@ export function installCommandSuggestions({input,form,provider,load,choose,persi
   list.setAttribute('role','listbox');list.setAttribute('aria-label','Command and skill suggestions');
   panel.append(status,list);form.append(panel);
   let generation=0,active=null,items=[],selected=0,loading=false;
+  let catalogCache=null,catalogRequest=null,cacheTime=0;
+  const catalog=()=>{
+    if(catalogCache && Date.now()-cacheTime<60000)return Promise.resolve(catalogCache);
+    if(!catalogRequest)catalogRequest=Promise.resolve().then(load).then(value=>{
+      catalogCache=value;cacheTime=Date.now();return value;
+    }).finally(()=>{catalogRequest=null;});
+    return catalogRequest;
+  };
   const token=()=>{
     if(document.activeElement!==input || input.selectionStart!==input.selectionEnd)return null;
     const end=input.selectionStart,text=input.value;
@@ -37,10 +45,10 @@ export function installCommandSuggestions({input,form,provider,load,choose,persi
     const request=generation;loading=true;panel.hidden=false;status.textContent='Loading...';list.replaceChildren();
     input.setAttribute('aria-controls',list.id);
     try {
-      const catalog=await load();
+      const entries=await catalog();
       if(request!==generation || !same(token()))return;
       input.setAttribute('aria-controls',list.id);
-      items=catalog.filter(item=>!item.unavailableReason && (active.prefix==='$'?item.kind==='skill':item.kind!=='skill')
+      items=entries.filter(item=>!item.unavailableReason && (active.prefix==='$'?item.kind==='skill':item.kind!=='skill')
         && `${item.name} ${item.description || ''}`.toLowerCase().includes(active.query)).slice(0,30);
       loading=false;selected=0;status.textContent=items.length?'':'No matching suggestions';
       for(const [index,item] of items.entries()){
@@ -55,6 +63,7 @@ export function installCommandSuggestions({input,form,provider,load,choose,persi
   input.addEventListener('input',event=>{if(event.isComposing)close();else update();},{signal:lifetime.signal});
   input.addEventListener('click',update,{signal:lifetime.signal});
   input.addEventListener('blur',close,{signal:lifetime.signal});
+  input.addEventListener('focus',()=>{catalog().catch(()=>{});},{signal:lifetime.signal});
   input.addEventListener('keydown',event=>{
     if(!active || event.isComposing || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey)return;
     if(!same(token()))return close();

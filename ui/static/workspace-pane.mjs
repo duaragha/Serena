@@ -184,7 +184,13 @@ export class WorkspacePane {
     this.tierSelect = node('select', 'aw-effort-select');
     this.tierSelect.setAttribute('aria-label', 'Speed tier'); this.tierSelect.title = 'Speed tier'; this.tierSelect.hidden = true;
     this.modelSelect.hidden = this.effortSelect.hidden = true;
-    this.modelSelect.addEventListener('change', () => this.renderEfforts(true));
+    this.modelSelect.addEventListener('change', () => {
+      const effort=this.effortSelect.value || this.effortSelect.selectedOptions[0]?.textContent;
+      this.renderEfforts(true);
+      this.selectEffort(effort);
+      this.persistModelPreference();
+    });
+    this.effortSelect.addEventListener('change', () => this.persistModelPreference());
     this.stop = this.button('Interrupt turn', 'square', () => this.interrupt());
     this.stop.title = 'Interrupt turn (Escape)';
     this.stop.setAttribute('aria-keyshortcuts','Escape');
@@ -1979,6 +1985,7 @@ export class WorkspacePane {
       totalTokens:total, maxTokens:window,
       percentage:Math.min(100,total/window*100),
       caption:'Measured on the most recent request.',
+      cumulativeTokens:Number.isSafeInteger(usage?.total?.totalTokens) && usage.total.totalTokens>=0 ? usage.total.totalTokens : null,
       categories:[
         {name:'Cached input',tokens:cached},
         {name:'New input',tokens:Math.max(0,input-cached)},
@@ -2006,7 +2013,11 @@ export class WorkspacePane {
         if(usage.caption)content.append(node('p','aw-context-caption',usage.caption));
         const progress=node('progress');progress.max=100;progress.value=Math.min(100,usage.percentage);progress.setAttribute('aria-label','Context used');content.append(progress);
         const list=node('dl');
+        if(this.provider==='Codex'){
+          list.append(node('dt','','Chat total (cumulative)'),node('dd','',usage.cumulativeTokens===null?'Not reported':usage.cumulativeTokens.toLocaleString()));
+        }
         for(const category of usage.categories){list.append(node('dt','',category.name+(category.isDeferred?' (deferred)':'')),node('dd','',category.tokens.toLocaleString()));}
+        if(this.provider==='Codex')content.append(node('p','aw-context-caption','Cumulative usage includes repeated input across requests, not just the saved transcript.'));
         content.append(list);status.textContent=`${usage.percentage.toFixed(1)}% used`;
       }catch(error){if(dialog.open){content.replaceChildren();status.textContent=error.message;}}
       finally{busy=false;refresh.disabled=false;}
@@ -2517,6 +2528,8 @@ export class WorkspacePane {
     if(skills.length)options.skills=skills.map(skill=>skill.path);
     if(this.modelSelect.value)options.model=this.modelSelect.value;
     if(this.effortSelect.value)options.effort=this.effortSelect.value;
+    else if(this.modelSelect.value && !this.effortSelect.hidden && this.effortSelect.selectedOptions[0]?.textContent)
+      options.effort=this.effortSelect.selectedOptions[0].textContent;
     if(!this.tierSelect.hidden && this.tierSelect.value)options.serviceTier=this.tierSelect.value==='__default'?null:this.tierSelect.value;
     return options;
   }
@@ -2738,9 +2751,22 @@ export class WorkspacePane {
     this.refreshIcons();
   }
 
+  persistModelPreference() {
+    const model=this.catalogModel(this.modelSelect.value || this.conversation.metadata.model);
+    if(!model)return;
+    const preference={model:model.claudeCapabilities?.resolvedModel || model.model,
+      effort:this.effortSelect.value || this.effortSelect.selectedOptions[0]?.textContent || ''};
+    try{window.localStorage.setItem(`serena-workspace-model:${this.provider.toLowerCase()}`,JSON.stringify(preference));}catch{}
+  }
+
+  selectEffort(effort) {
+    const option=[...this.effortSelect.options].find(option=>(option.value || option.textContent)===effort);
+    if(option)this.effortSelect.value=option.value;
+  }
+
   renderModelControls() {
     const models = this.conversation.models;
-    const signature = JSON.stringify([models, this.conversation.metadata.model, this.conversation.metadata.reasoningEffort, this.conversation.metadata.serviceTier]);
+    const signature = JSON.stringify([models, this.conversation.metadata.model, this.conversation.metadata.reasoningEffort, this.conversation.metadata.serviceTier,!!this.conversation.metadata.thread]);
     if (this.modelSignature === signature) return;
     this.modelSignature = signature;
     if (Object.hasOwn(this.conversation.metadata, 'model')) this.modelLabel.textContent = this.conversation.metadata.model || 'Model unavailable';
@@ -2765,6 +2791,23 @@ export class WorkspacePane {
       ? selected : (choices.get(labelKey(selectedName)) ?? '');
     this.modelSelect.hidden = !models.length;
     this.renderEfforts(false);
+    if(!this.modelPreferenceLoaded && models.length && this.conversation.metadata.thread){
+      this.modelPreferenceLoaded=true;
+      if(!this.conversation.turns.size){
+        try{
+          const saved=JSON.parse(window.localStorage.getItem(`serena-workspace-model:${this.provider.toLowerCase()}`) || 'null');
+          const preferred=this.catalogModel(saved?.model);
+          if(preferred && !preferred.hidden){
+            const value=preferred===current?'':preferred.model;
+            if([...this.modelSelect.options].some(option=>option.value===value)){
+              this.modelSelect.value=value;
+              this.renderEfforts(true);
+              this.selectEffort(saved.effort);
+            }
+          }
+        }catch{}
+      }
+    }
   }
 
   catalogModel(value) {
@@ -2855,7 +2898,9 @@ export class WorkspacePane {
       const parts = item.summary?.some(part => part) ? item.summary : item.content;
       const text = item.type === 'claudeThinking' ? item.text :
         (parts || []).map(part => typeof part === 'string' ? part : part?.text || '').join('\n');
-      detail.append(node('summary','','Thinking'),node('pre','aw-thinking',text || ''));
+      const summary=node('summary','','Thinking');
+      if(toolRunning(item))summary.append(toolStatus(item));
+      detail.append(summary,node('pre','aw-thinking',text || ''));
       entry.append(detail);
     } else if (item.type === 'acpPlan') {
       entry.append(node('div','aw-author','Plan'));

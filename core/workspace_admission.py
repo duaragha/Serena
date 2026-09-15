@@ -88,6 +88,14 @@ def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider
                 continue
             if _registered_other_runtime(process, sid):
                 continue
+            if provider == "codex" and not any(path.suffix == '.jsonl' for path in paths):
+                # A bare interactive launcher has no selected transcript. Sharing
+                # its working directory is not ownership of this saved session.
+                bare_native = len(argv) == 1 and Path(argv[0]).name.lower() in {"codex", "codex.exe"}
+                bare_wrapper = (len(argv) == 2 and Path(argv[0]).name.lower() in {"node", "node.exe"}
+                                and Path(argv[1]).name in {"codex", "codex.js"})
+                if (bare_native or bare_wrapper) and getattr(process, 'terminal', lambda: None)():
+                    continue
             switches = ("resume",) if provider == "codex" else (("--conversation",) if provider == "agy" else ("--resume", "-r"))
             explicit = next((value for value in switches if value in argv), None)
             if any(value.startswith(switch + "=") and value.split("=", 1)[1]
