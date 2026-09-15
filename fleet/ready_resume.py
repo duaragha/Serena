@@ -26,7 +26,19 @@ def resume_ready_input_runs(store) -> list[str]:
     resumed = []
     for run_id in ids:
         try:
-            if store.resume_ready_input_work(run_id, _ready_peer_review):
+            def ready(snapshot):
+                from fleet.dependencies import pending_wait, ready_fingerprint
+                review = _ready_peer_review(snapshot)
+                if review:
+                    return review
+                with store._connect() as db:
+                    for phase in snapshot["phases"]:
+                        for leg in phase["legs"]:
+                            if (leg["state"] == "queued" and pending_wait(db, leg["leg_id"])
+                                    and ready_fingerprint(db, leg["leg_id"])):
+                                return leg["leg_id"]
+                return None
+            if store.resume_ready_input_work(run_id, ready):
                 resumed.append(run_id)
         except Exception as error:
             # One malformed legacy run must not starve other ready work.

@@ -430,6 +430,11 @@ class PeerStore:
         return (
             "\nFleet peer tools (serena_peer): read_messages at start, before completion, and when blocked. "
             "Use send_message for informational findings; request_help for questions or blockers requiring an answer. "
+            "During Research, declare known implementation dependencies with declare_dependency(unit_id, dependency_id, reason). "
+            "Declare newly discovered dependencies during Code too, before reporting a missing peer API. "
+            "If a declared dependency is your only blocker, report status blocked with the exact stop_condition "
+            "returned by that tool. Fleet waits for verified peer integration, refreshes your preserved patch, "
+            "and resumes you. Never use that marker for credentials, approval, or unrelated failures. "
             "A reply or acknowledgement is not resolution: call resolve_request(message_id, resolved, reason) "
             "after checking whether the advice solved your request; unresolved requests escalate at their deadline. "
             "Use exact roster worker_key values. A service-owned read-only consultation can reply even "
