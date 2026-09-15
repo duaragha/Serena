@@ -49,6 +49,9 @@ from core.webhook_signing import (
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "webhook-ingress.sqlite3"
 MAX_BODY_BYTES = 256 * 1024
 MAX_DETAIL_CHARS = 1_000
+MAX_TASK_BODY_BYTES = 16_000
+MAX_TASK_TEXT_CHARS = 4_000
+MAX_TASK_PROJECT_CHARS = 512
 
 DECISIONS = ("accepted", "held", "rejected")
 
@@ -65,6 +68,7 @@ class WebhookRequest:
     body: bytes
     headers: dict[str, str]
     received_at: float
+    delivery_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +84,8 @@ class Route:
     handler: RouteHandler
     requires_approval: bool = False
     description: str = ""
+    validator: Callable[[dict[str, Any]], None] | None = None
+    max_body_bytes: int = MAX_BODY_BYTES
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +107,21 @@ class IngressResult:
 
 def _clean(value: object, limit: int = MAX_DETAIL_CHARS) -> str:
     return " ".join(str(value or "").split())[:limit]
+
+
+def _json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Refuse ambiguous duplicate keys before a brief can be approved."""
+
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _json_constant(value: str) -> None:
+    raise ValueError("non-finite JSON number")
 
 
 # A held delivery keeps its routing headers so approval can replay it faithfully,
@@ -172,6 +193,8 @@ class WebhookIngress:
         *,
         requires_approval: bool = False,
         description: str = "",
+        validator: Callable[[dict[str, Any]], None] | None = None,
+        max_body_bytes: int = MAX_BODY_BYTES,
     ) -> None:
         """Add one reviewed route. This is the only way a route can exist."""
 
@@ -180,11 +203,17 @@ class WebhookIngress:
             raise WebhookIngressError("a webhook route needs a name")
         if not callable(handler):
             raise WebhookIngressError("a webhook route needs a callable handler")
+        if validator is not None and not callable(validator):
+            raise WebhookIngressError("a webhook validator must be callable")
+        if not 0 < max_body_bytes <= MAX_BODY_BYTES:
+            raise WebhookIngressError("a webhook body limit must fit the ingress limit")
         self._routes[route] = Route(
             name=route,
             handler=handler,
             requires_approval=bool(requires_approval),
             description=_clean(description, 200),
+            validator=validator,
+            max_body_bytes=max_body_bytes,
         )
 
     @property
@@ -237,6 +266,12 @@ class WebhookIngress:
                 status=404,
             )
 
+        if len(raw) > registered.max_body_bytes:
+            return self._record(
+                delivery_id, name, raw, moment,
+                decision="rejected", reason="body is too large for this route", status=413,
+            )
+
         verified, why = verify_headers(
             raw,
             secret,
@@ -252,12 +287,15 @@ class WebhookIngress:
             )
 
         try:
-            parsed = json.loads(raw.decode("utf-8")) if raw else {}
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            parsed = json.loads(
+                raw.decode("utf-8"), object_pairs_hook=_json_object,
+                parse_constant=_json_constant,
+            ) if raw else {}
+        except (ValueError, RecursionError) as error:
             return self._record(
                 delivery_id, name, raw, moment,
                 decision="rejected",
-                reason=f"body is not valid JSON: {error}",
+                reason=f"body is not valid JSON: {type(error).__name__}",
                 status=400,
             )
         if not isinstance(parsed, dict):
@@ -265,6 +303,15 @@ class WebhookIngress:
                 delivery_id, name, raw, moment,
                 decision="rejected", reason="body must be a JSON object", status=400,
             )
+
+        if registered.validator is not None:
+            try:
+                registered.validator(parsed)
+            except ValueError as error:
+                return self._record(
+                    delivery_id, name, raw, moment,
+                    decision="rejected", reason=str(error), status=400,
+                )
 
         if registered.requires_approval:
             return self._record(
@@ -306,14 +353,19 @@ class WebhookIngress:
                 status=404,
                 moment=moment,
             )
-        try:
-            payload = json.loads(str(row["payload_json"] or "{}"))
-        except json.JSONDecodeError:
-            payload = {}
         # Replay what actually arrived. Dispatching an approved delivery with an
         # empty body would hand the handler a different request from the one
         # Raghav looked at and approved.
         raw = bytes(row["body_raw"] or b"")
+        try:
+            # payload_json is a bounded preview and may be truncated, especially
+            # for escaped Unicode. The exact retained bytes are authoritative.
+            payload = json.loads(raw if raw else str(row["payload_json"] or "{}"))
+        except (ValueError, RecursionError):
+            return self._finish(
+                delivery_id, decision="rejected", reason="stored body is not valid JSON",
+                status=400, moment=moment,
+            )
         try:
             stored_headers = json.loads(str(row["headers_json"] or "{}"))
         except json.JSONDecodeError:
@@ -384,7 +436,8 @@ class WebhookIngress:
         already_recorded: bool = False,
     ) -> IngressResult:
         request = WebhookRequest(
-            route=route.name, body=raw, headers=headers, received_at=moment
+            route=route.name, body=raw, headers=headers, received_at=moment,
+            delivery_id=delivery_id,
         )
         try:
             outcome = route.handler(payload, request)
@@ -614,6 +667,66 @@ def route_notify(payload: dict[str, Any], request: WebhookRequest) -> RouteOutco
     )
 
 
+def validate_task_payload(payload: dict[str, Any]) -> None:
+    """Bound the reviewed task schema before retaining anything for approval.
+
+    Hints are inert metadata, never commands or write paths. Operational state
+    and triage belong to the task store; an external caller cannot set them.
+    """
+
+    if set(payload) - {"text", "project", "repository", "priority"}:
+        raise ValueError("task payload contains unsupported fields")
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_TASK_TEXT_CHARS:
+        raise ValueError("task text must be a non-empty string of at most 4000 characters")
+    for field in ("text", "project", "repository"):
+        value = payload.get(field)
+        if value is None and field != "text":
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f"task {field} must be a string")
+        if field != "text" and (not value.strip() or len(value) > MAX_TASK_PROJECT_CHARS):
+            raise ValueError("task project hint must contain 1 to 512 characters")
+        # The queue uses line-oriented frontmatter. Reject its other Unicode
+        # separators and delimiter here too, before retaining a pending brief.
+        if field != "text" and ("---" in value or any(c in value for c in "\x85\u2028\u2029")):
+            raise ValueError("task project hint must fit one frontmatter line")
+        if any(ord(char) < 32 and (field != "text" or char not in "\n\r\t") for char in value):
+            raise ValueError(f"task {field} contains control characters")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValueError(f"task {field} must contain valid Unicode") from error
+    if payload.get("project") is not None and payload.get("repository") is not None:
+        raise ValueError("supply one project or repository hint, not both")
+    priority = payload.get("priority", "normal")
+    if not isinstance(priority, str) or priority not in ("low", "normal", "high", "critical"):
+        raise ValueError("task priority must be low, normal, high, or critical")
+
+
+def route_task(payload: dict[str, Any], request: WebhookRequest) -> RouteOutcome:
+    """Enqueue an approved phone brief through the durable task-store boundary.
+
+    The store owns triage and deduplicates delivery IDs under its write lock:
+    concurrent approvals and a crash after enqueue must not create two tasks.
+    add_memory is unsuitable because MemoryV2 may turn it into a proposal.
+    Fleet dispatch remains with the existing scheduler clock.
+    """
+
+    validate_task_payload(payload)
+    if not request.delivery_id:
+        raise ValueError("task enqueue requires a durable webhook delivery id")
+    from memory.store import enqueue_task
+
+    task = enqueue_task(
+        payload["text"].strip(),
+        project_hint=payload.get("project") or payload.get("repository"),
+        priority=payload.get("priority", "normal"),
+        source_id=f"webhook:{request.delivery_id}",
+    )
+    return RouteOutcome(True, f"queued task {task['id']} ({task['state']})")
+
+
 def default_ingress(**kwargs: Any) -> WebhookIngress:
     """An ingress with the reviewed routes already mounted."""
 
@@ -626,6 +739,11 @@ def default_ingress(**kwargs: Any) -> WebhookIngress:
         # kind of reach that should wait for him to say yes.
         requires_approval=True,
         description="ask Serena to pass a message along",
+    )
+    ingress.register(
+        "task", route_task, requires_approval=True,
+        description="queue a task brief after Raghav approves it",
+        validator=validate_task_payload, max_body_bytes=MAX_TASK_BODY_BYTES,
     )
     return ingress
 
