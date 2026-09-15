@@ -10,6 +10,24 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_codex_release_context_has_cumulative_total(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.evaluate("""()=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'thread/tokenUsage/updated',params:{tokenUsage:{last:{totalTokens:2000,inputTokens:1500,outputTokens:500},total:{totalTokens:999999},modelContextWindow:10000}}});
+    }""")
+    page.locator('#left').get_by_role('button',name='Context breakdown',exact=True).click()
+    dialog=page.get_by_role('dialog',name='Context breakdown')
+    playwright.expect(dialog).to_contain_text('999,999')
+    playwright.expect(dialog).to_contain_text('20.0% used')
+    assert dialog.locator('progress').evaluate('el=>el.value') == 20
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.screenshot(path=str(tmp_path / f'release-context-{width}.png'))
+    assert not errors
+
+
 @pytest.mark.parametrize('provider', ['Claude', 'Codex'])
 def test_new_chats_remember_explicit_provider_model_and_effort(pane, provider):
     page, errors = pane

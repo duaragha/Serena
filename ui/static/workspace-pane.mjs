@@ -1985,6 +1985,7 @@ export class WorkspacePane {
       totalTokens:total, maxTokens:window,
       percentage:Math.min(100,total/window*100),
       caption:'Measured on the most recent request.',
+      cumulativeTokens:Number.isSafeInteger(usage?.total?.totalTokens) && usage.total.totalTokens>=0 ? usage.total.totalTokens : null,
       categories:[
         {name:'Cached input',tokens:cached},
         {name:'New input',tokens:Math.max(0,input-cached)},
@@ -2012,7 +2013,11 @@ export class WorkspacePane {
         if(usage.caption)content.append(node('p','aw-context-caption',usage.caption));
         const progress=node('progress');progress.max=100;progress.value=Math.min(100,usage.percentage);progress.setAttribute('aria-label','Context used');content.append(progress);
         const list=node('dl');
+        if(this.provider==='Codex'){
+          list.append(node('dt','','Chat total (cumulative)'),node('dd','',usage.cumulativeTokens===null?'Not reported':usage.cumulativeTokens.toLocaleString()));
+        }
         for(const category of usage.categories){list.append(node('dt','',category.name+(category.isDeferred?' (deferred)':'')),node('dd','',category.tokens.toLocaleString()));}
+        if(this.provider==='Codex')content.append(node('p','aw-context-caption','Cumulative usage includes repeated input across requests, not just the saved transcript.'));
         content.append(list);status.textContent=`${usage.percentage.toFixed(1)}% used`;
       }catch(error){if(dialog.open){content.replaceChildren();status.textContent=error.message;}}
       finally{busy=false;refresh.disabled=false;}
