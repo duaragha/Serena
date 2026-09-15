@@ -70,6 +70,24 @@ test('streamed initial replay accepts split UTF-8 frames then switches to live p
   }finally{conn.dispose();}
 });
 
+test('large history frames split across small chunks preserve data and frame boundaries',async()=>{
+  const text='x'.repeat(12*1024*1024);
+  const payload=new TextEncoder().encode(JSON.stringify({events:[{sequence:1,event:{params:{text}}}]})+'\n'+
+    JSON.stringify({events:[{sequence:2,event:{params:{text:'next'}}}]})+'\n{"complete":true}\n');
+  const seen=[];
+  const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),streamReplay:true,
+    receive:e=>seen.push(e),error:()=>{},fetcher:async url=>url.includes('/replay?')
+      ? new Response(new ReadableStream({start(controller){
+        for(let i=0;i<payload.length;i+=4093)controller.enqueue(payload.subarray(i,i+4093));controller.close();
+      }}),{headers:{'Content-Type':'application/x-ndjson'}})
+      :response({events:[],has_more:false})});
+  try{
+    await conn.poll({required:true});
+    assert.equal(seen.length,2);assert.equal(seen[0].event.params.text,text);
+    assert.equal(seen[1].event.params.text,'next');assert.equal(conn.cursor,2);
+  }finally{conn.dispose();}
+});
+
 test('truncated replay retains only accepted events and retries without duplicating them',async()=>{
   let count=0;const received=[];
   const conn=new WorkspaceConnection({sessionId:'exact',token:'token',storage:storage(),streamReplay:true,

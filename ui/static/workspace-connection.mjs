@@ -110,7 +110,7 @@ export class WorkspaceConnection {
     if(!response.ok || !response.body || !response.headers.get('Content-Type')?.includes('application/x-ndjson'))
       throw Error(`Session replay failed (${response.status})`);
     const reader=response.body.getReader(), decoder=new TextDecoder();
-    let buffer='',complete=false;
+    let fragments=[],complete=false;
     const accept=line=>{
       const frame=JSON.parse(line);
       if(complete)throw Error('Unexpected data after session replay');
@@ -126,12 +126,17 @@ export class WorkspaceConnection {
       while(!this.stopped){
         const {done,value}=await reader.read();
         if(this.stopped)return;
-        buffer+=decoder.decode(value,{stream:!done});
-        let end;
-        while((end=buffer.indexOf('\n'))!==-1){accept(buffer.slice(0,end));buffer=buffer.slice(end+1);}
+        const chunk=decoder.decode(value,{stream:!done});
+        let start=0,end;
+        // Scan incoming chunks once; history frames can be many megabytes.
+        while((end=chunk.indexOf('\n',start))!==-1){
+          fragments.push(chunk.slice(start,end));
+          accept(fragments.join(''));fragments=[];start=end+1;
+        }
+        if(start<chunk.length)fragments.push(chunk.slice(start));
         if(done)break;
       }
-      if(!this.stopped && (!complete || buffer))throw Error('Session replay was interrupted; retry will continue from the last received event');
+      if(!this.stopped && (!complete || fragments.length))throw Error('Session replay was interrupted; retry will continue from the last received event');
     } finally {await reader.cancel();reader.releaseLock();}
   }
 
