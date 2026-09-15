@@ -9,12 +9,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import signal
 import sys
 from collections import deque
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 class WorkspaceRpcError(RuntimeError):
@@ -204,6 +207,7 @@ class WorkspaceRpc:
     async def _read(self) -> None:
         assert self.process and self.process.stdout
         failure = "Agent output pipe closed"
+        line = b""
         try:
             while line := await self._read_line():
                 message = json.loads(line)
@@ -229,7 +233,11 @@ class WorkspaceRpc:
         except WorkspaceRpcError as error:
             failure = str(error)
         except Exception as error:
-            failure = f"Invalid agent protocol: {type(error).__name__}"
+            # A bare class name cannot distinguish a malformed frame from an
+            # unexpected message shape; carry the reason and the offending line.
+            detail = str(error).strip() or type(error).__name__
+            failure = f"Invalid agent protocol: {detail}"
+            log.warning("workspace rpc rejected an agent message (%s): %.500r", detail, line)
         finally:
             self._failure = failure
             self._questions.clear()

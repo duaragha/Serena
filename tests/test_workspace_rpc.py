@@ -32,6 +32,8 @@ for line in sys.stdin:
         sys.exit(0)
     elif method == 'bad':
         print('not json', flush=True)
+    elif method == 'array':
+        emit([msg['id']])
     elif method == 'wait':
         pass
     elif method == 'noise':
@@ -275,6 +277,20 @@ def test_timeout_does_not_restart_or_cancel_agent(tmp_path):
             assert await rpc.request("ping", {"same": True}) == {"same": True}
             assert rpc.process.pid == pid
             assert not rpc._pending
+        finally:
+            await rpc.close()
+
+    asyncio.run(run())
+
+
+def test_protocol_failure_names_the_reason_not_the_exception_class(tmp_path):
+    """A bare class name cannot tell a malformed frame from a bad message shape."""
+    async def run():
+        rpc = WorkspaceRpc()
+        await rpc.start([sys.executable, "-u", "-c", PEER], cwd=tmp_path, env=dict(os.environ))
+        try:
+            with pytest.raises(WorkspaceRpcError, match="Expected a JSON-RPC object"):
+                await rpc.request("array", {}, timeout=5)
         finally:
             await rpc.close()
 
