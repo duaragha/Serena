@@ -1796,7 +1796,18 @@ export class WorkspacePane {
     const status=node('p','','Loading...');status.setAttribute('role','status');
     const objective=node('textarea');objective.setAttribute('aria-label','Goal objective');objective.maxLength=4000;
     const mode=node('select');mode.setAttribute('aria-label','Goal status');
-    for(const value of ['active','paused','complete']){const option=node('option','',value);option.value=value;mode.append(option);}
+    // Codex also reports blocked, usageLimited and budgetLimited, which this pane
+    // cannot set. Offer the current one as itself so the select still mirrors the
+    // native state instead of falling back to no selection at all.
+    const settable=['active','paused','complete'];
+    const modeOptions=current=>{
+      mode.replaceChildren();
+      for(const value of (current && !settable.includes(current) ? [current,...settable] : settable)){
+        const option=node('option','',settable.includes(value)?value:`${value} (current)`);
+        option.value=value;mode.append(option);
+      }
+    };
+    modeOptions(null);
     const budget=node('input');budget.type='number';budget.min='1';budget.step='1';budget.placeholder='Unlimited';budget.setAttribute('aria-label','Goal token budget');
     const confirm=node('input');confirm.type='checkbox';
     const label=node('label');label.append(confirm,document.createTextNode(' Confirm goal changes. A different objective resets usage accounting.'));
@@ -1809,7 +1820,7 @@ export class WorkspacePane {
     confirm.addEventListener('change',enable);
     const render=result=>{
       expected=result.goal;loaded=true;confirm.checked=false;
-      objective.value=expected?.objective || '';mode.value=expected?.status || 'paused';
+      objective.value=expected?.objective || '';modeOptions(expected?.status);mode.value=expected?.status || 'paused';
       budget.value=expected?.tokenBudget ?? '';
       status.textContent=expected?`${expected.status} / ${expected.tokensUsed} tokens / ${expected.timeUsedSeconds}s`:'No goal';
       enable();
