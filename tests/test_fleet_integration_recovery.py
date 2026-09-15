@@ -61,6 +61,9 @@ def _failed(tmp_path, monkeypatch, phase_index=3, failure_exit=2):
         "acceptance": [{"criterion": item, "met": True,
                         "evidence": "Updated core/alpha.py in the isolated checkout; git diff --check passed; peer files unchanged."}
                        for item in contract["acceptance_criteria"]],
+        "delivery": [{"requirement": item, "state": "verified",
+                      "evidence": "integrated into the base checkout and verified"}
+                     for item in contract.get("delivery_requirements") or []],
         "tests": [{"command": "git diff --check", "exit_code": 0}],
     }]}
     output = "Updated alpha in the isolated checkout and verified the patch; no external operations were performed.\n"

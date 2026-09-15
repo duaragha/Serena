@@ -2357,6 +2357,23 @@ class FleetStore:
             snapshot["retry_activated"] = False
             return snapshot
 
+    def wait_for_delivery(self, run_id: str, reason: str) -> dict[str, Any]:
+        """Park finalization without rewriting successful worker receipts."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = self._require_run(connection, run_id)
+            if run["cancel_requested"]:
+                return self._snapshot(connection, run_id)
+            connection.execute(
+                "UPDATE fleet_runs SET state='waiting_for_input', error=?, owner_pid=NULL, "
+                "owner_token=NULL, completed_at=NULL, updated_at=? WHERE run_id=?",
+                (reason, time.time(), run_id),
+            )
+            self._insert_event(connection, run_id=run_id, event_type="run.waiting_for_delivery",
+                               payload={"reason": reason, "state": "waiting_for_input",
+                                        "next_action": "verify outstanding delivery and submit coordinator receipts; completed agents need no retry"})
+            return self._snapshot(connection, run_id)
+
     def add_steering(self, run_id: str, message: str) -> dict[str, Any]:
         clean = redact_text(message)[0].strip()
         if not clean:

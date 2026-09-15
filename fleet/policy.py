@@ -949,12 +949,33 @@ def build_policy(
     return policy
 
 
+# A work unit's description is the only statement of what it must deliver, and
+# truncating it silently dropped requirements off the end of a long task: the
+# unit then completed honestly against the half of the scope that survived.
+# Raised, and every cut now says so in the text itself so a reader and a worker
+# can both see that something was removed.
+MAX_WORKSTREAM_CHARS = 16_000
+
+
+def _truncated(value: str, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    dropped = len(text) - limit
+    return (
+        text[:limit]
+        + f" [TRUNCATED: {dropped} characters of this scope were cut. Treat the "
+        "removed portion as unowned and record it as outstanding rather than "
+        "assuming it is out of scope.]"
+    )
+
+
 def _clean_workstream(value: object) -> str:
     clean = " ".join(str(value or "").strip().strip("; ").split())
     clean = clean.strip("*_` ")
     if not clean or _NON_WORKSTREAM.match(clean) or _PHASE_ONLY.fullmatch(clean):
         return ""
-    return clean[:4_000]
+    return _truncated(clean, MAX_WORKSTREAM_CHARS)
 
 
 def _workstream_title(description: str) -> str:
@@ -977,7 +998,7 @@ def _integration_workstream(
     else:
         description = (
             "Own architecture, integration, risk, and independent validation across the complete "
-            f"task: {' '.join(str(task or '').split())[:2_000]}"
+            f"task: {_truncated(task, MAX_WORKSTREAM_CHARS)}"
         )
     return WorkstreamPolicy(
         workstream_id=identifier,
@@ -1001,7 +1022,7 @@ def _build_workstream_plan(
         for index, description in enumerate(explicit, start=1)
     ]
     if not workstreams:
-        description = " ".join(str(task or "").split())[:4_000] or "complete the Fleet task"
+        description = _truncated(task, MAX_WORKSTREAM_CHARS) or "complete the Fleet task"
         workstreams.append(
             WorkstreamPolicy(
                 workstream_id="ws-1",

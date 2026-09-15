@@ -1062,6 +1062,22 @@ def _leg_research_activity(
     return totals
 
 
+def _run_worker_keys(snapshot: dict[str, Any]) -> list[str]:
+    """Every agent identity this run owns, for routing deferred delivery."""
+
+    keys: list[str] = []
+    for phase in snapshot.get("phases") or []:
+        if not isinstance(phase, dict):
+            continue
+        for leg in phase.get("legs") or phase.get("workers") or []:
+            if not isinstance(leg, dict):
+                continue
+            key = str(leg.get("worker_key") or "").strip()
+            if key and key not in keys:
+                keys.append(key)
+    return keys
+
+
 def evaluate_leg_completion(
     snapshot: dict[str, Any],
     leg: dict[str, Any],
@@ -1112,6 +1128,9 @@ def evaluate_leg_completion(
         research_depth=str(
             (snapshot.get("policy") or {}).get("research_depth") or "full"
         ).lower(),
+        # The agents actually in this run, so a deferral has to name one of
+        # them or "root" instead of addressing the work to nobody.
+        known_owners=_run_worker_keys(snapshot),
     )
     unsafe_cleanup = _event_log_unsafe_process_cleanup(event_log_path)
     if not unsafe_cleanup:
