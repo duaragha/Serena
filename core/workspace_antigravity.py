@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import hashlib
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -19,7 +20,7 @@ from core.workspace_rpc import WorkspaceRpc, WorkspaceRpcError
 class AntigravityStream(WorkspaceRpc):
     async def _read(self):
         try:
-            while line := await self.process.stdout.readline():
+            while line := await self._read_line():
                 data = json.loads(line)
                 if not isinstance(data, dict) or not isinstance(data.get('event'), str):
                     raise ValueError('Invalid Antigravity stream event')
@@ -53,6 +54,30 @@ class AntigravityWorkspace:
         self._mode = None
         self._background_possible = False
         self._last_result_error = None
+        self._error_baseline = set()
+        self._transcript_offset = 0
+        self._monitoring_lost = False
+
+    def _native_errors(self, *, after=0):
+        path = transcript_path(self.session_id)
+        errors = set()
+        if path is None:
+            return errors, 0
+        try:
+            with path.open('rb') as source:
+                if after > os.fstat(source.fileno()).st_size:
+                    return errors, 0
+                source.seek(after)
+                while line := source.readline():
+                    try:
+                        record = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if isinstance(record, dict) and record.get('type') == 'ERROR_MESSAGE' and isinstance(record.get('error'), str):
+                        errors.add(hashlib.sha256(record['error'].encode()).hexdigest())
+                return errors, source.tell()
+        except OSError:
+            return errors, 0
 
     async def event(self, method, params):
         await self.publish({'method': method, 'params': {'threadId': self.session_id, **params}})
@@ -76,7 +101,10 @@ class AntigravityWorkspace:
 
     async def _start(self, checkpoint=None):
         self.rpc = self.transport_factory()
-        args = [self.binary, '--input-format', 'stream-json', '--output-format', 'stream-json']
+        # The CLI defaults to returning after five minutes even if native work
+        # continues. Interactive workspace turns must not use that short limit.
+        args = [self.binary, '--input-format', 'stream-json', '--output-format', 'stream-json',
+                '--print-timeout', '24h']
         if checkpoint is None:
             args += ['--conversation', self.session_id]
         for key, flag in (('model', '--model'), ('reasoningEffort', '--effort')):
@@ -230,6 +258,8 @@ class AntigravityWorkspace:
                     raise
             self.active_turn = str(uuid4())
             self._last_result_error = None
+            self._error_baseline, self._transcript_offset = await asyncio.to_thread(self._native_errors)
+            self._monitoring_lost = False
             turn = self.active_turn
             self._items = {}
             self.state = 'running'
@@ -266,6 +296,19 @@ class AntigravityWorkspace:
                     raise ValueError('Gemini emitted output without an admitted turn')
                 turn = self.active_turn
                 if event['event'] == 'result':
+                    error = data.get('error')
+                    if isinstance(error, str) and hashlib.sha256(error.encode()).hexdigest() in self._error_baseline:
+                        recent, offset = await asyncio.to_thread(self._native_errors, after=self._transcript_offset)
+                        if offset >= self._transcript_offset and hashlib.sha256(error.encode()).hexdigest() not in recent:
+                            self._monitoring_lost = True
+                    if self._monitoring_lost:
+                        self.state = 'reconciling'
+                        self._background_possible = True
+                        await self.event('workspace/error', {'reason':
+                            'Gemini returned an error from before this request. Completion is unconfirmed; '
+                            'native work may still be running. No request was resent. Use Stop to end the unconfirmed run before sending again.',
+                            'activityUnconfirmed': True})
+                        continue
                     if data.get('response') and not any(i['type'] == 'agentMessage' for i in self._items.values()):
                         await self.event('item/completed', {'turnId': turn, 'item': {'id': turn + '-reply',
                             'type': 'agentMessage', 'text': data['response']}})

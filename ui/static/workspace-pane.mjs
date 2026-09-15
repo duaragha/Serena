@@ -2455,7 +2455,7 @@ export class WorkspacePane {
   }
 
   async interrupt() {
-    if(this.disposed || this.interrupting || this.conversation.status!=='running')return;
+    if(this.disposed || this.interrupting || (this.conversation.status!=='running' && !this.conversation.metadata.activityUnconfirmed))return;
     const turns=[...this.conversation.turns.values()].filter(turn=>turn.status==='inProgress');
     if(!turns.length || (this.provider!=='Claude' && turns.length!==1)){this.error(Error('Running turn identity is unavailable'));return;}
     this.interrupting=true;this.render();
@@ -3302,7 +3302,7 @@ export class WorkspacePane {
     this.usageLabel.textContent = Number.isSafeInteger(acpUsage?.used) && acpUsage.used >= 0 && Number.isSafeInteger(acpUsage?.size) && acpUsage.size > 0 ? `Context: ${acpUsage.used.toLocaleString()} / ${acpUsage.size.toLocaleString()} tokens (${Math.round(acpUsage.used/acpUsage.size*100)}%)` :
       Number.isFinite(tokens) && tokens >= 0 ? `Last request: ${tokens.toLocaleString()} tokens` :
       Number.isFinite(usage?.input_tokens) && Number.isFinite(usage?.output_tokens) ? `Turn: ${usage.input_tokens.toLocaleString()} input / ${usage.output_tokens.toLocaleString()} output` : '';
-    this.stop.hidden = this.conversation.status !== 'running';
+    this.stop.hidden = this.conversation.status !== 'running' && !this.conversation.metadata.activityUnconfirmed;
     this.stop.disabled = this.interrupting;
     this.reviewButton.disabled = !['ready','completed','interrupted','failed'].includes(this.conversation.status);
     this.compactButton.disabled = this.reviewButton.disabled;

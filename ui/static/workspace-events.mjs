@@ -130,6 +130,8 @@ export class WorkspaceConversation {
     } else if (method === 'workspace/settings') {
       Object.assign(this.metadata, p);
     } else if (method === 'turn/started' || method === 'turn/completed') {
+      if(this.metadata.activityUnconfirmed && method==='turn/completed')this.error=null;
+      this.metadata.activityUnconfirmed = false;
       const turn = this.turn(p.turn.id);
       const items = turn.items;
       Object.assign(turn, p.turn, {items, status: p.turn.status || (method === 'turn/started' ? 'inProgress' : 'completed')});
@@ -173,6 +175,7 @@ export class WorkspaceConversation {
     } else if (method === 'workspace/transportClosed' || method === 'workspace/error'
       || method === 'workspace/archived' || method === 'workspace/deleted') {
       this.status = 'unavailable';
+      this.metadata.activityUnconfirmed = p.activityUnconfirmed === true;
       for(const turn of this.turns.values())for(const item of turn.items.values()){
         if(item.type==='contextCompaction' && item.status==='inProgress')item.status='interrupted';
       }

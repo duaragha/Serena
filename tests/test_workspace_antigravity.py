@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -59,6 +60,7 @@ def test_resume_streams_steps_without_duplicate_final_and_retains_owner(build):
         owner, events = build()
         try:
             await owner.open()
+            assert owner.rpc.args[owner.rpc.args.index('--print-timeout')+1] == '24h'
             assert owner.rpc.args[-2:] == ['--conversation', SID]
             assert not owner.rpc.sent
             await owner.submit([{'type': 'text', 'text': 'hello'}])
@@ -86,6 +88,39 @@ def test_resume_streams_steps_without_duplicate_final_and_retains_owner(build):
             assert owner.rpc.args[-2:] == ['--conversation', SID]
         finally:
             await owner.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('fresh_error', [False, True])
+def test_historical_error_does_not_finish_new_turn_or_allow_duplicate_input(build, tmp_path, monkeypatch, fresh_error):
+    path=tmp_path/'transcript.jsonl'
+    record=json.dumps({'type':'ERROR_MESSAGE','error':'old connection reset'})+'\n'
+    path.write_text(record)
+    monkeypatch.setattr(native, 'transcript_path', lambda sid:path)
+    async def run():
+        owner, events=build()
+        try:
+            await owner.open()
+            await owner.submit([{'type':'text','text':'work'}])
+            turn=owner.active_turn
+            if fresh_error:
+                with path.open('a') as out:out.write(record)
+            await owner.rpc.events.put({'event':'result','result':{'conversation_id':SID,'status':'ERROR','error':'old connection reset'}})
+            async with asyncio.timeout(2):
+                while events[-1]['method'] not in {'workspace/error','turn/completed'}:await asyncio.sleep(0)
+            if fresh_error:
+                assert events[-1]['params']['turn']['status']=='failed'
+                assert owner.active_turn is None
+            else:
+                assert owner.state=='reconciling' and owner.active_turn==turn
+                assert events[-1]['params']['activityUnconfirmed']
+                assert not any(e['method']=='turn/completed' for e in events)
+                with pytest.raises(ValueError,match='not ready'):
+                    await owner.submit([{'type':'text','text':'duplicate'}])
+                assert len(owner.rpc.sent)==1
+                await owner.interrupt()
+                assert owner.state=='ready' and owner.active_turn is None
+        finally:await owner.close()
     asyncio.run(run())
 
 

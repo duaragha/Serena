@@ -10,6 +10,29 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('width',[390,1600])
+def test_unconfirmed_gemini_work_keeps_stop_and_blocks_send(pane,width,tmp_path):
+    page, errors=pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.evaluate("""()=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Gemini',controls});window.seq=0;
+      controls.interrupt=async id=>{calls.push(['stop',id]);emit({method:'turn/completed',params:{turn:{id,status:'interrupted'}}});};
+      emit({method:'turn/started',params:{turn:{id:'busy',status:'inProgress'}}});
+      emit({method:'workspace/error',params:{reason:'Gemini monitoring is unconfirmed; work may still be running.',activityUnconfirmed:true}});
+      pane.input.value='do not duplicate';pane.render();
+    }""")
+    root=page.locator('#left')
+    playwright.expect(root.get_by_role('button',name='Send message',exact=True)).to_be_disabled()
+    stop=root.get_by_role('button',name='Interrupt turn',exact=True)
+    playwright.expect(stop).to_be_visible()
+    page.screenshot(path=str(tmp_path/f'gemini-unconfirmed-{width}.png'))
+    stop.click()
+    assert page.evaluate('calls')==[['stop','busy']]
+    playwright.expect(stop).to_be_hidden()
+    assert page.evaluate('pane.conversation.error') is None
+    assert not errors
+
+
 @pytest.mark.parametrize('width', [390, 1600])
 def test_codex_release_context_has_cumulative_total(pane, width, tmp_path):
     page, errors = pane
