@@ -37,10 +37,22 @@ def test_all_steps_complete_parks_delivery_then_receipt_retry_runs_no_workers(fl
     assert len(calls) == 4
     entries = [{"unit_id": "ws-1", "requirement": debt["requirement"],
                 "evidence": "Verified base integration at the recorded Git revision with clean owned paths and passing tests."}]
-    assert accept_operator_evidence(store, run["run_id"], PREFIX + json.dumps(entries))
+    # Simulate a still-open older MCP connection that only understands steering.
+    store.add_steering(run["run_id"], PREFIX + json.dumps(entries))
     supervisor.retry_run(run["run_id"])
     assert supervisor.run_supervisor(run["run_id"])["state"] == "completed"
     assert len(calls) == 4
+
+
+def test_repeated_operator_proof_cannot_clear_a_newer_deferral(fleet_env):
+    store, run, debt = debt_run(fleet_env)
+    store.wait_for_delivery(run["run_id"], "awaiting delivery")
+    message = PREFIX + json.dumps([{**debt, "evidence": "Observed clean committed owned paths and passing independent tests."}])
+    accept_operator_evidence(store, run["run_id"], message)
+    store.append_event(run["run_id"], "leg.completion_evidence_accepted", {
+        "units": [{"unit_id": "ws-1", "accepted": True, "deferred_delivery": [debt]}]})
+    accept_operator_evidence(store, run["run_id"], message)
+    assert len(supervisor._outstanding_delivery(store, run["run_id"])) == 1
 
 
 def test_operator_receipt_refuses_unknown_requirements_and_cancelled_runs(fleet_env):

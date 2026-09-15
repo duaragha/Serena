@@ -996,6 +996,8 @@ def run_supervisor(run_id: str) -> dict[str, Any]:
                 ),
             )
         try:
+            from fleet.delivery import consume_operator_steering
+            consume_operator_steering(store, clean_id)
             outstanding = _outstanding_delivery(store, clean_id)
         except DeliveryLedgerUnavailable as exc:
             # Never complete on an unread ledger. A run that cannot prove it
