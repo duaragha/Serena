@@ -529,3 +529,24 @@ def test_a_run_waiting_for_input_texts_once_and_frees_its_slot(queue, monkeypatc
     store.enqueue_task(BRIEF + " Also cover the empty name case.")
     outcome = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.start"]({})
     assert outcome.output.get("run_id") == "run-next"
+
+
+def test_retry_command_reopens_a_blocked_run(hub, monkeypatch):
+    from core import phone_line
+    from fleet import supervisor
+
+    task = store.enqueue_task(BRIEF)
+    claimed = store.claim_next_task("d")
+    store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-r")
+    store.finish_task_run(task["id"], "run-r", "blocked", "failed: old codex")
+    retried = []
+    monkeypatch.setattr(supervisor, "retry_run", lambda run_id: retried.append(run_id) or {})
+    hub.state["inbound_watermark"] = "2026-09-16T11:00:00Z"
+    hub.messages.append(hub.msg("r1", f"retry #{task['id']}", "2026-09-16T11:01:00Z"))
+    hub.messages.append(hub.msg("r2", "retry #99999", "2026-09-16T11:02:00Z"))
+    report = phone_line.poll(now=1000)
+    assert [c["kind"] for c in report.commands] == ["retry", "retry"]
+    assert retried == ["run-r"]
+    row = store.get_memory(task["id"])
+    assert (row["state"], row["run_id"], row["result"]) == ("running", "run-r", "")
+    assert "retrying" in hub.sent[0] and "isn't blocked" in hub.sent[1]

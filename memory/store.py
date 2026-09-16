@@ -351,6 +351,20 @@ def finish_task_run(task_id: int, run_id: str, state: str, result: str = "") -> 
 
 
 @_serialized_write
+def reopen_task_run(task_id: int, run_id: str, *, now=None) -> bool:
+    """Put a blocked dispatched task back on its (retried) run."""
+    run_id = _task_text(run_id, "run_id", 256)
+    path = _find_path(task_id)
+    row = _parse_file(path) if path else None
+    if not row or row["type"] != "task" or row["state"] != "blocked" or row["run_id"] != run_id:
+        return False
+    _task_metadata(row, state="running", assignee="phone-retry",
+                   lease_token=uuid.uuid4().hex,
+                   lease_until=_moment(now) + TASK_WORK_SECONDS, result="")
+    return True
+
+
+@_serialized_write
 def mark_task_asked(task_id: int, now=None) -> bool:
     """Record that the one triage question went out, so it is asked once."""
     path = _find_path(task_id)

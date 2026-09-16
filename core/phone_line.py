@@ -14,6 +14,7 @@ queue writes; dispatch stays with the reviewed scheduler.
 Grammar (case-insensitive):
     task: <brief>            queue work (triaged like any phone brief)
     #<id> <answer>           answer the one question asked about task <id>
+    retry #<id>              rerun a blocked task's Fleet run from where it stopped
     status                   what is queued, running, and waiting on him
 """
 
@@ -33,6 +34,7 @@ DUPLICATE_WINDOW_SECONDS = 600
 _TASK = re.compile(r"^\s*task\s*[:\-]\s*(?P<brief>.+)$", re.IGNORECASE | re.DOTALL)
 _ANSWER = re.compile(r"^\s*#(?P<id>\d{1,6})\s*[:\-]?\s*(?P<answer>.+)$", re.DOTALL)
 _STATUS = re.compile(r"^\s*status\s*\??\s*$", re.IGNORECASE)
+_RETRY = re.compile(r"^\s*retry\s+#?(?P<id>\d{1,6})\s*$", re.IGNORECASE)
 
 
 def send(text: str, *, key: str = "") -> bool:
@@ -67,6 +69,8 @@ def parse(text: str) -> tuple[str, dict[str, Any]] | None:
                           "answer": match.group("answer").strip()}
     if _STATUS.match(text):
         return "status", {}
+    if match := _RETRY.match(text):
+        return "retry", {"task_id": int(match.group("id"))}
     return None
 
 
@@ -91,6 +95,25 @@ def _status_text() -> str:
             items = ", ".join(f"#{row['id']}" for row in rows[:8])
             lines.append(f"{label}: {items}")
     return "; ".join(lines) or "nothing queued"
+
+
+def _retry(task_id: int) -> str:
+    from fleet.supervisor import retry_run
+    from memory import store
+
+    task = store.get_memory(task_id)
+    if not task or task.get("type") != "task" or task.get("state") != "blocked":
+        return f"#{task_id} isn't blocked, nothing to retry."
+    run_id = str(task.get("run_id") or "")
+    if not run_id:
+        return f"#{task_id} never reached fleet; send it again as a new task."
+    try:
+        retry_run(run_id)
+    except Exception as error:
+        return f"fleet refused to retry #{task_id}: {str(error)[:200]}"
+    if not store.reopen_task_run(task_id, run_id):
+        return f"#{task_id} changed while retrying; check status."
+    return f"retrying #{task_id} (fleet {run_id[:8]})."
 
 
 def poll(*, now: float | None = None) -> PollReport:
@@ -156,6 +179,9 @@ def poll(*, now: float | None = None) -> PollReport:
                 else:
                     reply = (f"#{task['id']} still isn't specific enough to hand off. "
                              f"it's parked; say what file or behaviour to change.")
+                outcome["task_id"] = args["task_id"]
+            elif kind == "retry":
+                reply = _retry(args["task_id"])
                 outcome["task_id"] = args["task_id"]
             else:
                 reply = _status_text()
