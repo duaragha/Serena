@@ -49,7 +49,9 @@ def test_fleet_chats_have_one_collapsible_home_outside_normal_buckets() -> None:
     active_section = html.index("if (active.length)")
     fleet_section = html.index("if (fleetChats.length)")
     starred_section = html.index("if (starred.length)")
-    assert active_section < fleet_section < starred_section
+    serena_section = html.index("if (serenaVoice.length)")
+    voice_section = html.index('data-testid="voice-chats-header"')
+    assert serena_section < fleet_section < voice_section < active_section < starred_section
 
 
 def test_finished_fleet_workers_are_never_resumable(monkeypatch) -> None:
