@@ -44,6 +44,9 @@ class WorkspaceRpc:
         # Pages pushed out while frozen; cleared by wake so the next sleep may
         # reclaim again.
         self.reclaimed = False
+        # The owned scope frozen alongside SIGSTOP, kept by path so it can be
+        # thawed even if the owner process has already gone.
+        self._frozen_scope: str | None = None
 
     async def pause_idle(self) -> bool:
         """Pause a caller-verified idle owner, never a pending RPC.
@@ -72,6 +75,11 @@ class WorkspaceRpc:
                 os.killpg(process.pid, signal.SIGSTOP)
             except ProcessLookupError:
                 return False
+            from core.runtime_scope import freeze
+
+            # Children that started their own session (MCP servers) are
+            # outside the group; freezing the scope pauses them too.
+            self._frozen_scope = freeze(process.pid)
             self.suspended = True
             return True
 
@@ -80,6 +88,12 @@ class WorkspaceRpc:
         if not self.suspended:
             return
         process = self.process
+        if self._frozen_scope is not None:
+            from core.runtime_scope import set_frozen
+
+            # Thaw before SIGCONT: signals to frozen tasks wait for the thaw.
+            set_frozen(self._frozen_scope, False)
+            self._frozen_scope = None
         if os.name == "nt" and self._windows_job is not None:
             self._windows_job.resume()
         elif process is not None and process.returncode is None:

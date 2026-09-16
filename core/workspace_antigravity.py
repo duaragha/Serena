@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import hashlib
+import time
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -57,6 +58,30 @@ class AntigravityWorkspace:
         self._error_baseline = set()
         self._transcript_offset = 0
         self._monitoring_lost = False
+
+    def background_settled(self, quiet_seconds=20):
+        """Whether nothing a finished turn started can still be running.
+
+        run_command and subagent steps may outlive their turn, so they set a
+        flag only Stop clears; most chats carry it forever. Work that outlives a
+        turn is either a child process, which would still be in this owner's
+        scope, or in-process agent work, which keeps writing the transcript.
+        Neither is visible here, so without a scope this stays conservative.
+        """
+        if not self._background_possible:
+            return True
+        process = getattr(self.rpc, 'process', None)
+        if self.state != 'ready' or process is None or process.returncode is not None:
+            return False
+        from core.runtime_scope import scope_processes
+        members = scope_processes(process.pid)
+        if members is None or set(members) - {process.pid}:
+            return False
+        path = transcript_path(self.session_id)
+        try:
+            return path is not None and time.time() - path.stat().st_mtime >= quiet_seconds
+        except OSError:
+            return False
 
     def _native_errors(self, *, after=0):
         path = transcript_path(self.session_id)
