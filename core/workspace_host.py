@@ -2054,13 +2054,7 @@ class WorkspaceHost:
                         raise ValueError("Unsupported submit fields")
                     if self._bridge_queues.get(sid):
                         raise ValueError("Messages are already queued; queue this message to preserve their order")
-                    mapper = {
-                        "codex": self.uploads.codex_inputs,
-                        "claude": self.uploads.claude_inputs,
-                        "gemini": (self.uploads.gemini_inputs if getattr(owner, 'native_stream', False) else self.uploads.acp_inputs),
-                    }.get(provider)
-                    if mapper is None:
-                        raise ValueError("Provider input mapping is not implemented")
+                    mapper = self._input_mapper(provider, owner)
                     inputs = await asyncio.to_thread(mapper, sid, payload["inputs"])
                     result = await owner.submit(inputs, options=payload.get("options"))
                 elif action == "queue_input":

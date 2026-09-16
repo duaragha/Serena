@@ -2647,6 +2647,30 @@ def test_claude_input_routing_and_duplicate_receipt(host):
     assert not owner.closed
 
 
+def test_muse_normal_submit_routes_text_image_and_rejects_foreign_upload(host):
+    from PIL import Image
+
+    host.factories = {"muse": Owner}
+    host.resolve = lambda sid: {"session_id": sid, "provider": "muse", "cwd": "."}
+    host.attach("muse-exact")
+    stream = io.BytesIO()
+    Image.new("RGB", (8, 8), "green").save(stream, format="PNG")
+    image = host.uploads.save("muse-exact", "photo.png", io.BytesIO(stream.getvalue()))
+    payload = {"inputs": [{"type": "text", "text": "inspect"},
+                          {"type": "upload", "token": image["token"]}]}
+    receipt = host.command("muse-exact", "once", "submit", payload)
+    assert receipt["ok"], receipt
+    assert host.command("muse-exact", "once", "submit", payload) == receipt
+    owner = Owner.instances[0]
+    assert len(owner.sent) == 1
+    assert owner.sent[0][0] == payload["inputs"][0]
+    assert owner.sent[0][1]["type"] == "image"
+    assert Path(owner.sent[0][1]["path"]).read_bytes() == stream.getvalue()
+    host.attach("muse-other")
+    assert not host.command("muse-other", "foreign", "submit", payload)["ok"]
+    assert Owner.instances[1].sent == []
+
+
 def test_explicit_shutdown_waits_for_admitted_attach_and_is_idempotent(host):
     assert host.attach("exact", timeout=0.001)["pending"]
     host.shutdown()

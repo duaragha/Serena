@@ -97,6 +97,20 @@ def test_claude_rejects_changed_image(tmp_path):
         uploads.claude_inputs("exact", [{"type": "upload", "token": record["token"]}])
 
 
+def test_muse_maps_images_and_documents_and_rejects_changed_uploads(tmp_path):
+    uploads = WorkspaceUploads(tmp_path)
+    image = uploads.save("exact", "photo.png", io.BytesIO(png()))
+    document = uploads.save("exact", "notes.txt", io.BytesIO(b"notes"))
+    image_path, _ = uploads.resolve("exact", image["token"])
+    inputs = [{"type": "upload", "token": record["token"]} for record in [image, document]]
+    mapped = uploads.muse_inputs("exact", inputs)
+    assert mapped[0] == {"type": "image", "path": str(image_path)}
+    assert "notes.txt" in mapped[1]["text"]
+    image_path.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="changed"):
+        uploads.muse_inputs("exact", inputs)
+
+
 def test_acp_inputs_preserve_images_and_session_bound_file_references(tmp_path):
     uploads = WorkspaceUploads(tmp_path)
     raw = png()
