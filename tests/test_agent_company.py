@@ -46,6 +46,8 @@ def test_a_legacy_writer_ready_note_without_a_source_is_not_claimed(queue):
                     "updated: 2026-01-01 00:00:00\nstate: ready\nsource_id: \n---\n\n"
                     "Fix the flaky login test in locket before friday\n")
     assert store.claim_next_task("dispatcher") is None
+    assert store.get_memory(1)["state"] == "backlog"
+    assert store.tasks_in_state("ready") == []
     assert store.enqueue_task(BRIEF)["source_id"].startswith("queue:")
 
 

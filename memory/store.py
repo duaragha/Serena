@@ -509,6 +509,10 @@ def _parse_file(fpath: Path) -> dict | None:
         out["state"] = meta.get("state", "backlog")
         if out["state"] not in TASK_STATES:
             out["state"] = "needs_triage"
+        elif out["state"] == "ready" and not out["source_id"]:
+            # Older writers defaulted every note to "ready". Only enqueue_task
+            # stamps a source, so anything else is still human-owned backlog.
+            out["state"] = "backlog"
         out["priority"] = meta.get("priority", "normal")
         if out["priority"] not in TASK_PRIORITIES:
             out["priority"] = "normal"
