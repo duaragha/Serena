@@ -24,6 +24,9 @@ def runtime_request(tmp_path, monkeypatch):
 
 
 def test_runtime_is_private_per_attempt_and_overrides_operator_databases(runtime_request, monkeypatch):
+    # This checks command construction, not a native provider launch. CI must
+    # not need a locally installed/authenticated Codex CLI for that assertion.
+    monkeypatch.setattr("fleet.workers._binary", lambda provider: f"/test/{provider}")
     monkeypatch.setenv("SERENA_CONTROL_PLANE_DB_PATH", "/operator/control.sqlite3")
     monkeypatch.setenv("SERENA_NOTIFICATION_DB_PATH", "/operator/notifications.sqlite3")
     env = _worker_environment(runtime_request)
