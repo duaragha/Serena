@@ -34,14 +34,6 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
-      - name: Refuse a tag that disagrees with the app version
-        run: |
-          expected="v$(node -p "require('./apps/desktop/package.json').version")"
-          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
-            echo "tag $GITHUB_REF_NAME does not match package version $expected" >&2
-            exit 1
-          fi
-
       - name: Build the Python environment the sidecar is frozen from
         run: |
           python -m venv .venv
@@ -53,6 +45,9 @@ jobs:
         run: |
           npm ci
           npm test
+
+      - name: Configure the release edition from its tag
+        run: node apps/desktop/scripts/configure-release.cjs "$GITHUB_REF_NAME"
 
       - name: Prove workspace lifecycle and rendering before publishing
         run: |
@@ -92,6 +87,7 @@ jobs:
           path: |
             apps/desktop/dist/Serena-*.AppImage
             apps/desktop/dist/latest-linux.yml
+            apps/desktop/dist/dev-linux.yml
 
   windows:
     name: NSIS installer
@@ -119,14 +115,6 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
-      - name: Refuse a tag that disagrees with the app version
-        shell: pwsh
-        run: |
-          $expected = "v$((Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version)"
-          if ($env:GITHUB_REF_NAME -ne $expected) {
-            throw "tag $env:GITHUB_REF_NAME does not match package version $expected"
-          }
-
       - name: Create the Windows build environment
         shell: pwsh
         run: python -m venv .venv
@@ -137,6 +125,10 @@ jobs:
         run: |
           npm ci
           node --test tests/updates.test.cjs tests/menu.test.cjs tests/backend-install.test.mjs
+
+      - name: Configure the release edition from its tag
+        shell: pwsh
+        run: node apps/desktop/scripts/configure-release.cjs $env:GITHUB_REF_NAME
 
       - name: Build and publish the installer
         shell: pwsh
@@ -155,5 +147,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            apps/desktop/dist/windows/Serena-Setup-*.exe
+            apps/desktop/dist/windows/Serena-*.exe
             apps/desktop/dist/windows/latest.yml
+            apps/desktop/dist/windows/dev.yml

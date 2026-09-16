@@ -174,7 +174,7 @@ class WorkspaceUploads:
                     result.append({'type': 'text', 'text': 'User-attached file: '
                                    + json.dumps({'name': record['name'], 'path': str(path)})})
                 elif provider == 'muse':
-                    if record['media'] == 'image':
+                    if record['media_type'].startswith('image/'):
                         result.append({'type': 'image', 'path': str(path)})
                     else:
                         result.append({'type': 'text', 'text': 'User-attached file: '

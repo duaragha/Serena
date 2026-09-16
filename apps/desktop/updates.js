@@ -19,6 +19,8 @@
 const { app } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { desktopProfile, acceptsVersion } = require('./profile');
+const profile = desktopProfile(app.getVersion());
 
 const FEED_HOST = 'github.com';
 
@@ -39,6 +41,7 @@ const FEED = Object.freeze({
 let updater = null;
 let inFlight = null;
 let downloaded = null;
+let availableVersion = null;
 
 /** electron-updater is optional at runtime so a broken install still starts. */
 function getUpdater() {
@@ -51,13 +54,22 @@ function getUpdater() {
     return false;
   }
   updater.autoDownload = false;
+  updater.channel = profile.updateChannel;
+  updater.allowPrerelease = profile.channel === 'dev';
+  // Setting channel enables downgrades in electron-updater; undo that default.
+  updater.allowDowngrade = false;
   updater.autoInstallOnAppQuit = true;
   updater.logger = console;
   updater.on('error', (error) => {
     console.error('[updates] updater error:', error && error.message);
   });
   updater.on('update-downloaded', (info) => {
-    downloaded = info;
+    if (acceptsVersion(profile, info.version) && info.version === availableVersion) {
+      downloaded = info;
+    } else {
+      updater.autoInstallOnAppQuit = false;
+      console.error('[updates] refused an unrequested or cross-edition download');
+    }
   });
   return updater;
 }
@@ -88,6 +100,8 @@ function updateBlocker() {
 function describe() {
   return {
     version: app.getVersion(),
+    edition: profile.name,
+    channel: profile.channel,
     platform: platformLabel(),
     packaged: app.isPackaged,
     electron: process.versions.electron,
@@ -117,10 +131,15 @@ async function check({ silent = false } = {}) {
   if (inFlight) return inFlight;
 
   inFlight = (async () => {
+    availableVersion = null;
     try {
       const result = await auto.checkForUpdates();
       const remote = result && result.updateInfo && result.updateInfo.version;
-      if (remote && remote !== app.getVersion()) {
+      if (remote && !acceptsVersion(profile, remote)) {
+        throw new Error('Update belongs to a different Serena edition');
+      }
+      if (result?.isUpdateAvailable !== false && remote && remote !== app.getVersion()) {
+        availableVersion = remote;
         return { state: 'available', remoteVersion: remote, ...describe() };
       }
       return { state: 'current', ...describe() };
@@ -147,6 +166,9 @@ async function check({ silent = false } = {}) {
 async function download(onProgress) {
   const auto = getUpdater();
   if (!auto) throw new Error('The updater component is missing from this build.');
+  if (!availableVersion || !acceptsVersion(profile, availableVersion)) {
+    throw new Error('Check for an update in this edition before downloading');
+  }
   const listener = (progress) => {
     if (typeof onProgress === 'function') {
       onProgress({

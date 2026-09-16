@@ -72,7 +72,8 @@
   let facts = {}, state = 'idle', reason = '', remote = '', percent = 0, busy = false;
   function render() {
     dialog.dataset.state = state;
-    el('version').textContent = `${facts.version || '-'} / ${facts.platform || 'Desktop'}${facts.packaged === false ? ' / development' : ''}`;
+    dialog.querySelector('#desktopAboutTitle').textContent = facts.edition || 'Serena';
+    el('version').textContent = `${facts.version || '-'} / ${facts.platform || 'Desktop'}${facts.channel ? ' / ' + facts.channel : ''}${facts.packaged === false ? ' / development' : ''}`;
     for (const key of ['electron', 'chrome', 'node']) el(key).textContent = facts[key] || '-';
     const copy = {
       idle: ['Desktop updates', 'Check for the latest Serena release.', 'Check for updates'],

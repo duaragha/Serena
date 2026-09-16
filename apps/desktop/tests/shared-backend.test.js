@@ -53,9 +53,10 @@ for (const capabilities of [undefined, {}, { structuredWorkspace: 0 }, { structu
   });
 }
 
-test('the shell requires the workspace unless explicitly rolled back', () => {
+test('desktop editions never attach to or restart a shared backend', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-  assert.match(source, /requireStructuredWorkspace: process\.env\.SERENA_STRUCTURED_WORKSPACE !== '0'/);
+  assert.doesNotMatch(source, /findExistingBackend|syncBackend|sharedRestartCommand/);
+  assert.match(source, /backendEnvironment\(profile, app.getPath\('home'\)\)/);
 });
 
 test('ignores a server whose health payload is not ours', async () => {
@@ -112,15 +113,14 @@ test('quitting never terminates a backend the shell did not spawn', () => {
   const body = stop.slice(0, stop.indexOf('\n}'));
   assert.match(
     body,
-    /if \(child\) await terminateProcessTree\(child\)/,
+    /if \(child\) await terminateProcessTree\(child, 25000\)/,
     'stopBackend must guard the terminate call on owning the child',
   );
 });
 
-test('the shared path still creates a window and tray', () => {
+test('the owned path verifies edition and version before creating its window', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-  const shared = source.slice(source.indexOf('SERENA_BACKEND_SHARED'));
-  const block = shared.slice(0, shared.indexOf('const port = await findFreePort()'));
-  assert.match(block, /createWindow\(shared\.url\)/);
-  assert.match(block, /createTray\(\)/);
+  assert.match(source, /health.desktop\?\.channel !== profile.channel/);
+  assert.match(source, /health.desktop\?\.version !== profile.version/);
+  assert.match(source, /createWindow\(url\)/);
 });

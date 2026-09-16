@@ -1,6 +1,6 @@
 {
   "name": "serena-desktop",
-  "version": "0.2.86",
+  "version": "0.3.0",
   "description": "Serena desktop shell",
   "main": "main.js",
   "author": "Raghav",
@@ -36,6 +36,7 @@
       "main.js",
       "preload.js",
       "runtime.js",
+      "profile.js",
       "folder-picker.js",
       "package.json",
       "build/icon.png",

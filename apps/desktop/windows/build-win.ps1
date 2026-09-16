@@ -212,7 +212,7 @@ $Package = Get-Content -LiteralPath (Join-Path $DesktopDir "package.json") -Raw 
     ConvertFrom-Json
 $InstallerPath = Join-Path `
     $DesktopDir `
-    "dist\windows\Serena-Setup-$($Package.version)-x64.exe"
+    "dist\windows\$($Package.build.productName.Replace(' ', '-'))-Setup-$($Package.version)-x64.exe"
 if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
     throw "electron-builder did not produce the expected NSIS installer: $InstallerPath"
 }

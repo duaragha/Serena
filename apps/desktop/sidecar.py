@@ -58,6 +58,10 @@ if __name__ == "__main__" and sys.argv[1:2] == ["computer"]:
 # the voice stack just to paint the first window.
 os.environ.setdefault("SERENA_CALL_RUNTIME", "lazy")
 
+from core.desktop_profile import seed_dev_index  # noqa: E402
+
+seed_dev_index()
+
 # `app` is re-exported so the sidecar's own tests (and anything embedding it)
 # can reach the Flask app; /api/health now lives in ui.web itself so the
 # long-running mobile_host serves it too.
