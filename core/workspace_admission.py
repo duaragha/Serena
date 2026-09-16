@@ -10,6 +10,26 @@ from pathlib import Path
 import psutil
 
 
+def _muse_locked_sessions(paths: set[Path]) -> set[Path]:
+    """Muse keeps its writer lock open, not necessarily its JSONL transcript."""
+    from core.muse_scanner import SESSIONS_DIR
+
+    root = SESSIONS_DIR.resolve()
+    sessions = set()
+    for path in paths:
+        if path.name != ".session.lock":
+            continue
+        parent = path.parent.resolve()
+        try:
+            relative = parent.relative_to(root)
+        except ValueError:
+            continue
+        # Child-agent locks do not establish ownership of a root conversation.
+        if len(relative.parts) == 4:
+            sessions.add(parent)
+    return sessions
+
+
 def _registered_other_runtime(process, sid: str) -> bool:
     """Recognize leased runtime wrappers and their native child, not tool trees."""
     root = Path(os.environ.get("SERENA_RUNTIME_LEASE_DIR") or Path.home() / ".config/serena/runtime-leases")
@@ -80,8 +100,19 @@ def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider
             if sid in argv or f"--resume={sid}" in argv or (provider == 'agy' and f'--conversation={sid}' in argv):
                 raise RuntimeError(f"This session already has a {label} process")
             paths = {Path(f.path) for f in process.open_files()}
+            if provider == "muse":
+                locks = _muse_locked_sessions(paths)
+                if transcript.parent.resolve() in locks:
+                    raise RuntimeError(
+                        f"This Muse conversation is still open in another Muse process (PID {process.pid}). "
+                        "Close it in its current Muse terminal or Serena window, then click Retry connection here. "
+                        "Your saved conversation will be resumed; no Serena restart is needed."
+                    )
             if transcript in paths:
                 raise RuntimeError(f"This session transcript is already open by a {label} process")
+            if provider == "muse" and locks:
+                # All exact-target checks precede this unrelated-owner exemption.
+                continue
             if (provider == "claude" and len(argv) >= 6
                     and Path(argv[1]).resolve() == Path(__file__).with_name("workspace_claude_worker.mjs").resolve()
                     and argv[4] and argv[4] != sid):

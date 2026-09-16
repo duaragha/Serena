@@ -8,6 +8,57 @@ import pytest
 from core import workspace_admission as admission
 
 
+@pytest.mark.parametrize('owner', ['same', 'other', 'both', 'child', 'unknown'])
+def test_muse_native_writer_locks_identify_exact_owner(tmp_path, monkeypatch, owner):
+    from core import muse_scanner
+
+    root = tmp_path / 'muse' / 'sessions'
+    target = root / '2026/09/16/exact/session.jsonl'
+    other = root / '2026/09/16/other/.session.lock'
+    own = target.with_name('.session.lock')
+    paths = {'same': [own], 'other': [other], 'both': [other, own],
+             'child': [target.parent / 'subagent/child/.session.lock'],
+             'unknown': [tmp_path / '.session.lock']}[owner]
+    process = SimpleNamespace(pid=12345, info={'name': 'muse-bin-1.3.0'},
+                              cmdline=lambda: ['/bin/muse-bin-1.3.0'],
+                              cwd=lambda: str(tmp_path),
+                              open_files=lambda: [SimpleNamespace(path=str(p)) for p in paths])
+    monkeypatch.setattr(muse_scanner, 'SESSIONS_DIR', root)
+    monkeypatch.setattr(admission.psutil, 'process_iter', lambda attrs: [process])
+    if owner in {'same', 'both'}:
+        with pytest.raises(RuntimeError, match='PID 12345.*current Muse terminal or Serena window.*Retry connection'):
+            admission.reject_unregistered_provider('exact', tmp_path, target, 'muse')
+        # The lock is decisive even if the terminal changed directories.
+        process.cwd = lambda: '/different-project'
+        with pytest.raises(RuntimeError, match='still open'):
+            admission.reject_unregistered_provider('exact', tmp_path, target, 'muse')
+    elif owner == 'other':
+        admission.reject_unregistered_provider('exact', tmp_path, target, 'muse')
+        process.open_files = lambda: [SimpleNamespace(path=str(p)) for p in [other, target]]
+        with pytest.raises(RuntimeError, match='transcript'):
+            admission.reject_unregistered_provider('exact', tmp_path, target, 'muse')
+    else:
+        with pytest.raises(RuntimeError, match='unregistered'):
+            admission.reject_unregistered_provider('exact', tmp_path, target, 'muse')
+
+
+def test_muse_closed_terminal_allows_retry_without_backend_restart(tmp_path, monkeypatch):
+    from core import muse_scanner
+
+    root = tmp_path / 'muse/sessions'
+    target = root / '2026/09/16/exact/session.jsonl'
+    process = SimpleNamespace(pid=12345, info={'name': 'muse'}, cmdline=lambda: ['muse'],
+                              cwd=lambda: str(tmp_path),
+                              open_files=lambda: [SimpleNamespace(path=str(target.with_name('.session.lock')))])
+    processes = [process]
+    monkeypatch.setattr(muse_scanner, 'SESSIONS_DIR', root)
+    monkeypatch.setattr(admission.psutil, 'process_iter', lambda attrs: processes)
+    with pytest.raises(RuntimeError, match='still open'):
+        admission.reject_unregistered_provider('exact', tmp_path, target, 'muse')
+    processes.clear()
+    admission.reject_unregistered_provider('exact', tmp_path, target, 'muse')
+
+
 @pytest.mark.parametrize('kind', ['root', 'child', 'helper'])
 @pytest.mark.parametrize('lease_state', ['other', 'same', 'reused', 'dead_host'])
 def test_registered_runtime_identity_does_not_block_unrelated_chat(session, monkeypatch, tmp_path, kind, lease_state):
