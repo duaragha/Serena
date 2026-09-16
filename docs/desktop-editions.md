@@ -38,7 +38,7 @@ project or changing a native provider setting changes that real shared data.
 Runtime leases remain shared so the same saved conversation cannot be opened for
 writing in both apps. Close its owning pane before moving it between editions.
 
-On Dev's first launch, it takes a read-only SQLite backup of the existing index
+On Dev's first Linux launch, it takes a read-only SQLite backup of the existing index
 when available. This avoids reparsing every historical chat just to open Dev.
 After that initial snapshot, the two indexes are separate; no existing Dev index
 is replaced, and native conversations are not copied or changed.
