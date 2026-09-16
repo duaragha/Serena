@@ -121,7 +121,16 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
             "-c",
             'approval_policy="never"',
         ]
-        if request.access_mode == "write":
+        if _is_windows():
+            # Codex's Windows sandboxes cannot host a Fleet worker. Without a
+            # windows.sandbox choice (dropped by --ignore-user-config) every
+            # command is rejected as "blocked by policy"; the unelevated
+            # restricted token is denied the worktree under the user profile;
+            # the elevated one runs as a separate account git distrusts. The
+            # worker is contained the same way Claude writers are: a private
+            # worktree inside Fleet's kill-on-close Job Object.
+            base += ["--sandbox", "danger-full-access"]
+        elif request.access_mode == "write":
             base += ["--sandbox", _codex_sandbox(request.access_mode)]
         else:
             from fleet.worker_runtime import read_sandbox_flags
@@ -1302,6 +1311,10 @@ def _reported_model(value: object) -> str | None:
     if not clean or (clean.startswith("<") and clean.endswith(">")):
         return None
     return clean
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 def _codex_sandbox(access_mode: str) -> str:

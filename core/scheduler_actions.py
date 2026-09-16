@@ -24,6 +24,63 @@ OWED_STALE_SECONDS = 3_600.0
 # Reservations cannot be pruned without losing at-most-once dispatch. Stop
 # accepting new identities at this bound until an operator archives the queue.
 MAX_FLEET_DISPATCHES = 100_000
+# Dispatched runs that may be open at once. Fleet itself has no run ceiling,
+# and each run already fans out to up to four workers.
+DEFAULT_MAX_ACTIVE_TASK_RUNS = 2
+TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
+# A run parked on a question uses no workers. It must not hold a dispatch slot,
+# or one stuck run would stall the queue behind it indefinitely.
+IDLE_RUN_STATES = TERMINAL_RUN_STATES | {"waiting_for_input"}
+# Reconciliation work per tick: deliveries push to GitHub, so keep it small.
+MAX_RECONCILE_PER_TICK = 3
+DISPATCH_ORIGIN = "serena-task:"
+DELIVERY_RULES = (
+    "\n\n---\nDispatcher handoff for this task: you are working in a private "
+    "checkout on branch serena/task-{task_id}, and that checkout is this run's base "
+    "checkout. Leave your finished changes in its working tree. Do not push, open "
+    "pull requests, merge, tag, release, or deploy; after the run the dispatcher "
+    "commits the working tree, pushes the branch and opens the pull request, and "
+    "any release follows that pull request. Never defer delivery to root. Report "
+    "your delivery[] entries exactly as below, copying each requirement string "
+    "character for character (only the evidence text is yours to write):\n{answers}"
+)
+
+
+def _delivery_rules(task_id: int) -> str:
+    """The handoff note, with Fleet's own requirement strings quoted verbatim.
+
+    Fleet matches delivery answers by exact requirement text, and a worker
+    told to paraphrase-free answer them still paraphrased once. Quoting the
+    contract's strings removes the guesswork.
+    """
+
+    import json
+
+    from fleet.contracts import _completion_contract
+
+    requirements = _completion_contract("coding", "")["delivery_requirements"]
+    answers = []
+    for index, requirement in enumerate(requirements):
+        if index == 0:
+            answers.append({"requirement": requirement, "state": "verified",
+                            "evidence": "<the changed paths in this checkout>"})
+        else:
+            answers.append({"requirement": requirement, "state": "not_applicable",
+                            "reason": "This run touches no deployed or live surface; "
+                                      "delivery is the dispatcher's pull request after the run."})
+    return DELIVERY_RULES.format(task_id=task_id, answers=json.dumps(answers, indent=2))
+
+
+def _max_active_task_runs() -> int:
+    import os
+
+    raw = os.environ.get("SERENA_TASK_MAX_ACTIVE_RUNS", "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_MAX_ACTIVE_TASK_RUNS
+    except ValueError:
+        value = DEFAULT_MAX_ACTIVE_TASK_RUNS
+    return max(1, min(value, 8))
+
 
 
 def _number(value: object, fallback: float) -> float:
@@ -193,11 +250,14 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
 
     import sqlite3
     from contextlib import closing
+    from pathlib import Path
     from uuid import uuid4
 
     from core.coding_job_contract import resolve_repository_root
     from fleet.supervisor import list_runs, start_run
     from memory import store
+
+    from core import agent_checkouts
 
     if payload:
         return ActionOutcome(False, "serena.fleet.start accepts no schedule payload")
@@ -208,7 +268,7 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
         return ActionOutcome(True, "no ready task")
     task_id = int(task["id"])
     token = task["lease_token"]
-    origin = f"serena-task:{task_id}"
+    origin = f"{DISPATCH_ORIGIN}{task_id}"
     output = {"task_id": task_id}
 
     def hold(detail: str, *, state: str = "blocked") -> ActionOutcome:
@@ -277,10 +337,16 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
         # history is capped, so it may recover a receipt but may never license
         # a retry of an intent that already exists.
         try:
+            history = list_runs(limit=500)
             found = next(
-                (str(run["run_id"]) for run in list_runs(limit=500)
+                (str(run["run_id"]) for run in history
                  if run.get("origin_session_id") == origin),
                 "",
+            )
+            active = sum(
+                1 for run in history
+                if str(run.get("origin_session_id") or "").startswith(DISPATCH_ORIGIN)
+                and str(run.get("state") or "") not in IDLE_RUN_STATES
             )
         except Exception as error:
             if previous is not None:
@@ -292,6 +358,10 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
             )
         if previous is not None:
             return attach(found) if found else uncertain()
+        limit = _max_active_task_runs()
+        if not found and active >= limit:
+            # Fleet has no run ceiling of its own; this is the admission gate.
+            return hold(f"at capacity: {active} of {limit} task runs active", state="ready")
 
         with db:
             db.execute("BEGIN IMMEDIATE")
@@ -312,9 +382,19 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
             return attach(found)
 
         try:
+            checkout = agent_checkouts.prepare(Path(cwd), task_id)
+        except agent_checkouts.CheckoutError as error:
+            # Nothing reached Fleet, so the reservation can be withdrawn and a
+            # human told why; retrying blindly would hit the same wall.
+            with db:
+                db.execute("DELETE FROM dispatches WHERE task_id = ? AND run_id = ''",
+                           (task_id,))
+            return hold(f"no private checkout: {error}")
+        try:
             run = start_run(
-                task=task["content"], activity="auto", provider_mode="auto",
-                cwd=str(cwd), origin_session_id=origin,
+                task=task["content"] + _delivery_rules(task_id),
+                activity="auto", provider_mode="auto",
+                cwd=str(checkout.path), origin_session_id=origin,
             )
             run_id = str(run["run_id"] or "")
             if not run_id:
@@ -324,6 +404,171 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
         return attach(run_id)
 
 
+def _notify_phone(text: str, key: str) -> bool:
+    """Tell Raghav on his phone line, through the one notification authority."""
+
+    from core.notification_senders import notify
+
+    result = notify("task.update", text, channel="imessage", dedupe_key=key,
+                    source_surface="dispatch", fallback_channel=None)
+    return bool(result.sent)
+
+
+def _notify_once(text: str, key: str) -> bool:
+    """Send a notice at most once ever, beyond the authority's hourly dedupe."""
+
+    import sqlite3
+    from contextlib import closing
+
+    from memory import store
+
+    path = store.MEMORY_DIR / ".fleet-dispatch.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=5)) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY)")
+        if db.execute("SELECT 1 FROM notices WHERE key = ?", (key,)).fetchone():
+            return False
+        if not _notify_phone(text, key):
+            return False
+        with db:
+            db.execute("INSERT OR IGNORE INTO notices(key) VALUES (?)", (key,))
+    return True
+
+
+def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
+    """Close finished dispatched runs: deliver, record, and tell him.
+
+    Also sends the single triage question for briefs that were too thin.
+    Delivery is idempotent: pushing the same branch and finding its existing
+    pull request is the retry path, so a crash between steps is harmless.
+    """
+
+    import hashlib
+
+    from core import agent_checkouts
+    from fleet.supervisor import get_run
+    from memory import store
+
+    if payload:
+        return ActionOutcome(False, "serena.fleet.reconcile accepts no schedule payload")
+    closed: list[dict[str, Any]] = []
+    for task in store.tasks_in_state("running"):
+        if len(closed) >= MAX_RECONCILE_PER_TICK:
+            break
+        run_id = str(task.get("run_id") or "")
+        if not run_id:
+            continue
+        try:
+            run = get_run(run_id)
+        except Exception:
+            continue
+        state = str((run or {}).get("state") or "")
+        if state == "waiting_for_input":
+            # Fleet parked it on a question only a human can answer. Say so
+            # once per distinct question; the task stays open for a retry.
+            reason = " ".join(str(run.get("error") or "needs input").split())[:300]
+            digest = hashlib.sha256(reason.encode("utf-8")).hexdigest()[:12]
+            if _notify_once(
+                f"#{task['id']} is stuck waiting on input (fleet {run_id[:8]}): {reason}",
+                f"task:{task['id']}:waiting:{digest}",
+            ):
+                closed.append({"task_id": int(task["id"]), "run_state": state,
+                               "waiting": True})
+            continue
+        if state not in TERMINAL_RUN_STATES:
+            continue
+        task_id = int(task["id"])
+        brief = str(task["content"])
+        headline = " ".join(brief.split())[:80]
+        record: dict[str, Any] = {"task_id": task_id, "run_state": state}
+        checkout = None
+        try:
+            checkout = agent_checkouts.locate(run.get("cwd") or "")
+        except agent_checkouts.CheckoutError as error:
+            record["error"] = str(error)
+        if state == "completed" and checkout is not None:
+            try:
+                delivery = agent_checkouts.deliver(
+                    checkout, task_id=task_id, brief=brief, run_id=run_id)
+            except agent_checkouts.CheckoutError as error:
+                # Leave the task running; the next tick retries the delivery.
+                record["error"] = f"delivery failed: {error}"
+                closed.append(record)
+                continue
+            record.update(delivery=delivery.status, url=delivery.url)
+            if delivery.status == "no_changes":
+                result, message = "done: no changes needed", (
+                    f"#{task_id} finished with no code changes ({headline}).")
+            elif delivery.status == "merged":
+                try:
+                    shipped = agent_checkouts.ship(checkout)
+                except agent_checkouts.CheckoutError as error:
+                    shipped = f"ship step failed: {error}"
+                record["shipped"] = shipped
+                tail = f"; {shipped}" if shipped else ""
+                result, message = f"merged: {delivery.url}{tail}", (
+                    f"#{task_id} done and merged{tail}: {delivery.url}")
+            else:
+                note = f" ({delivery.detail})" if delivery.detail else ""
+                result, message = f"pr: {delivery.url}", (
+                    f"#{task_id} done, PR ready for you{note}: {delivery.url}")
+            final = "done"
+        else:
+            reason = str(run.get("error") or state)[:200]
+            result = f"{state}: {reason}"
+            message = f"#{task_id} {state} ({headline}). {reason}"
+            final = "blocked"
+        if store.finish_task_run(task_id, run_id, final, result):
+            record["notified"] = _notify_phone(message, f"task:{task_id}:{final}")
+            if checkout is not None and final == "done":
+                # A failed run keeps its worktree so the partial work can be read.
+                agent_checkouts.cleanup(checkout)
+        closed.append(record)
+
+    asked = []
+    for task in store.tasks_in_state("needs_triage"):
+        # Only briefs from his phone get a question back; internal queue
+        # writes have nobody on the other end of the thread.
+        if task.get("asked_at") or not str(task.get("source_id") or "").startswith(
+                ("imessage:", "webhook:")):
+            continue
+        if len(asked) >= MAX_RECONCILE_PER_TICK:
+            break
+        task_id = int(task["id"])
+        headline = " ".join(str(task["content"]).split())[:120]
+        question = (f"#{task_id} needs one detail before i hand it off: \"{headline}\". "
+                    f"what exactly should change, and in which project? "
+                    f"reply \"#{task_id} <details>\".")
+        if _notify_phone(question, f"task:{task_id}:question"):
+            store.mark_task_asked(task_id)
+            asked.append(task_id)
+    return ActionOutcome(
+        True, f"closed {sum(1 for r in closed if 'notified' in r)} task(s), "
+              f"asked {len(asked)} question(s)",
+        output={"closed": closed, "asked": asked},
+    )
+
+
+def poll_phone_line(payload: dict[str, Any]) -> ActionOutcome:
+    """Read new iMessage commands from Raghav's thread into the queue."""
+
+    from core import phone_line
+    from core.unified_hub import UnifiedHubError
+
+    if payload:
+        return ActionOutcome(False, "serena.phone.poll accepts no schedule payload")
+    if not phone_line.available():
+        return ActionOutcome(True, "phone line is not configured on this machine")
+    try:
+        report = phone_line.poll()
+    except UnifiedHubError as error:
+        return ActionOutcome(False, f"phone line unavailable: {error}")
+    return ActionOutcome(
+        True, f"read {report.seen} message(s), handled {len(report.commands)} command(s)",
+        output={"commands": report.commands},
+    )
+
+
 # The whole registry. A schedule may name exactly one of these keys.
 REVIEWED_ACTIONS = {
     "serena.obligations.sweep": sweep_obligations,
@@ -331,6 +576,8 @@ REVIEWED_ACTIONS = {
     "serena.notifications.flush": flush_notifications,
     "serena.surfaces.publish": publish_surface_events,
     "serena.fleet.start": start_ready_fleet_task,
+    "serena.fleet.reconcile": reconcile_fleet_tasks,
+    "serena.phone.poll": poll_phone_line,
 }
 
 

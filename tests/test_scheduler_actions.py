@@ -37,6 +37,8 @@ def test_the_registry_is_a_fixed_set_of_named_actions():
         "serena.notifications.flush",
         "serena.surfaces.publish",
         "serena.fleet.start",
+        "serena.fleet.reconcile",
+        "serena.phone.poll",
     }
     assert all(callable(handler) for handler in REVIEWED_ACTIONS.values())
 
@@ -206,7 +208,7 @@ def test_the_default_senders_cover_every_declared_channel():
 
 
 def test_the_fallback_hop_still_goes_through_the_authority(tmp_path):
-    """A voice failure may fall back to Telegram, but not past the policy."""
+    """A voice failure may fall back to his iMessage line, but not past the policy."""
 
     from core.notification_senders import notify
 
@@ -216,7 +218,7 @@ def test_the_fallback_hop_still_goes_through_the_authority(tmp_path):
         policy=NotificationPolicy(quiet_start_hour=0, quiet_end_hour=0),
         senders={
             "voice": lambda r: attempts.append("voice") or False,
-            "telegram": lambda r: attempts.append("telegram") or True,
+            "imessage": lambda r: attempts.append("imessage") or True,
         },
     )
 
@@ -224,7 +226,7 @@ def test_the_fallback_hop_still_goes_through_the_authority(tmp_path):
         "fleet.run.completed", "the run finished", authority=authority, dedupe_key="run-1"
     )
 
-    assert attempts == ["voice", "telegram"]
+    assert attempts == ["voice", "imessage"]
     assert result.sent is True
 
 
@@ -237,7 +239,7 @@ def test_the_fallback_does_not_fire_when_the_notice_was_merely_suppressed(tmp_pa
         policy=NotificationPolicy(quiet_start_hour=0, quiet_end_hour=0),
         senders={
             "voice": lambda r: attempts.append("voice") or True,
-            "telegram": lambda r: attempts.append("telegram") or True,
+            "imessage": lambda r: attempts.append("imessage") or True,
         },
     )
     notify("fleet.run.completed", "the run finished", authority=authority, dedupe_key="run-1")
@@ -258,7 +260,7 @@ def fleet_queue(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    from core import coding_job_contract
+    from core import agent_checkouts, coding_job_contract
     from fleet import supervisor
     from memory import store
 
@@ -275,6 +277,8 @@ def fleet_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(supervisor, "list_runs", queue.runs)
     monkeypatch.setattr(supervisor, "start_run", queue.start)
     monkeypatch.setattr(coding_job_contract, "resolve_repository_root", queue.resolve)
+    queue.prepare = Mock(side_effect=lambda source, task_id: SimpleNamespace(path=source))
+    monkeypatch.setattr(agent_checkouts, "prepare", queue.prepare)
     queue.task = {
         "id": 7, "content": "Fix the Serena scheduler failing to resume after capacity returns",
         "project_hint": "serena", "priority": "high", "state": "claimed",
@@ -299,8 +303,12 @@ def test_fleet_claims_one_ordered_ready_task_and_records_run(fleet_queue):
     fleet_queue.resolve.assert_called_once_with(
         fleet_queue.task["content"], project_hint="serena"
     )
+    from core.scheduler_actions import _delivery_rules
+
+    fleet_queue.prepare.assert_called_once_with(fleet_queue.resolve.return_value, 7)
     fleet_queue.start.assert_called_once_with(
-        task=fleet_queue.task["content"], activity="auto", provider_mode="auto",
+        task=fleet_queue.task["content"] + _delivery_rules(7),
+        activity="auto", provider_mode="auto",
         cwd=str(fleet_queue.resolve.return_value), origin_session_id="serena-task:7",
     )
     owner = fleet_queue.claim.call_args.args[0]
@@ -501,10 +509,13 @@ def real_fleet_queue(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock
 
+    from core import agent_checkouts
     from fleet import supervisor
     from memory import store
 
     monkeypatch.setattr(store, "MEMORY_DIR", tmp_path / "memory")
+    monkeypatch.setattr(agent_checkouts, "prepare",
+                        lambda source, task_id: SimpleNamespace(path=source))
     clock = [1000.0]
     monkeypatch.setattr(store.time, "time", lambda: clock[0])
     start = Mock(return_value={"run_id": "run-1", "state": "queued"})

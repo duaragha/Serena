@@ -317,3 +317,58 @@ The `.stignore` file in `~/.claude/` should already exclude device-specific file
 **Web UI empty**: The web server needs the index built first. Run `chats reindex -f` then `chats web`.
 
 **Syncthing conflicts**: Delete any `.sync-conflict-*` files in the chats directory. They're duplicates from concurrent edits.
+
+# PC Task Dispatcher (phone to pull request)
+
+The gaming PC is the only machine that dispatches queued work. The laptop must
+never register a `serena.fleet.start` schedule: nothing in the code stops a
+second dispatcher, and task leases do not cross Syncthing.
+
+## Loop
+
+1. Raghav texts his own iMessage thread (`+14168294648`, hub conversation
+   `conversation_j0Jwy2qIWvpL71Guxv1tY-flch85Cdjg`): `task: <brief>`,
+   `#<id> <answer>`, `retry #<id>`, or `status`.
+2. `serena.phone.poll` (every 60s) reads the thread through the Unified hub,
+   where Serena is a paired device (`chats phone status`), and calls
+   `memory.store.enqueue_task`. Thin briefs land in `needs_triage` and get one
+   question back.
+3. `serena.fleet.start` claims one sourced `ready` task, prepares a private
+   worktree under `~/.local/state/serena/agent-repos/` from the repo's GitHub
+   remote, and starts Fleet there. At most `SERENA_TASK_MAX_ACTIVE_RUNS`
+   (default 2) dispatched runs work at once; runs parked in
+   `waiting_for_input` do not hold a slot.
+4. `serena.fleet.reconcile` commits the finished worktree to
+   `serena/task-<id>`, pushes, opens a PR, and texts the link. Repos listed in
+   `~/.config/serena/dispatch.json` `automerge_repos` are squash-merged, and a
+   `ship` entry starts their Codemagic build. Railway services deploy from
+   their GitHub branch on their own.
+
+Only `enqueue_task` stamps a `source_id`, and only sourced `ready` tasks are
+dispatched. Notes from `chats memory add` and every pre-queue task are
+`backlog`.
+
+## PC layout
+
+| What | Where |
+|---|---|
+| Runtime checkout (not synced; deploy with `git fetch` + `checkout`) | `C:\Users\ragha\serena-runtime` + its `.venv` |
+| Service wrapper (restart loop, strips metered API keys) | `C:\Users\ragha\.serena-services\run-service.ps1` |
+| Scheduled tasks (at logon, interactive, `conhost --headless`) | `Serena Fleet Supervisor`, `Serena Automation Loop`, `Serena Webhook Ingress` |
+| Logs | `~\.local\state\serena\logs\{fleet,automation,webhooks}.log` |
+| Hub pairing + thread | `~\.config\serena\unified-hub.json` |
+| Signed webhook | `127.0.0.1:8768`, published as `https://pc.tail4d6220.ts.net/webhooks/task` (route is approval-held) |
+| Secrets | `~\.config\serena\webhook-secret`, `~\.config\serena\codemagic.env` |
+
+Gotchas:
+
+- Anything created over SSH is owned by `Administrators`, and git in the
+  interactive session then refuses it as dubious ownership. Fix with
+  `icacls <dir> /setowner <user> /T`.
+- GitHub credentials live in the Windows credential store, which SSH sessions
+  cannot read. Run `gh` checks from the desktop session.
+- Python's system trust store on the PC has an expired Let's Encrypt root. The
+  hub client uses `certifi`.
+- The services start at logon only. After a reboot the PC must be signed in.
+- Codex and Claude CLIs must be current enough for the Fleet phase models
+  (`npm i -g @openai/codex`, `claude update`).

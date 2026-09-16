@@ -111,6 +111,14 @@ _SAFE_TEST_ENV = {
 _INHERITED_TEST_ENV = frozenset(
     {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ"}
 )
+# Windows cannot start an interpreter, or resolve a console script, without
+# these. They name system and profile locations only, never credentials.
+_WINDOWS_TEST_ENV = frozenset({
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+})
 _NODE_MODULE_BIN = re.compile(r"^(?:\./)?node_modules/\.bin/([A-Za-z0-9_.-]+)$")
 _SHELL_CONTROL_TOKENS = frozenset({";", ";;", "&", "&&", "|", "||", "(", ")"})
 _SHELL_COMMAND_PREFIXES = frozenset({"command", "exec", "nohup", "sudo"})
@@ -494,10 +502,11 @@ def _test_environment(
 ) -> dict[str, str]:
     """Build a deterministic test environment without forwarding credentials."""
 
+    inherited = _INHERITED_TEST_ENV | (_WINDOWS_TEST_ENV if os.name == "nt" else frozenset())
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name in _INHERITED_TEST_ENV or name.startswith("LC_")
+        if name.upper() in inherited or name.startswith("LC_")
     }
     environment.update({"CI": "1", "NO_COLOR": "1"})
     for name in unsets:

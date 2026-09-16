@@ -5,11 +5,13 @@ decides *how*, and nothing else. Keeping them apart is the point: the authority
 stays testable with fake senders, and the transports stay dumb enough that
 adding one cannot accidentally add a policy exemption.
 
-Three channels, fixed:
+Four channels, fixed:
 
 - `voice` puts a line in front of the desktop voice bridge, which is how she
   actually talks to him when he is at the machine.
-- `telegram` is the fallback for when he is not, through the existing bot.
+- `imessage` is the fallback for when he is not: his own iMessage thread,
+  through the Unified hub he runs. No third-party service is involved.
+- `telegram` is the legacy bot, kept only so old queued notices can drain.
 - `desktop` is the silent overlay notice, for things worth showing but not
   worth saying out loud.
 
@@ -117,8 +119,20 @@ def send_telegram(request: NotificationRequest) -> bool:
     return result.returncode == 0
 
 
+def send_imessage(request: NotificationRequest) -> bool:
+    """Text his phone through his own Unified hub."""
+
+    from core import phone_line
+
+    try:
+        return phone_line.send(request.summary, key=request.dedupe_key or "")
+    except Exception:
+        return False
+
+
 DEFAULT_SENDERS = {
     "voice": send_voice,
+    "imessage": send_imessage,
     "telegram": send_telegram,
     "desktop": send_desktop,
 }
@@ -201,7 +215,7 @@ def notify(
     dedupe_key: str = "",
     source_surface: str = "system",
     job_id: str | None = None,
-    fallback_channel: str | None = "telegram",
+    fallback_channel: str | None = "imessage",
     authority: NotificationAuthority | None = None,
 ):
     """Ask the authority to tell Raghav something, with one fallback hop.

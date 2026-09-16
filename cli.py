@@ -895,16 +895,25 @@ def dev(no_hot_reload):
 @main.command(name="text")
 @click.argument("message", nargs=-1, required=True)
 def text(message):
-    """Text Raghav's phone via the Serena telegram bot (proactive ping).
+    """Text Raghav's phone (proactive ping).
 
     Usage: chats text "build's done, come look"
-    Credentials: ~/.config/serena/telegram.env (TELEGRAM_BOT_TOKEN/CHAT_ID).
-    Note: replies go to Locket's webhook brain (phone Serena), not back
-    to the session that sent the text.
+    Uses his own iMessage thread through the Unified hub when this machine is
+    paired (`chats phone status`). Otherwise falls back to the legacy
+    Telegram bot in ~/.config/serena/telegram.env.
     """
     import json
     import urllib.request
     from pathlib import Path
+
+    from core import phone_line
+
+    if phone_line.available():
+        if phone_line.send(" ".join(message)):
+            console.print("[green]sent[/green]")
+            return
+        console.print("[red]the hub did not accept the iMessage[/red]")
+        raise SystemExit(1)
 
     env_path = Path.home() / ".config" / "serena" / "telegram.env"
     if not env_path.exists():
@@ -2263,6 +2272,55 @@ def owed(as_json, limit):
         click.echo(f"  [?] {item['owes']} - {item['reason'] or 'never confirmed'}")
 
 
+@main.group(name="phone")
+def phone():
+    """Serena's iMessage line to Raghav, through his Unified hub."""
+
+
+@phone.command(name="status")
+def phone_status():
+    """Show whether this machine is paired and which thread it uses."""
+    import json
+
+    from core import unified_hub
+
+    print(json.dumps(unified_hub.settings(), indent=2))
+
+
+@phone.command(name="pair")
+@click.option("--name", default="Serena", help="Device name shown in Unified.")
+@click.option("--conversation", default="", help="Hub conversation id of his own thread.")
+def phone_pair(name, conversation):
+    """Claim a hub pairing offer (JSON on stdin) as this machine's device."""
+    import json
+    import platform as _platform
+    import sys
+
+    from core import unified_hub
+
+    offer = json.loads(sys.stdin.read())
+    system = _platform.system().lower()
+    result = unified_hub.claim_pairing(
+        offer, device_name=name,
+        platform="windows" if system == "windows" else "linux",
+        app_version="serena-cli",
+    )
+    if conversation:
+        unified_hub.configure(conversation_id=conversation)
+    print(json.dumps({**result, **unified_hub.settings()}, indent=2))
+
+
+@phone.command(name="poll")
+def phone_poll():
+    """Read new commands from the thread once."""
+    import json
+    from dataclasses import asdict
+
+    from core import phone_line
+
+    print(json.dumps(asdict(phone_line.poll()), indent=2))
+
+
 @main.group(name="webhook")
 def webhook_group():
     """Serena's authenticated signed webhook ingress."""
@@ -2272,6 +2330,27 @@ def _ingress():
     from core.webhook_ingress import default_ingress
 
     return default_ingress()
+
+
+@webhook_group.command(name="serve")
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8768, show_default=True, type=int)
+def webhook_serve(host, port):
+    """Serve only the signed webhook ingress, for a headless dispatcher.
+
+    Management endpoints stay loopback-only. Publish just the /webhooks prefix
+    (for example with tailscale serve), never /api/webhooks: a local reverse
+    proxy makes every caller look like loopback.
+    """
+    from flask import Flask
+    from werkzeug.serving import make_server
+
+    from ui.webhook_web import webhook_bp
+
+    app = Flask("serena-webhooks")
+    app.register_blueprint(webhook_bp)
+    click.echo(f"serving signed webhooks on http://{host}:{port}/webhooks/<route>")
+    make_server(host, port, app, threaded=True).serve_forever()
 
 
 @webhook_group.command(name="routes")

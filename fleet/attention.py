@@ -13,6 +13,10 @@ def notify_blocked_run(store, run, authority_factory):
         "completed", "failed", "cancelled", "stopping",
     }:
         return
+    if str(run.get("origin_session_id") or "").startswith("serena-task:"):
+        # The task dispatcher texts him about its own parked runs, with the
+        # task number he can reply to. A second, generic alert is noise.
+        return
     blocked = [leg for phase in run.get("phases", []) for leg in phase.get("legs", [])
                if leg.get("state") == "waiting_for_input"]
     if not blocked:
@@ -55,8 +59,8 @@ def notify_blocked_run(store, run, authority_factory):
     # A voice attempt deferred by quiet hours can fail on a later service
     # boot too. Its fallback has the same policy gate as immediate failures.
     if result.decision == "failed" and result.channel == "voice":
-        result = authority.request(replace(request, channel="telegram",
-                                           dedupe_key=request.dedupe_key + ":telegram"))
+        result = authority.request(replace(request, channel="imessage",
+                                           dedupe_key=request.dedupe_key + ":imessage"))
     store.append_event(run_id, "run.attention.result", {
         "notice_id": notice_id, "notification_id": result.notification_id,
         "decision": result.decision, "channel": result.channel,
