@@ -95,7 +95,7 @@ for line in sys.stdin:
                 for edition, image in (("stable", args.stable), ("dev", args.dev)):
                     debug_port = free_port()
                     log = (args.output / f"{edition}.log").open("w")
-                    process = subprocess.Popen([str(image.resolve()), "--no-sandbox", "--disable-gpu",
+                    process = subprocess.Popen([str(image.resolve()), "--no-sandbox", "--disable-gpu", "--ozone-platform=headless",
                         f"--remote-debugging-port={debug_port}"], env=env, stdout=log,
                         stderr=subprocess.STDOUT, start_new_session=True)
                     processes.append((process, log))
