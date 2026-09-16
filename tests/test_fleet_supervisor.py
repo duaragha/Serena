@@ -2472,3 +2472,230 @@ def test_a_stale_supervisor_refuses_the_run_instead_of_dispatching_old_code(
     monkeypatch.setattr(supervisor, "run_worker", _successful_fake(calls))
     supervisor.retry_run(run["run_id"])
     assert supervisor.run_supervisor(run["run_id"])["state"] == "completed"
+
+
+def test_a_run_stays_incomplete_while_delivery_is_still_owed(fleet_env):
+    """Handing work back to root is a debt, not a finish line.
+
+    The leg that defers is honest and completes. The run it belongs to does
+    not, because the task is not delivered until someone produces verified
+    evidence for what was deferred. A run that ends with the debt outstanding
+    ends failed, naming what is owed and who owes it.
+    """
+
+    store = supervisor._store()
+    run = supervisor.start_run(
+        "ship the bridge upgrades", activity="coding", cwd=str(fleet_env)
+    )
+    run_id = str(run["run_id"])
+
+    def accept(deferred, verified=()):
+        store.append_event(
+            run_id,
+            "leg.completion_evidence_accepted",
+            {
+                "accepted": True,
+                "units": [
+                    {
+                        "unit_id": "ws-1",
+                        "claimed_status": "completed",
+                        "accepted": True,
+                        "deferred_delivery": list(deferred),
+                        "verified_delivery": list(verified),
+                    }
+                ],
+            },
+        )
+
+    assert supervisor._outstanding_delivery(store, run_id) == []
+
+    debt = {
+        "requirement": "the delivered result is verified against the live surface",
+        "owner": "root coordinator",
+        "reason": "sandbox has no live-server access",
+    }
+    accept([debt])
+    outstanding = supervisor._outstanding_delivery(store, run_id)
+    assert len(outstanding) == 1
+    assert outstanding[0]["owner"] == "root coordinator"
+
+    # A later leg that actually does the work discharges it by name.
+    accept([], verified=[debt["requirement"]])
+    assert supervisor._outstanding_delivery(store, run_id) == []
+
+
+_LIVE_REQ = "the delivered result is verified against the live surface"
+
+
+class _LedgerEvents:
+    """A paginating event store, so the helper's own paging is exercised."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def events(self, run_id, *, after=0, limit=2_000, latest=False):
+        del run_id, latest
+        return [item for item in self._events if item["event_seq"] > after][:limit]
+
+
+def _accepted(seq, unit_id, *, deferred=(), verified=()):
+    return {
+        "event_seq": seq,
+        "type": "leg.completion_evidence_accepted",
+        "payload": {
+            "units": [
+                {
+                    "unit_id": unit_id,
+                    "deferred_delivery": [
+                        {
+                            "unit_id": unit_id,
+                            "requirement": item,
+                            "owner": "root coordinator",
+                            "reason": "sandbox cannot reach the live surface",
+                        }
+                        for item in deferred
+                    ],
+                    "verified_delivery": list(verified),
+                }
+            ]
+        },
+    }
+
+
+def test_one_units_delivery_never_discharges_anothers():
+    """Contract wording is generic, so text alone is not an identity.
+
+    Every unit carries the same three delivery sentences. Keyed on the text,
+    one bridge deploying cleared every other bridge's debt at once.
+    """
+
+    outstanding = supervisor._outstanding_delivery(
+        _LedgerEvents(
+            [
+                _accepted(1, "ws-1", deferred=[_LIVE_REQ]),
+                _accepted(2, "ws-2", verified=[_LIVE_REQ]),
+            ]
+        ),
+        "run",
+    )
+    assert [item["unit_id"] for item in outstanding] == ["ws-1"]
+
+
+def test_a_debt_incurred_after_a_verification_is_still_owed():
+    """Order matters: set subtraction cleared debts taken on later."""
+
+    stale_first = supervisor._outstanding_delivery(
+        _LedgerEvents(
+            [
+                _accepted(1, "ws-1", verified=[_LIVE_REQ]),
+                _accepted(2, "ws-1", deferred=[_LIVE_REQ]),
+            ]
+        ),
+        "run",
+    )
+    assert len(stale_first) == 1
+
+    # The honest order still discharges it.
+    discharged = supervisor._outstanding_delivery(
+        _LedgerEvents(
+            [
+                _accepted(1, "ws-1", deferred=[_LIVE_REQ]),
+                _accepted(2, "ws-1", verified=[_LIVE_REQ]),
+            ]
+        ),
+        "run",
+    )
+    assert discharged == []
+
+
+def test_debts_past_the_event_page_limit_are_still_found():
+    events = [
+        {"event_seq": index, "type": "worker.event", "payload": {}}
+        for index in range(1, 2_500)
+    ]
+    events.append(_accepted(2_500, "ws-9", deferred=[_LIVE_REQ]))
+    outstanding = supervisor._outstanding_delivery(_LedgerEvents(events), "run")
+    assert [item["unit_id"] for item in outstanding] == ["ws-9"]
+
+
+def test_an_unreadable_ledger_blocks_completion_instead_of_clearing_it():
+    """The one answer that must never be a guess is "nothing is owed"."""
+
+    class _Broken:
+        def events(self, *args, **kwargs):
+            raise OSError("database is locked")
+
+    with pytest.raises(supervisor.DeliveryLedgerUnavailable):
+        supervisor._outstanding_delivery(_Broken(), "run")
+
+
+def test_a_deferral_must_name_an_owner_fleet_can_route_to(fleet_env):
+    """A debt addressed to nobody is how delivery got dropped in the first place."""
+
+    from fleet.completion import _resolve_owner
+
+    known = frozenset({"agent:a", "agent:b"})
+    assert _resolve_owner("root coordinator", known) == "root"
+    assert _resolve_owner("Root", known) == "root"
+    assert _resolve_owner("agent:b", known) == "agent:b"
+    assert _resolve_owner("the deployment team", known) == ""
+    assert _resolve_owner("someone later", known) == ""
+
+
+def test_the_agent_that_owes_delivery_is_told_so_in_its_prompt(fleet_env, monkeypatch):
+    """Blocking the run is not enough; whoever owes it has to be handed it."""
+
+    run = supervisor.start_run(
+        "ship the bridge upgrades",
+        activity="coding",
+        cwd=str(fleet_env),
+        worker_count=2,
+    )
+    store = supervisor._store()
+    run_id = str(run["run_id"])
+    debt = {
+        "unit_id": "ws-1",
+        "requirement": _LIVE_REQ,
+        "owner": "agent:a",
+        "reason": "sandbox has no live-server access",
+    }
+    store.append_event(
+        run_id,
+        "leg.completion_evidence_accepted",
+        {
+            "accepted": True,
+            "units": [
+                {
+                    "unit_id": "ws-1",
+                    "deferred_delivery": [debt],
+                    "verified_delivery": [],
+                }
+            ],
+        },
+    )
+    refreshed = store.get_run(run_id)
+    legs = refreshed["phases"][3]["legs"]
+    owner_leg = next(leg for leg in legs if leg["worker_key"] == "agent:a")
+    other_leg = next(leg for leg in legs if leg["worker_key"] == "agent:b")
+
+    owed = supervisor._delivery_debt_block(store, refreshed, owner_leg)
+    assert _LIVE_REQ in owed
+    assert "cannot complete until it is done" in owed
+
+    # The peer is told the run is blocked without being handed someone else's work.
+    peer = supervisor._delivery_debt_block(store, refreshed, other_leg)
+    assert _LIVE_REQ not in peer
+    assert "outstanding elsewhere" in peer
+
+
+def test_an_unreadable_ledger_never_reads_as_nothing_owed_in_a_prompt(fleet_env):
+    run = supervisor.start_run("ship it", activity="coding", cwd=str(fleet_env))
+    leg = run["phases"][0]["legs"][0]
+
+    class _Broken:
+        def events(self, *args, **kwargs):
+            raise OSError("database is locked")
+
+    block = supervisor._delivery_debt_block(_Broken(), run, leg)
+    assert "still outstanding" in block
+    assert "nothing outstanding" not in block

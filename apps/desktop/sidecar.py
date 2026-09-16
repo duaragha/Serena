@@ -14,9 +14,27 @@ if __name__ == "__main__" and sys.argv[1:] == ["--workspace-runtime-check"]:
     from core.workspace_claude import ClaudeWorkspace  # noqa: F401
     from core.workspace_codex import CodexWorkspace  # noqa: F401
     from core.workspace_claude_runtime import runtime_paths
+    from core.scheduler_actions import REVIEWED_ACTIONS, start_ready_fleet_task
+    from core.webhook_ingress import default_ingress, route_task
+    from fleet.delivery import accept_operator_evidence, consume_operator_steering
+    from memory.store import enqueue_task, claim_next_task
+    from tempfile import TemporaryDirectory
     import jsonschema  # noqa: F401
 
     runtime_paths()
+    # Exercise the bundled registry, not the source checkout. Keep this probe
+    # private: never initialize the installed ingress DB or dispatch a task.
+    if REVIEWED_ACTIONS.get("serena.fleet.start") is not start_ready_fleet_task:
+        raise RuntimeError("packaged Fleet task dispatch is missing")
+    if not all(callable(fn) for fn in (
+        route_task, enqueue_task, claim_next_task,
+        accept_operator_evidence, consume_operator_steering,
+    )):
+        raise RuntimeError("packaged task/delivery runtime is incomplete")
+    with TemporaryDirectory(prefix="serena-runtime-check-") as scratch:
+        ingress = default_ingress(path=Path(scratch) / "ingress.sqlite3", secret="packaging-probe")
+        if "task" not in ingress.routes:
+            raise RuntimeError("packaged task webhook route is missing")
     raise SystemExit(0)
 
 if __name__ == "__main__" and sys.argv[1:] == ["--fleet-integration-replay"]:

@@ -121,6 +121,8 @@ class UnitVerdict:
     failures: tuple[str, ...] = ()
     changed_paths: tuple[str, ...] = ()
     stop_condition: str = ""
+    deferred_delivery: tuple[dict[str, str], ...] = ()
+    verified_delivery: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -130,6 +132,8 @@ class UnitVerdict:
             "failures": list(self.failures),
             "changed_paths": list(self.changed_paths),
             "stop_condition": self.stop_condition,
+            "deferred_delivery": [dict(item) for item in self.deferred_delivery],
+            "verified_delivery": list(self.verified_delivery),
         }
 
 
@@ -157,6 +161,18 @@ class CompletionVerdict:
     @property
     def completion_allowed(self) -> bool:
         return not self.enforced or (self.accepted and not self.terminal_stop)
+
+    @property
+    def deferred_delivery(self) -> tuple[dict[str, str], ...]:
+        """Delivery this leg moved to someone else, which nobody has discharged.
+
+        Handing work to a coordinator is a legitimate thing for a sandboxed
+        worker to do. What is not legitimate is that move ending the run. Each
+        entry here is a tracked debt: the leg may complete, the run may not,
+        until the owner named in it produces verified delivery evidence.
+        """
+
+        return tuple(item for unit in self.units for item in unit.deferred_delivery)
 
     @property
     def blocked(self) -> bool:
@@ -256,6 +272,7 @@ def evaluate_completion(
     observed_research_activity: dict[str, int] | None = None,
     dependency_states: dict[str, str] | None = None,
     research_depth: str = DEFAULT_RESEARCH_DEPTH,
+    known_owners: list[str] | tuple[str, ...] | None = None,
 ) -> CompletionVerdict:
     """Decide whether one finished leg may be recorded as completed."""
 
@@ -369,6 +386,9 @@ def evaluate_completion(
             observed_research_activity=observed_research_activity,
             dependency_states=dependency_states or {},
             research_depth=research_depth,
+            known_owners=frozenset(
+                str(item).strip() for item in (known_owners or ()) if str(item).strip()
+            ),
         )
         verdicts.append(verdict)
         declared_total.update(verdict.changed_paths)
@@ -420,6 +440,7 @@ def _evaluate_unit(
     observed_research_activity: dict[str, int] | None,
     dependency_states: dict[str, str],
     research_depth: str = DEFAULT_RESEARCH_DEPTH,
+    known_owners: frozenset[str] = frozenset(),
 ) -> UnitVerdict:
     failures: list[str] = []
     status = _clean(entry.get("status")).lower()
@@ -431,6 +452,8 @@ def _evaluate_unit(
     stop_condition = _clean(entry.get("stop_condition"))
     completion = contract.get("completion_contract")
     completion = completion if isinstance(completion, dict) else {}
+    deferred_delivery: list[dict[str, str]] = []
+    verified_delivery: list[str] = []
 
     if phase == "verify" and status == "completed":
         failures.extend(_review_findings_failures(entry.get("findings")))
@@ -508,6 +531,14 @@ def _evaluate_unit(
                     failures.append(
                         f"acceptance criterion was marked met with no evidence ({label[:160]})"
                     )
+
+        delivery_failures, deferred_delivery, verified_delivery = _delivery_failures(
+            _text_list(completion.get("delivery_requirements")),
+            entry.get("delivery"),
+            unit_id,
+            known_owners,
+        )
+        failures.extend(delivery_failures)
 
         if entry.get("constraints_respected") is not True:
             failures.append(
@@ -672,6 +703,8 @@ def _evaluate_unit(
         failures=tuple(failures),
         changed_paths=changed_paths,
         stop_condition=stop_condition,
+        deferred_delivery=tuple(deferred_delivery),
+        verified_delivery=tuple(verified_delivery),
     )
 
 
@@ -884,6 +917,138 @@ def _accepted_verification_forms() -> list[str]:
         return []
 
 
+_DELIVERY_STATES = frozenset({"verified", "deferred", "not_applicable"})
+
+
+_ROOT_OWNERS = frozenset({"root", "root coordinator", "coordinator", "parent", "origin"})
+
+
+def _resolve_owner(owner: str, known_owners: frozenset[str]) -> str:
+    """Map a stated owner onto an identity Fleet can route work to."""
+
+    candidate = owner.strip().casefold()
+    if candidate in _ROOT_OWNERS:
+        return "root"
+    for known in known_owners:
+        if candidate == known.casefold():
+            return known
+    return ""
+
+
+def _delivery_failures(
+    required: list[str],
+    reported: object,
+    unit_id: str = "",
+    known_owners: frozenset[str] = frozenset(),
+) -> tuple[list[str], list[dict[str, str]], list[str]]:
+    """Check delivery on its own terms, never by way of the acceptance answers.
+
+    A unit used to be able to satisfy every acceptance criterion honestly while
+    delivering nothing: the code existed, it integrated, the tests passed, and
+    deployment had been handed to a coordinator who was never tracked. Delivery
+    is therefore answered separately, requirement by requirement, and the only
+    three honest answers are that it happened, that it does not apply, or that
+    someone specific now owes it.
+    """
+
+    if not required:
+        return [], [], []
+    failures: list[str] = []
+    deferred: list[dict[str, str]] = []
+    verified: list[str] = []
+    answers = reported if isinstance(reported, list) else []
+    objects = [item for item in answers if isinstance(item, dict)]
+    if not objects:
+        return (
+            [
+                "a completed unit must answer every delivery requirement in its "
+                "contract with a delivery[] entry. Implementing the change does "
+                "not deliver it: "
+                + "; ".join(item[:120] for item in required[:3])
+            ],
+            [],
+            [],
+        )
+    required_counts = Counter(_criterion_key(item) for item in required)
+    answered_counts = Counter(
+        _criterion_key(item.get("requirement"))
+        for item in objects
+        if _criterion_key(item.get("requirement"))
+    )
+    missing = list((required_counts - answered_counts).elements())
+    unknown = list((answered_counts - required_counts).elements())
+    if missing:
+        failures.append(
+            "delivery requirements were not answered: " + "; ".join(missing[:4])
+        )
+    if unknown:
+        failures.append(
+            "unknown or duplicate delivery requirements were reported: "
+            + "; ".join(unknown[:4])
+        )
+    for item in objects:
+        # Full text is the identity; the short form is only for messages. The
+        # contract's requirements are generic by design, so two units share
+        # their wording and a truncated key made one unit's verification
+        # discharge another unit's debt.
+        requirement = _clean(item.get("requirement"))
+        label = requirement[:160] or "delivery requirement"
+        state = _clean(item.get("state")).casefold()
+        if state not in _DELIVERY_STATES:
+            failures.append(
+                f"delivery state must be one of {', '.join(sorted(_DELIVERY_STATES))} "
+                f"({label})"
+            )
+            continue
+        if state == "verified":
+            if not _clean(item.get("evidence")):
+                failures.append(
+                    f"delivery marked verified with no observed evidence ({label})"
+                )
+            else:
+                verified.append(requirement)
+            continue
+        reason = _clean(item.get("reason"))
+        if not reason:
+            failures.append(
+                f"delivery marked {state} without saying why ({label})"
+            )
+            continue
+        if state == "not_applicable":
+            continue
+        owner = _clean(item.get("owner"))
+        if not owner:
+            failures.append(
+                "deferred delivery must name the owner who now owes it, so Fleet "
+                f"can track the debt ({label})"
+            )
+            continue
+        # Free text was routable by nobody. An owner has to be an identity Fleet
+        # can actually hand the work to: a worker key in this run, or "root" for
+        # the coordinator outside it. Anything else is a debt addressed to the
+        # void, which is how deployment got handed back and quietly dropped.
+        resolved = _resolve_owner(owner, known_owners)
+        if not resolved:
+            failures.append(
+                f"deferred delivery named an owner Fleet cannot route to ({owner[:80]}). "
+                "Use 'root' for the coordinator that started this run, or the exact "
+                "worker key of a Fleet agent"
+                + (f" ({', '.join(sorted(known_owners)[:6])})" if known_owners else "")
+                + f" ({label})"
+            )
+            continue
+        owner = resolved
+        deferred.append(
+            {
+                "unit_id": str(unit_id or ""),
+                "requirement": requirement,
+                "owner": owner[:120],
+                "reason": reason[:400],
+            }
+        )
+    return failures, deferred, verified
+
+
 def render_evidence_instructions(
     units: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
     assignment_ids: list[str] | tuple[str, ...],
@@ -918,6 +1083,19 @@ def render_evidence_instructions(
                 "met": True,
                 "evidence": "what you actually observed that proves it",
             }
+        ],
+        "delivery": [
+            {
+                "requirement": "the first delivery requirement, copied verbatim",
+                "state": "verified",
+                "evidence": "the deploy or live check you actually observed",
+            },
+            {
+                "requirement": "the second delivery requirement, copied verbatim",
+                "state": "deferred",
+                "owner": "root coordinator",
+                "reason": "this sandbox cannot reach the live server",
+            },
         ],
         "constraints_respected": True,
         "changed_paths": ["core/example.py"] if writes else [],
@@ -994,6 +1172,20 @@ def render_evidence_instructions(
         "exactly once. Put your unit-specific detail in evidence, not in the "
         "criterion text.",
         "- completed is rejected when a declared dependency is not itself complete.",
+        # Stated because the alternative is a worker learning it from a
+        # rejection, and because the run this came from was accepted as
+        # complete while shipping nothing.
+        "- answer EVERY delivery requirement in delivery[], copied verbatim, "
+        "separately from acceptance. Satisfying the acceptance criteria does "
+        "NOT satisfy delivery: implementing a change is not delivering it.",
+        "- each delivery entry is state verified (with observed evidence), "
+        "not_applicable (with a reason), or deferred (with a reason AND the "
+        "owner who now owes it).",
+        "- deferring is allowed and is the honest answer when your sandbox "
+        "cannot deploy or reach a live surface. It is not a way to finish: "
+        "Fleet tracks the debt and the RUN stays incomplete until that owner "
+        "produces verified delivery evidence. Handing work back does not "
+        "close it.",
     ]
     if writes:
         lines += [

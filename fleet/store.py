@@ -9,13 +9,14 @@ import signal
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from core.work_jobs import process_start_token
 from core.process_probe import probe_process
 from core.sqlite_connection import connect_database
+from core.work_jobs import process_start_token
 from fleet.context import redact_text, redact_value
 from fleet.contracts import derive_work_unit_views
 from fleet.dag import (
@@ -479,7 +480,7 @@ class FleetStore:
             return result
 
     def resume_ready_input_work(self, run_id: str, select_ready: Callable[[dict[str, Any]], str | None]) -> bool:
-        """Wake a ready peer review, never retry or clear an input-blocked leg.
+        """Wake ready reviews or declared dependency waits, never arbitrary input stops.
 
         Selection and wakeup share the cancellation/dispatch transaction. The
         selector is an internal pure scheduler predicate, not a provider callback.
@@ -499,14 +500,17 @@ class FleetStore:
                 connection.rollback()
                 return False
             leg = connection.execute("SELECT state,access_mode FROM fleet_legs WHERE run_id=? AND leg_id=?", (run_id, leg_id)).fetchone()
-            if not leg or leg["state"] != "queued" or leg["access_mode"] != "review":
+            from fleet.dependencies import pending_wait, ready_fingerprint
+            peer_ready = bool(leg and pending_wait(connection, leg_id) and ready_fingerprint(connection, leg_id))
+            if not leg or leg["state"] != "queued" or (leg["access_mode"] != "review" and not peer_ready):
                 connection.rollback()
                 return False
             now = time.time()
             connection.execute("UPDATE fleet_runs SET state='queued', owner_pid=NULL, owner_token=NULL, error=NULL, completed_at=NULL, updated_at=? WHERE run_id=?", (now, run_id))
             self._insert_event(connection, run_id=run_id, leg_id=leg_id,
                                event_type="run.ready_work_resumed",
-                               payload={"reason": "independent peer review is ready; input blockers preserved"})
+                               payload={"reason": "verified peer dependencies are ready; preserved patch will refresh"
+                                        if peer_ready else "independent peer review is ready; input blockers preserved"})
             return True
 
     def begin_attempt(self, leg_id: str, *, integration_replay_source: str | None = None,
@@ -525,6 +529,14 @@ class FleetStore:
                 raise RuntimeError("Fleet run cancellation was requested")
             if leg["state"] == "completed":
                 raise ValueError("completed Fleet leg cannot start another attempt")
+            from fleet.dependencies import pending_wait, ready_fingerprint
+            if pending_wait(connection, leg_id):
+                fingerprint = ready_fingerprint(connection, leg_id)
+                if not fingerprint:
+                    raise RuntimeError("declared peer dependencies are not yet integrated")
+                self._insert_event(connection, run_id=leg["run_id"], leg_id=leg_id,
+                                   attempt_id=attempt_id, event_type="leg.dependencies_resumed",
+                                   payload={"fingerprint": fingerprint, "refresh_workspace": True})
             active = connection.execute(
                 "SELECT * FROM fleet_attempts WHERE leg_id = ? AND state = 'running' "
                 "ORDER BY attempt_number DESC LIMIT 1",
@@ -874,6 +886,7 @@ class FleetStore:
         completion_repair_reason: str | None = None,
         input_blocker_reason: str | None = None,
         helper_outcome_missing: bool = False,
+        dependency_verdict=None,
     ) -> None:
         if state not in {"completed", "failed", "cancelled", "interrupted"}:
             raise ValueError("invalid Fleet attempt terminal state")
@@ -931,7 +944,11 @@ class FleetStore:
                 ),
             )
             leg_state = "completed" if state == "completed" else state
-            from fleet.resources import is_disk_exhaustion, is_process_crash, is_transient_transport_error
+            from fleet.resources import (
+                is_disk_exhaustion,
+                is_process_crash,
+                is_transient_transport_error,
+            )
 
             recovery_allowed = (
                 state == "failed" and not run["cancel_requested"]
@@ -1030,7 +1047,16 @@ class FleetStore:
                                  "resume_session_id": session_id or attempt["session_id"],
                                  "state": "queued"},
                     )
-            if input_action:
+            from fleet.dependencies import declared_wait
+            dependency_waiting = recovery_allowed and declared_wait(connection, attempt_id, dependency_verdict)
+            if dependency_waiting:
+                leg_state = "waiting_for_dependencies"
+                self._insert_event(connection, run_id=str(attempt["run_id"]),
+                                   leg_id=str(attempt["leg_id"]), attempt_id=attempt_id,
+                                   event_type="leg.waiting_for_dependencies",
+                                   payload={"state": leg_state, "reason": clean_error,
+                                            "next_action": "Fleet resumes after verified peer integration"})
+            elif input_action:
                 leg_state = "waiting_for_input"
                 self._insert_event(
                     connection, run_id=str(attempt["run_id"]),
@@ -2330,6 +2356,23 @@ class FleetStore:
             snapshot = self._snapshot(connection, run_id)
             snapshot["retry_activated"] = False
             return snapshot
+
+    def wait_for_delivery(self, run_id: str, reason: str) -> dict[str, Any]:
+        """Park finalization without rewriting successful worker receipts."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = self._require_run(connection, run_id)
+            if run["cancel_requested"]:
+                return self._snapshot(connection, run_id)
+            connection.execute(
+                "UPDATE fleet_runs SET state='waiting_for_input', error=?, owner_pid=NULL, "
+                "owner_token=NULL, completed_at=NULL, updated_at=? WHERE run_id=?",
+                (reason, time.time(), run_id),
+            )
+            self._insert_event(connection, run_id=run_id, event_type="run.waiting_for_delivery",
+                               payload={"reason": reason, "state": "waiting_for_input",
+                                        "next_action": "verify outstanding delivery and submit coordinator receipts; completed agents need no retry"})
+            return self._snapshot(connection, run_id)
 
     def add_steering(self, run_id: str, message: str) -> dict[str, Any]:
         clean = redact_text(message)[0].strip()

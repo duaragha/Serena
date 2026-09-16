@@ -41,12 +41,18 @@ def _envelope(payload: dict) -> str:
 
 def _good_unit(unit: dict, unit_id: str = "ws-1", **overrides) -> dict:
     criteria = unit["completion_contract"]["acceptance_criteria"]
+    delivery = unit["completion_contract"].get("delivery_requirements") or []
     entry = {
         "id": unit_id,
         "status": "completed",
         "acceptance": [
             {"criterion": item, "met": True, "evidence": f"observed: {item}"}
             for item in criteria
+        ],
+        # A compliant coding envelope answers delivery as well as acceptance.
+        "delivery": [
+            {"requirement": item, "state": "verified", "evidence": f"delivered: {item}"}
+            for item in delivery
         ],
         "constraints_respected": True,
         "changed_paths": [],
@@ -896,3 +902,146 @@ def test_a_finding_without_an_owner_or_severity_is_rejected():
     assert any("unit_id" in item for item in verdict.failures)
     assert any("severity" in item for item in verdict.failures)
     assert any("evidence" in item for item in verdict.failures)
+
+
+def _delivery_contract():
+    from fleet.contracts import build_work_unit_contracts
+
+    return build_work_unit_contracts(
+        "coding",
+        [{"id": "ws-1", "title": "bridge", "description": "upgrade the bridges and deploy"}],
+        [
+            {
+                "worker_key": "agent:a",
+                "assignment_ids": ["ws-1"],
+                "review_target_ids": [],
+                "access_mode": "write",
+            }
+        ],
+        cwd=".",
+    )
+
+
+def _delivery_envelope(units, delivery):
+    contract = units[0]["completion_contract"]
+    body = {
+        "schema_version": 1,
+        "units": [
+            {
+                "id": "ws-1",
+                "status": "completed",
+                "acceptance": [
+                    {"criterion": item, "met": True, "evidence": "observed"}
+                    for item in contract["acceptance_criteria"]
+                ],
+                "delivery": delivery,
+                "constraints_respected": True,
+                "changed_paths": ["core/bridge.py"],
+                "tests": [{"command": "python -m pytest tests/ -q", "exit_code": 0}],
+                "stop_condition": "",
+            }
+        ],
+    }
+    return (
+        "a real readable answer for the next Fleet phase, long enough to count.\n"
+        + EVIDENCE_OPEN
+        + json.dumps(body)
+        + EVIDENCE_CLOSE
+    )
+
+
+def _delivery_verdict(units, delivery):
+    return evaluate_completion(
+        output_text=_delivery_envelope(units, delivery),
+        units=units,
+        assignment_ids=["ws-1"],
+        access_mode="write",
+        activity="coding",
+        phase="execute",
+        observed_test_results={"python -m pytest tests/ -q": 0},
+    )
+
+
+def test_implementing_a_change_does_not_count_as_delivering_it():
+    """The failure this exists to stop: honest code, nothing shipped.
+
+    Every acceptance criterion can be truthfully met the moment the code is
+    written and the tests pass. A run once completed on exactly that basis
+    while deployment and live verification had been handed to a coordinator
+    nobody tracked. Delivery is therefore answered separately, and answering
+    acceptance never answers it.
+    """
+
+    units = _delivery_contract()
+    requirements = units[0]["completion_contract"]["delivery_requirements"]
+    assert len(requirements) == 3
+
+    unanswered = _delivery_verdict(units, [])
+    assert unanswered.accepted is False
+    assert any("does not deliver it" in failure for failure in unanswered.failures)
+
+    # A claim is not evidence.
+    hollow = _delivery_verdict(
+        units, [{"requirement": item, "state": "verified"} for item in requirements]
+    )
+    assert hollow.accepted is False
+    assert any("no observed evidence" in failure for failure in hollow.failures)
+
+    # Nor is a deferral with nobody on the hook for it.
+    ownerless = _delivery_verdict(
+        units,
+        [{"requirement": item, "state": "deferred", "reason": "sandboxed"} for item in requirements],
+    )
+    assert ownerless.accepted is False
+    assert any("name the owner" in failure for failure in ownerless.failures)
+
+
+def test_deferring_delivery_completes_the_leg_but_records_the_debt():
+    """A sandboxed worker may hand delivery on. It may not thereby finish it."""
+
+    units = _delivery_contract()
+    requirements = units[0]["completion_contract"]["delivery_requirements"]
+    verdict = _delivery_verdict(
+        units,
+        [
+            {
+                "requirement": requirements[0],
+                "state": "verified",
+                "evidence": "integrated into the base checkout at abc123",
+            },
+            {
+                "requirement": requirements[1],
+                "state": "deferred",
+                "owner": "root coordinator",
+                "reason": "this sandbox cannot reach the deploy target",
+            },
+            {
+                "requirement": requirements[2],
+                "state": "not_applicable",
+                "reason": "this unit changes no externally reachable surface",
+            },
+        ],
+    )
+
+    # The leg is honest, so the leg completes.
+    assert verdict.accepted is True
+    # And exactly one debt is now tracked against the run.
+    assert len(verdict.deferred_delivery) == 1
+    # Stated as "root coordinator", stored as the canonical routable identity.
+    assert verdict.deferred_delivery[0]["owner"] == "root"
+    assert verdict.deferred_delivery[0]["unit_id"] == "ws-1"
+    assert verdict.units[0].verified_delivery == (requirements[0],)
+
+
+def test_delivering_everything_leaves_no_debt():
+    units = _delivery_contract()
+    requirements = units[0]["completion_contract"]["delivery_requirements"]
+    verdict = _delivery_verdict(
+        units,
+        [
+            {"requirement": item, "state": "verified", "evidence": "deployed, curled, 200 OK"}
+            for item in requirements
+        ],
+    )
+    assert verdict.accepted is True
+    assert verdict.deferred_delivery == ()

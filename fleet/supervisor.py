@@ -450,6 +450,9 @@ def handoff_leg(
 def steer_run(run_id: str, message: str) -> dict[str, Any]:
     """Queue context for future legs. Active model turns are never mislabelled as steered."""
 
+    from fleet.delivery import accept_operator_evidence
+    if accept_operator_evidence(_store(), _require_id(run_id), message):
+        return _store().get_run(run_id)
     run = _store().add_steering(_require_id(run_id), message)
     run["steering_scope"] = "future-legs"
     return run
@@ -992,6 +995,46 @@ def run_supervisor(run_id: str) -> dict[str, Any]:
                     f"{final_phase.display_name} completed without a final response",
                 ),
             )
+        try:
+            from fleet.delivery import consume_operator_steering
+            consume_operator_steering(store, clean_id)
+            outstanding = _outstanding_delivery(store, clean_id)
+        except DeliveryLedgerUnavailable as exc:
+            # Never complete on an unread ledger. A run that cannot prove it
+            # delivered has not proved it delivered.
+            return _terminal_outcome(
+                store,
+                store.fail_run(
+                    clean_id,
+                    f"{exc} Completion is refused because outstanding delivery "
+                    "cannot be ruled out. Retry once the evidence store is readable.",
+                ),
+            )
+        if outstanding:
+            # Successful coding is retained while coordinator-owned delivery
+            # waits. Do not mislabel a deployment/authority wait as an agent
+            # failure or rerun already accepted worker turns.
+            detail = "; ".join(
+                f"{item['requirement'][:120]} (owed by {item['owner'][:60]})"
+                for item in outstanding[:6]
+            )
+            with suppress(Exception):
+                store.append_event(
+                    clean_id,
+                    "run.delivery_outstanding",
+                    {"outstanding": outstanding[:20], "count": len(outstanding)},
+                )
+            return _terminal_outcome(
+                store,
+                store.wait_for_delivery(
+                    clean_id,
+                    f"{len(outstanding)} delivery requirement"
+                    + ("" if len(outstanding) == 1 else "s")
+                    + " remain outstanding after all agent steps completed: "
+                    f"{detail}. Finish that work and retry, or record "
+                    "verified delivery evidence for it.",
+                ),
+            )
         return _terminal_outcome(store, store.complete_run(clean_id, result_text))
     except BaseException as exc:
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
@@ -1036,6 +1079,72 @@ def _stale_fleet_modules() -> list[str]:
         if changed_at > _PROCESS_STARTED_AT:
             stale.append(Path(source).name)
     return sorted(set(stale))
+
+
+class DeliveryLedgerUnavailable(RuntimeError):
+    """The delivery debts could not be read, so nothing may be concluded."""
+
+
+def _outstanding_delivery(store: FleetStore, run_id: str) -> list[dict[str, str]]:
+    """Delivery this run deferred and nobody has since verified.
+
+    Three things this has to get right, each of which was wrong first time:
+
+    Identity is the unit plus the full requirement text. The contract wording is
+    generic on purpose, so every unit carries the same three sentences; keying
+    on the text alone let one bridge's deployment discharge another bridge's
+    debt.
+
+    Order matters. Deferrals and verifications are applied in event order, so a
+    verification that happened before a later deferral cannot cancel it. The
+    previous set-subtraction cleared debts that were incurred afterwards.
+
+    And it fails closed. An unreadable ledger used to return "nothing owed",
+    which is the one answer that must never be a guess: the gate exists to stop
+    a run completing undelivered, so losing the evidence blocks completion
+    rather than waving it through.
+    """
+
+    owed: dict[tuple[str, str], dict[str, str]] = {}
+    attempts: dict[str, list[str]] = {}
+    from fleet.delivery import reconcile_event
+    after = 0
+    try:
+        while True:
+            events = store.events(run_id, after=after, limit=2_000)
+            if not events:
+                break
+            for event in events:
+                after = max(after, int(event.get("event_seq") or 0))
+                reconcile_event(event, owed, attempts)
+                if str(event.get("type") or "") not in {
+                    "leg.completion_evidence_accepted",
+                    "leg.completion_evidence_stopped",
+                }:
+                    continue
+                for unit in (event.get("payload") or {}).get("units") or []:
+                    if not isinstance(unit, dict):
+                        continue
+                    unit_id = str(unit.get("unit_id") or "")
+                    for item in unit.get("deferred_delivery") or []:
+                        if not isinstance(item, dict):
+                            continue
+                        requirement = str(item.get("requirement") or "").strip()
+                        if not requirement:
+                            continue
+                        scope = str(item.get("unit_id") or unit_id)
+                        owed[(scope, requirement.casefold())] = dict(item)
+                    for requirement in unit.get("verified_delivery") or []:
+                        key = str(requirement or "").strip().casefold()
+                        if key:
+                            owed.pop((unit_id, key), None)
+            if len(events) < 2_000:
+                break
+    except Exception as exc:  # noqa: BLE001 - re-raised as a blocking failure
+        raise DeliveryLedgerUnavailable(
+            f"could not read this run's delivery evidence: {exc}"
+        ) from exc
+    return list(owed.values())
 
 
 def _refresh_read_mcp_catalog(store: FleetStore, run_id: str) -> None:
@@ -1703,9 +1812,9 @@ def serve_forever(
                 store.flush_control_outbox()
             next_control_flush = monotonic_now + CONTROL_PLANE_FLUSH_SECONDS
         if monotonic_now >= next_capacity_probe:
-            from fleet.resources import resume_ready_resource_waits
-            from fleet.ready_resume import resume_ready_input_runs
             from fleet.integration_recovery import resume_saved_integrations
+            from fleet.ready_resume import resume_ready_input_runs
+            from fleet.resources import resume_ready_resource_waits
 
             with suppress(Exception):
                 resume_ready_resource_waits(store)
@@ -2526,6 +2635,10 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
             peer_token=peer_token,
             fleet_db_path=str(store.path),
         )
+        from fleet.worker_runtime import preflight
+        receipt = preflight(request)
+        store.append_event(run_id, "worker.runtime_preflight", receipt,
+                           leg_id=str(leg["leg_id"]), attempt_id=str(attempt["attempt_id"]))
     except Exception as exc:
         monitor.stop()
         result = WorkerResult(
@@ -2774,6 +2887,7 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
                 else None
             ),
             input_blocker_reason=verdict.summary() if verdict is not None and verdict.terminal_stop else None,
+            dependency_verdict=verdict,
         )
         _wake_pending_integrations_after_terminal(store, snapshot, leg)
     finally:
@@ -3577,7 +3691,12 @@ def _worker_prompt(
             "Own only your assigned surface, re-read each file "
             "immediately before a narrow edit, preserve earlier team changes, and never reset, "
             "revert, checkout, or overwrite a conflict. If a safe merge is unclear, leave that file "
-            "intact and report the conflict. Implement and verify real work."
+            "intact and report the conflict. Implement and verify real work. "
+            "Fleet owns Git staging, commits, and integration in this managed worktree. "
+            "Do not git add/commit or change shared Git metadata; leave your tested patch for Fleet. "
+            "Tests use the private TMPDIR and SERENA_CONTROL_PLANE_DB_PATH / "
+            "SERENA_NOTIFICATION_DB_PATH supplied in your environment. Do not replace them with "
+            "operator database paths. Prefer .venv/bin/python -m pytest when that interpreter exists."
         ),
         "review": review_access,
         "verify": "Verify independently with relevant tests and inspection. Do not intentionally edit source files.",
@@ -3591,6 +3710,7 @@ def _worker_prompt(
         ),
     }[leg["access_mode"]]
     read_mcp = read_mcp_prompt_block(str(leg["access_mode"]))
+    delivery_debt_block = _delivery_debt_block(store, run, leg)
     # A worker whose phase moved it to the other provider starts in a session
     # that saw none of the earlier work. Say so, and point it at the read map
     # instead of letting it rediscover the checkout from scratch.
@@ -3793,6 +3913,9 @@ Integrated changes under review (the exact patches Fleet applied):
 Review findings assigned to you:
 {_findings_block(assigned_findings) if phase == "finalize" and run["activity"] == "coding" else "(not applicable in this phase)"}
 
+Delivery you owe from an earlier phase:
+{delivery_debt_block}
+
 Durable work-unit contract:
 {work_unit_contracts}
 
@@ -3829,6 +3952,53 @@ Do this leg now. Return a concise, evidence-based result for the next Fleet phas
     )
     store.record_context_receipt(attempt["attempt_id"], receipt)
     return safe_prompt
+
+
+def _delivery_debt_block(
+    store: FleetStore, run: dict[str, Any], leg: dict[str, Any]
+) -> str:
+    """Hand a worker the delivery it, or the run, still owes.
+
+    A debt that only blocks the run is a debt nobody was told to pay. Deferred
+    delivery names a routable owner, so the agent that owns it is shown the
+    requirement in its own prompt, and anything owed by root is shown to every
+    writer so the work is visible to whoever can actually do it.
+    """
+
+    try:
+        outstanding = _outstanding_delivery(store, str(run["run_id"]))
+    except DeliveryLedgerUnavailable:
+        return (
+            "(the delivery ledger could not be read; treat any delivery you "
+            "deferred earlier as still outstanding)"
+        )
+    if not outstanding:
+        return "(nothing outstanding)"
+    worker_key = _worker_key(leg)
+    writes = str(leg.get("access_mode") or "") == "write"
+    mine = [
+        item
+        for item in outstanding
+        if str(item.get("owner") or "") == worker_key
+        or (writes and str(item.get("owner") or "") == "root")
+    ]
+    if not mine:
+        return (
+            f"(none assigned to you; {len(outstanding)} outstanding elsewhere in "
+            "this run, which will keep it from completing)"
+        )
+    lines = [
+        "You deferred this delivery earlier, or it was deferred to root and you "
+        "are a writer who can do it. The run cannot complete until it is done "
+        "and reported verified with observed evidence. Do it now, or say "
+        "precisely why it is still impossible."
+    ]
+    for item in mine[:8]:
+        lines.append(
+            f"- [{item.get('unit_id') or 'unit'}] {str(item.get('requirement'))[:300]}"
+            f"\n    deferred because: {str(item.get('reason'))[:200]}"
+        )
+    return "\n".join(lines)
 
 
 def _phase_for_leg(run: dict[str, Any], leg_id: str) -> str:

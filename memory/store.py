@@ -4,17 +4,319 @@ Memories live as Markdown files with YAML frontmatter under
 ``MEMORY_DIR/{type}/NNN-<slug>.md``. This is the single source of truth —
 the web UI, the TUI, and the ``chats memory`` CLI all read and write the
 same files.
+
+Task ownership uses the voice inbox's discipline: serialize selection and
+transition, expire abandoned claims, and fence acknowledgements by owner/token.
+Here a bounded process lock and atomic replacement protect Markdown itself;
+there is no second task database to drift from the files. A lease only fences
+local writes. Dispatch must separately persist intent before starting Fleet.
 """
 
+import math
 import os
 import re
+import tempfile
+import threading
+import time
+import uuid
+from contextlib import suppress
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 
 from core.config import MEMORY_DIR
-
+from core.file_lock import exclusive_lock
 
 MEMORY_TYPES = ["task", "ledger", "feedback", "user", "project", "reference", "general"]
+TASK_STATES = frozenset({"needs_triage", "ready", "claimed", "running", "blocked", "done"})
+TASK_PRIORITIES = ("low", "normal", "high", "critical")
+MAX_TASKS = 10000
+TASK_LEASE_SECONDS = 30
+TASK_WORK_SECONDS = 86400
+_TASK_FIELDS = ("state", "assignee", "priority", "project_hint", "source_id",
+                "lease_token", "lease_until", "run_id")
+# Frontmatter is parsed with str.splitlines(), which breaks on far more than
+# LF and CR. Any of these inside a metadata value would be read back as a new
+# key, so a caller-supplied hint could forge its own state and skip triage.
+# Every separator str.splitlines() honours is listed here; the round-trip test
+# re-derives this set over the whole Unicode range.
+_LINE_BREAKS = frozenset("\n\v\f\r\x1c\x1d\x1e\x85\u2028\u2029")
+_WRITE_LOCK = threading.RLock()
+_WRITE_LOCAL = threading.local()
+
+
+def _serialized_write(function):
+    """All local writers cooperate, including legacy edits and ID allocation."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if not _WRITE_LOCK.acquire(timeout=5):
+            raise TimeoutError("memory writer is still owned")
+        callbacks = []
+        try:
+            if getattr(_WRITE_LOCAL, "held", False):
+                return function(*args, **kwargs)
+            MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+            with (MEMORY_DIR / ".task-queue.lock").open("a+b") as handle, exclusive_lock(handle, timeout=5):
+                _WRITE_LOCAL.held = True
+                _WRITE_LOCAL.callbacks = callbacks
+                try:
+                    result = function(*args, **kwargs)
+                finally:
+                    _WRITE_LOCAL.held = False
+                    _WRITE_LOCAL.callbacks = None
+        finally:
+            _WRITE_LOCK.release()
+        # Phone synchronization may perform network I/O. It must never hold
+        # the local claim lock, including nested set_locket_id callbacks.
+        for callback, call_args, call_kwargs in callbacks:
+            with suppress(Exception):
+                callback(*call_args, **call_kwargs)
+        return result
+    return wrapped
+
+
+def _after_write(callback, *args, **kwargs):
+    _WRITE_LOCAL.callbacks.append((callback, args, kwargs))
+
+
+def _atomic_text(path: Path, text: str) -> None:
+    """Publish a complete file, retaining the previous version on write failure."""
+    fd, name = tempfile.mkstemp(prefix=".memory-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(name, path)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def _one_line(value: str) -> bool:
+    """A value safe to serialize as one frontmatter line and read back unchanged."""
+    return not (_LINE_BREAKS & set(value)) and "---" not in value
+
+
+def _flatten(value: str) -> str:
+    """Free-text frontmatter: keep the prose, never a second parsed line."""
+    for separator in _LINE_BREAKS:
+        value = value.replace(separator, " ")
+    return value
+
+
+def _task_text(value, name: str, limit: int, *, optional=False) -> str:
+    if optional and value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > limit or "\x00" in value:
+        raise ValueError(f"invalid task {name}")
+    value = value.strip()
+    if not value and not optional:
+        raise ValueError(f"task {name} is required")
+    if name != "text" and not _one_line(value):
+        raise ValueError(f"invalid task {name}")
+    return value
+
+
+# Words that name nothing to act on: grammar, politeness, urgency, bare
+# symptoms, and the action verbs themselves. A brief built only from these is
+# padding, however long it runs. Words of two characters or fewer are dropped
+# outright, which covers the rest of the closed-class vocabulary.
+_PADDING_VOCABULARY = """
+the this that these those there here and but for nor yet with from into onto about after
+before while when because since than then also just only even still again very really quite
+please pls plz can could would will shall should must may might need needs needed want wants
+you your yours our ours their theirs his her hers its who whom whose what which
+was were are been being have has had does did doing done get gets got
+now today tonight tomorrow yesterday soon later asap urgent urgently immediately
+any all some more most much many anything something everything nothing thing things stuff
+broke broken breaks breaking break bad wrong weird strange odd off funny annoying
+issue issues problem problems bug bugs error errors fail fails failing failure failures
+work works working sometimes randomly random lately recently often always never
+fix fixes fixed add adds added implement build builds update updates remove removes repair
+repairs test tests create creates investigate diagnose refactor replace replaces resolve
+"""
+_TASK_PADDING = frozenset(_PADDING_VOCABULARY.split())
+
+
+def classify_task(text: str, project_hint: str | None = None) -> str:
+    """Conservative, pure triage; nothing outside the brief can supply a target.
+
+    A brief is actionable only when it names an action AND enough substantive
+    words to identify what to act on. A project hint is deliberately no
+    evidence at all: it says where to work, never what to do, so "please fix
+    it, it is still broken" stays needs_triage no matter which repository it
+    arrives with. MAST attributes ~41.8% of multi-agent failures to
+    specification issues, so an underspecified brief waits for one question
+    rather than opening a run. This is a classification boundary, not
+    permission to execute prose; ingress approval and reviewed dispatch remain
+    separate.
+    """
+    text = _task_text(text, "text", 4000)
+    _task_text(project_hint, "project", 512, optional=True)  # validated, never evidence
+    words = re.findall(r"\b\w+\b", text.lower())
+    action = re.search(r"\b(fix|add|implement|build|update|remove|repair|test|create|"
+                       r"investigate|diagnose|refactor|replace|resolve)\b", text, re.I)
+    substantive = {word for word in words if len(word) > 2 and word not in _TASK_PADDING}
+    return "ready" if action and len(words) >= 8 and len(substantive) >= 4 else "needs_triage"
+
+
+def _task_rows() -> list[dict]:
+    rows = []
+    ids = set()
+    for index, path in enumerate((MEMORY_DIR / "task").glob("*.md")):
+        if index >= MAX_TASKS:
+            raise ValueError("task queue capacity exceeded")
+        row = _parse_file(path)
+        if row and row["type"] == "task":
+            if row["id"] in ids:
+                raise ValueError("duplicate task id requires reconciliation")
+            ids.add(row["id"])
+            rows.append(row)
+    return rows
+
+
+@_serialized_write
+def enqueue_task(text: str, project_hint: str | None = None,
+                 priority: str = "normal", source_id: str | None = None) -> dict:
+    """Persist approved work, independently of the legacy MemoryV2 proposal UI.
+
+    This is only a local queue write, never approval or dispatch. Receipt keys
+    deduplicate retries under the same lock as ID allocation and publication.
+    """
+    text = _task_text(text, "text", 4000)
+    project = _task_text(project_hint, "project", 512, optional=True)
+    source = _task_text(source_id, "source_id", 512, optional=True)
+    if not isinstance(priority, str) or priority not in TASK_PRIORITIES:
+        raise ValueError("invalid task priority")
+    rows = _task_rows()
+    for row in rows:
+        if source and row["source_id"] == source:
+            return _clean(row)
+    if len(rows) >= MAX_TASKS:
+        raise ValueError("task queue capacity exceeded")
+    path = _write_file(_next_id(), "task", text, task_fields={
+        "state": classify_task(text, project), "assignee": "", "priority": priority,
+        "project_hint": project, "source_id": source,
+    })
+    return _clean(_parse_file(path))
+
+
+def _moment(now=None) -> float:
+    value = time.time() if now is None else float(now)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("invalid task timestamp")
+    return value
+
+
+def _lease_seconds(value) -> float:
+    value = float(value)
+    if not math.isfinite(value) or not 1 <= value <= TASK_WORK_SECONDS:
+        raise ValueError("task lease must be between 1 and 86400 seconds")
+    return value
+
+
+def _lease_alive(row: dict, now: float) -> bool:
+    try:
+        until = float(row.get("lease_until") or 0)
+        return math.isfinite(until) and until > now
+    except (ValueError, TypeError):
+        return False
+
+
+def _task_metadata(row: dict, **fields) -> dict:
+    """Called only while locked; retain body, filename and unknown frontmatter.
+
+    Transitions serialize the same way creation does, so the same one-line rule
+    applies: a forged separator here would outrank the state we just decided.
+    """
+    path = row["_path"]
+    _start, frontmatter, body = path.read_text(encoding="utf-8").split("---", 2)
+    fields["updated"] = _now()
+    for key, value in fields.items():
+        if not _one_line(str(key)) or not _one_line(str(value)):
+            raise ValueError(f"invalid task {key}")
+    lines = [line for line in frontmatter.strip().splitlines()
+             if line.partition(":")[0].strip() not in fields]
+    lines.extend(f"{key}: {value}" for key, value in fields.items())
+    _atomic_text(path, "---\n" + "\n".join(lines) + "\n---" + body)
+    return _parse_file(path)
+
+
+@_serialized_write
+def claim_next_task(owner: str, now=None, lease_seconds=TASK_LEASE_SECONDS) -> dict | None:
+    """Claim one highest-priority unsnoozed task; stale claim tokens lose ownership.
+
+    Mirrors voice_inbox.claim_next: expire, select, transition in one critical
+    section. Running expiry blocks rather than retrying an uncertain side effect.
+    """
+    owner = _task_text(owner, "assignee", 256)
+    moment = _moment(now)
+    duration = _lease_seconds(lease_seconds)
+    ready = []
+    for row in _task_rows():
+        if row["state"] in {"claimed", "running"} and not _lease_alive(row, moment):
+            state = "ready" if row["state"] == "claimed" else "blocked"
+            row = _task_metadata(row, state=state, assignee="", lease_token="", lease_until="")
+        if row["state"] == "ready" and not _is_snoozed(row):
+            ready.append(row)
+    if not ready:
+        return None
+    row = min(ready, key=lambda item: (-TASK_PRIORITIES.index(item["priority"]), item["id"]))
+    return _clean(_task_metadata(row, state="claimed", assignee=owner,
+                                lease_token=uuid.uuid4().hex, lease_until=moment + duration))
+
+
+def _owned_task(task_id: int, owner: str, token: str, now: float) -> dict | None:
+    path = _find_path(task_id)
+    row = _parse_file(path) if path else None
+    if (not row or row["type"] != "task" or row["state"] not in {"claimed", "running"}
+            or not owner or not token or row["assignee"] != owner
+            or row["lease_token"] != token or not _lease_alive(row, now)):
+        return None
+    return row
+
+
+@_serialized_write
+def mark_task_running(task_id: int, owner: str, token: str, run_id: str, *, now=None) -> bool:
+    run_id = _task_text(run_id, "run_id", 256)
+    moment = _moment(now)
+    row = _owned_task(task_id, owner, token, moment)
+    if not row or row["state"] != "claimed":
+        return False
+    _task_metadata(row, state="running", run_id=run_id, lease_until=moment + TASK_WORK_SECONDS)
+    return True
+
+
+@_serialized_write
+def release_task_claim(task_id: int, owner: str, token: str, *, state="ready", now=None) -> bool:
+    if state not in {"ready", "blocked", "needs_triage", "done"}:
+        raise ValueError("invalid task release state")
+    row = _owned_task(task_id, owner, token, _moment(now))
+    if not row or (row["state"] == "running" and state == "ready"):
+        return False
+    _task_metadata(row, state=state, assignee="", lease_token="", lease_until="")
+    return True
+
+
+@_serialized_write
+def renew_task_claim(task_id: int, owner: str, token: str, *, now=None,
+                     lease_seconds=TASK_LEASE_SECONDS) -> bool:
+    moment = _moment(now)
+    duration = _lease_seconds(lease_seconds)
+    row = _owned_task(task_id, owner, token, moment)
+    if not row:
+        return False
+    _task_metadata(row, lease_until=moment + duration)
+    return True
+
+
 _V2_TYPE_MAP = {
     "task": "commitment",
     "ledger": "commitment",
@@ -116,6 +418,16 @@ def _parse_file(fpath: Path) -> dict | None:
         out["ledger_key"] = meta.get("ledger_key", "")
         for f in LEDGER_FIELDS:
             out[f] = meta.get(f, "")
+    if out["type"] == "task":
+        out.update({key: meta.get(key, "") for key in _TASK_FIELDS})
+        # Missing fields are legacy work; malformed explicit values fail closed.
+        out["state"] = meta.get("state", "ready")
+        if out["state"] not in TASK_STATES:
+            out["state"] = "needs_triage"
+        out["priority"] = meta.get("priority", "normal")
+        if out["priority"] not in TASK_PRIORITIES:
+            out["priority"] = "normal"
+            out["state"] = "needs_triage"
     return out
 
 
@@ -157,12 +469,14 @@ def _find_path(memory_id: int) -> Path | None:
     return None
 
 
+@_serialized_write
 def _write_file(mem_id: int, mem_type: str, content: str,
                 created: str = "", updated: str = "", snooze: str = "",
                 locket_id: str = "", source_session_id: str = "",
                 source_agent: str = "", source_title: str = "",
                 source_message_timestamp: str = "",
-                ledger_key: str = "", ledger_fields: dict | None = None) -> Path:
+                ledger_key: str = "", ledger_fields: dict | None = None,
+                task_fields: dict | None = None) -> Path:
     if not created:
         created = _now()
     if not updated:
@@ -183,19 +497,36 @@ def _write_file(mem_id: int, mem_type: str, content: str,
     if source_agent:
         fm += f"source_agent: {source_agent}\n"
     if source_title:
-        fm += f"source_title: {source_title.replace(chr(10), ' ')[:500]}\n"
+        # Captured from a chat title, so it is free text on a task's own
+        # frontmatter. Flatten every separator, not just LF.
+        fm += f"source_title: {_flatten(source_title)[:500]}\n"
     if source_message_timestamp:
         fm += f"source_message_timestamp: {source_message_timestamp}\n"
     if mem_type == "ledger":
         fm += f"ledger_key: {ledger_key}\n"
         for f in LEDGER_FIELDS:
             v = (ledger_fields or {}).get(f, "")
-            fm += f"{f}: {v.replace(chr(10), ' ').strip()}\n"
+            fm += f"{f}: {_flatten(v).strip()}\n"
+    if mem_type == "task":
+        previous_path = _find_path(mem_id)
+        previous = _parse_file(previous_path) if previous_path else {}
+        fields = {key: (previous or {}).get(key, "") for key in _TASK_FIELDS}
+        fields.update(task_fields or {})
+        fields["state"] = fields.get("state") or "ready"
+        fields["priority"] = fields.get("priority") or "normal"
+        if fields["state"] not in TASK_STATES or fields["priority"] not in TASK_PRIORITIES:
+            raise ValueError("invalid task state or priority")
+        for key in _TASK_FIELDS:
+            value = str(fields.get(key, ""))
+            if not _one_line(value):
+                raise ValueError(f"invalid task {key}")
+            fm += f"{key}: {value}\n"
     fm += "---\n"
-    fpath.write_text(f"{fm}\n{content}\n", encoding="utf-8")
+    _atomic_text(fpath, f"{fm}\n{content}\n")
     return fpath
 
 
+@_serialized_write
 def set_locket_id(memory_id: int, locket_id: int) -> None:
     """Stamp an existing local memory with its Locket row id (rewrites the
     file in place, preserving everything else)."""
@@ -205,17 +536,27 @@ def set_locket_id(memory_id: int, locket_id: int) -> None:
     m = _parse_file(fpath)
     if not m:
         return
-    _write_file(memory_id, m["type"], m["content"],
+    new_path = _write_file(memory_id, m["type"], m["content"],
                 created=m["created_at"], updated=m["updated_at"],
                 snooze=m.get("snooze_until", ""), locket_id=str(locket_id),
                 source_session_id=m.get("source_session_id", ""),
                 source_agent=m.get("source_agent", ""),
                 source_title=m.get("source_title", ""),
                 source_message_timestamp=m.get("source_message_timestamp", ""))
+    if new_path != fpath:
+        fpath.unlink()
 
 
+@_serialized_write
 def _next_id() -> int:
-    return max((m["id"] for m in _scan_all()), default=0) + 1
+    # A scheduler's durable dispatch receipt outlives a deleted task. Never
+    # recycle that identity. Persist before publication: a crash may leave a
+    # harmless gap, but cannot make two different tasks share a receipt.
+    counter = MEMORY_DIR / ".memory-next-id"
+    floor = int(counter.read_text()) if counter.exists() else 1
+    mid = max(floor, max((m["id"] for m in _scan_all()), default=0) + 1)
+    _atomic_text(counter, str(mid + 1))
+    return mid
 
 
 def _rewrite_index():
@@ -310,6 +651,7 @@ def _flush_v2_outbox(store, proposal: dict) -> dict:
     return proposal
 
 
+@_serialized_write
 def add_memory(
     content: str,
     mem_type: str = "general",
@@ -321,7 +663,6 @@ def add_memory(
 ) -> int | str:
     if mem_type not in MEMORY_TYPES:
         mem_type = "general"
-    mid = _next_id()
     if not source_session_id and not _no_mirror:
         (
             source_session_id,
@@ -342,6 +683,7 @@ def add_memory(
             sensitivity="personal",
         )
         return str(_flush_v2_outbox(v2, proposal)["proposal_id"])
+    mid = _next_id()
     _write_file(
         mid,
         mem_type,
@@ -358,7 +700,7 @@ def add_memory(
     if not _no_mirror:
         try:
             from memory.locket_mirror import mirror_add
-            mirror_add(
+            _after_write(mirror_add,
                 content,
                 mem_type,
                 mid,
@@ -372,6 +714,7 @@ def add_memory(
     return mid
 
 
+@_serialized_write
 def update_memory(
     memory_id: int, content: str | None = None, mem_type: str | None = None
 ) -> str | None:
@@ -420,23 +763,21 @@ def update_memory(
         source_message_timestamp=existing.get("source_message_timestamp", ""),
     )
     if fpath != new_path:
-        try:
+        with suppress(OSError):
             fpath.unlink()
-        except OSError:
-            pass
     _rewrite_index()
     try:
         if new_type == existing["type"]:
             from memory.locket_mirror import mirror_update
-            mirror_update(
+            _after_write(mirror_update,
                 existing["content"],
                 new_content,
                 existing.get("locket_id", ""),
             )
         else:
             from memory.locket_mirror import mirror_add, mirror_delete
-            mirror_delete(existing["content"], existing.get("locket_id", ""))
-            mirror_add(
+            _after_write(mirror_delete, existing["content"], existing.get("locket_id", ""))
+            _after_write(mirror_add,
                 new_content,
                 new_type,
                 memory_id,
@@ -449,6 +790,7 @@ def update_memory(
         pass
 
 
+@_serialized_write
 def delete_memory(memory_id: int) -> bool | str:
     fpath = _find_path(memory_id)
     if not fpath:
@@ -475,15 +817,16 @@ def delete_memory(memory_id: int) -> bool | str:
         try:
             if existing["type"] == "task":
                 from memory.locket_mirror import mirror_archive
-                mirror_archive(existing["content"], existing.get("locket_id", ""))
+                _after_write(mirror_archive, existing["content"], existing.get("locket_id", ""))
             else:
                 from memory.locket_mirror import mirror_delete
-                mirror_delete(existing["content"], existing.get("locket_id", ""))
+                _after_write(mirror_delete, existing["content"], existing.get("locket_id", ""))
         except Exception:
             pass
     return True
 
 
+@_serialized_write
 def snooze_memory(memory_id: int, days: float = 7) -> bool | str:
     """Defer an item (task/loop): hide it from the nudge rail until `days`
     from now, so a different one surfaces instead. Content is untouched."""
@@ -526,10 +869,8 @@ def snooze_memory(memory_id: int, days: float = 7) -> bool | str:
         source_message_timestamp=existing.get("source_message_timestamp", ""),
     )
     if fpath != new_path:
-        try:
+        with suppress(OSError):
             fpath.unlink()
-        except OSError:
-            pass
     return True
 
 
@@ -542,6 +883,7 @@ def find_ledger(key: str) -> dict | None:
     return None
 
 
+@_serialized_write
 def upsert_ledger(key: str, **fields) -> int:
     """Create or update the ledger card for `key`. Only fields actually
     passed are changed — omitted fields keep their current value. `key`
@@ -568,10 +910,8 @@ def upsert_ledger(key: str, **fields) -> int:
             ledger_key=key, ledger_fields=merged,
         )
         if fpath != new_path:
-            try:
+            with suppress(OSError):
                 fpath.unlink()
-            except OSError:
-                pass
     else:
         mid = _next_id()
         source_session_id, source_agent, source_title, _ts = _source_context()
@@ -637,7 +977,8 @@ def format_ledgers() -> str:
 def format_tasks() -> str:
     """Raghav's deliberate todo list, freshest first, with age (so I can tell
     what's gone stale and nudge harder). Empty string if none."""
-    tasks = [m for m in _scan_all() if m["type"] == "task" and not _is_snoozed(m)]
+    tasks = [m for m in _scan_all() if m["type"] == "task"
+             and m.get("state") != "done" and not _is_snoozed(m)]
     if not tasks:
         return ""
     tasks.sort(key=lambda m: m.get("updated_at", ""), reverse=True)

@@ -57,6 +57,14 @@ def request_help(recipient: str, body: str, dedupe: str) -> dict:
 
 
 @mcp.tool(annotations=WRITE)
+def declare_dependency(unit_id: str, dependency_id: str, reason: str) -> dict:
+    """Declare your unit's required peer output. Cycles and foreign ownership are refused."""
+    from fleet.dependencies import declare_dependency as declare
+    _store, peer, token = context()
+    return declare(peer, token, unit_id, dependency_id, reason)
+
+
+@mcp.tool(annotations=WRITE)
 def resolve_request(message_id: str, resolved: bool, reason: str) -> dict:
     """Requester only: confirm an observed solution, or escalate with a concrete reason. Ack is not resolution."""
     _store, peer, token = context()

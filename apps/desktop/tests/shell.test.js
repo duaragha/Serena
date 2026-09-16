@@ -182,6 +182,20 @@ test('linux sidecar packaging resolves the repository above apps/desktop', () =>
   assert.match(script, /repo_root="\$\(cd "\$desktop_dir\/\.\.\/\.\." && pwd\)"/);
 });
 
+test('both packaged runtimes verify Fleet task ingestion and delivery imports', () => {
+  const sidecar = fs.readFileSync(path.join(desktopDir, 'sidecar.py'), 'utf8');
+  const probe = sidecar.slice(sidecar.indexOf('["--workspace-runtime-check"]'),
+    sidecar.indexOf('["--fleet-integration-replay"]'));
+  for (const required of ['core.scheduler_actions', 'core.webhook_ingress',
+    'fleet.delivery', 'enqueue_task', 'claim_next_task', '"task" not in ingress.routes']) {
+    assert.ok(probe.includes(required), `missing packaged capability check: ${required}`);
+  }
+  assert.match(probe, /TemporaryDirectory/);
+  for (const script of ['scripts/build-sidecar.sh', 'windows/build-win.ps1']) {
+    assert.ok(fs.readFileSync(path.join(desktopDir, script), 'utf8').includes('--workspace-runtime-check'));
+  }
+});
+
 test('linux sidecar bundles the opt-in Gemini adapter and checks its dependency', () => {
   const script = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-sidecar.sh'), 'utf8');
   assert.match(script, /--hidden-import core\.workspace_gemini/);

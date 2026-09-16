@@ -1150,12 +1150,9 @@ def _coding_evidence_text(request, *, findings=None):
     }
     units = []
     for unit_id in _request_unit_ids(request):
-        criteria = (
-            contracts.get(unit_id, {}).get("completion_contract", {}).get(
-                "acceptance_criteria"
-            )
-            or []
-        )
+        completion = contracts.get(unit_id, {}).get("completion_contract", {})
+        criteria = completion.get("acceptance_criteria") or []
+        delivery = completion.get("delivery_requirements") or []
         entry = {
             "id": unit_id,
             "status": "completed",
@@ -1166,6 +1163,15 @@ def _coding_evidence_text(request, *, findings=None):
             "acceptance": [
                 {"criterion": criterion, "met": True, "evidence": "observed"}
                 for criterion in criteria
+            ],
+            # A coding unit answers delivery separately from acceptance.
+            "delivery": [
+                {
+                    "requirement": requirement,
+                    "state": "verified",
+                    "evidence": "integrated and verified against the target",
+                }
+                for requirement in delivery
             ],
         }
         if request.phase == "discover":
