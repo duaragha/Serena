@@ -662,7 +662,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
 
 
 @pytest.mark.parametrize("platform_name,expected", [("nt", True), ("posix", False)])
-def test_codex_pins_the_unelevated_windows_sandbox(tmp_path, monkeypatch, platform_name, expected):
+def test_codex_uses_full_access_only_on_windows(tmp_path, monkeypatch, platform_name, expected):
     import fleet.workers as workers
 
     monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", "/opt/bin/codex")
@@ -670,4 +670,5 @@ def test_codex_pins_the_unelevated_windows_sandbox(tmp_path, monkeypatch, platfo
     monkeypatch.setattr(workers, "_is_windows", lambda: platform_name == "nt")
     for mode in ("write", "read"):
         argv = worker_command(_request(tmp_path, "codex", access_mode=mode))
-        assert ('windows.sandbox="unelevated"' in argv) is expected
+        full = "--sandbox" in argv and argv[argv.index("--sandbox") + 1] == "danger-full-access"
+        assert full is expected
