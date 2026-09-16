@@ -106,3 +106,39 @@ def reclaim(pid: int) -> float | None:
         if error.errno != errno.EAGAIN:
             return None
     return max(0.0, before - _memory_mb(cgroup))
+
+
+def set_frozen(cgroup: str, frozen: bool) -> bool:
+    """Freeze or thaw every process in an owned scope, by path.
+
+    SIGSTOP reaches only the owner's process group, and MCP servers start
+    their own sessions, so a "sleeping" owner left them running and resident.
+    The path is kept by the caller so a scope can still be thawed after its
+    leader has died.
+    """
+    if not OWNED_SCOPE.match(os.path.basename(cgroup)):
+        return False
+    try:
+        with open(os.path.join(cgroup, "cgroup.freeze"), "w", encoding="utf-8") as handle:
+            handle.write("1" if frozen else "0")
+    except OSError:
+        return False
+    return True
+
+
+def freeze(pid: int) -> str | None:
+    """Freeze the owned scope holding *pid*; returns its path when frozen."""
+    cgroup = owned_cgroup(pid)
+    return cgroup if cgroup is not None and set_frozen(cgroup, True) else None
+
+
+def scope_processes(pid: int) -> list[int] | None:
+    """Every process in *pid*'s owned scope, or None when it has none."""
+    cgroup = owned_cgroup(pid)
+    if cgroup is None:
+        return None
+    try:
+        with open(os.path.join(cgroup, "cgroup.procs"), encoding="utf-8") as handle:
+            return [int(line) for line in handle if line.strip()]
+    except (OSError, ValueError):
+        return None

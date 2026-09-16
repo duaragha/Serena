@@ -3034,3 +3034,23 @@ def test_confirmed_claude_rename_indexes_exact_owner_without_attach(tmp_path, pe
     assert result['indexed'] is not pending
     assert result.get('native_rename', False) is not pending
     assert host._loop is None
+
+
+@pytest.mark.parametrize("settled", [True, False])
+def test_flagged_gemini_peer_sleeps_only_once_its_background_work_settled(tmp_path, monkeypatch, settled):
+    import core.workspace_host as host_module
+    monkeypatch.setattr(host_module, "PEER_IDLE_SECONDS", 0.2)
+    monkeypatch.setattr(host_module, "_PEER_SWEEP_INTERVAL", 0.0)
+    host = _sweep_host(tmp_path, "gemini", with_background_api=False)
+    try:
+        host.attach("source")
+        host.attach("peer")
+        peer = host._sessions["peer"][0]
+        # A turn once ran a shell command, which Gemini never un-flags on its own.
+        peer._background_possible = True
+        peer.background_settled = lambda: settled
+        time.sleep(.25)
+        _merged_view(host)
+        assert peer.rpc.suspended is settled
+    finally:
+        host.shutdown()

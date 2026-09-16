@@ -431,7 +431,9 @@ class WorkspaceHost:
                     if not isinstance(tasks, dict) or tasks.get("data") != []:
                         return {"ok": False, "message": "Native background work is active or unknown"}
                 elif getattr(owner, "_background_possible", False):
-                    return {"ok": False, "message": "Native background work is active or unknown"}
+                    settled = getattr(owner, "background_settled", None)
+                    if settled is None or not await asyncio.to_thread(settled):
+                        return {"ok": False, "message": "Native background work is active or unknown"}
             error = self._sleep_blocker(sid)
             if error or self._stopped or (guard is not None and not guard()):
                 return {"ok": False, "message": error or "Host stopped"}

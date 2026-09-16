@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import sys
 
 import psutil
@@ -36,6 +37,10 @@ for line in sys.stdin:
         emit([msg['id']])
     elif method == 'wait':
         pass
+    elif method == 'spawn':
+        import subprocess
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], start_new_session=True)
+        emit({'id':msg['id'], 'result':child.pid})
     elif method == 'noise':
         sys.stderr.write('x' * 200000); sys.stderr.flush()
         emit({'id':msg['id'], 'result':True})
@@ -334,3 +339,49 @@ def test_reclaim_refuses_any_cgroup_serena_did_not_create():
         assert runtime_scope.reclaim(1) is None
     assert runtime_scope.OWNED_SCOPE.match("serena-pane-123-abcdef01.scope")
     assert not runtime_scope.OWNED_SCOPE.match("serena-mobile-host.service")
+
+
+def test_sleep_freezes_children_that_left_the_owner_group(tmp_path):
+    from core import runtime_scope
+
+    if os.name == "nt" or not runtime_scope.scope_supported():
+        pytest.skip("transient user scopes are unavailable here")
+
+    def frozen(cgroup):
+        with open(os.path.join(cgroup, "cgroup.events"), encoding="utf-8") as handle:
+            return dict(line.split() for line in handle)["frozen"] == "1"
+
+    async def settle(cgroup, want):
+        for _ in range(100):
+            if frozen(cgroup) is want:
+                return True
+            await asyncio.sleep(.02)
+        return False
+
+    async def run():
+        rpc = WorkspaceRpc()
+        await rpc.start([sys.executable, "-u", "-c", PEER], cwd=tmp_path, env=dict(os.environ))
+        child = None
+        try:
+            child = await rpc.request("spawn", {})
+            assert os.getpgid(child) != rpc.process.pid  # MCP-style: its own session.
+            cgroup = runtime_scope.owned_cgroup(rpc.process.pid)
+            assert sorted(runtime_scope.scope_processes(rpc.process.pid)) == sorted([rpc.process.pid, child])
+            assert await rpc.pause_idle()
+            assert await settle(cgroup, True)
+            rpc.wake()
+            assert await settle(cgroup, False)
+            assert await rpc.request("ping", {"x": 1}) == {"x": 1}
+            # A leader that dies while frozen must not strand its children frozen.
+            assert await rpc.pause_idle()
+            assert await settle(cgroup, True)
+            os.kill(rpc.process.pid, signal.SIGKILL)
+            await rpc.close()
+            assert await settle(cgroup, False)
+        finally:
+            if child:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(child, signal.SIGKILL)
+            await rpc.close()
+
+    asyncio.run(run())

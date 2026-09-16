@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -268,3 +270,24 @@ def test_headless_transcript_and_confirmed_workspace_rebuild_catalog(tmp_path, m
     result = gemini_scanner.parse_gemini_metadata(db)
     assert result.cwd == str(tmp_path) and result.first_message == 'Native headless message'
     assert result.message_count == 1
+
+
+@pytest.mark.parametrize('case', ['clear', 'child', 'recent', 'no_scope', 'running', 'never_flagged'])
+def test_background_settles_only_when_nothing_started_can_still_run(tmp_path, monkeypatch, case):
+    from core import runtime_scope
+
+    sid = '11111111-2222-4333-8444-555555555555'
+    owner = native.AntigravityWorkspace(session_id=sid, cwd=tmp_path, publish=lambda event: None)
+    transcript = tmp_path / 'transcript.jsonl'
+    transcript.write_text('{}\n')
+    if case != 'recent':
+        old = time.time() - 60
+        os.utime(transcript, (old, old))
+    monkeypatch.setattr(native, 'transcript_path', lambda conversation: transcript)
+    owner.rpc = SimpleNamespace(process=SimpleNamespace(pid=4242, returncode=None))
+    owner.state = 'running' if case == 'running' else 'ready'
+    owner._background_possible = case != 'never_flagged'
+    members = {'clear': [4242], 'child': [4242, 4243], 'recent': [4242], 'no_scope': None,
+               'running': [4242], 'never_flagged': None}[case]
+    monkeypatch.setattr(runtime_scope, 'scope_processes', lambda pid: members)
+    assert owner.background_settled() is (case in {'clear', 'never_flagged'})
