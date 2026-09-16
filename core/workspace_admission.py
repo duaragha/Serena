@@ -96,7 +96,11 @@ def reject_unregistered_provider(sid: str, cwd: Path, transcript: Path, provider
                                 and Path(argv[1]).name in {"codex", "codex.js"})
                 if (bare_native or bare_wrapper) and getattr(process, 'terminal', lambda: None)():
                     continue
-            switches = ("resume",) if provider == "codex" else (("--conversation",) if provider == "agy" else ("--resume", "-r"))
+            switches = (
+                ("resume",)
+                if provider in {"codex", "muse"}
+                else (("--conversation",) if provider == "agy" else ("--resume", "-r"))
+            )
             explicit = next((value for value in switches if value in argv), None)
             if any(value.startswith(switch + "=") and value.split("=", 1)[1]
                    for value in argv for switch in switches if switch.startswith("-")):
@@ -127,7 +131,7 @@ def resolve_workspace_session(sid: str) -> dict:
     if not session or session.get("session_id") != sid:
         raise ValueError("Exact persisted session was not found")
     provider = str(session.get("agent") or "").lower()
-    if provider not in {"codex", "claude", "gemini"}:
+    if provider not in {"codex", "claude", "gemini", "muse"}:
         raise ValueError("This provider's structured workspace is not implemented yet")
     meta = metadata.get_meta(sid)
     if meta.get("fleet_worker") or metadata.external_runtime_active(sid):

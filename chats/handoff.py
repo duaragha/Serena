@@ -66,6 +66,17 @@ def build_handoff_briefing(session_id: str) -> dict:
                 ),
             }
         msgs = _parse_gemini(transcript)
+    elif agent == "muse":
+        transcript = _muse_transcript(file_path)
+        if transcript is None:
+            return {
+                "ok": False,
+                "error": (
+                    "This Muse chat has no readable transcript on disk, so there is "
+                    "nothing to brief from this side."
+                ),
+            }
+        msgs = _parse_muse(transcript)
     elif agent == "codex":
         msgs = _parse_codex(file_path)
     else:
@@ -124,6 +135,30 @@ def _gemini_transcript(file_path: Path) -> Path | None:
 def _parse_gemini(file_path: Path) -> list[_Msg]:
     """Antigravity turns, via the shared reader in ``core.gemini_scanner``."""
     from core.gemini_scanner import read_turns
+
+    return [
+        _Msg(
+            role=turn["role"],
+            text=turn["text"],
+            tool_name=turn["tool_name"],
+            tool_input=turn["tool_input"],
+        )
+        for turn in read_turns(file_path)
+    ]
+
+
+def _muse_transcript(file_path: Path) -> Path | None:
+    """A Muse log is already readable; resolve through the id when needed."""
+    from core.muse_scanner import session_id_for, transcript_path
+
+    if file_path.name == "session.jsonl" and file_path.is_file():
+        return file_path
+    return transcript_path(session_id_for(file_path))
+
+
+def _parse_muse(file_path: Path) -> list[_Msg]:
+    """Muse turns, via the shared reader in ``core.muse_scanner``."""
+    from core.muse_scanner import read_turns
 
     return [
         _Msg(

@@ -61,6 +61,11 @@ def _session_file(
     elif provider == "claude":
         root = claude_projects_root.expanduser().resolve()
         matches = list(root.glob(f"**/{session_id}.jsonl")) if root.is_dir() else []
+    elif provider == "muse":
+        from core.muse_scanner import resumable_session_path
+
+        native = resumable_session_path(session_id)
+        return native if native and native.is_file() else None
     else:
         return None
     safe: list[Path] = []
@@ -99,7 +104,7 @@ def _terminal_target_from_values(
         return None, "job id is not an exact persisted id"
     if not UUID_RE.fullmatch(session) or session != attempt_session:
         return None, "job session metadata is incomplete or stale"
-    if actual_provider not in {"codex", "claude"}:
+    if actual_provider not in {"codex", "claude", "muse"}:
         return None, "job session provider is not supported"
     if str(state or "").strip().lower() != "completed":
         if str(state or "").strip().lower() in ACTIVE_STATES:

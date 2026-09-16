@@ -58,21 +58,24 @@ def choose_brain_provider(
         if override is not None
         else os.environ.get("SERENA_BRAIN_PROVIDER", "auto")
     ).strip().lower()
-    if selected not in {"auto", "claude", "codex"}:
-        raise ValueError("SERENA_BRAIN_PROVIDER must be auto, claude, or codex")
+    if selected not in {"auto", "claude", "codex", "muse"}:
+        raise ValueError("SERENA_BRAIN_PROVIDER must be auto, claude, codex, or muse")
     if selected != "auto":
         if not provider_is_usable(capacity, selected):
             raise BrainProviderUnavailable(f"{selected} subscription usage is exhausted")
         return selected
     preferred = str(preferred_provider or "claude").strip().lower()
-    if preferred not in {"claude", "codex"}:
-        raise ValueError("preferred_provider must be claude or codex")
-    fallback = "codex" if preferred == "claude" else "claude"
-    if provider_is_usable(capacity, preferred):
-        return preferred
-    if provider_is_usable(capacity, fallback):
-        return fallback
-    raise BrainProviderUnavailable("Claude and Codex subscription usage are exhausted")
+    if preferred not in {"claude", "codex", "muse"}:
+        raise ValueError("preferred_provider must be claude, codex, or muse")
+    for candidate in (
+        preferred,
+        *(name for name in ("claude", "codex", "muse") if name != preferred),
+    ):
+        if provider_is_usable(capacity, candidate):
+            return candidate
+    raise BrainProviderUnavailable(
+        "Claude, Codex, and Muse subscription usage are exhausted"
+    )
 
 
 def capacity_reset_time(
@@ -104,6 +107,16 @@ def is_usage_limit_error(value: object) -> bool:
         return True
     if "usage limit" in text and any(
         marker in text for marker in ("hit", "reached", "exceeded", "reset", "resets")
+    ):
+        return True
+    if any(
+        phrase in text
+        for phrase in (
+            "quota exceeded",
+            "credits exhausted",
+            "subscription exhausted",
+            "subscription quota exceeded",
+        )
     ):
         return True
     return "rate limit" in text and any(

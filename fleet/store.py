@@ -1622,8 +1622,8 @@ class FleetStore:
         """Queue a provider switch and interrupt only that worker when live."""
 
         target = str(target_provider or "").strip().lower()
-        if target not in {"codex", "claude"}:
-            raise ValueError("handoff provider must be claude or codex")
+        if target not in {"codex", "claude", "muse"}:
+            raise ValueError("handoff provider must be claude, codex, or muse")
         clean_reason = str(reason or "provider handoff").strip()[:1_000]
         now = time.time()
         owned_process: tuple[object, object] | None = None
@@ -1753,11 +1753,11 @@ class FleetStore:
             dict.fromkeys(
                 str(provider or "").strip().lower()
                 for provider in eligible_providers
-                if str(provider or "").strip().lower() in {"codex", "claude"}
+                if str(provider or "").strip().lower() in {"codex", "claude", "muse"}
             )
         )
-        if failed not in {"codex", "claude"}:
-            raise ValueError("failed capacity provider must be claude or codex")
+        if failed not in {"codex", "claude", "muse"}:
+            raise ValueError("failed capacity provider must be claude, codex, or muse")
         if not eligible:
             raise ValueError("capacity wait requires at least one eligible provider")
         clean_reason = str(reason or f"{failed} capacity is exhausted").strip()[:1_000]
@@ -1855,7 +1855,7 @@ class FleetStore:
                     "eligible_providers": [
                         str(provider)
                         for provider in decoded
-                        if str(provider) in {"codex", "claude"}
+                        if str(provider) in {"codex", "claude", "muse"}
                     ],
                     "reason": str(row["reason"] or ""),
                     "not_before": float(row["not_before"]),
@@ -1884,8 +1884,8 @@ class FleetStore:
         """Requeue a parked worker on its existing native provider."""
 
         selected = str(provider or "").strip().lower()
-        if selected not in {"codex", "claude"}:
-            raise ValueError("capacity resume provider must be claude or codex")
+        if selected not in {"codex", "claude", "muse"}:
+            raise ValueError("capacity resume provider must be claude, codex, or muse")
         now = time.time()
         clean_reason = str(reason or f"{selected} capacity recovered").strip()[:1_000]
         with self._connect() as connection:
@@ -1972,8 +1972,8 @@ class FleetStore:
         if not isinstance(phases, list) or not phases:
             raise ValueError("replacement Fleet policy has no phases")
         target = str(target_provider or "").strip().lower()
-        if target not in {"codex", "claude"}:
-            raise ValueError("handoff provider must be claude or codex")
+        if target not in {"codex", "claude", "muse"}:
+            raise ValueError("handoff provider must be claude, codex, or muse")
         now = time.time()
         clean_reason = str(reason or "provider handoff").strip()[:1_000]
         with self._connect() as connection:
@@ -2979,7 +2979,7 @@ class FleetStore:
                 "eligible_providers": [
                     str(provider)
                     for provider in eligible
-                    if str(provider) in {"codex", "claude"}
+                    if str(provider) in {"codex", "claude", "muse"}
                 ],
                 "reason": str(row["reason"] or ""),
                 "not_before": float(row["not_before"]),

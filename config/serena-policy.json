@@ -60,6 +60,17 @@
         "haiku",
         "haiku 4.5"
       ]
+    },
+    "muse-spark": {
+      "provider": "muse",
+      "runtime_model": "muse-spark",
+      "label": "muse spark",
+      "strength": 2,
+      "aliases": [
+        "muse",
+        "spark",
+        "muse spark"
+      ]
     }
   },
   "risk_strength_floors": {
@@ -125,7 +136,8 @@
         "gpt-5.6-terra",
         "gpt-5.6-sol",
         "claude-sonnet-5",
-        "claude-opus-5"
+        "claude-opus-5",
+        "muse-spark"
       ],
       "lanes": {
         "fast": {
@@ -142,6 +154,10 @@
             {
               "model": "gpt-5.6-terra",
               "effort": "high"
+            },
+            {
+              "model": "muse-spark",
+              "effort": "high"
             }
           ]
         },
@@ -154,6 +170,10 @@
             },
             {
               "model": "gpt-5.6-terra",
+              "effort": "high"
+            },
+            {
+              "model": "muse-spark",
               "effort": "high"
             }
           ]
@@ -171,6 +191,10 @@
             },
             {
               "model": "claude-sonnet-5",
+              "effort": "high"
+            },
+            {
+              "model": "muse-spark",
               "effort": "high"
             }
           ]
@@ -193,6 +217,10 @@
             {
               "model": "claude-opus-5",
               "effort": "high"
+            },
+            {
+              "model": "muse-spark",
+              "effort": "high"
             }
           ]
         },
@@ -209,6 +237,10 @@
             },
             {
               "model": "gpt-5.6-sol",
+              "effort": "high"
+            },
+            {
+              "model": "muse-spark",
               "effort": "high"
             }
           ]
@@ -227,6 +259,10 @@
             {
               "model": "claude-opus-5",
               "effort": "high"
+            },
+            {
+              "model": "muse-spark",
+              "effort": "high"
             }
           ]
         },
@@ -243,6 +279,10 @@
             },
             {
               "model": "claude-sonnet-5",
+              "effort": "high"
+            },
+            {
+              "model": "muse-spark",
               "effort": "high"
             }
           ]
@@ -265,7 +305,8 @@
         "gpt-5.6-terra",
         "gpt-5.6-sol",
         "claude-sonnet-5",
-        "claude-opus-5"
+        "claude-opus-5",
+        "muse-spark"
       ],
       "lanes": {
         "routine": {
@@ -282,6 +323,10 @@
             {
               "model": "gpt-5.6-sol",
               "effort": "high"
+            },
+            {
+              "model": "muse-spark",
+              "effort": "high"
             }
           ],
           "review": [
@@ -295,6 +340,10 @@
             },
             {
               "model": "claude-opus-5",
+              "effort": "high"
+            },
+            {
+              "model": "muse-spark",
               "effort": "high"
             }
           ]
@@ -317,6 +366,10 @@
             {
               "model": "gpt-5.6-terra",
               "effort": "high"
+            },
+            {
+              "model": "muse-spark",
+              "effort": "high"
             }
           ],
           "review": [
@@ -330,6 +383,10 @@
             },
             {
               "model": "claude-haiku-4-5",
+              "effort": "high"
+            },
+            {
+              "model": "muse-spark",
               "effort": "high"
             }
           ]
@@ -348,6 +405,10 @@
             {
               "model": "claude-sonnet-5",
               "effort": "xhigh"
+            },
+            {
+              "model": "muse-spark",
+              "effort": "xhigh"
             }
           ],
           "review": [
@@ -362,6 +423,10 @@
             {
               "model": "claude-haiku-4-5",
               "effort": "high"
+            },
+            {
+              "model": "muse-spark",
+              "effort": "xhigh"
             }
           ]
         }
@@ -381,7 +446,8 @@
         "gpt-5.6-terra",
         "gpt-5.6-sol",
         "claude-sonnet-5",
-        "claude-opus-5"
+        "claude-opus-5",
+        "muse-spark"
       ],
       "lanes": {
         "normal": {
@@ -393,6 +459,10 @@
             },
             {
               "model": "claude-sonnet-5",
+              "effort": "high"
+            },
+            {
+              "model": "muse-spark",
               "effort": "high"
             }
           ]
@@ -406,6 +476,10 @@
             },
             {
               "model": "claude-opus-5",
+              "effort": "high"
+            },
+            {
+              "model": "muse-spark",
               "effort": "high"
             }
           ]
@@ -426,7 +500,8 @@
         "gpt-5.6-terra",
         "gpt-5.6-sol",
         "claude-sonnet-5",
-        "claude-opus-5"
+        "claude-opus-5",
+        "muse-spark"
       ],
       "lanes": {
         "normal": {
@@ -438,6 +513,10 @@
             },
             {
               "model": "claude-sonnet-5",
+              "effort": "high"
+            },
+            {
+              "model": "muse-spark",
               "effort": "high"
             }
           ]
@@ -451,6 +530,10 @@
             },
             {
               "model": "claude-opus-5",
+              "effort": "xhigh"
+            },
+            {
+              "model": "muse-spark",
               "effort": "xhigh"
             }
           ]

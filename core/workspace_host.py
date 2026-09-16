@@ -38,6 +38,11 @@ def _gemini_owner(**kwargs):
     return AntigravityWorkspace(**kwargs)
 
 
+def _muse_owner(**kwargs):
+    from core.workspace_muse import MuseWorkspace
+    return MuseWorkspace(**kwargs)
+
+
 class WorkspaceHost:
     def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None, register_fork=None,
                  delete_catalog=None):
@@ -57,6 +62,7 @@ class WorkspaceHost:
                 "codex": CodexWorkspace,
                 "claude": _claude_owner,
                 "gemini": _gemini_owner,
+                "muse": _muse_owner,
             }
         )
         self._guard = threading.Lock()
@@ -605,7 +611,7 @@ class WorkspaceHost:
     def create(self, request_id: str, provider: str, cwd: str, *, confirmed=False, seed="", timeout=35):
         if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
             raise ValueError("Creation requires an exact request UUID")
-        if confirmed is not True or provider not in {"codex", "claude", "gemini"} or provider not in self.factories:
+        if confirmed is not True or provider not in {"codex", "claude", "gemini", "muse"} or provider not in self.factories:
             raise ValueError("Explicit supported-provider creation is required")
         if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
             raise ValueError("An existing absolute project directory is required")
@@ -1386,7 +1392,8 @@ class WorkspaceHost:
 
     def _input_mapper(self, provider, owner):
         return {"codex": self.uploads.codex_inputs, "claude": self.uploads.claude_inputs,
-                "gemini": self.uploads.gemini_inputs if getattr(owner, "native_stream", False) else self.uploads.acp_inputs}[provider]
+                "gemini": self.uploads.gemini_inputs if getattr(owner, "native_stream", False) else self.uploads.acp_inputs,
+                "muse": self.uploads.muse_inputs}[provider]
 
     def command(self, sid: str, request_id: str, action: str, payload: dict, *, timeout=35):
         self._validate_session(sid)
@@ -1949,7 +1956,7 @@ class WorkspaceHost:
                     retryable = True
                     result = await asyncio.to_thread(read_project_diff, owner.cwd)
                 elif action == "commands":
-                    if provider not in {"claude", "codex", "gemini"} or payload:
+                    if provider not in {"claude", "codex", "gemini", "muse"} or payload:
                         raise ValueError(
                             "Command discovery requires a supported session and no payload"
                         )
@@ -2039,7 +2046,7 @@ class WorkspaceHost:
                         raise ValueError("Invalid native session mode")
                     result = await owner.set_session_mode(payload["mode"])
                 elif action == "models":
-                    if payload or provider not in {"codex", "claude", "gemini"}:
+                    if payload or provider not in {"codex", "claude", "gemini", "muse"}:
                         raise ValueError("Model discovery is unavailable for this request")
                     result = await owner.list_models()
                 elif action == "submit":

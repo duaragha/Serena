@@ -173,6 +173,7 @@ def test_coding_options_come_from_policy_and_frozen_decisions_revalidate() -> No
         "gpt-5.6-sol",
         "claude-sonnet-5",
         "claude-opus-5",
+        "muse-spark",
     ]
     frozen = validate_frozen_decision(
         decision.as_dict(),

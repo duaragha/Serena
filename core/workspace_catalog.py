@@ -13,7 +13,7 @@ def list_saved_sessions(provider, query="", offset=0, *, archived=False):
     """Read bounded catalog pages without starting or attaching any owner."""
     from core.indexer import _get_db
 
-    if provider not in {"claude", "codex"} or not isinstance(query, str) or len(query) > 200 or type(archived) is not bool:
+    if provider not in {"claude", "codex", "muse"} or not isinstance(query, str) or len(query) > 200 or type(archived) is not bool:
         raise ValueError("Invalid session search")
     if type(offset) is not int or not 0 <= offset <= 1000000:
         raise ValueError("Invalid session page")
@@ -40,12 +40,18 @@ def register_fork(target):
 
     sid = target["session_id"]
     provider = target.get("provider")
-    if provider not in {"claude", "codex", "gemini"} or str(UUID(sid)) != sid:
+    if provider not in {"claude", "codex", "gemini", "muse"} or str(UUID(sid)) != sid:
         raise ValueError("An exact native fork is required")
     if provider == 'gemini':
         from core.gemini_scanner import GEMINI_ROOT, resumable_conversation_path
         projects = GEMINI_ROOT
         native = resumable_conversation_path(sid)
+        candidates = [native] if native else []
+    elif provider == "muse":
+        from core.muse_scanner import MUSE_ROOT, resumable_session_path
+
+        projects = MUSE_ROOT
+        native = resumable_session_path(sid)
         candidates = [native] if native else []
     elif provider == "claude":
         projects = Path(os.environ.get("CLAUDE_CONFIG_DIR") or CLAUDE_DIR) / "projects"
@@ -76,6 +82,10 @@ def register_fork(target):
     if provider == 'gemini':
         from core.gemini_scanner import parse_gemini_metadata
         meta = parse_gemini_metadata(path)
+    elif provider == "muse":
+        from core.muse_scanner import parse_muse_metadata
+
+        meta = parse_muse_metadata(path)
     elif provider == "claude":
         meta = parse_metadata(path, path.parent.name)
     else:

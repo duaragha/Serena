@@ -56,11 +56,11 @@ def install_workspace(
         source = request.args.get("source", "")
         provider = request.args.get("provider", "codex")
         seeded = request.args.get("seeded", "0")
-        if (provider not in {"codex", "claude", "gemini"} or not source or len(source) > 200
+        if (provider not in {"codex", "claude", "gemini", "muse"} or not source or len(source) > 200
                 or seeded not in {"0", "1"}
                 or "\0" in source or not Path(cwd).is_absolute() or not Path(cwd).is_dir()):
             abort(400)
-        label = {"codex": "Codex", "claude": "Claude", "gemini": "Gemini"}[provider]
+        label = {"codex": "Codex", "claude": "Claude", "gemini": "Gemini", "muse": "Muse"}[provider]
         boot = json.dumps({"source": source, "cwd": str(Path(cwd).resolve()), "provider": provider, "seeded": seeded == "1", "token": token}).replace("<", "\\u003c")
         response = Response("""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>New """ + label + """ chat</title>
@@ -84,7 +84,7 @@ def install_workspace(
         session = describe(sid) or host.describe_pending_session(sid)
         if not session or session.get("session_id") != sid:
             abort(404)
-        provider = {"codex": "Codex", "claude": "Claude", "gemini": "Gemini"}.get(
+        provider = {"codex": "Codex", "claude": "Claude", "gemini": "Gemini", "muse": "Muse"}.get(
             session.get("agent"), "Unknown"
         )
         boot = json.dumps({"sessionId": sid, "provider": provider, "token": token,

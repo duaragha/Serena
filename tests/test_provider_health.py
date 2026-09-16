@@ -28,7 +28,7 @@ from core.provider_health import (
 NOW = 1_786_000_000.0
 
 
-def _capacity(*, claude=True, codex=True, claude_reason="", codex_reason=""):
+def _capacity(*, claude=True, codex=True, muse=True, claude_reason="", codex_reason="", muse_reason=""):
     return {
         "claude": {
             "provider": "claude",
@@ -42,6 +42,13 @@ def _capacity(*, claude=True, codex=True, claude_reason="", codex_reason=""):
             "status": "available" if codex else "unavailable",
             "usable": codex,
             "reason": codex_reason or ("ok" if codex else "usage limit reached"),
+            "source": "test",
+        },
+        "muse": {
+            "provider": "muse",
+            "status": "available" if muse else "unavailable",
+            "usable": muse,
+            "reason": muse_reason or ("ok" if muse else "usage limit reached"),
             "source": "test",
         },
     }
@@ -80,7 +87,7 @@ def test_routing_picks_the_cloud_provider_while_one_has_capacity():
 
 def test_routing_falls_to_the_local_model_when_both_subscriptions_are_out():
     routing = route_brain_turn(
-        _capacity(claude=False, codex=False), local=_local(True), now=NOW
+        _capacity(claude=False, codex=False, muse=False), local=_local(True), now=NOW
     )
     assert routing.provider == "local"
     assert routing.is_local is True
@@ -91,7 +98,7 @@ def test_routing_falls_to_the_local_model_when_both_subscriptions_are_out():
 
 def test_routing_queues_the_turn_when_nothing_can_answer_it():
     routing = route_brain_turn(
-        _capacity(claude=False, codex=False), local=_local(False, "nothing loaded"), now=NOW
+        _capacity(claude=False, codex=False, muse=False), local=_local(False, "nothing loaded"), now=NOW
     )
     assert routing.provider == ""
     assert routing.should_queue is True
@@ -122,7 +129,7 @@ def test_an_explicit_cloud_override_that_is_out_of_capacity_is_not_silently_swap
 
 def test_routing_can_reuse_an_assessment_without_probing_again():
     state = assess_continuity(
-        _capacity(claude=False, codex=False), local=_local(True), now=NOW
+        _capacity(claude=False, codex=False, muse=False), local=_local(True), now=NOW
     )
     routing = route_brain_turn(state=state)
     assert routing.provider == "local"
@@ -168,25 +175,25 @@ def test_one_exhausted_provider_still_means_full_but_names_the_fallback():
 def test_unknown_capacity_is_not_treated_as_exhausted():
     state = assess_continuity({}, now=NOW, probe_local=False)
     assert state.mode == FULL
-    assert state.usable_cloud == ("claude", "codex")
+    assert state.usable_cloud == ("claude", "codex", "muse")
 
 
 def test_both_out_with_a_local_model_is_degraded():
     state = assess_continuity(
-        _capacity(claude=False, codex=False),
+        _capacity(claude=False, codex=False, muse=False),
         local=_local(True),
         now=NOW,
     )
     assert state.mode == DEGRADED
     assert state.selected_provider == "local"
     assert state.selected_model == "qwen2.5:14b-instruct-q4_K_M"
-    assert "both subscriptions are out" in state.fallback_reason
+    assert "all subscriptions are out" in state.fallback_reason
     assert state.local_available is True
 
 
 def test_both_out_with_no_local_model_is_offline():
     state = assess_continuity(
-        _capacity(claude=False, codex=False),
+        _capacity(claude=False, codex=False, muse=False),
         local=(None, LocalModelStatus(False, "no local model server answering")),
         now=NOW,
     )
@@ -226,7 +233,7 @@ def test_cloud_only_capabilities_are_refused_when_cloud_is_gone():
 
 def test_offline_does_not_claim_local_reasoning():
     state = assess_continuity(
-        _capacity(claude=False, codex=False),
+        _capacity(claude=False, codex=False, muse=False),
         local=(None, LocalModelStatus(False, "nothing loaded")),
         now=NOW,
     )
@@ -239,7 +246,7 @@ def test_offline_does_not_claim_local_reasoning():
 
 def test_degraded_says_the_real_local_model_and_the_real_reason():
     state = assess_continuity(
-        _capacity(claude=False, codex=False), local=_local(True), now=NOW
+        _capacity(claude=False, codex=False, muse=False), local=_local(True), now=NOW
     )
     line = describe(state)
     assert "degraded" in line
@@ -251,7 +258,7 @@ def test_degraded_says_the_real_local_model_and_the_real_reason():
 
 def test_offline_does_not_pretend_a_model_is_answering():
     state = assess_continuity(
-        _capacity(claude=False, codex=False),
+        _capacity(claude=False, codex=False, muse=False),
         local=(None, LocalModelStatus(False, "nothing loaded")),
         now=NOW,
     )
@@ -273,7 +280,7 @@ def test_full_mode_names_the_provider_actually_selected():
 
 def test_a_degraded_result_may_not_claim_a_cloud_provider():
     state = assess_continuity(
-        _capacity(claude=False, codex=False), local=_local(True), now=NOW
+        _capacity(claude=False, codex=False, muse=False), local=_local(True), now=NOW
     )
     assert_not_claiming_cloud(state, {"provider": "local", "model": "qwen2.5:14b"})
     with pytest.raises(AssertionError):
@@ -317,7 +324,7 @@ def test_queued_work_survives_reopening_the_store(tmp_path):
 def test_resume_refuses_while_still_degraded(store):
     store.defer(kind="brain_turn", summary="a question", reason="out", now=NOW)
     degraded = assess_continuity(
-        _capacity(claude=False, codex=False), local=_local(True), now=NOW
+        _capacity(claude=False, codex=False, muse=False), local=_local(True), now=NOW
     )
 
     def must_not_run(_item):  # pragma: no cover - the point is it is not called
@@ -381,7 +388,7 @@ def test_a_raising_handler_is_recorded_not_swallowed(store):
 def test_only_mode_changes_are_recorded(store):
     healthy = assess_continuity(_capacity(), now=NOW, probe_local=False)
     degraded = assess_continuity(
-        _capacity(claude=False, codex=False), local=_local(True), now=NOW + 60
+        _capacity(claude=False, codex=False, muse=False), local=_local(True), now=NOW + 60
     )
 
     assert store.record_mode(healthy) is True
@@ -417,7 +424,7 @@ def test_briefings_are_generated_with_no_provider_at_all(tmp_path):
         now=NOW,
     )
     state = assess_continuity(
-        _capacity(claude=False, codex=False),
+        _capacity(claude=False, codex=False, muse=False),
         local=(None, LocalModelStatus(False, "nothing loaded")),
         now=NOW,
     )

@@ -20,12 +20,14 @@ TERRA_MODEL = "gpt-5.6-terra"
 CODEX_MODEL = "gpt-5.6-sol"
 SONNET_MODEL = "claude-sonnet-5"
 CLAUDE_MODEL = "claude-opus-5"
+MUSE_MODEL = "muse-spark"
 CODING_MODELS = (
     AUTO_MODEL,
     TERRA_MODEL,
     CODEX_MODEL,
     SONNET_MODEL,
     CLAUDE_MODEL,
+    MUSE_MODEL,
 )
 DEFAULT_PREFERENCE_PATH = (
     Path.home() / ".local" / "state" / "serena" / "coding-model.json"
@@ -55,6 +57,8 @@ def preferred_provider_for(model: object) -> str:
         return "codex"
     if selected in {SONNET_MODEL, CLAUDE_MODEL}:
         return "claude"
+    if selected == MUSE_MODEL:
+        return "muse"
     return ""
 
 

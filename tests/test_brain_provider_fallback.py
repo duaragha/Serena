@@ -24,7 +24,7 @@ def _message(kind: str, **values):
     return type(kind, (), values)()
 
 
-def _capacity(*, claude: bool, codex: bool):
+def _capacity(*, claude: bool, codex: bool, muse: bool = True):
     return {
         "claude": ProviderCapacity(
             provider="claude",
@@ -37,6 +37,13 @@ def _capacity(*, claude: bool, codex: bool):
             provider="codex",
             status="available" if codex else "unavailable",
             usable=codex,
+            source="test",
+            reason="test",
+        ),
+        "muse": ProviderCapacity(
+            provider="muse",
+            status="available" if muse else "unavailable",
+            usable=muse,
             source="test",
             reason="test",
         ),
@@ -152,12 +159,13 @@ def test_auto_provider_prefers_claude_and_falls_back_only_when_exhausted() -> No
     assert choose_brain_provider(_capacity(claude=True, codex=True)) == "claude"
     assert choose_brain_provider(_capacity(claude=False, codex=True)) == "codex"
     assert choose_brain_provider(None) == "claude"
+    assert choose_brain_provider(_capacity(claude=False, codex=False)) == "muse"
     try:
-        choose_brain_provider(_capacity(claude=False, codex=False))
+        choose_brain_provider(_capacity(claude=False, codex=False, muse=False))
     except BrainProviderUnavailable as exc:
-        assert "Claude and Codex" in str(exc)
+        assert "Claude, Codex, and Muse" in str(exc)
     else:
-        raise AssertionError("two exhausted providers were accepted")
+        raise AssertionError("three exhausted providers were accepted")
 
 
 def test_shared_policy_preference_can_choose_codex_without_disabling_fallback() -> None:

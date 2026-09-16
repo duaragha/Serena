@@ -157,7 +157,7 @@ def validate_policy(data: object) -> dict[str, Any]:
     for model_id, raw in models.items():
         if not isinstance(raw, Mapping):
             raise SerenaPolicyError(f"model {model_id} must be an object")
-        if raw.get("provider") not in {"codex", "claude"}:
+        if raw.get("provider") not in {"codex", "claude", "muse"}:
             raise SerenaPolicyError(f"model {model_id} has an invalid provider")
         if not str(raw.get("runtime_model") or "").strip():
             raise SerenaPolicyError(f"model {model_id} has no runtime_model")

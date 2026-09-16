@@ -24,9 +24,9 @@ SCHEMA_VERSION = 1
 PHASES = ("discover", "execute", "verify", "finalize")
 ACTIVITIES = frozenset({"auto", "coding", "research"})
 EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
-PROVIDERS = frozenset({"codex", "claude", "gemini"})
-REQUESTED_PROVIDER_MODES = frozenset({"auto", "balanced", "mixed", "codex", "claude"})
-SELECTED_PROVIDER_MODES = frozenset({"balanced", "codex", "claude", "adaptive"})
+PROVIDERS = frozenset({"codex", "claude", "gemini", "muse"})
+REQUESTED_PROVIDER_MODES = frozenset({"auto", "balanced", "mixed", "codex", "claude", "muse"})
+SELECTED_PROVIDER_MODES = frozenset({"balanced", "codex", "claude", "muse", "adaptive"})
 SESSION_MODES = frozenset({"per_leg", "persistent_by_worker"})
 CAPACITY_HANDOFF_MODES = frozenset({"automatic", "manual"})
 MAX_WORKERS = 4
@@ -125,6 +125,22 @@ PROVIDER_ONLY_POLICY = {
             "finalize": (("claude", "claude-opus-5", "high"),),
         },
     },
+    # Muse runs every phase on one stack. Like the other provider-only
+    # stacks this is an explicit downgrade target, never a silent pick.
+    "muse": {
+        "coding": {
+            "discover": (("muse", "muse-spark", "high"),),
+            "execute": (("muse", "muse-spark", "high"),),
+            "verify": (("muse", "muse-spark", "high"),),
+            "finalize": (("muse", "muse-spark", "high"),),
+        },
+        "research": {
+            "discover": (("muse", "muse-spark", "high"),),
+            "execute": (("muse", "muse-spark", "high"),),
+            "verify": (("muse", "muse-spark", "high"),),
+            "finalize": (("muse", "muse-spark", "high"),),
+        },
+    },
 }
 
 _LEGACY_PROFILE_PHASE = {"coding": "execute", "research": "discover"}
@@ -201,25 +217,25 @@ _ONLY_PROVIDER_DIRECTIVE = re.compile(
     + r"(?:"
     + r"(?:use|run|spawn|launch)\s+"
     + r"(?:(?P<count_a>[1-4]|one|two|three|four)\s+)?"
-    + r"(?P<provider_a>codex|claude)(?:\s+(?:agents?|workers?|chats?))?\s+only"
+    + r"(?P<provider_a>codex|claude|muse)(?:\s+(?:agents?|workers?|chats?))?\s+only"
     + r"|(?:use|run|spawn|launch)\s+only\s+"
     + r"(?:(?P<count_b>[1-4]|one|two|three|four)\s+)?"
-    + r"(?P<provider_b>codex|claude)(?:\s+(?:agents?|workers?|chats?))?"
+    + r"(?P<provider_b>codex|claude|muse)(?:\s+(?:agents?|workers?|chats?))?"
     + r"|only\s+(?:(?P<count_c>[1-4]|one|two|three|four)\s+)?"
-    + r"(?P<provider_c>codex|claude)(?:\s+(?:agents?|workers?|chats?))?"
+    + r"(?P<provider_c>codex|claude|muse)(?:\s+(?:agents?|workers?|chats?))?"
     + _DIRECTIVE_SCOPE_END
-    + r"|(?P<provider_d>codex|claude)[-\s]+only(?=\s*(?:$|[:;,]))"
+    + r"|(?P<provider_d>codex|claude|muse)[-\s]+only(?=\s*(?:$|[:;,]))"
     + r")\b",
     re.IGNORECASE,
 )
 _EXCLUDED_PROVIDER_DIRECTIVE = re.compile(
     _DIRECTIVE_PREFIX
     + r"(?:"
-    + r"(?:no|without|zero)\s*[- ]?\s*(?P<excluded_a>codex|claude)"
+    + r"(?:no|without|zero)\s*[- ]?\s*(?P<excluded_a>codex|claude|muse)"
     + r"(?:\s+(?:agents?|workers?|chats?))?"
     + _DIRECTIVE_SCOPE_END
     + r"|(?:do\s+not|don't)\s+(?:use|run|spawn|launch)\s+(?:any\s+)?"
-    + r"(?P<excluded_b>codex|claude)(?:\s+(?:agents?|workers?|chats?))?"
+    + r"(?P<excluded_b>codex|claude|muse)(?:\s+(?:agents?|workers?|chats?))?"
     + r")\b",
     re.IGNORECASE,
 )
@@ -463,7 +479,7 @@ def validate_config(data: object) -> None:
         # one locked spec, and which provider that implies is the phase's choice.
         for worker in workers:
             if str(worker.get("provider") or "").lower() not in PROVIDERS:
-                raise ValueError(f"{activity} worker provider must be codex or claude")
+                raise ValueError(f"{activity} worker provider must be codex, claude, or muse")
         legacy_specs = _configured_worker_specs(workers)
         expected_legacy = PHASE_MODEL_POLICY[activity][_LEGACY_PROFILE_PHASE[activity]]
         if legacy_specs != expected_legacy:
@@ -606,10 +622,17 @@ def _task_provider_directive(task: str) -> tuple[str | None, int | None]:
             for name in ("excluded_a", "excluded_b")
             if match.group(name)
         )
+        if excluded == "muse":
+            # "Not muse" cannot name a single remaining provider, so it is
+            # recorded as no directive; automatic routing may still fall
+            # back to Muse when Codex and Claude are both unusable.
+            continue
         requests.append(("claude" if excluded == "codex" else "codex", None))
     providers = {provider for provider, _count in requests}
     if len(providers) > 1:
-        raise ValueError("Fleet task contains conflicting codex-only and claude-only directives")
+        if providers == {"codex", "claude"}:
+            raise ValueError("Fleet task contains conflicting codex-only and claude-only directives")
+        raise ValueError("Fleet task contains conflicting provider-only directives")
     counts = {count for _provider, count in requests if count is not None}
     if len(counts) > 1:
         raise ValueError("Fleet task contains conflicting worker-count directives")
@@ -690,7 +713,7 @@ def _resolve_provider_mode(
 ) -> tuple[str, str, int | None, dict[str, tuple[bool, str]], str]:
     requested_mode = str(requested or "auto").strip().casefold()
     if requested_mode not in REQUESTED_PROVIDER_MODES:
-        raise ValueError("provider_mode must be auto, balanced, mixed, codex, or claude")
+        raise ValueError("provider_mode must be auto, balanced, mixed, codex, claude, or muse")
     explicit_mode = "balanced" if requested_mode == "mixed" else requested_mode
     task_mode, task_count = _task_provider_directive(task)
     if explicit_mode != "auto" and task_mode and task_mode != explicit_mode:
@@ -703,16 +726,27 @@ def _resolve_provider_mode(
         if task_mode:
             selected_mode = task_mode
         else:
+            # Automatic and balanced runs prefer the Codex/Claude pair, with
+            # Muse as the automatic last resort. Gemini still joins only
+            # through an explicit research comparison.
             usable = [provider for provider in ("codex", "claude") if capacities[provider][0]]
-            if not usable:
-                raise ValueError("no usable Fleet providers are available")
-            selected_mode = "balanced" if len(usable) == 2 else usable[0]
-            if len(usable) == 1:
-                excluded = "claude" if usable[0] == "codex" else "codex"
+            if not usable and capacities["muse"][0]:
+                selected_mode = "muse"
                 routing_reason = (
-                    f"auto excluded {excluded}: "
-                    f"{capacities[excluded][1] or 'provider unavailable'}"
+                    "auto fell back to muse: "
+                    f"codex {capacities['codex'][1] or 'unavailable'}; "
+                    f"claude {capacities['claude'][1] or 'unavailable'}"
                 )
+            else:
+                if not usable:
+                    raise ValueError("no usable Fleet providers are available")
+                selected_mode = "balanced" if len(usable) == 2 else usable[0]
+                if len(usable) == 1:
+                    excluded = "claude" if usable[0] == "codex" else "codex"
+                    routing_reason = (
+                        f"auto excluded {excluded}: "
+                        f"{capacities[excluded][1] or 'provider unavailable'}"
+                    )
     else:
         selected_mode = explicit_mode
     required = {"codex", "claude"} if selected_mode == "balanced" else {selected_mode}
@@ -1293,6 +1327,10 @@ def expected_model_matches(provider: str, requested: str, actual: str | None) ->
     actual_clean = actual.casefold().strip()
     if provider == "codex":
         return actual_clean == requested_clean
+    if provider == "muse":
+        if requested_clean in {"muse", "spark", "muse-spark", "muse spark"}:
+            return actual_clean == "muse-spark" or actual_clean.startswith("muse")
+        return actual_clean == requested_clean
     if requested_clean in {"opus", "claude-opus-5"}:
         return actual_clean == "claude-opus-5" or actual_clean.startswith("claude-opus-5-")
     if requested_clean.startswith("claude-opus-"):
@@ -1420,7 +1458,7 @@ def build_provider_handoff_policy(
     validate_policy_snapshot(snapshot)
     target = str(target_provider or "").strip().lower()
     if target not in PROVIDERS:
-        raise ValueError("handoff provider must be claude or codex")
+        raise ValueError("handoff provider must be claude, codex, or muse")
     try:
         start_index = int(phase_index)
         worker_ordinal = int(ordinal)
@@ -1561,7 +1599,7 @@ def _validate_snapshot_worker(worker: object) -> None:
         raise ValueError("Fleet workers must be objects")
     provider = str(worker.get("provider") or worker.get("runtime") or "").lower()
     if provider not in PROVIDERS:
-        raise ValueError("Fleet worker provider must be claude or codex")
+        raise ValueError("Fleet worker provider must be claude, codex, or muse")
     if not str(worker.get("model") or "").strip():
         raise ValueError("Fleet worker model is required")
     if str(worker.get("effort") or "").lower() not in EFFORTS:

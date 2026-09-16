@@ -17,6 +17,7 @@ from core.parser import SessionMeta, parse_messages_for_search, parse_metadata
 from core.scanner import scan_sessions
 from core.codex_scanner import scan_codex_sessions, parse_codex_metadata, _FILENAME_RE as _CODEX_FILE_RE
 from core.gemini_scanner import scan_gemini_sessions, parse_gemini_metadata
+from core.muse_scanner import scan_muse_sessions, parse_muse_metadata
 from core.locket_scanner import scan_locket_sessions, parse_locket_metadata
 from core.voice_transcripts import (
     VOICE_SESSION_ID,
@@ -290,6 +291,8 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
         discovered.append(("serena-voice", project_dir, fp))
     for agent_name, fp in scan_gemini_sessions():
         discovered.append((agent_name, "gemini", fp))
+    for agent_name, fp in scan_muse_sessions():
+        discovered.append((agent_name, "muse", fp))
 
     # The same Claude session can legitimately exist under several cwd/OS
     # slug folders. Indexing every copy reparses large transcripts repeatedly
@@ -357,6 +360,11 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
             if meta is None:
                 continue
             project_dir = meta.project_dir
+        elif agent == "muse":
+            meta = parse_muse_metadata(file_path)
+            if meta is None:
+                continue
+            project_dir = meta.project_dir
         else:
             meta = parse_codex_metadata(file_path)
             if meta is None:
@@ -386,6 +394,11 @@ def _discovered_session_id(agent: str, file_path: Path) -> str | None:
         if file_path.name == "transcript.jsonl":
             return file_path.parent.parent.parent.name
         return file_path.stem
+    if agent == "muse":
+        # The directory IS the id; discovery stays lenient while forking
+        # still requires an exact UUID.
+        name = file_path.parent.name if file_path.name == "session.jsonl" else file_path.stem
+        return name if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name or "") else None
     if agent == "codex":
 
         match = _CODEX_FILE_RE.match(file_path.name)

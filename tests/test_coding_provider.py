@@ -14,9 +14,9 @@ import pytest
 from core.coding_provider import choose_providers
 
 
-def _capacity(codex: bool | None, claude: bool | None) -> dict:
+def _capacity(codex: bool | None, claude: bool | None, muse: bool | None = True) -> dict:
     out = {}
-    for name, state in (("codex", codex), ("claude", claude)):
+    for name, state in (("codex", codex), ("claude", claude), ("muse", muse)):
         if state is None:
             out[name] = {"provider": name, "status": "unknown",
                          "usable": True, "reason": f"{name} usage is unavailable"}
@@ -65,7 +65,7 @@ def test_one_provider_reviewing_itself_is_recorded_as_such() -> None:
 
 def test_nothing_is_dispatched_when_both_are_out() -> None:
     """Better to say so than to hang at 'working' with no log line."""
-    plan = choose_providers(_capacity(False, False))
+    plan = choose_providers(_capacity(False, False, False))
     assert not plan.usable
     assert not plan.implement_provider
     assert "rate_limit_reached" in plan.reason

@@ -238,7 +238,7 @@ def test_the_menu_offers_every_agent_in_both_directions() -> None:
     """Two hardcoded rows each meant a third agent was simply unreachable."""
     page = _page()
 
-    assert "const _HANDOFF_AGENTS = ['claude', 'codex', 'gemini']" in page
+    assert "const _HANDOFF_AGENTS = ['claude', 'codex', 'gemini', 'muse']" in page
     assert "'Hand off → ' + _agentLabel(agent)" in page
     assert "'Fork context → ' + _agentLabel(agent)" in page
     assert "targetAgent === 'claude' ? 'Claude' : 'Codex'" not in page, (
@@ -251,7 +251,7 @@ def test_the_handoff_endpoint_accepts_gemini() -> None:
     start = page.index("def api_handoff(")
     body = page[start : page.index("@app.route", start + 10)]
 
-    assert '("claude", "codex", "gemini")' in body
+    assert '("claude", "codex", "gemini", "muse")' in body
 
 
 def test_gemini_can_receive_a_context_fork() -> None:

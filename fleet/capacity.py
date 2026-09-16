@@ -25,7 +25,7 @@ from core.billing import strip_metered_auth_env
 from core.codex_usage_reader import CodexUsageReader
 from core.config import DATA_DIR
 
-PROVIDERS = ("codex", "claude")
+PROVIDERS = ("codex", "claude", "muse")
 STATUSES = frozenset({"available", "unavailable", "unknown"})
 DEFAULT_CLAUDE_FRESH_SECONDS = 30.0
 DEFAULT_CODEX_FRESH_SECONDS = 120.0
@@ -67,12 +67,14 @@ def read_fleet_capacity(
     now: float | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, ProviderCapacity]:
-    """Return current capacity states for both native Fleet providers.
+    """Return current capacity states for the native Fleet providers.
 
     Tests and emergency operations can supply a complete deterministic snapshot
     through ``SERENA_FLEET_CAPACITY_JSON``.  Otherwise Claude is read from the
     statusline materialization and Codex is queried through its local app-server
-    account endpoint, with bounded rollout telemetry as a fallback.
+    account endpoint, with bounded rollout telemetry as a fallback.  Muse
+    exposes no local usage-meter endpoint, so it reports unknown (usable until
+    a worker says otherwise) unless an override pins it.
     """
 
     current = time.time() if now is None else float(now)
@@ -84,6 +86,7 @@ def read_fleet_capacity(
     return {
         "codex": _read_codex_capacity(current, env),
         "claude": _read_claude_capacity(current, env),
+        "muse": _read_muse_capacity(current, env),
     }
 
 
@@ -98,6 +101,15 @@ def _override_capacity(value: str) -> dict[str, ProviderCapacity]:
     result: dict[str, ProviderCapacity] = {}
     for provider in PROVIDERS:
         item = decoded.get(provider)
+        if provider == "muse" and not isinstance(item, dict):
+            # Overrides written before Muse existed stay valid; an absent
+            # Muse entry is unknown, never an outage.
+            result[provider] = _unknown(
+                "muse",
+                "environment-override",
+                "Muse capacity override is absent",
+            )
+            continue
         if not isinstance(item, dict):
             raise ValueError(f"SERENA_FLEET_CAPACITY_JSON requires a {provider} object")
         raw_status = str(item.get("status") or "").strip().lower()
@@ -119,6 +131,24 @@ def _override_capacity(value: str) -> dict[str, ProviderCapacity]:
             resets_at=_number(item.get("resets_at")),
         )
     return result
+
+
+def _read_muse_capacity(
+    now: float,
+    environ: Mapping[str, str],
+) -> ProviderCapacity:
+    """Muse has no usage-meter signal, so only overrides can bench it."""
+
+    configured = str(environ.get("SERENA_FLEET_MUSE_BIN") or "").strip()
+    binary = str(Path(configured).expanduser()) if configured else shutil.which("muse")
+    if not binary:
+        return _unknown("muse", "muse-cli", "Muse CLI is not installed")
+    return _unknown(
+        "muse",
+        "muse-cli",
+        "Muse usage has no measured window",
+        observed_at=now,
+    )
 
 
 def _read_claude_capacity(
