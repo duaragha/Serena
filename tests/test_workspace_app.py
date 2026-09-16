@@ -1048,3 +1048,50 @@ function teardownLiveTerminal(sid){const runtime=termSessions.get(sid);runtime.c
         server.server_close()
         thread.join(5)
         host.shutdown()
+
+
+def test_page_reports_engagement_only_after_a_real_click_or_key(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / "ui/static"))
+    host = install_workspace(app, tmp_path / "events.db", describe=lambda sid: {"session_id": sid, "agent": "claude"})
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": 1200, "height": 900})
+                errors, contexts = [], []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+
+                def api(route):
+                    if '/replay?' in route.request.url:
+                        route.fulfill(content_type='application/x-ndjson', body='{"complete":true}\n')
+                        return
+                    if route.request.url.endswith('/view-context'):
+                        contexts.append(route.request.post_data_json)
+                    route.fulfill(json={"session_id": "exact", "observing": False} if route.request.url.endswith("/observe")
+                                  else {"ok": True, "events": [], "has_more": False})
+
+                page.route("**/api/workspace/**", api)
+                page.goto(f"http://127.0.0.1:{server.server_port}/workspace/exact")
+                composer = page.get_by_role("textbox", name="Message Claude", exact=True)
+                composer.wait_for()
+                # Programmatic focus, as opening a chat does, is not engagement.
+                page.evaluate("document.querySelector('textarea').focus()")
+                page.wait_for_timeout(2100)
+                assert contexts and all(context['engaged'] is False for context in contexts)
+                assert any(context['focused'] for context in contexts)
+                seen = len(contexts)
+                composer.click()
+                page.wait_for_timeout(300)
+                assert any(context['engaged'] is True and context['focused'] for context in contexts[seen:])
+                assert not errors
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+        host.shutdown()
