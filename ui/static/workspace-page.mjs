@@ -93,11 +93,14 @@ try {
   viewContext=saved && typeof saved.view_id==='string' && Number.isSafeInteger(saved.sequence)
     ? saved : {view_id:crypto.randomUUID(),sequence:0};
 } catch { /* Context telemetry must not interfere with the session. */ }
+// Opening a chat focuses its composer on the user's behalf. Only a real click
+// or key press in this page may keep its owner awake or wake it.
+let engaged=false;
 function reportContext(closing=false,sleepPeers=false) {
   closing=closing===true;
   if(!viewContext || pane.disposed)return;
   const visible=!closing && intersects && document.visibilityState==='visible';
-  const state={visible,focused:visible && document.hasFocus(),split_sids:visible ? splitSids : [],
+  const state={visible,focused:visible && document.hasFocus(),engaged,split_sids:visible ? splitSids : [],
     ...(closing ? {closed:true} : {}),
     ...(typeof pinned==='boolean' ? {pinned} : {}),
     ...(sleepPeers===true && !connection.storageFailure && visible && document.hasFocus() && pinned===false && splitSids.length>1
@@ -139,8 +142,15 @@ function reportFocus() {
 document.addEventListener('focusin',reportFocus);
 document.addEventListener('pointerdown',reportFocus);
 document.addEventListener('pointerdown',event=>{
-  if(event.isTrusted)setTimeout(()=>reportContext(false,true),0);
-});
+  if(!event.isTrusted)return;
+  engaged=true;
+  setTimeout(()=>reportContext(false,true),0);
+},true);
+document.addEventListener('keydown',event=>{
+  if(!event.isTrusted || engaged)return;
+  engaged=true;
+  reportContext();
+},true);
 window.addEventListener('focus',reportFocus);
 function reportState() {
   if (pane.conversation.status === 'unavailable') {

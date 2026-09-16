@@ -40,6 +40,10 @@ def _claude_owner(**kwargs):
 # Reclaiming the moment a pane sleeps would make every switch back fault its
 # heap in from disk, which is the stall GTK avoided the same way.
 PEER_IDLE_SECONDS = max(5.0, float(os.environ.get("SERENA_PEER_SLEEP_SECONDS", "20")))
+# A pane the user has not touched since its page loaded sleeps as soon as it has
+# finished loading: this long after its last event, and never while the owner
+# still reports tools starting.
+OPEN_SETTLE_SECONDS = max(1.0, float(os.environ.get("SERENA_OPEN_SLEEP_SECONDS", "5")))
 PEER_RECLAIM_SECONDS = max(0.0, float(os.environ.get("SERENA_PEER_RECLAIM_SECONDS", "60")))
 # The focused pane reports every two seconds; one sweep attempt per peer is enough.
 _PEER_SWEEP_INTERVAL = 5.0
@@ -94,6 +98,8 @@ class WorkspaceHost:
         self._last_focus = {}
         self._asleep_since = {}
         self._peer_swept = {}
+        # Sessions the user has clicked or typed in since their page loaded.
+        self._engaged_since_open = set()
         self._work_reservations = {}
         self._work_turns = {}
         self._restore_failures = {}
@@ -254,7 +260,7 @@ class WorkspaceHost:
 
     def note_view_context(self, sid, data):
         self._validate_session(sid)
-        if (not isinstance(data, dict) or set(data) - {"split_sids", "pinned", "sleep_peers", "closed"} != {"view_id", "sequence", "focused", "visible", "draft"}
+        if (not isinstance(data, dict) or set(data) - {"split_sids", "pinned", "sleep_peers", "closed", "engaged"} != {"view_id", "sequence", "focused", "visible", "draft"}
                 or not isinstance(data["view_id"], str) or str(UUID(data["view_id"])) != data["view_id"]
                 or type(data["sequence"]) is not int or not 0 <= data["sequence"] <= 2 ** 53 - 1
                 or any(type(data[key]) is not bool for key in ("focused", "visible", "draft"))
@@ -264,6 +270,8 @@ class WorkspaceHost:
             raise ValueError("Pinned context must be boolean")
         if "sleep_peers" in data and type(data["sleep_peers"]) is not bool:
             raise ValueError("Peer sleep intent must be boolean")
+        if "engaged" in data and type(data["engaged"]) is not bool:
+            raise ValueError("Engagement must be boolean")
         if "closed" in data and (type(data["closed"]) is not bool or
                                  (data["closed"] and (data["visible"] or data["focused"] or data.get("sleep_peers")))):
             raise ValueError("Closed view must be inactive")
@@ -295,19 +303,36 @@ class WorkspaceHost:
         same_focus = previous is not None and all(previous.get(key) == data.get(key)
                                                   for key in ("focused", "visible", "split_sids", "pinned"))
         epoch = previous.get("focus_epoch", previous["sequence"]) if same_focus else data["sequence"]
+        if data.get("engaged") is False:
+            # A page the user has not touched since it loaded may sleep as soon
+            # as it has loaded instead of after the ordinary idle window.
+            self._engaged_since_open.discard(sid)
         views[data["view_id"]] = {**data, "seen": monotonic(), "focused_at": time.time(), "focus_epoch": epoch}
-        if data["focused"] or data["draft"]:
+        active = self._view_active(data)
+        if active or "engaged" not in data:
+            self._engaged_since_open.add(sid)
+        if active or data["draft"]:
             self._last_focus[sid] = monotonic()
-        if data["focused"] or data.get("pinned"):
+        if active or data.get("pinned"):
             transport = self._owner_transport(*self._sessions[sid])
             if transport is not None and getattr(transport, "suspended", False):
                 transport.wake()
                 self._asleep_since.pop(sid, None)
-        if data.get("sleep_peers") and data["focused"] and data.get("pinned") is False:
+        if data.get("sleep_peers") and active and data.get("pinned") is False:
             asyncio.create_task(self._run(self._sleep_clicked_peers(sid, {**data, "focus_epoch": epoch})))
-        elif data["focused"] and data.get("pinned") is False and len(data.get("split_sids", [])) > 1:
-            asyncio.create_task(self._run(self._sweep_idle_peers(sid, {**data, "focus_epoch": epoch})))
+        elif not active and data.get("pinned") is False:
+            asyncio.create_task(self._run(self._sweep_self(sid)))
         return {"ok": True}
+
+    @staticmethod
+    def _view_active(view):
+        """Focused, and touched by the user since the page loaded.
+
+        Opening a chat focuses a composer programmatically; only a click or a
+        key press in the pane may keep it awake or wake it. Pages that predate
+        the engaged field count focus alone.
+        """
+        return bool(view.get("focused")) and view.get("engaged", True) is not False
 
     def _active_views(self, sid):
         return [view for view in self._views.get(sid, {}).values() if not view.get("closed")]
@@ -316,7 +341,7 @@ class WorkspaceHost:
         view = self._views.get(source, {}).get(data["view_id"], {})
         split = data.get("split_sids", [])
         if (self._stopped or view.get("focus_epoch") != data["focus_epoch"]
-                or not view.get("focused") or not view.get("visible") or view.get("pinned") is not False
+                or not self._view_active(view) or not view.get("visible") or view.get("pinned") is not False
                 or monotonic() - view.get("seen", 0) >= 6 or source == peer or peer not in split):
             return False
         return any(other.get("visible") and other.get("split_sids") == split
@@ -334,37 +359,37 @@ class WorkspaceHost:
                 # Power saving is optional; failed admission must not affect work.
                 continue
 
-    async def _sweep_idle_peers(self, source, data):
-        """Sleep merged-view peers that stayed quiet, then release their memory.
+    async def _sweep_self(self, sid):
+        """Sleep a pane nobody is using once it is quiet, then release its memory.
 
-        A click only sleeps a peer that is idle at that instant, so one that was
-        still finishing a turn stayed awake for as long as the view was open.
-        The focused pane's heartbeat retries it once it has been quiet.
+        Every open page reports every two seconds, so each pane decides for
+        itself. A pane untouched since its page loaded sleeps once loading has
+        settled; one the user has used waits out the ordinary idle window. The
+        admission checks in _set_sleep still refuse any pane with work, a draft,
+        focus, a pin, or unknown composer state.
         """
+        entry = self._sessions.get(sid)
+        transport = self._owner_transport(*entry) if entry else None
+        if transport is None or self._stopped:
+            return
         now = monotonic()
-        for peer in data.get("split_sids", []):
-            if peer not in self._sessions or not self._peer_sleep_current(source, data, peer):
-                continue
-            transport = self._owner_transport(*self._sessions[peer])
-            if transport is None:
-                continue
-            if getattr(transport, "suspended", False):
-                asleep = self._asleep_since.setdefault(peer, now)
-                if not getattr(transport, "reclaimed", True) and now - asleep >= PEER_RECLAIM_SECONDS:
-                    with contextlib.suppress(Exception):
-                        await transport.reclaim_idle()
-                continue
-            quiet_since = max(self._activity.get(peer, 0.0), self._last_focus.get(peer, 0.0))
-            if now - quiet_since < PEER_IDLE_SECONDS or now - self._peer_swept.get(peer, 0.0) < _PEER_SWEEP_INTERVAL:
-                continue
-            self._peer_swept[peer] = now
-            try:
-                result = await self._set_sleep(
-                    peer, True, guard=lambda peer=peer: self._peer_sleep_current(source, data, peer))
-            except (RuntimeError, OSError):
-                continue  # Power saving is optional; never let it affect work.
-            if result.get("sleeping"):
-                self._asleep_since[peer] = monotonic()
+        if getattr(transport, "suspended", False):
+            asleep = self._asleep_since.setdefault(sid, now)
+            if not getattr(transport, "reclaimed", True) and now - asleep >= PEER_RECLAIM_SECONDS:
+                with contextlib.suppress(Exception):
+                    await transport.reclaim_idle()
+            return
+        wait = PEER_IDLE_SECONDS if sid in self._engaged_since_open else OPEN_SETTLE_SECONDS
+        quiet_since = max(self._activity.get(sid, 0.0), self._last_focus.get(sid, 0.0))
+        if now - quiet_since < wait or now - self._peer_swept.get(sid, 0.0) < _PEER_SWEEP_INTERVAL:
+            return
+        self._peer_swept[sid] = now
+        try:
+            result = await self._set_sleep(sid, True)
+        except (RuntimeError, OSError):
+            return  # Power saving is optional; never let it affect work.
+        if result.get("sleeping"):
+            self._asleep_since[sid] = monotonic()
 
     @staticmethod
     def _owner_transport(owner, provider):
@@ -389,6 +414,8 @@ class WorkspaceHost:
             return "Native work is active or uncertain"
         if getattr(owner, "active_agent_threads", None):
             return "Delegated agent work is active or uncertain"
+        if getattr(owner, "mcp_starting", None):
+            return "Native tools are still starting"
         if getattr(owner, "questions", None) or getattr(owner, "elicitations", None):
             return "Native questions are pending"
         if self._work_reservations.get(sid) or self._bridge_queues.get(sid):
@@ -399,7 +426,7 @@ class WorkspaceHost:
         views = self._active_views(sid)
         if not views or any(monotonic() - view["seen"] >= 6 for view in views):
             return "Composer state is not freshly confirmed"
-        if any(view["draft"] or view["focused"] or view.get("pinned") is not False for view in views):
+        if any(view["draft"] or self._view_active(view) or view.get("pinned") is not False for view in views):
             return "Native pane is focused, pinned, has a draft, or pin state is unknown"
         return ""
 

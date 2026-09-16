@@ -66,6 +66,9 @@ class CodexWorkspace:
         self.active_turn: str | None = None
         self.state = "closed"
         self.questions: dict[int | str, dict] = {}
+        # MCP servers Codex reported as starting and has not finished; a pane
+        # must not be frozen while they are still coming up.
+        self.mcp_starting: set[str] = set()
         self._completed: deque[str] = deque(maxlen=64)
         self._control_lock = asyncio.Lock()
         self._events_task: asyncio.Task | None = None
@@ -2188,6 +2191,13 @@ class CodexWorkspace:
                         self.settings["personality"] = settings["personality"]
                         self.settings.setdefault("personalityConfirmed", False)
                     await self.publish({"method": "workspace/settings", "params": deepcopy(self.settings)})
+                elif method == "mcpServer/startupStatus/updated":
+                    name = params.get("name")
+                    if isinstance(name, str):
+                        if params.get("status") == "starting":
+                            self.mcp_starting.add(name)
+                        else:
+                            self.mcp_starting.discard(name)
                 elif method == "mcpServer/oauthLogin/completed":
                     login = self._mcp_logins.get(params.get("name"))
                     if login is not None and type(params.get("success")) is bool:
@@ -2292,6 +2302,7 @@ class CodexWorkspace:
             await self.publish({"method": "workspace/error", "params": {"reason": str(error)}})
 
     async def _close(self) -> None:
+        self.mcp_starting.clear()  # A reopened server reports its own startup.
         if self._events_task:
             self._events_task.cancel()
             await asyncio.gather(self._events_task, return_exceptions=True)

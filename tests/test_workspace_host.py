@@ -3054,3 +3054,86 @@ def test_flagged_gemini_peer_sleeps_only_once_its_background_work_settled(tmp_pa
         assert peer.rpc.suspended is settled
     finally:
         host.shutdown()
+
+
+def _pane_report(host, sid, sequence, *, focused=False, engaged=False, split=("source", "peer"), draft=False):
+    host.note_view_context(sid, {"view_id": "44444444-4444-4444-8444-%012d" % (1 if sid == "source" else 2),
+                                 "sequence": sequence, "visible": True, "focused": focused, "engaged": engaged,
+                                 "draft": draft, "pinned": False, "split_sids": list(split)})
+    host._dispatch(asyncio.sleep(.05), 2)
+
+
+@pytest.fixture
+def quick_sleep(monkeypatch):
+    import core.workspace_host as host_module
+    monkeypatch.setattr(host_module, "OPEN_SETTLE_SECONDS", 0.2)
+    monkeypatch.setattr(host_module, "PEER_IDLE_SECONDS", 0.6)
+    monkeypatch.setattr(host_module, "_PEER_SWEEP_INTERVAL", 0.0)
+
+
+def test_freshly_opened_panes_all_start_asleep_even_the_auto_focused_one(tmp_path, quick_sleep):
+    host = _sweep_host(tmp_path)
+    try:
+        host.attach("source")
+        host.attach("peer")
+        # Opening focuses one composer programmatically; nobody has clicked yet.
+        _pane_report(host, "source", 1, focused=True)
+        _pane_report(host, "peer", 1)
+        time.sleep(.25)
+        _pane_report(host, "source", 2, focused=True)
+        _pane_report(host, "peer", 2)
+        assert host._sessions["source"][0].rpc.suspended
+        assert host._sessions["peer"][0].rpc.suspended
+        # A click in one pane wakes that pane only.
+        _pane_report(host, "source", 3, focused=True, engaged=True)
+        assert not host._sessions["source"][0].rpc.suspended
+        assert host._sessions["peer"][0].rpc.suspended
+        # The pane now in use stays awake however long it is quiet.
+        time.sleep(.7)
+        _pane_report(host, "source", 4, focused=True, engaged=True)
+        assert not host._sessions["source"][0].rpc.suspended
+    finally:
+        host.shutdown()
+
+
+def test_used_pane_sleeps_after_the_idle_window_even_with_the_app_unfocused(tmp_path, quick_sleep):
+    host = _sweep_host(tmp_path)
+    try:
+        host.attach("source")
+        host.attach("peer")
+        _pane_report(host, "source", 1, focused=True, engaged=True)
+        # Clicking out of Serena leaves no pane focused at all.
+        _pane_report(host, "source", 2, engaged=True)
+        time.sleep(.3)
+        _pane_report(host, "source", 3, engaged=True)
+        assert not host._sessions["source"][0].rpc.suspended  # Used: the short settle does not apply.
+        time.sleep(.4)
+        _pane_report(host, "source", 4, engaged=True)
+        assert host._sessions["source"][0].rpc.suspended
+    finally:
+        host.shutdown()
+
+
+@pytest.mark.parametrize("guard", ["running", "mcp_starting", "draft"])
+def test_panes_with_work_never_sleep_after_open_and_do_once_it_finishes(tmp_path, quick_sleep, guard):
+    host = _sweep_host(tmp_path)
+    try:
+        host.attach("source")
+        owner = host._sessions["source"][0]
+        if guard == "running":
+            owner.state, owner.active_turn = "running", "turn-1"
+        if guard == "mcp_starting":
+            owner.mcp_starting = {"linear"}
+        time.sleep(.3)
+        _pane_report(host, "source", 1, split=(), draft=guard == "draft")
+        assert not owner.rpc.suspended
+        # The run finishes (its completion is output, so the settle restarts).
+        owner.state, owner.active_turn, owner.mcp_starting = "ready", None, set()
+        host._dispatch(host._publish("source", {"method": "turn/completed", "params": {"threadId": "source"}}), 2)
+        _pane_report(host, "source", 2, split=())
+        assert not owner.rpc.suspended
+        time.sleep(.3)
+        _pane_report(host, "source", 3, split=())
+        assert owner.rpc.suspended
+    finally:
+        host.shutdown()

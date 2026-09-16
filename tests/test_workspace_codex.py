@@ -2579,3 +2579,25 @@ def test_approval_validation_and_stale_resolution(tmp_path):
             await client.close()
 
     asyncio.run(run())
+
+
+def test_mcp_startup_is_tracked_until_every_server_reports_back(tmp_path):
+    async def run():
+        client, rpc, events = await make(tmp_path)
+        await client.open(binary="codex")
+        try:
+            for name, status in (("linear", "starting"), ("context7", "starting"), ("context7", "ready")):
+                await rpc.events.put({"method": "mcpServer/startupStatus/updated",
+                                      "params": {"threadId": "exact-session", "name": name, "status": status}})
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert client.mcp_starting == {"linear"}
+            await rpc.events.put({"method": "mcpServer/startupStatus/updated",
+                                  "params": {"threadId": "exact-session", "name": "linear", "status": "failed"}})
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert client.mcp_starting == set()  # A failed server is finished starting too.
+        finally:
+            await client.close()
+        assert client.mcp_starting == set()
+    asyncio.run(run())
