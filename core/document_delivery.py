@@ -1,7 +1,8 @@
 """Capability broker for documents Serena creates and sends on voice turns.
 
 Files are confined to one private, user-visible directory under Documents.
-Telegram uses the existing bot credentials. Beeper is opt-in and talks only
+iMessage goes to Raghav's own thread through his Unified hub; Telegram uses
+the legacy bot credentials. Beeper is opt-in and talks only
 to the official Desktop API on localhost with a chat id pinned in config.
 
 The model's tool arguments are never treated as authority. Every write and
@@ -63,6 +64,13 @@ _SEND_SIGNAL = re.compile(
 )
 _TELEGRAM_SIGNAL = re.compile(r"\btelegram(?:\s+bot)?\b", re.IGNORECASE)
 _BEEPER_SIGNAL = re.compile(r"\bbeeper\b", re.IGNORECASE)
+# His phone line is his own iMessage thread, so "text it to me" and "send it
+# to my phone" name it as clearly as saying iMessage does.
+_IMESSAGE_SIGNAL = re.compile(
+    r"\b(?:i\s*message|imessage|my\s+phone|to\s+me|text\s+(?:it|that|this)\s+(?:to\s+)?me|"
+    r"messages?\s+(?:it|that|this)\s+(?:to\s+)?me)\b",
+    re.IGNORECASE,
+)
 _INVALID_XML = re.compile(
     "[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]"
 )
@@ -117,6 +125,10 @@ def authority_denial(action: str, origin: Mapping[str, object]) -> str | None:
     if action == "send_telegram":
         if not _SEND_SIGNAL.search(spoken) or not _TELEGRAM_SIGNAL.search(spoken):
             return "the spoken turn did not ask to send a document on Telegram"
+        return None
+    if action == "send_imessage":
+        if not _SEND_SIGNAL.search(spoken) or not _IMESSAGE_SIGNAL.search(spoken):
+            return "the spoken turn did not ask to send a document to his phone"
         return None
     if action == "send_beeper":
         if not _SEND_SIGNAL.search(spoken) or not _BEEPER_SIGNAL.search(spoken):
@@ -273,6 +285,48 @@ def send_document_to_telegram(
     if response.get("ok") is not True:
         return SendResult(False, "Telegram rejected the attachment", target.name, "telegram")
     return SendResult(True, "sent", target.name, "telegram")
+
+
+def send_document_to_imessage(
+    filename: str,
+    *,
+    origin: Mapping[str, object],
+    root: Path = DOCUMENT_ROOT,
+    audit_path: Path = AUTHORITY_AUDIT_PATH,
+    hub=None,
+) -> SendResult:
+    """Upload one document to the Unified hub and send it to his own thread."""
+
+    decision = authorize(
+        "send_imessage", origin=origin, filename=filename, audit_path=audit_path
+    )
+    if not decision.allowed:
+        return SendResult(False, decision.reason, channel="imessage")
+    try:
+        target = _resolve_attachment(filename, root=root)
+    except (OSError, ValueError):
+        return SendResult(False, "the attachment is not a Serena document", channel="imessage")
+    if hub is None:
+        from core import unified_hub as hub
+    try:
+        if not hub.settings().get("conversation_id"):
+            return SendResult(False, "the iMessage line is not paired on this machine",
+                              target.name, "imessage")
+        content = target.read_bytes()
+        mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        stored = hub.upload_attachment(content, file_name=target.name, content_type=mime_type)
+        sent = hub.send_text(
+            f"serena: {target.name}",
+            attachments=[{"mediaId": stored["mediaId"], "fileName": target.name,
+                          "mimeType": stored.get("contentType") or mime_type}],
+            idempotency_key=f"serena-doc-{hashlib.sha256(content).hexdigest()[:24]}-"
+                            f"{int(time.time() // 60)}",
+        )
+    except Exception:
+        return SendResult(False, "the hub could not accept the attachment", target.name, "imessage")
+    if not sent.ok:
+        return SendResult(False, "the hub rejected the attachment", target.name, "imessage")
+    return SendResult(True, "sent", target.name, "imessage")
 
 
 def send_document_to_beeper(

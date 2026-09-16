@@ -284,7 +284,7 @@ def test_document_tools_are_explicitly_allowed_by_the_brain(
     assert options.allowed_tools == brain_document_tools.DOCUMENT_TOOL_NAMES
     assert set(name.rsplit("__", 1)[-1] for name in options.allowed_tools) == {
         "create_document",
-        "send_document_to_telegram",
+        "send_document_to_imessage",
         "send_document_to_beeper",
     }
 
@@ -295,3 +295,73 @@ def test_prompt_requires_one_truthful_post_tool_outcome() -> None:
     assert "Do the tool calls before speaking about the outcome" in prompt
     assert "Never send through both channels unless he names both" in prompt
     assert "Never first promise you can send and then reverse yourself" in prompt
+
+
+class _FakeHub:
+    def __init__(self, paired=True, accept=True):
+        self.paired, self.accept = paired, accept
+        self.uploads, self.sends = [], []
+
+    def settings(self):
+        return {"conversation_id": "conv" if self.paired else ""}
+
+    def upload_attachment(self, content, *, file_name, content_type):
+        self.uploads.append((content, file_name, content_type))
+        return {"mediaId": "media_1", "contentType": content_type}
+
+    def send_text(self, text, *, attachments, idempotency_key):
+        from core.unified_hub import SentMessage
+
+        self.sends.append((text, attachments, idempotency_key))
+        return SentMessage(self.accept, message_id="m1" if self.accept else "")
+
+
+def test_imessage_delivery_uploads_then_sends_to_his_thread(tmp_path):
+    from core.document_delivery import send_document_to_imessage
+
+    root = tmp_path / "Serena"
+    root.mkdir(mode=0o700)
+    (root / "Memories.txt").write_text("one\ntwo\n", encoding="utf-8")
+    hub = _FakeHub()
+    result = send_document_to_imessage(
+        "Memories.txt", origin=_turn("text that list to me"), root=root,
+        audit_path=tmp_path / "audit.jsonl", hub=hub,
+    )
+    assert result.ok and result.channel == "imessage"
+    assert hub.uploads == [(b"one\ntwo\n", "Memories.txt", "text/plain")]
+    text, attachments, _key = hub.sends[0]
+    assert text == "serena: Memories.txt"
+    assert attachments == [{"mediaId": "media_1", "fileName": "Memories.txt",
+                            "mimeType": "text/plain"}]
+
+
+def test_imessage_delivery_needs_his_words_a_pairing_and_a_real_file(tmp_path):
+    from core.document_delivery import send_document_to_imessage
+
+    root = tmp_path / "Serena"
+    root.mkdir(mode=0o700)
+    (root / "Memories.txt").write_text("x", encoding="utf-8")
+    audit = tmp_path / "audit.jsonl"
+    hub = _FakeHub()
+    assert not send_document_to_imessage(
+        "Memories.txt", origin=_turn("make a list of my memories"), root=root,
+        audit_path=audit, hub=hub).ok
+    assert not send_document_to_imessage(
+        "../secret.txt", origin=_turn("send it to my phone"), root=root,
+        audit_path=audit, hub=hub).ok
+    assert hub.uploads == []
+    unpaired = send_document_to_imessage(
+        "Memories.txt", origin=_turn("send it to my phone"), root=root,
+        audit_path=audit, hub=_FakeHub(paired=False))
+    assert not unpaired.ok and "not paired" in unpaired.reason
+    refused = send_document_to_imessage(
+        "Memories.txt", origin=_turn("send it to my phone"), root=root,
+        audit_path=audit, hub=_FakeHub(accept=False))
+    assert not refused.ok
+
+
+def test_brain_offers_imessage_not_telegram():
+    from core.brain_document_tools import DOCUMENT_TOOL_NAMES
+
+    assert "mcp__serena-documents__send_document_to_imessage" in DOCUMENT_TOOL_NAMES
+    assert "mcp__serena-documents__send_document_to_telegram" not in DOCUMENT_TOOL_NAMES

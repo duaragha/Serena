@@ -253,3 +253,27 @@ def test_concurrent_approvals_create_one_real_task(ingress, monkeypatch, tmp_pat
     assert len(tasks) == 1
     assert tasks[0]["state"] == "ready"
     assert tasks[0]["source_id"] == f"webhook:{held.delivery_id}"
+
+
+def test_a_denied_delivery_never_runs_and_drops_its_body(ingress, enqueue, monkeypatch):
+    import cli
+
+    held = post(ingress, {"text": "fix login and add a regression test"})
+    with pytest.raises(webhooks.WebhookIngressError):
+        ingress.deny(held.delivery_id, actor="")
+    monkeypatch.setattr(cli, "_ingress", lambda: ingress)
+    denied = CliRunner().invoke(cli.main, ["webhook", "deny", held.delivery_id, "--actor", "raghav"])
+    assert denied.exit_code == 0, denied.output
+    assert json.loads(denied.output)["decision"] == "rejected"
+    assert not ingress.pending()
+    row = ingress.history(route="task")[0]
+    assert row["reason"] == "denied by raghav"
+    with ingress._connect() as connection:
+        stored = connection.execute(
+            "SELECT body_raw FROM webhook_deliveries WHERE delivery_id = ?", (held.delivery_id,)
+        ).fetchone()
+    assert stored["body_raw"] is None
+    assert ingress.approve(held.delivery_id, actor="raghav").decision == "rejected"
+    enqueue.assert_not_called()
+    with pytest.raises(webhooks.WebhookIngressError):
+        ingress.deny(held.delivery_id, actor="raghav")

@@ -15,6 +15,9 @@ from core.document_delivery import (
     send_document_to_beeper as _send_document_to_beeper,
 )
 from core.document_delivery import (
+    send_document_to_imessage as _send_document_to_imessage,
+)
+from core.document_delivery import (
     send_document_to_telegram as _send_document_to_telegram,
 )
 
@@ -94,6 +97,33 @@ async def send_document_to_telegram(args):
 
 
 @tool(
+    "send_document_to_imessage",
+    "Send one file previously created in ~/Documents/Serena to Raghav's phone as "
+    "an iMessage attachment in his own thread, when his current spoken turn asks "
+    "for it to be sent or texted to him or his phone. This is his default phone "
+    "channel. filename must be the plain filename returned by create_document, "
+    "never a path. The broker confines attachments to that folder and "
+    "independently re-reads his actual words. Never claim it was sent unless "
+    "this returns SENT.",
+    {"filename": str},
+    annotations=_DOCUMENT_SEND,
+)
+async def send_document_to_imessage(args):
+    result = await asyncio.to_thread(
+        _send_document_to_imessage,
+        str(args.get("filename") or ""),
+        origin=current_turn(),
+    )
+    if not result.ok:
+        return _text(
+            "NOT SENT TO IMESSAGE. Reason: "
+            + result.reason
+            + ". Tell Raghav the attachment was not sent and why."
+        )
+    return _text(f"SENT TO IMESSAGE. attachment={result.filename!r}.")
+
+
+@tool(
     "send_document_to_beeper",
     "Send one file previously created in ~/Documents/Serena through the "
     "official Beeper Desktop API, but only when his current spoken turn "
@@ -119,9 +149,11 @@ async def send_document_to_beeper(args):
     return _text(f"SENT TO BEEPER. attachment={result.filename!r}.")
 
 
+# Telegram stays importable for old callers but is no longer offered: his
+# phone channel is iMessage.
 DOCUMENT_TOOLS = (
     create_document,
-    send_document_to_telegram,
+    send_document_to_imessage,
     send_document_to_beeper,
 )
 DOCUMENT_TOOL_NAMES = [f"mcp__serena-documents__{item.name}" for item in DOCUMENT_TOOLS]

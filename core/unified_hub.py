@@ -99,11 +99,14 @@ def _tls_context():
     return ssl.create_default_context(cafile=certifi.where())
 
 
-def _post(url: str, body: dict[str, Any], token: str = "") -> dict[str, Any]:
+def _post(url: str, body: dict[str, Any] | bytes, token: str = "",
+          headers: dict[str, str] | None = None) -> dict[str, Any]:
+    raw = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        data=raw,
+        headers={"Content-Type": "application/json", "Accept": "application/json",
+                 **(headers or {})},
         method="POST",
     )
     if token:
@@ -212,6 +215,36 @@ def call(endpoint: str, body: dict[str, Any], *, path: Path | None = None) -> di
                      {"protocolVersion": PROTOCOL_VERSION, **body}, token)
 
 
+MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024
+ATTACHMENT_TYPES = frozenset({
+    "image/jpeg", "image/png", "image/webp", "image/gif", "video/mp4", "video/quicktime",
+    "audio/mpeg", "audio/mp4", "application/pdf", "application/zip", "application/json",
+    "application/octet-stream", "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "text/plain", "text/csv",
+})
+
+
+def upload_attachment(content: bytes, *, file_name: str, content_type: str,
+                      path: Path | None = None) -> dict[str, Any]:
+    """Store one outbound file on the hub; the returned mediaId goes in a send."""
+
+    import urllib.parse
+
+    if not content or len(content) > MAX_ATTACHMENT_BYTES:
+        raise UnifiedHubError("attachment is empty or larger than the hub accepts")
+    kind = content_type if content_type in ATTACHMENT_TYPES else "application/octet-stream"
+    with _LOCK:
+        state = _load(path)
+        token = _access_token(state, path)
+        return _post(f"{state['hub_url']}/api/v1/media", content, token, headers={
+            "Content-Type": kind,
+            "x-unified-inbox-file-name": urllib.parse.quote(file_name[:255]),
+        })
+
+
 def configure(path: Path | None = None, **fields: Any) -> dict[str, Any]:
     with _LOCK:
         state = _load(path)
@@ -242,6 +275,7 @@ class SentMessage:
 
 
 def send_text(text: str, *, conversation_id: str = "", idempotency_key: str = "",
+              attachments: list[dict[str, Any]] | None = None,
               path: Path | None = None) -> SentMessage:
     """Send one iMessage into Raghav's configured Serena conversation.
 
@@ -251,7 +285,7 @@ def send_text(text: str, *, conversation_id: str = "", idempotency_key: str = ""
     """
 
     text = " ".join(str(text).split("\0"))[:MAX_TEXT_CHARS].strip()
-    if not text:
+    if not text and not attachments:
         return SentMessage(False, error="empty message")
     try:
         with _LOCK:
@@ -264,7 +298,8 @@ def send_text(text: str, *, conversation_id: str = "", idempotency_key: str = ""
                 "command": {
                     "kind": "message.send",
                     "conversationId": target,
-                    "content": {"text": text, "attachments": []},
+                    "content": {**({"text": text} if text else {}),
+                                "attachments": list(attachments or [])},
                 },
             }, path=path)
             message_id = str((ack.get("result") or {}).get("messageId") or "")
