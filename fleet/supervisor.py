@@ -1559,7 +1559,7 @@ def _terminal_notification_authority(run: dict[str, Any], token: str):
         policy=_policy_from_environment(),
         senders={
             "voice": lambda _request: _send_spoken_notice(run, token),
-            "telegram": lambda request: _send_raghav_text(request.summary),
+            "imessage": lambda request: _send_raghav_text(request.summary),
         },
         control_store=ControlPlaneStore(Path(control_path) if control_path else None),
         result_observer=observe_notification_result,
@@ -1594,8 +1594,8 @@ def _request_terminal_notification(run: dict[str, Any], token: str):
     return authority.request(
         NotificationRequest(
             summary=_terminal_notice_text(run),
-            channel="telegram",
-            dedupe_key=f"fleet:{run['run_id']}:{token}:telegram",
+            channel="imessage",
+            dedupe_key=f"fleet:{run['run_id']}:{token}:imessage",
             **common,
         )
     )
@@ -1623,6 +1623,10 @@ def _terminal_outcome(store: FleetStore, run: dict[str, Any]) -> dict[str, Any]:
         if store.terminal_notice_delivered(run_id, token):
             return run
         if _terminal_notice_pending(store, run_id, token):
+            return run
+        if str(run.get("origin_session_id") or "").startswith("serena-task:"):
+            # The task dispatcher owns this announcement: it texts him once the
+            # pull request exists, which is the part he actually needs.
             return run
         result = _request_terminal_notification(run, token)
         if result.decision in {"deferred", "pending_approval", "suppressed"}:
@@ -1677,7 +1681,7 @@ def _terminal_outcome(store: FleetStore, run: dict[str, Any]) -> dict[str, Any]:
                 {
                     "notice_id": token,
                     "state": state,
-                    "channel": "telegram",
+                    "channel": "imessage",
                     "error": _notice_summary(error, limit=300),
                 },
             )
@@ -1751,7 +1755,12 @@ def _recover_outstanding_obligations(store: FleetStore) -> dict[str, Any]:
             if not notification_id:
                 return False
             authority = NotificationAuthority(
-                senders={"telegram": lambda request: _send_raghav_text(request.summary)},
+                senders={
+                    # `chats text` picks the iMessage line when this machine is
+                    # paired, so a legacy telegram notice drains the same way.
+                    "imessage": lambda request: _send_raghav_text(request.summary),
+                    "telegram": lambda request: _send_raghav_text(request.summary),
+                },
                 control_store=control,
             )
             result = authority.redeliver(notification_id)

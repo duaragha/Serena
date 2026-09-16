@@ -111,7 +111,7 @@ def test_the_idempotency_key_survives_secret_filtering(notice_env, monkeypatch):
 
     store = supervisor._store()
     assert store.terminal_notice_delivered(
-        completed["run_id"], supervisor._notice_token(completed), channel="telegram"
+        completed["run_id"], supervisor._notice_token(completed), channel="imessage"
     )
 
 

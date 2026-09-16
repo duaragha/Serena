@@ -28,13 +28,17 @@ from core.config import MEMORY_DIR
 from core.file_lock import exclusive_lock
 
 MEMORY_TYPES = ["task", "ledger", "feedback", "user", "project", "reference", "general"]
-TASK_STATES = frozenset({"needs_triage", "ready", "claimed", "running", "blocked", "done"})
+# "backlog" is human-owned work: anything filed as a note, by an agent or by
+# hand, and every task that predates the queue. Only enqueue_task, the phone
+# and webhook boundary, can make work "ready", so the dispatcher never picks up
+# a to-do list it was not handed.
+TASK_STATES = frozenset({"backlog", "needs_triage", "ready", "claimed", "running", "blocked", "done"})
 TASK_PRIORITIES = ("low", "normal", "high", "critical")
 MAX_TASKS = 10000
 TASK_LEASE_SECONDS = 30
 TASK_WORK_SECONDS = 86400
 _TASK_FIELDS = ("state", "assignee", "priority", "project_hint", "source_id",
-                "lease_token", "lease_until", "run_id")
+                "lease_token", "lease_until", "run_id", "asked_at", "result")
 # Frontmatter is parsed with str.splitlines(), which breaks on far more than
 # LF and CR. Any of these inside a metadata value would be read back as a new
 # key, so a caller-supplied hint could forge its own state and skip triage.
@@ -317,6 +321,70 @@ def renew_task_claim(task_id: int, owner: str, token: str, *, now=None,
     return True
 
 
+def tasks_in_state(*states: str) -> list[dict]:
+    """Queue rows in any of the given states, oldest first."""
+    wanted = set(states)
+    return [_clean(row) for row in sorted(_task_rows(), key=lambda row: row["id"])
+            if row["state"] in wanted]
+
+
+@_serialized_write
+def finish_task_run(task_id: int, run_id: str, state: str, result: str = "") -> bool:
+    """Close a dispatched task once its Fleet run is terminal.
+
+    The run id is the credential here, not a lease: the dispatcher that opened
+    the run is long gone by the time it finishes, and the reservation ledger
+    guarantees one task maps to one run.
+    """
+    if state not in {"done", "blocked"}:
+        raise ValueError("invalid task finish state")
+    run_id = _task_text(run_id, "run_id", 256)
+    path = _find_path(task_id)
+    row = _parse_file(path) if path else None
+    if not row or row["type"] != "task" or row["state"] != "running" or row["run_id"] != run_id:
+        return False
+    _task_metadata(row, state=state, assignee="", lease_token="", lease_until="",
+                   result=_flatten(str(result or ""))[:500])
+    return True
+
+
+@_serialized_write
+def mark_task_asked(task_id: int, now=None) -> bool:
+    """Record that the one triage question went out, so it is asked once."""
+    path = _find_path(task_id)
+    row = _parse_file(path) if path else None
+    if not row or row["type"] != "task" or row["state"] != "needs_triage" or row["asked_at"]:
+        return False
+    _task_metadata(row, asked_at=int(_moment(now)))
+    return True
+
+
+@_serialized_write
+def answer_triage(task_id: int, answer: str) -> dict | None:
+    """Fold his answer into the brief and triage it again.
+
+    The combined brief goes through the same classifier as a fresh one, so an
+    answer that still says nothing actionable leaves the task waiting instead
+    of opening a run. A second question is not sent automatically.
+    """
+    answer = _task_text(_flatten(str(answer)) if isinstance(answer, str) else answer,
+                        "answer", 2000)
+    path = _find_path(task_id)
+    row = _parse_file(path) if path else None
+    if not row or row["type"] != "task" or row["state"] != "needs_triage":
+        return None
+    brief = _task_text(f"{row['content']}\n\nClarification: {answer}", "text", 6000)
+    state = classify_task(brief[:4000], row.get("project_hint") or None)
+    new_path = _write_file(task_id, "task", brief, created=row["created_at"], snooze=row["snooze_until"],
+                locket_id=row["locket_id"], source_session_id=row["source_session_id"],
+                source_agent=row["source_agent"], source_title=row["source_title"],
+                source_message_timestamp=row["source_message_timestamp"],
+                task_fields={"state": state})
+    if new_path != path:
+        path.unlink(missing_ok=True)
+    return _clean(_parse_file(new_path))
+
+
 _V2_TYPE_MAP = {
     "task": "commitment",
     "ledger": "commitment",
@@ -420,8 +488,9 @@ def _parse_file(fpath: Path) -> dict | None:
             out[f] = meta.get(f, "")
     if out["type"] == "task":
         out.update({key: meta.get(key, "") for key in _TASK_FIELDS})
-        # Missing fields are legacy work; malformed explicit values fail closed.
-        out["state"] = meta.get("state", "ready")
+        # Missing fields are legacy work, which stays human-owned; malformed
+        # explicit values fail closed.
+        out["state"] = meta.get("state", "backlog")
         if out["state"] not in TASK_STATES:
             out["state"] = "needs_triage"
         out["priority"] = meta.get("priority", "normal")
@@ -512,7 +581,7 @@ def _write_file(mem_id: int, mem_type: str, content: str,
         previous = _parse_file(previous_path) if previous_path else {}
         fields = {key: (previous or {}).get(key, "") for key in _TASK_FIELDS}
         fields.update(task_fields or {})
-        fields["state"] = fields.get("state") or "ready"
+        fields["state"] = fields.get("state") or "backlog"
         fields["priority"] = fields.get("priority") or "normal"
         if fields["state"] not in TASK_STATES or fields["priority"] not in TASK_PRIORITIES:
             raise ValueError("invalid task state or priority")

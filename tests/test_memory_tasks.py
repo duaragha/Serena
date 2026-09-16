@@ -34,7 +34,8 @@ def test_legacy_defaults_do_not_rewrite_or_change_task_surface(queue):
     path = legacy(queue)
     before = path.read_bytes()
     row = store.get_memory(1)
-    assert (row["state"], row["assignee"], row["priority"]) == ("ready", "", "normal")
+    # Legacy work is human-owned: it is listed as before but never dispatched.
+    assert (row["state"], row["assignee"], row["priority"]) == ("backlog", "", "normal")
     assert "- [1] legacy task" in store.format_tasks()
     assert "legacy task" in store.format_active()
     assert path.read_bytes() == before
@@ -219,7 +220,8 @@ def test_locket_stamp_does_not_leave_duplicate_legacy_filename(queue):
     legacy(queue)
     store.set_locket_id(1, 42)
     assert len(list((queue / "task").glob("*.md"))) == 1
-    assert store.claim_next_task("worker")["locket_id"] == "42"
+    assert store.get_memory(1)["locket_id"] == "42"
+    assert store.claim_next_task("worker") is None
 
 
 def test_bad_state_is_triage_and_corrupt_lease_is_recoverable(queue):

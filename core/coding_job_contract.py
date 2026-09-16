@@ -50,7 +50,18 @@ DEFAULT_IMPLEMENT_EFFORT = IMPLEMENT_EFFORT_BY_COMPLEXITY[DEFAULT_COMPLEXITY]
 # against it. It is no longer what an ordinary job runs at.
 CODEX_EFFORT = IMPLEMENT_EFFORT_BY_COMPLEXITY[HARD_COMPLEXITY]
 
-DEFAULT_PROJECTS_ROOT = Path.home() / "Documents" / "Projects"
+def _default_projects_root() -> Path:
+    """Same resolution as core.config: the PC keeps Projects directly in home."""
+
+    configured = os.environ.get("SERENA_PROJECTS_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    documents = Path.home() / "Documents" / "Projects"
+    home = Path.home() / "Projects"
+    return home if not documents.exists() and home.exists() else documents
+
+
+DEFAULT_PROJECTS_ROOT = _default_projects_root()
 DEFAULT_SERENA_ROOT = DEFAULT_PROJECTS_ROOT / "serena"
 
 _PATH = re.compile(r"(?:^|[\s'\"(])(?P<path>(?:~|/)[^\s'\"),;]+)")

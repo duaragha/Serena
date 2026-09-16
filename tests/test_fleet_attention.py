@@ -53,13 +53,13 @@ def test_failed_transport_reuses_its_bounded_retry_record(tmp_path):
     calls = []
     authority = _authority(tmp_path, [])
     authority._senders = {channel: lambda request: calls.append(request.channel) or False
-                          for channel in ("voice", "telegram")}
+                          for channel in ("voice", "imessage")}
     for _ in range(6):
         notify_blocked_runs(store, lambda *_: authority)
         # Only this test's private queue is made due; no resident timing claim.
         with authority._connect() as db:
             db.execute("UPDATE notifications SET deliver_after=0 WHERE decision='failed'")
-    assert calls == ["voice", "telegram", "telegram", "telegram"]
+    assert calls == ["voice", "imessage", "imessage", "imessage"]
     assert len(authority.history()) == 2
 
 
@@ -86,14 +86,14 @@ def test_deferred_voice_failure_falls_back_after_restart(tmp_path):
     authority = _authority(tmp_path, calls)
     authority._senders = {
         "voice": lambda request: calls.append(request.channel) or False,
-        "telegram": lambda request: calls.append(request.channel) or True,
+        "imessage": lambda request: calls.append(request.channel) or True,
     }
     with authority._connect() as db:
         db.execute("UPDATE notifications SET deliver_after=0 WHERE decision='deferred'")
     store = type(store)(store.path)
     for _ in range(3):
         notify_blocked_runs(store, lambda *_: authority)
-    assert calls == ["voice", "telegram"]
+    assert calls == ["voice", "imessage"]
 
 
 def test_resident_poll_reports_blocker_without_operator_call(tmp_path, monkeypatch):
@@ -133,14 +133,14 @@ def test_resolved_blocker_is_not_retried_by_fleet(tmp_path):
     calls = []
     authority = _authority(tmp_path, [])
     authority._senders = {channel: lambda request: calls.append(request.channel) or False
-                          for channel in ("voice", "telegram")}
+                          for channel in ("voice", "imessage")}
     notify_blocked_runs(store, lambda *_: authority)
     with authority._connect() as db:
         db.execute("UPDATE notifications SET deliver_after=0 WHERE decision='failed'")
     with store._connect() as db:
         db.execute("UPDATE fleet_legs SET state='queued' WHERE run_id=? AND state='waiting_for_input'", (rid,))
     notify_blocked_runs(store, lambda *_: authority)
-    assert calls == ["voice", "telegram"]
+    assert calls == ["voice", "imessage"]
 
 
 def test_approved_but_failed_notice_can_retry_without_bypassing_approval(tmp_path):
@@ -157,7 +157,7 @@ def test_approved_but_failed_notice_can_retry_without_bypassing_approval(tmp_pat
     assert calls == ["voice", "voice"]
     # The alternate channel still requests approval; it cannot reuse voice's.
     pending = authority.pending_approvals()
-    assert len(pending) == 1 and pending[0]["channel"] == "telegram"
+    assert len(pending) == 1 and pending[0]["channel"] == "imessage"
 
 
 def test_voice_bridge_accepts_blocked_notice_and_preserves_delivery_identity(tmp_path, monkeypatch):
@@ -180,7 +180,7 @@ def test_voice_bridge_fallback_respects_approval_and_cancel(tmp_path, monkeypatc
     monkeypatch.setattr("core.fleet_store.FleetStore", lambda: store)
     sent = []
     authority = _authority(tmp_path, sent, approval_required_kinds=("fleet.run.waiting_for_input",))
-    authority._senders = {"telegram": lambda request: sent.append(request) or True}
+    authority._senders = {"imessage": lambda request: sent.append(request) or True}
     monkeypatch.setattr(supervisor, "_terminal_notification_authority", lambda *_: authority)
     notice = {"run_id": rid, "state": "waiting_for_input", "token": "attention:bridge-fallback",
               "text": "Worker reported blocked work."}
