@@ -11,6 +11,31 @@ STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
 @pytest.mark.parametrize('width', [390, 1600])
+def test_muse_failed_resume_still_displays_saved_history(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""async()=>{
+      const {WorkspaceConnection}=await import('/workspace-connection.mjs');
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Muse',controls});
+      const reason='Muse could not restore this saved conversation. Saved messages remain readable; sending is disabled.';
+      const events=[{sequence:1,event:{method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'saved',status:'completed',items:[
+        {id:'u',type:'userMessage',content:[{type:'text',text:'Keep my original conversation'}]},
+        {id:'a',type:'agentMessage',text:'Your saved reply is still readable.'}
+      ]}]}}}},{sequence:2,event:{method:'workspace/error',params:{reason}}}];
+      const connection=new WorkspaceConnection({sessionId:'exact',token:'token',receive:e=>pane.receive(e),error:e=>pane.error(e),fetcher:async url=>({ok:true,json:async()=>url.endsWith('/attach')?{ok:false,session_id:'exact',error:reason}:{events,has_more:false}})});
+      try{await connection.connect();}catch(e){pane.setConnectionHealthy(false);pane.error(e);}finally{connection.dispose();}
+    }""")
+    root = page.locator('#left')
+    playwright.expect(root.locator('.aw-user-message')).to_contain_text('Keep my original conversation')
+    playwright.expect(root.locator('.aw-message')).to_contain_text('Your saved reply is still readable.')
+    playwright.expect(root.get_by_role('button', name='Send message', exact=True)).to_be_disabled()
+    assert page.evaluate('pane.conversation.status') == 'unavailable'
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path=str(tmp_path / f'muse-refused-{width}.png'))
+    assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
 def test_muse_native_history_streaming_tools_and_stop(pane, width, tmp_path):
     from core.workspace_muse import MuseWorkspace
 

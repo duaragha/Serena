@@ -175,6 +175,39 @@ def test_resume_keeps_identity_and_stop_does_not_wait_for_completion(tmp_path):
     asyncio.run(run())
 
 
+def test_native_history_refusal_keeps_readable_history_without_rewriting_or_forking(tmp_path, monkeypatch):
+    from core.workspace_muse import MuseWorkspaceError
+    from core.workspace_rpc import WorkspaceRpcError
+
+    path = native_log(tmp_path, monkeypatch)
+    original = path.read_bytes()
+
+    class RefusingRpc(Rpc):
+        async def request(self, method, params):
+            result = await super().request(method, params)
+            if method == 'session/resume':
+                raise WorkspaceRpcError('internal error: classify turns: session fork rejected: MalformedJsonl')
+            return result
+
+    async def run():
+        obj, rpc, events = owner(tmp_path, RefusingRpc())
+        with pytest.raises(MuseWorkspaceError, match='Saved messages remain readable') as error:
+            await obj.open()
+        assert isinstance(error.value.__cause__, WorkspaceRpcError)
+        assert obj.state == 'unavailable' and obj.can_retry_attachment()
+        assert rpc.process is None and obj._lease is None
+        history = next(e for e in events if e['method'] == 'workspace/history')
+        assert history['params']['thread']['id'] == SID
+        assert history['params']['thread']['turns'][0]['items'][1]['text'] == 'repaired'
+        assert sum(m == 'session/resume' for m, _ in rpc.calls) == 1
+        assert not any(m in {'session/start', 'session/fork', 'turn/start'} for m, _ in rpc.calls)
+        with pytest.raises(MuseWorkspaceError, match='not ready'):
+            await obj.submit([{'type': 'text', 'text': 'do not replay'}])
+        assert path.read_bytes() == original
+
+    asyncio.run(run())
+
+
 def test_streaming_items_keep_native_details_and_final_revision(tmp_path):
     async def run():
         obj, rpc, events = owner(tmp_path)
