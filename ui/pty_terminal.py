@@ -254,15 +254,15 @@ def _spawn_windows_process(
 
 
 def _terminal_environment(environ: dict[str, str]) -> dict[str, str]:
-    """Restore user CLI directories omitted by long-running service hosts.
-
-    Electron attaches to ``serena-mobile-host`` when it is available. That
-    systemd service can inherit its PATH before the login shell exports
-    ``~/.local/bin`` or the active NVM directory, leaving Claude or Codex
-    installed but invisible to every terminal launched from the app.
-    """
+    """Describe our interactive renderer, not the service or agent launching it."""
 
     env = dict(environ)
+    env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
+    # Automation hosts disable color for captured output. Their children here
+    # have a real PTY and xterm renderer; those output policies do not apply.
+    for key in ("NO_COLOR", "CLICOLOR", "FORCE_COLOR", "CLICOLOR_FORCE"):
+        env.pop(key, None)
     home = env.get("HOME") or env.get("USERPROFILE") or os.path.expanduser("~")
     user_dirs = [
         os.path.join(home, ".local", "bin"),
@@ -544,22 +544,11 @@ def _spawn_process(
     cols = max(MIN_COLS, int(cols))
     rows = max(MIN_ROWS, int(rows))
 
-    # Ensure claude/codex see a real terminal type. On Windows, the inherited
-    # env from pythonw.exe has no TERM, so apps fall back to plain ASCII
-    # rendering — claude's TUI then can't position its statusline/input bar
-    # correctly + may skip the alt-screen switch entirely.
     env = _terminal_environment(dict(os.environ if env is None else env))
+    env["COLUMNS"] = str(cols)
+    env["LINES"] = str(rows)
     pty_backend = ""
     if _IS_WINDOWS:
-        # PowerShell, Git, and some parent Codex processes export TERM=dumb on
-        # Windows. This child is not attached to that parent terminal: it is
-        # attached to Serena's xterm.js renderer, so inheriting "dumb" makes
-        # Codex stop at an interactive warning and prevents its TUI from ever
-        # appearing. Describe the PTY Serena actually provides.
-        env["TERM"] = "xterm-256color"
-        env["COLORTERM"] = "truecolor"
-        env["COLUMNS"] = str(cols)
-        env["LINES"] = str(rows)
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
         proc, pty_backend = _spawn_windows_process(
@@ -570,10 +559,6 @@ def _spawn_process(
             env=env,
         )
     else:
-        env.setdefault("TERM", "xterm-256color")
-        env.setdefault("COLORTERM", "truecolor")
-        env.setdefault("COLUMNS", str(cols))
-        env.setdefault("LINES", str(rows))
         launch = argv
         if _systemd_scope_supported():
             # ptyprocess reports a missing binary by raising FileNotFoundError

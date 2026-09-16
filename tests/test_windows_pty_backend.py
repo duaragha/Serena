@@ -216,11 +216,12 @@ def test_web_switches_xterm_to_the_spawned_windows_backend():
 
 
 def test_windows_children_do_not_inherit_a_dumb_parent_terminal():
-    source = HOST.read_text(encoding="utf-8")
-    windows_branch = source[source.index("if _IS_WINDOWS:", source.index("def spawn(")) :]
+    from ui import pty_terminal
 
-    assert 'env["TERM"] = "xterm-256color"' in windows_branch
-    assert 'env["COLORTERM"] = "truecolor"' in windows_branch
+    env = pty_terminal._terminal_environment({"TERM": "dumb", "NO_COLOR": "1"})
+    assert env["TERM"] == "xterm-256color"
+    assert env["COLORTERM"] == "truecolor"
+    assert "NO_COLOR" not in env
 
 
 def test_the_host_imports_nothing_that_is_missing_on_windows():

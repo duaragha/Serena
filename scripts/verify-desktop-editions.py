@@ -78,7 +78,10 @@ for line in sys.stdin:
 import os, sys
 from pathlib import Path
 Path(os.environ['HOME'], 'cli-proof.pid').write_text(str(os.getpid()))
-print('Native CLI terminal ready', flush=True)
+assert os.environ.get('TERM') == 'xterm-256color'
+assert os.environ.get('COLORTERM') == 'truecolor'
+assert 'NO_COLOR' not in os.environ
+print('\\033[38;2;18;180;90mNative CLI terminal ready\\033[0m', flush=True)
 for line in sys.stdin:
     print('CLI received: ' + line.strip(), flush=True)
 ''')
@@ -86,7 +89,8 @@ for line in sys.stdin:
         env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
                "PATH": str(binary_dir) + os.pathsep + os.environ["PATH"],
                "SERENA_CALL_RUNTIME": "lazy", "KNOWLEDGE_DIR": str(home / "knowledge"),
-               "MEMORY_DIR": str(home / "memory"), "SERENA_PERSONA_FILE": str(home / "Persona.md")}
+               "MEMORY_DIR": str(home / "memory"), "SERENA_PERSONA_FILE": str(home / "Persona.md"),
+               "TERM": "dumb", "COLORTERM": "", "NO_COLOR": "1"}
         for key in ("APPIMAGE", "APPDIR", "LD_LIBRARY_PATH", "LD_LIBRARY_PATH_ORIG", "ELECTRON_RUN_AS_NODE", "CLAUDE_DIR", "CODEX_HOME"):
             env.pop(key, None)
         proof = {}
@@ -121,6 +125,7 @@ for line in sys.stdin:
                     if edition == "stable":
                         page.wait_for_function("[...termSessions.values()].some(s => s.term?.buffer.active.getLine(0)?.translateToString().includes('Native CLI'))")
                         assert page.locator('#termMounts iframe').count() == 0
+                        assert page.evaluate("termSessions.get(activeTermSid).term.buffer.active.getLine(0).getCell(0).getFgColor()") == 0x12B45A
                         page.evaluate('termSessions.get(activeTermSid).term.focus()')
                         page.keyboard.type('edition-proof')
                         page.keyboard.press('Enter')
