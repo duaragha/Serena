@@ -578,3 +578,16 @@ def test_delivery_rules_quote_fleet_requirements_verbatim():
     failures, deferred, verified = _delivery_failures(required, answers)
     assert failures == [] and deferred == [] and verified == [required[0]]
     assert "serena/task-12" in note
+
+
+def test_windows_test_reruns_keep_system_variables(monkeypatch):
+    from fleet import completion_gate
+
+    monkeypatch.setenv("SYSTEMROOT", "C:\\Windows")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    monkeypatch.setattr(completion_gate.os, "name", "nt")
+    environment = completion_gate._test_environment({}, [])
+    assert environment["SYSTEMROOT"] == "C:\\Windows"
+    assert "ANTHROPIC_API_KEY" not in environment
+    monkeypatch.setattr(completion_gate.os, "name", "posix")
+    assert "SYSTEMROOT" not in completion_gate._test_environment({}, [])
