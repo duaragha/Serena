@@ -80,6 +80,11 @@ export class WorkspaceConnection {
     if (!result.ok) {
       const error=Error(result.error || 'Session attachment is not confirmed');
       if(result.session_id===this.sessionId && result.setting_recovery)error.settingRecovery=result.setting_recovery;
+      if(result.session_id===this.sessionId){
+        // An owner may publish saved history before its native resume fails.
+        // Replay that history without treating the failed attachment as ready.
+        try{await this.poll({required:true});}catch{/* Preserve the original attachment error. */}
+      }
       throw error;
     }
     await this.poll({required: true});

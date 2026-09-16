@@ -20,7 +20,7 @@ from uuid import UUID
 
 from core.billing import strip_metered_auth_env
 from core.workspace_lease import SessionLease
-from core.workspace_rpc import WorkspaceRpc
+from core.workspace_rpc import WorkspaceRpc, WorkspaceRpcError
 
 MODEL = "muse-spark"
 EFFORT = "high"
@@ -131,7 +131,17 @@ class MuseWorkspace:
                         "approvalMode": "onRequest",
                     })
                 else:
-                    result = await self._request("session/resume", history="auto")
+                    try:
+                        result = await self._request("session/resume", history="auto")
+                    except WorkspaceRpcError as error:
+                        if "classify turns: session fork rejected: MalformedJsonl" not in str(error):
+                            raise
+                        raise MuseWorkspaceError(
+                            "Muse could not restore this saved conversation: its native history validator "
+                            "rejected a stored turn (MalformedJsonl). Saved messages remain readable, "
+                            "but sending is disabled. The original history has not been changed. "
+                            "Restarting Serena will not repair this native-history error."
+                        ) from error
                 session = result["session"]
                 sid = session["sessionId"]
                 if str(UUID(sid)) != sid or (not creating and sid != self.session_id):

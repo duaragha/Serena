@@ -1083,3 +1083,19 @@ test('initial replay failure rejects attachment without cancelling the owner or 
     assert.deepEqual(calls,['/api/workspace/s/attach','/api/workspace/s/events?after=0','/api/workspace/s/attach','/api/workspace/s/events?after=0']);
   } finally { conn.dispose(); }
 });
+
+for(const replayFails of [false,true])test(`failed attachment preserves saved history and original error (replay failure: ${replayFails})`,async()=>{
+  const calls=[],received=[];
+  const conn=new WorkspaceConnection({sessionId:'s',token:'token',storage:storage(),receive:e=>received.push(e),error:()=>{},fetcher:async url=>{
+    calls.push(url);
+    if(url.endsWith('/attach'))return response({ok:false,session_id:'s',error:'Native history rejected'});
+    if(replayFails)throw Error('Replay unavailable');
+    return response({events:[{sequence:1,event:{method:'workspace/history'}},{sequence:2,event:{method:'workspace/error',params:{reason:'Native history rejected'}}}],has_more:false});
+  }});
+  try{
+    await assert.rejects(conn.connect(),/Native history rejected/);
+    assert.deepEqual(calls,['/api/workspace/s/attach','/api/workspace/s/events?after=0']);
+    assert.equal(received.length,replayFails?0:2);
+    assert.equal(conn.cursor,replayFails?0:2);
+  }finally{conn.dispose();}
+});

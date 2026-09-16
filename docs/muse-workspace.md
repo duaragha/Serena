@@ -23,6 +23,27 @@ conversation. Serena paints durable messages, folds `view/page` history, then
 polls forward from the last observed cursor. No input is resent for recovery.
 Polling failures disable sending and preserve Stop for unconfirmed work.
 
+## Native History Refusal
+
+Muse 1.3.0-R3057.1 can refuse `session/resume` and `session/read` with
+`classify turns: session fork rejected: MalformedJsonl` even when every
+physical log line is valid JSON. An isolated copy of a reported conversation
+reproduces this before the session is loaded; `turn/start` then correctly
+returns `sessionNotLoaded`. `excludeItems=true` does not bypass the refusal.
+
+Prefix isolation located the first refusal at the completion record of a
+long turn containing compaction. Retained-frame and omission-marker variants
+did not resolve it. This is evidence of a native semantic-history refusal,
+not proof that the original JSONL is corrupt or that compaction is its root
+cause. Do not strip records, rewrite checkpoints, or silently resume as new.
+
+Serena publishes readable durable messages before attempting native resume.
+The browser now consumes that journal even when attachment returns `ok:false`,
+then preserves the attachment error and disabled composer. A failed replay
+must not replace the original error, retry a prompt, or advance past an
+unaccepted event. Recovery into a different conversation requires an explicit
+user choice. This mitigation does not claim to fix Muse's native validator.
+
 ## Verification (2026-09-16)
 
 - Read-only discovery of the installed store: 84 logs, 16 root sessions, nine
