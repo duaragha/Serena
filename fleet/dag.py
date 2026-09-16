@@ -654,7 +654,7 @@ def mark_leg_finished(
                 phase_state,
                 attempt_id,
                 clean_error,
-                None if phase_state in {"queued", "waiting_for_resources", "waiting_for_input"} else at,
+                None if phase_state in {"queued", "waiting_for_resources", "waiting_for_input", "waiting_for_dependencies"} else at,
                 at,
                 run_id,
                 unit_id,

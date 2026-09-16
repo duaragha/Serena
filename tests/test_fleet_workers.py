@@ -101,7 +101,8 @@ def test_worker_argv_isolated_from_nested_fleet_and_user_mcp(tmp_path, monkeypat
     assert codex[-3:] == ["-C", str(tmp_path), "-"]
 
     codex_read_only = worker_command(_request(tmp_path, "codex"))
-    assert codex_read_only[codex_read_only.index("--sandbox") + 1] == "read-only"
+    assert 'permissions.fleet_test_read.extends=":read-only"' in codex_read_only
+    assert "--sandbox" not in codex_read_only
     assert codex_read_only[codex_read_only.index("--enable") + 1] == "standalone_web_search"
 
     claude = worker_command(_request(tmp_path, "claude"), session_id="sid-1")
@@ -231,7 +232,7 @@ def test_codex_resume_places_subcommand_after_enforced_outer_options(tmp_path, m
     )
     command = worker_command(request)
     assert command[-3:] == ["resume", "codex-session-1", "-"]
-    assert command.index("--sandbox") < command.index("resume")
+    assert command.index('default_permissions="fleet_test_read"') < command.index("resume")
     assert command[command.index("-m") + 1] == "gpt-5.6-sol"
     assert 'model_reasoning_effort="xhigh"' in command
 

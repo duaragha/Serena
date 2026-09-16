@@ -56,6 +56,14 @@ jobs:
           node --test tests/workspace*.test.mjs
           ./.venv/bin/python -m pytest tests/test_workspace*.py -q --tb=short --junitxml=workspace-tests.xml
 
+      - name: Prove Fleet delivery and phone task ingestion before publishing
+        run: |
+          ./.venv/bin/python -m pytest -q --tb=short \
+            tests/test_scheduler_actions.py tests/test_webhook_tasks.py \
+            tests/test_memory_tasks.py tests/test_fleet_delivery.py \
+            tests/test_fleet_dependencies.py tests/test_fleet_dependency_scheduler.py \
+            tests/test_fleet_worker_runtime.py
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

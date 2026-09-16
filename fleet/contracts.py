@@ -118,11 +118,13 @@ def build_work_unit_contracts(
             if activity == "coding"
             else []
         )
-        dependencies = tuple(
+        dependencies = tuple(dict.fromkeys([
             candidate
             for candidate in primary_ids
             if synthetic and candidate != identifier
-        )
+        ] + list(item.get("dependency_ids") or []) + [value.lower() for value in re.findall(
+            r"\bdepends\s+on\s+(ws-\d+)\b", description, re.IGNORECASE
+        )]))
         file_mode = (
             "declare_before_edit"
             if declared_paths
@@ -219,6 +221,16 @@ def validate_work_unit_contracts(
                 not str(entry).strip() for entry in entries
             ):
                 raise ValueError(f"Fleet work unit {identifier} requires {key}")
+        # Present for every unit, empty only where nothing is deployed. Absent
+        # means an old contract, which would silently skip delivery entirely.
+        delivery = completion.get("delivery_requirements")
+        if not isinstance(delivery, list) or any(
+            not str(entry).strip() for entry in delivery
+        ):
+            raise ValueError(
+                f"Fleet work unit {identifier} requires delivery_requirements "
+                "(an empty list when the unit delivers nothing deployable)"
+            )
         units[identifier] = unit
     if set(units) != workstream_ids:
         raise ValueError("Fleet work units must cover every workstream exactly once")
@@ -413,7 +425,10 @@ def derive_work_unit_views(
 
 
 def _completion_contract(activity: str, description: str) -> dict[str, Any]:
-    outcome = f"Deliver and verify this bounded work unit: {description}"[:4_000]
+    # Follows the workstream limit rather than halving it again here: a
+    # contract that states less than the unit it contracts for is how delivery
+    # requirements fell off the end.
+    outcome = f"Deliver and verify this bounded work unit: {description}"[:20_000]
     shared_constraints = [
         "preserve Serena's authority rules, native provider identity, and unrelated dirty work",
         "stay inside this logical scope and reconcile shared dependencies explicitly",
@@ -429,6 +444,22 @@ def _completion_contract(activity: str, description: str) -> dict[str, Any]:
             "the requested behavior is implemented within this work unit's scope",
             "the result integrates with dependency outputs without overwriting peer changes",
             "relevant focused tests or checks pass, or the exact blocker is recorded",
+        ]
+        # Delivery is tracked apart from the acceptance criteria above, and
+        # deliberately so. Those three read as satisfied the moment code exists
+        # and tests pass, which is how a run shipped nothing and was accepted as
+        # complete: the worker implemented, handed deployment back to its
+        # coordinator, and every criterion above was honestly true. Writing code
+        # is not delivering it. Each requirement here must be answered on its
+        # own terms with observed evidence, or explicitly deferred to an owner,
+        # and a deferral keeps the whole run open until it is discharged.
+        delivery = [
+            "the change is integrated into the run's base checkout, not left only "
+            "in a worker worktree or an uncommitted patch",
+            "every external surface this unit touches (service, bridge, endpoint, "
+            "deployment target) is deployed, or recorded as explicitly out of scope",
+            "the delivered result is verified against the live surface, with the "
+            "observed response, or the exact reason live verification was impossible",
         ]
         evidence = [
             "changed paths, declared ownership, or an explicit no-change finding",
@@ -446,9 +477,13 @@ def _completion_contract(activity: str, description: str) -> dict[str, Any]:
             "the material findings and how each follows from that evidence",
             "remaining uncertainty, contradictions, and follow-up limits",
         ]
+        # A research unit delivers a report, which its required evidence already
+        # covers. Nothing is deployed, so there is nothing to defer.
+        delivery = []
     return {
         "outcome": outcome,
         "acceptance_criteria": acceptance,
+        "delivery_requirements": delivery,
         "required_evidence": evidence,
         "constraints": shared_constraints,
         "stop_conditions": shared_stops,

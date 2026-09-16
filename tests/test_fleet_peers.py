@@ -493,6 +493,7 @@ def test_real_stdio_peer_tools_from_isolated_working_directory(team, entrypoint)
             await session.initialize()
             tools = await session.list_tools()
             assert {tool.name for tool in tools.tools} == {
+                "declare_dependency",
                 "read_messages",
                 "send_message",
                 "request_help",
