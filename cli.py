@@ -2279,12 +2279,17 @@ def phone():
 
 @phone.command(name="status")
 def phone_status():
-    """Show whether this machine is paired and which thread it uses."""
+    """Show which iMessage line Serena uses on this machine, and its health."""
     import json
 
-    from core import unified_hub
+    from core import bluebubbles_line, phone_line, unified_hub
 
-    print(json.dumps(unified_hub.settings(), indent=2))
+    report = {"backend": phone_line.backend_name(), "hub": unified_hub.settings()}
+    if bluebubbles_line.enabled():
+        settings = bluebubbles_line.settings()
+        report["own_line"] = {"url": settings.get("url"), "address": settings.get("address"),
+                              "server_up": bluebubbles_line.ping()}
+    print(json.dumps(report, indent=2))
 
 
 @phone.command(name="pair")

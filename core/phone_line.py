@@ -1,5 +1,10 @@
 """Serena's text line to Raghav: one iMessage thread, both directions.
 
+Two transports sit behind the same grammar. The preferred one is Serena's own
+Apple ID on her own BlueBubbles server (core.bluebubbles_line): she is an
+ordinary contact, so "who wrote this" is just isFromMe. The fallback is his
+own number's self-thread through the Unified hub, described below.
+
 Outbound, every text starts with "serena:" and its hub message id is recorded.
 Inbound, a message counts as a command only when it is new, is not one of
 Serena's own, does not start with that prefix, and matches the small grammar
@@ -15,6 +20,7 @@ Grammar (case-insensitive):
     task: <brief>            queue work (triaged like any phone brief)
     #<id> <answer>           answer the one question asked about task <id>
     retry #<id>              rerun a blocked task's Fleet run from where it stopped
+    swapped                  he just refreshed his number's registration
     status                   what is queued, running, and waiting on him
 """
 
@@ -34,28 +40,142 @@ DUPLICATE_WINDOW_SECONDS = 600
 _TASK = re.compile(r"^\s*task\s*[:\-]\s*(?P<brief>.+)$", re.IGNORECASE | re.DOTALL)
 _ANSWER = re.compile(r"^\s*#(?P<id>\d{1,6})\s*[:\-]?\s*(?P<answer>.+)$", re.DOTALL)
 _STATUS = re.compile(r"^\s*status\s*\??\s*$", re.IGNORECASE)
+_SWAPPED = re.compile(r"^\s*swapped\s*[.!]?\s*$", re.IGNORECASE)
 _RETRY = re.compile(r"^\s*retry\s+#?(?P<id>\d{1,6})\s*$", re.IGNORECASE)
 
 
+class _HubBackend:
+    """His own number's self-thread, through the Unified hub."""
+
+    name = "hub"
+    initial_watermark = ""
+
+    def available(self) -> bool:
+        from core import unified_hub
+
+        try:
+            settings = unified_hub.settings()
+        except unified_hub.UnifiedHubError:
+            return False
+        return bool(settings["paired"] and settings["conversation_id"])
+
+    def load_state(self) -> dict[str, Any]:
+        from core import unified_hub
+
+        return unified_hub._load()
+
+    def save_state(self, **fields: Any) -> None:
+        from core import unified_hub
+
+        unified_hub.configure(**fields)
+
+    def messages(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        from core import unified_hub
+
+        ours = set(state.get("sent_message_ids") or [])
+        rows = []
+        for message in unified_hub.recent_messages(limit=50):
+            message_id = str(message.get("id") or "")
+            rows.append({
+                "id": message_id,
+                "text": str(message.get("textPreview") or ""),
+                "created": str(message.get("createdAt") or ""),
+                "own": not message_id or message_id in ours,
+                "deleted": bool(message.get("deletedAt")),
+                "kind": message.get("kind"),
+            })
+        return rows
+
+    def send(self, text: str, key: str) -> bool:
+        from core import unified_hub
+
+        body = text.strip()
+        if not body.lower().startswith(PREFIX):
+            body = f"{PREFIX} {body}"
+        return unified_hub.send_text(body, idempotency_key=key).ok
+
+
+class _BlueBubblesBackend:
+    """Serena's own Apple ID; she is simply a contact in his Messages."""
+
+    name = "bluebubbles"
+    initial_watermark = 0
+
+    def _state_path(self):
+        from pathlib import Path
+
+        return Path.home() / ".local" / "state" / "serena" / "phone-line-state.json"
+
+    def available(self) -> bool:
+        from core import bluebubbles_line
+
+        return bluebubbles_line.enabled()
+
+    def load_state(self) -> dict[str, Any]:
+        import json
+
+        try:
+            data = json.loads(self._state_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save_state(self, **fields: Any) -> None:
+        import json
+        import os
+
+        path = self._state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = self.load_state()
+        data.update(fields)
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+
+    def messages(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        from core import bluebubbles_line
+
+        return bluebubbles_line.recent_messages(limit=50)
+
+    def send(self, text: str, key: str) -> bool:
+        from core import bluebubbles_line
+
+        body = text.strip()
+        if body.lower().startswith(PREFIX):
+            body = body[len(PREFIX):].strip()
+        try:
+            bluebubbles_line.send_text(body)
+        except bluebubbles_line.BlueBubblesLineError:
+            return False
+        return True
+
+
+def _backend():
+    """Her own Apple ID when it is configured; otherwise the hub self-thread."""
+
+    preferred = _BlueBubblesBackend()
+    return preferred if preferred.available() else _HubBackend()
+
+
+def backend_name() -> str:
+    return _backend().name
+
+
 def send(text: str, *, key: str = "") -> bool:
-    """Text Raghav. Returns True only when the hub accepted the message."""
+    """Text Raghav. Returns True only when the transport accepted the message."""
 
-    from core import unified_hub
+    return _backend().send(text, key)
 
-    body = text.strip()
-    if not body.lower().startswith(PREFIX):
-        body = f"{PREFIX} {body}"
-    return unified_hub.send_text(body, idempotency_key=key).ok
+
+def send_fallback(text: str, *, key: str = "") -> bool:
+    """Reach him through the hub self-thread even when her server is down."""
+
+    hub = _HubBackend()
+    return hub.available() and hub.send(text, key)
 
 
 def available() -> bool:
-    from core import unified_hub
-
-    try:
-        settings = unified_hub.settings()
-    except unified_hub.UnifiedHubError:
-        return False
-    return bool(settings["paired"] and settings["conversation_id"])
+    return _backend().available()
 
 
 def parse(text: str) -> tuple[str, dict[str, Any]] | None:
@@ -69,6 +189,8 @@ def parse(text: str) -> tuple[str, dict[str, Any]] | None:
                           "answer": match.group("answer").strip()}
     if _STATUS.match(text):
         return "status", {}
+    if _SWAPPED.match(text):
+        return "swapped", {}
     if match := _RETRY.match(text):
         return "retry", {"task_id": int(match.group("id"))}
     return None
@@ -116,35 +238,51 @@ def _retry(task_id: int) -> str:
     return f"retrying #{task_id} (fleet {run_id[:8]})."
 
 
+def _record_swap(moment: float) -> str:
+    import json
+    from pathlib import Path
+
+    path = Path.home() / ".local" / "state" / "serena" / "phone-health.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    state.update(number_swapped_at=moment, swap_reminded=False, number_alerted=False,
+                 number_checked_at=0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    return "noted. next sim refresh reminder in 6 weeks; i'll check the number tomorrow."
+
+
 def poll(*, now: float | None = None) -> PollReport:
     """Read new thread messages once and act on the commands among them."""
 
-    from core import unified_hub
     from memory import store
 
     moment = time.time() if now is None else now
     report = PollReport()
-    state = unified_hub._load()
+    line = _backend()
+    state = line.load_state()
+    messages = line.messages(state)
     # The first poll only sets the watermark. History from before the line was
     # connected is never replayed as fresh commands.
-    watermark = str(state.get("inbound_watermark") or "")
-    messages = unified_hub.recent_messages(limit=50)
-    if not watermark:
-        newest = max((str(m.get("createdAt") or "") for m in messages), default="")
-        unified_hub.configure(inbound_watermark=newest or "1970-01-01T00:00:00Z")
+    watermark = state.get("inbound_watermark")
+    if watermark in (None, ""):
+        newest = max((m["created"] for m in messages), default=line.initial_watermark)
+        line.save_state(inbound_watermark=newest if newest else (
+            "1970-01-01T00:00:00Z" if line.name == "hub" else 0))
         return report
-    ours = set(state.get("sent_message_ids") or [])
     handled = dict(state.get("inbound_handled") or {})
     newest = watermark
     for message in messages:
-        created = str(message.get("createdAt") or "")
+        created = message["created"]
         if created <= watermark:
             continue
-        message_id = str(message.get("id") or "")
-        text = str(message.get("textPreview") or "")
+        message_id = message["id"]
+        text = message["text"]
         command = None
-        if (message_id and message_id not in ours and not message.get("deletedAt")
-                and message.get("kind") == "text"):
+        if (message_id and not message["own"] and not message["deleted"]
+                and message["kind"] == "text"):
             command = parse(text)
         fingerprint = _fingerprint(text)
         if command is not None and len(report.commands) >= MAX_COMMANDS_PER_POLL:
@@ -154,7 +292,7 @@ def poll(*, now: float | None = None) -> PollReport:
         report.seen += 1
         if command is None:
             continue
-        if moment - float(handled.get(fingerprint, 0)) < DUPLICATE_WINDOW_SECONDS:
+        if fingerprint in handled and moment - float(handled[fingerprint]) < DUPLICATE_WINDOW_SECONDS:
             continue
         handled[fingerprint] = moment
         kind, args = command
@@ -180,6 +318,8 @@ def poll(*, now: float | None = None) -> PollReport:
                     reply = (f"#{task['id']} still isn't specific enough to hand off. "
                              f"it's parked; say what file or behaviour to change.")
                 outcome["task_id"] = args["task_id"]
+            elif kind == "swapped":
+                reply = _record_swap(moment)
             elif kind == "retry":
                 reply = _retry(args["task_id"])
                 outcome["task_id"] = args["task_id"]
@@ -191,7 +331,7 @@ def poll(*, now: float | None = None) -> PollReport:
         outcome["replied"] = send(reply, key=f"serena-reply-{message_id}")
         report.commands.append(outcome)
     cutoff = moment - DUPLICATE_WINDOW_SECONDS
-    unified_hub.configure(
+    line.save_state(
         inbound_watermark=newest,
         inbound_handled={k: v for k, v in handled.items() if float(v) >= cutoff},
     )

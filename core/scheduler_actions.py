@@ -569,6 +569,83 @@ def poll_phone_line(payload: dict[str, Any]) -> ActionOutcome:
     )
 
 
+# His number only reaches iMessage while the SIM-swap registration holds, and
+# Apple re-checks it on its own schedule. Swap well before that.
+NUMBER_SWAP_REMINDER_DAYS = 42
+LINE_DOWN_ALERT_SECONDS = 15 * 60
+
+
+def check_phone_health(payload: dict[str, Any]) -> ActionOutcome:
+    """Watch Serena's own iMessage server and his number's registration.
+
+    Her server lives in a second macOS user that does not log in by itself
+    after a reboot, so a dead server is the expected failure. It is reported
+    through the hub self-thread, which does not depend on her server.
+    """
+
+    import json
+    import time
+    from pathlib import Path
+
+    from core import bluebubbles_line, phone_line
+
+    if payload:
+        return ActionOutcome(False, "serena.phone.health accepts no schedule payload")
+    if not bluebubbles_line.enabled():
+        return ActionOutcome(True, "Serena's own iMessage line is not configured here")
+    state_path = Path.home() / ".local" / "state" / "serena" / "phone-health.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    now = time.time()
+    output: dict[str, Any] = {}
+    up = bluebubbles_line.ping()
+    output["server_up"] = up
+    if up:
+        if state.get("down_since"):
+            phone_line.send("i'm back on my own line.", key=f"line-up-{int(now)}")
+        state["down_since"] = 0
+        state["down_alerted"] = False
+    else:
+        state["down_since"] = state.get("down_since") or now
+        if not state.get("down_alerted") and now - state["down_since"] >= LINE_DOWN_ALERT_SECONDS:
+            sent = phone_line.send_fallback(
+                "serena: my own imessage server is down (probably the mac vm restarted). "
+                "log into the Serena user on the BlueBubbles Mac VM to bring it back.",
+                key=f"line-down-{int(state['down_since'])}")
+            state["down_alerted"] = bool(sent)
+            output["alerted"] = bool(sent)
+
+    number = str(bluebubbles_line.settings().get("watch_number") or "")
+    if up and number and now - float(state.get("number_checked_at") or 0) >= 24 * 3600:
+        registered = bluebubbles_line.imessage_available(number)
+        output["number_registered"] = registered
+        if registered is not None:
+            state["number_checked_at"] = now
+            if registered:
+                state["number_ok_since"] = state.get("number_ok_since") or now
+                state["number_alerted"] = False
+            elif not state.get("number_alerted"):
+                if phone_line.send(
+                        "your number fell off imessage. put the sim in the xr for 5 minutes "
+                        "(wi-fi on), then move it back to the s23.",
+                        key=f"number-dropped-{int(now // 86400)}"):
+                    state["number_alerted"] = True
+                state["number_ok_since"] = 0
+    swapped_at = float(state.get("number_swapped_at") or 0)
+    if swapped_at and now - swapped_at >= NUMBER_SWAP_REMINDER_DAYS * 86400 and not state.get(
+            "swap_reminded"):
+        if phone_line.send(
+                "time for the sim refresh: sim into the xr for 5 minutes when you're home, "
+                "then back to the s23. text me \"swapped\" after.",
+                key=f"swap-due-{int(swapped_at)}"):
+            state["swap_reminded"] = True
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    return ActionOutcome(True, "server up" if up else "server down", output=output)
+
+
 # The whole registry. A schedule may name exactly one of these keys.
 REVIEWED_ACTIONS = {
     "serena.obligations.sweep": sweep_obligations,
@@ -578,6 +655,7 @@ REVIEWED_ACTIONS = {
     "serena.fleet.start": start_ready_fleet_task,
     "serena.fleet.reconcile": reconcile_fleet_tasks,
     "serena.phone.poll": poll_phone_line,
+    "serena.phone.health": check_phone_health,
 }
 
 

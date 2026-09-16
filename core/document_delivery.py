@@ -307,6 +307,15 @@ def send_document_to_imessage(
     except (OSError, ValueError):
         return SendResult(False, "the attachment is not a Serena document", channel="imessage")
     if hub is None:
+        from core import bluebubbles_line
+
+        if bluebubbles_line.enabled():
+            try:
+                bluebubbles_line.send_attachment(target, name=target.name)
+            except Exception:
+                return SendResult(False, "Serena's iMessage server could not send the attachment",
+                                  target.name, "imessage")
+            return SendResult(True, "sent", target.name, "imessage")
         from core import unified_hub as hub
     try:
         if not hub.settings().get("conversation_id"):
