@@ -121,6 +121,14 @@ for line in sys.stdin:
                     if edition == "stable":
                         page.wait_for_function("[...termSessions.values()].some(s => s.term?.buffer.active.getLine(0)?.translateToString().includes('Native CLI'))")
                         assert page.locator('#termMounts iframe').count() == 0
+                        page.evaluate('termSessions.get(activeTermSid).term.focus()')
+                        page.keyboard.type('edition-proof')
+                        page.keyboard.press('Enter')
+                        page.wait_for_function("""() => {
+                          const b = termSessions.get(activeTermSid).term.buffer.active;
+                          return Array.from({length: b.length}, (_, i) => b.getLine(i).translateToString())
+                            .some(line => line.includes('CLI received: edition-proof'));
+                        }""")
                     else:
                         frame = page.frame_locator('#termMounts iframe')
                         frame.get_by_text('Development runtime ready', exact=True).wait_for()
