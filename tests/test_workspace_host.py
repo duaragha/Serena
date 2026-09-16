@@ -120,6 +120,118 @@ def test_only_explicit_linked_pane_click_sleeps_idle_sibling(tmp_path, mode):
         host.shutdown()
 
 
+class _SweepTransport:
+    def __init__(self):
+        self.suspended = False
+        self.reclaimed = False
+        self.reclaims = 0
+
+    async def pause_idle(self):
+        self.suspended = True
+        return True
+
+    def wake(self):
+        self.suspended = False
+        self.reclaimed = False
+
+    async def reclaim_idle(self):
+        self.reclaims += 1
+        self.reclaimed = True
+        return 12.0
+
+
+def _sweep_host(tmp_path, provider="codex", with_background_api=True):
+    class SweepOwner(Owner):
+        async def open(self):
+            await super().open()
+            self.rpc = _SweepTransport()
+
+    if with_background_api:
+        async def list_background_tasks(self):
+            return {"data": []}
+        SweepOwner.list_background_tasks = list_background_tasks
+    return WorkspaceHost(journal=WorkspaceJournal(tmp_path / "sweep.db"),
+        resolve=lambda sid: {"session_id": sid, "provider": provider, "cwd": str(tmp_path)},
+        factories={provider: SweepOwner})
+
+
+def _merged_view(host, *, pinned=False, peer_draft=False, sequence=1):
+    view = "22222222-2222-4222-8222-222222222222"
+    split = ["source", "peer"]
+    host.note_view_context("peer", {"view_id": view, "sequence": sequence, "visible": True, "focused": False,
+                                    "draft": peer_draft, "pinned": pinned, "split_sids": split})
+    host.note_view_context("source", {"view_id": view, "sequence": sequence, "visible": True, "focused": True,
+                                      "draft": False, "pinned": pinned, "split_sids": split})
+    host._dispatch(asyncio.sleep(.05), 2)
+
+
+@pytest.mark.parametrize("provider", ["codex", "gemini", "muse"])
+def test_heartbeat_sleeps_a_merged_peer_only_after_it_stays_quiet(tmp_path, monkeypatch, provider):
+    import core.workspace_host as host_module
+    monkeypatch.setattr(host_module, "PEER_IDLE_SECONDS", 0.3)
+    monkeypatch.setattr(host_module, "_PEER_SWEEP_INTERVAL", 0.0)
+    # Gemini has no background-task API; it must still be able to sleep.
+    host = _sweep_host(tmp_path, provider, with_background_api=provider != "gemini")
+    try:
+        host.attach("source")
+        host.attach("peer")
+        _merged_view(host)
+        assert not host._sessions["peer"][0].rpc.suspended  # It just opened.
+        time.sleep(.35)
+        _merged_view(host, sequence=2)
+        assert host._sessions["peer"][0].rpc.suspended
+        assert not host._sessions["source"][0].rpc.suspended
+    finally:
+        host.shutdown()
+
+
+@pytest.mark.parametrize("guard", ["pinned", "draft", "recent_output", "background"])
+def test_heartbeat_never_sleeps_a_protected_peer(tmp_path, monkeypatch, guard):
+    import core.workspace_host as host_module
+    monkeypatch.setattr(host_module, "PEER_IDLE_SECONDS", 0.3)
+    monkeypatch.setattr(host_module, "_PEER_SWEEP_INTERVAL", 0.0)
+    host = _sweep_host(tmp_path, "gemini", with_background_api=False)
+    try:
+        host.attach("source")
+        host.attach("peer")
+        peer = host._sessions["peer"][0]
+        if guard == "background":
+            peer._background_possible = True
+        time.sleep(.35)
+        if guard == "recent_output":
+            host._dispatch(host._publish("peer", {"method": "item/agentMessage/delta", "params": {"threadId": "peer"}}), 2)
+        _merged_view(host, pinned=guard == "pinned", peer_draft=guard == "draft")
+        assert not peer.rpc.suspended
+    finally:
+        host.shutdown()
+
+
+def test_sleeping_peer_releases_memory_once_and_wake_allows_it_again(tmp_path, monkeypatch):
+    import core.workspace_host as host_module
+    monkeypatch.setattr(host_module, "PEER_IDLE_SECONDS", 0.2)
+    monkeypatch.setattr(host_module, "PEER_RECLAIM_SECONDS", 0.2)
+    monkeypatch.setattr(host_module, "_PEER_SWEEP_INTERVAL", 0.0)
+    host = _sweep_host(tmp_path)
+    try:
+        host.attach("source")
+        host.attach("peer")
+        rpc = host._sessions["peer"][0].rpc
+        time.sleep(.25)
+        _merged_view(host, sequence=1)
+        assert rpc.suspended and rpc.reclaims == 0  # Never reclaim on the way down.
+        time.sleep(.25)
+        _merged_view(host, sequence=2)
+        _merged_view(host, sequence=3)
+        assert rpc.reclaims == 1
+        # Focusing the peer wakes it immediately and re-arms reclaim.
+        view = "33333333-3333-4333-8333-333333333333"
+        host.note_view_context("peer", {"view_id": view, "sequence": 1, "visible": True, "focused": True,
+                                        "draft": False, "pinned": False, "split_sids": ["source", "peer"]})
+        assert not rpc.suspended and not rpc.reclaimed
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize("provider", ["codex", "claude"])
 @pytest.mark.parametrize("blocker", [None, "running", "draft", "focused", "pinned", "unknown_pin",
                                     "stale", "questions", "reserved", "queued", "background", "rpc_failure", "race"])

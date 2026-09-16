@@ -285,7 +285,15 @@ export class WorkspacePane {
     identity.append(this.usageLabel);
     const context=this.button('Context breakdown','chart-pie',()=>this.openContext());
     context.hidden=provider==='Claude' ? !controls.contextUsage : provider!=='Codex';identity.append(context);
-    root.replaceChildren(head, this.log, this.questionArea, this.alert, this.form, identity);
+    // A sleeping owner greys the whole pane; any click wakes it and puts the
+    // caret back, the way the GTK shell's frozen panes behaved.
+    this.sleepVeil = node('button', 'aw-sleep-veil');
+    this.sleepVeil.type = 'button';
+    this.sleepVeil.hidden = true;
+    this.sleepVeil.setAttribute('aria-label', `Wake ${provider} conversation`);
+    this.sleepVeil.append(node('span', 'aw-sleep-label', 'sleeping · click to wake'));
+    this.sleepVeil.addEventListener('click', () => this.wakeFromVeil());
+    root.replaceChildren(head, this.log, this.questionArea, this.alert, this.form, identity, this.sleepVeil);
     this.renderAttachments();
     this.refreshIcons();
     this.render();
@@ -2404,7 +2412,16 @@ export class WorkspacePane {
   setSleeping(sleeping) {
     if(this.disposed || this.sleeping === sleeping)return;
     this.sleeping = sleeping;
+    this.root.classList.toggle('aw-sleeping', sleeping);
+    this.sleepVeil.hidden = !sleeping;
     this.renderStatus();
+  }
+
+  wakeFromVeil() {
+    // Focusing reports this view as focused, which is what wakes the owner.
+    // Clear the grey now; the next runtime snapshot restores it if waking failed.
+    this.setSleeping(false);
+    this.input.focus();
   }
 
   renderStatus() {

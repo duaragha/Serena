@@ -4498,3 +4498,29 @@ def test_mobile_text_fits_and_composer_remains_visible(pane, tmp_path):
     page.screenshot(path=str(tmp_path / "rich-workspace-mobile.png"))
     print("Screenshot:", tmp_path / "rich-workspace-mobile.png")
     assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1600])
+def test_sleeping_pane_greys_out_and_one_click_wakes_it(pane, width):
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.evaluate("""()=>{
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',status:'completed',items:[
+        {id:'u',type:'userMessage',content:[{type:'text',text:'Earlier question'}]},
+        {id:'a',type:'agentMessage',text:'Earlier answer'}]}]}}});
+      pane.input.value='';pane.setSleeping(true);
+    }""")
+    veil = page.get_by_role('button', name='Wake Claude conversation', exact=True)
+    playwright.expect(veil).to_be_visible()
+    playwright.expect(page.locator('#left .aw-state')).to_have_text('sleeping')
+    page.wait_for_function("getComputedStyle(pane.log).filter==='grayscale(1) brightness(0.4)'")
+    shot = STATIC.parents[1] / 'apps/desktop/build/workspace-proof' / f'sleeping-{width}.png'
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(shot))
+    veil.click()
+    playwright.expect(veil).to_be_hidden()
+    assert page.evaluate('pane.sleeping') is False
+    assert page.evaluate('document.activeElement===pane.input')
+    playwright.expect(page.locator('#left .aw-state')).not_to_have_text('sleeping')
+    page.wait_for_function("getComputedStyle(pane.log).filter==='none'")
+    assert not errors

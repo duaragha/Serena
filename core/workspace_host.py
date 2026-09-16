@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import hashlib
 import json
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -31,6 +33,16 @@ def _claude_owner(**kwargs):
     from core.workspace_claude_runtime import client_factory
 
     return ClaudeWorkspace(client_factory=client_factory(), **kwargs)
+
+
+# How long an unfocused pane in a merged view must be quiet before it sleeps,
+# and how long it must then stay asleep before its pages are pushed out.
+# Reclaiming the moment a pane sleeps would make every switch back fault its
+# heap in from disk, which is the stall GTK avoided the same way.
+PEER_IDLE_SECONDS = max(5.0, float(os.environ.get("SERENA_PEER_SLEEP_SECONDS", "20")))
+PEER_RECLAIM_SECONDS = max(0.0, float(os.environ.get("SERENA_PEER_RECLAIM_SECONDS", "60")))
+# The focused pane reports every two seconds; one sweep attempt per peer is enough.
+_PEER_SWEEP_INTERVAL = 5.0
 
 
 def _gemini_owner(**kwargs):
@@ -77,6 +89,11 @@ class WorkspaceHost:
         self._bridge_inputs = {}
         self._bridge_cancelled = set()
         self._views = {}
+        # Last event, focus and sweep attempt per session, all on monotonic().
+        self._activity = {}
+        self._last_focus = {}
+        self._asleep_since = {}
+        self._peer_swept = {}
         self._work_reservations = {}
         self._work_turns = {}
         self._restore_failures = {}
@@ -279,12 +296,17 @@ class WorkspaceHost:
                                                   for key in ("focused", "visible", "split_sids", "pinned"))
         epoch = previous.get("focus_epoch", previous["sequence"]) if same_focus else data["sequence"]
         views[data["view_id"]] = {**data, "seen": monotonic(), "focused_at": time.time(), "focus_epoch": epoch}
+        if data["focused"] or data["draft"]:
+            self._last_focus[sid] = monotonic()
         if data["focused"] or data.get("pinned"):
             transport = self._owner_transport(*self._sessions[sid])
             if transport is not None and getattr(transport, "suspended", False):
                 transport.wake()
+                self._asleep_since.pop(sid, None)
         if data.get("sleep_peers") and data["focused"] and data.get("pinned") is False:
             asyncio.create_task(self._run(self._sleep_clicked_peers(sid, {**data, "focus_epoch": epoch})))
+        elif data["focused"] and data.get("pinned") is False and len(data.get("split_sids", [])) > 1:
+            asyncio.create_task(self._run(self._sweep_idle_peers(sid, {**data, "focus_epoch": epoch})))
         return {"ok": True}
 
     def _active_views(self, sid):
@@ -312,9 +334,41 @@ class WorkspaceHost:
                 # Power saving is optional; failed admission must not affect work.
                 continue
 
+    async def _sweep_idle_peers(self, source, data):
+        """Sleep merged-view peers that stayed quiet, then release their memory.
+
+        A click only sleeps a peer that is idle at that instant, so one that was
+        still finishing a turn stayed awake for as long as the view was open.
+        The focused pane's heartbeat retries it once it has been quiet.
+        """
+        now = monotonic()
+        for peer in data.get("split_sids", []):
+            if peer not in self._sessions or not self._peer_sleep_current(source, data, peer):
+                continue
+            transport = self._owner_transport(*self._sessions[peer])
+            if transport is None:
+                continue
+            if getattr(transport, "suspended", False):
+                asleep = self._asleep_since.setdefault(peer, now)
+                if not getattr(transport, "reclaimed", True) and now - asleep >= PEER_RECLAIM_SECONDS:
+                    with contextlib.suppress(Exception):
+                        await transport.reclaim_idle()
+                continue
+            quiet_since = max(self._activity.get(peer, 0.0), self._last_focus.get(peer, 0.0))
+            if now - quiet_since < PEER_IDLE_SECONDS or now - self._peer_swept.get(peer, 0.0) < _PEER_SWEEP_INTERVAL:
+                continue
+            self._peer_swept[peer] = now
+            try:
+                result = await self._set_sleep(
+                    peer, True, guard=lambda peer=peer: self._peer_sleep_current(source, data, peer))
+            except (RuntimeError, OSError):
+                continue  # Power saving is optional; never let it affect work.
+            if result.get("sleeping"):
+                self._asleep_since[peer] = monotonic()
+
     @staticmethod
     def _owner_transport(owner, provider):
-        if provider == "codex":
+        if provider in {"codex", "gemini", "muse"}:
             return getattr(owner, "rpc", None)
         return getattr(getattr(getattr(owner, "client", None), "transport", None), "rpc", None)
 
@@ -361,6 +415,7 @@ class WorkspaceHost:
                 return {"ok": False, "message": "Native power control is unavailable"}
             if not sleeping:
                 transport.wake()
+                self._asleep_since.pop(sid, None)
                 return {"ok": True, "sleeping": False}
             error = self._sleep_blocker(sid)
             if error:
@@ -368,11 +423,14 @@ class WorkspaceHost:
             if await asyncio.to_thread(self.journal.has_pending_work, sid):
                 return {"ok": False, "message": "Native dispatch is unconfirmed"}
             if not getattr(transport, "suspended", False):
-                try:
-                    tasks = await owner.list_background_tasks()
-                except Exception:
-                    return {"ok": False, "message": "Native background work could not be checked"}
-                if not isinstance(tasks, dict) or tasks.get("data") != []:
+                if hasattr(owner, "list_background_tasks"):
+                    try:
+                        tasks = await owner.list_background_tasks()
+                    except Exception:
+                        return {"ok": False, "message": "Native background work could not be checked"}
+                    if not isinstance(tasks, dict) or tasks.get("data") != []:
+                        return {"ok": False, "message": "Native background work is active or unknown"}
+                elif getattr(owner, "_background_possible", False):
                     return {"ok": False, "message": "Native background work is active or unknown"}
             error = self._sleep_blocker(sid)
             if error or self._stopped or (guard is not None and not guard()):
@@ -2105,6 +2163,7 @@ class WorkspaceHost:
             return receipt
 
     async def _publish(self, sid, event):
+        self._activity[sid] = monotonic()
         if event.get('method') == 'turn/started':
             event = deepcopy(event)
             event['params']['turn'].setdefault('startedAtMs', int(time.time()*1000))

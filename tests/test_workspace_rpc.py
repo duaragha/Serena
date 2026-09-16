@@ -295,3 +295,42 @@ def test_protocol_failure_names_the_reason_not_the_exception_class(tmp_path):
             await rpc.close()
 
     asyncio.run(run())
+
+
+def test_owner_runs_in_its_own_scope_and_releases_memory_only_while_frozen(tmp_path):
+    from core import runtime_scope
+
+    if os.name == "nt" or not runtime_scope.scope_supported():
+        pytest.skip("transient user scopes are unavailable here")
+
+    async def run():
+        rpc = WorkspaceRpc()
+        await rpc.start([sys.executable, "-u", "-c", PEER], cwd=tmp_path, env=dict(os.environ))
+        try:
+            assert await rpc.request("ping", {"x": 1}) == {"x": 1}
+            # Same pid and process group after systemd-run execs the owner.
+            assert os.getpgid(rpc.process.pid) == rpc.process.pid
+            assert runtime_scope.owned_cgroup(rpc.process.pid)
+            assert await rpc.reclaim_idle() is None  # Awake: never reclaimed.
+            assert await rpc.pause_idle()
+            freed = await rpc.reclaim_idle()
+            assert freed is not None and rpc.reclaimed
+            assert await rpc.reclaim_idle() is None  # Once per sleep.
+            rpc.wake()
+            assert not rpc.reclaimed
+            assert await rpc.request("ping", {"x": 2}) == {"x": 2}
+        finally:
+            await rpc.close()
+
+    asyncio.run(run())
+
+
+def test_reclaim_refuses_any_cgroup_serena_did_not_create():
+    from core import runtime_scope
+
+    # init is never in a Serena scope (the runner may be: Serena launches it).
+    if os.path.exists("/proc/1/cgroup"):
+        assert runtime_scope.owned_cgroup(1) is None
+        assert runtime_scope.reclaim(1) is None
+    assert runtime_scope.OWNED_SCOPE.match("serena-pane-123-abcdef01.scope")
+    assert not runtime_scope.OWNED_SCOPE.match("serena-mobile-host.service")
