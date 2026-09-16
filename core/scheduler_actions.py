@@ -40,12 +40,35 @@ DELIVERY_RULES = (
     "checkout. Leave your finished changes in its working tree. Do not push, open "
     "pull requests, merge, tag, release, or deploy; after the run the dispatcher "
     "commits the working tree, pushes the branch and opens the pull request, and "
-    "any release follows that pull request. Answer your delivery requirements with "
-    "exactly that: the integration requirement is verified by the changed paths in "
-    "this checkout; the external-surface and live-verification requirements are "
-    "not_applicable because this run touches no deployed surface and delivery "
-    "happens through the dispatcher's pull request. Never defer them to root."
+    "any release follows that pull request. Never defer delivery to root. Report "
+    "your delivery[] entries exactly as below, copying each requirement string "
+    "character for character (only the evidence text is yours to write):\n{answers}"
 )
+
+
+def _delivery_rules(task_id: int) -> str:
+    """The handoff note, with Fleet's own requirement strings quoted verbatim.
+
+    Fleet matches delivery answers by exact requirement text, and a worker
+    told to paraphrase-free answer them still paraphrased once. Quoting the
+    contract's strings removes the guesswork.
+    """
+
+    import json
+
+    from fleet.contracts import _completion_contract
+
+    requirements = _completion_contract("coding", "")["delivery_requirements"]
+    answers = []
+    for index, requirement in enumerate(requirements):
+        if index == 0:
+            answers.append({"requirement": requirement, "state": "verified",
+                            "evidence": "<the changed paths in this checkout>"})
+        else:
+            answers.append({"requirement": requirement, "state": "not_applicable",
+                            "reason": "This run touches no deployed or live surface; "
+                                      "delivery is the dispatcher's pull request after the run."})
+    return DELIVERY_RULES.format(task_id=task_id, answers=json.dumps(answers, indent=2))
 
 
 def _max_active_task_runs() -> int:
@@ -369,7 +392,7 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
             return hold(f"no private checkout: {error}")
         try:
             run = start_run(
-                task=task["content"] + DELIVERY_RULES.format(task_id=task_id),
+                task=task["content"] + _delivery_rules(task_id),
                 activity="auto", provider_mode="auto",
                 cwd=str(checkout.path), origin_session_id=origin,
             )

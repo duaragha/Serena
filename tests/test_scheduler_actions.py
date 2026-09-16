@@ -303,11 +303,11 @@ def test_fleet_claims_one_ordered_ready_task_and_records_run(fleet_queue):
     fleet_queue.resolve.assert_called_once_with(
         fleet_queue.task["content"], project_hint="serena"
     )
-    from core.scheduler_actions import DELIVERY_RULES
+    from core.scheduler_actions import _delivery_rules
 
     fleet_queue.prepare.assert_called_once_with(fleet_queue.resolve.return_value, 7)
     fleet_queue.start.assert_called_once_with(
-        task=fleet_queue.task["content"] + DELIVERY_RULES.format(task_id=7),
+        task=fleet_queue.task["content"] + _delivery_rules(7),
         activity="auto", provider_mode="auto",
         cwd=str(fleet_queue.resolve.return_value), origin_session_id="serena-task:7",
     )

@@ -562,3 +562,19 @@ def test_dispatcher_owned_runs_get_no_generic_blocked_alert():
     factory = Mock()
     attention.notify_blocked_run(Mock(), run, factory)
     factory.assert_not_called()
+
+
+def test_delivery_rules_quote_fleet_requirements_verbatim():
+    import json
+
+    from core.scheduler_actions import _delivery_rules
+    from fleet.completion import _delivery_failures
+    from fleet.contracts import _completion_contract
+
+    required = _completion_contract("coding", "")["delivery_requirements"]
+    note = _delivery_rules(12)
+    answers = json.loads(note[note.index("\n[") + 1:])
+    answers[0]["evidence"] = "greet.py"
+    failures, deferred, verified = _delivery_failures(required, answers)
+    assert failures == [] and deferred == [] and verified == [required[0]]
+    assert "serena/task-12" in note
