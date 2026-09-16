@@ -659,3 +659,15 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
         for event, payload in events
     )
     assert Path(result.event_log_path).stat().st_size <= 800
+
+
+@pytest.mark.parametrize("platform_name,expected", [("nt", True), ("posix", False)])
+def test_codex_pins_the_unelevated_windows_sandbox(tmp_path, monkeypatch, platform_name, expected):
+    import fleet.workers as workers
+
+    monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", "/opt/bin/codex")
+    monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(workers, "_is_windows", lambda: platform_name == "nt")
+    for mode in ("write", "read"):
+        argv = worker_command(_request(tmp_path, "codex", access_mode=mode))
+        assert ('windows.sandbox="unelevated"' in argv) is expected

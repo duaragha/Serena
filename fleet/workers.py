@@ -126,6 +126,13 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
         else:
             from fleet.worker_runtime import read_sandbox_flags
             base += read_sandbox_flags(request)
+        if _is_windows():
+            # --ignore-user-config drops the machine's windows.sandbox choice,
+            # and without one Codex rejects every command as "blocked by
+            # policy". The unelevated restricted token runs as this user, so
+            # git still trusts the worker's checkout; the elevated one runs as
+            # a separate sandbox account that git treats as dubious ownership.
+            base += ["-c", 'windows.sandbox="unelevated"']
         if request.phase == "discover" or request.activity == "research":
             base += ["--enable", "standalone_web_search"]
         if request.access_mode == "write":
@@ -1302,6 +1309,10 @@ def _reported_model(value: object) -> str | None:
     if not clean or (clean.startswith("<") and clean.endswith(">")):
         return None
     return clean
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 def _codex_sandbox(access_mode: str) -> str:
