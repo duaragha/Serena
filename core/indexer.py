@@ -270,11 +270,11 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
     existing_paths = {}
     needs_reparse = set()
     for row in conn.execute(
-        "SELECT session_id, file_size, file_mtime, file_path, raw_message_count FROM sessions"
+        "SELECT session_id, file_size, file_mtime, file_path, raw_message_count, agent FROM sessions"
     ):
         existing[row["session_id"]] = (row["file_size"], row["file_mtime"])
         existing_paths[row["session_id"]] = row["file_path"]
-        if row["raw_message_count"] is None:
+        if row["raw_message_count"] is None or (row["agent"] == "muse" and not row["raw_message_count"]):
             needs_reparse.add(row["session_id"])
 
     # Combined discovery: claude sessions (project-dir layout) + codex sessions
@@ -363,6 +363,11 @@ def _update_index_locked(force: bool = False, progress_callback=None) -> tuple[i
         elif agent == "muse":
             meta = parse_muse_metadata(file_path)
             if meta is None:
+                # Remove startup-only rows imported by the old Muse parser.
+                # Native logs and synced titles/stars remain untouched.
+                conn.execute("DELETE FROM tags WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM messages_fts WHERE session_id = ?", (session_id,))
                 continue
             project_dir = meta.project_dir
         else:

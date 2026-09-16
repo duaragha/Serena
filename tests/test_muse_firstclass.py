@@ -358,7 +358,7 @@ def test_a_session_is_discovered_and_described(tmp_path, monkeypatch) -> None:
     assert muse_scanner.transcript_path(sid) == log
 
 
-def test_a_session_with_no_readable_turns_still_lists(tmp_path, monkeypatch) -> None:
+def test_a_session_with_no_readable_turns_does_not_list(tmp_path, monkeypatch) -> None:
     sid = "22222222-3333-4444-5555-666666666666"
     root = tmp_path / "muse-home"
     log_dir = root / "sessions" / "2026" / "09" / "15" / sid
@@ -369,9 +369,7 @@ def test_a_session_with_no_readable_turns_still_lists(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(muse_scanner, "SESSIONS_DIR", root / "sessions")
 
     meta = muse_scanner.parse_muse_metadata(log)
-    assert meta is not None
-    assert meta.first_message == ""
-    assert meta.last_timestamp is not None
+    assert meta is None
 
 
 def test_unparseable_usage_reports_unavailable_rather_than_zero() -> None:
@@ -414,11 +412,25 @@ def test_workspace_create_submit_close_publishes_turn_events(tmp_path, monkeypat
             """#!/usr/bin/env python3
 import json, sys
 argv = sys.argv
-assert argv[1:3] == ["exec", "--json"], argv
-assert "--no-session-log" not in argv, argv
-assert argv[-1] == "do the pane test", argv
-print(json.dumps({"type": "result", "result": "pane answer",
-                  "status": "SUCCESS"}), flush=True)
+assert argv[1:] == ["serve"], argv
+sid = "11111111-2222-4333-8444-555555555555"
+def emit(value): print(json.dumps(value), flush=True)
+for line in sys.stdin:
+    req = json.loads(line)
+    if "id" not in req: continue
+    method, p = req["method"], req["params"]
+    result = {}
+    if method == "initialize": result = {"schema": {"version": 1}}
+    elif method == "session/start": result = {"session": {"sessionId": sid, "modelId": "muse-spark"}}
+    elif method == "model/list": result = {"models": [{"modelId": "muse-spark", "displayLabel": "Muse Spark"}]}
+    elif method == "turn/start":
+        assert p["input"] == [{"type": "text", "text": "do the pane test"}]
+        tid = p["commandId"]
+        result = {"turnId": tid}
+        emit({"method": "turn/started", "params": {"sessionId": sid, "turnId": tid}})
+        emit({"method": "item/completed", "params": {"sessionId": sid, "item": {"itemId": "answer", "turnId": tid, "kind": "agentMessage", "revision": 1, "status": "completed", "text": "pane answer"}}})
+        emit({"method": "turn/completed", "params": {"sessionId": sid, "turnId": tid, "terminal": "completed"}})
+    emit({"id": req["id"], "result": result})
 """,
         )
         monkeypatch.setenv("SERENA_RUNTIME_LEASE_DIR", str(tmp_path / "leases"))
@@ -442,9 +454,12 @@ print(json.dumps({"type": "result", "result": "pane answer",
         assert created["provider"] == "muse"
         assert owner.state == "ready"
         result = await owner.submit([{"type": "text", "text": "do the pane test"}])
+        async with asyncio.timeout(3):
+            while not any(e.get("method") == "turn/completed" for e in events):
+                await asyncio.sleep(0.01)
         turn_id = result["turn"]["id"]
         methods = [event.get("method") for event in events]
-        assert methods == ["turn/started", "item/completed", "turn/completed"]
+        assert methods == ["workspace/history", "turn/started", "item/completed", "turn/completed"]
         completed = next(event for event in events if event.get("method") == "turn/completed")
         assert completed["params"]["turn"]["status"] == "completed"
         assert owner.state == "ready"
@@ -473,7 +488,6 @@ def test_workspace_submit_validates_inputs_and_options(tmp_path, monkeypatch) ->
             publish=lambda event: None,
             binary="/nonexistent/muse",
         )
-        await owner.open()
         with pytest.raises(MuseWorkspaceError):
             await owner.submit([{"type": "text", "text": "  "}])
         with pytest.raises(MuseWorkspaceError):

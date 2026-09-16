@@ -215,7 +215,7 @@ button.addEventListener('click', async () => {
       pane.render();
     }
     pane.input.focus();
-    if (['Codex', 'Claude'].includes(boot.provider)) connection.controls().models().catch(error => pane.error(error));
+    if (['Codex', 'Claude', 'Muse'].includes(boot.provider)) connection.controls().models().catch(error => pane.error(error));
   } catch (error) {
     connectionFailed(error);
     if (parent !== window) parent.postMessage({type:'serena-workspace-state',sid:boot.sessionId,state:'unavailable'},location.origin);
