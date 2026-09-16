@@ -30,17 +30,19 @@ Never install an update by hand via SSH or manual copying. Both desktop apps sel
 ### 1. Serena Desktop (`apps/desktop/`)
 - **Architecture**: Public repository `duaragha/Serena`. Releases are downloaded anonymously by `electron-updater`, requiring no token.
 - **When**: Any changes affecting `apps/desktop/`, `ui/`, or core desktop services.
+- **Every Serena update ships to Serena Dev, never straight to stable.** Serena Dev is a separate app that runs alongside stable (own name, `~/.config/serena-dev`, `~/.local/share/chats-dev`, `dev` update channel), so Raghav tests new features without disturbing the stable app his work runs in. Native structured panes only run in Dev. Cut a stable `vX.Y.Z` only when Raghav asks to promote a Dev build he has tested.
 - **Workflow**:
   1. Test: `cd apps/desktop && npm test`
-  2. Bump patch version in `apps/desktop/package.json` (e.g. `0.2.11` -> `0.2.12`).
-  3. Commit and tag:
+  2. Set `apps/desktop/package.json` to the next patch version (e.g. `0.3.4` -> `0.3.5`) for the first Dev build of that version. Later Dev builds of the same version keep it unchanged; the release job refuses a tag whose base differs from `package.json`.
+  3. Commit and tag a Dev build (`N` counts up from 1 per version):
      ```bash
      git add apps/desktop/package.json
      git commit -m "chore(release): bump desktop version to vX.Y.Z"
-     git tag vX.Y.Z
-     git push origin master --tags
+     git tag vX.Y.Z-dev.N
+     git push origin master vX.Y.Z-dev.N
      ```
-  4. GitHub Actions (`.github/workflows/desktop-release.yml`) builds Linux AppImage + Windows installer into the same release.
+     Promoting to stable, only on request: `git tag vX.Y.Z && git push origin vX.Y.Z` on the tested commit.
+  4. GitHub Actions (`.github/workflows/desktop-release.yml`) builds Linux AppImage + Windows installer into the same release. Dev tags publish a prerelease on the `dev` channel, which stable installs never read.
 - **Invariants**:
   - The installed AppImage on Linux must live at `~/Applications/Serena.AppImage`. The unversioned filename is load-bearing so `electron-updater` overwrites in-place instead of creating orphan files.
   - Rollback archive: `cd apps/desktop && npm run rollback:keep` (or `npm run rollback:list`).
