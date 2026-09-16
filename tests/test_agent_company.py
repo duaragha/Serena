@@ -39,6 +39,28 @@ def test_a_task_filed_as_a_note_is_backlog_and_never_claimed(queue):
     assert store.claim_next_task("dispatcher") is None
 
 
+def test_a_legacy_writer_ready_note_without_a_source_is_not_claimed(queue):
+    path = queue / "task" / "001-note.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nid: 1\ntype: task\ncreated: 2026-01-01 00:00:00\n"
+                    "updated: 2026-01-01 00:00:00\nstate: ready\nsource_id: \n---\n\n"
+                    "Fix the flaky login test in locket before friday\n")
+    assert store.claim_next_task("dispatcher") is None
+    assert store.enqueue_task(BRIEF)["source_id"].startswith("queue:")
+
+
+def test_projects_root_follows_the_serena_checkout(tmp_path, monkeypatch):
+    from core import coding_job_contract
+
+    monkeypatch.delenv("SERENA_PROJECTS_ROOT", raising=False)
+    monkeypatch.setattr(coding_job_contract.Path, "home", lambda: tmp_path)
+    (tmp_path / "Documents" / "Projects" / "mcp-gateway").mkdir(parents=True)
+    (tmp_path / "Projects" / "serena").mkdir(parents=True)
+    assert coding_job_contract._default_projects_root() == tmp_path / "Projects"
+    (tmp_path / "Documents" / "Projects" / "serena").mkdir()
+    assert coding_job_contract._default_projects_root() == tmp_path / "Documents" / "Projects"
+
+
 def test_an_enqueued_brief_is_the_only_ready_work(queue):
     store.add_memory("Fix the flaky login test in locket before friday", "task")
     task = store.enqueue_task(BRIEF, source_id="imessage:m1")

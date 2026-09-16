@@ -58,7 +58,11 @@ def _default_projects_root() -> Path:
         return Path(configured).expanduser()
     documents = Path.home() / "Documents" / "Projects"
     home = Path.home() / "Projects"
-    return home if not documents.exists() and home.exists() else documents
+    # Anchor on the serena checkout, as core.config does: the PC also has a
+    # near-empty Documents\Projects that is not the synced tree.
+    if not (documents / "serena").exists() and (home / "serena").exists():
+        return home
+    return documents
 
 
 DEFAULT_PROJECTS_ROOT = _default_projects_root()

@@ -227,7 +227,8 @@ def test_locket_stamp_does_not_leave_duplicate_legacy_filename(queue):
 def test_bad_state_is_triage_and_corrupt_lease_is_recoverable(queue):
     legacy(queue, extra="state: whatever\n")
     assert store.get_memory(1)["state"] == "needs_triage"
-    legacy(queue, mid=2, extra="state: claimed\nlease_until: nan\nassignee: dead\n")
+    legacy(queue, mid=2, extra="state: claimed\nlease_until: nan\nassignee: dead\n"
+                               "source_id: webhook:d2\n")
     assert store.claim_next_task("worker")["id"] == 2
 
 

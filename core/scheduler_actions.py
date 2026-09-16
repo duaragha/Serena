@@ -460,7 +460,10 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
 
     asked = []
     for task in store.tasks_in_state("needs_triage"):
-        if task.get("asked_at") or not str(task.get("source_id") or ""):
+        # Only briefs from his phone get a question back; internal queue
+        # writes have nobody on the other end of the thread.
+        if task.get("asked_at") or not str(task.get("source_id") or "").startswith(
+                ("imessage:", "webhook:")):
             continue
         if len(asked) >= MAX_RECONCILE_PER_TICK:
             break

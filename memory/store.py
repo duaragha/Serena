@@ -207,7 +207,7 @@ def enqueue_task(text: str, project_hint: str | None = None,
         raise ValueError("task queue capacity exceeded")
     path = _write_file(_next_id(), "task", text, task_fields={
         "state": classify_task(text, project), "assignee": "", "priority": priority,
-        "project_hint": project, "source_id": source,
+        "project_hint": project, "source_id": source or f"queue:{uuid.uuid4().hex}",
     })
     return _clean(_parse_file(path))
 
@@ -268,7 +268,9 @@ def claim_next_task(owner: str, now=None, lease_seconds=TASK_LEASE_SECONDS) -> d
         if row["state"] in {"claimed", "running"} and not _lease_alive(row, moment):
             state = "ready" if row["state"] == "claimed" else "blocked"
             row = _task_metadata(row, state=state, assignee="", lease_token="", lease_until="")
-        if row["state"] == "ready" and not _is_snoozed(row):
+        # Only enqueue_task stamps a source id. Older writers defaulted plain
+        # notes to "ready"; without a source they are never dispatch input.
+        if row["state"] == "ready" and row["source_id"] and not _is_snoozed(row):
             ready.append(row)
     if not ready:
         return None
