@@ -17,7 +17,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const FEED = require('./updates').FEED;
-const RELEASE_API = `https://api.github.com/repos/${FEED.owner}/${FEED.repo}/releases/latest`;
+const { desktopProfile, acceptsVersion } = require('./profile');
+const profile = desktopProfile(app.getVersion());
+const RELEASE_API = `https://api.github.com/repos/${FEED.owner}/${FEED.repo}/releases`
+  + (profile.channel === 'dev' ? '?per_page=30' : '/latest');
 
 // 15 minutes: four calls an hour against an anonymous limit of sixty.
 const POLL_INTERVAL_MS = 15 * 60 * 1000;
@@ -31,13 +34,13 @@ const FIRST_POLL_DELAY_MS = 30 * 1000;
 const PLATFORMS = {
   linux: {
     label: 'Linux',
-    channel: 'latest-linux.yml',
+    channel: `${profile.updateChannel}-linux.yml`,
     installer: (name) => name.endsWith('.AppImage'),
   },
   win32: {
     label: 'Windows',
-    channel: 'latest.yml',
-    installer: (name) => /^Serena-Setup-.*\.exe$/.test(name),
+    channel: `${profile.updateChannel}.yml`,
+    installer: (name) => (profile.channel === 'dev' ? /^Serena-Dev-Setup-.*\.exe$/ : /^Serena-Setup-.*\.exe$/).test(name),
   },
 };
 
@@ -88,7 +91,10 @@ function fetchLatestRelease() {
           return;
         }
         try {
-          resolve(JSON.parse(body));
+          const payload = JSON.parse(body);
+          resolve(Array.isArray(payload)
+            ? payload.find(release => !release.draft && acceptsVersion(profile, versionOf(release)))
+            : payload);
         } catch (error) {
           reject(new Error(`release feed was not JSON: ${error.message}`));
         }
@@ -134,14 +140,14 @@ function announce(version, key, release) {
   const platform = PLATFORMS[key];
   const forThisMachine = key === process.platform;
   const body = forThisMachine
-    ? `Serena ${version} is ready to install. Open About and check for updates.`
-    : `The ${platform.label} build of Serena ${version} finished publishing.`;
+    ? `${profile.name} ${version} is ready to install. Open About and check for updates.`
+    : `The ${platform.label} build of ${profile.name} ${version} finished publishing.`;
 
   if (!Notification.isSupported()) {
     console.log(`[releases] ${platform.label} build ${version} is up (no notifications here)`);
     return;
   }
-  const note = new Notification({ title: `Serena ${version} · ${platform.label} build`, body });
+  const note = new Notification({ title: `${profile.name} ${version} · ${platform.label} build`, body });
   note.on('click', () => {
     const url = release && release.html_url;
     if (url) shell.openExternal(url).catch(() => {});
@@ -169,7 +175,7 @@ async function poll(options = {}) {
   }
 
   const version = versionOf(release);
-  if (!version || !isNewer(version, current)) return [];
+  if (!acceptsVersion(profile, version) || !isNewer(version, current)) return [];
 
   const announced = readAnnounced();
   const already = new Set(announced[version] || []);

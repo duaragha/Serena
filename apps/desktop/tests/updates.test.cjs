@@ -26,11 +26,11 @@ function feeds() {
   return { linux: linux[0], windows: windows[0] };
 }
 
-function loadUpdates({ packaged = true, platform = 'linux', appImage = '/tmp/Serena.AppImage', updater } = {}) {
+function loadUpdates({ packaged = true, platform = 'linux', appImage = '/tmp/Serena.AppImage', updater, version = '0.1.0' } = {}) {
   const source = fs.readFileSync(path.join(ROOT, 'updates.js'), 'utf8');
   const dialogCalls = [];
   const electron = {
-    app: { isPackaged: packaged, getVersion: () => '0.1.0', getName: () => 'Serena' },
+    app: { isPackaged: packaged, getVersion: () => version, getName: () => 'Serena' },
     dialog: {
       showMessageBox: async (_parent, options) => {
         dialogCalls.push(options);
@@ -40,6 +40,7 @@ function loadUpdates({ packaged = true, platform = 'linux', appImage = '/tmp/Ser
   };
   const sandboxRequire = (name) => {
     if (name === 'node:fs' || name === 'node:path') return require(name);
+    if (name === './profile') return require('../profile');
     if (name === 'electron') return electron;
     if (name === 'electron-updater') {
       if (updater === null) throw new Error('not installed');
@@ -116,6 +117,22 @@ test('a newer remote version is reported as available', async () => {
   assert.equal(outcome.version, '0.1.0');
 });
 
+for (const [version, remote, channel, prerelease] of [
+  ['0.2.85', '0.2.86-dev.1', 'latest', false],
+  ['0.2.85-dev.1', '0.2.86', 'dev', true],
+]) {
+  test(`${channel} refuses a release from the other edition`, async () => {
+    const updater = fakeUpdater({ checkForUpdates: async () => ({ updateInfo: { version: remote } }) });
+    const { api } = loadUpdates({ updater, version });
+    assert.equal((await api.check()).state, 'error');
+    assert.equal(updater.channel, channel);
+    assert.equal(updater.allowPrerelease, prerelease);
+    assert.equal(updater.allowDowngrade, false);
+    updater.emit('update-downloaded', { version: remote });
+    assert.throws(() => api.install(), /No update/);
+  });
+}
+
 test('a matching version reports current, not available', async () => {
   const { api } = loadUpdates({ updater: fakeUpdater() });
   const outcome = await api.check();
@@ -182,7 +199,7 @@ test('installing before downloading is refused', () => {
 });
 
 test('download progress is reported as whole percentages', async () => {
-  const updater = fakeUpdater();
+  const updater = fakeUpdater({ checkForUpdates: async () => ({ updateInfo: { version: '0.2.0' } }) });
   updater.downloadUpdate = async function () {
     this.emit('download-progress', { percent: 42.7, transferred: 1, total: 2, bytesPerSecond: 3 });
     return [];
@@ -190,10 +207,19 @@ test('download progress is reported as whole percentages', async () => {
   const { api } = loadUpdates({ updater });
   const seen = [];
 
+  await api.check();
   await api.download((progress) => seen.push(progress));
 
   assert.equal(seen.length, 1);
   assert.equal(seen[0].percent, 43);
+});
+
+test('a late older release is not offered when the real updater refuses it', async () => {
+  const { api } = loadUpdates({ version: '0.3.0', updater: fakeUpdater({
+    checkForUpdates: async () => ({ isUpdateAvailable: false, updateInfo: { version: '0.2.85' } }),
+  }) });
+  assert.equal((await api.check()).state, 'current');
+  await assert.rejects(api.download(), /before downloading/);
 });
 
 test('the platform label matches the build the user is running', () => {

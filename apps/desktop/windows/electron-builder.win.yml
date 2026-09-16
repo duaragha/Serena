@@ -15,6 +15,7 @@ files:
   - main.js
   - preload.js
   - runtime.js
+  - profile.js
   - folder-picker.js
   - menu.js
   - updates.js

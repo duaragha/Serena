@@ -11616,7 +11616,12 @@ def index():
     )
     if ui_hot_reload_enabled():
         boot += _HOT_RELOAD_SCRIPT
-    return boot + _live_html()
+    html = _live_html()
+    if os.environ.get("SERENA_DESKTOP_CHANNEL") == "dev":
+        html = html.replace("<title>Serena</title>", "<title>Serena Dev</title>")
+        html = html.replace("<strong>Serena<span>.</span></strong>",
+                            "<strong>Serena <span>Dev</span></strong>")
+    return boot + html
 
 
 def _ambiguous_shorts() -> set[str]:
@@ -12160,7 +12165,7 @@ def api_keybindings():
 # silently lost on every restart and never shared between the GTK window and a
 # browser tab. Persist it server-side instead.
 # ─────────────────────────────────────────────────────────────────────────────
-_UI_STATE_PATH = Path.home() / ".config" / "serena" / "ui-state.json"
+_UI_STATE_PATH = Path(os.environ.get("SERENA_CONFIG_DIR", Path.home() / ".config" / "serena")) / "ui-state.json"
 
 
 def _load_ui_state() -> dict:
@@ -14481,15 +14486,14 @@ def api_backend_freshness():
 
 @app.get("/api/health")
 def api_health():
-    """Liveness probe shared by every entry point.
-
-    The desktop shell polls this to decide whether to attach to an already
-    running server (mobile_host) or spawn its own sidecar, so it has to live
-    on the app rather than on one launcher.
-    """
+    """Liveness and edition identity for owned desktop sidecars and other hosts."""
     return jsonify({
         "ok": True,
         "pid": os.getpid(),
+        "desktop": {
+            "channel": os.environ.get("SERENA_DESKTOP_CHANNEL", "standalone"),
+            "version": os.environ.get("SERENA_DESKTOP_VERSION", ""),
+        },
         "capabilities": {
             "structuredWorkspace": 1 if "workspace_host" in app.extensions else 0,
         },
@@ -14499,6 +14503,16 @@ def api_health():
 # ---------------------------------------------------------------------------
 # Server entry point
 # ---------------------------------------------------------------------------
+
+def _shutdown_owned_runtimes():
+    """Close only this server's providers, including their detached children."""
+    try:
+        workspace = app.extensions.get("workspace_host")
+        if workspace is not None:
+            workspace.shutdown()
+    finally:
+        pty_terminal.shutdown_all()
+
 
 def run_web(host="0.0.0.0", port=8080, open_browser=False):
     """Start the web server."""
@@ -14584,10 +14598,10 @@ def run_web(host="0.0.0.0", port=8080, open_browser=False):
     for _stranded in pty_terminal.sweep_stranded_agents():
         print(f"[serena] reaped stranded agent process {_stranded}", file=sys.stderr)
 
-    atexit.register(pty_terminal.shutdown_all)
+    atexit.register(_shutdown_owned_runtimes)
 
     def _leave(signum, _frame):
-        pty_terminal.shutdown_all()
+        _shutdown_owned_runtimes()
         raise SystemExit(128 + signum)
 
     for _signal_name in ("SIGTERM", "SIGINT", "SIGHUP"):

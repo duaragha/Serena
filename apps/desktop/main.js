@@ -1,7 +1,6 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
-const http = require('node:http');
 const path = require('node:path');
 const {
   app,
@@ -17,7 +16,6 @@ const {
 const {
   LOOPBACK_HOST,
   backendLaunch,
-  findExistingBackend,
   findFreePort,
   normalizeExternalUrl,
   terminateProcessTree,
@@ -28,7 +26,7 @@ const updates = require('./updates');
 const releases = require('./releases');
 const logging = require('./logging');
 const backendControl = require('./backend-control');
-const backendInstall = require('./backend-install');
+const { desktopProfile, backendEnvironment } = require('./profile');
 const folderPicker = require('./folder-picker');
 
 const SMOKE_TEST = process.argv.includes('--smoke-test');
@@ -44,10 +42,12 @@ const BACKEND_READY_TIMEOUT_MS = process.platform === 'win32' && app.isPackaged
 // expected to sit beside the installed build while the UI is being worked on.
 // Sharing the packaged app's lock made `--dev` exit instantly with no output,
 // which reads exactly like a broken launcher.
-const isDevRun = process.argv.includes('--dev');
-if (isDevRun) {
-  app.setPath('userData', `${app.getPath('userData')}-dev`);
-} else if (SMOKE_TEST) {
+const profile = desktopProfile(app.getVersion(), { packaged: app.isPackaged, argv: process.argv });
+app.setName(profile.name);
+// Stable's new profile can coexist with an active pre-split window during the
+// first upgrade. Neither edition borrows the old window's instance lock.
+app.setPath('userData', path.join(app.getPath('appData'), `serena-desktop-${profile.channel}`));
+if (SMOKE_TEST) {
   // Release verification must be able to run beside the installed app without
   // stealing its single-instance lock or touching its real profile.
   app.setPath('userData', `${app.getPath('userData')}-smoke-${process.pid}`);
@@ -157,7 +157,7 @@ function createWindow(url) {
     minWidth: 900,
     minHeight: 600,
     show: false,
-    title: 'Serena',
+    title: profile.name,
     // Without this the running window carries Electron's default icon on
     // Linux: the desktop entry's icon only applies once the window manager
     // matches StartupWMClass, and it never matched this app's.
@@ -226,123 +226,16 @@ function trayIcon() {
   ).resize({ width: 22, height: 22 });
 }
 
-let backendFreshness = { reachable: false, stale: false };
-let restartingBackend = false;
-
-function getJson(url) {
-  return new Promise((resolve, reject) => {
-    const request = http.get(url, { timeout: 4000 }, (response) => {
-      const chunks = [];
-      response.on('data', (chunk) => chunks.push(chunk));
-      response.on('end', () => {
-        if (response.statusCode !== 200) {
-          reject(new Error(`HTTP ${response.statusCode}`));
-          return;
-        }
-        try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-        } catch (error) {
-          reject(error);
-        }
-      });
-    });
-    request.once('timeout', () => request.destroy(new Error('timed out')));
-    request.once('error', reject);
-  });
-}
-
-async function refreshBackendFreshness() {
-  backendFreshness = await backendControl.freshness(backendUrl, getJson);
-  updateTrayMenu();
-  return backendFreshness;
-}
-
-/**
- * Restart the server this window is talking to.
- *
- * Two shapes. When the shell spawned the backend it owns the process and can
- * simply cycle it. When it attached to the long-lived systemd server it must go
- * through the helper, because a bare systemctl restart is issued from inside
- * the unit being restarted and gets killed partway through.
- */
-async function restartBackend() {
-  if (restartingBackend) return { ok: false, reason: 'already restarting' };
-  restartingBackend = true;
-  updateTrayMenu();
-  const url = backendUrl;
-  try {
-    if (backend) {
-      logging.note('restarting the backend this shell owns');
-      await stopBackend();
-      await startBackend();
-      return { ok: true, owned: true };
-    }
-
-    const before = await getJson(`${url}/api/health`);
-    if (!Number.isInteger(before.pid) || before.pid <= 0) {
-      throw new Error('cannot identify the backend being restarted');
-    }
-    const root = backendFreshness.sourceRoot || (await refreshBackendFreshness()).sourceRoot;
-    const launch = backendControl.sharedRestartCommand(root);
-    logging.note(`restarting ${backendControl.SHARED_UNIT} via ${launch.args[0]}`);
-    await new Promise((resolve, reject) => {
-      const child = spawn(launch.command, launch.args, {
-        env: { ...process.env, ...launch.env },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-      });
-      child.stdout.on('data', (chunk) => logging.note(`restart: ${chunk}`));
-      child.stderr.on('data', (chunk) => logging.note(`restart: ${chunk}`));
-      child.once('error', reject);
-      child.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(`helper exited ${code}`))));
-    });
-
-    const back = await backendControl.waitForBackend(url, getJson, { previousPid: before.pid });
-    if (!back.ok) throw new Error(`server did not come back: ${back.reason}`);
-    logging.note(`backend restarted, now pid=${back.pid}`);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      await backendControl.loadBackendWindow(mainWindow, url);
-    }
-    return { ok: true, owned: false, pid: back.pid };
-  } catch (error) {
-    logging.note(`backend restart failed: ${error.message}`);
-    return { ok: false, reason: error.message };
-  } finally {
-    restartingBackend = false;
-    refreshBackendFreshness().catch(() => {});
-  }
-}
-
 function updateTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
     {
-      label: mainWindow && mainWindow.isVisible() ? 'Hide Serena' : 'Show Serena',
+      label: `${mainWindow && mainWindow.isVisible() ? 'Hide' : 'Show'} ${profile.name}`,
       click: () => {
         if (!mainWindow) return;
         if (mainWindow.isVisible()) mainWindow.hide();
         else showMainWindow();
         updateTrayMenu();
-      },
-    },
-    {
-      // Named for what it costs, because it ends open panes and the voice
-      // pipeline shares the unit.
-      label: restartingBackend
-        ? 'Restarting Backend…'
-        : (backendControl.staleLabel(backendFreshness) || 'Restart Backend'),
-      enabled: !restartingBackend,
-      click: () => {
-        restartBackend().then((result) => {
-          if (!result.ok && result.reason !== 'already restarting') {
-            dialog.showMessageBox(mainWindow || undefined, {
-              type: 'error',
-              title: 'Restart failed',
-              message: 'The backend could not be restarted.',
-              detail: String(result.reason || '').slice(0, 500),
-            }).catch(() => {});
-          }
-        });
       },
     },
     { type: 'separator' },
@@ -355,7 +248,7 @@ function updateTrayMenu() {
 
 function createTray() {
   tray = new Tray(trayIcon());
-  tray.setToolTip('Serena');
+  tray.setToolTip(profile.name);
   tray.on('click', () => {
     if (mainWindow && mainWindow.isVisible()) mainWindow.hide();
     else showMainWindow();
@@ -394,24 +287,8 @@ async function startBackend() {
   startingBackend = true;
   let child = null;
   try {
-    // Attach to the persistent mobile_host server when it is already up
-    // rather than running a second copy of the same Flask UI.
-    const shared = await findExistingBackend({
-      enabled: process.env.SERENA_DESKTOP_SHARE_BACKEND !== '0',
-      requireStructuredWorkspace: process.env.SERENA_STRUCTURED_WORKSPACE !== '0',
-    });
-    if (shared && !quitting) {
-      backend = null;
-      backendUrl = shared.url;
-      logging.note(`attached to a shared backend at ${shared.url} pid=${shared.pid}`);
-      console.log(`SERENA_BACKEND_SHARED ${shared.url} pid=${shared.pid}`);
-      if (!SMOKE_TEST) {
-        if (!mainWindow) await createWindow(shared.url);
-        else await backendControl.loadBackendWindow(mainWindow, shared.url);
-        if (!tray) createTray();
-      }
-      return;
-    }
+    // Every desktop edition owns its bundled backend. Never attach to or
+    // replace the phone host, another release, or the other edition.
     const port = await findFreePort();
     const url = `http://${LOOPBACK_HOST}:${port}`;
     const launch = backendLaunch({
@@ -426,6 +303,7 @@ async function startBackend() {
       env: {
         ...process.env,
         ...launch.env,
+        ...backendEnvironment(profile, app.getPath('home')),
         PYTHONUNBUFFERED: '1',
         SERENA_CALL_RUNTIME: 'lazy',
       },
@@ -442,6 +320,11 @@ async function startBackend() {
     const health = await waitForHealth(child, backendHealthUrl(url), {
       timeoutMs: BACKEND_READY_TIMEOUT_MS,
     });
+    if (health.desktop?.channel !== profile.channel
+      || health.desktop?.version !== profile.version
+      || Boolean(health.capabilities?.structuredWorkspace) !== profile.structured) {
+      throw new Error('Bundled backend identity does not match this desktop edition');
+    }
     if (backend !== child || quitting) return;
     backendUrl = url;
     logging.note(`backend ready at ${url} pid=${health.pid}`);
@@ -468,12 +351,11 @@ async function stopBackend() {
     clearTimeout(restartTimer);
     restartTimer = null;
   }
-  // `backend` is null when we attached to mobile_host: that server belongs
-  // to systemd and the phone, so quitting the app must leave it running.
+  // Only this edition's child can be stopped here.
   const child = backend;
   backend = null;
   backendUrl = null;
-  if (child) await terminateProcessTree(child);
+  if (child) await terminateProcessTree(child, 25000);
 }
 
 app.on('second-instance', () => showMainWindow());
@@ -507,21 +389,8 @@ if (gotSingleInstanceLock) {
     // Say when each platform's build lands. A tagged release publishes Linux
     // first and Windows minutes later, so both are worth hearing about.
     releases.start();
-    // Cheap and local. The point is that the menu can say the server is behind
-    // before a fix appears not to work.
-    setInterval(() => refreshBackendFreshness().catch(() => {}), 60_000).unref();
-    // An update has to carry the server, not just the window. This runs before
-    // the app looks for a backend so the one it finds is already this build's,
-    // and it is a no-op on every launch where the version has not moved.
-    backendInstall.syncBackend({
-      isPackaged: app.isPackaged,
-      resourcesPath: process.resourcesPath,
-      version: app.getVersion(),
-      log: (message) => logging.note(message),
-    }).finally(() => {
-      startBackend().catch((error) => {
-        console.error('[desktop] initial backend start failed:', error.message);
-      });
+    startBackend().catch((error) => {
+      console.error('[desktop] initial backend start failed:', error.message);
     });
   });
 }

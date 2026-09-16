@@ -48,6 +48,7 @@ function load({ platform = 'linux', version = '0.2.1' } = {}) {
     require: (name) => {
       if (name === 'electron') return electron;
       if (name === './updates') return { FEED: { owner: 'duaragha', repo: 'Serena' } };
+      if (name === './profile') return require('../profile');
       if (name === 'node:fs') return fs;
       if (name === 'node:path') return path;
       throw new Error(`unexpected require: ${name}`);
