@@ -522,6 +522,7 @@ html, body {
 .live-usage-chip.claude { color: #f29b6f; }
 .live-usage-chip.codex { color: #9dc5ff; }
 .live-usage-chip.gemini { color: #67d9a0; }
+.live-usage-chip.muse { color: #e8bd5f; }
 .live-usage-chip.waiting { color: var(--text-dim); opacity: 0.75; }
 .live-usage-chip.stale { opacity: 0.58; }
 .live-usage-dial {
@@ -615,6 +616,7 @@ html, body {
 .live-usage-name.claude { color: #ff9f72; }
 .live-usage-name.codex { color: #a7caff; }
 .live-usage-name.gemini { color: #67d9a0; }
+.live-usage-name.muse { color: #f0cf7d; }
 .live-usage-meta {
   color: #b4a8b8;
   font-size: 9px;
@@ -719,6 +721,7 @@ html, body {
 .usage-alert-name.claude { color: #ff9f72; }
 .usage-alert-name.codex { color: #a7caff; }
 .usage-alert-name.gemini { color: #67d9a0; }
+.usage-alert-name.muse { color: #e8bd5f; }
 .usage-alert-level {
   color: #f4eef5;
   font-size: 11px;
@@ -988,6 +991,7 @@ body.pane-dragging * {
 .agent-filter-btn.claude.active { color: #C15F3C; border-color: rgba(193,95,60,0.7); background: rgba(193,95,60,0.10); }
 .agent-filter-btn.codex.active  { color: #b07cff; border-color: rgba(176,124,255,0.7); background: rgba(176,124,255,0.10); }
 .agent-filter-btn.gemini.active { color: #67d9a0; border-color: rgba(103,217,160,0.7); background: rgba(103,217,160,0.10); }
+.agent-filter-btn.muse.active { color: #e8bd5f; border-color: rgba(217,164,65,0.7); background: rgba(217,164,65,0.10); }
 
 /* ── Project Sidebar ── */
 .project-sidebar {
@@ -1095,6 +1099,7 @@ body.pane-dragging * {
 .agent-icon.claude { color: #C15F3C; }   /* Anthropic crail orange */
 .agent-icon.codex  { color: #b07cff; }   /* purple to differentiate cleanly from claude orange */
 .agent-icon.gemini { color: #67d9a0; }   /* green, clear of claude orange and codex purple */
+.agent-icon.muse { color: #d9a441; }   /* amber, clear of the other three */
 .agent-icon.serena { color: #f472b6; }
 .group-header.serena-header {
   color: #f9a8d4;
@@ -1609,6 +1614,7 @@ body.pane-dragging * {
 .term-session-id.claude { color: #ff967d; }
 .term-session-id.codex { color: #8cb4ff; }
 .term-session-id.gemini { color: #67d9a0; }
+.term-session-id.muse { color: #e8bd5f; }
 .runtime-pin {
   display: inline-flex;
   align-items: center;
@@ -2600,6 +2606,9 @@ body.pane-dragging * {
           <button class="agent-filter-btn gemini" id="filterGemini" onclick="toggleAgentFilter('gemini')">
             <span class="agent-icon gemini"></span>Gemini
           </button>
+          <button class="agent-filter-btn muse" id="filterMuse" onclick="toggleAgentFilter('muse')">
+            <span class="agent-icon muse"></span>Muse
+          </button>
         </div>
       </div>
       <div class="selection-info hidden" id="selectionInfo">
@@ -3579,6 +3588,7 @@ function checkUsageAlerts(data) {
     ['claude', 'claude', data && data.claude],
     ['codex', 'codex', data && data.codex],
     ['gemini', 'gemini', data && data.gemini],
+    ['muse', 'muse', data && data.muse],
   ];
   services.forEach(([name, cls, svc]) => {
     const state = usageAlertState[name] || (usageAlertState[name] = { lastPct: null });
@@ -3604,17 +3614,20 @@ function renderLiveUsage(data) {
   const c = (data && data.claude) || {};
   const x = (data && data.codex) || {};
   const g = (data && data.gemini) || {};
+  const m = (data && data.muse) || {};
   const stateUpdatedAt = data && data.state_updated_at;
   el.innerHTML = '<div class="live-usage-compact">'
     + '<span class="live-usage-label">limits</span>'
     + liveUsageCompactHtml('claude', 'claude', c)
     + liveUsageCompactHtml('codex', 'codex', x)
     + liveUsageCompactHtml('gemini', 'gemini', g)
+    + liveUsageCompactHtml('muse', 'muse', m)
     + '</div>'
     + '<div class="live-usage-popover">'
     + liveUsageServiceHtml('claude', 'claude', c, stateUpdatedAt)
     + liveUsageServiceHtml('codex', 'codex', x, stateUpdatedAt)
     + liveUsageServiceHtml('gemini', 'gemini', g, stateUpdatedAt)
+    + liveUsageServiceHtml('muse', 'muse', m, stateUpdatedAt)
     + '</div>';
   _syncNativeUsagePopover();
 }
@@ -4652,12 +4665,14 @@ function toggleParentExpansion(sid) {
 const _CLAUDE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="m3.127 10.604 3.135-1.76.053-.153-.053-.085H6.11l-.525-.032-1.791-.048-1.554-.065-1.505-.08-.38-.081L0 7.832l.036-.234.32-.214.455.04 1.009.069 1.513.105 1.097.064 1.626.17h.259l.036-.105-.089-.065-.068-.064-1.566-1.062-1.695-1.121-.887-.646-.48-.327-.243-.306-.104-.67.435-.48.585.04.15.04.593.456 1.267.981 1.654 1.218.242.202.097-.068.012-.049-.109-.181-.9-1.626-.96-1.655-.428-.686-.113-.411a2 2 0 0 1-.068-.484l.496-.674L4.446 0l.662.089.279.242.411.94.666 1.48 1.033 2.014.302.597.162.553.06.17h.105v-.097l.085-1.134.157-1.392.154-1.792.052-.504.25-.605.497-.327.387.186.319.456-.045.294-.19 1.23-.37 1.93-.243 1.29h.142l.161-.16.654-.868 1.097-1.372.484-.545.565-.601.363-.287h.686l.505.751-.226.775-.707.895-.585.759-.839 1.13-.524.904.048.072.125-.012 1.897-.403 1.024-.186 1.223-.21.553.258.06.263-.218.536-1.307.323-1.533.307-2.284.54-.028.02.032.04 1.029.098.44.024h1.077l2.005.15.525.346.315.424-.053.323-.807.411-3.631-.863-.872-.218h-.12v.073l.726.71 1.331 1.202 1.667 1.55.084.383-.214.302-.226-.032-1.464-1.101-.565-.497-1.28-1.077h-.084v.113l.295.432 1.557 2.34.08.718-.112.234-.404.141-.444-.08-.911-1.28-.94-1.44-.759-1.291-.093.053-.448 4.821-.21.246-.484.186-.403-.307-.214-.496.214-.98.258-1.28.21-1.016.19-1.263.112-.42-.008-.028-.092.012-.953 1.307-1.448 1.957-1.146 1.227-.274.109-.477-.247.045-.44.266-.39 1.586-2.018.956-1.25.617-.723-.004-.105h-.036l-4.212 2.736-.75.096-.324-.302.04-.496.154-.162 1.267-.871z"/></svg>';
 const _CODEX_SVG  = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M14.949 6.547a3.94 3.94 0 0 0-.348-3.273 4.11 4.11 0 0 0-4.4-1.934 A4.1 4.1 0 0 0 8.423.2 4.15 4.15 0 0 0 6.305.086a4.1 4.1 0 0 0-1.891.948 4.04 4.04 0 0 0-1.158 1.753 4.1 4.1 0 0 0-1.563.679A4 4 0 0 0 .554 4.72a3.99 3.99 0 0 0 .502 4.731 3.94 3.94 0 0 0 .346 3.274 4.11 4.11 0 0 0 4.402 1.933c.382.425.852.764 1.377.995.526.231 1.095.35 1.67.346 1.78.002 3.358-1.132 3.901-2.804a4.1 4.1 0 0 0 1.563-.68 4 4 0 0 0 1.14-1.253 3.99 3.99 0 0 0-.506-4.716m-6.097 8.406a3.05 3.05 0 0 1-1.945-.694l.096-.054 3.23-1.838a.53.53 0 0 0 .265-.455v-4.49l1.366.778q.02.011.025.035v3.722c-.003 1.653-1.361 2.992-3.037 2.996m-6.53-2.75a2.95 2.95 0 0 1-.36-2.01l.095.057L5.29 12.09a.53.53 0 0 0 .527 0l3.949-2.246v1.555a.05.05 0 0 1-.022.041L6.473 13.3c-1.454.826-3.311.335-4.15-1.098m-.85-6.94A3.02 3.02 0 0 1 3.07 3.949v3.785a.51.51 0 0 0 .262.451l3.93 2.237-1.366.779a.05.05 0 0 1-.048 0L2.585 9.342a2.98 2.98 0 0 1-1.113-4.094zm11.216 2.571L8.747 5.576l1.362-.776a.05.05 0 0 1 .048 0l3.265 1.86a3 3 0 0 1 1.173 1.207 2.96 2.96 0 0 1-.27 3.2 3.05 3.05 0 0 1-1.36.997V8.279a.52.52 0 0 0-.276-.445m1.36-2.015-.097-.057-3.226-1.855a.53.53 0 0 0-.53 0L6.249 6.153V4.598a.04.04 0 0 1 .019-.04L9.533 2.7a3.07 3.07 0 0 1 3.257.139c.474.325.843.778 1.066 1.303.223.526.289 1.103.191 1.664zM5.503 8.575 4.139 7.8a.05.05 0 0 1-.026-.037V4.049c0-.57.166-1.127.476-1.607s.752-.864 1.275-1.105a3.08 3.08 0 0 1 3.234.41l-.096.054-3.23 1.838a.53.53 0 0 0-.265.455zm.742-1.577 1.758-1 1.762 1v2l-1.755 1-1.762-1z"/></svg>';
 const _GEMINI_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c.28 3.02 1.35 5.1 2.9 6.36C12.1 7.34 13.8 7.83 16 8c-2.2.17-3.9.66-5.1 1.64C9.35 10.9 8.28 12.98 8 16c-.28-3.02-1.35-5.1-2.9-6.36C3.9 8.66 2.2 8.17 0 8c2.2-.17 3.9-.66 5.1-1.64C6.65 5.1 7.72 3.02 8 0Z"/></svg>';
+const _MUSE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l1.8 5.2L15 8l-5.2 1.8L8 15l-1.8-5.2L1 8l5.2-1.8Z"/><circle cx="13.2" cy="2.8" r="1.2"/></svg>';
 const _SERENA_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M8 9.5a3 3 0 0 0 3-3v-3a3 3 0 0 0-6 0v3a3 3 0 0 0 3 3Z"/><path d="M3.5 6.5a.5.5 0 0 1 1 0 3.5 3.5 0 0 0 7 0 .5.5 0 0 1 1 0 4.5 4.5 0 0 1-4 4.473V13h2a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1h2v-2.027a4.5 4.5 0 0 1-4-4.473Z"/></svg>';
 
 function _agentBadge(agent) {
   const normalized = String(agent || 'claude').toLowerCase();
   if (normalized === 'codex') return '<span class="agent-icon codex" title="Codex">' + _CODEX_SVG + '</span>';
   if (normalized === 'gemini') return '<span class="agent-icon gemini" title="Gemini">' + _GEMINI_SVG + '</span>';
+  if (normalized === 'muse') return '<span class="agent-icon muse" title="Muse">' + _MUSE_SVG + '</span>';
   if (normalized === 'serena-voice') return '<span class="agent-icon serena" title="Serena">' + _SERENA_SVG + '</span>';
   return '<span class="agent-icon claude" title="Claude">' + _CLAUDE_SVG + '</span>';
 }
@@ -6379,7 +6394,8 @@ async function loadReadTranscript(sid, force) {
         const defaultAgentLabel = data.agent === 'serena-voice' ? 'Serena' : 'Claude';
         const roleLabel = m.role === 'user'
           ? 'You'
-          : (data.agent === 'codex' ? 'Codex'
+          : (data.agent === 'muse' ? 'Muse'
+             : data.agent === 'codex' ? 'Codex'
              : data.agent === 'gemini' ? 'Gemini' : defaultAgentLabel);
         html += '<div class="msg">'
           + '<div class="msg-role ' + m.role + '">' + roleLabel + '</div>'
@@ -6576,7 +6592,7 @@ function _installClipboardBridge(term) {
  * away from the split, so that case leaves the layout alone.
  */
 // Every agent a chat can be handed to, in the order the panes read.
-const _HANDOFF_AGENTS = ['claude', 'codex', 'gemini'];
+const _HANDOFF_AGENTS = ['claude', 'codex', 'gemini', 'muse'];
 
 function _agentLabel(agent) {
   const name = String(agent || '').toLowerCase();
@@ -6757,7 +6773,7 @@ function _hideAllTermPanes() {
 // Quadrant order, so a square always reads the same way regardless of which
 // pane you clicked to open it: claude top-left, codex top-right, gemini
 // bottom-left, anything else bottom-right.
-const _AGENT_PANE_ORDER = ['claude', 'codex', 'gemini'];
+const _AGENT_PANE_ORDER = ['claude', 'codex', 'gemini', 'muse'];
 
 function _agentOf(sid) {
   const local = _findClientSession(sid);
@@ -7184,7 +7200,7 @@ function _startStructuredPane(sid, opts) {
     const pseudo = _pseudoSessions.find(session => session.session_id === sid);
     if (pseudo) pseudo.structured_pending = true;
   }
-  if (opts.isNew && !['codex', 'claude', 'gemini'].includes(opts.agent)) {
+  if (opts.isNew && !['codex', 'claude', 'gemini', 'muse'].includes(opts.agent)) {
     setTermStatus('New structured sessions are not available for this provider yet.', 'error');
     return null;
   }
@@ -7361,7 +7377,7 @@ async function startLiveTerminal(sid, opts) {
     return null;
   }
   const provider = opts.agent || localSession?.agent;
-  if (window.SERENA?.structuredWorkspace && ['claude', 'codex', 'gemini'].includes(provider)) return _startStructuredPane(sid, opts);
+  if (window.SERENA?.structuredWorkspace && ['claude', 'codex', 'gemini', 'muse'].includes(provider)) return _startStructuredPane(sid, opts);
   // A missing CLI/session in one pane must not block the rest of the group.
   if (!opts.background && !opts.isNew) _startLinkedTerminals(sid);
   // Already alive? Just bring its pane to front.
@@ -10640,9 +10656,11 @@ function toggleAgentFilter(agent) {
   const c = document.getElementById('filterClaude');
   const x = document.getElementById('filterCodex');
   const g = document.getElementById('filterGemini');
+  const m = document.getElementById('filterMuse');
   if (c) c.classList.toggle('active', _agentFilter === 'claude');
   if (x) x.classList.toggle('active', _agentFilter === 'codex');
   if (g) g.classList.toggle('active', _agentFilter === 'gemini');
+  if (m) m.classList.toggle('active', _agentFilter === 'muse');
   document.getElementById('filterAll')?.classList.toggle('active', !_agentFilter);
   renderSessionList();
   updateChatCount();
@@ -10651,9 +10669,11 @@ function _initAgentFilterIcons() {
   const c = document.querySelector('#filterClaude .agent-icon');
   const x = document.querySelector('#filterCodex .agent-icon');
   const g = document.querySelector('#filterGemini .agent-icon');
+  const m = document.querySelector('#filterMuse .agent-icon');
   if (c) c.innerHTML = _CLAUDE_SVG;
   if (x) x.innerHTML = _CODEX_SVG;
   if (g) g.innerHTML = _GEMINI_SVG;
+  if (m) m.innerHTML = _MUSE_SVG;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -11167,7 +11187,7 @@ function showPrompt({ title = 'Enter value', body = '', placeholder = '', defaul
       (Array.isArray(defaultAgents) && defaultAgents.length ? defaultAgents : [defaultAgent]).includes(a));
     if (!chosenAgents.length) chosenAgents = ['claude'];
     if (agentPicker) {
-      const icons = { claude: _CLAUDE_SVG, codex: _CODEX_SVG, gemini: _GEMINI_SVG };
+      const icons = { claude: _CLAUDE_SVG, codex: _CODEX_SVG, gemini: _GEMINI_SVG, muse: _MUSE_SVG };
       picker.innerHTML = _AGENT_PANE_ORDER.map(a =>
         '<button type="button" class="agent-pill' + (chosenAgents.includes(a) ? ' active' : '')
           + '" data-agent="' + a + '" aria-pressed="' + chosenAgents.includes(a) + '">'
@@ -11757,7 +11777,7 @@ def _mark_usage_freshness(service: dict, fallback_updated_at, now: float) -> dic
     service["updated_at"] = updated_at
     service["age_seconds"] = age
     source = service.get("source", "")
-    threshold = 330 if source == "gemini-cli-usage" else 60 if source in {"claude-workspace", "codex-workspace"} else _LIVE_USAGE_STALE_AFTER
+    threshold = 330 if source in {"gemini-cli-usage", "muse-cli-usage"} else 60 if source in {"claude-workspace", "codex-workspace"} else _LIVE_USAGE_STALE_AFTER
     service["stale"] = age > threshold
     return service
 
@@ -11841,6 +11861,17 @@ def _live_usage_payload() -> dict:
             print(f"[live-usage] gemini read failed: {exc}", flush=True)
             gemini = {"available": False, "source": "gemini-cli-usage"}
 
+        # Muse exposes no quota readout at all; the reader reports that
+        # honestly instead of inventing a percentage.
+        try:
+            from core.muse_usage_reader import read_muse_usage
+
+            muse = _normalize_usage_service(read_muse_usage(now=now), now)
+            muse = _mark_usage_freshness(muse, muse.get("updated_at"), now)
+        except Exception as exc:
+            print(f"[live-usage] muse read failed: {exc}", flush=True)
+            muse = {"available": False, "source": "muse-cli-usage"}
+
         payload = {
             "ok": True,
             "updated_at": now,
@@ -11849,6 +11880,7 @@ def _live_usage_payload() -> dict:
             "claude": claude or {"available": False, "source": "claude-statusline"},
             "codex": codex,
             "gemini": gemini,
+            "muse": muse,
         }
         _LIVE_USAGE_CACHE["at"] = now
         _LIVE_USAGE_CACHE["data"] = payload
@@ -13382,6 +13414,18 @@ def _persona_args(cwd: str | None = None, session_id: str | None = None) -> list
     return []
 
 
+def _muse_argv(*, conversation: str | None = None, seed: str = "") -> list[str]:
+    """The exact argv a pane needs. Muse resumes by session id; a seed starts
+    a fresh chat with the prompt as its first message."""
+
+    if conversation:
+        return ["muse", "resume", conversation]
+    argv = ["muse"]
+    if seed:
+        argv.append(seed)
+    return argv
+
+
 def _gemini_argv(*, conversation: str | None = None, seed: str = "") -> list[str]:
 
     """Launch Antigravity, which is what Gemini is for individuals now.
@@ -13472,6 +13516,10 @@ def api_spawn_terminal():
             # conversation id and nothing has to be staged first. The id is the
             # session id: Serena indexes each conversation file by its stem.
             argv = _gemini_argv(conversation=sid)
+        elif agent == "muse":
+            # Muse resumes by session id against its own event log; the
+            # resumability guard below refuses when the log is not here.
+            argv = _muse_argv(conversation=sid)
         elif agent == "codex":
             # --cd settles the working root up front. Without it, resuming a
             # session whose recorded cwd is not the one we spawn in (which is
@@ -13493,6 +13541,8 @@ def api_spawn_terminal():
 
         if agent == "gemini":
             argv = _gemini_argv(seed=seed)
+        elif agent == "muse":
+            argv = _muse_argv(seed=seed)
         elif agent == "codex":
             argv = ["codex"]  # fresh codex session
             if seed:
@@ -13536,6 +13586,16 @@ def api_spawn_terminal():
                     + " cannot resume on this machine: its native conversation file is missing. "
                     "A saved transcript alone is read-only; restore the original Antigravity "
                     "conversation data to resume this exact chat.",
+                }), 409
+
+        if session_id and agent == "muse":
+            from core.muse_scanner import resumable_session_path
+
+            if resumable_session_path(runtime_sid) is None:
+                return jsonify({
+                    "ok": False,
+                    "error": "Muse chat " + runtime_sid[:8]
+                    + " cannot resume on this machine: its native session log is missing.",
                 }), 409
 
         try:
@@ -14016,9 +14076,9 @@ def api_handoff():
     data = request.get_json(silent=True) or {}
     src_sid = (data.get("source_sid") or "").strip()
     target_agent = (data.get("target_agent") or "").strip().lower()
-    if not src_sid or target_agent not in ("claude", "codex", "gemini"):
+    if not src_sid or target_agent not in ("claude", "codex", "gemini", "muse"):
         return jsonify(
-            {"error": "source_sid and target_agent (claude|codex|gemini) required"}
+            {"error": "source_sid and target_agent (claude|codex|gemini|muse) required"}
         ), 400
 
     res = build_handoff_briefing(src_sid)

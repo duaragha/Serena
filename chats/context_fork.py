@@ -17,8 +17,8 @@ DEFAULT_CONTEXT_FORK_DIR = Path.home() / ".local" / "share" / "serena" / "contex
 # Every agent whose transcript can be READ, in the order a fork presents them.
 # Gemini joined once its Antigravity transcript became readable; before that it
 # could receive a fork but never contribute to one.
-_FORKABLE_AGENTS = ("claude", "codex", "gemini")
-_AGENT_LABELS = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini"}
+_FORKABLE_AGENTS = ("claude", "codex", "gemini", "muse")
+_AGENT_LABELS = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "muse": "Muse"}
 
 
 def _english_list(names: list[str]) -> str:
@@ -44,6 +44,17 @@ def _read_turns(agent: str, path: Path):
             for turn in read_turns(source)
             if turn["text"].strip()
         ]
+    if agent == "muse":
+        from core.muse_scanner import read_turns, session_id_for, transcript_path
+
+        source = path if path.name == "session.jsonl" else transcript_path(session_id_for(path))
+        if source is None:
+            return []
+        return [
+            (turn["role"], turn["text"], turn["timestamp"])
+            for turn in read_turns(source)
+            if turn["text"].strip()
+        ]
     return [
         (m.role, str(m.text or ""), m.timestamp.isoformat() if m.timestamp else "")
         for m in parse_full(path)
@@ -62,8 +73,8 @@ def build_context_fork(
     target = str(target_agent or "").strip().lower()
     if not source_id:
         raise ValueError("source session id is required")
-    if target not in {"claude", "codex", "gemini"}:
-        raise ValueError("target agent must be claude, codex or gemini")
+    if target not in {"claude", "codex", "gemini", "muse"}:
+        raise ValueError("target agent must be claude, codex, gemini or muse")
 
     source = get_session(source_id)
     if source is None:

@@ -178,7 +178,7 @@ def test_context_fork_route_and_right_click_actions(monkeypatch, tmp_path) -> No
     # The rows are built from one agent list rather than spelled out, so that
     # adding a third agent cannot leave a destination unreachable.
     assert "'Fork context → ' + _agentLabel(agent)" in page
-    assert "const _HANDOFF_AGENTS = ['claude', 'codex', 'gemini']" in page
+    assert "const _HANDOFF_AGENTS = ['claude', 'codex', 'gemini', 'muse']" in page
     assert "function forkLinkedContext(srcSid, targetAgent)" in page
     assert "pending_group_link_with:" not in page.split(
         "async function forkLinkedContext", 1

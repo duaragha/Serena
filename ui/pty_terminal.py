@@ -1598,7 +1598,7 @@ def shutdown_all() -> int:
 #
 # A codex the user runs in a real terminal has a tty and fails the test, which
 # is what keeps this from reaping live work.
-_STRANDED_MARKERS = ("codex", "claude", "gemini", "agy")
+_STRANDED_MARKERS = ("codex", "claude", "gemini", "muse", "agy")
 
 
 def _agent_cmdline(pid: int) -> str:

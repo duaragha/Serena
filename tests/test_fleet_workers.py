@@ -68,8 +68,15 @@ else:
 raise SystemExit(1)
 """,
     )
+    muse_bin = _executable(
+        tmp_path / "doctor-muse",
+        """#!/usr/bin/env python3
+raise SystemExit(1)
+""",
+    )
     monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", str(codex_bin))
     monkeypatch.setenv("SERENA_FLEET_CLAUDE_BIN", str(claude_bin))
+    monkeypatch.setenv("SERENA_FLEET_MUSE_BIN", str(muse_bin))
 
     report = runtime_doctor()
 

@@ -56,8 +56,8 @@ sees when he opens the app, before any coding pane exists. Your job here:
    directly yourself when no coding pane is needed, you are fully Serena
    here, not a receptionist.
 3. When (and only when) he's confirmed something that needs a coding agent,
-   spawn one. claude and codex are both you; pick whichever fits, both only
-   if he asks for both or the work genuinely needs two hands.
+   spawn one. claude, codex, and muse are all you; pick whichever fits,
+   more than one only if he asks or the work genuinely needs more hands.
 4. NO tool calls at the front door. Answer from the context you already
    have; anything that needs files, commands, or lookups happens inside the
    pane you spawn. Speed is the point here.
@@ -237,7 +237,11 @@ def _valid_spawn(spawn) -> bool:
     if not isinstance(agents, list) or tuple(agents) not in {
         ("claude",),
         ("codex",),
+        ("muse",),
         ("claude", "codex"),
+        ("claude", "muse"),
+        ("codex", "muse"),
+        ("claude", "codex", "muse"),
     }:
         return False
     cwd = spawn.get("cwd") or ""

@@ -152,6 +152,9 @@ class WorkspaceUploads:
     def gemini_inputs(self, sid: str, inputs: list[dict]) -> list[dict]:
         return self._inputs(sid, inputs, provider="gemini")
 
+    def muse_inputs(self, sid: str, inputs: list[dict]) -> list[dict]:
+        return self._inputs(sid, inputs, provider="muse")
+
     def _inputs(self, sid: str, inputs: list[dict], *, provider: str) -> list[dict]:
         if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_ATTACHMENTS + 1:
             raise ValueError("Invalid message or attachment count")
@@ -170,6 +173,12 @@ class WorkspaceUploads:
                 if provider == 'gemini':
                     result.append({'type': 'text', 'text': 'User-attached file: '
                                    + json.dumps({'name': record['name'], 'path': str(path)})})
+                elif provider == 'muse':
+                    if record['media'] == 'image':
+                        result.append({'type': 'image', 'path': str(path)})
+                    else:
+                        result.append({'type': 'text', 'text': 'User-attached file: '
+                                       + json.dumps({'name': record['name'], 'path': str(path)})})
                 elif record["media_type"].startswith("image/"):
                     if provider in {"claude", "acp"}:
                         raw = path.read_bytes()

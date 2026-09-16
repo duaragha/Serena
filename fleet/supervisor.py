@@ -162,7 +162,7 @@ def _read_start_capacity() -> dict[str, Any]:
                 "status": "unknown",
                 "reason": f"capacity preflight unavailable: {exc}",
             }
-            for provider in ("codex", "claude")
+            for provider in ("codex", "claude", "muse")
         }
 
 
@@ -179,7 +179,7 @@ def _saved_policy_request(
     selected = str(snapshot.get("provider_mode") or "").strip().lower()
     provider_mode = (
         selected
-        if preserve_selected_provider and selected in {"balanced", "codex", "claude"}
+        if preserve_selected_provider and selected in {"balanced", "codex", "claude", "muse"}
         else requested or "auto"
     )
     scaling = snapshot.get("scaling")
@@ -417,8 +417,8 @@ def handoff_leg(
     clean_id = _require_id(run_id)
     clean_leg_id = _require_id(leg_id)
     target = str(target_provider or "").strip().lower()
-    if target not in {"codex", "claude"}:
-        raise ValueError("handoff provider must be claude or codex")
+    if target not in {"codex", "claude", "muse"}:
+        raise ValueError("handoff provider must be claude, codex, or muse")
     capacity = _read_start_capacity()
     usable, detail = _capacity_decision(capacity.get(target))
     if not usable:

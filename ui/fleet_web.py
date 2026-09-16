@@ -271,8 +271,8 @@ def fleet_handoff_leg(run_id: str, leg_id: str):
         return _error("invalid run or worker id", 400)
     data = request.get_json(silent=True) or {}
     provider = str(data.get("provider") or "").strip().lower()
-    if provider not in {"codex", "claude"}:
-        return _error("provider must be codex or claude", 400)
+    if provider not in {"codex", "claude", "muse"}:
+        return _error("provider must be codex, claude, or muse", 400)
     action, unavailable = _action("handoff_leg")
     if unavailable:
         return unavailable

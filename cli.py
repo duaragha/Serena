@@ -1623,7 +1623,7 @@ def _fleet_call(function, *args, **kwargs):
 @click.option(
     "--provider",
     "provider_mode",
-    type=click.Choice(["auto", "balanced", "codex", "claude"]),
+    type=click.Choice(["auto", "balanced", "codex", "claude", "muse"]),
     default="auto",
     show_default=True,
     help="Provider routing. Auto may avoid a provider with a confirmed fresh usage limit.",
@@ -1637,7 +1637,7 @@ def _fleet_call(function, *args, **kwargs):
 )
 @click.option("--cwd", "work_dir", type=click.Path(file_okay=False, path_type=Path), default=None)
 @click.option("--origin", "origin_session_id", default=None, help="Launching Serena session id.")
-@click.option("--origin-agent", type=click.Choice(["claude", "codex"]), default=None)
+@click.option("--origin-agent", type=click.Choice(["claude", "codex", "muse"]), default=None)
 @click.option("--dry-run", is_flag=True, help="Validate and materialize the workflow without model calls.")
 @click.option("--json", "as_json", is_flag=True, help="Print machine-readable JSON.")
 @click.argument("task", nargs=-1, required=True)
@@ -1797,7 +1797,7 @@ def fleet_retry(run_id, as_json):
 @fleet_group.command(name="handoff")
 @click.argument("run_id")
 @click.argument("leg_id")
-@click.argument("provider", type=click.Choice(["codex", "claude"]))
+@click.argument("provider", type=click.Choice(["codex", "claude", "muse"]))
 @click.option("--json", "as_json", is_flag=True)
 def fleet_handoff(run_id, leg_id, provider, as_json):
     """Continue one unfinished worker on the other native provider."""

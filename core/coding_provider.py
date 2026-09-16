@@ -22,6 +22,7 @@ from typing import Any
 from core.coding_model_preferences import (
     AUTO_MODEL,
     CLAUDE_MODEL,
+    MUSE_MODEL,
     SONNET_MODEL,
     normalise_coding_model,
 )
@@ -120,7 +121,7 @@ def choose_providers(
         capacity = read_fleet_capacity()
 
     snapshot: dict[str, Any] = {}
-    for name in ("codex", "claude"):
+    for name in ("codex", "claude", "muse"):
         entry = capacity.get(name) if hasattr(capacity, "get") else None
         as_dict = entry.to_dict() if hasattr(entry, "to_dict") else dict(entry or {})
         snapshot[name] = as_dict
@@ -132,7 +133,9 @@ def choose_providers(
     # jobs pass a concrete preferred_model instead.
     if selected_model == AUTO_MODEL and preferred_implementer == "claude":
         selected_model = SONNET_MODEL
-    elif selected_model == AUTO_MODEL and preferred_implementer not in {"codex", "claude"}:
+    elif selected_model == AUTO_MODEL and preferred_implementer == "muse":
+        selected_model = MUSE_MODEL
+    elif selected_model == AUTO_MODEL and preferred_implementer not in {"codex", "claude", "muse"}:
         preferred_implementer = "codex"
     risk_level, _risk_reason = classify_risk(
         request,
@@ -177,7 +180,7 @@ def choose_providers(
     )
     unavailable = [
         provider
-        for provider in ("codex", "claude")
+        for provider in ("codex", "claude", "muse")
         if snapshot.get(provider, {}).get("usable") is False
     ]
     if len(unavailable) == 1:
@@ -211,7 +214,7 @@ def _no_capacity_reason(snapshot: dict[str, Any]) -> str:
     wait, and he can only tell the difference if the message says so.
     """
     parts = []
-    for name in ("codex", "claude"):
+    for name in ("codex", "claude", "muse"):
         entry = snapshot.get(name) or {}
         detail = str(entry.get("reason") or "no capacity reading").strip()
         parts.append(f"{name}: {detail}")

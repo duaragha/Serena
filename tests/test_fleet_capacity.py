@@ -62,13 +62,15 @@ def test_fresh_claude_exhaustion_and_codex_headroom_are_detected(tmp_path, monke
         },
     )
 
-    assert set(states) == {"codex", "claude"}
+    assert set(states) == {"codex", "claude", "muse"}
     assert states["claude"].status == "unavailable"
     assert states["claude"].usable is False
     assert states["claude"].used_percent == 111
     assert states["codex"].status == "available"
     assert states["codex"].usable is True
     assert states["codex"].used_percent == 79
+    assert states["muse"].status == "unknown"
+    assert states["muse"].usable is True
 
 
 def test_stale_or_expired_claude_observation_never_blocks(tmp_path, monkeypatch):

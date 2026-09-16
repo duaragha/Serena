@@ -49,7 +49,7 @@ DEGRADED = "degraded"
 OFFLINE = "offline"
 MODES = (FULL, DEGRADED, OFFLINE)
 
-CLOUD_PROVIDERS = ("claude", "codex")
+CLOUD_PROVIDERS = ("claude", "codex", "muse")
 
 # What still works, per mode. Everything true in offline is local by
 # construction: sqlite, files, and formatting. Nothing here is aspirational.
@@ -253,7 +253,7 @@ def assess_continuity(
             cloud=readings,
             selected_provider="local",
             selected_model=str(getattr(profile, "model_id", "")),
-            fallback_reason=f"both subscriptions are out ({exhausted})",
+            fallback_reason=f"all subscriptions are out ({exhausted})",
             local_available=True,
             local_reason=local_reason,
             capabilities=dict(CAPABILITY_MATRIX[DEGRADED]),
@@ -265,7 +265,7 @@ def assess_continuity(
         cloud=readings,
         selected_provider="",
         selected_model="",
-        fallback_reason=f"both subscriptions are out ({exhausted}); {local_reason}",
+        fallback_reason=f"all subscriptions are out ({exhausted}); {local_reason}",
         local_available=False,
         local_reason=local_reason,
         capabilities=dict(CAPABILITY_MATRIX[OFFLINE]),

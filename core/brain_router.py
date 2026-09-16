@@ -174,7 +174,12 @@ def route_turn(
             model = conversation
         else:
             model = voice
-        provider = "codex" if model.startswith("gpt-") else "claude"
+        if model.startswith("gpt-"):
+            provider = "codex"
+        elif model.startswith("muse-") or model.startswith("spark"):
+            provider = "muse"
+        else:
+            provider = "claude"
         return RouteDecision(
             route_class=route_class,
             model=model,

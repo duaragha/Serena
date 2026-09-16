@@ -87,6 +87,8 @@ def run_worker(
         return _run_claude(request, cancel_requested=cancel_requested, on_event=on_event)
     if provider == "gemini":
         return _run_gemini(request, cancel_requested=cancel_requested, on_event=on_event)
+    if provider == "muse":
+        return _run_muse(request, cancel_requested=cancel_requested, on_event=on_event)
     raise ValueError(f"unsupported Fleet provider {request.provider}")
 
 
@@ -202,12 +204,44 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
         else:
             base += ["--session-id", sid]
         return base
+    if request.provider == "muse":
+        from fleet.muse import MODEL as _MUSE_MODEL
+
+        sid = session_id or request.resume_session_id or str(uuid.uuid4())
+        base = [
+            _binary("muse"),
+            "exec",
+            "--json",
+            "--no-session-log",
+        ]
+        if request.model != _MUSE_MODEL:
+            # An explicit Meta model pin travels verbatim. Serena's own
+            # muse-spark identity uses the CLI default instead, so Serena
+            # never invents a Meta catalog id.
+            base += ["--model", request.model]
+        base += [
+            "--reasoning-effort",
+            request.effort,
+            "--workspace",
+            request.cwd,
+            "--session-id",
+            sid,
+            "--approval-mode",
+            "never",
+        ]
+        if request.access_mode != "write":
+            base += ["--disable-write"]
+        # `muse exec` does not read stdin, so the prompt travels as the
+        # positional argument. _stream_process still delivers it on stdin,
+        # which the CLI ignores.
+        base += [request.prompt]
+        return base
     raise ValueError(f"unsupported Fleet provider {request.provider}")
 
 
 def runtime_doctor() -> dict[str, Any]:
     providers: dict[str, Any] = {}
-    for provider in ("codex", "claude"):
+    for provider in ("codex", "claude", "muse"):
         try:
             binary = _binary(provider)
             result = subprocess.run(
@@ -218,7 +252,9 @@ def runtime_doctor() -> dict[str, Any]:
                 check=False,
                 env=_worker_environment(),
             )
-            help_command = [binary, "exec", "--help"] if provider == "codex" else [binary, "--help"]
+            help_command = (
+                [binary, "exec", "--help"] if provider in {"codex", "muse"} else [binary, "--help"]
+            )
             help_result = subprocess.run(
                 help_command,
                 capture_output=True,
@@ -228,17 +264,24 @@ def runtime_doctor() -> dict[str, Any]:
                 env=_worker_environment(),
             )
             help_text = help_result.stdout or help_result.stderr
-            required = (
-                ("--ignore-user-config", "--disable", "--sandbox", "--model")
-                if provider == "codex"
-                else (
+            if provider == "codex":
+                required = ("--ignore-user-config", "--disable", "--sandbox", "--model")
+            elif provider == "muse":
+                required = (
+                    "--json",
+                    "--model",
+                    "--reasoning-effort",
+                    "--workspace",
+                    "--approval-mode",
+                )
+            else:
+                required = (
                     "--strict-mcp-config",
                     "--disable-slash-commands",
                     "--setting-sources",
                     "--model",
                     "--effort",
                 )
-            )
             command_contract_ok = help_result.returncode == 0 and all(
                 flag in help_text for flag in required
             )
@@ -591,6 +634,119 @@ def _run_claude(
         True,
         output_text,
         session_id,
+        actual_model,
+        actual_effort,
+        process.exit_code,
+        None,
+        False,
+        process.event_log_path,
+    )
+
+
+def _run_muse(
+    request: WorkerRequest,
+    *,
+    cancel_requested: CancelCallback,
+    on_event: EventCallback,
+) -> WorkerResult:
+    from fleet import muse as _muse
+
+    assigned_sid = request.resume_session_id or str(uuid.uuid4())
+    command = worker_command(request, session_id=assigned_sid)
+    stream = _muse.MuseStream()
+    raw_lines: list[str] = []
+
+    def parse(line: str) -> None:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            text = line.strip()
+            if text and len(raw_lines) < 200:
+                raw_lines.append(text[:4000])
+            return
+        if not isinstance(event, dict):
+            return
+        stream.accept(event)
+        summary = _event_summary(event)
+        summary["type"] = "muse." + str(event.get("type") or event.get("event") or "event")
+        on_event("worker.event", summary)
+
+    # The session id is assigned before launch so Fleet can expose the
+    # transcript immediately, mirroring the Claude worker.
+    on_event("session.started", {"session_id": assigned_sid})
+    process = _stream_process(
+        command,
+        request=request,
+        parse_stdout=parse,
+        cancel_requested=cancel_requested,
+        on_event=on_event,
+    )
+    output_text = stream.output
+    if not output_text and not stream.error and process.exit_code == 0 and raw_lines:
+        # The CLI answered in prose rather than JSONL; use it directly.
+        output_text = "\n".join(raw_lines)[-32 * 1024 :]
+    # Serena's own muse-spark identity runs on the CLI default model, so an
+    # absent report contradicts nothing. An explicit pin must be reported.
+    actual_model = stream.model or (_muse.MODEL if request.model == _muse.MODEL else None)
+    actual_effort = stream.effort or request.effort
+    if process.cancelled:
+        return WorkerResult(
+            False,
+            output_text,
+            assigned_sid,
+            actual_model,
+            actual_effort,
+            process.exit_code,
+            "cancelled by user",
+            True,
+            process.event_log_path,
+        )
+    if process.exit_code != 0 or stream.error:
+        detail = (
+            stream.error
+            or process.stderr[-2_000:]
+            or f"Muse exited with status {process.exit_code}"
+        )
+        return WorkerResult(
+            False,
+            output_text,
+            assigned_sid,
+            actual_model,
+            actual_effort,
+            process.exit_code,
+            detail,
+            False,
+            process.event_log_path,
+        )
+    identity_error = _identity_error(request, actual_model, actual_effort)
+    if identity_error:
+        return WorkerResult(
+            False,
+            output_text,
+            assigned_sid,
+            actual_model,
+            actual_effort,
+            process.exit_code,
+            identity_error,
+            False,
+            process.event_log_path,
+        )
+    if not output_text:
+        return WorkerResult(
+            False,
+            "",
+            assigned_sid,
+            actual_model,
+            actual_effort,
+            process.exit_code,
+            "Muse completed without a final response",
+            False,
+            process.event_log_path,
+        )
+    return WorkerResult(
+        True,
+        output_text,
+        assigned_sid,
         actual_model,
         actual_effort,
         process.exit_code,
@@ -1156,6 +1312,12 @@ def _binary(provider: str) -> str:
     home = Path.home()
     if provider == "codex":
         candidates = sorted((home / ".nvm" / "versions" / "node").glob("*/bin/codex"), reverse=True)
+    elif provider == "muse":
+        candidates = [
+            home / ".local" / "bin" / "muse",
+            Path("/usr/local/bin/muse"),
+            Path("/usr/bin/muse"),
+        ]
     else:
         candidates = [
             home / ".local" / "bin" / "claude",

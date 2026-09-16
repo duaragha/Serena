@@ -398,11 +398,11 @@ def start_fleet(
         }
     if selected_activity not in {"auto", "coding", "research"}:
         return {"ok": False, "started": False, "error": "activity must be auto, coding, or research"}
-    if selected_provider not in {"auto", "balanced", "codex", "claude"}:
+    if selected_provider not in {"auto", "balanced", "codex", "claude", "muse"}:
         return {
             "ok": False,
             "started": False,
-            "error": "provider_mode must be auto, balanced, codex, or claude",
+            "error": "provider_mode must be auto, balanced, codex, claude, or muse",
         }
     if worker_count is not None and (
         isinstance(worker_count, bool)

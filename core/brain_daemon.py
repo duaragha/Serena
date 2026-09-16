@@ -811,6 +811,7 @@ async def _run_turn_answered(client, payload: dict, on_delta=None) -> dict:
     try:
         if not (
             bool(getattr(client, "codex_fallback_enabled", False))
+            or bool(getattr(client, "muse_fallback_enabled", False))
             or bool(getattr(client, "local_fallback_enabled", False))
         ):
             return await _run_turn_scoped(client, payload, on_delta=on_delta)
@@ -830,15 +831,22 @@ async def _run_turn_answered(client, payload: dict, on_delta=None) -> dict:
             route_payload = {**payload, "_fast_model_available": False}
         route = await client.resolve_route(route_payload)
         provider = route.provider
-        if provider in {"claude", "codex", "local"}:
+        if provider in {"claude", "codex", "muse", "local"}:
             selected = await client.select_provider(preferred_provider=provider)
             if selected != provider:
-                provider = selected
-                route = await client.resolve_route(
-                    route_payload,
-                    force=True,
-                    required_provider=provider,
-                )
+                if selected in {"claude", "codex", "muse", "local"}:
+                    provider = selected
+                    route = await client.resolve_route(
+                        route_payload,
+                        force=True,
+                        required_provider=provider,
+                    )
+                else:
+                    # Selection found nothing usable; re-resolve against fresh
+                    # capacity (which now carries the runtime block) so the
+                    # honest local/offline path runs.
+                    route = await client.resolve_route(route_payload, force=True)
+                    provider = route.provider
         try:
             return await _run_provider_turn_scoped(
                 client,
@@ -856,7 +864,7 @@ async def _run_turn_answered(client, payload: dict, on_delta=None) -> dict:
                 and not delta_emitted
             )
             usage_limit_failed = (
-                provider in {"claude", "codex"}
+                provider in {"claude", "codex", "muse"}
                 and is_usage_limit_error(exc)
                 and not delta_emitted
             )
@@ -886,18 +894,26 @@ async def _run_turn_answered(client, payload: dict, on_delta=None) -> dict:
                 required_provider=provider_hint,
             )
             fallback_provider = fallback_route.provider
-            if fallback_provider in {"claude", "codex", "local"}:
+            if fallback_provider in {"claude", "codex", "muse", "local"}:
                 selected = await client.select_provider(
                     preferred_provider=fallback_provider,
                     honor_override=False,
                 )
                 if selected != fallback_provider:
-                    fallback_provider = selected
-                    fallback_route = await client.resolve_route(
-                        fallback_payload,
-                        force=True,
-                        required_provider=fallback_provider,
-                    )
+                    if selected in {"claude", "codex", "muse", "local"}:
+                        fallback_provider = selected
+                        fallback_route = await client.resolve_route(
+                            fallback_payload,
+                            force=True,
+                            required_provider=fallback_provider,
+                        )
+                    else:
+                        # Selection found nothing usable; re-resolve against
+                        # fresh capacity so the honest local/offline path runs.
+                        fallback_route = await client.resolve_route(
+                            fallback_payload, force=True
+                        )
+                        fallback_provider = fallback_route.provider
             return await _run_provider_turn_scoped(
                 client,
                 payload,
@@ -919,6 +935,13 @@ async def _run_provider_turn_scoped(
 ) -> dict:
     if provider == "codex":
         return await _run_codex_turn_scoped(
+            client,
+            payload,
+            on_delta=on_delta,
+            route=route,
+        )
+    if provider == "muse":
+        return await _run_muse_turn_scoped(
             client,
             payload,
             on_delta=on_delta,
@@ -1152,6 +1175,103 @@ async def _run_codex_turn_scoped(client, payload: dict, on_delta=None, *, route=
         session_id=result_session_id,
         compact_boundary_seen=False,
         provider="codex",
+    )
+    if inspect.isawaitable(lifecycle):
+        lifecycle = await lifecycle
+    if isinstance(lifecycle, dict):
+        out.update({f"_{key}": value for key, value in lifecycle.items()})
+    return out
+
+
+async def _run_muse_turn_scoped(client, payload: dict, on_delta=None, *, route=None) -> dict:
+    """Run one turn through the headless Muse subscription fallback."""
+
+    global _active_model, _last_route, _turns
+    if not (payload.get("text") or "").strip() and not payload.get("images"):
+        return {"ok": False, "error": "text or image required"}
+    t0 = time.time()
+    if route is None:
+        resolver = getattr(client, "resolve_route", None)
+        if callable(resolver):
+            route = resolver(payload, required_provider="muse")
+            if inspect.isawaitable(route):
+                route = await route
+        else:
+            from core.brain_router import route_turn
+
+            route = route_turn(
+                payload,
+                conversation_model="muse-spark",
+                voice_model="muse-spark",
+                reflex_model="muse-spark",
+            )
+    first_delta_at: float | None = None
+
+    async def emit(delta: str) -> None:
+        nonlocal first_delta_at
+        if first_delta_at is None:
+            first_delta_at = time.time()
+        if on_delta is not None:
+            result = on_delta(delta)
+            if inspect.isawaitable(result):
+                await result
+
+    turn_options = {
+        "on_delta": emit if on_delta is not None else None,
+        "model": route.runtime_model or route.model,
+        "effort": route.effort,
+    }
+    if payload.get("images"):
+        turn_options["images"] = list(payload["images"])
+    result = await client.run_muse_turn(
+        _compose_message(payload),
+        **turn_options,
+    )
+    raw = str(result.get("text") or "").strip()
+    selected_model = str(result.get("model") or "muse-spark")
+    result_session_id = str(result.get("thread_id") or "") or None
+    _turns += 1
+    _active_model = selected_model
+    _last_route = route.as_dict()
+    _last_route.update({"model": selected_model, "provider": "muse"})
+    out = {
+        "ok": True,
+        "elapsed": round(time.time() - t0, 2),
+        "turns": _turns,
+        "model": selected_model,
+        "provider": "muse",
+        "effort": str(result.get("effort") or route.effort),
+        "route_class": route.route_class,
+        "route_reason": _last_route["reason"],
+        "route_lane": route.lane,
+        "risk": route.risk,
+        "fallback_reason": route.fallback_reason,
+        "billing_mode": "subscription_muse_fallback",
+        "daemon_pid": os.getpid(),
+        "daemon_started": _started,
+    }
+    if result_session_id:
+        out["session_id"] = result_session_id
+    if first_delta_at is not None:
+        out["first_delta"] = round(first_delta_at - t0, 2)
+    out["_tool_calls"] = list(result.get("tool_calls") or [])
+    if (payload.get("protocol") or "plain") == "frontdoor":
+        try:
+            from core.frontdoor import _parse_reply
+
+            parsed = _parse_reply(raw)
+            out["say"], out["spawn"] = parsed["say"], parsed["spawn"]
+        except Exception:
+            out["say"], out["spawn"] = raw, None
+    else:
+        out["say"] = raw
+    lifecycle = client.record_completed_turn(
+        payload=payload,
+        assistant_text=raw,
+        selected_model=selected_model,
+        session_id=result_session_id,
+        compact_boundary_seen=False,
+        provider="muse",
     )
     if inspect.isawaitable(lifecycle):
         lifecycle = await lifecycle
@@ -2066,6 +2186,7 @@ class ResidentClientManager:
         lifetime: LifetimeLedger | None = None,
         voice_transcripts: VoiceTranscriptStore | None = None,
         codex_brain_factory=None,
+        muse_brain_factory=None,
         local_brain_factory=None,
         continuity_store=None,
         capacity_reader=None,
@@ -2094,6 +2215,7 @@ class ResidentClientManager:
         self.lifetime = lifetime or LifetimeLedger()
         self.voice_transcripts = voice_transcripts or VoiceTranscriptStore()
         self.codex_brain_factory = codex_brain_factory
+        self.muse_brain_factory = muse_brain_factory
         self.local_brain_factory = local_brain_factory
         self.continuity_store = continuity_store
         self.capacity_reader = capacity_reader
@@ -2102,13 +2224,16 @@ class ResidentClientManager:
         self.policy = policy_from_environment()
         self.client = None
         self._codex_brain = None
+        self._muse_brain = None
         self._local_brain = None
         self._active_provider = "claude"
         self._capacity_cache = None
         self._capacity_checked_monotonic = 0.0
         self._claude_blocked_until = 0.0
         self._codex_blocked_until = 0.0
+        self._muse_blocked_until = 0.0
         self._codex_turns = 0
+        self._muse_turns = 0
         self.session_id: str | None = None
         self.process_token: str | None = None
         self.epoch_started_monotonic = 0.0
@@ -2133,6 +2258,10 @@ class ResidentClientManager:
     @property
     def codex_fallback_enabled(self) -> bool:
         return self.codex_brain_factory is not None and self.capacity_reader is not None
+
+    @property
+    def muse_fallback_enabled(self) -> bool:
+        return self.muse_brain_factory is not None and self.capacity_reader is not None
 
     @property
     def local_fallback_enabled(self) -> bool:
@@ -2160,6 +2289,7 @@ class ResidentClientManager:
         for provider, blocked_until in (
             ("claude", self._claude_blocked_until),
             ("codex", self._codex_blocked_until),
+            ("muse", self._muse_blocked_until),
         ):
             if blocked_until <= now:
                 continue
@@ -2192,16 +2322,19 @@ class ResidentClientManager:
             if self.provider_override is not None
             else os.environ.get("SERENA_BRAIN_PROVIDER", "auto")
         ).strip().lower()
-        if provider_override not in {"auto", "claude", "codex", "local"}:
-            raise ValueError("SERENA_BRAIN_PROVIDER must be auto, claude, codex, or local")
+        if provider_override not in {"auto", "claude", "codex", "muse", "local"}:
+            raise ValueError(
+                "SERENA_BRAIN_PROVIDER must be auto, claude, codex, muse, or local"
+            )
         if required_provider:
             required = str(required_provider).strip().lower()
-            if required not in {"claude", "codex", "local"}:
-                raise ValueError("required_provider must be claude, codex, or local")
+            if required not in {"claude", "codex", "muse", "local"}:
+                raise ValueError("required_provider must be claude, codex, muse, or local")
             provider_override = required
 
         clouds_available = any(
-            provider_is_usable(capacity, provider) for provider in ("claude", "codex")
+            provider_is_usable(capacity, provider)
+            for provider in ("claude", "codex", "muse")
         )
         wants_local = provider_override == "local" or (
             provider_override == "auto" and not clouds_available
@@ -2234,20 +2367,20 @@ class ResidentClientManager:
                 risk="normal",
                 lane="degraded",
                 manual_override=provider_override,
-                fallback_reason="both cloud subscriptions are unavailable"
+                fallback_reason="all cloud subscriptions are unavailable"
                 if provider_override == "auto"
                 else "local provider requested explicitly",
                 reason=f"{reason}; local continuity model selected",
             )
 
-        if provider_override in {"claude", "codex"}:
-            other = "codex" if provider_override == "claude" else "claude"
+        if provider_override in {"claude", "codex", "muse"}:
             capacity = dict(capacity or {})
-            capacity[other] = {
-                "status": "unavailable",
-                "usable": False,
-                "reason": f"turn is already falling back to {provider_override}",
-            }
+            for other in {"claude", "codex", "muse"} - {provider_override}:
+                capacity[other] = {
+                    "status": "unavailable",
+                    "usable": False,
+                    "reason": f"turn is already falling back to {provider_override}",
+                }
         return route_turn(
             payload,
             capacity=capacity,
@@ -2299,6 +2432,48 @@ class ResidentClientManager:
 
     async def _close_codex_brain(self) -> None:
         brain, self._codex_brain = self._codex_brain, None
+        if brain is not None:
+            with contextlib.suppress(Exception):
+                await brain.close()
+
+    async def _ensure_muse_brain(self, *, model: str = "", effort: str = ""):
+        if not self.muse_fallback_enabled:
+            raise RuntimeError("Muse brain fallback is not configured")
+        if self._muse_brain is None:
+            created = self.muse_brain_factory()
+            self._muse_brain = await created if inspect.isawaitable(created) else created
+        if model or effort:
+            setter = getattr(self._muse_brain, "set_route", None)
+            if callable(setter):
+                setter(
+                    model or getattr(self._muse_brain, "model", "muse-spark"),
+                    effort or getattr(self._muse_brain, "effort", "high"),
+                )
+        await self._muse_brain.start()
+        return self._muse_brain
+
+    async def _try_ensure_muse_brain(self, *, model: str = "", effort: str = "") -> bool:
+        """Bring the Muse fallback up, or report failure instead of dying."""
+
+        try:
+            await self._ensure_muse_brain(model=model, effort=effort)
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.last_error = f"Muse fallback brain failed to start: {exc}"
+            print(f"[brain] {self.last_error}", flush=True)
+            with contextlib.suppress(Exception):
+                await self._close_muse_brain()
+            # Block Muse briefly so selection stops hammering a broken
+            # runtime; it re-tries automatically once this expires.
+            self._muse_blocked_until = max(
+                getattr(self, "_muse_blocked_until", 0.0), time.time() + 60.0
+            )
+            return False
+
+    async def _close_muse_brain(self) -> None:
+        brain, self._muse_brain = self._muse_brain, None
         if brain is not None:
             with contextlib.suppress(Exception):
                 await brain.close()
@@ -2364,6 +2539,13 @@ class ResidentClientManager:
                 return self._active_provider
             self._active_provider = "codex"
             return provider
+        if provider == "muse":
+            await self._close_local_brain()
+            if not await self._try_ensure_muse_brain():
+                await self.mark_provider_unavailable("muse", self.last_error)
+                return self._active_provider
+            self._active_provider = "muse"
+            return provider
         if self.client is None:
             await self._close_local_brain()
             await self._close_codex_brain()
@@ -2395,26 +2577,35 @@ class ResidentClientManager:
         )
 
         provider = str(provider).strip().lower()
-        if provider not in {"claude", "codex"}:
-            raise ValueError("provider must be claude or codex")
-        fallback = "codex" if provider == "claude" else "claude"
+        if provider not in {"claude", "codex", "muse"}:
+            raise ValueError("provider must be claude, codex, or muse")
         capacity = self._capacity_with_runtime_block(
             await self._read_provider_capacity(force=True)
         )
         reset = capacity_reset_time(capacity, provider)
         now = time.time()
         blocked_until = reset if reset is not None and reset > now else now + 60.0
-        fallback_usable = provider_is_usable(capacity, fallback)
         if provider == "claude":
             self._claude_blocked_until = blocked_until
-            if fallback_usable:
-                fallback_usable = await self._try_ensure_codex_brain()
-        else:
+        elif provider == "codex":
             self._codex_blocked_until = blocked_until
+        else:
+            self._muse_blocked_until = blocked_until
         self.last_error = f"{provider.title()} subscription unavailable: {detail}"
-        if fallback_usable:
-            self._active_provider = fallback
-            return
+        # First usable cloud in preference order, skipping the one that
+        # just failed. The daemon stays on subscriptions whenever any of
+        # the three can serve, and only then looks at local or offline.
+        for fallback in ("claude", "codex", "muse"):
+            if fallback == provider:
+                continue
+            fallback_usable = provider_is_usable(capacity, fallback)
+            if fallback == "codex" and fallback_usable:
+                fallback_usable = await self._try_ensure_codex_brain()
+            if fallback == "muse" and fallback_usable:
+                fallback_usable = await self._try_ensure_muse_brain()
+            if fallback_usable:
+                self._active_provider = fallback
+                return
         if self.local_fallback_enabled:
             try:
                 await self._ensure_local_brain()
@@ -2438,6 +2629,27 @@ class ResidentClientManager:
     ) -> dict:
         brain = await self._ensure_codex_brain(model=model, effort=effort)
         self._active_provider = "codex"
+        turn_options = {"on_delta": on_delta}
+        if images:
+            turn_options["images"] = images
+        result = await brain.turn(message, **turn_options)
+        return {
+            **result,
+            "model": getattr(brain, "model", model),
+            "effort": getattr(brain, "effort", effort),
+        }
+
+    async def run_muse_turn(
+        self,
+        message: str,
+        *,
+        images: list[dict[str, str]] | None = None,
+        on_delta=None,
+        model: str = "muse-spark",
+        effort: str = "high",
+    ) -> dict:
+        brain = await self._ensure_muse_brain(model=model, effort=effort)
+        self._active_provider = "muse"
         turn_options = {"on_delta": on_delta}
         if images:
             turn_options["images"] = images
@@ -2512,7 +2724,11 @@ class ResidentClientManager:
                 )
             except Exception as exc:
                 self.last_error = f"voice transcript index deferred: {exc}"
-        if not self.codex_fallback_enabled and not self.local_fallback_enabled:
+        if (
+            not self.codex_fallback_enabled
+            and not self.muse_fallback_enabled
+            and not self.local_fallback_enabled
+        ):
             await self._start_epoch("boot")
             return
         from core.brain_provider import is_usage_limit_error
@@ -2673,7 +2889,9 @@ class ResidentClientManager:
             session_id, warm_reply = await asyncio.wait_for(
                 receive_warm_response(), timeout=SDK_DISCONNECT_TIMEOUT_SECONDS
             )
-            if self.codex_fallback_enabled and is_usage_limit_error(warm_reply):
+            if (
+                self.codex_fallback_enabled or self.muse_fallback_enabled
+            ) and is_usage_limit_error(warm_reply):
                 raise BrainProviderUsageLimit("claude", warm_reply)
             print(f"[brain] epoch warm reply session={session_id}", flush=True)
         except BaseException:
@@ -2727,10 +2945,14 @@ class ResidentClientManager:
     async def interrupt(self):
         if self._active_provider == "codex" and self._codex_brain is not None:
             return await self._codex_brain.interrupt()
+        if self._active_provider == "muse" and self._muse_brain is not None:
+            return await self._muse_brain.interrupt()
         if self._active_provider == "local" and self._local_brain is not None:
             return await self._local_brain.interrupt()
         if self.client is None and self._codex_brain is not None:
             return await self._codex_brain.interrupt()
+        if self.client is None and self._muse_brain is not None:
+            return await self._muse_brain.interrupt()
         if self.client is None and self._local_brain is not None:
             return await self._local_brain.interrupt()
         return await self._require_client().interrupt()
@@ -2748,7 +2970,7 @@ class ResidentClientManager:
         compact_boundary_seen: bool,
         provider: str = "claude",
     ) -> dict:
-        if provider in {"codex", "local", "offline"}:
+        if provider in {"codex", "muse", "local", "offline"}:
             return await self._record_codex_turn(
                 payload=payload,
                 assistant_text=assistant_text,
@@ -2880,7 +3102,12 @@ class ResidentClientManager:
     ) -> dict:
         """Persist fallback speech without mutating the Claude lifetime epoch."""
 
-        self._codex_turns += 1
+        if provider == "muse":
+            self._muse_turns += 1
+            turns = self._muse_turns
+        else:
+            self._codex_turns += 1
+            turns = self._codex_turns
         journal_id = None
         if payload.get("journal", True) is not False:
             try:
@@ -2933,7 +3160,7 @@ class ResidentClientManager:
             "rotation_reason": None,
             "fallback_provider": provider,
             "session_id": session_id,
-            "session_turns": self._codex_turns,
+            "session_turns": turns,
             "context_percentage": None,
         }
 
@@ -2990,6 +3217,7 @@ class ResidentClientManager:
         self.rotation_in_progress = True
         try:
             await self._close_codex_brain()
+            await self._close_muse_brain()
             await self._close_local_brain()
             old_snapshot = process_tree_snapshot()
             old_token = self.process_token
@@ -3060,6 +3288,7 @@ class ResidentClientManager:
             self.last_error = "shutdown could not acquire the resident turn lock"
         try:
             await self._close_codex_brain()
+            await self._close_muse_brain()
             await self._close_local_brain()
             old_token = self.process_token
             client, self.client = self.client, None
@@ -3118,6 +3347,16 @@ class ResidentClientManager:
                 if self._codex_brain is not None
                 else {"enabled": self.codex_fallback_enabled, "running": False}
             ),
+            "muse_blocked_until": (
+                self._muse_blocked_until
+                if self._muse_blocked_until > time.time()
+                else None
+            ),
+            "muse_fallback": (
+                self._muse_brain.snapshot()
+                if self._muse_brain is not None
+                else {"enabled": self.muse_fallback_enabled, "running": False}
+            ),
             "local_fallback": (
                 self._local_brain.snapshot()
                 if self._local_brain is not None
@@ -3170,6 +3409,7 @@ async def _run_daemon() -> None:
     from core.brain_tools import BRAIN_TOOL_NAMES, brain_tools_server
     from core.brain_work_tools import WORK_TOOL_NAMES, work_tools_server
     from core.codex_brain import CodexBrainClient
+    from core.muse_brain import MuseBrainClient
     from core.codex_brain_tools import build_serena_codex_brain_tools
     from fleet.capacity import read_fleet_capacity
     from core.local_model_fallback import LocalBrain
@@ -3200,6 +3440,10 @@ async def _run_daemon() -> None:
             cwd=BRAIN_CWD,
             developer_instructions=_persona_context(),
             tool_registry=codex_tools,
+        ),
+        muse_brain_factory=lambda: MuseBrainClient(
+            cwd=BRAIN_CWD,
+            developer_instructions=_persona_context(),
         ),
         local_brain_factory=lambda: LocalBrain(system_prompt=_persona_context()),
         continuity_store=ContinuityStore(),
