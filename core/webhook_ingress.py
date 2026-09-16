@@ -392,6 +392,27 @@ class WebhookIngress:
             already_recorded=True,
         )
 
+    def deny(
+        self, delivery_id: str, *, actor: str, now: float | None = None
+    ) -> IngressResult:
+        """Refuse one held delivery for good. Its body is dropped; the audit row stays."""
+
+        named = _clean(actor, 120)
+        if not named:
+            raise WebhookIngressError("denying a webhook delivery requires an actor")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT decision FROM webhook_deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown webhook delivery {delivery_id}")
+        if str(row["decision"]) != "held":
+            raise WebhookIngressError("only a held delivery can be denied")
+        return self._finish(
+            delivery_id, decision="rejected", reason=f"denied by {named}",
+            status=403, moment=float(time.time() if now is None else now),
+        )
+
     def pending(self, limit: int = 50) -> list[dict[str, Any]]:
         return self.history(decision="held", limit=limit)
 

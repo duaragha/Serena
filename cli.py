@@ -2379,6 +2379,14 @@ def webhook_approve(delivery_id, actor):
     _emit_json(_operator_call(_ingress().approve, delivery_id, actor=actor).to_dict())
 
 
+@webhook_group.command(name="deny")
+@click.argument("delivery_id")
+@click.option("--actor", required=True)
+def webhook_deny(delivery_id, actor):
+    """Refuse one held webhook delivery for good; its body is discarded."""
+    _emit_json(_operator_call(_ingress().deny, delivery_id, actor=actor).to_dict())
+
+
 @webhook_group.command(name="history")
 @click.option("--route", default=None)
 @click.option("--decision", default=None)
