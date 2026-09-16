@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import signal
 import sys
 from collections import deque
@@ -40,6 +41,9 @@ class WorkspaceRpc:
         self._failure: str | None = None
         self._windows_job = None
         self.suspended = False
+        # Pages pushed out while frozen; cleared by wake so the next sleep may
+        # reclaim again.
+        self.reclaimed = False
 
     async def pause_idle(self) -> bool:
         """Pause a caller-verified idle owner, never a pending RPC.
@@ -84,6 +88,21 @@ class WorkspaceRpc:
                     raise WorkspaceRpcError("Provider process group changed while suspended")
                 os.killpg(process.pid, signal.SIGCONT)
         self.suspended = False
+        self.reclaimed = False
+
+    async def reclaim_idle(self) -> float | None:
+        """Release a frozen owner's resident pages; MB freed, or None if not possible."""
+        async with self._lifecycle_lock:
+            process = self.process
+            if (os.name == "nt" or not self.suspended or self.reclaimed
+                    or process is None or process.returncode is not None):
+                return None
+            from core.runtime_scope import reclaim
+
+            freed = await asyncio.to_thread(reclaim, process.pid)
+            if freed is not None:
+                self.reclaimed = True
+            return freed
 
     async def start(self, command: list[str], *, cwd: Path, env: dict[str, str]) -> None:
         async with self._lifecycle_lock:
@@ -106,6 +125,15 @@ class WorkspaceRpc:
                 else:
                     launch = [getattr(sys, "_base_executable", sys.executable), "-I", "-S",
                               str(Path(__file__).with_name("workspace_windows_bootstrap.py"))]
+            elif os.name != "nt":
+                from core.runtime_scope import scope_argv, scope_supported
+
+                # Its own scope is what lets a sleeping owner give memory back
+                # without touching the backend or any awake owner.
+                reachable = (env.get("XDG_RUNTIME_DIR") or env.get("DBUS_SESSION_BUS_ADDRESS")) and \
+                    shutil.which("systemd-run", path=env.get("PATH"))
+                if reachable and await asyncio.to_thread(scope_supported):
+                    launch = scope_argv(command)
             try:
                 self.process = await asyncio.create_subprocess_exec(
                     *launch,

@@ -1,4 +1,4 @@
-.agent-workspace-pane{height:100%;min-height:0;min-width:0;display:flex;flex-direction:column;background:#000;color:#dfd8e3;font:12px/1.7 'SFMono-Regular',Consolas,'Liberation Mono',monospace;letter-spacing:0}
+.agent-workspace-pane{position:relative;height:100%;min-height:0;min-width:0;display:flex;flex-direction:column;background:#000;color:#dfd8e3;font:12px/1.7 'SFMono-Regular',Consolas,'Liberation Mono',monospace;letter-spacing:0}
 .agent-workspace-pane *{box-sizing:border-box;letter-spacing:0}
 .agent-workspace-pane button,.agent-workspace-pane input,.agent-workspace-pane textarea{font:inherit;color:inherit}
 .agent-workspace-pane button{cursor:pointer;background:transparent;border:0;border-radius:5px;min-height:28px;padding:4px 8px}
@@ -137,3 +137,11 @@
 @media(max-width:760px){.aw-head{padding:8px 12px}.aw-transcript{padding:18px 14px}.aw-composer{margin:8px 12px 0}.aw-identity{padding:6px 12px}.aw-question{padding:12px}}
 .aw-account-usage table{width:100%;table-layout:fixed;border-collapse:collapse}.aw-account-usage th,.aw-account-usage td{padding:8px 4px;border-bottom:1px solid #302730;text-align:right;overflow-wrap:anywhere}.aw-account-usage th:first-child,.aw-account-usage td:first-child{text-align:left}
 .aw-usage-scope{display:flex;gap:12px;border:0;padding:0;margin:12px 0}.aw-usage-scope legend{color:#b7a6b4;margin-bottom:8px}.aw-usage-scope label{display:flex;align-items:center;gap:6px}.aw-usage-scope input{accent-color:#ff85cb}.aw-account-usage h4{font-size:13px;overflow-wrap:anywhere;border-top:1px solid #302730;padding-top:16px}
+
+.agent-workspace-pane>:not(.aw-sleep-veil):not(dialog){transition:filter .2s ease}
+.aw-sleeping>:not(.aw-sleep-veil):not(dialog){filter:grayscale(1) brightness(.4)}
+.agent-workspace-pane .aw-sleep-veil{position:absolute;inset:0;z-index:5;display:grid;place-items:center;width:100%;height:100%;min-height:0;padding:0;border-radius:0;background:#0006;cursor:pointer}
+.agent-workspace-pane .aw-sleep-veil:hover{background:#0004}
+.aw-sleep-label{padding:6px 12px;border:1px solid #50354a;border-radius:5px;background:#110d12;color:#a89aab;font:10px monospace}
+.aw-sleep-veil:hover .aw-sleep-label,.aw-sleep-veil:focus-visible .aw-sleep-label{color:#dfd8e3;border-color:#ff80bf}
+@media(prefers-reduced-motion:reduce){.agent-workspace-pane>:not(.aw-sleep-veil):not(dialog){transition:none}}

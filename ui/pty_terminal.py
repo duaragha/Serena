@@ -376,8 +376,10 @@ def _scope_argv(argv: list[str]) -> list[str]:
 
 
 # systemd appends ".scope" itself, so the same pattern has to read both the
-# name we pass to --unit and the name that comes back from list-units.
-_SCOPE_UNIT = re.compile(r"^serena-pty-(\d+)-[0-9a-f]+(?:\.scope)?$")
+# name we pass to --unit and the name that comes back from list-units. Native
+# pane owners (core.runtime_scope) use the same host-pid shape so one reaper
+# covers both.
+_SCOPE_UNIT = re.compile(r"^serena-(?:pty|pane)-(\d+)-[0-9a-f]+(?:\.scope)?$")
 
 
 def _process_alive(pid: int) -> bool:
