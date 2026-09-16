@@ -109,6 +109,8 @@ class FakeHub:
     def install(self, monkeypatch):
         from core import unified_hub
 
+        monkeypatch.setenv("SERENA_PHONE_LINE_CONFIG", "/nonexistent/phone-line.json")
+
         monkeypatch.setattr(unified_hub, "_load", lambda path=None: dict(self.state))
         monkeypatch.setattr(unified_hub, "configure",
                             lambda path=None, **f: self.state.update(f) or self.state)
