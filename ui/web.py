@@ -337,6 +337,28 @@ def _shorten_project(project: str, cwd: str | None = None) -> str:
     return parts[-1] if parts else norm or "Home"
 
 
+def _project_trail(project: str, cwd: str | None = None) -> str:
+    """The leaf folder plus its parent — 'frameworth/it', '~/gemini' — so rows
+    in same-named leaves under different parents stay distinguishable."""
+    leaf = _shorten_project(project, cwd)
+    if leaf == "Home":
+        return leaf
+    if cwd:
+        path = cwd
+    elif project.startswith("C--"):
+        path = project.replace("C--", "C:\\", 1).replace("-", "\\")
+    elif project.startswith(("-home-", "-root-", "-Users-")):
+        path = "/" + project[1:].replace("-", "/")
+    else:
+        path = project
+    norm = path.replace("\\", "/").rstrip("/")
+    parent = norm.rsplit("/", 1)[0] if "/" in norm else ""
+    if parent == str(Path.home()).replace("\\", "/").rstrip("/"):
+        return f"~/{leaf}"
+    parent_name = parent.rsplit("/", 1)[-1]
+    return f"{parent_name}/{leaf}" if parent_name and not parent_name.endswith(":") else leaf
+
+
 def _get_session_cwd(session: dict) -> str:
     """Get the best working directory for a session."""
     return session.get("last_cwd") or session.get("cwd") or ""
@@ -4769,7 +4791,7 @@ function renderSessionRow(s, idx, opts) {
     + disclosure
     + linkGlyph
     + '<span class="session-title"><span class="session-title-main">' + liveIndicator + agentBadges + esc(_isSerenaVoiceSession(s) ? 'Serena' : (s.display_title || 'Untitled')) + childBadge + threadBadge + '</span>' + snippetHtml + '</span>'
-    + '<span class="workspace-row-project">' + esc(s.project_short || '') + '</span>'
+    + '<span class="workspace-row-project">' + esc(s.project_trail || s.project_short || '') + '</span>'
     + '<span class="session-date" title="Last activity">' + formatDate(rowActivityTs(s)) + '</span>'
     + '</div>';
 }
@@ -11670,11 +11692,14 @@ def _decorate_sessions(sessions: list[dict]) -> list[dict]:
         stored_cwd = _get_session_cwd(s)
         real_cwd = _resolve_project_cwd(project_dir, stored_cwd)
         short = _shorten_project(project_dir, real_cwd)
+        trail = _project_trail(project_dir, real_cwd)
         if short in ambiguous:
             tag = _device_tag(s.get("device"))
             if tag:
                 short = f"{short} {tag}"
+                trail = f"{trail} {tag}"
         s["project_short"] = short
+        s["project_trail"] = trail
         s["input_tokens"] = s.get("input_tokens") or 0
         s["output_tokens"] = s.get("output_tokens") or 0
         s["cache_read_tokens"] = s.get("cache_read_tokens") or 0

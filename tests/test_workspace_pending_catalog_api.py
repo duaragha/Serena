@@ -70,6 +70,7 @@ def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_p
                  "_ambiguous_shorts": lambda: set(), "_get_session_cwd": lambda session: session["cwd"],
                  "_resolve_project_cwd": lambda project, cwd: cwd,
                  "_shorten_project": lambda project, cwd: project,
+                 "_project_trail": lambda project, cwd: project,
                  "_external_runtime_active": lambda sid: False}
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(source), "exec"), namespace)
     sid = "11111111-2222-4333-8444-555555555555"
