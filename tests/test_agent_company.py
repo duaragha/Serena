@@ -495,3 +495,37 @@ def test_ship_triggers_only_configured_codemagic_builds(tmp_path, monkeypatch):
     url, body, headers = seen[0]
     assert body == {"appId": "app", "workflowId": "ios", "branch": "main"}
     assert headers["X-auth-token"] == "tok"
+
+
+def test_a_run_waiting_for_input_texts_once_and_frees_its_slot(queue, monkeypatch):
+    from core import agent_checkouts, coding_job_contract, scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task(BRIEF)
+    claimed = store.claim_next_task("d")
+    store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-w")
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: {
+        "state": "waiting_for_input", "error": "delivery requirements were not answered"})
+    keys = []
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key: keys.append(key) or True)
+    reconcile = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]
+    reconcile({})
+    reconcile({})
+    assert store.get_memory(task["id"])["state"] == "running"
+    assert len(keys) == 1 and keys[0].startswith(f"task:{task['id']}:waiting:")
+
+    # The parked run does not count against the ceiling.
+    monkeypatch.setenv("SERENA_TASK_MAX_ACTIVE_RUNS", "1")
+    monkeypatch.setattr(coding_job_contract, "resolve_repository_root",
+                        lambda text, project_hint="": Path("/repo"))
+    monkeypatch.setattr(agent_checkouts, "prepare",
+                        lambda source, task_id: SimpleNamespace(path=Path("/agents/y")))
+    monkeypatch.setattr(supervisor, "list_runs", lambda limit=500: [
+        {"origin_session_id": f"serena-task:{task['id']}", "run_id": "run-w",
+         "state": "waiting_for_input"}])
+    start = Mock(return_value={"run_id": "run-next"})
+    monkeypatch.setattr(supervisor, "start_run", start)
+    store.enqueue_task(BRIEF + " Also cover the empty name case.")
+    outcome = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.start"]({})
+    assert outcome.output.get("run_id") == "run-next"

@@ -28,14 +28,23 @@ MAX_FLEET_DISPATCHES = 100_000
 # and each run already fans out to up to four workers.
 DEFAULT_MAX_ACTIVE_TASK_RUNS = 2
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
+# A run parked on a question uses no workers. It must not hold a dispatch slot,
+# or one stuck run would stall the queue behind it indefinitely.
+IDLE_RUN_STATES = TERMINAL_RUN_STATES | {"waiting_for_input"}
 # Reconciliation work per tick: deliveries push to GitHub, so keep it small.
 MAX_RECONCILE_PER_TICK = 3
 DISPATCH_ORIGIN = "serena-task:"
 DELIVERY_RULES = (
-    "\n\n---\nDelivery rules for this dispatched task: you are working in a private "
-    "checkout on branch serena/task-{task_id}. Leave your finished changes in this "
-    "working tree. Do not push, open pull requests, merge, tag, release, or deploy; "
-    "the dispatcher commits, pushes and opens the pull request after the run."
+    "\n\n---\nDispatcher handoff for this task: you are working in a private "
+    "checkout on branch serena/task-{task_id}, and that checkout is this run's base "
+    "checkout. Leave your finished changes in its working tree. Do not push, open "
+    "pull requests, merge, tag, release, or deploy; after the run the dispatcher "
+    "commits the working tree, pushes the branch and opens the pull request, and "
+    "any release follows that pull request. Answer your delivery requirements with "
+    "exactly that: the integration requirement is verified by the changed paths in "
+    "this checkout; the external-surface and live-verification requirements are "
+    "not_applicable because this run touches no deployed surface and delivery "
+    "happens through the dispatcher's pull request. Never defer them to root."
 )
 
 
@@ -314,7 +323,7 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
             active = sum(
                 1 for run in history
                 if str(run.get("origin_session_id") or "").startswith(DISPATCH_ORIGIN)
-                and str(run.get("state") or "") not in TERMINAL_RUN_STATES
+                and str(run.get("state") or "") not in IDLE_RUN_STATES
             )
         except Exception as error:
             if previous is not None:
@@ -382,6 +391,27 @@ def _notify_phone(text: str, key: str) -> bool:
     return bool(result.sent)
 
 
+def _notify_once(text: str, key: str) -> bool:
+    """Send a notice at most once ever, beyond the authority's hourly dedupe."""
+
+    import sqlite3
+    from contextlib import closing
+
+    from memory import store
+
+    path = store.MEMORY_DIR / ".fleet-dispatch.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=5)) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY)")
+        if db.execute("SELECT 1 FROM notices WHERE key = ?", (key,)).fetchone():
+            return False
+        if not _notify_phone(text, key):
+            return False
+        with db:
+            db.execute("INSERT OR IGNORE INTO notices(key) VALUES (?)", (key,))
+    return True
+
+
 def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     """Close finished dispatched runs: deliver, record, and tell him.
 
@@ -389,6 +419,8 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     Delivery is idempotent: pushing the same branch and finding its existing
     pull request is the retry path, so a crash between steps is harmless.
     """
+
+    import hashlib
 
     from core import agent_checkouts
     from fleet.supervisor import get_run
@@ -408,6 +440,18 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
         except Exception:
             continue
         state = str((run or {}).get("state") or "")
+        if state == "waiting_for_input":
+            # Fleet parked it on a question only a human can answer. Say so
+            # once per distinct question; the task stays open for a retry.
+            reason = " ".join(str(run.get("error") or "needs input").split())[:300]
+            digest = hashlib.sha256(reason.encode("utf-8")).hexdigest()[:12]
+            if _notify_once(
+                f"#{task['id']} is stuck waiting on input (fleet {run_id[:8]}): {reason}",
+                f"task:{task['id']}:waiting:{digest}",
+            ):
+                closed.append({"task_id": int(task["id"]), "run_state": state,
+                               "waiting": True})
+            continue
         if state not in TERMINAL_RUN_STATES:
             continue
         task_id = int(task["id"])
