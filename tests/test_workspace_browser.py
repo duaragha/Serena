@@ -134,6 +134,49 @@ def workspace():
         browser.close()
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_sidebar_pins_fleet_and_voice_above_active_terminals(workspace, width):
+    page, calls, errors, rows = workspace
+    page.set_viewport_size({"width": width, "height": 850})
+    rows[0]["workspace_runtime"] = {"ok": True}
+    rows.extend([
+        dict(session_id="serena-voice-main", agent="serena-voice", display_title="Serena"),
+        dict(session_id="fleet-worker", agent="codex", display_title="Fleet worker",
+             fleet_worker={"run_id": "run-1"}, workspace_runtime={"ok": True}),
+    ])
+    page.evaluate("rows => { allSessions = rows; sessionSource = rows; renderSessionList(); }", rows)
+    if width < 760:
+        page.locator("#workspaceChatsToggle").click()
+    headers = page.locator("#sessionList > .group-header")
+    assert headers.all_text_contents()[:4] == [
+        "Serena", "▸ Fleet Chats (1)", "▸ Voice Chats (0)", "● Active Terminals",
+    ]
+    fleet = page.get_by_test_id("fleet-chats-header")
+    voice = page.get_by_test_id("voice-chats-header")
+    worker = page.locator('#sessionList [data-sid="fleet-worker"]')
+    assert not worker.is_visible()
+    fleet.click()
+    playwright.expect(fleet).to_have_attribute("aria-expanded", "true")
+    playwright.expect(worker).to_be_visible()
+    assert page.locator("#sessionList .session-row").count() == 4
+    fleet.click()
+    voice.click()
+    playwright.expect(voice).to_have_attribute("aria-expanded", "true")
+    voice.click()
+    assert headers.all_text_contents()[:4] == [
+        "Serena", "▸ Fleet Chats (1)", "▸ Voice Chats (0)", "● Active Terminals",
+    ]
+    bounds = [headers.nth(i).bounding_box() for i in range(4)]
+    assert all(a["y"] + a["height"] <= b["y"] for a, b in zip(bounds, bounds[1:]))
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    if output := os.environ.get("SERENA_EVIDENCE_DIR"):
+        path = Path(output)
+        path.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path / f"sidebar-order-{width}.png"))
+    assert not errors
+    assert not any(path == "/api/spawn-terminal" for path, _ in calls)
+
+
 def test_navigation_projects_and_drafts_do_not_spawn(workspace):
     page, calls, errors, _ = workspace
     page.get_by_role("button", name="Tooling", exact=True).first.click()

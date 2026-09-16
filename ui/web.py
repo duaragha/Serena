@@ -4423,13 +4423,6 @@ function renderSessionList() {
     for (const s of serenaVoice) appendRow(s);
   }
 
-  if (active.length) {
-    html += '<div class="group-header active-header">\u25CF Active Terminals</div>';
-    for (const s of active) {
-      appendRow(s);
-    }
-  }
-
   if (fleetChats.length) {
     const chev = _collapsedState.fleetChats ? '▸' : '▾';
     html += '<div class="group-header fleet-header" data-testid="fleet-chats-header" role="button" aria-expanded="'
@@ -4471,6 +4464,13 @@ function renderSessionList() {
     + voiceChev + ' Voice Chats (' + voiceChats.length + ')</div>';
   html += '<div class="voice-chats-section' + (_collapsedState.voiceChats ? ' collapsed' : '')
     + '" data-testid="voice-chats-section"></div>';
+
+  if (active.length) {
+    html += '<div class="group-header active-header">\u25CF Active Terminals</div>';
+    for (const s of active) {
+      appendRow(s);
+    }
+  }
 
   if (starred.length) {
     const chev = _collapsedState.starred ? '\u25b8' : '\u25be';
