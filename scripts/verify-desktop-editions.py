@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -60,14 +61,14 @@ for line in sys.stdin:
     if method == 'initialize': result = {'schema': {'version': 1}}
     if method in ('session/start', 'session/resume'):
         result = {'session': {'sessionId': sid, 'modelId': 'muse-proof', 'activeTurnId': None},
-                  'history': {'mode': 'inline', 'items': [{'itemId': 'welcome', 'kind': 'assistantMessage',
+                  'history': {'mode': 'inline', 'items': [{'itemId': 'welcome', 'kind': 'agentMessage', 'revision': 1,
                   'turnId': 'welcome', 'status': 'completed', 'text': 'Development runtime ready'}]}}
     if method == 'turn/start': result = {'turnId': 'proof-turn'}
     emit({'jsonrpc': '2.0', 'id': request['id'], 'result': result})
     if method == 'turn/start':
         emit({'method': 'turn/started', 'params': {'sessionId': sid, 'turnId': 'proof-turn'}})
         emit({'method': 'item/completed', 'params': {'sessionId': sid, 'item': {
-            'itemId': 'answer', 'kind': 'assistantMessage', 'turnId': 'proof-turn',
+            'itemId': 'answer', 'kind': 'agentMessage', 'turnId': 'proof-turn',
             'status': 'completed', 'revision': 1, 'text': 'Development request completed'}}})
         emit({'method': 'turn/completed', 'params': {'sessionId': sid, 'turnId': 'proof-turn', 'terminal': 'completed'}})
 ''')
@@ -95,16 +96,16 @@ for line in sys.stdin:
                 for edition, image in (("stable", args.stable), ("dev", args.dev)):
                     debug_port = free_port()
                     log = (args.output / f"{edition}.log").open("w")
-                    process = subprocess.Popen([str(image.resolve()), "--no-sandbox", "--disable-gpu", "--ozone-platform=headless",
+                    process = subprocess.Popen([str(image.resolve()), "--no-sandbox", "--disable-gpu",
                         f"--remote-debugging-port={debug_port}"], env=env, stdout=log,
                         stderr=subprocess.STDOUT, start_new_session=True)
                     processes.append((process, log))
                     wait_json(f"http://127.0.0.1:{debug_port}/json/version", process)
-                    browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
-                    deadline = time.monotonic() + 90
-                    while not browser.contexts[0].pages and time.monotonic() < deadline:
-                        time.sleep(0.2)
-                    page = browser.contexts[0].pages[0]
+                    browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}", timeout=15000)
+                    context = browser.contexts[0]
+                    page = context.pages[0] if context.pages else context.wait_for_event('page', timeout=90000)
+                    page.on('crash', lambda *unused, edition=edition: print(f'{edition}: renderer crashed', flush=True))
+                    page.on('pageerror', lambda error, edition=edition: print(f'{edition}: {error}', flush=True))
                     page.wait_for_function("window.SERENA && typeof newChatInline === 'function'")
                     page.wait_for_load_state('domcontentloaded')
                     assert page.evaluate("window.SERENA.structuredWorkspace") is (edition == "dev")
@@ -122,7 +123,6 @@ for line in sys.stdin:
                         assert page.locator('#termMounts iframe').count() == 0
                     else:
                         frame = page.frame_locator('#termMounts iframe')
-                        frame.get_by_role('button', name='Create Muse chat', exact=True).click()
                         frame.get_by_text('Development runtime ready', exact=True).wait_for()
                         frame.get_by_role('textbox', name='Message Muse', exact=True).fill('edition proof')
                         frame.get_by_role('textbox', name='Message Muse', exact=True).press('Enter')
@@ -155,7 +155,10 @@ for line in sys.stdin:
                 (args.output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
                 print(json.dumps(proof, indent=2))
         finally:
+            for logfile in home.glob('.config/serena-desktop-*/logs/backend.log'):
+                shutil.copy2(logfile, args.output / (logfile.parents[1].name + '-backend.log'))
             for process, log in reversed(processes):
+                print(f'cleanup: process {process.pid}, status {process.poll()}', flush=True)
                 if process.poll() is None:
                     process.send_signal(signal.SIGTERM)
                     try:
