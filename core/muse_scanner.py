@@ -38,6 +38,10 @@ AGENT = "muse"
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 
+def _object(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def _session_files() -> dict[str, Path]:
     """Every session log on disk, keyed by id. The directory IS the id."""
     found: dict[str, Path] = {}
@@ -45,7 +49,9 @@ def _session_files() -> dict[str, Path]:
     if not root.is_dir():
         return found
     try:
-        candidates = sorted(root.rglob("session.jsonl"))
+        # Only root conversations. Recursive discovery includes subagent and
+        # reminder transcripts, which must not become standalone sidebar chats.
+        candidates = sorted(root.glob("*/*/*/*/session.jsonl"))
     except OSError:
         return found
     for path in candidates:
@@ -72,7 +78,7 @@ def resumable_session_path(session_id: str) -> Path | None:
     """The native log a resume needs, or None when it is not on this machine."""
     if not session_id or not _ID_RE.fullmatch(session_id):
         return None
-    matches = sorted(SESSIONS_DIR.rglob(f"{session_id}/session.jsonl"))
+    matches = sorted(SESSIONS_DIR.glob(f"*/*/*/{session_id}/session.jsonl"))
     for candidate in matches:
         try:
             if candidate.is_file():
@@ -106,6 +112,21 @@ def _iter_events(path: Path) -> Iterator[dict]:
 
 def _event_text(event: dict) -> str:
     """Best-effort assistant/user text from one event, across known shapes."""
+    payload = _object(event.get("payload"))
+    if event.get("payload_type") == "runtime.user_intent.accepted":
+        messages = payload.get("model_messages")
+        if not isinstance(messages, list):
+            return ""
+        return "\n".join(
+            block["text"] for message in messages if isinstance(message, dict)
+            and isinstance(message.get("content"), list)
+            for block in message["content"]
+            if isinstance(block, dict) and block.get("kind") == "text"
+            and isinstance(block.get("text"), str)
+        ).strip()
+    if event.get("payload_type") == "runtime.session" and payload.get("kind") == "run":
+        native = _object(payload.get("event"))
+        return str(native.get("prompt" if native.get("kind") == "started" else "text") or "").strip()
     for scope in (event, event.get("message"), event.get("payload"), event.get("data")):
         if not isinstance(scope, dict):
             continue
@@ -132,6 +153,13 @@ def _event_text(event: dict) -> str:
 
 
 def _event_role(event: dict) -> str:
+    payload = _object(event.get("payload"))
+    if event.get("payload_type") == "runtime.user_intent.accepted":
+        # Internal peer/reminder deliveries are not user messages.
+        return "user" if _object(payload.get("semantic_kind")).get("kind") == "chat" else ""
+    if event.get("payload_type") == "runtime.session" and payload.get("kind") == "run":
+        kind = _object(payload.get("event")).get("kind")
+        return {"started": "user", "assistant_message_committed": "assistant"}.get(kind, "")
     for scope in (event, event.get("message"), event.get("payload")):
         if not isinstance(scope, dict):
             continue
@@ -147,6 +175,11 @@ def _event_role(event: dict) -> str:
 
 
 def _event_moment(event: dict) -> str:
+    # Native durable records use microseconds since epoch, not seconds.
+    value = event.get("recorded_at")
+    if isinstance(value, (int, float)) and value > 0:
+        with suppress(ValueError, OSError, OverflowError):
+            return datetime.fromtimestamp(value / 1_000_000, tz=timezone.utc).isoformat()
     for key in ("timestamp", "created_at", "at", "time"):
         value = event.get(key)
         if isinstance(value, (int, float)) and value > 0:
@@ -164,7 +197,17 @@ def read_turns(path) -> list[dict]:
     agent: a briefing that quotes the log to itself is worse than none.
     """
     turns: list[dict] = []
+    accepted = set()
     for event in _iter_events(Path(path)):
+        payload = _object(event.get("payload"))
+        if event.get("payload_type") == "runtime.user_intent.accepted":
+            if isinstance(payload.get("intent_id"), str):
+                accepted.add(payload["intent_id"])
+        elif (payload.get("kind") == "run"
+              and _object(payload.get("event")).get("kind") == "started"
+              and isinstance(payload.get("run_id"), str)
+              and payload.get("run_id") in accepted):
+            continue
         role = _event_role(event)
         if role not in {"user", "assistant"}:
             continue
@@ -186,10 +229,11 @@ def read_turns(path) -> list[dict]:
 def _event_workspace(path: Path) -> str:
     """The checkout a session ran in, when the log says so."""
     for event in _iter_events(path):
-        for scope in (event, event.get("message"), event.get("payload")):
+        payload = _object(event.get("payload"))
+        for scope in (event, event.get("message"), payload, payload.get("record")):
             if not isinstance(scope, dict):
                 continue
-            for key in ("workspace", "cwd", "working_directory", "workdir"):
+            for key in ("workspace_root", "workspace", "cwd", "working_directory", "workdir"):
                 value = scope.get(key)
                 if isinstance(value, str) and value.strip():
                     candidate = Path(value.strip()).expanduser()
@@ -217,6 +261,10 @@ def parse_muse_metadata(file_path: Path) -> SessionMeta | None:
 
     turns = read_turns(fp)
     user_turns = [turn for turn in turns if turn["role"] == "user"]
+    if not user_turns:
+        # Startup-only logs are not chats. A newly created Serena conversation
+        # remains accessible through the host's pending-creation catalog.
+        return None
     first_message = user_turns[0]["text"][:500] if user_turns else ""
     first_timestamp = None
     if user_turns and user_turns[0]["timestamp"]:

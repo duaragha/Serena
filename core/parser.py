@@ -213,6 +213,17 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
 
 def parse_full(file_path: Path) -> list[Message]:
     """Full parse: extract all conversation turns for display."""
+    if file_path.name == "session.jsonl":
+        from core.muse_scanner import read_turns
+
+        messages = []
+        for turn in read_turns(file_path):
+            try:
+                timestamp = datetime.fromisoformat(turn["timestamp"].replace("Z", "+00:00"))
+            except ValueError:
+                timestamp = None
+            messages.append(Message(role=turn["role"], text=turn["text"], timestamp=timestamp))
+        return messages
     fp_str = str(file_path)
     if "/.codex/sessions/" in fp_str or "\\.codex\\sessions\\" in fp_str:
         return _parse_codex_full(file_path)
@@ -355,6 +366,10 @@ def _parse_codex_full(file_path: Path) -> list[Message]:
 def parse_messages_for_search(file_path: Path) -> list[tuple[str, str, str]]:
     """Extract (role, text, timestamp) tuples for FTS indexing. Skips tool noise.
     Auto-dispatches to codex format if the file lives under ~/.codex/sessions/."""
+    if file_path.name == "session.jsonl":
+        from core.muse_scanner import read_turns
+
+        return [(t["role"], t["text"], t["timestamp"]) for t in read_turns(file_path)]
     fp_str = str(file_path)
     if "/.codex/sessions/" in fp_str or "\\.codex\\sessions\\" in fp_str:
         return _parse_codex_messages_for_search(file_path)

@@ -1,392 +1,455 @@
-"""Explicit owner for Muse chats, backed by headless ``muse exec`` turns.
+"""Muse's native MSP session host, translated into Serena workspace events.
 
-Muse offers no persistent agent server, so unlike the Codex and Claude owners
-there is no long-lived child to supervise: each turn spawns one
-``muse exec``, streams its JSONL answer into the workspace event protocol the
-host already speaks (``turn/started``, ``item/completed``, ``turn/completed``),
-and exits. Ownership is guarded per turn with the shared session lease,
-because two writers appending to one native transcript is the only shared
-mutable state here.
-
-Turns run WITHOUT ``--no-session-log`` and WITH the workspace session id, so
-the native transcript the catalog indexes is the one these turns wrote.
-Authority matches a full pane: approval never prompts. A failed turn fails
-closed with the CLI's own error; nothing is retried or reinterpreted.
+Use session/resume, never exec --session-id: an identity is not a history
+restore. Wire shapes are verified against Muse 1.3.0's exported schema.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import mimetypes
 import os
+import secrets
 import shutil
-import signal
-import uuid
+import time
 from contextlib import suppress
 from pathlib import Path
 from uuid import UUID
 
 from core.billing import strip_metered_auth_env
 from core.workspace_lease import SessionLease
+from core.workspace_rpc import WorkspaceRpc
 
 MODEL = "muse-spark"
 EFFORT = "high"
-TURN_TIMEOUT_SECONDS = 1800.0
+EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+def command_id() -> str:
+    """MSP requires UUIDv7, including on Python versions without uuid.uuid7."""
+    return str(UUID(int=(int(time.time() * 1000) << 80) | (7 << 76)
+                    | (secrets.randbits(12) << 64) | (2 << 62) | secrets.randbits(62)))
 
 
 class MuseWorkspaceError(RuntimeError):
-    """A Muse pane could not do what was asked."""
+    pass
+
+
+class MuseRpc(WorkspaceRpc):
+    async def _write(self, message):
+        await super()._write({**message, "jsonrpc": "2.0"})
 
 
 class MuseWorkspace:
-    """One Muse chat: native session id, working directory, and turns."""
-
-    def __init__(
-        self,
-        *,
-        session_id: str,
-        cwd: Path | str,
-        publish,
-        binary: str | None = None,
-        lease_factory=SessionLease,
-    ) -> None:
+    def __init__(self, *, session_id, cwd, publish, binary=None,
+                 lease_factory=SessionLease, rpc_factory=MuseRpc):
         if not session_id.startswith("new:") and str(UUID(session_id)) != session_id:
             raise ValueError("Exact Muse session ID required")
         self.session_id = session_id
         self.cwd = Path(cwd).resolve(strict=True)
         self.publish = publish
-        self._binary_override = str(binary) if binary else ""
+        self._binary_override = binary
         self._lease_factory = lease_factory
+        self._lease = None
+        self.rpc = rpc_factory()
         self._control = asyncio.Lock()
+        self._reader = None
+        self._poller = None
+        self._cursor = None
+        self._paged = False
+        self._finished_turns = set()
         self._state = "opening"
-        self._turn_id: str | None = None
-        self._process: asyncio.subprocess.Process | None = None
-        self._model = MODEL
-        self._effort = EFFORT
-        self.settings = {"model": self._model, "reasoningEffort": self._effort}
-
-    def __getattr__(self, name: str):
-        if name.startswith("_"):
-            raise AttributeError(name)
-
-        def _unsupported(*args, **kwargs):
-            raise MuseWorkspaceError(f"Muse workspace does not support {name} yet")
-
-        return _unsupported
+        self._turn_id = None
+        self._items = {}
+        self._questions = {}
+        self.settings = {"model": MODEL}
 
     @property
-    def state(self) -> str:
+    def state(self):
         return self._state
 
     @property
-    def active_turn(self) -> str | None:
-        return self._turn_id if self._state == "running" else None
+    def active_turn(self):
+        return self._turn_id
 
     @property
-    def questions(self) -> dict:
-        # Headless turns never ask; approval never prompts.
-        return {}
+    def questions(self):
+        return self._questions
 
-    def _binary(self) -> str:
-        if self._binary_override:
-            return self._binary_override
-        found = shutil.which("muse")
+    def _binary(self):
+        found = self._binary_override or shutil.which("muse")
         if found:
-            return found
-        for candidate in (
-            Path.home() / ".local" / "bin" / "muse",
-            Path("/usr/local/bin/muse"),
-            Path("/usr/bin/muse"),
-        ):
-            if candidate.exists() and os.access(candidate, os.X_OK):
-                return str(candidate)
+            return str(found)
+        candidate = Path.home() / ".local/bin/muse"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
         raise MuseWorkspaceError("Muse CLI is not installed")
 
-    def _argv(self, prompt: str, *, image_paths: list[str]) -> list[str]:
-        argv = [self._binary(), "exec", "--json"]
-        if self._model != MODEL:
-            argv += ["--model", self._model]
-        argv += [
-            "--reasoning-effort",
-            self._effort,
-            "--workspace",
-            str(self.cwd),
-            "--session-id",
-            self.session_id,
-            "--approval-mode",
-            "never",
-        ]
-        for path in image_paths:
-            argv += ["--image", path]
-        argv.append(prompt)
-        return argv
+    async def _request(self, method, **params):
+        return await self.rpc.request(method, {"sessionId": self.session_id,
+                                              "commandId": command_id(), **params})
 
-    async def create(self, *, checkpoint) -> dict:
-        """Mint the native identity and checkpoint it, like every owner."""
-        async with self._control:
-            if not self.session_id.startswith("new:"):
-                raise MuseWorkspaceError("Muse creation was already attempted")
-            self._binary()
-            native_id = str(uuid.uuid4())
-            self.session_id = native_id
-            target = {"session_id": native_id, "provider": "muse", "cwd": str(self.cwd)}
-            await checkpoint(target)
-            with suppress(Exception):
-                from core.metadata import set_muse_workspace
+    async def create(self, *, checkpoint):
+        return await self._open(checkpoint=checkpoint)
 
-                set_muse_workspace(native_id, str(self.cwd))
-            self._state = "ready"
-            return {"session_id": native_id}
+    async def open(self):
+        return await self._open()
 
-    async def open(self) -> dict:
-        """Attach to an existing chat; the transcript stays the authority."""
+    async def _open(self, checkpoint=None):
         async with self._control:
             if self._state not in {"opening", "closed", "unavailable"}:
                 raise MuseWorkspaceError("Muse attachment was already attempted")
-            self._binary()
-            self._state = "ready"
-            await self._publish_history_best_effort()
-            return {"session_id": self.session_id}
+            creating = self.session_id.startswith("new:")
+            if creating != (checkpoint is not None):
+                raise MuseWorkspaceError("Explicit Muse creation required")
+            try:
+                binary = self._binary()
+                if not creating:
+                    from core.muse_scanner import transcript_path
 
-    async def _publish_history_best_effort(self) -> None:
-        try:
-            from core.muse_scanner import read_turns, transcript_path
-
-            native = transcript_path(self.session_id)
-            turns = read_turns(native) if native else []
-        except Exception:
-            turns = []
-        items = []
-        for index, turn in enumerate(turns):
-            if turn["role"] == "user":
-                items.append(
-                    {
-                        "id": f"history-{index}",
-                        "type": "userMessage",
-                        "text": turn["text"][:8000],
-                    }
-                )
-            else:
-                items.append(
-                    {
-                        "id": f"history-{index}",
-                        "type": "agentMessage",
-                        "text": turn["text"][:8000],
-                    }
-                )
-        history = {"id": "history", "status": "completed", "items": items}
-        with suppress(Exception):
-            await self.publish(
-                {
-                    "method": "workspace/history",
-                    "params": {
-                        "thread": {
-                            "id": self.session_id,
-                            "turns": [history] if items else [],
-                        }
-                    },
-                }
-            )
+                    path = await asyncio.to_thread(transcript_path, self.session_id)
+                    if path:
+                        await self._paint_messages(path)
+                        await self.publish({"method": "workspace/activity", "params": {"status": "connecting"}})
+                self._lease = self._lease_factory(self.session_id)
+                self._lease.launching()
+                await self.rpc.start([binary, "serve"], cwd=self.cwd,
+                                     env=strip_metered_auth_env(dict(os.environ)))
+                self._lease.bind(self.rpc.process.pid)
+                hello = await self.rpc.request("initialize", {
+                    "clientInfo": {"name": "serena_workspace", "version": "1"},
+                    "capabilities": {"userInputDialogs": True},
+                })
+                if (hello.get("schema") or {}).get("version") != 1:
+                    raise MuseWorkspaceError("Unsupported Muse session protocol version")
+                await self.rpc.notify("initialized", {})
+                if creating:
+                    result = await self.rpc.request("session/start", {
+                        "commandId": command_id(), "workspaceRoot": str(self.cwd),
+                        "approvalMode": "onRequest",
+                    })
+                else:
+                    result = await self._request("session/resume", history="auto")
+                session = result["session"]
+                sid = session["sessionId"]
+                if str(UUID(sid)) != sid or (not creating and sid != self.session_id):
+                    raise MuseWorkspaceError("Muse returned a different session")
+                if creating:
+                    self._lease = self._lease.transfer_after_transition(sid)
+                    self.session_id = sid
+                    await checkpoint({"session_id": sid, "provider": "muse", "cwd": str(self.cwd)})
+                self.settings["model"] = session.get("modelId") or MODEL
+                self._turn_id = session.get("activeTurnId")
+                self._state = "running" if self._turn_id else "ready"
+                await self._history(result)
+                self._reader = asyncio.create_task(self._read_events())
+                if self._paged:
+                    self._poller = asyncio.create_task(self._poll_events())
+                return {"session_id": sid}
+            except BaseException:
+                await self._shutdown()
+                self._state = "unavailable"
+                raise
 
     @staticmethod
-    def _prompt_and_images(inputs: list[dict]) -> tuple[str, list[str]]:
-        parts: list[str] = []
-        images: list[str] = []
-        for item in inputs or []:
-            if not isinstance(item, dict):
-                raise MuseWorkspaceError("Invalid Muse message input")
-            kind = item.get("type")
-            if kind == "text" and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-            elif kind in {"image", "localImage"} and isinstance(item.get("path"), str):
-                images.append(item["path"])
-            else:
-                raise MuseWorkspaceError(f"Unsupported Muse input: {kind}")
-        prompt = "\n\n".join(part for part in parts if part.strip()).strip()
-        if not prompt:
-            raise MuseWorkspaceError("Muse turn requires text")
-        return prompt, images
-
-    async def submit(self, inputs: list[dict], *, options: dict | None = None) -> dict:
-        from fleet.muse import MuseStream
-
-        async with self._control:
-            if options is not None and (
-                not isinstance(options, dict) or options.keys() - {"model", "effort"}
-            ):
-                raise MuseWorkspaceError("Unsupported Muse per-turn settings")
-            if self._state != "ready" or self._turn_id is not None:
-                raise MuseWorkspaceError("Muse is not ready for input")
-            if options:
-                if "model" in options:
-                    self._model = str(options["model"] or MODEL)
-                if "effort" in options:
-                    self._effort = str(options["effort"] or EFFORT)
-                self.settings = {
-                    "model": self._model,
-                    "reasoningEffort": self._effort,
-                }
-            prompt, image_paths = self._prompt_and_images(inputs)
-            lease = self._lease_factory(self.session_id)
+    def _item(native):
+        item = {**native, "id": native["itemId"], "type": native["kind"]}
+        kind = native["kind"]
+        if kind == "userMessage":
+            item["content"] = [{"type": "text", "text": native.get("displayText", native.get("text", ""))}]
+        elif kind == "toolCall":
+            item["type"] = "acpToolCall"
             try:
-                lease.launching()
-            except Exception:
-                lease.release()
-                raise
-            turn_id = uuid.uuid4().hex
-            item_id = f"{turn_id}-answer"
-            self._state = "running"
-            self._turn_id = turn_id
-            try:
-                await self.publish({"method": "turn/started", "params": {"turn": {"id": turn_id}}})
-                environment = strip_metered_auth_env(dict(os.environ))
-                try:
-                    self._process = await asyncio.create_subprocess_exec(
-                        *self._argv(prompt, image_paths=image_paths),
-                        cwd=str(self.cwd),
-                        env=environment,
-                        stdin=asyncio.subprocess.DEVNULL,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        start_new_session=True,
-                    )
-                except OSError as exc:
-                    raise MuseWorkspaceError(f"Muse turn could not start: {exc}") from exc
-                assert self._process.stdout is not None
-                assert self._process.stderr is not None
-                with suppress(Exception):
-                    lease.bind(self._process.pid)
-                stream = MuseStream()
-                raw_lines: list[str] = []
-                try:
-                    async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
-                        async for raw in self._process.stdout:
-                            try:
-                                event = json.loads(raw.decode("utf-8", "replace"))
-                            except json.JSONDecodeError:
-                                text = raw.decode("utf-8", "replace").strip()
-                                if text and len(raw_lines) < 200:
-                                    raw_lines.append(text[:4000])
-                                continue
-                            if isinstance(event, dict):
-                                stream.accept(event)
-                        stderr = await self._process.stderr.read()
-                        returncode = await self._process.wait()
-                except (asyncio.TimeoutError, TimeoutError) as exc:
-                    raise MuseWorkspaceError("Muse turn timed out") from exc
-                output = stream.output
-                if not output and not stream.error and returncode == 0 and raw_lines:
-                    output = "\n".join(raw_lines)[-32 * 1024 :]
-                failure = stream.completion_error(returncode)
-                if failure is None and not output:
-                    failure = (stderr or b"").decode("utf-8", "replace").strip()[
-                        -2000:
-                    ] or "Muse completed without a final response"
-                if failure:
-                    raise MuseWorkspaceError(failure)
-                await self.publish(
-                    {
-                        "method": "item/completed",
-                        "params": {
-                            "turnId": turn_id,
-                            "item": {"id": item_id, "type": "agentMessage", "text": output},
-                        },
-                    }
-                )
-                await self.publish(
-                    {
-                        "method": "turn/completed",
-                        "params": {
-                            "turn": {
-                                "id": turn_id,
-                                "status": "completed",
-                                "items": [{"id": item_id, "type": "agentMessage", "text": output}],
-                            }
-                        },
-                    }
-                )
-                return {"turn": {"id": turn_id}}
-            except BaseException as error:
-                with suppress(Exception):
-                    await self.publish(
-                        {
-                            "method": "turn/completed",
-                            "params": {"turn": {"id": turn_id, "status": "failed", "items": []}},
-                        }
-                    )
-                if not isinstance(error, MuseWorkspaceError):
-                    raise MuseWorkspaceError(str(error)) from error
-                raise
-            finally:
-                self._kill_process()
-                self._turn_id = None
-                if self._state == "running":
-                    self._state = "ready"
-                with suppress(Exception):
-                    lease.release()
+                item["input"] = json.loads(native.get("args") or "{}")
+            except (ValueError, TypeError):
+                item["input"] = {"raw": native.get("args")}
+            item["output"] = native.get("visibleOutput", native.get("failureReason"))
+        elif kind == "userShell":
+            item.update(type="commandExecution", command=native.get("commandText", ""),
+                        aggregatedOutput=native.get("visibleOutput", ""))
+        elif kind == "compaction":
+            item["type"] = "contextCompaction"
+        elif kind == "reasoning":
+            item["content"] = [native.get("text", "")]
+        return item
 
-    def _kill_process(self) -> None:
-        process, self._process = self._process, None
-        if process is None or process.returncode is not None:
+    async def _history(self, result):
+        history = result.get("history") or {}
+        snapshot = (history.get("snapshot") or {}).get("state") or {}
+        items = history.get("items") or snapshot.get("items") or []
+        if history.get("mode") == "none":
+            # Older CLI transcripts can load without a materialized live view.
+            # MSP explicitly supports point-in-time view/page in that state.
+            # First paint the durable messages; then recover the full tool view.
+            path = result["session"].get("path")
+            if path:
+                await self._paint_messages(path)
+            recovered = {}
+            self._cursor = None
+            while True:
+                page = await self._page()
+                for event in page["events"]:
+                    p = event.get("params") or {}
+                    if event["method"] in {"item/started", "item/updated", "item/completed"}:
+                        recovered[p["item"]["itemId"]] = p["item"]
+                if not page.get("nextCursor"):
+                    break
+            items = list(recovered.values())
+            self._paged = True
+        else:
+            self._cursor = result.get("viewCursor")
+        turns = {}
+        self._items.clear()
+        for native in items:
+            self._items[native["itemId"]] = dict(native)
+            tid = native.get("turnId") or "history"
+            turn = turns.setdefault(tid, {"id": tid, "status": "inProgress" if tid == self._turn_id else "completed", "items": []})
+            turn["items"].append(self._item(native))
+        if self._turn_id:
+            turns.setdefault(self._turn_id, {"id": self._turn_id, "status": "inProgress", "items": []})
+        if snapshot.get("reasoningEffort"):
+            self.settings["reasoningEffort"] = snapshot["reasoningEffort"]
+        await self.publish({"method": "workspace/history", "params": {
+            "thread": {"id": self.session_id, "turns": list(turns.values())}, **self.settings,
+        }})
+
+    async def _paint_messages(self, path):
+        from core.muse_scanner import read_turns
+
+        turns = await asyncio.to_thread(read_turns, path)
+        await self.publish({"method": "workspace/history", "params": {
+            "thread": {"id": self.session_id, "turns": [{"id": "loading-history", "status": "completed", "items": [
+                {"id": f"loading-{n}", "type": "userMessage" if t["role"] == "user" else "agentMessage",
+                 "text": t["text"], "content": [{"type": "text", "text": t["text"]}]}
+                for n, t in enumerate(turns)]}]}, **self.settings}})
+
+    async def _page(self):
+        params = {"sessionId": self.session_id, "limit": 1000}
+        if self._cursor:
+            params["cursor"] = self._cursor
+        page = await self.rpc.request("view/page", params)
+        events = page.get("events") or []
+        if events:
+            cursor = events[-1]["params"]["viewCursor"]
+            if cursor == self._cursor:
+                raise MuseWorkspaceError("Muse history cursor did not advance")
+            self._cursor = cursor
+        elif page.get("nextCursor"):
+            raise MuseWorkspaceError("Muse returned an empty unfinished history page")
+        return page
+
+    async def _poll_events(self):
+        try:
+            while True:
+                await asyncio.sleep(0.5 if self._state == "running" else 2)
+                while True:
+                    page = await self._page()
+                    for event in page["events"]:
+                        await self._event(event)
+                    if not page.get("nextCursor"):
+                        break
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._state = "unavailable"
+            await self.publish({"method": "workspace/error", "params": {
+                "reason": f"Muse monitoring interrupted: {error}", "activityUnconfirmed": bool(self._turn_id)}})
+
+    async def _read_events(self):
+        try:
+            while True:
+                event = await self.rpc.events.get()
+                await self._event(event)
+                if event.get("method") == "workspace/transportClosed":
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._state = "unavailable"
+            await self.publish({"method": "workspace/error", "params": {"reason": str(error)}})
+
+    async def _event(self, event):
+        method = event.get("method")
+        p = event.get("params") or {}
+        if p.get("sessionId", self.session_id) != self.session_id:
             return
-        with suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGTERM)
+        if method in {"turn/started", "turn/completed"}:
+            tid = p["turnId"]
+            started = method == "turn/started"
+            self._turn_id = tid if started else None
+            if not started:
+                self._finished_turns.add(tid)
+            self._state = "running" if started else "ready"
+            await self.publish({"method": method, "params": {"turn": {
+                "id": tid, "status": "inProgress" if started else p["terminal"],
+                **({"error": p["error"]} if p.get("error") else {}),
+            }}})
+        elif method in {"item/started", "item/updated", "item/completed"}:
+            native = p["item"]
+            previous = self._items.get(native["itemId"])
+            if previous and previous.get("revision", 0) >= native["revision"]:
+                return
+            self._items[native["itemId"]] = dict(native)
+            await self.publish({"method": "item/started" if native["status"] == "inProgress" else "item/completed",
+                                "params": {"turnId": native.get("turnId") or "history", "item": self._item(native)}})
+        elif method == "item/delta":
+            native = self._items.get(p["itemId"])
+            if not native:
+                return
+            field = p.get("field", "text")
+            if field.startswith("summary."):
+                index = int(field.split(".")[1])
+                if not 0 <= index <= 10000:
+                    raise MuseWorkspaceError("Invalid Muse summary index")
+                values = native.setdefault("summary", [])
+                while len(values) <= index:
+                    values.append("")
+                values[index] += p["delta"]
+            else:
+                key = "visibleOutput" if field == "output" else field
+                if key not in {"text", "visibleOutput"}:
+                    return
+                native[key] = native.get(key, "") + p["delta"]
+            await self.publish({"method": "item/started", "params": {
+                "turnId": native.get("turnId") or "history", "item": self._item(native)}})
+        elif method == "session/modelChanged":
+            self.settings["model"] = (p.get("model") or {}).get("modelId", self.settings["model"])
+            await self.publish({"method": "workspace/settings", "params": self.settings})
+        elif method == "workspace/transportClosed":
+            self._state = "unavailable"
+            await self.publish(event)
+            if self._poller:
+                self._poller.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._poller
+                self._poller = None
+            await self.rpc.close()
+            if self._lease:
+                self._lease.release()
+                self._lease = None
+        elif method == "view/gap":
+            result = await self.rpc.request("session/read", {"sessionId": self.session_id, "excludeItems": False})
+            await self._history(result)
+        elif method in {"approval/request", "approval/requested", "approval/updated"}:
+            qid = "approval:" + p["approvalId"]
+            self._questions[qid] = p
+            await self.publish({"id": qid, "method": "session/request_permission", "params": {
+                "toolCall": {"title": p["toolName"], "rawInput": p["subject"]},
+                "options": [{"optionId": c["choiceId"], "name": c["label"] +
+                             (f" ({c['scope']})" if c.get("scope") else "")} for c in p["availableChoices"]],
+            }})
+            if "id" in event:
+                await self.rpc.respond(event["id"], {})
+        elif method in {"userInput/request", "userInput/requested"}:
+            qid = "input:" + p["userInputId"]
+            self._questions[qid] = p
+            await self.publish({"id": qid, "method": "item/tool/requestUserInput", "params": {"questions": p["questions"]}})
+            if "id" in event:
+                await self.rpc.respond(event["id"], {})
+        elif method in {"approval/resolved", "userInput/settled"}:
+            qid = "approval:" + p["approvalId"] if method == "approval/resolved" else "input:" + p["userInputId"]
+            self._questions.pop(qid, None)
+            await self.publish({"method": "serverRequest/resolved", "params": {"requestId": qid}})
+        else:
+            await self.publish(event)
 
-    async def interrupt(self) -> dict:
+    async def submit(self, inputs, *, options=None):
+        options = options or {}
+        if not isinstance(options, dict) or options.keys() - {"model", "effort"}:
+            raise MuseWorkspaceError("Unsupported Muse per-turn settings")
+        if options.get("effort", EFFORT) not in EFFORTS:
+            raise MuseWorkspaceError("Invalid Muse reasoning effort")
+        parts = []
+        for item in inputs:
+            if item.get("type") == "text" and isinstance(item.get("text"), str):
+                parts.append({"type": "text", "text": item["text"]})
+            elif item.get("type") in {"image", "localImage"} and isinstance(item.get("path"), str):
+                path = Path(item["path"])
+                parts.append({"type": "image", "mediaType": mimetypes.guess_type(path)[0] or "image/png",
+                              "base64Data": base64.b64encode(await asyncio.to_thread(path.read_bytes)).decode()})
+            else:
+                raise MuseWorkspaceError("Unsupported Muse message input")
+        if not parts or not any(p.get("text", "").strip() or p["type"] == "image" for p in parts):
+            raise MuseWorkspaceError("Muse turn requires input")
         async with self._control:
-            self._kill_process()
-            if self._turn_id is not None:
-                turn_id, self._turn_id = self._turn_id, None
-                with suppress(Exception):
-                    await self.publish(
-                        {
-                            "method": "turn/completed",
-                            "params": {
-                                "turn": {
-                                    "id": turn_id,
-                                    "status": "cancelled",
-                                    "items": [],
-                                }
-                            },
-                        }
-                    )
-            if self._state == "running":
-                self._state = "ready"
-            return {}
+            if self._state != "ready" or self._turn_id:
+                raise MuseWorkspaceError("Muse is not ready for input")
+            model = options.get("model")
+            if model and model != self.settings["model"]:
+                await self._request("session/setModel", model={"modelId": model})
+                self.settings["model"] = model
+            effort = options.get("effort", self.settings.get("reasoningEffort"))
+            self._state = "running"
+            try:
+                result = await self._request("turn/start", input=parts, **({"reasoningEffort": effort} if effort else {}))
+            except Exception:
+                self._state = "unavailable"
+                raise
+            if effort:
+                self.settings["reasoningEffort"] = effort
+            if result["turnId"] not in self._finished_turns:
+                self._turn_id = result["turnId"]
+            return {"turn": {"id": result["turnId"]}}
 
-    async def list_models(self) -> dict:
-        if self._state not in {"ready", "running"}:
-            raise MuseWorkspaceError("Muse is not attached")
-        return {
-            "data": [
-                {
-                    "id": MODEL,
-                    "model": MODEL,
-                    "displayName": "Muse Spark",
-                    "supportedReasoningEfforts": [],
-                }
-            ],
-            "settings": {"model": self._model},
-        }
+    async def answer(self, request_id, answer):
+        question = self._questions.get(request_id)
+        if not question or not isinstance(answer, dict):
+            raise MuseWorkspaceError("Muse question is no longer pending")
+        if request_id.startswith("approval:"):
+            outcome = answer.get("outcome") or {}
+            if outcome.get("outcome") == "cancelled":
+                return await self.interrupt()
+            choice = outcome.get("optionId")
+            if choice not in {c["choiceId"] for c in question["availableChoices"]}:
+                raise MuseWorkspaceError("Invalid Muse approval choice")
+            return await self._request("approval/decide", approvalId=question["approvalId"],
+                                       choiceId=choice, requirementId=question["currentRequirementId"])
+        values = answer.get("answers") or {}
+        answers = []
+        for q in question["questions"]:
+            text = "\n".join((values.get(q["id"]) or {}).get("answers", []))
+            if not text.strip() or len(text) > 500:
+                raise MuseWorkspaceError("Answer every Muse question (at most 500 characters)")
+            answers.append({"questionId": q["id"], "freeText": text})
+        return await self._request("userInput/answer", userInputId=question["userInputId"], answers=answers)
 
-    async def list_commands(self) -> dict:
-        if self._state not in {"ready", "running"}:
-            raise MuseWorkspaceError("Muse is not attached")
+    async def interrupt(self):
+        if self._turn_id:
+            return await self._request("turn/interrupt", turnId=self._turn_id)
+        return {}
+
+    async def list_models(self):
+        result = await self.rpc.request("model/list", {"sessionId": self.session_id})
+        return {"data": [{"id": m["modelId"], "model": m["modelId"], "displayName": m["displayLabel"],
+                          "supportedReasoningEfforts": [{"reasoningEffort": e} for e in EFFORTS]}
+                         for m in result["models"]], "settings": dict(self.settings)}
+
+    async def list_commands(self):
         return {"data": []}
 
-    async def list_background_tasks(self) -> dict:
+    async def list_background_tasks(self):
         return {"data": []}
 
-    def can_retry_attachment(self) -> bool:
-        return (
-            self._state in {"closed", "unavailable"}
-            and self._process is None
-            and self._turn_id is None
-        )
+    def can_retry_attachment(self):
+        return self._state in {"closed", "unavailable"} and self.rpc.process is None
 
-    async def close(self) -> None:
-        """Explicit native shutdown; never a disposal callback."""
+    async def _shutdown(self):
+        for task in (self._reader, self._poller):
+            if not task:
+                continue
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self._reader = self._poller = None
+        await self.rpc.close()
+        if self._lease:
+            self._lease.release()
+            self._lease = None
+
+    async def close(self):
         async with self._control:
-            self._kill_process()
+            await self._shutdown()
             self._turn_id = None
             self._state = "closed"

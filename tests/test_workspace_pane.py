@@ -10,6 +10,35 @@ playwright = pytest.importorskip("playwright.sync_api")
 STATIC = Path(__file__).resolve().parents[1] / "ui" / "static"
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_muse_native_history_streaming_tools_and_stop(pane, width, tmp_path):
+    from core.workspace_muse import MuseWorkspace
+
+    page, errors = pane
+    page.set_viewport_size({'width': width, 'height': 900})
+    native = [
+        {'itemId': 'u', 'kind': 'userMessage', 'turnId': 't', 'revision': 1, 'status': 'completed', 'text': 'Restore my Muse conversations'},
+        {'itemId': 'a', 'kind': 'agentMessage', 'turnId': 't', 'revision': 1, 'status': 'completed', 'text': 'Your original conversation is restored.'},
+        {'itemId': 'tool', 'kind': 'toolCall', 'turnId': 't', 'revision': 1, 'status': 'inProgress',
+         'tool': 'bash', 'args': '{"command":"pwd","description":"Check project folder"}', 'visibleOutput': '/workspace/project'},
+    ]
+    page.evaluate("""items=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Muse',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[{id:'t',status:'inProgress',items}]}}});
+    }""", [MuseWorkspace._item(i) for i in native])
+    root = page.locator('#left')
+    playwright.expect(root.locator('.aw-user-message')).to_contain_text('Restore my Muse conversations')
+    playwright.expect(root.locator('.aw-message')).to_contain_text('Your original conversation is restored.')
+    root.get_by_text('Check project folder', exact=True).click()
+    playwright.expect(root.locator('.aw-tool-output')).to_contain_text('/workspace/project')
+    assert root.locator('.aw-tool-running').evaluate("el=>getComputedStyle(el,'::before').animationName") == 'aw-working'
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path=str(tmp_path / f'muse-native-{width}.png'))
+    root.get_by_role('button', name='Interrupt turn', exact=True).click()
+    assert page.evaluate('calls') == [['interrupt']]
+    assert not errors
+
+
 @pytest.mark.parametrize('width',[390,1600])
 def test_unconfirmed_gemini_work_keeps_stop_and_blocks_send(pane,width,tmp_path):
     page, errors=pane
