@@ -275,6 +275,8 @@ def test_deliver_pushes_a_task_branch_and_opens_one_pr(github, monkeypatch):
     calls = _fake_gh(monkeypatch, gh)
     checkout = agent_checkouts.prepare(github.synced, 9, projects_root=github.projects)
     (checkout.path / "fix.txt").write_text("fixed\n")
+    (checkout.path / "__pycache__").mkdir()
+    (checkout.path / "__pycache__" / "fix.cpython-313.pyc").write_bytes(b"junk")
     first = agent_checkouts.deliver(checkout, task_id=9, brief=BRIEF, run_id="run-9")
     again = agent_checkouts.deliver(checkout, task_id=9, brief=BRIEF, run_id="run-9")
     assert first.status == again.status == "pr"
@@ -550,3 +552,13 @@ def test_retry_command_reopens_a_blocked_run(hub, monkeypatch):
     row = store.get_memory(task["id"])
     assert (row["state"], row["run_id"], row["result"]) == ("running", "run-r", "")
     assert "retrying" in hub.sent[0] and "isn't blocked" in hub.sent[1]
+
+
+def test_dispatcher_owned_runs_get_no_generic_blocked_alert():
+    from fleet import attention
+
+    run = {"run_id": "r", "origin_session_id": "serena-task:5", "state": "running",
+           "phases": [{"legs": [{"leg_id": "l", "state": "waiting_for_input"}]}]}
+    factory = Mock()
+    attention.notify_blocked_run(Mock(), run, factory)
+    factory.assert_not_called()

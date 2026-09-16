@@ -13,6 +13,10 @@ def notify_blocked_run(store, run, authority_factory):
         "completed", "failed", "cancelled", "stopping",
     }:
         return
+    if str(run.get("origin_session_id") or "").startswith("serena-task:"):
+        # The task dispatcher texts him about its own parked runs, with the
+        # task number he can reply to. A second, generic alert is noise.
+        return
     blocked = [leg for phase in run.get("phases", []) for leg in phase.get("legs", [])
                if leg.get("state") == "waiting_for_input"]
     if not blocked:

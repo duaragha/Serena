@@ -24,6 +24,8 @@ from pathlib import Path
 GIT_TIMEOUT_SECONDS = 600
 GH_TIMEOUT_SECONDS = 120
 DEFAULT_AUTHOR = ("Serena", "serena@users.noreply.github.com")
+JUNK_PATHS = ("**/__pycache__/**", "**/*.pyc", "**/.pytest_cache/**", "**/node_modules/**",
+              "**/.DS_Store")
 _GITHUB = re.compile(
     r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
     r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"
@@ -203,7 +205,9 @@ def deliver(checkout: TaskCheckout, *, task_id: int, brief: str, run_id: str) ->
     path = checkout.path
     if checkout.branch != task_branch(task_id):
         raise CheckoutError(f"refusing to deliver from unexpected branch {checkout.branch}")
-    _git(path, "add", "-A")
+    # Build caches never ship, even from a repository that forgot to ignore
+    # them: a test run inside the worktree is enough to create them.
+    _git(path, "add", "-A", "--", ".", *(f":(exclude,glob){pattern}" for pattern in JUNK_PATHS))
     title_line = " ".join(brief.split())[:72] or f"task {task_id}"
     staged = _git(path, "diff", "--cached", "--quiet", check=False).returncode != 0
     if staged:
