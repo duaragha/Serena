@@ -132,6 +132,9 @@ for line in sys.stdin:
                     else:
                         frame = page.frame_locator('#termMounts iframe')
                         frame.get_by_text('Development runtime ready', exact=True).wait_for()
+                        print('Dev composers:', frame.locator('textarea').evaluate_all(
+                            "nodes => nodes.map(n => ({label:n.getAttribute('aria-label'), disabled:n.disabled, hidden:n.hidden}))"), flush=True)
+                        page.screenshot(path=str(args.output / 'dev-ready.png'))
                         frame.get_by_role('textbox', name='Message Muse', exact=True).fill('edition proof')
                         frame.get_by_role('textbox', name='Message Muse', exact=True).press('Enter')
                         frame.get_by_text('Development request completed', exact=True).wait_for()
