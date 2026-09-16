@@ -7,6 +7,8 @@ pointing at a source checkout.
 ## Release Contract
 
 - Stable tags: `vX.Y.Z`; Dev tags: `vX.Y.Z-dev.N`.
+- Structured-view fixes ship a Dev tag only. Publishing a Dev update does not
+  publish a stable update. Increase `N` for subsequent Dev builds on the same base.
 - `apps/desktop/package.json` holds the base stable version. The release workflow
   validates the tag and configures the edition before building either platform.
 - Stable publishes `latest-linux.yml` / `latest.yml`; Dev publishes

@@ -30,8 +30,9 @@ test('both platforms build distinct app IDs, names, executables, installers and 
   const root = path.resolve(__dirname, '..');
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json')));
   const windows = yaml.load(fs.readFileSync(path.join(root, 'windows/electron-builder.win.yml'), 'utf8'));
-  const stable = configure(pkg, windows, `v${pkg.version}`);
-  const dev = configure(pkg, windows, `v${pkg.version}-dev.1`);
+  const base = pkg.version.split('-')[0];
+  const stable = configure(pkg, windows, `v${base}`);
+  const dev = configure(pkg, windows, `v${base}-dev.1`);
   assert.notEqual(stable.pkg.name, dev.pkg.name);
   for (const [a, b] of [[stable.pkg.build, dev.pkg.build], [stable.windows, dev.windows]]) {
     assert.notEqual(a.appId, b.appId);
@@ -47,5 +48,5 @@ test('both platforms build distinct app IDs, names, executables, installers and 
   assert.notEqual(stable.pkg.build.linux.executableName, dev.pkg.build.linux.executableName);
   assert.notEqual(stable.pkg.build.linux.desktop.entry.StartupWMClass, dev.pkg.build.linux.desktop.entry.StartupWMClass);
   assert.throws(() => configure(pkg, windows, 'v99.0.0'), /does not match/);
-  assert.throws(() => configure(pkg, windows, `v${pkg.version}-beta.1`), /does not match/);
+  assert.throws(() => configure(pkg, windows, `v${base}-beta.1`), /does not match/);
 });
