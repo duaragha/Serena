@@ -135,8 +135,10 @@ def workspace():
 def test_navigation_projects_and_drafts_do_not_spawn(workspace):
     page, calls, errors, _ = workspace
     page.get_by_role("button", name="Tooling", exact=True).first.click()
+    playwright.expect(page.locator("#toolingText")).to_have_value("Tooling content")
     page.locator("#toolingText").fill("Unsaved tooling draft")
     page.locator('.tab[data-tab="persona"]').click()
+    playwright.expect(page.locator("#personaText")).to_have_value("Persona content")
     page.locator("#personaText").fill("Unsaved persona draft")
     page.locator('.tab[data-tab="tooling"]').click()
     assert page.locator("#toolingText").input_value() == "Unsaved tooling draft"
