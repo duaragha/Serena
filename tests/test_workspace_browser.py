@@ -1,5 +1,7 @@
 """Real renderer/xterm with isolated API and socket fixtures; no provider launches."""
 
+import os
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -239,4 +241,46 @@ def test_responsive_layout_and_neon_black(workspace, width):
         assert page.locator("#chatListCol").is_visible()
         page.keyboard.press("Escape")
         assert not page.locator("#chatListCol").is_visible()
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [1440, 390])
+def test_muse_limits_show_native_windows_and_stale_snapshot(workspace, width):
+    page, _, errors, _ = workspace
+    page.set_viewport_size({"width": width, "height": 850})
+    now = int(time.time())
+    payload = {"ok": True, "muse": {
+        "available": True, "source": "muse-cli-usage", "model": "muse-spark",
+        "updated_at": now, "window_minutes": 300,
+        "five_hour": {"used_percentage": 0, "resets_at": now + 1800},
+        "seven_day": {"used_percentage": 9, "resets_at": now + 180000},
+    }}
+    page.route("**/api/live-usage", lambda route: route.fulfill(json=payload))
+    page.evaluate("loadLiveUsage()")
+    ribbon = page.locator("#liveUsageRibbon")
+    playwright.expect(ribbon.locator(".live-usage-chip.muse .live-usage-pct")).to_have_text("0%")
+    ribbon.focus()
+    card = ribbon.locator(".live-usage-card").filter(has=page.locator(".live-usage-name.muse"))
+    playwright.expect(card).to_be_visible()
+    assert card.locator(".live-usage-pct").all_text_contents() == ["0%", "9%"]
+    assert card.locator(".live-usage-window-label").all_text_contents() == ["5h", "7d"]
+    assert "as of just now" in card.inner_text()
+    bounds = card.bounding_box()
+    assert bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= width
+    chip_bounds = ribbon.locator(".live-usage-chip.muse").bounding_box()
+    assert chip_bounds["x"] >= 0 and chip_bounds["x"] + chip_bounds["width"] <= width
+    assert ribbon.locator(".live-usage-chip.muse").get_attribute("title") == "muse: 0% used"
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    if output := os.environ.get("SERENA_EVIDENCE_DIR"):
+        path = Path(output)
+        path.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path / f"muse-usage-{width}.png"))
+    payload["muse"].update(stale=True, window_minutes=180)
+    page.evaluate("loadLiveUsage()")
+    playwright.expect(card.locator(".live-usage-age")).to_have_class("live-usage-age stale")
+    assert "last known" in card.inner_text()
+    assert card.locator(".live-usage-window-label").all_text_contents() == ["3h", "7d"]
+    payload["muse"] = {"available": False, "loading": True}
+    page.evaluate("loadLiveUsage()")
+    playwright.expect(card.locator(".live-usage-empty")).to_have_text("loading")
     assert not errors

@@ -25,6 +25,7 @@
 .serena-workspace .tab .count{color:inherit;font:10px var(--mono);margin-left:0}.serena-workspace .tab-action{border-radius:5px}
 .serena-workspace .live-usage-compact{height:31px;border-radius:5px;background:#100b11;border-color:var(--border);font-size:10px}
 .serena-workspace .live-usage-popover{background:#0d080e;border-color:#683c59;border-radius:8px;max-width:calc(100vw - 24px)}
+@media(max-width:760px){.serena-workspace .live-usage-popover{position:fixed;top:60px;right:12px;max-height:calc(100dvh - 72px);overflow-y:auto}.serena-workspace .live-usage-chip>span:not(.live-usage-dial){display:none}}
 .serena-workspace .live-usage-card{background:#100b11;border-color:#3f2a3a;border-radius:6px}
 .serena-workspace .main{min-height:0}.serena-workspace #viewChats{position:relative}
 .serena-workspace .project-sidebar{display:none;position:absolute;top:72px;left:12px;z-index:9900;width:300px;max-width:calc(100vw - 24px);max-height:min(65vh,600px);min-width:0;border:1px solid #67405d;border-radius:7px;background:#130b14;box-shadow:0 16px 40px #000b;padding:8px 0}

@@ -3489,7 +3489,7 @@ function usageToneColor(pct) {
 function usagePressureWindow(svc) {
   if (!svc || !svc.available) return null;
   const fiveHour = usagePct(svc.five_hour);
-  if (fiveHour != null) return { label: '5h', data: svc.five_hour, pct: fiveHour };
+  if (fiveHour != null) return { label: usageWindowLabel(svc), data: svc.five_hour, pct: fiveHour };
   const sevenDay = usagePct(svc.seven_day);
   if (sevenDay != null) return { label: '7d', data: svc.seven_day, pct: sevenDay };
   return null;
@@ -3501,10 +3501,16 @@ function usagePressure(svc) {
 }
 
 function usageSourceLabel(source) {
+  if (source === 'muse-cli-usage') return 'Muse account';
   if (source === 'claude-statusline') return 'claude statusline';
   if (source === 'codex-jsonl') return 'codex local log';
   if (source === 'claude-statusline-codex-scan') return 'claude codex scan';
   return source || '';
+}
+
+function usageWindowLabel(svc) {
+  const mins = Number(svc && svc.window_minutes);
+  return mins > 0 ? (mins % 60 === 0 ? (mins / 60) + 'h' : mins + 'm') : '5h';
 }
 
 function liveUsageWindowHtml(label, data) {
@@ -3525,7 +3531,7 @@ function liveUsageCompactHtml(name, cls, svc) {
   const pct = usagePressure(svc);
   const initial = cls === 'codex' ? 'x' : name[0];   // 'c' is claude's, so codex takes x
   if (!svc || !svc.available || pct == null) {
-    return '<span class="live-usage-chip waiting">'
+    return '<span class="live-usage-chip waiting" title="' + esc(name + (svc && svc.loading ? ': loading' : ': unavailable')) + '">'
       + '<span class="live-usage-dial" style="--pct:0"><span>' + esc(initial) + '</span></span>'
       + '<span>' + esc(name) + '</span>'
       + '</span>';
@@ -3533,7 +3539,7 @@ function liveUsageCompactHtml(name, cls, svc) {
   const pctText = pct + '%';
   const dialPct = Math.min(100, pct);
   const staleCls = svc.stale ? ' stale' : '';
-  return '<span class="live-usage-chip ' + cls + staleCls + '">'
+  return '<span class="live-usage-chip ' + cls + staleCls + '" title="' + esc(name + ': ' + pctText + (svc.stale ? ' (last known)' : ' used')) + '">'
     + '<span class="live-usage-dial" style="--pct:' + dialPct + ';--dial-color:' + usageToneColor(pct) + '"><span>' + esc(initial) + '</span></span>'
     + '<span>' + esc(name) + '</span>'
     + '<span class="live-usage-pct">' + esc(pctText) + '</span>'
@@ -3546,7 +3552,7 @@ function liveUsageServiceHtml(name, cls, svc, updatedAt) {
     return '<div class="live-usage-card">'
       + '<div class="live-usage-card-head">'
       + '<span class="live-usage-name ' + cls + '">' + esc(name) + '</span>'
-      + '<span class="live-usage-empty" title="' + esc(svc.reason || '') + '">' + (svc.reason ? 'unavailable' : 'waiting') + '</span>'
+      + '<span class="live-usage-empty" title="' + esc(svc.reason || '') + '">' + (svc.loading ? 'loading' : svc.reason ? 'unavailable' : 'waiting') + '</span>'
       + '</div>'
       + '</div>';
   }
@@ -3556,14 +3562,14 @@ function liveUsageServiceHtml(name, cls, svc, updatedAt) {
   if (svc.model) metaParts.push(svc.model);
   if (source) metaParts.push(source);
   const ageClass = svc.stale ? 'live-usage-age stale' : 'live-usage-age';
-  const agePrefix = svc.stale ? 'last known ' : 'live ';
+  const agePrefix = svc.stale ? 'last known ' : svc.source === 'muse-cli-usage' ? 'as of ' : 'live ';
   const cardClass = svc.stale ? 'live-usage-card stale' : 'live-usage-card';
   return '<div class="' + cardClass + '">'
     + '<div class="live-usage-card-head">'
     + '<span class="live-usage-name ' + cls + '">' + esc(name) + '</span>'
     + '<span class="live-usage-meta">' + esc(metaParts.join(' · ')) + '</span>'
     + '</div>'
-    + liveUsageWindowHtml('5h', svc.five_hour)
+    + liveUsageWindowHtml(usageWindowLabel(svc), svc.five_hour)
     + liveUsageWindowHtml('7d', svc.seven_day)
     + (updated ? '<div class="' + ageClass + '">' + esc(agePrefix + updated) + '</div>' : '')
     + '</div>';
@@ -11808,7 +11814,7 @@ def _mark_usage_freshness(service: dict, fallback_updated_at, now: float) -> dic
     service["age_seconds"] = age
     source = service.get("source", "")
     threshold = 330 if source in {"gemini-cli-usage", "muse-cli-usage"} else 60 if source in {"claude-workspace", "codex-workspace"} else _LIVE_USAGE_STALE_AFTER
-    service["stale"] = age > threshold
+    service["stale"] = bool(service.get("stale")) or age > threshold
     return service
 
 
@@ -11891,8 +11897,8 @@ def _live_usage_payload() -> dict:
             print(f"[live-usage] gemini read failed: {exc}", flush=True)
             gemini = {"available": False, "source": "gemini-cli-usage"}
 
-        # Muse exposes no quota readout at all; the reader reports that
-        # honestly instead of inventing a percentage.
+        # The Muse account reader returns its cached observation immediately;
+        # quota refresh must never hold up this response or open a chat.
         try:
             from core.muse_usage_reader import read_muse_usage
 

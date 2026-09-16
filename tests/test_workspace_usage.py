@@ -23,7 +23,9 @@ def test_codex_uses_account_bucket_and_window_duration():
 
 
 def test_usage_endpoint_prefers_fresh_workspace_observations(monkeypatch):
+    from core import muse_usage_reader
     from ui import web
+    monkeypatch.setattr(muse_usage_reader, 'read_muse_usage', lambda **kwargs: {'available':False})
     monkeypatch.setitem(web._LIVE_USAGE_CACHE, 'data', None)
     monkeypatch.setattr(web, '_read_live_usage_state', lambda: {'claude':{'available':True,'updated_at':10}})
     monkeypatch.setattr(web, '_latest_codex_usage', lambda: {'available':True,'updated_at':10})
