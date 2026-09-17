@@ -598,6 +598,94 @@ def poll_phone_line(payload: dict[str, Any]) -> ActionOutcome:
     )
 
 
+# She waits before raising a stalled task, because the queue usually moves it
+# without him, and then speaks at most once a shift. Initiative that repeats
+# every poll is nagging, and he stops reading a line that nags.
+NUDGE_ASKED_AGE_SECONDS = 45 * 60
+NUDGE_INTERVAL_SECONDS = 6 * 3600
+
+
+def _nudge_state_path():
+    from pathlib import Path
+
+    return Path.home() / ".local" / "state" / "serena" / "phone-nudge.json"
+
+
+def _nudge_text(task: dict[str, Any]) -> str:
+    brief = " ".join(str(task.get("content") or "").split())[:140]
+    task_id = task["id"]
+    if task["state"] == "blocked":
+        return (f"#{task_id} is still stuck and i can't move it: {brief}. "
+                f"reply \"retry #{task_id}\" or tell me what to change.")
+    return (f"#{task_id} is still waiting on you: {brief}. "
+            f"reply \"#{task_id} <details>\" and i'll run it.")
+
+
+def nudge_phone_line(payload: dict[str, Any]) -> ActionOutcome:
+    """Text him first about the one task that cannot move without him.
+
+    Every other notice is a reply, or a report about work that just finished.
+    This is the one place she starts the conversation, so it is deliberately
+    narrow: the oldest task that is blocked or whose triage question he never
+    answered, one line, and never more often than NUDGE_INTERVAL_SECONDS.
+    Delivery goes through the same authority as everything else, so quiet hours
+    and the hourly limit still hold.
+    """
+
+    import json
+    import time
+
+    from core import phone_line
+    from memory import store
+
+    if payload:
+        return ActionOutcome(False, "serena.phone.nudge accepts no schedule payload")
+    if not phone_line.available():
+        return ActionOutcome(True, "phone line is not configured on this machine")
+    now = time.time()
+    path = _nudge_state_path()
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    quiet_for = NUDGE_INTERVAL_SECONDS - (now - float(state.get("nudged_at") or 0))
+    if quiet_for > 0:
+        return ActionOutcome(True, f"spoke recently; quiet for {int(quiet_for / 60)}m more")
+
+    candidate = None
+    for task in store.tasks_in_state("blocked", "needs_triage"):
+        if store._is_snoozed(task):
+            continue
+        if task["state"] == "needs_triage":
+            # Unasked briefs are the reconciler's job; she only chases the
+            # question she already sent and he left unanswered.
+            try:
+                asked = float(task.get("asked_at") or 0)
+            except (TypeError, ValueError):
+                asked = 0
+            if not asked or now - asked < NUDGE_ASKED_AGE_SECONDS:
+                continue
+        candidate = task
+        break
+    if candidate is None:
+        return ActionOutcome(True, "nothing is waiting on him")
+
+    key = f"nudge:{candidate['id']}:{candidate['state']}"
+    sent = _notify_phone(_nudge_text(candidate), key)
+    if sent:
+        state.update(nudged_at=now, task_id=candidate["id"], key=key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    return ActionOutcome(
+        True,
+        f"nudged him about #{candidate['id']}" if sent
+        else f"#{candidate['id']} is waiting, but the notice was held",
+        output={"task_id": candidate["id"], "state": candidate["state"], "sent": sent},
+    )
+
+
 # His number only reaches iMessage while the SIM-swap registration holds, and
 # Apple re-checks it on its own schedule. Swap well before that.
 NUMBER_SWAP_REMINDER_DAYS = 42
@@ -684,6 +772,7 @@ REVIEWED_ACTIONS = {
     "serena.fleet.start": start_ready_fleet_task,
     "serena.fleet.reconcile": reconcile_fleet_tasks,
     "serena.phone.poll": poll_phone_line,
+    "serena.phone.nudge": nudge_phone_line,
     "serena.phone.health": check_phone_health,
 }
 
