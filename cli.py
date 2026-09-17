@@ -2367,7 +2367,10 @@ def phone_line_health():
 @phone.command(name="voice-host")
 @click.option("--host", default="127.0.0.1")
 @click.option("--port", type=int, default=8766)
-def phone_voice_host(host, port):
+@click.option("--whisper", default="faster-whisper-tiny.en", show_default=True,
+              help="Model directory under voice/models. small.en takes ~1.8 s per "
+                   "clip on the PC's CPU, which he hears as a slow reply.")
+def phone_voice_host(host, port, whisper):
     """Run the voice host that phone calls talk to (STT, brain, TTS)."""
     import os
     from pathlib import Path
@@ -2382,11 +2385,11 @@ def phone_voice_host(host, port):
         Path.home() / "Documents" / "Projects" / "serena" / "voice" / "models",
     ]
     models = next((path for path in candidates
-                   if (path / "faster-whisper-small.en").is_dir()), candidates[0])
+                   if (path / whisper).is_dir()), candidates[0])
     defaults = {
         "SERENA_CALL_TTS_BACKEND": "remote",
         "SERENA_CALL_TTS_REMOTE_URL": "http://127.0.0.1:8812",
-        "SERENA_CALL_WHISPER_MODEL": str(models / "faster-whisper-small.en"),
+        "SERENA_CALL_WHISPER_MODEL": str(models / whisper),
         "SERENA_CALL_KOKORO_MODEL": str(models / "kokoro-v1.0.int8.onnx"),
         "SERENA_CALL_KOKORO_VOICES": str(models / "voices-v1.0.bin"),
     }
