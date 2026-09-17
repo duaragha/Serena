@@ -33,7 +33,10 @@ services:
     restart: unless-stopped
 
 volumes:
+  # A fixed name: her ZRTP keys live here, and a new volume would make his
+  # phone ask him to verify her again.
   serena-phone-data:
+    name: serena-phone-data
 
 # The VM has no free address pools left, so join the existing Serena network.
 networks:
