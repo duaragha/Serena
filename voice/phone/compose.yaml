@@ -1,0 +1,42 @@
+# Runs inside the PC's Docker-Ubuntu VM. It builds straight from GitHub master,
+# so a deploy is: copy this file to ~/serena-phone-src/ and run
+#   docker compose -f ~/serena-phone-src/compose.yaml up -d --build
+# Secrets live outside the synced tree, in /home/dockeradmin/serena-phone:
+#   sip.env        SIP_USER / SIP_PASSWORD / SIP_DOMAIN / RAGHAV_SIP
+#   chat_token     the PC's ~/.config/serena/chat_token (voice host auth)
+#   control_token  shared with the PC's ~/.config/serena/phone-call-token
+services:
+  serena-phone:
+    build:
+      context: https://github.com/duaragha/Serena.git#master
+      dockerfile: voice/phone/Dockerfile
+    image: serena-phone:local
+    container_name: serena-phone
+    # Its own bridge network, not the VM's: on host networking ICE offered a
+    # candidate for every docker bridge and the INVITE never reached his
+    # phone. 10.0.2.2 is still the PC's loopback through the VM's NAT.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8796:8796"
+    environment:
+      SERENA_VOICE_URL: ws://10.0.2.2:8766/ws/desk
+      SERENA_CALL_TTS_REMOTE_URL: http://host.docker.internal:8812
+      PHONE_CONTROL_PORT: "8796"
+      PHONE_LINPHONE_LOG: ${PHONE_LINPHONE_LOG:-warning}
+      PHONE_DEBUG_AUDIO: ${PHONE_DEBUG_AUDIO:-}
+      PHONE_SIP_LISTEN: ${PHONE_SIP_LISTEN:-}
+      PHONE_ALLOWED_CALLERS: ${PHONE_ALLOWED_CALLERS:-}
+    volumes:
+      - /home/dockeradmin/serena-phone:/run/phone:ro
+      - serena-phone-data:/data
+    restart: unless-stopped
+
+volumes:
+  serena-phone-data:
+
+# The VM has no free address pools left, so join the existing Serena network.
+networks:
+  default:
+    name: serena_default
+    external: true
