@@ -292,3 +292,23 @@ def test_extra_callers_must_be_listed_explicitly():
     assert bridge.caller_allowed("its_serena", "sip.linphone.org", config)
     assert bridge.caller_allowed("its_raghav", "sip.linphone.org", config)
     assert not bridge.caller_allowed("its_serena", "other.example", config)
+
+
+def test_caller_gain_boosts_and_clips():
+    import numpy as np
+
+    loud = bridge.apply_gain(_tone(2000, 4), 4.0)
+    assert np.frombuffer(loud, dtype="<i2").tolist() == [8000] * 4
+    clipped = bridge.apply_gain(_tone(20000, 2), 4.0)
+    assert np.frombuffer(clipped, dtype="<i2").tolist() == [32767] * 2
+
+
+def test_flush_drops_speech_that_was_already_queued():
+    link = bridge.AudioLink()
+    link.play(b"\x00\x00" * 10, 24_000)
+    link.flush()
+    link.play(b"\x01\x00" * 10, 24_000)
+    queued = []
+    while not link._outbox.empty():
+        queued.append(link._outbox.get_nowait())
+    assert [epoch for epoch, _, _ in queued] == [1]

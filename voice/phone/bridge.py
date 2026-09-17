@@ -153,8 +153,9 @@ class VoiceGate:
     own voice is on a different sink so it can never trigger this.
     """
 
-    # His handset line idles around 300-2000 RMS; speech peaks well above.
-    def __init__(self, threshold: float = 2500.0, sustain_ms: int = 300,
+    # Measured after RX gain: his line idles in the low hundreds, his speech
+    # sits around 6000-9000.
+    def __init__(self, threshold: float = 3000.0, sustain_ms: int = 300,
                  chunk_ms: int = 20) -> None:
         self.threshold = threshold
         self.needed = max(1, sustain_ms // chunk_ms)
@@ -175,14 +176,35 @@ class VoiceGate:
         return self.run >= self.needed
 
 
-class AudioLink:
-    """Caller audio in, Serena audio out, through the container's PulseAudio."""
+def apply_gain(pcm: bytes, gain: float) -> bytes:
+    import numpy as np
 
-    def __init__(self) -> None:
+    if gain == 1.0 or not pcm:
+        return pcm
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) * gain
+    return np.clip(samples, -32768, 32767).astype("<i2").tobytes()
+
+
+class AudioLink:
+    """Caller audio in, Serena audio out, through the container's PulseAudio.
+
+    Her speech is queued to a writer thread and played with a quarter second
+    of buffer. The voice host streams replies about as fast as they play, so a
+    tight buffer ran dry between chunks and he heard her stutter.
+    """
+
+    PLAYBACK_LATENCY_MS = 250
+
+    def __init__(self, rx_gain: float = 4.0) -> None:
         self.frames: queue.Queue[bytes] = queue.Queue(maxsize=500)
+        # His handset delivers speech around -24 dBFS, quiet enough that the
+        # voice host's VAD never fired on a real call.
+        self.rx_gain = rx_gain
         self._reader: subprocess.Popen | None = None
         self._writer: subprocess.Popen | None = None
         self._writer_rate = 0
+        self._outbox: queue.Queue[tuple[int, int, bytes]] = queue.Queue()
+        self._epoch = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
@@ -193,6 +215,7 @@ class AudioLink:
              "--channels=1", "--format=s16le", "--latency-msec=20", "--raw"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         threading.Thread(target=self._pump, name="phone-rx", daemon=True).start()
+        threading.Thread(target=self._speaker, name="phone-tx", daemon=True).start()
 
     def _pump(self) -> None:
         reader = self._reader
@@ -204,6 +227,7 @@ class AudioLink:
             buffer += chunk
             while len(buffer) >= CHUNK_BYTES:
                 frame, buffer = buffer[:CHUNK_BYTES], buffer[CHUNK_BYTES:]
+                frame = apply_gain(frame, self.rx_gain)
                 try:
                     self.frames.put_nowait(frame)
                 except queue.Full:
@@ -219,26 +243,54 @@ class AudioLink:
                 return
 
     def play(self, pcm: bytes, rate: int) -> None:
-        with self._lock:
-            if self._writer is None or self._writer.poll() is not None or (
-                    self._writer_rate != rate):
-                self._close_writer()
-                self._writer = subprocess.Popen(
-                    ["pacat", "--playback", f"--device={TX_SINK}", f"--rate={rate}",
-                     "--channels=1", "--format=s16le", "--latency-msec=60", "--raw"],
-                    stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                self._writer_rate = rate
+        """Queue her speech; returns immediately."""
+
+        if pcm:
+            self._outbox.put((self._epoch, rate, pcm))
+
+    def _speaker(self) -> None:
+        while not self._stop.is_set():
             try:
-                self._writer.stdin.write(pcm)
-                self._writer.stdin.flush()
-            except (BrokenPipeError, OSError) as error:
-                log.warning("player write failed: %s", error)
-                self._close_writer()
+                epoch, rate, pcm = self._outbox.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            with self._lock:
+                if epoch != self._epoch:
+                    continue
+                writer = self._ensure_writer(rate)
+            try:
+                # Blocks while the player is full, which paces this thread.
+                writer.stdin.write(pcm)
+                writer.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError) as error:
+                if epoch == self._epoch:
+                    log.warning("player write failed: %s", error)
+                with self._lock:
+                    if self._writer is writer:
+                        self._close_writer()
+
+    def _ensure_writer(self, rate: int) -> subprocess.Popen:
+        if self._writer is None or self._writer.poll() is not None or (
+                self._writer_rate != rate):
+            self._close_writer()
+            self._writer = subprocess.Popen(
+                ["pacat", "--playback", f"--device={TX_SINK}", f"--rate={rate}",
+                 "--channels=1", "--format=s16le",
+                 f"--latency-msec={self.PLAYBACK_LATENCY_MS}", "--raw"],
+                stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            self._writer_rate = rate
+        return self._writer
 
     def flush(self) -> None:
-        """Stop her mid-sentence: dropping the player discards its buffer."""
+        """Stop her mid-sentence: drop what is queued and what is buffered."""
 
         with self._lock:
+            self._epoch += 1
+            while True:
+                try:
+                    self._outbox.get_nowait()
+                except queue.Empty:
+                    break
             self._close_writer()
 
     def _close_writer(self) -> None:
@@ -327,26 +379,25 @@ class Conversation:
         except Exception as error:
             log.warning("opening line failed: %s", error)
             return
-        # Paced so an interruption can cut it short like any other reply.
-        step = rate // 10 * 2
+        # Queued whole, then watched, so an interruption cuts it short like
+        # any other reply.
+        self.audio.drain()
+        self.audio.play(pcm, rate)
+        started = time.monotonic()
+        duration = len(pcm) / 2 / rate + AudioLink.PLAYBACK_LATENCY_MS / 1000 + 0.2
         gate = VoiceGate()
-        for start in range(0, len(pcm), step):
+        while time.monotonic() - started < duration:
             if self._stop.is_set():
                 return
-            self.audio.play(pcm[start:start + step], rate)
-            deadline = time.monotonic() + 0.1
-            while time.monotonic() < deadline:
-                try:
-                    frame = self.audio.frames.get(timeout=0.02)
-                except queue.Empty:
-                    continue
-                if gate.feed(frame):
-                    log.info("opening interrupted after %.1fs", start / 2 / rate)
-                    self.audio.flush()
-                    return
+            try:
+                frame = self.audio.frames.get(timeout=0.02)
+            except queue.Empty:
+                continue
+            if gate.feed(frame):
+                log.info("opening interrupted after %.1fs", time.monotonic() - started)
+                self.audio.flush()
+                return
         log.info("opening spoken (%.1fs)", len(pcm) / 2 / rate)
-        # Let the tail of the line reach him before listening starts.
-        time.sleep(0.4)
 
     def _run(self) -> None:
         reason = "ended"
@@ -572,7 +623,7 @@ class PhoneBridge:
 
     def __init__(self, config: PhoneConfig) -> None:
         self.config = config
-        self.audio = AudioLink()
+        self.audio = AudioLink(rx_gain=float(os.environ.get("PHONE_RX_GAIN", "4")))
         self.commands: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.core = None
         self.account = None
