@@ -109,6 +109,13 @@ Locket keeps a sanitized cache of Claude/Codex chats and the knowledge base so p
 - `chats archive-sync --force` repairs or rebuilds the remote cache.
 - Add the `noindex` tag to a chat to remove it from the Locket cache on the next sync.
 
+## Her text line to him (phone tasking)
+`core/phone_line.py` is the one grammar (`task: …`, `status`, `#<id> <answer>`, `retry #<id>`, `swapped`); `~/.config/serena/phone-line.json` picks the transport, and the **PC** is the only machine that polls inbound — it owns the repos Fleet works in.
+- `backend: telegram` — her own bot (`@SerenaDuaAiBot`) in his private chat, credentials in `~/.config/serena/telegram.env`. Current default since 2026-09-17: the bot is a second identity, so nothing doubles. `TELEGRAM_CHAT_ID` is the authentication — updates from any other chat are dropped before the grammar sees them.
+- `backend: bluebubbles` — her Apple ID, or his own self-thread with `self_thread: true` (then `serena:` prefixes mark her texts).
+- `chats phone status` shows the live backend, `token_live`, and server health. Never print the bot token.
+- **Only one process may call `getUpdates`.** Telegram hands each update to whoever asks first, so a second poller silently steals his briefs from the PC. Diagnose with `getChat`/`getMe`/`sendMessage`, never `getUpdates`.
+
 ## Talking to a Linked Sibling (claude ↔ codex)
 Linked chats are a group text — Raghav gets feedback from two people at once. Either agent can ping the other live on the opposite pane.
 - **If you're claude** consulting codex → `chats ask-codex "<prompt>"`

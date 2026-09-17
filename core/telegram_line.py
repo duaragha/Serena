@@ -101,9 +101,17 @@ def _call(method: str, payload: dict[str, Any] | None = None) -> Any:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             answer = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
-        # The token is in the URL, so the message says the code, never the URL.
+        # The token is in the URL, so the message carries the code and Telegram's
+        # own description ("chat not found", "Unauthorized") but never the URL.
+        detail = ""
+        try:
+            body = json.loads(error.read().decode("utf-8"))
+            detail = str(body.get("description") or "")[:200]
+        except (OSError, ValueError, AttributeError):
+            detail = ""
         raise TelegramLineError(
-            f"telegram {method} failed with HTTP {error.code}") from error
+            f"telegram {method} failed with HTTP {error.code}"
+            + (f": {detail}" if detail else "")) from error
     except (OSError, ValueError) as error:
         raise TelegramLineError(f"telegram {method} unreachable") from error
     if not isinstance(answer, dict) or not answer.get("ok"):
