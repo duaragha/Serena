@@ -115,10 +115,19 @@ def _request(method: str, endpoint: str, *, body: bytes | None = None,
 
 
 def ping() -> bool:
+    """True when the server answers its health probe.
+
+    BlueBubbles replies `{"message": "Ping received!", "data": "pong"}`, so the
+    pong lives in `data`; reading only `message` reported a healthy server as
+    down and had the health check crying wolf.
+    """
+
     try:
-        return _request("GET", "ping", timeout=10).get("message") == "pong"
+        response = _request("GET", "ping", timeout=10)
     except BlueBubblesLineError:
         return False
+    return "pong" in {str(response.get("data") or "").lower(),
+                      str(response.get("message") or "").lower()}
 
 
 def server_info() -> dict[str, Any]:
