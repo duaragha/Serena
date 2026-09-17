@@ -18,10 +18,11 @@ queue writes; dispatch stays with the reviewed scheduler.
 
 Grammar (case-insensitive):
     task: <brief>            queue work (triaged like any phone brief)
+    status                   what is queued, running, and waiting on him
+    how many tasks are left  any plain question about the queue reads as status
     #<id> <answer>           answer the one question asked about task <id>
     retry #<id>              rerun a blocked task's Fleet run from where it stopped
     swapped                  he just refreshed his number's registration
-    status                   what is queued, running, and waiting on him
 """
 
 from __future__ import annotations
@@ -40,6 +41,11 @@ DUPLICATE_WINDOW_SECONDS = 600
 _TASK = re.compile(r"^\s*task\s*[:\-]\s*(?P<brief>.+)$", re.IGNORECASE | re.DOTALL)
 _ANSWER = re.compile(r"^\s*#(?P<id>\d{1,6})\s*[:\-]?\s*(?P<answer>.+)$", re.DOTALL)
 _STATUS = re.compile(r"^\s*status\s*\??\s*$", re.IGNORECASE)
+# He asks in English, not in grammar: anything that asks about the queue's
+# state counts as `status`, because a missed question reads as her ignoring him.
+_STATUS_QUESTION = re.compile(
+    r"^\s*(?:how many|what|which|any|hows|how's|how is|how are)\b.{0,60}?"
+    r"\b(tasks?|jobs?|work|queue|prs?)\b.*$", re.IGNORECASE | re.DOTALL)
 _SWAPPED = re.compile(r"^\s*swapped\s*[.!]?\s*$", re.IGNORECASE)
 _RETRY = re.compile(r"^\s*retry\s+#?(?P<id>\d{1,6})\s*$", re.IGNORECASE)
 
@@ -135,13 +141,19 @@ class _BlueBubblesBackend:
     def messages(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         from core import bluebubbles_line
 
-        return bluebubbles_line.recent_messages(limit=50)
+        # On his own thread every message is his, so hers are the prefixed ones.
+        prefix = PREFIX if bluebubbles_line.self_thread() else ""
+        return bluebubbles_line.recent_messages(limit=50, own_prefix=prefix)
 
     def send(self, text: str, key: str) -> bool:
         from core import bluebubbles_line
 
         body = text.strip()
-        if body.lower().startswith(PREFIX):
+        if bluebubbles_line.self_thread():
+            # The prefix is what tells her messages from his in that thread.
+            if not body.lower().startswith(PREFIX):
+                body = f"{PREFIX} {body}"
+        elif body.lower().startswith(PREFIX):
             body = body[len(PREFIX):].strip()
         try:
             bluebubbles_line.send_text(body)
@@ -187,7 +199,7 @@ def parse(text: str) -> tuple[str, dict[str, Any]] | None:
     if match := _ANSWER.match(text):
         return "answer", {"task_id": int(match.group("id")),
                           "answer": match.group("answer").strip()}
-    if _STATUS.match(text):
+    if _STATUS.match(text) or _STATUS_QUESTION.match(text):
         return "status", {}
     if _SWAPPED.match(text):
         return "swapped", {}
