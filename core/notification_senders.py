@@ -5,7 +5,7 @@ decides *how*, and nothing else. Keeping them apart is the point: the authority
 stays testable with fake senders, and the transports stay dumb enough that
 adding one cannot accidentally add a policy exemption.
 
-Four channels, fixed:
+Five channels, fixed:
 
 - `voice` puts a line in front of the desktop voice bridge, which is how she
   actually talks to him when he is at the machine.
@@ -14,6 +14,7 @@ Four channels, fixed:
 - `telegram` is the legacy bot, kept only so old queued notices can drain.
 - `desktop` is the silent overlay notice, for things worth showing but not
   worth saying out loud.
+- `call` rings his phone over her SIP line and says the line when he answers.
 
 Each sender returns True only when the transport genuinely accepted the
 message. Returning True on a best-effort send is how an assistant ends up
@@ -130,11 +131,25 @@ def send_imessage(request: NotificationRequest) -> bool:
         return False
 
 
+def send_call(request: NotificationRequest) -> bool:
+    """Ring his phone; the line accepts it or this returns False."""
+
+    from core import phone_call
+
+    if not phone_call.enabled():
+        return False
+    try:
+        return phone_call.place(request.summary, key=request.dedupe_key or "")
+    except Exception:
+        return False
+
+
 DEFAULT_SENDERS = {
     "voice": send_voice,
     "imessage": send_imessage,
     "telegram": send_telegram,
     "desktop": send_desktop,
+    "call": send_call,
 }
 
 

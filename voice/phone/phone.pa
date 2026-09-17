@@ -1,0 +1,8 @@
+# Two null sinks, one per call direction. No hardware in the container.
+load-module module-native-protocol-unix
+load-module module-null-sink sink_name=phone_rx sink_properties=device.description=phone_rx rate=48000 channels=1
+load-module module-null-sink sink_name=phone_tx sink_properties=device.description=phone_tx rate=48000 channels=1
+# Linphone skips monitor sources, so her side is re-exposed as a plain source.
+load-module module-remap-source master=phone_tx.monitor source_name=phone_mic source_properties=device.description=phone_mic
+set-default-sink phone_rx
+set-default-source phone_mic

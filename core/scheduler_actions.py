@@ -414,6 +414,25 @@ def _notify_phone(text: str, key: str) -> bool:
     return bool(result.sent)
 
 
+def _ring_phone(text: str, key: str) -> bool:
+    """Call him about it too, when his phone line is set up.
+
+    The text above is the record; the call is only the nudge, so it skips
+    quiet hours instead of queueing a stale call for the morning.
+    """
+
+    import time
+
+    from core import phone_call
+    from core.notification_senders import default_authority, notify
+
+    if not phone_call.enabled() or default_authority().policy.in_quiet_hours(time.time()):
+        return False
+    result = notify("task.update", text, channel="call", dedupe_key=f"{key}:call",
+                    source_surface="dispatch", fallback_channel=None)
+    return bool(result.sent)
+
+
 def _notify_once(text: str, key: str) -> bool:
     """Send a notice at most once ever, beyond the authority's hourly dedupe."""
 
@@ -433,6 +452,14 @@ def _notify_once(text: str, key: str) -> bool:
         with db:
             db.execute("INSERT OR IGNORE INTO notices(key) VALUES (?)", (key,))
     return True
+
+
+def _spoken_summary(task_id: int, final: str, headline: str) -> str:
+    """What she says when he picks up; links stay in the text."""
+
+    if final == "done":
+        return f"hey, task {task_id} is done: {headline}. details are in your messages."
+    return f"hey, task {task_id} got stuck: {headline}. i texted you what happened."
 
 
 def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
@@ -520,6 +547,8 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             final = "blocked"
         if store.finish_task_run(task_id, run_id, final, result):
             record["notified"] = _notify_phone(message, f"task:{task_id}:{final}")
+            record["called"] = _ring_phone(_spoken_summary(task_id, final, headline),
+                                           f"task:{task_id}:{final}")
             if checkout is not None and final == "done":
                 # A failed run keeps its worktree so the partial work can be read.
                 agent_checkouts.cleanup(checkout)

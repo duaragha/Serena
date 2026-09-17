@@ -2326,6 +2326,69 @@ def phone_poll():
     print(json.dumps(asdict(phone_line.poll()), indent=2))
 
 
+@phone.command(name="call")
+@click.argument("text")
+@click.option("--force", is_flag=True, help="Ignore the one-call-per-window limit.")
+def phone_call_command(text, force):
+    """Ring Raghav over Serena's SIP line and say TEXT when he answers."""
+    from core import phone_call
+
+    try:
+        placed = phone_call.place(text, force=force)
+    except phone_call.PhoneCallError as error:
+        raise click.ClickException(str(error))
+    click.echo("ringing" if placed else "held back: a call went out recently (use --force)")
+
+
+@phone.command(name="hangup")
+def phone_hangup_command():
+    """End the current call on Serena's SIP line."""
+    from core import phone_call
+
+    try:
+        phone_call.hangup()
+    except phone_call.PhoneCallError as error:
+        raise click.ClickException(str(error))
+
+
+@phone.command(name="line")
+def phone_line_health():
+    """Show whether Serena's SIP line is registered and on a call."""
+    import json
+
+    from core import phone_call
+
+    try:
+        click.echo(json.dumps(phone_call.health(), indent=2))
+    except phone_call.PhoneCallError as error:
+        raise click.ClickException(str(error))
+
+
+@phone.command(name="voice-host")
+@click.option("--host", default="127.0.0.1")
+@click.option("--port", type=int, default=8766)
+def phone_voice_host(host, port):
+    """Run the voice host that phone calls talk to (STT, brain, TTS)."""
+    import os
+    from pathlib import Path
+
+    from core.machine_context import projects_root
+
+    models = (projects_root() or Path.home() / "Projects") / "serena" / "voice" / "models"
+    defaults = {
+        "SERENA_CALL_TTS_BACKEND": "remote",
+        "SERENA_CALL_TTS_REMOTE_URL": "http://127.0.0.1:8812",
+        "SERENA_CALL_WHISPER_MODEL": str(models / "faster-whisper-small.en"),
+        "SERENA_CALL_KOKORO_MODEL": str(models / "kokoro-v1.0.int8.onnx"),
+        "SERENA_CALL_KOKORO_VOICES": str(models / "voices-v1.0.bin"),
+    }
+    for name, value in defaults.items():
+        os.environ.setdefault(name, value)
+    from voice.call.server import main as serve
+
+    raise SystemExit(serve(["--host", host, "--port", str(port)]))
+
+
 @main.group(name="webhook")
 def webhook_group():
     """Serena's authenticated signed webhook ingress."""

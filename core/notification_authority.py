@@ -38,7 +38,7 @@ SCHEMA_VERSION = 1
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "notifications.sqlite3"
 
 # Fixed, reviewed, and small. Not extensible at runtime.
-CHANNELS = ("voice", "imessage", "telegram", "desktop")
+CHANNELS = ("voice", "imessage", "telegram", "desktop", "call")
 DECISIONS = ("sent", "suppressed", "deferred", "pending_approval", "failed")
 
 # Urgency decides what quiet hours may hold back. `critical` is for things that
