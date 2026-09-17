@@ -38,3 +38,16 @@ def test_self_thread_send_keeps_the_prefix(monkeypatch):
     monkeypatch.setattr(bluebubbles_line, "self_thread", lambda: False)
     assert phone_line._BlueBubblesBackend().send("serena: queued as #9", "k") is True
     assert sent == ["serena: queued as #9", "queued as #9"]
+
+
+def test_ping_reads_the_pong_from_data(monkeypatch):
+    from core import bluebubbles_line
+
+    monkeypatch.setattr(bluebubbles_line, "_request",
+                        lambda *a, **k: {"status": 200, "message": "Ping received!",
+                                         "data": "pong"})
+    assert bluebubbles_line.ping() is True
+    monkeypatch.setattr(bluebubbles_line, "_request", lambda *a, **k: {"message": "pong"})
+    assert bluebubbles_line.ping() is True
+    monkeypatch.setattr(bluebubbles_line, "_request", lambda *a, **k: {"message": "nope"})
+    assert bluebubbles_line.ping() is False
