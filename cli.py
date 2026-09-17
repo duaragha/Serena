@@ -2372,9 +2372,17 @@ def phone_voice_host(host, port):
     import os
     from pathlib import Path
 
-    from core.machine_context import projects_root
+    from core.machine_context import serena_root
 
-    models = (projects_root() or Path.home() / "Projects") / "serena" / "voice" / "models"
+    # The PC's runtime checkout carries no model weights; the synced
+    # Projects tree does.
+    candidates = [
+        (serena_root() or Path.cwd()) / "voice" / "models",
+        Path.home() / "Projects" / "serena" / "voice" / "models",
+        Path.home() / "Documents" / "Projects" / "serena" / "voice" / "models",
+    ]
+    models = next((path for path in candidates
+                   if (path / "faster-whisper-small.en").is_dir()), candidates[0])
     defaults = {
         "SERENA_CALL_TTS_BACKEND": "remote",
         "SERENA_CALL_TTS_REMOTE_URL": "http://127.0.0.1:8812",
