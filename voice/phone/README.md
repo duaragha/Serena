@@ -45,6 +45,14 @@ Docker-Ubuntu natpf1 "phonectl,tcp,127.0.0.1,8796,,8796"`), and runs the
 voice host as the `Serena Voice Host` scheduled task through
 `run-service.ps1 -Name voice-host phone voice-host`.
 
+### Control API
+
+The phone bridge control API listens on `127.0.0.1:8796` on the PC,
+forwarded from the Docker VM. It accepts `POST /call` (with `{"text": "..."}`,
+the line she opens with), `POST /hangup`, and `GET /health`. All three require
+an `Authorization: Bearer <token>` header, using the token from
+`~/.config/serena/phone-call-token` on the PC.
+
 ## Debugging
 
 Set these in the VM shell before `docker compose up -d`:
