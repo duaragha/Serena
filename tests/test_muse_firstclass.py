@@ -657,7 +657,7 @@ def test_all_three_out_is_degraded_or_offline() -> None:
 
 
 def test_coding_jobs_accept_muse_sessions(tmp_path, monkeypatch) -> None:
-    from voice.desktop.coding_jobs_query import (
+    from core.coding_jobs_query import (
         _session_file,
         _terminal_target_from_values,
     )

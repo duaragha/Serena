@@ -15,6 +15,10 @@ So the choice lives in the repository, which Syncthing already keeps byte
 identical on both machines, instead of in two hand-maintained unit files that
 nothing compares. Environment still wins wherever it is set, so one machine can
 be pinned for a test without touching the file everyone reads.
+
+It covers the whole stack and not just the speaking half: what hears her, what
+thinks, and what answers are three choices that have to agree across machines
+for the desk and the phone to be the same person.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "voice-stack.json"
 
 

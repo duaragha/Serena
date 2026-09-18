@@ -137,7 +137,7 @@ def test_spec_excludes_the_linux_desktop_stack(spec_calls):
     excludes = spec_calls["Analysis"]["kwargs"]["excludes"]
     for module in ("gi", "vte", "cairo", "desktop.app_gtk"):
         assert module in excludes, f"{module} is GTK/VTE and must not ship on Windows"
-    for module in ("voice.desktop", "voice.desk.client", "pulsectl"):
+    for module in ("voice.desk.client", "pulsectl"):
         assert module in excludes, f"{module} is a Linux desk runtime"
 
 

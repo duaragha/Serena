@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.voice_stack import voice_setting
+
 from .process_worker import CancellableModelProcess
 from .protocol import MIC_SAMPLE_RATE
-from .stack_config import voice_setting
 
 log_stt = logging.getLogger("serena.call.stt")
 

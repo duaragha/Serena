@@ -19,7 +19,6 @@
     "mobile",
     "voice/call",
     "voice/desk",
-    "voice/desktop",
     "voice/brain_bridge.py",
     "systemd",
     "config",
@@ -59,7 +58,6 @@
     "apps/mobile/dist",
     "apps/desktop/node_modules",
     "apps/desktop/dist",
-    "voice/desktop/node_modules",
     "build",
     "serena.egg-info"
   ],
@@ -100,8 +98,7 @@
     ],
     "activation_only": [
       "serena-brain-bridge.service",
-      "serena-desk.service",
-      "serena-dot-overlay.service"
+      "serena-desk.service"
     ],
     "acceptance_only": [
       "serena-wakeword-acceptance.service",
@@ -133,7 +130,6 @@
     "core.mobile_host",
     "core.voice_work_supervisor",
     "voice.call",
-    "voice.desk.client",
-    "voice.desktop.supervisor"
+    "voice.desk.client"
   ]
 }

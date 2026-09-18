@@ -57,6 +57,7 @@ from core.brain_lifetime import (
     write_text_atomic,
 )
 from core.brain_provider import BrainProviderUsageLimit, is_usage_limit_error
+from core.voice_stack import voice_setting
 from core.voice_transcripts import VoiceTranscriptStore
 
 BRAIN_FILE = Path.home() / ".config" / "serena" / "brain.json"
@@ -79,11 +80,14 @@ STREAM_PORT = int(os.environ.get("SERENA_BRAIN_STREAM_PORT", "8378"))
 STREAM_TRANSPORT = (
     "tcp" if os.name == "nt" or os.environ.get("SERENA_BRAIN_STREAM_TRANSPORT") == "tcp" else "unix"
 )
-MODEL = os.environ.get("SERENA_BRAIN_MODEL", "sonnet")
-VOICE_MODEL = os.environ.get("SERENA_BRAIN_VOICE_MODEL", "").strip() or MODEL
-REFLEX_MODEL = (
-    os.environ.get("SERENA_BRAIN_REFLEX_MODEL", "").strip() or VOICE_MODEL
-)
+# config/voice-stack.json, not a unit file: the laptop had its reflex lane on
+# haiku and the PC had none, so the same question answered at two speeds
+# depending on which machine she was asked from.
+MODEL = voice_setting("brain", "model", env="SERENA_BRAIN_MODEL", default="sonnet")
+VOICE_MODEL = voice_setting(
+    "brain", "voice_model", env="SERENA_BRAIN_VOICE_MODEL", default=MODEL)
+REFLEX_MODEL = voice_setting(
+    "brain", "reflex_model", env="SERENA_BRAIN_REFLEX_MODEL", default=VOICE_MODEL)
 BRAIN_TOKEN = secrets.token_urlsafe(32)
 
 _started = time.time()

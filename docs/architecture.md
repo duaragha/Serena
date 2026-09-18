@@ -233,7 +233,7 @@ worked on, brainstorm.")**
 - Read-only asks ("check github for the repo's latest changes") are daemon
   tools, answered by voice, NO pane spawned. Panes spawn only when work
   needs doing, wait-for-go as usual.
-- Visual anchor: the dot-pulse. REUSE the abandoned voice/desktop overlay's
+- Visual anchor: the dot-pulse. REUSE the deleted voice/desktop overlay's
   architecture, brain_bridge.py's state file + websocket
   (~/.config/serena/voice_state: idle|listening|thinking|speaking) already
   does state broadcast; replace the abandoned 3D brain renderer with a
@@ -574,7 +574,6 @@ Make Serena continuously reachable without making the full microphone, display, 
 - The brain, mobile host, work supervisor, state sync, archive sync, and wake-only listener have systemd units.
 - `voice/call` implements local VAD, faster-whisper STT, local TTS, audio streaming, reconnect telemetry, call transcripts, greeting state, and tasking.
 - `voice/desk` implements wake handoff, listening/thinking/speaking states, local microphone ownership, playback, reconnect, and local fallback behavior.
-- `voice/desktop` renders the dot-field and coding activity panel.
 - The wake-only listener can launch the paired voice and display supervisor after a validated phrase.
 - The phone call surface and exact acceptance harness exist.
 
@@ -631,7 +630,7 @@ Classify every voice package as active, compatibility fallback, migration source
 
 Candidate paths requiring classification:
 
-- supported production paths: `voice/call`, `voice/desk`, `voice/desktop`, `voice/brain_bridge.py`
+- supported production paths: `voice/call`, `voice/desk`, `voice/brain_bridge.py`
 - removed legacy paths: `voice/brain`, `voice/voice`, `voice/daemon`, `LIVE_VOICE_DAEMON.md`, and the older daemon TTS files
 
 **Acceptance:**

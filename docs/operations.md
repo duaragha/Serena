@@ -33,7 +33,6 @@ These paths are required product source and belong in Git.
 | `apps/desktop/` | Serena desktop client (Electron) |
 | `voice/call/` | phone and browser voice transport, local STT, local TTS, VAD, telemetry, and acceptance harnesses |
 | `voice/desk/` | wake-only listener and desk conversation client |
-| `voice/desktop/` | dot-field display and private coding activity surface |
 | `voice/brain_bridge.py` | shared voice and display state bridge |
 | `systemd/` | canonical user-service definitions |
 | `tests/`, `apps/desktop/tests/`, `voice/*/tests/`, `apps/mobile/test/` | automated acceptance and regression coverage |
@@ -124,7 +123,6 @@ These paths may be removed once the owning process is stopped. Bootstrap recreat
 | `apps/mobile/node_modules/` | mobile JavaScript dependencies |
 | `apps/mobile/dist/` | built mobile web client |
 | `apps/desktop/node_modules/` | desktop JavaScript dependencies |
-| `voice/desktop/node_modules/` | Electron display dependencies |
 | `build/`, `*.egg-info/`, Python and test caches | generated packaging and test output |
 
 ## Installed runtime wiring
@@ -149,7 +147,7 @@ The brain soak unit is source only. The 24-hour soak must not run without new ex
 
 The consolidation pass proved and removed the unsupported voice daemon generations, duplicate voice packages, old voice entrypoints, superseded systemd units, stale design material, empty nested repository metadata, old lockfiles, packaging output, and test caches. The active recognizer vocabulary now lives with its owner at `voice/call/vocabulary.txt`.
 
-The supported voice surface is now only `voice/call/`, `voice/desk/`, `voice/desktop/`, and `voice/brain_bridge.py`. No legacy scheduler, speech daemon, or notification relay remains in the repository.
+The supported voice surface is now only `voice/call/`, `voice/desk/`, and `voice/brain_bridge.py`. The Electron dot-field overlay in `voice/desktop/` was deleted on 2026-09-18: `apps/desktop/` is the desktop app, and `serena-desk.service` runs the microphone headlessly against the shared host. No legacy scheduler, speech daemon, or notification relay remains in the repository.
 
 ## Remote PC finding
 

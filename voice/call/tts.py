@@ -28,6 +28,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from core.voice_stack import voice_setting
+
 from .process_worker import (
     CancellableModelProcess,
     ModelProcessError,
@@ -38,7 +40,6 @@ from .process_worker import (
     _trusted_bubblewrap,
 )
 from .protocol import MAX_TTS_FRAME_MS, TTS_SAMPLE_RATES
-from .stack_config import voice_setting
 from .timestretch import StreamingTimeStretch
 from .voice_speed import read_voice_speed
 

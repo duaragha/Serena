@@ -167,7 +167,7 @@ def test_the_desk_and_the_phone_read_one_shared_voice(tmp_path, monkeypatch):
     the built-in default is Kokoro. The synced file is what closes that gap.
     """
 
-    from voice.call.stack_config import stack_config, voice_setting
+    from core.voice_stack import stack_config, voice_setting
 
     config = tmp_path / "voice-stack.json"
     config.write_text(
@@ -201,7 +201,7 @@ def test_one_machine_can_still_be_pinned_for_a_test(tmp_path, monkeypatch):
 def test_an_unreadable_stack_file_never_costs_her_a_voice(tmp_path, monkeypatch):
     """Built-in defaults take over; a bad edit must not make her mute."""
 
-    from voice.call.stack_config import stack_config
+    from core.voice_stack import stack_config
 
     broken = tmp_path / "voice-stack.json"
     broken.write_text("{ not json", encoding="utf-8")
@@ -215,7 +215,7 @@ def test_an_unreadable_stack_file_never_costs_her_a_voice(tmp_path, monkeypatch)
 def test_the_checked_in_stack_is_the_voice_both_machines_should_run(monkeypatch):
     """Guards the file itself: it is the only thing keeping the two in step."""
 
-    from voice.call.stack_config import DEFAULT_CONFIG_PATH, stack_config
+    from core.voice_stack import DEFAULT_CONFIG_PATH, stack_config
 
     monkeypatch.delenv("SERENA_VOICE_STACK_CONFIG", raising=False)
     assert DEFAULT_CONFIG_PATH.is_file()

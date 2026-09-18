@@ -5,7 +5,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from voice.desktop.coding_jobs_query import (
+from core.coding_jobs_query import (
     read_coding_jobs,
     resolve_live_terminal_target,
 )
@@ -343,18 +343,3 @@ def test_session_identity_is_guarded_across_all_job_records(tmp_path: Path) -> N
     assert target is None
     assert error == "session belongs to an already-open app chat"
 
-
-def test_clean_extension_bootstraps_the_renderer_without_touching_daemon_paths() -> None:
-    desktop = Path(__file__).resolve().parents[1]
-    package = json.loads((desktop / "package.json").read_text(encoding="utf-8"))
-    main = (desktop / "coding-main.js").read_text(encoding="utf-8")
-    preload = (desktop / "coding-preload.js").read_text(encoding="utf-8")
-    css = (desktop / "renderer" / "coding-jobs.css").read_text(encoding="utf-8")
-
-    assert package["main"] == "coding-main.js"
-    assert "session.defaultSession.setPreloads" in main
-    assert "voice.desktop.coding_jobs_query" in main
-    assert "contextBridge.exposeInMainWorld('serenaCodingJobs'" in preload
-    assert "right: 14px" in css
-    assert "left: auto" in css
-    assert "padding-right: 118px" in css

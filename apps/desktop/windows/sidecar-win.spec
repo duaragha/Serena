@@ -61,7 +61,6 @@ excludes = [
     "pygtk",
     "pulsectl",
     "sounddevice",
-    "voice.desktop",
     "voice.desk.client",
     "voice.desk.duplex",
     "voice.desk.fallback",

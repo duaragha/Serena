@@ -1,5 +1,5 @@
 {
-  "_comment": "Her voice, shared by every machine. The phone host on the PC and the desk host on the laptop both read this, so she cannot sound like two different people. Environment variables still override it per machine.",
+  "_comment": "Her voice stack, shared by every machine: what hears her, what thinks, and what answers. The phone host on the PC and the desk host on the laptop both read this, so she cannot be two different people. Environment variables still override it per machine.",
   "tts": {
     "backend": "elevenlabs",
     "voice_id": "LZAcK8Cx5QjdQhfBsJQZ",
@@ -8,5 +8,9 @@
   },
   "stt": {
     "backend": "auto"
+  },
+  "brain": {
+    "model": "sonnet",
+    "reflex_model": "haiku"
   }
 }

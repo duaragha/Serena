@@ -722,7 +722,7 @@ def prompt_brief(brief: Mapping[str, Any] | None) -> dict[str, Any]:
 def _documentation_only(paths: Sequence[str]) -> bool:
     """True only when nothing shipped changed.
 
-    Path first, extension second. `voice/desktop/renderer/index.html` and
+    Path first, extension second. `ui/renderer/index.html` and
     `ui/static/app.css` are the overlay he actually looks at, not prose, so a
     markup extension alone must never buy a skipped review.
     """

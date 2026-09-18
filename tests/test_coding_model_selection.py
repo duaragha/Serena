@@ -22,7 +22,7 @@ from core.voice_inbox import VoiceInboxStore
 from core.voice_work_supervisor import VoiceWorkSupervisor
 from core.work_authority import start_coding_work
 from core.work_session_router import WorkRoute
-from voice.desktop.coding_jobs_query import read_coding_jobs
+from core.coding_jobs_query import read_coding_jobs
 
 
 def _repo(path: Path) -> Path:
