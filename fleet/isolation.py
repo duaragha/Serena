@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -1616,7 +1617,7 @@ def _generated_types_preparation(
         return None
     if len(command) != 3 or command[1:] != ["run", "typecheck"]:
         return None
-    if Path(command[0]).name not in {"npm", "npm.cmd"}:
+    if Path(command[0]).name.casefold() not in {"npm", "npm.cmd", "npm.exe"}:
         return None
     if not re.search(
         r"error TS2307: Cannot find module ['\"][^'\"\n]*[./]generated(?:[./][^'\"\n]*)?['\"]",
@@ -1697,6 +1698,20 @@ _NODE_DEPENDENCY_FILES = frozenset(
 )
 
 
+def _package_manager(name: str) -> str | None:
+    """Resolve npm/pnpm/yarn to something subprocess can actually launch.
+
+    On Windows these are `.CMD` shims and `subprocess.run` does not consult
+    PATHEXT, so a bare "npm" raises WinError 2. That surfaced as "test gate
+    could not run: [WinError 2]", which the caller treats as a failed gate --
+    so a missing executable rolled back a worker's finished change and blamed
+    the change. `shutil.which` honours PATHEXT and returns the real path,
+    which is also what the workers' own declared commands carry.
+    """
+
+    return shutil.which(name)
+
+
 def dependency_sync_command(
     root: Path | str, changed_paths: list[str] | tuple[str, ...]
 ) -> list[str] | None:
@@ -1726,14 +1741,19 @@ def dependency_sync_command(
     absent = not (checkout / "node_modules").is_dir()
     if not manifest_changed and not absent:
         return None
-    if (checkout / "package-lock.json").is_file() or (
-        checkout / "npm-shrinkwrap.json"
-    ).is_file():
-        return ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
-    if (checkout / "pnpm-lock.yaml").is_file():
-        return ["pnpm", "install", "--frozen-lockfile", "--ignore-scripts"]
-    if (checkout / "yarn.lock").is_file():
-        return ["yarn", "install", "--immutable", "--mode=skip-builds"]
+    lockfiles: tuple[tuple[tuple[str, ...], str, tuple[str, ...]], ...] = (
+        (("package-lock.json", "npm-shrinkwrap.json"), "npm",
+         ("ci", "--ignore-scripts", "--no-audit", "--no-fund")),
+        (("pnpm-lock.yaml",), "pnpm", ("install", "--frozen-lockfile", "--ignore-scripts")),
+        (("yarn.lock",), "yarn", ("install", "--immutable", "--mode=skip-builds")),
+    )
+    for names, manager, arguments in lockfiles:
+        if not any((checkout / name).is_file() for name in names):
+            continue
+        executable = _package_manager(manager)
+        # No manager on this machine is not the worker's fault, and emitting a
+        # command that cannot launch would read as its change failing a test.
+        return [executable, *arguments] if executable else None
     # A manifest-only repository has no reproducible graph for Fleet to trust.
     # Refuse to invent or rewrite its lockfile during integration. A *changed*
     # manifest with no lockfile is a real problem for the caller to report; a

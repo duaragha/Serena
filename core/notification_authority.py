@@ -45,6 +45,14 @@ DECISIONS = ("sent", "suppressed", "deferred", "pending_approval", "failed")
 # are worse to withhold than to interrupt with; it is not a general escape.
 URGENCIES = ("low", "normal", "critical")
 
+# Quiet hours exist so Serena does not interrupt him. Answering something he
+# asked for is not an interruption, and holding the answer until morning is
+# indistinguishable from the line being broken -- which is how a task that
+# failed at 23:56 went unmentioned while he sat there asking about it.
+# `answers_request` marks a notice as a reply rather than an approach. It skips
+# quiet hours only: dedupe, the hourly limit and approval all still apply, so
+# it cannot become the general escape `critical` refuses to be.
+
 DEFAULT_QUIET_START_HOUR = 22
 DEFAULT_QUIET_END_HOUR = 8
 DEFAULT_DEDUPE_WINDOW_SECONDS = 3_600
@@ -116,6 +124,7 @@ class NotificationRequest:
     job_id: str | None = None
     session_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    answers_request: bool = False
 
 
 def _clean(value: object, limit: int = MAX_SUMMARY_CHARS) -> str:
@@ -240,7 +249,9 @@ class NotificationAuthority:
                     moment=moment,
                 )
 
-            if urgency != "critical" and self.policy.in_quiet_hours(moment):
+            answering = bool(getattr(request, "answers_request", False))
+            if (urgency != "critical" and not answering
+                    and self.policy.in_quiet_hours(moment)):
                 return self._record(
                     connection,
                     notification_id=notification_id,
