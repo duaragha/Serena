@@ -18,7 +18,8 @@ def test_release_selection_dependencies_confirmation_and_status(width):
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.add_init_script("""window.submissions=[];window.serenaReleases={
-          load:async()=>structuredClone(window.fixture), status:async()=>null, github:async()=>{}, dismiss:async()=>true,
+          load:async()=>{if(window.failLoad)throw Error('Offline');return structuredClone(window.fixture)},
+          status:async()=>null, github:async()=>{}, dismiss:async()=>true,
           submit:async v=>{window.submissions.push(v);return {request:'a'.repeat(32),mode:v.mode,run:null}}
         };""" + "window.fixture=" + json.dumps({"source": "a" * 40, "stable": "v0.3.4", "version": "0.3.9-dev.1",
             "catalog": CATALOG, "installed": [], "status": None}) + ";")
@@ -48,8 +49,13 @@ def test_release_selection_dependencies_confirmation_and_status(width):
         assert "Awaiting GitHub" in page.locator("#requestStatus").inner_text()
         page.get_by_role("button", name="Dismiss tracking", exact=True).click()
         assert publish.is_enabled()
-        page.evaluate("fixture.source='b'.repeat(40)")
+        page.evaluate("window.failLoad=true")
         page.get_by_role("button", name="Refresh", exact=True).click()
+        expect(page.locator("#error")).to_have_text("Offline")
+        expect(publish).to_be_disabled()
+        page.evaluate("window.failLoad=false;fixture.source='b'.repeat(40)")
+        page.get_by_role("button", name="Refresh", exact=True).click()
+        expect(page.locator("#error")).to_be_hidden()
         expect(publish).to_be_disabled()
         assert page.get_by_role("checkbox").evaluate_all("es => es.every(e => !e.checked)")
         assert not errors
