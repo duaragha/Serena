@@ -333,6 +333,49 @@ def check_dispatch_visibility() -> list[Finding]:
 
 
 INTEGRATION_BRANCH = "origin/master"
+# Beyond this, "level with master" says more about the last fetch than the code.
+STALE_FETCH_SECONDS = 6 * 60 * 60
+
+
+def _fetch_age_seconds(repo: Path) -> float | None:
+    """How long since this checkout last heard from the remote, or None.
+
+    Asks git for the git directory rather than assuming `.git` is one: in a
+    worktree it is a file pointing elsewhere, and guessing gave every worktree
+    a silent None. Remote refs are shared, so the common dir is the right place
+    to look for them.
+    """
+
+    import subprocess
+
+    def where(*args: str) -> Path | None:
+        out = subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                             text=True, check=False).stdout.strip()
+        if not out:
+            return None
+        found = Path(out)
+        return found if found.is_absolute() else repo / found
+
+    candidates: list[Path] = []
+    for kind in (("rev-parse", "--git-common-dir"), ("rev-parse", "--git-dir")):
+        base = where(*kind)
+        if base is None:
+            continue
+        candidates.extend([base / "FETCH_HEAD", base / "refs/remotes/origin/master"])
+    for candidate in candidates:
+        try:
+            return max(0.0, time.time() - candidate.stat().st_mtime)
+        except OSError:
+            continue
+    return None
+
+
+def _approx_duration(seconds: float) -> str:
+    if seconds < 90 * 60:
+        return f"{round(seconds / 60)} minutes"
+    if seconds < 48 * 3600:
+        return f"{round(seconds / 3600)} hours"
+    return f"{round(seconds / 86400)} days"
 
 
 def check_repo_freshness() -> list[Finding]:
@@ -395,7 +438,24 @@ def check_repo_freshness() -> list[Finding]:
         ))
     if findings:
         return findings
-    return [Finding("repo", True, f"{branch} is level with {target}")]
+
+    # "Level with origin/master" is only as true as the last fetch, and a
+    # doctor deliberately does not reach the network. The PC runtime answered
+    # "up to date" on 2026-09-18 while it was thirty-five commits behind,
+    # because nothing there had fetched since the morning. Saying how old the
+    # answer is turns false comfort back into a fact.
+    age = _fetch_age_seconds(repo)
+    if age is not None and age > STALE_FETCH_SECONDS:
+        return [Finding(
+            "repo.stale_fetch", False,
+            f"{branch} is level with {target}, but nothing here has fetched for "
+            f"{_approx_duration(age)}, so that comparison is only as current as "
+            f"the last fetch and may be hiding commits that shipped since.",
+            fix="git fetch origin, then read this again",
+            severity="warn",
+        )]
+    when = "" if age is None else f" (fetched {_approx_duration(age)} ago)"
+    return [Finding("repo", True, f"{branch} is level with {target}{when}")]
 
 
 def check_notification_backlog(now: float | None = None) -> list[Finding]:
