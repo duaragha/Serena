@@ -59,6 +59,8 @@ class WorkerRequest:
     resume_session_id: str | None = None
     peer_token: str = field(default="", repr=False)
     fleet_db_path: str = ""
+    frozen_argv: tuple[str, ...] = ()
+    assigned_session_id: str = ''
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +97,8 @@ def run_worker(
 def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> list[str]:
     """Build the exact provider argv, exposed for policy and regression tests."""
 
+    if request.frozen_argv:
+        return list(request.frozen_argv)
     if request.provider == "gemini":
         from fleet.gemini import AGENT, MODEL, verify_agent
         if request.access_mode == "write" or request.phase != "discover":
@@ -509,7 +513,7 @@ def _run_claude(
     cancel_requested: CancelCallback,
     on_event: EventCallback,
 ) -> WorkerResult:
-    assigned_sid = request.resume_session_id or str(uuid.uuid4())
+    assigned_sid = request.assigned_session_id or request.resume_session_id or str(uuid.uuid4())
     command = worker_command(request, session_id=assigned_sid)
     session_id: str | None = assigned_sid
     output_text = ""
@@ -666,7 +670,7 @@ def _run_muse(
 ) -> WorkerResult:
     from fleet import muse as _muse
 
-    assigned_sid = request.resume_session_id or str(uuid.uuid4())
+    assigned_sid = request.assigned_session_id or request.resume_session_id or str(uuid.uuid4())
     command = worker_command(request, session_id=assigned_sid)
     stream = _muse.MuseStream()
     raw_lines: list[str] = []

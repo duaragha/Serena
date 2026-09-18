@@ -2674,6 +2674,8 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
         )
         from fleet.worker_runtime import preflight
         receipt = preflight(request)
+        from fleet.leg_scripts import freeze
+        request = freeze(store, request, snapshot, leg)
         store.append_event(run_id, "worker.runtime_preflight", receipt,
                            leg_id=str(leg["leg_id"]), attempt_id=str(attempt["attempt_id"]))
     except Exception as exc:

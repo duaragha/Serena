@@ -556,7 +556,7 @@ class FleetStore:
             if active is not None and _process_alive(active["pid"], active["process_token"]):
                 raise RuntimeError("Fleet leg already has a live attempt")
             previous = connection.execute(
-                "SELECT * FROM fleet_attempts WHERE leg_id = ? "
+                "SELECT * FROM fleet_attempts WHERE leg_id = ? AND replay_of IS NULL "
                 "ORDER BY attempt_number DESC LIMIT 1",
                 (leg_id,),
             ).fetchone()
@@ -573,7 +573,7 @@ class FleetStore:
                 ).fetchone()
                 if not source or not queued or json.loads(queued[0]).get("source_attempt_id") != integration_replay_source:
                     raise RuntimeError("saved integration replay has no matching durable source")
-            number = int(previous["attempt_number"] or 0) + 1 if previous else 1
+            number = connection.execute('SELECT COALESCE(MAX(attempt_number),0)+1 FROM fleet_attempts WHERE leg_id=?', (leg_id,)).fetchone()[0]
             resume_sid = ""
             resume_kind: str | None = None
             resume_source_phase: str | None = None
@@ -756,7 +756,7 @@ class FleetStore:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT error FROM fleet_attempts WHERE leg_id = ? AND attempt_number < ? "
-                "AND error IS NOT NULL AND error != '' "
+                "AND replay_of IS NULL AND error IS NOT NULL AND error != '' "
                 "ORDER BY attempt_number DESC LIMIT 1",
                 (str(leg_id), int(before_attempt_number)),
             ).fetchone()
@@ -774,7 +774,7 @@ class FleetStore:
             rows = connection.execute(
                 "SELECT a.event_log_path FROM fleet_attempts a "
                 "JOIN fleet_legs l ON l.leg_id = a.leg_id "
-                "WHERE l.run_id = ? AND a.leg_id = ? "
+                "WHERE l.run_id = ? AND a.leg_id = ? AND a.replay_of IS NULL "
                 "AND a.event_log_path IS NOT NULL AND a.event_log_path != '' "
                 "ORDER BY a.attempt_number",
                 (str(run_id), str(leg_id)),
@@ -915,11 +915,14 @@ class FleetStore:
                 raise KeyError(f"unknown Fleet attempt {attempt_id}")
             run = self._require_run(connection, str(attempt["run_id"]))
             latest = connection.execute(
+                # A debugging replay is an append-only observation, never a
+                # generation of live work; it must not fence out the worker.
                 "SELECT attempt_id FROM fleet_attempts WHERE leg_id = ? "
-                "ORDER BY attempt_number DESC LIMIT 1", (attempt["leg_id"],),
+                "AND replay_of IS NULL ORDER BY attempt_number DESC LIMIT 1",
+                (attempt["leg_id"],),
             ).fetchone()
             if (attempt["state"] in TERMINAL_ATTEMPT_STATES
-                    or latest["attempt_id"] != attempt_id):
+                    or latest is None or latest["attempt_id"] != attempt_id):
                 # A duplicate callback or old process generation has no authority
                 # over a replacement attempt's leg/DAG state.
                 self._insert_event(
@@ -2301,7 +2304,7 @@ class FleetStore:
             honest_stop = "work stopped before completion" in clean_error.lower()
             input_wait = connection.execute(
                 "SELECT a.error FROM fleet_legs l JOIN fleet_attempts a ON a.leg_id = l.leg_id "
-                "AND a.attempt_number = l.current_attempt WHERE l.run_id = ? "
+                "AND a.attempt_number = l.current_attempt AND a.replay_of IS NULL WHERE l.run_id = ? "
                 "AND l.state = 'waiting_for_input' ORDER BY l.phase_index, l.ordinal LIMIT 1",
                 (run_id,),
             ).fetchone()
@@ -2447,8 +2450,10 @@ class FleetStore:
                 WHERE """
                 + where
                 + " "
+                "AND a.replay_of IS NULL "
                 "AND a.attempt_number = (SELECT MAX(a2.attempt_number) "
-                "FROM fleet_attempts a2 WHERE a2.leg_id = l.leg_id AND a2.state = 'completed') "
+                "FROM fleet_attempts a2 WHERE a2.leg_id = l.leg_id AND a2.state = 'completed' "
+                "AND a2.replay_of IS NULL) "
                 "ORDER BY l.phase_index, l.ordinal",
                 tuple(params),
             ).fetchall()
@@ -2507,7 +2512,8 @@ class FleetStore:
                     l.role, l.requested_model, l.requested_effort
                 FROM fleet_attempts a
                 JOIN fleet_legs l ON l.leg_id = a.leg_id
-                WHERE l.run_id = ? AND a.session_id IS NOT NULL AND a.session_id != ''
+                WHERE l.run_id = ? AND a.replay_of IS NULL
+                    AND a.session_id IS NOT NULL AND a.session_id != ''
                 ORDER BY l.phase_index, l.ordinal, a.attempt_number
                 """,
                 (run_id,),
@@ -2967,10 +2973,11 @@ class FleetStore:
                 a.session_id, a.actual_model, a.actual_effort, a.pid,
                 substr(a.output_text, 1, ?) AS output_text,
                 length(a.output_text) > ? AS output_truncated,
-                a.error, a.exit_code, a.event_log_path, a.started_at, a.completed_at
+                a.error, a.exit_code, a.event_log_path, a.started_at, a.completed_at,
+                a.script_path, a.script_sha256
             FROM fleet_attempts a
             JOIN fleet_legs l ON l.leg_id = a.leg_id
-            WHERE l.run_id = ? ORDER BY a.attempt_number
+            WHERE l.run_id = ? AND a.replay_of IS NULL ORDER BY a.attempt_number
             """,
             (MAX_PUBLIC_PREVIEW_CHARS, MAX_PUBLIC_PREVIEW_CHARS, run_id),
         ).fetchall()
@@ -3192,6 +3199,8 @@ class FleetStore:
             "error": row["error"],
             "exit_code": row["exit_code"],
             "event_log_path": row["event_log_path"],
+            "script_path": row['script_path'],
+            "script_sha256": row['script_sha256'],
             "started_at": float(row["started_at"]) if row["started_at"] else None,
             "completed_at": float(row["completed_at"]) if row["completed_at"] else None,
         }
@@ -3503,7 +3512,7 @@ class FleetStore:
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(fleet_attempts)").fetchall()
             }
-            for name in ("requested_provider", "requested_model", "requested_effort"):
+            for name in ("requested_provider", "requested_model", "requested_effort", "script_path", "script_sha256", "replay_of"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE fleet_attempts ADD COLUMN {name} TEXT")
             connection.execute(
@@ -3599,8 +3608,11 @@ def _stale_review_legs(
         if review_state != "completed" or not targets:
             continue
         review_attempt = connection.execute(
+            # Freshness compares live generations only. A debugging replay is an
+            # append-only observation, so counting it would reopen a review that
+            # did receive its target's final Code output.
             "SELECT started_at FROM fleet_attempts WHERE leg_id = ? "
-            "ORDER BY attempt_number DESC LIMIT 1",
+            "AND replay_of IS NULL ORDER BY attempt_number DESC LIMIT 1",
             (review_leg_id,),
         ).fetchone()
         review_started = (
@@ -3614,7 +3626,7 @@ def _stale_review_legs(
             code_attempt = (
                 connection.execute(
                     "SELECT state, completed_at FROM fleet_attempts WHERE leg_id = ? "
-                    "ORDER BY attempt_number DESC LIMIT 1",
+                    "AND replay_of IS NULL ORDER BY attempt_number DESC LIMIT 1",
                     (code_leg_id,),
                 ).fetchone()
                 if code_leg_id

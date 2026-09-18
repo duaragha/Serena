@@ -2013,6 +2013,17 @@ def fleet_start(
     _fleet_print(run, as_json=as_json)
 
 
+@fleet_group.command(name='replay-leg')
+@click.option('--run', 'run_id', required=True)
+@click.option('--leg', 'leg_id', required=True)
+@click.option('--attempt', 'attempt_number', type=click.IntRange(min=1), required=True)
+def fleet_replay_leg(run_id, leg_id, attempt_number):
+    """Replay frozen inputs in a private checkout, recording a new attempt."""
+    from fleet.store import FleetStore
+    from fleet.leg_scripts import replay_leg
+    _fleet_print(_fleet_call(replay_leg, FleetStore(), run_id, leg_id, attempt_number), as_json=True)
+
+
 @fleet_group.command(name="list")
 @click.option("--limit", default=20, type=click.IntRange(min=1, max=500), show_default=True)
 @click.option("--json", "as_json", is_flag=True)

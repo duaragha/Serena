@@ -64,6 +64,46 @@ as proof of resolution. Exhaustion emits `run.review.unresolved`. With
 records them. Minor findings never force a round. Reports include a severity
 histogram, unresolved findings, and a solo-review limitation note.
 
+During attempt startup, after prompt assembly and before provider dispatch,
+Fleet freezes a JSON leg script with the redacted request/prompt, exact provider
+argv, prompt SHA-256 and text reference, Git commit/branch and working delta,
+dependency states, CLI version and test allowlist version. Attempts expose the
+script path and hash. Bundles live under `runs/<run-id>/leg-scripts` beside the
+run event journal, outside Git's input tree so subsequent attempts do not
+recursively capture earlier bundles as source changes.
+
+`chats fleet replay-leg --run RUN --leg LEG --attempt NUMBER` checks the bundle
+hash and pinned commit, reconstructs a private checkout, invokes frozen provider
+flags with workspace paths relocated to that checkout, then applies the
+completion gate. A new numbered replay attempt and verdict/output diff are
+recorded without advancing the live DAG or replacing its output. Replay rows
+carry `replay_of` and are excluded from every live query: attempt fencing in
+`finish_attempt`, work-unit/DAG reconciliation, prior-error and event-log
+evidence, phase handoff outputs, live session inventory, and run-report attempt
+and retry counts. A replay taken while its leg is still running therefore cannot
+discard the live worker's completion as stale.
+
+The replay checkout, private isolation/input journal, and result JSON are
+retained for diagnosis. Keep the pinned Git object
+and bundle until debugging is finished; missing bases and changed allowlist
+versions refuse replay. Provider output is not expected to be byte-identical.
+Workspace and runtime paths are relocated in both argv and the prompt, with
+the relocation map and executed prompt hash in the replay receipt. The provider
+session is relocated too: a fresh session id replaces the frozen one in argv and
+the receipt records both. A leg that resumed an existing provider session is
+refused outright, because no supported CLI can fork that conversation and the
+replay would otherwise append to live state. Dependency
+environments (`.venv`, `node_modules`) are not bundled. Untracked symlinks,
+special files, and files larger than 32 MiB are recorded as unsupported inputs
+and cause replay to refuse rather than silently reconstruct a different tree.
+
+Replay validates declared checks through the same receipt-first evaluator the
+live completion gate uses: a command already recorded in the provider stream is
+not re-run, and a re-run keeps the environment overrides and `env -u` unsets the
+allowlist accepted. Re-runs go through the proof gate, so a check whose test log
+could not be persisted fails the replay with the capture reason even when the
+test process itself exited zero.
+
 ## Atomic Windows worker ownership
 
 `fleet.windows_process.WindowsProcess` creates every Windows Fleet worker,
