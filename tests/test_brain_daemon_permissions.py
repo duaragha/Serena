@@ -178,6 +178,9 @@ def test_brain_options_are_unattended_and_read_only(monkeypatch, tmp_path: Path)
         "git_latest",
         "github_activity",
         "recall_chats",
+        # Read-only search over the local code corpus, which is as unattended
+        # as recalling a chat: it reads an index and returns citations.
+        "recall_code",
         "read_ledger",
         # Read-only recall over everything she knows, added 2026-08-01: only
         # active tasks/loops/ledgers are injected, the rest was unreachable.

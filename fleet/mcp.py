@@ -12,6 +12,7 @@ from mcp.types import ToolAnnotations
 from fleet.store import TERMINAL_RUN_STATES
 from fleet.supervisor import (
     delete_run,
+    get_report,
     get_result,
     get_run,
     handoff_leg,
@@ -293,6 +294,17 @@ def fleet_result(run_id: str) -> dict[str, Any]:
     try:
         result = get_result(run_id)
         return {"ok": True, **result}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True,
+))
+def fleet_report(run_id: str) -> dict[str, Any]:
+    """Read a report; an uncached terminal run invokes a pinned provider and saves it."""
+    try:
+        return {"ok": True, "report": get_report(run_id)}
     except Exception as exc:
         return _error(exc)
 

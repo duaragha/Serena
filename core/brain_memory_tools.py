@@ -60,6 +60,68 @@ _REVIEW_SIGNAL = re.compile(
     r"\b(?:approve|accept|apply|reject|decline|roll\s*back|rollback|undo)\b",
     re.IGNORECASE,
 )
+_KNOWLEDGE_REVIEW_VERBS = {
+    "approve": r"approv(?:e|es|ed|ing)|accept(?:s|ed|ing)?|appl(?:y|ies|ied)",
+    "reject": r"reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)",
+}
+# A refusal contains the review verb too, so consent is only affirmative when no
+# negation governs the verb inside its own clause.
+_REVIEW_NEGATION = re.compile(
+    r"\b(?:not|dont|doesnt|didnt|cant|cannot|wont|never|no|nope|without|stop|"
+    r"cancel|avoid|refuse|refrain|hold|skip|instead\s+of)\b",
+    re.IGNORECASE,
+)
+# Asking whether to approve is deliberation, not consent.
+_REVIEW_QUESTION = re.compile(
+    r"^\s*(?:should|shall|can|could|would|will|do|does|did|may|might|must|is|are|was|were|"
+    r"what|which|when|where|how|why|who|whether|if)\b",
+    re.IGNORECASE,
+)
+# Consent promised for later is a plan; only act on an instruction meant for now.
+_REVIEW_CONDITIONAL = re.compile(
+    r"\b(?:if|unless|once|after|afterwards|afterward|before|until|till|when|whenever|while|"
+    r"later|afterhours|tomorrow|tonight|monday|pending|provided|assuming|supposing|"
+    r"eventually|someday|soon|maybe|perhaps|probably|might|planning|intend)\b",
+    re.IGNORECASE,
+)
+# Review language inside quotes is reported speech, not the caller's own instruction.
+_REVIEW_QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”|'[^']*'|‘[^’]*’|`[^`]*`")
+_REVIEW_IDENTIFIER = re.compile(r"\b[0-9a-f]{8,}\b", re.IGNORECASE)
+# Determiners and adjectives that may sit between the verb and its object.
+_REVIEW_FILLER = (r"(?:the|that|this|these|those|it|its|your|my|our|serenas|pending|open|latest|"
+                  r"newest|first|second|third|last|new|proposed|knowledge|kb|factual|above)")
+_REVIEW_OBJECT = r"(?:proposals?|corrections?|notes?|topics?|edits?|changes?|[0-9a-f]{8,})"
+
+
+def _affirmative_knowledge_review(text: str, action: str, proposal_id: str) -> bool:
+    """Accept only a complete, present-tense instruction to review this proposal.
+
+    The turn must contain the review verb taking this proposal as its object.
+    Questions, deferred or conditional consent, quoted review language, and a verb
+    whose object is something else are all refused, because canonical knowledge is
+    replaced on approval and a near miss is indistinguishable from consent.
+    """
+    clean = re.sub(r"(?<=\w)['’](?=\w)", "", str(text or ""))
+    clean = _REVIEW_QUOTED.sub(lambda match: " " * (match.end() - match.start()), clean)
+    identity = str(proposal_id or "").strip().lower()
+    if not identity or "?" in clean:
+        return False
+    # Any identifier the turn cites has to name this proposal, so consent aimed
+    # at a different pending proposal never lands on the selected one.
+    if any(not identity.startswith(token.lower()) for token in _REVIEW_IDENTIFIER.findall(clean)):
+        return False
+    instruction = re.compile(
+        rf"\b(?:{_KNOWLEDGE_REVIEW_VERBS[action]})\b(?:\s+{_REVIEW_FILLER}\b){{0,3}}\s+{_REVIEW_OBJECT}\b",
+        re.IGNORECASE)
+    for clause in re.split(r"[,.;:!?\n]|\bbut\b|\band\b|\bwhile\b", clean):
+        found = instruction.search(clause)
+        if not found or _REVIEW_QUESTION.match(clause) or _REVIEW_CONDITIONAL.search(clause):
+            continue
+        if not _REVIEW_NEGATION.search(clause[: found.start()]):
+            return True
+    return False
+
+
 _MIGRATION_SIGNAL = re.compile(r"\b(?:migrate|migration|upgrade|import)\b", re.IGNORECASE)
 _EXPORT_SIGNAL = re.compile(r"\b(?:export|projection|project|markdown)\b", re.IGNORECASE)
 
@@ -158,12 +220,8 @@ async def save_knowledge(args):
         return _text(_REFUSAL.format(reason=decision.reason))
 
     def _write() -> str:
-        from core.config import KNOWLEDGE_DIR
-
-        directory = KNOWLEDGE_DIR / topic
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / filename).write_text(content + "\n", encoding="utf-8")
-        return str(directory / filename)
+        from core.knowledge_store import save_note
+        return save_note(topic, filename, content)
 
     path = await asyncio.to_thread(_write)
     return _text(f"SAVED. knowledge note at {path}.")
@@ -699,7 +757,69 @@ async def migrate_memory_v2(_args):
     return _text(f"MIGRATED. {result['imported']} imported, {result['existing']} already present.")
 
 
+@tool('record_knowledge_feedback',
+      'Record receipt-bound knowledge feedback from a genuine user turn. '
+      'Factual corrections need corrected_content and create a reviewable proposal; '
+      'canonical Markdown stays unchanged until approval.',
+      {'slug': str, 'file': str, 'kind': str, 'receipt_id': str, 'corrected_content': str},
+      annotations=_BROKERED_WRITE)
+async def record_knowledge_feedback(args):
+    from core.knowledge_store import propose_feedback
+    from memory.feedback import classify_feedback
+    origin = current_turn()
+    utterances = [str(origin.get('text') or ''), previous_user_turn_text()]
+    corrected = str(args.get('corrected_content') or '')
+    intent = next((candidate for text in utterances if text and
+                   (candidate := classify_feedback(text, corrected_content=corrected)) is not None), None)
+    if intent is None or intent.kind == 'revoke':
+        return _text(_REFUSAL.format(reason='No explicit knowledge feedback in a genuine user turn'))
+    requested = str(args.get('kind') or intent.kind)
+    if requested != intent.kind:
+        return _text(_REFUSAL.format(reason='Feedback kind does not match the genuine user turn'))
+    decision = authorize('record_knowledge_feedback', origin=origin, destructive=False)
+    if not decision.allowed:
+        return _text(_REFUSAL.format(reason=decision.reason))
+    try:
+        result = await asyncio.to_thread(propose_feedback, str(args.get('slug') or ''),
+            str(args.get('file') or ''), intent.kind, receipt_id=str(args.get('receipt_id') or ''),
+            corrected_content=corrected, reason=' '.join(utterances))
+    except (OSError, ValueError) as exc:
+        return _text(_REFUSAL.format(reason=str(exc)))
+    return _text('PROPOSED, NOT APPLIED. Canonical knowledge unchanged.\n' + json.dumps(result))
+
+
+@tool('list_knowledge_proposals', 'List knowledge feedback proposals and candidates for review.',
+      {}, annotations=_LOCAL_READ_ONLY)
+async def list_knowledge_proposals(args):
+    from core.knowledge_store import proposals
+    return _text(json.dumps(await asyncio.to_thread(proposals), default=str))
+
+
+@tool('review_knowledge_proposal', 'Approve or reject a knowledge proposal on an explicit genuine user turn.',
+      {'proposal_id': str, 'action': str}, annotations=_BROKERED_WRITE)
+async def review_knowledge_proposal(args):
+    from core.knowledge_store import review_proposal
+    origin = current_turn()
+    action = str(args.get('action') or '')
+    proposal_id = str(args.get('proposal_id') or '')
+    if action not in {'approve', 'reject'} or not _affirmative_knowledge_review(
+            str(origin.get('text') or ''), action, proposal_id):
+        return _text(_REFUSAL.format(
+            reason=f'The current user turn must affirmatively {action or "approve or reject"} this knowledge proposal'))
+    decision = authorize('review_knowledge_proposal', origin=origin, destructive=False, detail=proposal_id)
+    if not decision.allowed:
+        return _text(_REFUSAL.format(reason=decision.reason))
+    try:
+        result = await asyncio.to_thread(review_proposal, proposal_id, action)
+    except (OSError, ValueError) as exc:
+        return _text(_REFUSAL.format(reason=str(exc)))
+    return _text('REVIEW RECORDED.\n' + json.dumps(result))
+
+
 MEMORY_TOOLS = (
+    record_knowledge_feedback,
+    list_knowledge_proposals,
+    review_knowledge_proposal,
     save_memory,
     edit_memory,
     delete_memory,

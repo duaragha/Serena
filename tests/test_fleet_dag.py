@@ -533,3 +533,61 @@ def test_dag_projects_machine_accepted_evidence_instead_of_only_worker_prose(tmp
     assert receipt["accepted"] is True
     assert receipt["reason"] == "completion evidence satisfied the work-unit contract"
     assert receipt["units"][0]["changed_paths"] == ["core/parser.py"]
+
+
+def test_retry_after_replay_keeps_a_fresh_review_closed(tmp_path):
+    """A debugging replay is not a newer Code generation for review freshness."""
+    import time
+    import uuid
+
+    store = FleetStore(tmp_path / "replay-freshness.sqlite3")
+    task = "tasks:\n- auth guard\n- cart contract"
+    policy = build_policy(
+        "coding", task, config=builtin_config(), worker_count=2
+    ).to_dict()
+    # Rotated review is what makes freshness observable: agent:a reviews ws-2.
+    verify = next(item for item in policy["phases"] if item["name"] == "verify")
+    assert verify["workers"][0]["review_target_ids"] == ["ws-2"]
+    run = store.create_run(
+        task=task,
+        activity="coding",
+        cwd=str(tmp_path),
+        origin_session_id=None,
+        origin_agent="codex",
+        dry_run=False,
+        policy=policy,
+    )
+    run_id = str(run["run_id"])
+    for phase_index in (0, 1, 2):
+        store.prepare_phase_runnable(run_id, phase_index)
+        snapshot = store.get_run(run_id)
+        assert snapshot is not None
+        for leg in snapshot["phases"][phase_index]["legs"]:
+            _finish(store, leg)
+
+    snapshot = store.get_run(run_id)
+    assert snapshot is not None
+    assert all(leg["state"] == "completed" for leg in snapshot["phases"][2]["legs"])
+
+    # A replay taken after every review, appended to each Code leg append-only.
+    later = time.time() + 600
+    with sqlite3.connect(store.path) as connection:
+        for code_leg in snapshot["phases"][1]["legs"]:
+            source = connection.execute(
+                "SELECT attempt_id, attempt_number FROM fleet_attempts WHERE leg_id = ? "
+                "AND replay_of IS NULL ORDER BY attempt_number DESC LIMIT 1",
+                (code_leg["leg_id"],),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO fleet_attempts(attempt_id, leg_id, attempt_number, state, "
+                "started_at, completed_at, created_at, updated_at, replay_of) "
+                "VALUES (?, ?, ?, 'replay_completed', ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), code_leg["leg_id"], int(source[1]) + 1,
+                 later, later, later, later, source[0]),
+            )
+
+    store.fail_run(run_id, "unrelated failure")
+    retried = store.retry_run(run_id)
+    retry_event = store.events(run_id)[-1]
+    assert retry_event["payload"]["stale_review_legs_reopened"] == []
+    assert all(leg["state"] == "completed" for leg in retried["phases"][2]["legs"])

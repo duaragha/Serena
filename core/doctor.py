@@ -332,6 +332,9 @@ def check_dispatch_visibility() -> list[Finding]:
     )]
 
 
+INTEGRATION_BRANCH = "origin/master"
+
+
 def check_repo_freshness() -> list[Finding]:
     """Code on disk that is behind the branch everything else is deployed from.
 
@@ -352,26 +355,47 @@ def check_repo_freshness() -> list[Finding]:
         return subprocess.run(["git", *args], cwd=repo, capture_output=True,
                               text=True, check=False).stdout.strip()
 
-    # The remote-tracking ref as of the last fetch: no network from a doctor.
-    upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-    target = upstream or "origin/master"
+    # Always the integration branch, never merely this branch's own upstream.
+    # Measuring against @{upstream} is how this check missed the thing it was
+    # written for: the laptop sat on laptop-master, which tracked
+    # origin/laptop-master, which matched it exactly -- so the doctor said "up
+    # to date" while the checkout was forty-six commits behind origin/master
+    # and twenty-five ahead of it, and both machines ran that tree for a day.
+    target = INTEGRATION_BRANCH
     if not git("rev-parse", "--verify", "--quiet", target):
         return [Finding("repo", True, f"no {target} to compare against", severity="warn")]
-    behind = git("rev-list", "--count", f"HEAD..{target}")
-    if not behind.isdigit():
+    branch = git("rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
+    counts = git("rev-list", "--left-right", "--count", f"{target}...HEAD").split()
+    if len(counts) != 2 or not all(value.isdigit() for value in counts):
         return [Finding("repo", True, "could not compare against the remote", severity="warn")]
-    count = int(behind)
-    if count == 0:
-        return [Finding("repo", True, f"up to date with {target}")]
-    newest = git("log", "-1", "--format=%h %s", target)[:90]
-    return [Finding(
-        "repo.behind", False,
-        f"this checkout is {count} commit(s) behind {target} as of the last fetch, so "
-        f"services started from it are not running what was shipped. Newest there: "
-        f"{newest}",
-        fix=f"git fetch origin && git merge --ff-only {target} (check for local work first)",
-        severity="warn",
-    )]
+    behind, ahead = (int(value) for value in counts)
+
+    findings: list[Finding] = []
+    if behind:
+        newest = git("log", "-1", "--format=%h %s", target)[:90]
+        findings.append(Finding(
+            "repo.behind", False,
+            f"this checkout ({branch}) is {behind} commit(s) behind {target} as of the "
+            f"last fetch, so services started from it are not running what was shipped. "
+            f"Newest there: {newest}",
+            fix=f"git fetch origin && git merge --ff-only {target} (check for local work first)",
+            severity="warn",
+        ))
+    if ahead:
+        # Commits that exist here and nowhere that is deployed or reviewed. One
+        # is a branch mid-review; twenty-five is a program nobody landed.
+        oldest = git("log", "--reverse", "--format=%h %s", f"{target}..HEAD")
+        first = oldest.splitlines()[0][:90] if oldest else ""
+        findings.append(Finding(
+            "repo.unlanded", False,
+            f"{ahead} commit(s) on {branch} are not on {target}, so they are running here "
+            f"and nowhere else, and nothing is reviewing them. Oldest: {first}",
+            fix=f"open a pull request for {branch}, or drop it and return to {target}",
+            severity="warn",
+        ))
+    if findings:
+        return findings
+    return [Finding("repo", True, f"{branch} is level with {target}")]
 
 
 def check_notification_backlog(now: float | None = None) -> list[Finding]:

@@ -24,6 +24,7 @@ EXPECTED_TOOLS = {
     "fleet_handoff",
     "fleet_inspect",
     "fleet_result",
+    "fleet_report",
     "fleet_steer",
 }
 
@@ -189,4 +190,6 @@ def test_chats_fleet_mcp_stdio_handshake_lists_all_tools(tmp_path):
             tools = await session.list_tools()
             return {tool.name for tool in tools.tools}
 
-    assert asyncio.run(handshake()) == EXPECTED_TOOLS
+    async def bounded_handshake():
+        return await asyncio.wait_for(handshake(), timeout=20)
+    assert asyncio.run(bounded_handshake()) == EXPECTED_TOOLS

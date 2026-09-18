@@ -1,5 +1,201 @@
 # Fleet runtime and recovery
 
+## Proof artifacts, review rounds, and replay
+
+Fleet persists proof in the shared `ArtifactRegistry` and keeps only linked
+metadata in `fleet_run_artifacts`: run, leg, attempt, kind, registry id, SHA-256,
+byte count and creation time. Kinds are `testlog` (32 MiB), `patch` (32 MiB), and
+`screenshot` (16 MiB). Oversize writes fail explicitly. Existing registry callers
+retain their 512 KiB default. Reads validate both registry integrity and Fleet
+metadata. Links use the existing HMAC-protected `/artifacts/<token>` route and
+inherit registry TTL. Deleting a run cascades Fleet pointers; registry bytes
+remain under the registry retention policy, so deleting a run does not revoke
+an already-issued capability before its TTL.
+
+Integration gates store full stdout/stderr, including partial timeout output,
+and retain their existing 2,000-character-per-stream `output_tail` with an
+additive `artifact` pointer. Worker envelopes may declare `artifacts` entries
+with `kind` and a workspace-relative `path`. Paths escaping the workspace are
+refused. The operator artifact endpoint supports `fleet_run_id`, `leg_id`, and
+`attempt_id`; reports expose `artifacts` links and review counts.
+
+Set policy defaults `ui_verify_screenshots: true` and `computer_session_id` to
+an existing, operator-authorized desktop observation session to capture PNG
+proof after Verify. This never starts a desktop session. Missing sessions or
+displays are a clean no-op; JPEG observations are converted to PNG. No video is
+captured.
+
+Findings may include `category`, including `security`. Fix prompts order
+blockers before majors before minors. Verify receives a fixed secret-pattern
+grep and an offline npm dependency audit for package-lock projects. Missing
+tools, lockfiles, or advisory caches are recorded as unavailable, not clean.
+Secret values are omitted from findings. These narrow checks supplement the
+reviewer checklist; they do not replace a full vulnerability scanner.
+
+The secret grep excludes `node_modules`, `.venv`, `.git`, and `site-packages`
+recursively at any depth, so vendored and packaged-sidecar copies of a
+dependency no longer scan. Every surviving match carries a deterministic
+`classification`, and only `first-party source` is a blocker.
+
+Matched content is always inspected before any downgrade, so a source path is
+never on its own a reason to downgrade: unexplained credential material gates
+in `tests/`, in `docs/`, and in a Markdown file exactly as it does in
+`core/`. Two content verdicts can lower a match to `minor`. A PEM header with
+no base64 key body is `private-key header without key material` — a header
+compared as a string, or an abbreviated example. Key bytes count wherever the
+representation puts them: physical following lines, a body joined onto the
+header, and escaped separators (`\n`, `\r\n`, `%0A`, `&#10;`) that keep a whole
+key on one source line. A match inside a test path is `verified synthetic
+fixture` only with positive evidence at the match: the file asserts that exact
+value absent or redacted, a narrow synthetic marker (`synthetic`, `not-real`,
+`placeholder`, `dummy`, `fake`, `fixture`, `redact`, `test-only`, `nonexistent`)
+sits within three lines, or the value is filler no credential uses (a single
+repeated run, or AWS's `…EXAMPLE` form). Bare `example` and `sample` are
+deliberately not markers. Anything unreadable or unparsable keeps the stricter
+answer. Classification reads the file locally and reports only the verdict —
+never the matched bytes.
+
+After Fix, blockers and majors trigger scoped Verify/Fix rounds. The default
+`review_rounds` budget is two additional Verify rounds (0–10 configurable);
+provider attempt retries do not consume rounds. A clean review stops at once.
+Claims of fixing a finding are conservatively re-reviewed rather than treated
+as proof of resolution. Exhaustion emits `run.review.unresolved`. With
+`blocker_gates_run: true`, remaining blockers fail the run; the default false
+records them. Minor findings never force a round. Reports include a severity
+histogram, unresolved findings, and a solo-review limitation note.
+
+During attempt startup, after prompt assembly and before provider dispatch,
+Fleet freezes a JSON leg script with the redacted request/prompt, exact provider
+argv, prompt SHA-256 and text reference, Git commit/branch and working delta,
+dependency states, CLI version and test allowlist version. Attempts expose the
+script path and hash. Bundles live under `runs/<run-id>/leg-scripts` beside the
+run event journal, outside Git's input tree so subsequent attempts do not
+recursively capture earlier bundles as source changes.
+
+`chats fleet replay-leg --run RUN --leg LEG --attempt NUMBER` checks the bundle
+hash and pinned commit, reconstructs a private checkout, invokes frozen provider
+flags with workspace paths relocated to that checkout, then applies the
+completion gate. A new numbered replay attempt and verdict/output diff are
+recorded without advancing the live DAG or replacing its output. Replay rows
+carry `replay_of` and are excluded from every live query: attempt fencing in
+`finish_attempt`, work-unit/DAG reconciliation, prior-error and event-log
+evidence, phase handoff outputs, live session inventory, and run-report attempt
+and retry counts. A replay taken while its leg is still running therefore cannot
+discard the live worker's completion as stale.
+
+The replay checkout, private isolation/input journal, and result JSON are
+retained for diagnosis. Keep the pinned Git object
+and bundle until debugging is finished; missing bases and changed allowlist
+versions refuse replay. Provider output is not expected to be byte-identical.
+Workspace and runtime paths are relocated in both argv and the prompt, with
+the relocation map and executed prompt hash in the replay receipt. The provider
+session is relocated too: a fresh session id replaces the frozen one in argv and
+the receipt records both. A leg that resumed an existing provider session is
+refused outright, because no supported CLI can fork that conversation and the
+replay would otherwise append to live state. Dependency
+environments (`.venv`, `node_modules`) are not bundled. Untracked symlinks,
+special files, and files larger than 32 MiB are recorded as unsupported inputs
+and cause replay to refuse rather than silently reconstruct a different tree.
+
+Replay validates declared checks through the same receipt-first evaluator the
+live completion gate uses: a command already recorded in the provider stream is
+not re-run, and a re-run keeps the environment overrides and `env -u` unsets the
+allowlist accepted. Re-runs go through the proof gate, so a check whose test log
+could not be persisted fails the replay with the capture reason even when the
+test process itself exited zero.
+
+## Run reports
+
+Terminal runs (`completed`, `failed`, `cancelled`, and dry-run `planned`) have
+post-run analysis in `fleet_run_reports` in the existing Fleet database. The
+additive migration creates a run-id primary key/FK with cascading deletion,
+`score_json`, `timeline_json`, `knowledge_json`, nullable `narrative_text`,
+`next_prompt_text`, `actions_json`, `generator`, `created_at`, and `generation`.
+`FleetStore.save_report/get_report/report_exists` redact writes with the same
+filters as final run output. First insertion and `run.report.ready` commit
+together; its payload contains `run_id`, `score`, and `size_class`, and the
+insertion returns the report's `generation`.
+
+Reopening a run retires its report. Retry, worker retry, difficult retry, and
+provider handoff delete the row inside the same transaction that queues the run
+again and emit `run.report.invalidated`, so the next terminal state recomputes
+facts instead of serving a summary of a state that no longer holds. Enrichment
+is fenced by `generation`: a pass still running when the run reopened updates
+nothing, records `run.report.superseded`, and cannot overwrite the report that
+replaced it.
+
+The terminal hook finishes lesson outcomes and commits deterministic facts before
+notification, then performs narrative enrichment after notification delivery has
+been attempted. Facts are therefore available without waiting for the model.
+Errors emit `run.report.failed`; model failure keeps the deterministic report and
+sets `generator` to `none (<reason>)`. The model pass has a 40-second cancellation
+deadline through the existing worker runner, a pinned final-phase model/effort,
+read access, and no adaptive routing. Dry runs, cancelled runs, and runs with no
+completed worker outputs skip it with an explicit reason. The prompt is at most
+8,000 redacted characters, including bounded Fix outputs and lesson summaries.
+Strict JSON is validated, and the returned model identity is checked with the
+same provider-aware family rule the worker runner uses, so dated releases of the
+pinned model are accepted while a substituted model is not. Actions are
+recommendations only.
+
+Score starts at 100: subtract 10 per distinct leg with multiple attempts (cap 30),
+5 per completion-evidence rejection (cap 20), 5 per stall (cap 15), 5 once if
+context delivered/source is below 0.5, 3 per recorded leg/run capacity or resource
+wait event (cap 9), and 15 for failed/cancelled runs. A zero source size is not
+context loss. Size counts all attempt rows: up to 2 XS, 4 S, 8 M, 16 L, else XL.
+The timeline contains the latest 100 matching issues, chronologically ordered,
+with timestamp, leg/attempt identifiers, and 500-character redacted summaries.
+Queries filter on the indexed run id; scoring still counts all matching events.
+
+Attribution covers Fleet lessons only: workers currently retrieve neither full
+knowledge nor memory. The stored lesson outcome is merely terminal run state.
+Votes default to `unclear`; `helped`/`hurt` require a quoted supplied Fix excerpt.
+The lessons section carries whole records inside its own share of the prompt and
+reports `omitted_lesson_count` rather than cutting a record in half, so a run
+with more lessons than the prompt can hold still produces a valid envelope: the
+model votes on exactly the delivered ids and every omitted lesson stays
+`unclear`. The deterministic lesson list preserves every use; narrative votes do
+not change the lesson database or prove causality. No cost rollups, timestamp backfills,
+or automatic knowledge-maintenance actions are introduced.
+
+Read through MCP `fleet_report(run_id)`, `chats fleet report RUN_ID [--json]`,
+or loopback-only `GET /fleet_report/RUN_ID` (also
+`GET /api/fleet/runs/RUN_ID/report`). MCP and HTTP return `{ok, report}`;
+CLI JSON returns the report itself. Live runs are refused, missing ids error,
+and old terminal runs generate on demand. Repeated/concurrent reads return the
+cached row without another ready event or provider call. While the first pass
+is running, the row says `none (generation pending)`; if the process dies, that
+durable deterministic report remains available. Terminal notices include the
+`/fleet_report/RUN_ID` pointer. MCP annotations disclose the on-demand write and
+provider call instead of advertising a strictly read-only operation.
+
+Acceptance uses real private SQLite runs and real MCP/CLI/Flask handlers with a
+mock narrative provider (`tests/test_fleet_reports.py`); this is not a receipt for
+an installed desktop release or a live paid/subscription provider call.
+
+## Delivery handoff at terminal (complete-with-handoff)
+
+When every agent step has finished but root-owed delivery debt remains —
+genuine ship steps with no Fleet owner (daemon restart, commit, release), or a
+worker that deferred instead of answering `not_applicable` — the run completes
+with a tracked handoff instead of parking in `waiting_for_input` forever.
+Terminal evaluation files one commitment per (unit, requirement) with
+`source="fleet/delivery"` and an idempotent
+`<run_id>:<unit_id>:<requirement-hash>` source ref, emits
+`run.delivery.handed_off` with the commitment ids, and appends a handoff
+listing to the result text under the `completed_with_handoff` marker. The run
+state stays `completed`, so learning outcomes, notifications, and reports treat
+it as success; the report's actions section leads with the handoff items.
+Resolve handed-off debt through commitments (`chats owed`), not delivery
+receipts.
+
+Parking is unchanged for every other case: debt owed by a real Fleet owner
+still parks the run with the usual "verify and submit coordinator receipts"
+copy, mid-run operator delivery evidence works exactly as before, and a
+commitments failure at terminal fails open to parked rather than completing
+without the handoff. Runs with no remaining debt complete byte-identically to
+before: no commitments, no marker, no event.
+
 ## Atomic Windows worker ownership
 
 `fleet.windows_process.WindowsProcess` creates every Windows Fleet worker,
@@ -715,11 +911,28 @@ run concurrently. Unknown ownership is repository-wide and serial. Integration r
 
 ## Context and inspection
 
-`core/fleet_context.py` gives every worker prompt a deterministic context budget. Context that fits
+`fleet/context.py` gives every worker prompt a deterministic context budget. Context that fits
 is delivered in full. Oversized context is excerpted per source rather than tail-truncated, and a
 durable receipt records source bytes, delivered bytes, omitted bytes, source count, redaction count,
 strategy, budget, and a hash of the complete sanitized source. The native chat remains authoritative,
 while Fleet attempts retain sanitized output; failed or bounded prompt composition rewrites neither.
+
+Repository briefs and skills share the 96,000-character context budget with peer outputs.
+A brief is selected by the exact registered `run.cwd` (never clone-name folding),
+bounded to 12,000 characters, and recorded with the SHA-256 of the exact version read.
+Later regeneration cannot change that dispatch receipt. `context.budgeted` events
+persist individual `sources` receipts through `record_context_receipt`, while the
+attempt receipt stores aggregate counts and the ordered source-digest hash.
+
+Skills are discovered in the actual worker checkout (`working_directory` when
+isolated, otherwise `run.cwd`): root `SKILL.md`, then `.agents/skills/*/SKILL.md`.
+Nested skills override root skills of the same name; names are sorted. The catalog
+is always injected and meaningful task/name/description token matches add full
+skill text within a 16,000-character cap. Oversized sources have explicit omission
+markers and receipt counts. Invalid skills emit `skill.discovery_warning` and are
+skipped. Both briefs and skills are untrusted evidence, redacted before dispatch;
+they never override worker authority. All providers receive identical prompt text,
+with no native skill flag changes. See [the skill standard](skills-standard.md).
 
 Fleet persistence filters common authorization headers, token/password environment assignments,
 private keys, and high-confidence GitHub, Slack, and AWS credential forms. The filter covers worker
@@ -1024,3 +1237,17 @@ navigation, PTY lifecycle, desktop split restoration, control outbox, and obliga
 | Scheduler and notification authority | implemented | The resident bounded loop registers only reviewed actions. Quiet hours, dedup, limits, approvals, retries, delivery history, Fleet alerts, voice, and Telegram fallback are enforced through one authority. |
 | Signed webhooks | implemented | Signed ingress, replay rejection, held-request approval with exact-body replay, loopback-only management routes, and the public HTTP mount are tested. |
 | Worker supervision, memory v2 | implemented | Worker leases, stalled-run recovery, reviewed memory proposals, typed records, retrieval receipts, retention, contradiction, supersession, and normal-surface routing are enforced and tested. |
+
+## Plan mode (CLI plan → approve → launch)
+
+`chats plan "query" --repo <abs-path>` runs the read-only evidence searches
+(chats FTS, memory retrieval, knowledge FTS, ledger retrieval via
+`core/plan_mode.py`), prints normalized citations
+(`chat:<sid8>`, `kb:<slug>`, `mem:<type>:<id>`, `ledger:<key>`), asks
+clarifiers (repo pin mandatory — never guessed), composes the fleet prompt,
+shows the exact `start_run(dry_run=True)` policy preview, and launches only
+after explicit approval through an `ActionAuthority` confirmation
+(`fleet.start_run`, source `cli`, effect `external`). Decline creates no run
+row (dry-run rows excepted). `--json` emits findings + clarifiers + artifact +
+preview + launched (null unless approved). Brain `"plan"` protocol, web
+approval card, and mobile/voice approval are follow-ups reusing the module.

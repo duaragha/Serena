@@ -59,6 +59,8 @@ class WorkerRequest:
     resume_session_id: str | None = None
     peer_token: str = field(default="", repr=False)
     fleet_db_path: str = ""
+    frozen_argv: tuple[str, ...] = ()
+    assigned_session_id: str = ''
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +97,8 @@ def run_worker(
 def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> list[str]:
     """Build the exact provider argv, exposed for policy and regression tests."""
 
+    if request.frozen_argv:
+        return list(request.frozen_argv)
     if request.provider == "gemini":
         from fleet.gemini import AGENT, MODEL, verify_agent
         if request.access_mode == "write" or request.phase != "discover":
@@ -227,7 +231,9 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
             _binary("muse"),
             "exec",
             "--json",
-            "--no-session-log",
+            # No --no-session-log: Fleet pins --session-id so the transcript is
+            # addressable, and Muse 1.3 refuses the pair ("a session id needs
+            # retained logging; remove --no-session-log").
         ]
         if request.model != _MUSE_MODEL:
             # An explicit Meta model pin travels verbatim. Serena's own
@@ -509,7 +515,7 @@ def _run_claude(
     cancel_requested: CancelCallback,
     on_event: EventCallback,
 ) -> WorkerResult:
-    assigned_sid = request.resume_session_id or str(uuid.uuid4())
+    assigned_sid = request.assigned_session_id or request.resume_session_id or str(uuid.uuid4())
     command = worker_command(request, session_id=assigned_sid)
     session_id: str | None = assigned_sid
     output_text = ""
@@ -666,7 +672,7 @@ def _run_muse(
 ) -> WorkerResult:
     from fleet import muse as _muse
 
-    assigned_sid = request.resume_session_id or str(uuid.uuid4())
+    assigned_sid = request.assigned_session_id or request.resume_session_id or str(uuid.uuid4())
     command = worker_command(request, session_id=assigned_sid)
     stream = _muse.MuseStream()
     raw_lines: list[str] = []
@@ -703,7 +709,10 @@ def _run_muse(
     # Serena's own muse-spark identity runs on the CLI default model, so an
     # absent report contradicts nothing. An explicit pin must be reported.
     actual_model = stream.model or (_muse.MODEL if request.model == _muse.MODEL else None)
-    actual_effort = stream.effort or request.effort
+    # A gated effort is downgraded on stderr and nowhere else, so read it back
+    # before trusting the request; otherwise the receipt claims an effort the
+    # model never ran.
+    actual_effort = stream.effort or _muse.downgraded_effort(process.stderr) or request.effort
     if process.cancelled:
         return WorkerResult(
             False,

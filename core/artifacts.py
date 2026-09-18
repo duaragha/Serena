@@ -96,6 +96,7 @@ class ArtifactRegistry:
         job_id: str,
         name: str,
         content: str | bytes,
+        max_bytes: int = MAX_ARTIFACT_BYTES,
     ) -> Path:
         """Atomically replace one artifact without following attacker-made links."""
 
@@ -103,7 +104,7 @@ class ArtifactRegistry:
             raise ValueError("invalid job id")
         clean_name = _clean_artifact_name(name)
         data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
-        if not data or len(data) > MAX_ARTIFACT_BYTES:
+        if not data or len(data) > max_bytes:
             raise ValueError("artifact size is outside the allowed range")
 
         root = self.root.resolve()
@@ -161,6 +162,7 @@ class ArtifactRegistry:
         origin_session_id: str = "",
         fleet_run_id: str = "",
         fleet_worker_key: str = "",
+        max_bytes: int = MAX_ARTIFACT_BYTES,
     ) -> ArtifactLink:
         if not _safe_identifier(job_id):
             raise ValueError("invalid job id")
@@ -177,7 +179,7 @@ class ArtifactRegistry:
         if _has_symlink_between(root, source):
             raise ValueError("artifact path may not contain symlinks")
         size = resolved.stat().st_size
-        if size < 1 or size > MAX_ARTIFACT_BYTES:
+        if size < 1 or size > max_bytes:
             raise ValueError("artifact size is outside the allowed range")
         clean_name = _clean_artifact_name(name)
         artifact_id = str(uuid.uuid4())
@@ -268,6 +270,11 @@ class ArtifactRegistry:
                 tuple(values),
             ).fetchall()
         return [self._link_from_row(row) for row in rows]
+
+    def get_link(self, artifact_id: str) -> ArtifactLink | None:
+        with self._connect() as connection:
+            row = connection.execute('SELECT * FROM artifacts WHERE artifact_id=?', (artifact_id,)).fetchone()
+        return self._link_from_row(row) if row else None
 
     def attach_provenance(
         self,

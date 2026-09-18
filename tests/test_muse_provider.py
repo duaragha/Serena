@@ -101,7 +101,7 @@ def test_fleet_builds_a_muse_only_run(tmp_path: Path) -> None:
     worker = policy.phases[1].workers[0]
     assert worker.provider == "muse"
     assert worker.model == "muse-spark"
-    assert worker.effort == "high"
+    assert worker.effort == MUSE_EFFORT == "max"
 
 
 def test_fleet_task_directive_selects_muse_only(tmp_path: Path) -> None:
@@ -117,7 +117,9 @@ def test_muse_worker_argv_uses_exec_json_and_bounds_authority(tmp_path, monkeypa
 
     write = worker_command(_request(tmp_path))
     assert write[:3] == ["/opt/bin/muse", "exec", "--json"]
-    assert "--no-session-log" in write
+    # Muse 1.3 refuses --no-session-log alongside the --session-id Fleet pins.
+    assert "--no-session-log" not in write
+    assert "--session-id" in write
     assert "--model" not in write  # default Serena identity uses the CLI default
     assert write[write.index("--reasoning-effort") + 1] == "high"
     assert write[write.index("--workspace") + 1] == str(tmp_path)
@@ -226,4 +228,25 @@ def test_muse_capacity_override_is_explicit_and_compatible(tmp_path) -> None:
 
 
 def test_muse_effort_is_a_real_cli_effort() -> None:
-    assert MUSE_EFFORT == "high"
+    # `muse exec --reasoning-effort` takes none|minimal|low|medium|high|xhigh|
+    # max|ultra; Fleet may only ask for one that is also a Serena effort.
+    from fleet.policy import EFFORTS
+
+    cli_efforts = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+    assert MUSE_EFFORT in cli_efforts
+    assert MUSE_EFFORT in EFFORTS
+    assert MUSE_EFFORT == "max"
+
+
+def test_gated_effort_downgrade_is_read_back_from_stderr() -> None:
+    # Verbatim from `muse exec --reasoning-effort ultra` on 2026-09-18.
+    from fleet.muse import downgraded_effort
+
+    stderr = (
+        "tbh: reasoning effort ultra is not available "
+        "(gate ultra_reasoning_effort is closed); using xhigh\n"
+    )
+    assert downgraded_effort(stderr) == "xhigh"
+    assert downgraded_effort("") is None
+    assert downgraded_effort(None) is None
+    assert downgraded_effort("muse: workspace trust: trusted source=user-config") is None

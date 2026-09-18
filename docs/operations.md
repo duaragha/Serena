@@ -62,12 +62,54 @@ They are not disposable. The private backup command covers them.
 | `~/.config/serena/` | brain discovery, environment files, tokens, models, job databases, call metrics, wake calibration, acceptance evidence, logs, and service state |
 | `~/.local/state/serena` | compatibility symlink to `~/.config/serena` on this laptop |
 | `~/.local/share/chats/` | rebuilt chat index plus desktop WebView storage |
+| `~/.config/serena/code-repos.json` | explicit code repository registry; user configuration, not a derived cache |
+| `DATA_DIR/code-index.db` (normally `~/.local/share/chats/code-index.db`) | storage class 3/4: derived, rebuildable code FTS, separate from chat/knowledge indexing |
 | `~/.claude/` | Claude subscription authentication and session history |
 | `~/.codex/` | Codex subscription authentication and session history |
 | `~/.config/systemd/user/` | installed service links used by the current Linux login |
 | iPhone installation | compiled Serena client and its device-local permissions/state |
 
 Runtime databases, credentials, logs, and tokens must never be committed.
+
+### Local code recall
+
+Register each checkout explicitly with `chats code add /absolute/repo/path`, then
+run `chats code refresh` and `chats code search 'someIdentifier'`. `chats code list`
+shows registered roots; `chats code status` shows indexed file/byte counts, timestamp,
+and skip counts. `--repo KEY` scopes refresh/search; `refresh --force` re-reads files.
+Refresh is manual in v1: search, unified search, and the read-only brain tool
+`recall_code` never refresh or create an index. Restart an already-running brain
+after installing the new tool registration.
+
+Registry keys are portable project paths; explicit ticket clones are **not** folded
+into their parent project. For a relocated checkout, use `chats code add NEW_ROOT
+--key EXISTING_KEY` to retain identity. Rows are keyed by repository plus relative
+path, and result paths use the current registry root. Foreign OS paths use the
+shared path translator, so the flat Windows `Projects/` layout also resolves to a
+checkout nested under `Documents/Projects/personal_projects/`; an unavailable root
+fails refresh rather than scanning a parent/home directory or pruning its indexed
+files. Git metadata columns are reserved and nullable in v1; refresh does not walk
+Git history.
+
+Search matches split identifier forms through a separate indexed column, so a
+returned snippet is always a window of the real redacted source centred on the
+match. Raising the schema version drops the derived corpus and the next refresh
+rebuilds it; the registry is never touched.
+
+The scanner honors nested `.gitignore` rules for `*`, `**`, and directory patterns
+(negations are unsupported), skips dependency/build/protected paths and symlinks,
+rejects NUL-containing probes, files above 200 KiB, and average lines above 500
+characters. Long-line lockfiles may intentionally be absent. Source secrets are
+redacted before storage, with line offsets retained. Ignore rules and accepted/
+rejected file signatures are cached in the derived DB so unchanged refreshes need
+only filesystem metadata, including across CLI invocations. Stat caching assumes
+content changes alter size or mtime; use `--force` after timestamp-preserving edits.
+
+`chats code remove KEY` unregisters and prunes that repository. `chats code drop`
+clears only derived code rows, preserving the registry and chat index; run refresh
+to rebuild. Updates use an independent code lock and transactions. Code readers
+use SQLite read-only connections without WAL sidecars; they cannot acquire the
+chat writer lock. No automatic repository registration or hosted service is added.
 
 ## Rebuildable local cache
 

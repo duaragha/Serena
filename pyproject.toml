@@ -30,6 +30,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+browser = [
+    # Raw CDP, no Playwright driver/browser download or context mutations.
+    "httpx>=0.28,<1",
+    "websockets>=10.4,<16",
+]
 workspace = [
     # Verified SDK control schema/process identity for the opt-in native pane.
     # The SDK itself is a base dependency; only the schema check is extra.

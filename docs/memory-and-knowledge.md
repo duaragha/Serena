@@ -324,6 +324,71 @@ memories and tasks; screen text never becomes action authority. Rollouts remain
 unchanged and screenshots are not persisted. See `docs/computer-use.md` for
 hook installation, retention and context-size limits.
 
-## Files to Create
-1. `~/Documents/Projects/knowledge/.claude/maintenance-prompt.md` — the agent's instructions
-2. update `~/.claude/settings.json` or use `/schedule` to register the weekly trigger
+## Implemented knowledge lifecycle
+
+`core/knowledge_maintenance.py` supersedes the historical prose maintenance plan
+above, including its auto-fix/date-stamping instructions. The resident scheduler
+installs `serena.knowledge.maintenance` once, runs it immediately and then weekly,
+and respects operator pause/removal. No provider call or shell command is used.
+
+Every topic Markdown file carries `trigger: <one-line retrieval description>` and
+`last_verified: YYYY-MM-DD` frontmatter. `chats knowledge backfill` adds missing
+metadata without rewriting bodies or unknown fields. Existing verification comments
+are retained; unknown dates become `1970-01-01`, never file mtime. The scheduled
+pass runs this idempotent metadata migration, then reports stale files (tech 60 days,
+default 90), orphan topics, duplicate/strongly overlapping bodies, malformed triggers, and pending factual
+feedback in `DATA_DIR/knowledge-maintenance.json`. It flags content for review and
+does not rewrite research. `chats knowledge maintenance` runs the same pass manually.
+Overlap uses exact normalized-body hashes or at least 80% three-word-shingle
+similarity on the first 10,000 words (minimum 20 distinct shingles); it is a
+review hint, never an automatic merge or semantic contradiction assertion.
+Private knowledge is absent from isolated Git checkouts; its backfill runs against
+the configured runtime knowledge directory after integration, or via the explicit CLI.
+
+`core/knowledge_store.py` owns note/INDEX writes. Unknown INDEX lines and per-file
+links are preserved. A process/thread lock, same-directory atomic replacements,
+and a durable write-ahead journal make the pair recoverable. A failed INDEX replace
+rolls back the note; a process interruption rolls forward before the next cooperating
+read/write. Readers outside these APIs cannot observe a two-file atomic snapshot.
+No filesystem offers a single rename transaction across two independent paths.
+
+Knowledge read surfaces persist `knowledge_hits` in `DATA_DIR/knowledge.sqlite3`:
+timestamp, slug, filename, SHA-256 query/content hashes, surface, caller, receipt ID.
+Brain reads/search, daemon catalog reads, computer packs, CLI, and FTS use this store.
+The newest 10,000 receipts are retained; raw queries and feedback speech are never
+stored. Internal indexing/maintenance scans are not user retrieval receipts.
+Trigger text joins titles in the brain search heading zone at three times body weight.
+
+`record_knowledge_feedback` validates a genuine current/previous user turn and the
+persisted file receipt. Relevance feedback and factual corrections are distinct
+reviewable proposals. Factual corrections require a complete candidate; canonical
+Markdown stays unchanged until `review_knowledge_proposal` explicitly approves it.
+Approval checks the retrieved content hash to reject stale corrections. Consent must
+be a complete, present-tense instruction whose review verb takes this proposal as its
+object. Negation ("do not approve that proposal"), a verb aimed elsewhere ("approve
+the deployment and leave the knowledge proposal unchanged"), a question ("should I
+approve this proposal?"), deferred or conditional consent ("approve it only after I
+confirm tomorrow"), quoted review language (`the document says "approve that
+proposal"`), and any cited identifier that is not this proposal's are all refused,
+never applied. Receipts also
+require the canonical file to still exist, so a deleted note never produces a
+retrieval record even when a cached index row still holds its content. Inspection
+and review are also available through `chats knowledge proposals` and
+`chats knowledge review <id> approve|reject`. Rejection never changes the note.
+
+## Repository brief convention
+
+Every code index refresh generates a missing brief at `repo-<key>/brief.md` with six
+sections: layout, entry points, key modules, data stores, build commands, test commands.
+Simple lowercase registry keys remain literal; path-like keys use a readable slug
+plus a stable hash to prevent collisions and traversal. Ticket clones remain distinct.
+Generation uses only guarded/redacted code-index chunks. Missing evidence is stated,
+and inferred commands are labeled. No repository scripts run during generation.
+
+`drift.json` stores the indexed HEAD, file hashes, brief hash, timestamp, and stale
+state. A HEAD change or changed-file ratio greater than 20% marks it stale before
+refresh. The stale state doubles as a durable retry queue; failed generation is
+reported by index refresh and retried on the next refresh. Brief replacement is
+atomic. `chats code brief <key>` shows it, `--generate` rebuilds from the existing
+index, and `--refresh` updates the index first. Zero-hit `recall_code` returns
+ranked brief excerpts without regenerating anything.

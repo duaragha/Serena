@@ -166,6 +166,23 @@ def fleet_inspect(run_id: str):
     return jsonify({"ok": True, "inspection": _jsonable(inspection)})
 
 
+@fleet_bp.get("/fleet_report/<run_id>")
+@fleet_bp.get("/api/fleet/runs/<run_id>/report")
+def fleet_report(run_id: str):
+    if not _valid_run_id(run_id):
+        return _error("invalid run id", 400)
+    action, unavailable = _action("get_report")
+    if unavailable:
+        return unavailable
+    try:
+        report = action(run_id)
+    except KeyError:
+        return _error("run not found", 404)
+    except (ValueError, RuntimeError) as exc:
+        return _error(str(exc) or "Fleet report rejected", 409)
+    return jsonify({"ok": True, "report": _jsonable(report)})
+
+
 @fleet_bp.post("/api/fleet/runs/<run_id>/stop")
 def fleet_stop(run_id: str):
     if not _valid_run_id(run_id):
