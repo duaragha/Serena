@@ -599,3 +599,67 @@ def test_windows_test_reruns_keep_system_variables(monkeypatch):
     assert "ANTHROPIC_API_KEY" not in environment
     monkeypatch.setattr(completion_gate.os, "name", "posix")
     assert "SYSTEMROOT" not in completion_gate._test_environment({}, [])
+
+
+def test_a_delivery_it_cannot_finish_is_not_retried_in_silence(queue, monkeypatch):
+    """The run passed; pushing it did not. That is still an answer he is owed.
+
+    Delivery fails on things only he can clear -- expired GitHub auth, a
+    protected branch -- and the old path recorded the reason and retried every
+    60s without ever mentioning it, so a finished job looked like a hung one.
+    """
+
+    from core import agent_checkouts, scheduler_actions
+    from fleet import supervisor
+
+    # Sourced the way his texts are, which is what makes the answer his.
+    task = store.enqueue_task(BRIEF, source_id="imessage:12")
+    claimed = store.claim_next_task("d")
+    store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-9")
+    monkeypatch.setattr(supervisor, "get_run",
+                        lambda run_id: {"state": "completed", "cwd": "/checkout"})
+    checkout = SimpleNamespace(path="/checkout", branch=f"serena/task-{task['id']}")
+    monkeypatch.setattr(agent_checkouts, "locate", lambda cwd: checkout)
+    monkeypatch.setattr(agent_checkouts, "deliver", Mock(
+        side_effect=agent_checkouts.CheckoutError("gh pr create failed: token is invalid")))
+    texts = []
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key, **kw: texts.append((key, text, kw.get("answers_request"))) or True)
+
+    reconcile = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]
+    first = reconcile({})
+
+    assert texts and "can't deliver it" in texts[0][1]
+    assert "token is invalid" in texts[0][1]
+    assert texts[0][2] is True, "he asked for this task, so it must not wait for morning"
+    # It stays running so the next tick delivers once he clears the cause.
+    assert store.get_memory(task["id"])["state"] == "running"
+    assert first.output["closed"][0]["error"].startswith("delivery failed")
+
+    # And the same reason does not text him again on every tick.
+    reconcile({})
+    assert len(texts) == 1
+
+
+def test_an_internal_task_stuck_on_delivery_can_wait_for_morning(queue, monkeypatch):
+    """Nobody is sitting on the other end of a queue write, so it is a notice."""
+
+    from core import agent_checkouts, scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task(BRIEF)  # no imessage source: internal
+    claimed = store.claim_next_task("d")
+    store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-10")
+    monkeypatch.setattr(supervisor, "get_run",
+                        lambda run_id: {"state": "completed", "cwd": "/checkout"})
+    checkout = SimpleNamespace(path="/checkout", branch=f"serena/task-{task['id']}")
+    monkeypatch.setattr(agent_checkouts, "locate", lambda cwd: checkout)
+    monkeypatch.setattr(agent_checkouts, "deliver", Mock(
+        side_effect=agent_checkouts.CheckoutError("gh pr create failed: token is invalid")))
+    seen = []
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key, **kw: seen.append(kw.get("answers_request")) or True)
+
+    scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]({})
+
+    assert seen == [False]
