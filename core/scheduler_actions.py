@@ -34,6 +34,20 @@ IDLE_RUN_STATES = TERMINAL_RUN_STATES | {"waiting_for_input"}
 # Reconciliation work per tick: deliveries push to GitHub, so keep it small.
 MAX_RECONCILE_PER_TICK = 3
 DISPATCH_ORIGIN = "serena-task:"
+# The scheduler adds these to every handler payload out of its own context --
+# where to run, and what the previous link produced -- never from anything a
+# caller supplied. An action that takes no configuration still has to tolerate
+# them: without this, chaining one of them would fail it on every run and
+# `MAX_CONSECUTIVE_FAILURES` would quietly disable the schedule.
+RESERVED_PAYLOAD_KEYS = frozenset({"chain_input", "workdir"})
+
+
+def _configuration(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """The part of a payload that is actually configuration, if any."""
+
+    return {key: value for key, value in (payload or {}).items()
+            if key not in RESERVED_PAYLOAD_KEYS}
+
 DELIVERY_RULES = (
     "\n\n---\nDispatcher handoff for this task: you are working in a private "
     "checkout on branch serena/task-{task_id}, and that checkout is this run's base "
@@ -259,7 +273,7 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
 
     from core import agent_checkouts
 
-    if payload:
+    if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.start accepts no schedule payload")
 
     owner = f"scheduler:{uuid4().hex}"
@@ -414,25 +428,6 @@ def _notify_phone(text: str, key: str) -> bool:
     return bool(result.sent)
 
 
-def _ring_phone(text: str, key: str) -> bool:
-    """Call him about it too, when his phone line is set up.
-
-    The text above is the record; the call is only the nudge, so it skips
-    quiet hours instead of queueing a stale call for the morning.
-    """
-
-    import time
-
-    from core import phone_call
-    from core.notification_senders import default_authority, notify
-
-    if not phone_call.enabled() or default_authority().policy.in_quiet_hours(time.time()):
-        return False
-    result = notify("task.update", text, channel="call", dedupe_key=f"{key}:call",
-                    source_surface="dispatch", fallback_channel=None)
-    return bool(result.sent)
-
-
 def _notify_once(text: str, key: str) -> bool:
     """Send a notice at most once ever, beyond the authority's hourly dedupe."""
 
@@ -454,14 +449,6 @@ def _notify_once(text: str, key: str) -> bool:
     return True
 
 
-def _spoken_summary(task_id: int, final: str, headline: str) -> str:
-    """What she says when he picks up; links stay in the text."""
-
-    if final == "done":
-        return f"hey, task {task_id} is done: {headline}. details are in your messages."
-    return f"hey, task {task_id} got stuck: {headline}. i texted you what happened."
-
-
 def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     """Close finished dispatched runs: deliver, record, and tell him.
 
@@ -476,7 +463,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     from fleet.supervisor import get_run
     from memory import store
 
-    if payload:
+    if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.reconcile accepts no schedule payload")
     closed: list[dict[str, Any]] = []
     for task in store.tasks_in_state("running"):
@@ -547,8 +534,6 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             final = "blocked"
         if store.finish_task_run(task_id, run_id, final, result):
             record["notified"] = _notify_phone(message, f"task:{task_id}:{final}")
-            record["called"] = _ring_phone(_spoken_summary(task_id, final, headline),
-                                           f"task:{task_id}:{final}")
             if checkout is not None and final == "done":
                 # A failed run keeps its worktree so the partial work can be read.
                 agent_checkouts.cleanup(checkout)
@@ -584,7 +569,7 @@ def poll_phone_line(payload: dict[str, Any]) -> ActionOutcome:
     from core import phone_line
     from core.unified_hub import UnifiedHubError
 
-    if payload:
+    if _configuration(payload):
         return ActionOutcome(False, "serena.phone.poll accepts no schedule payload")
     if not phone_line.available():
         return ActionOutcome(True, "phone line is not configured on this machine")
@@ -595,94 +580,6 @@ def poll_phone_line(payload: dict[str, Any]) -> ActionOutcome:
     return ActionOutcome(
         True, f"read {report.seen} message(s), handled {len(report.commands)} command(s)",
         output={"commands": report.commands},
-    )
-
-
-# She waits before raising a stalled task, because the queue usually moves it
-# without him, and then speaks at most once a shift. Initiative that repeats
-# every poll is nagging, and he stops reading a line that nags.
-NUDGE_ASKED_AGE_SECONDS = 45 * 60
-NUDGE_INTERVAL_SECONDS = 6 * 3600
-
-
-def _nudge_state_path():
-    from pathlib import Path
-
-    return Path.home() / ".local" / "state" / "serena" / "phone-nudge.json"
-
-
-def _nudge_text(task: dict[str, Any]) -> str:
-    brief = " ".join(str(task.get("content") or "").split())[:140]
-    task_id = task["id"]
-    if task["state"] == "blocked":
-        return (f"#{task_id} is still stuck and i can't move it: {brief}. "
-                f"reply \"retry #{task_id}\" or tell me what to change.")
-    return (f"#{task_id} is still waiting on you: {brief}. "
-            f"reply \"#{task_id} <details>\" and i'll run it.")
-
-
-def nudge_phone_line(payload: dict[str, Any]) -> ActionOutcome:
-    """Text him first about the one task that cannot move without him.
-
-    Every other notice is a reply, or a report about work that just finished.
-    This is the one place she starts the conversation, so it is deliberately
-    narrow: the oldest task that is blocked or whose triage question he never
-    answered, one line, and never more often than NUDGE_INTERVAL_SECONDS.
-    Delivery goes through the same authority as everything else, so quiet hours
-    and the hourly limit still hold.
-    """
-
-    import json
-    import time
-
-    from core import phone_line
-    from memory import store
-
-    if payload:
-        return ActionOutcome(False, "serena.phone.nudge accepts no schedule payload")
-    if not phone_line.available():
-        return ActionOutcome(True, "phone line is not configured on this machine")
-    now = time.time()
-    path = _nudge_state_path()
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        state = {}
-    if not isinstance(state, dict):
-        state = {}
-    quiet_for = NUDGE_INTERVAL_SECONDS - (now - float(state.get("nudged_at") or 0))
-    if quiet_for > 0:
-        return ActionOutcome(True, f"spoke recently; quiet for {int(quiet_for / 60)}m more")
-
-    candidate = None
-    for task in store.tasks_in_state("blocked", "needs_triage"):
-        if store._is_snoozed(task):
-            continue
-        if task["state"] == "needs_triage":
-            # Unasked briefs are the reconciler's job; she only chases the
-            # question she already sent and he left unanswered.
-            try:
-                asked = float(task.get("asked_at") or 0)
-            except (TypeError, ValueError):
-                asked = 0
-            if not asked or now - asked < NUDGE_ASKED_AGE_SECONDS:
-                continue
-        candidate = task
-        break
-    if candidate is None:
-        return ActionOutcome(True, "nothing is waiting on him")
-
-    key = f"nudge:{candidate['id']}:{candidate['state']}"
-    sent = _notify_phone(_nudge_text(candidate), key)
-    if sent:
-        state.update(nudged_at=now, task_id=candidate["id"], key=key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    return ActionOutcome(
-        True,
-        f"nudged him about #{candidate['id']}" if sent
-        else f"#{candidate['id']} is waiting, but the notice was held",
-        output={"task_id": candidate["id"], "state": candidate["state"], "sent": sent},
     )
 
 
@@ -706,7 +603,7 @@ def check_phone_health(payload: dict[str, Any]) -> ActionOutcome:
 
     from core import bluebubbles_line, phone_line
 
-    if payload:
+    if _configuration(payload):
         return ActionOutcome(False, "serena.phone.health accepts no schedule payload")
     if not bluebubbles_line.enabled():
         return ActionOutcome(True, "Serena's own iMessage line is not configured here")
@@ -764,7 +661,10 @@ def check_phone_health(payload: dict[str, Any]) -> ActionOutcome:
 
 
 # The whole registry. A schedule may name exactly one of these keys.
+from core.knowledge_maintenance import scheduled_pass as maintain_knowledge
+
 REVIEWED_ACTIONS = {
+    'serena.knowledge.maintenance': maintain_knowledge,
     "serena.obligations.sweep": sweep_obligations,
     "serena.obligations.report": report_outstanding,
     "serena.notifications.flush": flush_notifications,
@@ -772,7 +672,6 @@ REVIEWED_ACTIONS = {
     "serena.fleet.start": start_ready_fleet_task,
     "serena.fleet.reconcile": reconcile_fleet_tasks,
     "serena.phone.poll": poll_phone_line,
-    "serena.phone.nudge": nudge_phone_line,
     "serena.phone.health": check_phone_health,
 }
 
