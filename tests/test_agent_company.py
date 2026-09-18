@@ -663,3 +663,38 @@ def test_an_internal_task_stuck_on_delivery_can_wait_for_morning(queue, monkeypa
     scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]({})
 
     assert seen == [False]
+
+
+def test_the_handoff_names_the_owner_the_validator_accepts():
+    """The handoff used to forbid the only owner a dispatched run can defer to.
+
+    It said "Never defer delivery to root" while fleet.completion rejects
+    anything but "root" or a worker key -- so the worker on #1054 obeyed the
+    handoff, wrote "Fleet supervisor", and burned an attempt on
+    "deferred delivery named an owner Fleet cannot route to". The handoff also
+    says the dispatcher opens the pull request, and that dispatcher is root.
+    """
+
+    import json
+
+    from core.scheduler_actions import _delivery_rules
+    from fleet.completion import _delivery_failures
+    from fleet.contracts import _completion_contract
+
+    note = _delivery_rules(1054)
+    assert "Never defer delivery to root" not in note
+
+    required = _completion_contract("coding", "")["delivery_requirements"]
+    answers = json.loads(note[note.index("\n[") + 1:])
+
+    # What the handoff now tells it to write is what the validator accepts.
+    answers[0].update(state="deferred", reason="the dispatcher opens the PR",
+                      owner="root")
+    failures, deferred, _verified = _delivery_failures(required, answers)
+    assert failures == [], failures
+    assert deferred and deferred[0]["owner"] == "root"
+
+    # And the prose it wrote last time is still refused, so the rule is real.
+    answers[0]["owner"] = "Fleet supervisor"
+    failures, _deferred, _verified = _delivery_failures(required, answers)
+    assert any("cannot route to" in f for f in failures)
