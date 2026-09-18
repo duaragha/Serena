@@ -51,7 +51,7 @@ def _capacity(*, claude: bool, codex: bool, muse: bool = True):
 
 
 class FakeCodexBrain:
-    model = "gpt-5.6-terra"
+    model = "gpt-6-astra"
     effort = "high"
 
     def __init__(self) -> None:
@@ -203,7 +203,7 @@ def test_normal_limit_reply_is_replaced_by_codex_and_never_journaled(
         )
 
         assert out["provider"] == "codex"
-        assert out["model"] == "gpt-5.6-terra"
+        assert out["model"] == "gpt-6-astra"
         assert out["say"] == "fallback reply"
         assert manager.session_id == "claude-session"
         assert codex.messages and "are you there?" in codex.messages[0]
