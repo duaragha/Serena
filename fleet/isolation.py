@@ -1549,10 +1549,25 @@ def _restore_paths(root: Path, captured: dict[str, bytes | None]) -> None:
             continue
 
 
+def _testlog_receipt(stdout, stderr):
+    from fleet.artifacts import spill_testlog
+    try:
+        artifact = spill_testlog(stdout, stderr)
+        return {'artifact': artifact} if artifact else {}
+    except (ValueError, OSError, sqlite3.Error) as error:
+        # Return a failed gate so integration executes its normal rollback.
+        return {'artifact_error': f'testlog persistence refused: {error}'}
+
+
 def run_test_gate(
-    root: Path | str, command: list[str] | None, *, timeout: int = 900
+    root: Path | str, command: list[str] | None, *, timeout: int = 900,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Run the integration test gate and record what was actually observed."""
+    """Run the integration test gate and record what was actually observed.
+
+    `env` carries the environment a declared check was accepted with, so a
+    replay runs the same process the live completion gate would have run.
+    """
 
     if not command:
         return {"ran": False, "ok": True, "reason": "no test gate configured"}
@@ -1560,20 +1575,30 @@ def run_test_gate(
         result = subprocess.run(
             list(command),
             cwd=str(root),
+            env=env,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout.decode(errors='replace') if isinstance(error.stdout, bytes) else error.stdout
+        stderr = error.stderr.decode(errors='replace') if isinstance(error.stderr, bytes) else error.stderr
+        proof = _testlog_receipt(stdout, stderr)
+        return {'ran': True, 'ok': False, 'command': list(command), 'exit_code': 124,
+                'reason': 'test gate timed out', 'output_tail': (stdout or '')[-2000:] + (stderr or '')[-2000:],
+                **proof}
     except (OSError, subprocess.SubprocessError) as error:
         return {"ran": False, "ok": False, "reason": f"test gate could not run: {error}"}
     tail = (result.stdout or "")[-2_000:] + (result.stderr or "")[-2_000:]
+    proof = _testlog_receipt(result.stdout, result.stderr)
     return {
         "ran": True,
-        "ok": result.returncode == 0,
+        "ok": result.returncode == 0 and 'artifact_error' not in proof,
         "command": list(command),
         "exit_code": result.returncode,
         "output_tail": tail,
+        **proof,
     }
 
 
@@ -1683,13 +1708,23 @@ def dependency_sync_command(
     worse, validate the wrong version. The install is bounded to recognised
     lockfiles and disables lifecycle scripts; arbitrary package-manager hooks
     never become part of Fleet's integration authority.
+
+    A *stale* tree is not the only way to have the wrong one. Because
+    node_modules is outside git, a freshly created private checkout has no
+    dependency tree at all, and a worker that touched no manifest left the
+    graph "unchanged" -- so the gate used to run `npm test` against nothing,
+    fail on the missing preset, and roll back work whose own checks had
+    passed. An absent tree is therefore as much a reason to install as a
+    changed one.
     """
 
     checkout = Path(root)
     changed = {str(path).replace("\\", "/").lstrip("./") for path in changed_paths}
-    if not changed.intersection(_NODE_DEPENDENCY_FILES):
-        return None
     if not (checkout / "package.json").is_file():
+        return None
+    manifest_changed = bool(changed.intersection(_NODE_DEPENDENCY_FILES))
+    absent = not (checkout / "node_modules").is_dir()
+    if not manifest_changed and not absent:
         return None
     if (checkout / "package-lock.json").is_file() or (
         checkout / "npm-shrinkwrap.json"
@@ -1700,8 +1735,11 @@ def dependency_sync_command(
     if (checkout / "yarn.lock").is_file():
         return ["yarn", "install", "--immutable", "--mode=skip-builds"]
     # A manifest-only repository has no reproducible graph for Fleet to trust.
-    # Refuse to invent or rewrite its lockfile during integration.
-    return []
+    # Refuse to invent or rewrite its lockfile during integration. A *changed*
+    # manifest with no lockfile is a real problem for the caller to report; a
+    # merely absent tree is not this function's to fail integration over, so
+    # it declines and lets the gate speak for itself.
+    return [] if manifest_changed else None
 
 
 def run_dependency_sync(
