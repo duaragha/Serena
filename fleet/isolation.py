@@ -1549,10 +1549,25 @@ def _restore_paths(root: Path, captured: dict[str, bytes | None]) -> None:
             continue
 
 
+def _testlog_receipt(stdout, stderr):
+    from fleet.artifacts import spill_testlog
+    try:
+        artifact = spill_testlog(stdout, stderr)
+        return {'artifact': artifact} if artifact else {}
+    except (ValueError, OSError, sqlite3.Error) as error:
+        # Return a failed gate so integration executes its normal rollback.
+        return {'artifact_error': f'testlog persistence refused: {error}'}
+
+
 def run_test_gate(
-    root: Path | str, command: list[str] | None, *, timeout: int = 900
+    root: Path | str, command: list[str] | None, *, timeout: int = 900,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Run the integration test gate and record what was actually observed."""
+    """Run the integration test gate and record what was actually observed.
+
+    `env` carries the environment a declared check was accepted with, so a
+    replay runs the same process the live completion gate would have run.
+    """
 
     if not command:
         return {"ran": False, "ok": True, "reason": "no test gate configured"}
@@ -1560,20 +1575,30 @@ def run_test_gate(
         result = subprocess.run(
             list(command),
             cwd=str(root),
+            env=env,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout.decode(errors='replace') if isinstance(error.stdout, bytes) else error.stdout
+        stderr = error.stderr.decode(errors='replace') if isinstance(error.stderr, bytes) else error.stderr
+        proof = _testlog_receipt(stdout, stderr)
+        return {'ran': True, 'ok': False, 'command': list(command), 'exit_code': 124,
+                'reason': 'test gate timed out', 'output_tail': (stdout or '')[-2000:] + (stderr or '')[-2000:],
+                **proof}
     except (OSError, subprocess.SubprocessError) as error:
         return {"ran": False, "ok": False, "reason": f"test gate could not run: {error}"}
     tail = (result.stdout or "")[-2_000:] + (result.stderr or "")[-2_000:]
+    proof = _testlog_receipt(result.stdout, result.stderr)
     return {
         "ran": True,
-        "ok": result.returncode == 0,
+        "ok": result.returncode == 0 and 'artifact_error' not in proof,
         "command": list(command),
         "exit_code": result.returncode,
         "output_tail": tail,
+        **proof,
     }
 
 

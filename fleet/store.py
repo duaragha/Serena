@@ -182,6 +182,13 @@ class FleetStore:
             ).fetchone()
             return self._snapshot(connection, run_id) if row is not None else None
 
+    def artifact_links(self, run_id: str, *, leg_id: str = '', attempt_id: str = '') -> list[dict[str, Any]]:
+        from fleet.artifacts import FleetArtifacts
+        with self._connect() as connection:
+            if not connection.execute('SELECT 1 FROM fleet_run_artifacts WHERE run_id=? LIMIT 1', (run_id,)).fetchone():
+                return []
+        return FleetArtifacts(self).list(run_id, leg_id=leg_id, attempt_id=attempt_id)
+
     def get_result(self, run_id: str) -> dict[str, Any]:
         """Return the potentially large final result only on explicit request."""
 
@@ -3332,6 +3339,19 @@ class FleetStore:
                 );
                 CREATE INDEX IF NOT EXISTS fleet_runs_state_idx
                     ON fleet_runs(state, created_at);
+
+                CREATE TABLE IF NOT EXISTS fleet_run_artifacts (
+                    id INTEGER PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
+                    leg_id TEXT NOT NULL REFERENCES fleet_legs(leg_id) ON DELETE CASCADE,
+                    attempt_id TEXT NOT NULL REFERENCES fleet_attempts(attempt_id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL CHECK(kind IN ('screenshot','testlog','patch')),
+                    artifact_id TEXT NOT NULL UNIQUE,
+                    sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS fleet_artifacts_run_idx
+                    ON fleet_run_artifacts(run_id, leg_id, attempt_id);
+
 
                 CREATE TABLE IF NOT EXISTS fleet_legs (
                     leg_id TEXT PRIMARY KEY,

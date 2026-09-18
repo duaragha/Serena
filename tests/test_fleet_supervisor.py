@@ -314,6 +314,8 @@ def test_four_isolated_writers_without_declared_paths_are_serialized_and_preclai
 
 
 def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch):
+    # This queue fixture has no durable attempts; proof uses real-row fixtures.
+    monkeypatch.setattr('fleet.artifacts.FleetArtifacts.write', lambda *a, **kw: {'artifact_id': 'fixture'})
     root = fleet_env / "ordered-integration-repo"
     root.mkdir()
     subprocess.run(["git", "-C", str(root), "init", "-q", "-b", "main"], check=True)
@@ -420,6 +422,7 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
 
 
 def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, monkeypatch):
+    monkeypatch.setattr('fleet.artifacts.FleetArtifacts.write', lambda *a, **kw: {'artifact_id': 'fixture'})
     root = fleet_env / "failed-writer-integration-repo"
     root.mkdir()
     subprocess.run(["git", "-C", str(root), "init", "-q", "-b", "main"], check=True)

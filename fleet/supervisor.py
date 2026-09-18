@@ -2265,7 +2265,18 @@ def _declared_integration_tests(
     return argvs
 
 
-def _integrate_completed_workspace(
+def _integrate_completed_workspace(store, snapshot, leg, attempt, **kwargs):
+    from fleet.artifacts import FleetArtifacts, artifact_capture
+    adapter = FleetArtifacts(store)
+    with artifact_capture(adapter, snapshot['run_id'], leg['leg_id'], attempt['attempt_id']):
+        result = _integrate_completed_workspace_impl(store, snapshot, leg, attempt, **kwargs)
+    patch = getattr(result, 'patch_path', None)
+    if patch and Path(patch).is_file():
+        adapter.write(snapshot['run_id'], leg['leg_id'], attempt['attempt_id'], 'patch', Path(patch).read_bytes())
+    return result
+
+
+def _integrate_completed_workspace_impl(
     store: FleetStore,
     snapshot: dict[str, Any],
     leg: dict[str, Any],
@@ -2421,15 +2432,17 @@ def _drain_pending_integrations_locked(
         if current is None:
             continue
         try:
-            integration = integrate_workspace(
-                isolation,
-                run_id=run_id,
-                worker_key=ready_worker,
-                cwd=str(current["cwd"]),
-                test_gate=_integration_test_gate(),
-                declared_tests=current.get("declared_tests"),
-                declared_paths=current.get("declared_paths"),
-            )
+            from fleet.artifacts import FleetArtifacts, artifact_capture
+            with artifact_capture(FleetArtifacts(store), run_id, current['leg']['leg_id'], current['attempt']['attempt_id']):
+                integration = integrate_workspace(
+                    isolation,
+                    run_id=run_id,
+                    worker_key=ready_worker,
+                    cwd=str(current["cwd"]),
+                    test_gate=_integration_test_gate(),
+                    declared_tests=current.get("declared_tests"),
+                    declared_paths=current.get("declared_paths"),
+                )
             current["result"] = integration
             with suppress(Exception):
                 store.append_event(
@@ -2880,6 +2893,19 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
                 False,
                 result.event_log_path,
             )
+    try:
+        from fleet.artifacts import FleetArtifacts, persist_declared, capture_screenshot
+        adapter = FleetArtifacts(store)
+        persist_declared(adapter, run_id, leg['leg_id'], attempt['attempt_id'], safe_output, working_directory)
+        if request.phase == 'verify' and snapshot['policy'].get('ui_verify_screenshots', False):
+            capture_screenshot(adapter, run_id, leg['leg_id'], attempt['attempt_id'],
+                               session_id=str(snapshot['policy'].get('computer_session_id') or ''))
+    except Exception as exc:
+        store.append_event(run_id, 'artifact.capture.failed', {'error': redact_text(str(exc))[0]},
+                           leg_id=leg['leg_id'], attempt_id=attempt['attempt_id'])
+        state, safe_error = 'failed', f'proof artifact capture failed: {redact_text(str(exc))[0]}'
+        from dataclasses import replace
+        result = replace(result, ok=False, error=safe_error)
     try:
         store.finish_attempt(
             attempt["attempt_id"],

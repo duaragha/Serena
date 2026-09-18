@@ -1,5 +1,30 @@
 # Fleet runtime and recovery
 
+## Proof artifacts, review rounds, and replay
+
+Fleet persists proof in the shared `ArtifactRegistry` and keeps only linked
+metadata in `fleet_run_artifacts`: run, leg, attempt, kind, registry id, SHA-256,
+byte count and creation time. Kinds are `testlog` (32 MiB), `patch` (32 MiB), and
+`screenshot` (16 MiB). Oversize writes fail explicitly. Existing registry callers
+retain their 512 KiB default. Reads validate both registry integrity and Fleet
+metadata. Links use the existing HMAC-protected `/artifacts/<token>` route and
+inherit registry TTL. Deleting a run cascades Fleet pointers; registry bytes
+remain under the registry retention policy, so deleting a run does not revoke
+an already-issued capability before its TTL.
+
+Integration gates store full stdout/stderr, including partial timeout output,
+and retain their existing 2,000-character-per-stream `output_tail` with an
+additive `artifact` pointer. Worker envelopes may declare `artifacts` entries
+with `kind` and a workspace-relative `path`. Paths escaping the workspace are
+refused. The operator artifact endpoint supports `fleet_run_id`, `leg_id`, and
+`attempt_id`; reports expose `artifacts` links and review counts.
+
+Set policy defaults `ui_verify_screenshots: true` and `computer_session_id` to
+an existing, operator-authorized desktop observation session to capture PNG
+proof after Verify. This never starts a desktop session. Missing sessions or
+displays are a clean no-op; JPEG observations are converted to PNG. No video is
+captured.
+
 ## Atomic Windows worker ownership
 
 `fleet.windows_process.WindowsProcess` creates every Windows Fleet worker,
