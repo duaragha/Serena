@@ -115,8 +115,8 @@ def test_substantive_and_explicit_conversation_stay_on_the_strong_model() -> Non
         assert (decision.activity, decision.lane, decision.model, decision.effort) == (
             "chat",
             "casual",
-            "gpt-6-astra",
-            "medium",
+            "claude-sonnet-5",
+            "high",
         )
         assert decision.fallback_reason == ""
 
@@ -160,7 +160,7 @@ def test_fast_voice_model_unavailability_restores_the_previous_route() -> None:
         runtime_fallback.lane,
         runtime_fallback.model,
         runtime_fallback.effort,
-    ) == ("casual", "gpt-6-astra", "medium")
+    ) == ("casual", "claude-sonnet-5", "high")
     assert "restored the standard chat lane" in runtime_fallback.fallback_reason
 
 
@@ -178,6 +178,6 @@ def test_non_voice_chat_keeps_the_previous_casual_route() -> None:
     assert (decision.activity, decision.lane, decision.model, decision.effort) == (
         "chat",
         "casual",
-        "gpt-6-astra",
-        "medium",
+        "claude-sonnet-5",
+        "high",
     )

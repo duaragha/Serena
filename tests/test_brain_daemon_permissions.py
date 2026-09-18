@@ -434,8 +434,8 @@ def test_haiku_start_failure_retries_then_skips_the_failed_model(monkeypatch):
     assert second["ok"] is True
     assert [(provider, model) for provider, model, _payload in attempts] == [
         ("claude", "claude-haiku-4-5"),
-        ("codex", "gpt-6-astra"),
-        ("codex", "gpt-6-astra"),
+        ("claude", "claude-sonnet-5"),
+        ("claude", "claude-sonnet-5"),
     ]
     assert all("_fast_model_available" not in payload for _, _, payload in attempts)
 
