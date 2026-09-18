@@ -7,8 +7,7 @@ const { execFileSync } = require('node:child_process');
 const yaml = require('../apps/desktop/node_modules/js-yaml');
 const { STABLE, SHA, REQUEST } = require('../apps/desktop/promotion-policy.cjs');
 const REPO = 'duaragha/Serena';
-function run(binary, args) { return execFileSync(binary, args, { encoding: 'utf8', timeout: 300000, maxBuffer: 8 * 1024 * 1024 }); }
-function gh(args) { return run('gh', args); }
+function run(binary, args, cwd) { return execFileSync(binary, args, { cwd, encoding: 'utf8', timeout: 300000, maxBuffer: 8 * 1024 * 1024 }); }
 
 function verifyAssets(dir, plan) {
   if (!STABLE.test(plan.version) || !STABLE.test(plan.baseTag) || !SHA.test(plan.commit)
@@ -33,27 +32,31 @@ function verifyAssets(dir, plan) {
   return names;
 }
 
-function publish(root, dir) {
+function publish(root, dir, { command = run, authorization = {
+  request: process.env.PROMOTION_REQUEST, mode: process.env.PROMOTION_MODE,
+} } = {}) {
+  const gh = args => command('gh', args, root);
+  const git = args => command('git', args, root);
   const plan = JSON.parse(fs.readFileSync(path.join(dir, 'promotion-plan.json'), 'utf8'));
   const names = verifyAssets(dir, plan);
   if (plan.mode !== 'publish') return { published: false, version: plan.version };
-  if (plan.request !== process.env.PROMOTION_REQUEST || process.env.PROMOTION_MODE !== 'publish')
+  if (plan.request !== authorization.request || authorization.mode !== 'publish')
     throw new Error('Publish authorization does not match this candidate');
   const assertCurrent = () => {
     if (JSON.parse(gh(['api', `repos/${REPO}/releases/latest`])).tag_name !== plan.baseTag)
       throw new Error('Main changed during the build. Candidate was not published; refresh and rebuild.');
   };
   assertCurrent();
-  run('git', ['fetch', path.join(dir, 'candidate.bundle'), 'candidate']);
-  if (run('git', ['rev-parse', 'FETCH_HEAD']).trim() !== plan.commit) throw new Error('Candidate source mismatch');
-  const receipt = run('git', ['show', `${plan.commit}:config/stable-promotion.json`]);
+  git(['fetch', path.join(dir, 'candidate.bundle'), 'candidate']);
+  if (git(['rev-parse', 'FETCH_HEAD']).trim() !== plan.commit) throw new Error('Candidate source mismatch');
+  const receipt = git(['show', `${plan.commit}:config/stable-promotion.json`]);
   const parsed = JSON.parse(receipt);
   if (parsed.request !== plan.request || parsed.version !== plan.version || parsed.baseTag !== plan.baseTag)
     throw new Error('Candidate receipt mismatch');
   const receiptFile = path.join(dir, 'stable-promotion.json');
   fs.writeFileSync(receiptFile, receipt);
   // No force push and no overwrite: retries cannot silently replace shipped bits.
-  run('git', ['push', 'origin', `${plan.commit}:refs/tags/${plan.version}`]);
+  git(['push', 'origin', `${plan.commit}:refs/tags/${plan.version}`]);
   gh(['release', 'create', plan.version, '--repo', REPO, '--verify-tag', '--draft',
     '--title', `Serena ${plan.version.slice(1)}`, '--notes',
     `Selected features: ${plan.features.map(f => f.id).join(', ')}\n\nBased on ${plan.baseTag}. Linux and Windows build gates passed. Original CLI terminals retained.`,
