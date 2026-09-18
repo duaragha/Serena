@@ -425,6 +425,23 @@ async def recall_chats(args):
     return {"content": [{"type": "text", "text": out}]}
 
 
+@tool("recall_code", "Search explicitly registered local code repositories. Read-only; "
+      "returns snippets with repository, file and line citations.",
+      {"query": str}, annotations=_LOCAL_READ_ONLY)
+async def recall_code(args):
+    try:
+        from core.code_index import search_code_fts
+        hits = search_code_fts(str(args.get("query") or ""), limit=10)
+        out = "\n\n".join(f"{hit['citation']}\n{hit['snippet']}" for hit in hits)
+        if not out:
+            from core.repo_brief import fallback
+            out = fallback(str(args.get('query') or ''))
+        out = out or "no code matches (register repositories and run chats code refresh)"
+    except (ValueError, OSError) as exc:
+        out = f"code index unavailable: {exc}"
+    return {"content": [{"type": "text", "text": out[:4000]}]}
+
+
 @tool("read_ledger", "Current state of an active ledger thread (or all of "
       "them when name is empty). Read-only.",
       {"name": str}, annotations=_LOCAL_READ_ONLY)
@@ -642,6 +659,7 @@ BRAIN_TOOLS = (
     git_latest,
     github_activity,
     recall_chats,
+    recall_code,
     read_ledger,
     search_memory,
     search_knowledge,

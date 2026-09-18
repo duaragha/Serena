@@ -561,6 +561,79 @@ def memory_ledger(key, goal, facts, decision, promise, risk, next_action):
             console.print(f"  [dim]{f}:[/dim] {v}")
 
 
+@main.group()
+def code():
+    """Manage the explicit local code corpus (separate from chats)."""
+
+
+def _code_call(operation, *args, **kwargs):
+    try:
+        return operation(*args, **kwargs)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@code.command("add")
+@click.argument("path", type=click.Path())
+@click.option("--key", default=None, help="Stable identity, including after relocation.")
+def code_add(path, key):
+    from core.code_index import add_repo
+    click.echo(_code_call(add_repo, path, repo_key=key))
+
+
+@code.command("remove")
+@click.argument("repo_key")
+def code_remove(repo_key):
+    from core.code_index import remove_repo
+    _code_call(remove_repo, repo_key)
+    click.echo(f"Removed {repo_key}")
+
+
+@code.command("list")
+def code_list():
+    from core.code_index import load_registry
+    for key, root in _code_call(load_registry).items():
+        click.echo(f"{key}\t{root}")
+
+
+@code.command("status")
+def code_status_command():
+    from core.code_index import code_status
+    for row in _code_call(code_status):
+        click.echo(f"{row['repo_key']}\t{row['root_path']}\t"
+                   f"files={row.get('file_count', 0)} bytes={row.get('total_size', 0)} "
+                   f"indexed={row.get('indexed_at') or 'never'} "
+                   f"skipped={row.get('skip_counts', '{}')}")
+
+
+@code.command("refresh")
+@click.option("--force", is_flag=True, help="Read files even if size and mtime match.")
+@click.option("--repo", "repo_key", default=None, help="Refresh only this registered key.")
+def code_refresh(force, repo_key):
+    from core.code_index import update_code_index
+    stats = _code_call(update_code_index, force=force, repo_key=repo_key)
+    click.echo(" ".join(f"{key}={value}" for key, value in stats.items()))
+
+
+@code.command("search")
+@click.argument("query")
+@click.option("--repo", "repo_key", default=None)
+@click.option("--limit", type=click.IntRange(1, 100), default=20)
+def code_search(query, repo_key, limit):
+    from core.code_index import search_code_fts
+    for hit in _code_call(search_code_fts, query, limit=limit, repo_key=repo_key):
+        click.echo(f"{hit['citation']}\n{hit['snippet']}\n")
+
+
+@code.command("drop")
+def code_drop():
+    """Clear derived code rows only; retain the repository registry."""
+    from core.code_index import drop_code_index
+    _code_call(drop_code_index)
+    click.echo("Code index cleared; registry retained.")
+
+
+
 @main.group(invoke_without_command=True)
 @click.pass_context
 def knowledge(ctx):

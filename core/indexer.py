@@ -1767,7 +1767,7 @@ def search_knowledge_fts(query: str, limit: int = 20) -> list[dict]:
 
 
 def unified_search(query: str, limit: int = 30) -> list[dict]:
-    """Search across chats, knowledge, and memories."""
+    """Concatenate chats, knowledge, memories and explicitly indexed code."""
     results = []
 
     # Chat messages
@@ -1812,6 +1812,11 @@ def unified_search(query: str, limit: int = 30) -> list[dict]:
     except Exception:
         pass
 
+    try:
+        from core.code_index import search_code_fts
+        results.extend(search_code_fts(query, limit=limit))
+    except (ValueError, OSError):
+        pass
     return results
 
 
