@@ -291,6 +291,43 @@ def test_sidebar_date_then_project_groups_preserve_chats_and_collapse(workspace,
     assert not any(path == "/api/spawn-terminal" for path, _ in calls)
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_compact_sidebar_rows_keep_hover_details_and_search_matches(workspace, width):
+    page, calls, errors, rows = workspace
+    page.set_viewport_size({"width": width, "height": 850})
+    page.wait_for_function("_collapsedLoaded")
+    title = 'A very long title with "quotes" <markup> & more ' * 6
+    rows[0].update(display_title=title, cwd='/project/"quoted"/<path>', starred=True,
+                   workspace_runtime={"ok": True})
+    page.evaluate('rows => { setSessionSource(rows); renderSessionList(); }', rows)
+    if width < 760:
+        page.locator("#workspaceChatsToggle").click()
+    row = page.locator('#sessionList .session-row').first
+    assert row.get_attribute("title") == '\n'.join([title, 'serena', '/project/"quoted"/<path>', '2026-09-09T12:00:00Z'])
+    assert row.get_attribute("aria-label") == row.get_attribute("title")
+    assert row.locator('.workspace-row-project, .session-date').count() == 0
+    assert row.locator('.agent-icon').count() == 3
+    assert row.locator('.session-star.starred').count() == 1
+    assert row.locator('.term-close').get_attribute('title') == 'Close terminal (Alt+W)'
+    assert row.bounding_box()['height'] == 32
+    row.hover()
+    assert row.bounding_box()['height'] == 32
+    playwright.expect(row.locator('.term-close')).to_have_css('opacity', '1')
+    assert row.locator('.session-title-main').evaluate('el => el.scrollWidth > el.clientWidth')
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.evaluate('''() => {
+      sessionSource[0].search_snippet = 'Here is a >>>matching<<< message';
+      renderSessionList();
+    }''')
+    playwright.expect(row.locator('.session-snippet mark')).to_have_text('matching')
+    if output := os.environ.get("SERENA_EVIDENCE_DIR"):
+        path = Path(output)
+        path.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path / f"sidebar-compact-{width}.png"))
+    assert not errors
+    assert not any(path == "/api/spawn-terminal" for path, _ in calls)
+
+
 def test_navigation_projects_and_drafts_do_not_spawn(workspace):
     page, calls, errors, _ = workspace
     page.get_by_role("button", name="Tooling", exact=True).first.click()
