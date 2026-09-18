@@ -63,8 +63,16 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
                 actual_effort=None, exit_code=0, cancelled=True,
                 error="private helper probe ended at recovered Code boundary",
             )
-        unexpected.append("native model dispatch")
-        raise RuntimeError("native model dispatch forbidden in private timer test")
+        # Say WHICH dispatch, not just that one happened. This assertion has
+        # tripped twice on a loaded machine and both times the message was
+        # `assert not True`, which named neither the phase nor the run and cost
+        # a fresh investigation to get back to.
+        unexpected.append(
+            f"native model dispatch: phase={request.phase!r} run={request.run_id!r} "
+            f"worker={getattr(request, 'worker_key', '?')!r} "
+            f"(only verify on {rid!r} is expected here)"
+        )
+        raise RuntimeError(unexpected[-1])
     for module in (supervisor, workers, peer_runtime, lesson_review):
         monkeypatch.setattr(module, "run_worker", no_model)
     service = threading.Thread(target=supervisor.serve_forever,
@@ -105,7 +113,7 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
                 not_before = float(wait["not_before"])
             if review_boundary.is_set():
                 break
-            assert not unexpected
+            assert not unexpected, unexpected
             time.sleep(.1)
         assert final["phases"][1]["legs"][0]["state"] == "completed", final
         assert review_boundary.is_set(), "recovered Code did not make Review runnable"
@@ -121,7 +129,7 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
         assert retries[0]["created_at"] >= not_before
         accepted = [e for e in events if e["type"] == "worker.integration.accepted"]
         assert accepted[-1]["payload"]["test_gate"]["integration_journal"]["recovered_postimage"]
-        assert not unexpected
+        assert not unexpected, unexpected
         assert not gate_process.is_running() or gate_process.status() == psutil.STATUS_ZOMBIE
         print(f"resident-only helper recovery: {time.monotonic() - started:.2f}s")
     finally:
@@ -141,4 +149,4 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
             time.sleep(.1)
         assert not service.is_alive()
         assert not any(t.name == f"fleet-{rid[:8]}" and t.is_alive() for t in threading.enumerate())
-        assert not unexpected
+        assert not unexpected, unexpected

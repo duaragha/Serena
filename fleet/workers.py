@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1330,9 +1330,22 @@ def _codex_sandbox(access_mode: str) -> str:
     return "workspace-write" if access_mode == "write" else "read-only"
 
 
-def _binary(provider: str) -> str:
-    override = os.environ.get(f"SERENA_FLEET_{provider.upper()}_BIN", "").strip()
+def provider_binary(provider: str, environ: Mapping[str, str] | None = None) -> str | None:
+    """Where this provider's CLI is, or None if this machine has not got it.
+
+    Capacity and execution have to answer this the same way. They did not:
+    fleet.capacity asked shutil.which alone while a worker also searched
+    ~/.local/bin and the nvm prefixes, so a provider that runs perfectly well
+    could be reported missing, and -- worse -- a missing one was reported
+    usable and only failed once a leg had already been handed to it.
+    """
+
+    source = os.environ if environ is None else environ
+    override = str(source.get(f"SERENA_FLEET_{provider.upper()}_BIN") or "").strip()
     if override:
+        # An explicit override is an operator statement about this machine and
+        # is taken at face value, including by the tests that build argv
+        # without installing anything.
         return str(Path(override).expanduser())
     found = shutil.which(provider)
     if found:
@@ -1346,17 +1359,29 @@ def _binary(provider: str) -> str:
             Path("/usr/local/bin/muse"),
             Path("/usr/bin/muse"),
         ]
-    else:
+    elif provider == "claude":
         candidates = [
             home / ".local" / "bin" / "claude",
             home / ".claude" / "local" / "claude",
             Path("/usr/local/bin/claude"),
             Path("/usr/bin/claude"),
         ]
+    else:
+        # An unknown provider used to fall into the claude branch and be handed
+        # claude's binary, so a typo in a policy ran the wrong model rather than
+        # saying so.
+        return None
     for candidate in candidates:
         if candidate.exists() and os.access(candidate, os.X_OK):
             return str(candidate)
-    raise FileNotFoundError(f"{provider} CLI is not installed")
+    return None
+
+
+def _binary(provider: str) -> str:
+    found = provider_binary(provider)
+    if found is None:
+        raise FileNotFoundError(f"{provider} CLI is not installed")
+    return found
 
 
 def _peer_command() -> list[str]:

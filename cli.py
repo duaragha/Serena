@@ -212,6 +212,21 @@ def recall(query, limit, no_update):
         click.echo("")
 
 
+@main.command("doctor")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable report.")
+def doctor_cmd(as_json):
+    """Check this machine: schedules, tasks, Fleet config, imports, freshness.
+
+    Exits non-zero when something is broken, so a wrapper can act on it.
+    Warnings alone still exit zero; they are drift, not an outage.
+    """
+    from core import doctor
+
+    report = doctor.run()
+    click.echo(doctor.as_json(report) if as_json else doctor.render(report))
+    raise SystemExit(0 if report.ok else 1)
+
+
 @main.command("project-context")
 @click.argument("cwd", required=False)
 @click.option("--limit", "-n", default=6, help="Max recent sessions (default 6)")

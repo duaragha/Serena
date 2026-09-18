@@ -115,37 +115,65 @@ def test_the_fold_uses_the_comparator_rather_than_its_own_copy() -> None:
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required to run page code")
 def test_filter_reveals_old_months_without_changing_saved_collapse_choices():
     functions = "\n".join(_extract(name) for name in (
-        "toggleAgentFilter", "isTimeGroupCollapsed", "toggleTimeGroupCollapsed", "updateChatCount",
+        "toggleAgentFilter", "isTimeGroupCollapsed", "toggleTimeGroupCollapsed",
+        # Project groups collapse exactly like time groups and toggleAgentFilter
+        # clears both. Leaving them out of the harness is what made this test
+        # fail on a ReferenceError rather than on anything it was asserting.
+        "isProjectGroupCollapsed", "toggleProjectGroupCollapsed",
+        "updateChatCount",
     ))
     script = r"""
 const assert = require('node:assert/strict');
 let _agentFilter = null;
 let _timeGroupsCollapsed = new Set(['June 2026', 'May 2026']);
 let _filteredTimeGroupsCollapsed = new Set();
+let _projectGroupsCollapsed = new Set(['serena', 'locket']);
+let _filteredProjectGroupsCollapsed = new Set();
+let _searchQuery = '';
 let saved = 0;
 function _saveCollapsedState() { saved++; }
 function renderSessionList() {}
 const count = {};
-const document = {getElementById: id => id === 'chatCount' ? count : null};
+const document = {
+  getElementById: id => id === 'chatCount' ? count : null,
+  // toggleProjectGroupCollapsed repaints its headers; nothing here draws.
+  querySelectorAll: () => [],
+};
 const allSessions = [{agent:'claude'}, {agent:'codex'}, {agent:'codex'}];
 __FUNCTIONS__
 assert.equal(isTimeGroupCollapsed('June 2026'), true);
+assert.equal(isProjectGroupCollapsed('serena'), true);
 toggleAgentFilter('codex');
 assert.equal(isTimeGroupCollapsed('June 2026'), false);
 assert.equal(isTimeGroupCollapsed('May 2026'), false);
+// A filter reveals collapsed project groups on the same terms.
+assert.equal(isProjectGroupCollapsed('serena'), false);
+assert.equal(isProjectGroupCollapsed('locket'), false);
 assert.equal(count.textContent, '(2 / 3)');
 toggleTimeGroupCollapsed('June 2026');
 assert.equal(isTimeGroupCollapsed('June 2026'), true);
+// Collapsing while filtered is scratch state and is never persisted.
+toggleProjectGroupCollapsed('serena');
+assert.equal(isProjectGroupCollapsed('serena'), true);
 assert.equal(saved, 0);
 toggleAgentFilter('claude');
 assert.equal(isTimeGroupCollapsed('June 2026'), false);
+// Switching filters clears the scratch collapse for BOTH groupings. Without
+// the project half, a group he collapsed under one filter stayed collapsed
+// under the next and its chats were simply not there.
+assert.equal(isProjectGroupCollapsed('serena'), false);
 assert.equal(count.textContent, '(1 / 3)');
 toggleAgentFilter('claude');
 assert.equal(isTimeGroupCollapsed('June 2026'), true);
 assert.equal(count.textContent, '(3)');
 assert.deepEqual([..._timeGroupsCollapsed], ['June 2026', 'May 2026']);
+// ...and his real choices come back untouched once the filter is off.
+assert.deepEqual([..._projectGroupsCollapsed], ['serena', 'locket']);
+assert.equal(isProjectGroupCollapsed('serena'), true);
 toggleTimeGroupCollapsed('June 2026');
 assert.equal(saved, 1);
+toggleProjectGroupCollapsed('serena');
+assert.equal(saved, 2);
 """.replace("__FUNCTIONS__", functions)
     result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr

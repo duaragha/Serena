@@ -91,15 +91,31 @@ def send_desktop(request: NotificationRequest) -> bool:
     )
 
 
+# Windows entry points are chats.exe, and Path.is_file() on a bare "chats" is
+# simply false there. Without these the interpreter's own sibling never
+# matched, PATH won instead, and the deployed runtime sent its notices through
+# whichever other Serena install happened to come first -- on the PC that was a
+# user-site chats running the synced dev tree, not the runtime's own code.
+_BINARY_SUFFIXES = ("", ".exe", ".cmd", ".bat") if os.name == "nt" else ("",)
+
+
 def _chats_binary() -> str | None:
-    candidates = [
-        shutil.which("chats"),
-        str(Path(sys.executable).resolve().with_name("chats")),
-        str(HOME / ".local" / "bin" / "chats"),
-    ]
-    return next(
-        (item for item in candidates if item and Path(item).is_file()), None
-    )
+    """The chats CLI belonging to this install, falling back to PATH.
+
+    The sibling of the running interpreter comes first on purpose: the code
+    sending a notice should use the CLI from the same installation, not
+    whatever another one put on PATH ahead of it.
+    """
+
+    sibling = Path(sys.executable).resolve().parent / "chats"
+    roots = [sibling, HOME / ".local" / "bin" / "chats"]
+    for root in roots:
+        for suffix in _BINARY_SUFFIXES:
+            candidate = root.with_name(root.name + suffix)
+            if candidate.is_file():
+                return str(candidate)
+    found = shutil.which("chats")
+    return found if found and Path(found).is_file() else None
 
 
 def send_telegram(request: NotificationRequest) -> bool:

@@ -36,8 +36,9 @@ DEFAULT_CODEX_RPC_TIMEOUT_SECONDS = 4.0
 class ProviderCapacity:
     """One provider's current capacity decision.
 
-    ``usable`` is false only for a positive, unexpired exhaustion signal.
-    ``unknown`` therefore remains usable by design.
+    ``usable`` is false for a positive signal that this provider cannot do
+    work here: an unexpired exhaustion, or a CLI this machine has not got.
+    ``unknown`` otherwise remains usable by design.
     """
 
     provider: str
@@ -133,16 +134,37 @@ def _override_capacity(value: str) -> dict[str, ProviderCapacity]:
     return result
 
 
+def _not_installed(provider: str, source: str) -> ProviderCapacity:
+    """A provider whose CLI is absent cannot do work, so say so here.
+
+    This used to come back `unknown`, and unknown is usable by design, so Fleet
+    scheduled a leg onto a provider this machine cannot run and only found out
+    when the worker raised FileNotFoundError mid-run. Reported as unavailable,
+    the automatic capacity handoff routes around it before any work is handed
+    over.
+    """
+
+    return ProviderCapacity(
+        provider=provider,
+        status="unavailable",
+        usable=False,
+        source=source,
+        reason=f"{provider.title()} CLI is not installed on this machine",
+    )
+
+
 def _read_muse_capacity(
     now: float,
     environ: Mapping[str, str],
 ) -> ProviderCapacity:
     """Muse has no usage-meter signal, so only overrides can bench it."""
 
-    configured = str(environ.get("SERENA_FLEET_MUSE_BIN") or "").strip()
-    binary = str(Path(configured).expanduser()) if configured else shutil.which("muse")
-    if not binary:
-        return _unknown("muse", "muse-cli", "Muse CLI is not installed")
+    # The resolver a worker will actually use, not shutil.which alone: they
+    # disagreed, and a provider that runs fine was reported missing.
+    from fleet.workers import provider_binary
+
+    if not provider_binary("muse", environ):
+        return _not_installed("muse", "muse-cli")
     return _unknown(
         "muse",
         "muse-cli",
@@ -155,6 +177,10 @@ def _read_claude_capacity(
     now: float,
     environ: Mapping[str, str],
 ) -> ProviderCapacity:
+    from fleet.workers import provider_binary
+
+    if not provider_binary("claude", environ):
+        return _not_installed("claude", "claude-statusline")
     configured = str(environ.get("SERENA_FLEET_LIVE_USAGE_PATH") or "").strip()
     path = Path(configured).expanduser() if configured else DATA_DIR / "live-usage.json"
     try:
@@ -192,6 +218,10 @@ def _read_codex_capacity(
     now: float,
     environ: Mapping[str, str],
 ) -> ProviderCapacity:
+    from fleet.workers import provider_binary
+
+    if not provider_binary("codex", environ):
+        return _not_installed("codex", "codex-app-server")
     limits = _read_codex_app_server(environ)
     if isinstance(limits, dict):
         reached_type = limits.get("rateLimitReachedType")

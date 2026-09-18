@@ -336,6 +336,58 @@ def test_a_side_branch_that_tracks_itself_is_still_measured_against_master(
     assert {behind.severity, unlanded.severity} == {"warn"}
 
 
+def test_a_level_checkout_whose_fetch_is_old_says_so(tmp_path, monkeypatch):
+    """"Up to date" is only as true as the last fetch.
+
+    The PC runtime answered "up to date" while it was thirty-five commits
+    behind, because nothing there had fetched since the morning. A doctor that
+    does not reach the network has to say how old its answer is.
+    """
+
+    import os
+
+    clone = _repo_with_upstream(tmp_path, commits_behind=0)
+    stale = time.time() - (30 * 3600)
+    for name in ("FETCH_HEAD", "refs/remotes/origin/master"):
+        target = clone / ".git" / name
+        if target.exists():
+            os.utime(target, (stale, stale))
+    monkeypatch.setattr(doctor, "_repo_root", lambda: clone)
+
+    finding = _finding(doctor.check_repo_freshness(), "repo.stale_fetch")
+
+    assert finding.ok is False
+    assert "30 hours" in finding.detail
+    assert "only as current as the last fetch" in finding.detail
+    assert "git fetch" in finding.fix
+    assert finding.severity == "warn"
+
+
+def test_a_fresh_fetch_is_reported_plainly(tmp_path, monkeypatch):
+    clone = _repo_with_upstream(tmp_path, commits_behind=0)
+    monkeypatch.setattr(doctor, "_repo_root", lambda: clone)
+
+    findings = doctor.check_repo_freshness()
+
+    assert [f.ok for f in findings] == [True]
+    assert "level with" in findings[0].detail
+    assert "fetched" in findings[0].detail
+
+
+def test_the_fetch_age_is_found_inside_a_worktree_too(tmp_path, monkeypatch):
+    """A worktree's .git is a file, and guessing it is a directory gave None."""
+
+    import subprocess
+
+    clone = _repo_with_upstream(tmp_path, commits_behind=0)
+    linked = tmp_path / "linked"
+    subprocess.run(["git", "-C", str(clone), "worktree", "add", "-q",
+                    str(linked), "-b", "side"], check=True, capture_output=True)
+    assert (linked / ".git").is_file(), "a worktree points at its git dir"
+
+    assert doctor._fetch_age_seconds(linked) is not None
+
+
 def test_the_freshness_check_never_reaches_the_network(tmp_path, monkeypatch):
     """A doctor must be safe and instant; it reads the last fetch, not the remote."""
 
