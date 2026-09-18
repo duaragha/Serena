@@ -14,6 +14,8 @@ const codePanelCallbacks = {
   onEvent: null,
   onDone: null,
   onToggle: null,
+  onSnapshot: null,
+  onControlResult: null,
 };
 
 contextBridge.exposeInMainWorld('serena', {
@@ -50,6 +52,24 @@ contextBridge.exposeInMainWorld('serena', {
   onToggleCodePanel: (callback) => {
     ipcRenderer.on('toggle-code-panel', (_event) => callback());
   },
+  // Whether the drawer is on screen is the main process's decision: it owns the
+  // window width the drawer is a column of. The renderer is told, it does not
+  // decide.
+  onShowCodePanel: (callback) => {
+    ipcRenderer.on('show-code-panel', (_event) => callback());
+  },
+  onHideCodePanel: (callback) => {
+    ipcRenderer.on('hide-code-panel', (_event) => callback());
+  },
+  onCodeSnapshot: (callback) => {
+    ipcRenderer.on('code-snapshot', (_event, snapshot) => callback(snapshot));
+  },
+  onCodePanelWidth: (callback) => {
+    ipcRenderer.on('code-panel-width', (_event, width) => callback(width));
+  },
+  onCodeControlResult: (callback) => {
+    ipcRenderer.on('code-control-result', (_event, result) => callback(result));
+  },
 
   // Renderer → Main process
   setIgnoreMouse: (ignore) => {
@@ -57,6 +77,22 @@ contextBridge.exposeInMainWorld('serena', {
   },
   toggleDashboard: () => {
     ipcRenderer.send('toggle-dashboard');
+  },
+  showCodePanel: () => {
+    ipcRenderer.send('show-code-panel');
+  },
+  hideCodePanel: () => {
+    ipcRenderer.send('hide-code-panel');
+  },
+  setCodePanelWidth: (width) => {
+    ipcRenderer.send('set-code-panel-width', width);
+  },
+  sendCodeControl: (control) => {
+    ipcRenderer.send('code-control', control);
+  },
+  // Say so after a reload, so the main process can put back what was on screen.
+  rendererReady: () => {
+    ipcRenderer.send('renderer-ready');
   },
 
   // Brain visualization callbacks — registered by the module script
@@ -73,6 +109,8 @@ contextBridge.exposeInMainWorld('serena', {
     if (fns.onEvent) codePanelCallbacks.onEvent = fns.onEvent;
     if (fns.onDone) codePanelCallbacks.onDone = fns.onDone;
     if (fns.onToggle) codePanelCallbacks.onToggle = fns.onToggle;
+    if (fns.onSnapshot) codePanelCallbacks.onSnapshot = fns.onSnapshot;
+    if (fns.onControlResult) codePanelCallbacks.onControlResult = fns.onControlResult;
   },
 
   // Accessors for app.js to call brain functions
@@ -86,4 +124,6 @@ contextBridge.exposeInMainWorld('serena', {
   get codePanelOnEvent() { return codePanelCallbacks.onEvent; },
   get codePanelOnDone() { return codePanelCallbacks.onDone; },
   get codePanelOnToggle() { return codePanelCallbacks.onToggle; },
+  get codePanelOnSnapshot() { return codePanelCallbacks.onSnapshot; },
+  get codePanelOnControlResult() { return codePanelCallbacks.onControlResult; },
 });

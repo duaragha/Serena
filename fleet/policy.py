@@ -82,7 +82,9 @@ PHASE_MODEL_POLICY = {
         "finalize": (("claude", "claude-opus-5", "high"),),
     },
     # Research runs read, analyse, review, refine. Same four models in the same
-    # order: Luna reads, Opus analyses, Sol reviews, Opus refines.
+    # order: Luna reads, Opus analyses, Astra reviews, Opus refines. Review
+    # tracks the coding ladder -- Sol is retired, and a phase left pinned to it
+    # fails validation against this very table, which refuses the whole run.
     "research": {
         "discover": (("codex", "gpt-5.6-luna", "max"),),
         "execute": (("claude", "claude-opus-5", "high"),),

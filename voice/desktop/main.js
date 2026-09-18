@@ -1,4 +1,6 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen } = require('electron');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 
@@ -13,6 +15,20 @@ const RECONNECT_INTERVAL_MS = 3000;
 const WINDOW_WIDTH = 500;
 const WINDOW_HEIGHT = 600;
 
+// The drawer is a column of the window, not a sheet over it: opening it widens
+// the window by its own width and closing it gives that room straight back, so
+// the dot field he was looking at never gets covered. These bounds are shared
+// with renderer/styles.css, which sizes the column from the same numbers.
+const DEFAULT_CODE_PANEL_WIDTH = 450;
+const MIN_CODE_PANEL_WIDTH = 300;
+const MAX_CODE_PANEL_WIDTH = 720;
+const CODING_PANE_WIDTH_PATH = path.join(
+  os.homedir(), '.config', 'serena', 'coding_pane_width',
+);
+// The only job states that are still going. Everything else is history, and
+// history has no business taking the screen.
+const RUNNING_JOB_STATES = new Set(['working', 'resume_queued']);
+
 let win = null;
 let tray = null;
 let ws = null;
@@ -21,6 +37,14 @@ let currentState = 'idle';
 let focusModeEnabled = false;
 let dashboardVisible = false;
 let codePanelVisible = false;
+let codePanelWidth = DEFAULT_CODE_PANEL_WIDTH;
+// The job whose snapshot the drawer is currently showing, and the dismissal he
+// made against it. `itemId: null` is a blind dismissal -- he closed a drawer
+// that was not showing any particular job -- and that one has to hold against
+// every snapshot, because there is no job for it to key on.
+let currentCodeItemId = null;
+let codePanelDismissal = null;
+let lastCodeSnapshot = null;
 
 // --- Tray icon generation ---
 
@@ -48,7 +72,11 @@ function createTrayIcon(state) {
 // --- Window creation ---
 
 function createWindow() {
-  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+  // workArea, not workAreaSize: on a second monitor the usable rectangle has an
+  // origin too, and a size-only read parks the window on the wrong screen.
+  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workArea;
+
+  codePanelWidth = readCodingPaneWidth();
 
   win = new BrowserWindow({
     width: WINDOW_WIDTH,
@@ -95,6 +123,105 @@ function createWindow() {
   });
 }
 
+// --- The coding drawer ---
+
+function clampCodePanelWidth(value) {
+  const width = Math.round(Number(value));
+  if (!Number.isFinite(width)) return DEFAULT_CODE_PANEL_WIDTH;
+  return Math.min(MAX_CODE_PANEL_WIDTH, Math.max(MIN_CODE_PANEL_WIDTH, width));
+}
+
+function readCodingPaneWidth() {
+  try {
+    return clampCodePanelWidth(fs.readFileSync(CODING_PANE_WIDTH_PATH, 'utf8').trim());
+  } catch (_error) {
+    // He has never dragged the separator. The default is not a failure.
+    return DEFAULT_CODE_PANEL_WIDTH;
+  }
+}
+
+function persistCodingPaneWidth(width) {
+  const temporary = `${CODING_PANE_WIDTH_PATH}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(CODING_PANE_WIDTH_PATH), { recursive: true });
+    fs.writeFileSync(temporary, String(width), 'utf8');
+    fs.renameSync(temporary, CODING_PANE_WIDTH_PATH);
+  } catch (error) {
+    console.error('[drawer] could not save the coding pane width:', error.message);
+  }
+}
+
+// Grow leftward so the window keeps whichever corner he parked it in.
+function widenWindowBy(delta) {
+  if (!win || win.isDestroyed() || !delta) return;
+  const bounds = win.getBounds();
+  win.setBounds({
+    x: bounds.x - delta,
+    y: bounds.y,
+    width: bounds.width + delta,
+    height: bounds.height,
+  });
+}
+
+function openCodePanel() {
+  codePanelDismissal = null;
+  if (codePanelVisible) return;
+  codePanelVisible = true;
+  widenWindowBy(codePanelWidth);
+  sendToRenderer('show-code-panel', null);
+  updateTrayMenu();
+}
+
+function closeCodePanel({ dismissed = false } = {}) {
+  if (dismissed) codePanelDismissal = { itemId: currentCodeItemId };
+  if (!codePanelVisible) {
+    updateTrayMenu();
+    return;
+  }
+  codePanelVisible = false;
+  widenWindowBy(-codePanelWidth);
+  updateTrayMenu();
+}
+
+// A dismissal keyed on a job dies with that job. A blind one has nothing to
+// die with, so it holds until the next job actually starts.
+function dismissalBlocks(itemId) {
+  if (!codePanelDismissal) return false;
+  if (codePanelDismissal.itemId === null) return true;
+  return codePanelDismissal.itemId === itemId;
+}
+
+function surfaceWindow() {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.showInactive();
+}
+
+function handleCodeSnapshot(snapshot) {
+  lastCodeSnapshot = snapshot || null;
+  sendToRenderer('code-snapshot', lastCodeSnapshot);
+  const itemId = (snapshot && snapshot.item_id) || null;
+  if (!snapshot || !RUNNING_JOB_STATES.has(snapshot.state)) return;
+  if (dismissalBlocks(itemId)) return;
+  currentCodeItemId = itemId;
+  openCodePanel();
+}
+
+function handleCodeStart(msg) {
+  currentCodeItemId = msg.item_id || null;
+  if (msg.snapshot) lastCodeSnapshot = msg.snapshot;
+  sendToRenderer('code-start', {
+    item_id: msg.item_id || null,
+    project: msg.project,
+    status: msg.status,
+    snapshot: msg.snapshot || null,
+  });
+  // A job he just asked for is the one thing allowed to override a dismissal:
+  // he started it, so he is expecting to see it.
+  surfaceWindow();
+  openCodePanel();
+}
+
 // --- System tray ---
 
 function createTray() {
@@ -135,8 +262,8 @@ function updateTrayMenu() {
       type: 'checkbox',
       checked: codePanelVisible,
       click: (menuItem) => {
-        codePanelVisible = menuItem.checked;
-        sendToRenderer('toggle-code-panel', null);
+        if (menuItem.checked) openCodePanel();
+        else closeCodePanel({ dismissed: true });
       },
     },
     { type: 'separator' },
@@ -251,7 +378,11 @@ function handleBackendMessage(msg) {
       break;
 
     case 'code_start':
-      sendToRenderer('code-start', { project: msg.project });
+      handleCodeStart(msg);
+      break;
+
+    case 'code_snapshot':
+      handleCodeSnapshot(msg.snapshot);
       break;
 
     case 'code_event':
@@ -263,7 +394,8 @@ function handleBackendMessage(msg) {
       break;
 
     case 'toggle_code_panel':
-      sendToRenderer('toggle-code-panel', null);
+      if (codePanelVisible) closeCodePanel({ dismissed: true });
+      else openCodePanel();
       break;
 
     default:
@@ -283,6 +415,36 @@ ipcMain.on('toggle-dashboard', () => {
   dashboardVisible = !dashboardVisible;
   sendToRenderer('toggle-dashboard', dashboardVisible);
   updateTrayMenu();
+});
+
+// He closed the drawer. That sticks: the window gives the room back and no
+// further snapshot of this job puts it in front of him again.
+ipcMain.on('hide-code-panel', () => {
+  closeCodePanel({ dismissed: true });
+});
+
+ipcMain.on('show-code-panel', () => {
+  openCodePanel();
+});
+
+// He dragged the separator. Keep the rest of the window exactly where it is by
+// absorbing the difference into the same edge the drawer grew from.
+ipcMain.on('set-code-panel-width', (_event, requested) => {
+  const width = clampCodePanelWidth(requested);
+  if (codePanelVisible) widenWindowBy(width - codePanelWidth);
+  codePanelWidth = width;
+  persistCodingPaneWidth(width);
+  sendToRenderer('code-panel-width', width);
+});
+
+// The renderer reloaded. Put its contents back, and the drawer only if it was
+// open -- a reload is not a new job and must not undo a dismissal.
+ipcMain.on('renderer-ready', (event) => {
+  const sender = event && event.sender;
+  if (!sender) return;
+  sender.send('code-panel-width', codePanelWidth);
+  if (lastCodeSnapshot) sender.send('code-snapshot', lastCodeSnapshot);
+  if (codePanelVisible) sender.send('show-code-panel', null);
 });
 
 // --- App lifecycle ---

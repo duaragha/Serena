@@ -1027,10 +1027,20 @@ def get_memory(memory_id: int) -> dict | None:
 
 
 def search_memories(query: str) -> list[dict]:
-    q = query.lower()
-    results = [m for m in _scan_all() if q in m["content"].lower()]
-    results.sort(key=lambda m: m["updated_at"], reverse=True)
-    return [_clean(m) for m in results]
+    """Search memory through the one retrieval authority.
+
+    This used to be its own substring scan over every file, which made it the
+    only search surface that did not go through `retrieve_memory`: it ignored
+    the active authority, scored nothing, and returned rows with no record_id,
+    so a hit found here could not be matched against a hit found anywhere else.
+    The surface stays the default private one: this is a local search over his
+    own memory, and the old scan read everything. Imported lazily because
+    retrieval reads this module.
+    """
+
+    from memory.retrieval import search_memory_records
+
+    return search_memory_records(query)
 
 
 def format_loops() -> str:

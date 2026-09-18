@@ -580,27 +580,50 @@ html, body {
 
 /* ---- Code Output Panel ---- */
 
+/* A column of the window, not a sheet over it. It used to be fixed to the
+   viewport and slid across on a transform, which covered the dot field he was
+   watching; now the window widens by exactly this column's width and the rest
+   of the app keeps its own room. The default here is main.js's
+   DEFAULT_CODE_PANEL_WIDTH and the bounds are the ones it clamps to. */
 .code-panel {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 450px;
-  height: 100vh;
+  --code-panel-width: 450px;
+  position: relative;
+  width: var(--code-panel-width);
+  min-width: 300px;
+  max-width: 720px;
+  height: 100%;
+  flex: 0 0 auto;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   border-right: 1px solid var(--glass-border);
-  transform: translateX(-100%);
-  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
   z-index: 100;
-  display: flex;
+  display: none;
   flex-direction: column;
   overflow: hidden;
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', 'Consolas', monospace;
 }
 
 .code-panel--visible {
-  transform: translateX(0);
+  display: flex;
+}
+
+/* The separator he drags, and can also reach with the keyboard. */
+.code-panel__resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.code-panel__resize:hover,
+.code-panel__resize:focus-visible {
+  background: var(--glass-border);
+  outline: none;
 }
 
 /* Status bar */

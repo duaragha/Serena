@@ -115,6 +115,8 @@ function loadRenderer({ helpers = imageHelpers } = {}) {
     onCodeControlResult: on('code-control-result'),
     onToggleCodePanel: on('toggle-code-panel'),
     onShowCodePanel: on('show-code-panel'),
+    onHideCodePanel: on('hide-code-panel'),
+    onCodePanelWidth: on('code-panel-width'),
     onTypedInputAccepted: on('typed-accepted'),
     onTypedInputError: on('typed-error'),
     sendTyped(payload) {

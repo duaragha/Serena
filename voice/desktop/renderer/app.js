@@ -191,6 +191,30 @@ window.serena.onToggleCodePanel(() => {
   if (fn) fn();
 });
 
+window.serena.onCodeSnapshot((snapshot) => {
+  const fn = window.serena.codePanelOnSnapshot;
+  if (fn) fn(snapshot);
+});
+
+window.serena.onCodeControlResult((result) => {
+  const fn = window.serena.codePanelOnControlResult;
+  if (fn) fn(result);
+});
+
+// The main process owns whether the drawer is on screen, because opening it
+// widens the window it is a column of. These two just follow.
+window.serena.onShowCodePanel(() => {
+  if (window._serenaCodePanel) window._serenaCodePanel.show();
+});
+
+window.serena.onHideCodePanel(() => {
+  if (window._serenaCodePanel) window._serenaCodePanel.hide();
+});
+
+window.serena.onCodePanelWidth((width) => {
+  if (window._serenaCodePanel) window._serenaCodePanel.setWidth(width);
+});
+
 // --- Focus mode ---
 
 window.serena.onFocusMode((enabled) => {

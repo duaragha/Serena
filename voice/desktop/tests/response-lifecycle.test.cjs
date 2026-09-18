@@ -142,6 +142,8 @@ function loadRenderer() {
     onCodeControlResult: on('code-control-result'),
     onToggleCodePanel: on('toggle-code-panel'),
     onShowCodePanel: on('show-code-panel'),
+    onHideCodePanel: on('hide-code-panel'),
+    onCodePanelWidth: on('code-panel-width'),
     setIgnoreMouse() {},
     setAmplitude() {},
     setState() {},

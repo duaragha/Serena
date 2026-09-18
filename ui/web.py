@@ -12443,6 +12443,23 @@ def api_claude_bridge():
 # mobile/src/types.ts, handlers in core/chat_daemon.py. Token rides the query
 # string because browsers can't set headers on a WebSocket handshake.)
 # ─────────────────────────────────────────────────────────────────────────────
+def _mobile_dist_root() -> Path:
+    """Where the built phone client lives, as one overridable lookup.
+
+    dist is a build output and is not in the repo, so a test that exercises
+    this route's security -- that it will not serve a file outside dist, and
+    that it never writes the bearer token into the page -- has to be able to
+    point the route at a directory it controls. Resolving the path inline made
+    those assertions silently untestable on a checkout that had never built.
+    """
+
+    root = Path(__file__).resolve().parent.parent
+    dist = (root / "apps" / "mobile" / "dist").resolve()
+    if not dist.exists():
+        dist = (root / "mobile" / "dist").resolve()
+    return dist
+
+
 @app.route("/app")
 @app.route("/app/")
 @app.route("/app/<path:subpath>")
@@ -12453,9 +12470,7 @@ def serve_mobile_app(subpath: str = ""):
     disclosed by this unauthenticated static route. Assets are served as-is."""
     from flask import Response, send_file
 
-    dist = (Path(__file__).resolve().parent.parent / "apps" / "mobile" / "dist").resolve()
-    if not dist.exists():
-        dist = (Path(__file__).resolve().parent.parent / "mobile" / "dist").resolve()
+    dist = _mobile_dist_root()
     # static asset (js/css/svg/png) — serve directly
     if subpath and subpath != "index.html":
         target = (dist / subpath).resolve()
@@ -12476,18 +12491,32 @@ def serve_mobile_app(subpath: str = ""):
     return Response(html, mimetype="text/html")
 
 
-@sock.route("/ws/chat")
-def ws_chat(ws):
-    from core import chat_daemon
+def _chat_websocket_is_authorized(expected: str) -> bool:
+    """Whether this chat socket handshake carries the private token.
 
-    expected = chat_daemon.get_or_create_token()
+    Unlike the call socket, this one also accepts ?token= : the phone client
+    opens it from saved settings and cannot set a header on a WebSocket. It is
+    a named predicate rather than an inline check so the rule can be asserted
+    directly instead of only through a live handshake.
+    """
+
+    import hmac
+
     authorization = request.headers.get("Authorization", "")
     provided = (
         authorization.removeprefix("Bearer ")
         if authorization.startswith("Bearer ")
         else request.args.get("token", "")
     )
-    if not provided or provided != expected:
+    return bool(provided) and hmac.compare_digest(provided, expected)
+
+
+@sock.route("/ws/chat")
+def ws_chat(ws):
+    from core import chat_daemon
+
+    expected = chat_daemon.get_or_create_token()
+    if not _chat_websocket_is_authorized(expected):
         try:
             ws.send(json.dumps({"type": "error", "message": "unauthorized"}))
         except Exception:

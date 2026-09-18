@@ -109,9 +109,25 @@ def test_brain_instance_lock_is_process_exclusive(tmp_path: Path):
 
 
 def test_runtime_declares_the_claude_agent_sdk_dependency():
+    """The brain needs a version of the SDK that has what it calls.
+
+    Asserted as "this specifier admits nothing older" rather than as the exact
+    text of the specifier: pinning the string means an ordinary pin bump reads
+    as the dependency having been dropped, which is what it did.
+    """
+
+    from packaging.requirements import Requirement
+
     project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
-    dependencies = project["project"]["dependencies"]
-    assert any(value.startswith("claude-agent-sdk>=0.2.120") for value in dependencies)
+    declared = [Requirement(value) for value in project["project"]["dependencies"]]
+    sdk = next(
+        (requirement for requirement in declared if requirement.name == "claude-agent-sdk"),
+        None,
+    )
+    assert sdk is not None, "the resident brain's SDK is not a required dependency"
+    # Whether it is pinned or floored, no version below what the brain calls
+    # may satisfy it.
+    assert not any(sdk.specifier.contains(old) for old in ("0.2.0", "0.2.119"))
 
 
 def test_windows_acl_principal_prefers_resolvable_whoami(monkeypatch):

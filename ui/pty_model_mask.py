@@ -3,8 +3,9 @@
 
 Claude's workflow UI reports the model of its relay agent, usually Sonnet,
 instead of the Codex model that relay launches. Serena requires Codex workflow
-labels to start with sol, terra, or luna, so this relay replaces only the
-Claude model token on those rows. All other output and all input are untouched.
+labels to start with a known Codex family name, so this relay replaces only
+the Claude model token on those rows. All other output and all input are
+untouched.
 """
 
 from __future__ import annotations
@@ -27,7 +28,13 @@ _CONTROL_STRING = rb"\x1b[P^_][\s\S]*?\x1b\\"
 _SHORT_ESCAPE = rb"\x1b[@-_]"
 _ESCAPE = rb"(?:" + b"|".join((_CSI, _OSC, _CONTROL_STRING, _SHORT_ESCAPE)) + rb")"
 
-_FAMILY = rb"(?P<family>sol|terra|luna)"
+# Every Codex family a workflow label may start with, and the version each one
+# is when the label does not say. astra is 6; the 5.6 generation is the rest.
+# A family missing here is not masked at all, so its pane keeps claiming to be
+# whatever Claude model the relay agent happens to be.
+_FAMILY_VERSIONS = {b"sol": b"5.6", b"terra": b"5.6", b"luna": b"5.6", b"astra": b"6"}
+_FAMILY_ALTERNATION = b"|".join(_FAMILY_VERSIONS)
+_FAMILY = rb"(?P<family>" + _FAMILY_ALTERNATION + rb")"
 _VERSION = rb"(?P<version>[0-9]+(?:\.[0-9]+)?)?"
 _LABEL_CHAR = rb"(?:[A-Za-z0-9._-]|" + _ESCAPE + rb")"
 _LABEL = _FAMILY + _VERSION + _LABEL_CHAR + rb"*:[^\s\x1b]+"
@@ -39,18 +46,20 @@ _PATTERN = re.compile(
 )
 
 _VISIBLE_COMPLETE = re.compile(
-    rb"^(?:sol|terra|luna)(?:[0-9]+(?:\.[0-9]+)?)?[A-Za-z0-9._-]*:"
+    rb"^(?:" + _FAMILY_ALTERNATION + rb")(?:[0-9]+(?:\.[0-9]+)?)?[A-Za-z0-9._-]*:"
     rb"[^\s]+[ \t]*" + _CLAUDE_MODEL,
     re.IGNORECASE,
 )
-_FAMILIES = (b"sol", b"terra", b"luna")
+_FAMILIES = tuple(_FAMILY_VERSIONS)
 _MODEL_NAMES = (b"sonnet", b"opus", b"haiku", b"fable")
 _MAX_PARTIAL = 1024
 
 
 def _model_display(match: re.Match[bytes]) -> bytes:
-    family = match.group("family").decode("ascii").title()
-    version = (match.group("version") or b"5.6").decode("ascii")
+    name = match.group("family")
+    default = _FAMILY_VERSIONS[name.lower()]
+    family = name.decode("ascii").title()
+    version = (match.group("version") or default).decode("ascii")
     return f"{family} {version}".encode("ascii")
 
 

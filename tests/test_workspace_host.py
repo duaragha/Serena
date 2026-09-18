@@ -1969,6 +1969,12 @@ def test_pending_delete_retains_recovery_and_rejects_owned_target(tmp_path, monk
     monkeypatch.setattr(indexer, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(indexer, "DB_PATH", tmp_path / "data/index.db")
     monkeypatch.setattr(indexer, "_INDEX_LOCK_PATH", tmp_path / "data/index.lock")
+    # The schema is created once per process and remembered. Repointing the
+    # database without clearing that flag leaves this test reading a file that
+    # was never given tables -- but only when something earlier in the run
+    # created the real one, which is why it failed in the full suite and passed
+    # on its own.
+    monkeypatch.setattr(indexer, "_schema_ready", False)
     monkeypatch.setattr(metadata, "METADATA_DIR", tmp_path / "meta")
     monkeypatch.setattr(metadata, "METADATA_PATH", tmp_path / "legacy.json")
     monkeypatch.setattr(metadata, "_migrated", False)

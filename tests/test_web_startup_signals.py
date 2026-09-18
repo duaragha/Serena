@@ -13,11 +13,17 @@ import pytest
 @pytest.mark.parametrize("has_hup", [False, True])
 def test_web_server_starts_with_only_the_platforms_available_signals(tmp_path, has_hup):
     source = Path(__file__).resolve().parents[1] / "ui/web.py"
-    function = next(
+    # run_web leaves through _shutdown_owned_runtimes, so the entry point is
+    # both of these. Exec'ing only run_web would find the name missing and
+    # fail as a NameError at the moment of the signal -- which is exactly the
+    # shutdown path this test exists to prove.
+    wanted = ("_shutdown_owned_runtimes", "run_web")
+    body = [
         node
         for node in ast.parse(source.read_text()).body
-        if isinstance(node, ast.FunctionDef) and node.name == "run_web"
-    )
+        if isinstance(node, ast.FunctionDef) and node.name in wanted
+    ]
+    assert [node.name for node in body] == list(wanted)
     calls = []
     registered = {}
 
@@ -44,9 +50,14 @@ def test_web_server_starts_with_only_the_platforms_available_signals(tmp_path, h
         "atexit": SimpleNamespace(register=lambda callback: calls.append("atexit")),
         "signal": signals,
         "sys": SimpleNamespace(platform="linux" if has_hup else "win32", stderr=io.StringIO()),
-        "app": SimpleNamespace(run=lambda **kwargs: calls.append(kwargs)),
+        # The workspace host is optional; an unstarted server has none, and
+        # the pty terminals still have to be closed in that case.
+        "app": SimpleNamespace(
+            run=lambda **kwargs: calls.append(kwargs),
+            extensions={},
+        ),
     }
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), scope)
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(source), "exec"), scope)
     scope["run_web"](host="127.0.0.1", port=8123)
     assert calls[-1] == {"host": "127.0.0.1", "port": 8123, "debug": False, "threaded": True}
     assert set(registered) == ({15, 2, 1} if has_hup else {15, 2})

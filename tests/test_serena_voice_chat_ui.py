@@ -58,8 +58,26 @@ def test_permanent_serena_chat_cannot_be_deleted_or_resumed(monkeypatch, tmp_pat
     assert client.post("/api/spawn-terminal", json={"session_id": "serena-voice-main"}).status_code == 409
 
 
+def _script_line(needle: str) -> str:
+    """The one line of the page's inline script that does `needle`.
+
+    These used to be whole-expression substring matches, which meant adding an
+    unrelated clause to a condition failed the test without anything about the
+    behaviour having changed. Asserting on the operands of the right line says
+    what actually matters and survives the next clause.
+    """
+
+    lines = [line.strip() for line in web.HTML.splitlines() if needle in line]
+    assert len(lines) == 1, f"expected exactly one line doing {needle!r}, got {len(lines)}"
+    return lines[0]
+
+
 def test_serena_read_view_polls_for_new_turns() -> None:
-    assert "externallyRunning || _isSerenaVoiceSession(data.agent || sid)" in web.HTML
+    """A Serena transcript grows from outside this process, so read mode polls."""
+
+    scheduling = _script_line(") _scheduleExternalReadRefresh(sid);")
+    assert "_isSerenaVoiceSession(data.agent || sid)" in scheduling
+    assert "convMode === 'read'" in scheduling
 
 
 def test_voice_conversation_api_exposes_agent_for_serena_label(
@@ -82,5 +100,7 @@ def test_voice_conversation_api_exposes_agent_for_serena_label(
 
     assert response.status_code == 200
     assert response.get_json()["agent"] == "serena-voice"
-    assert "const defaultAgentLabel = 'Serena';" in web.HTML
-    assert "data.agent === 'codex' ? 'Codex' : defaultAgentLabel" in web.HTML
+    # ...and the page turns that agent into her name, not Claude's.
+    label = _script_line("const defaultAgentLabel")
+    assert "data.agent === 'serena-voice'" in label and "'Serena'" in label
+    assert "data.agent === 'codex' ? 'Codex'" in _script_line("? 'Codex'")
