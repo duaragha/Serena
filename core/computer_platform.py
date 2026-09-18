@@ -119,6 +119,8 @@ class X11Desktop:
         self.monitor_error = ""
         self.shortcut_ready = threading.Event()
         self.shortcut_error = ""
+        self.monitor_cache = None
+        self.monitor_cached_at = 0.0
 
     def _run(self, *args, timeout=3, input=None):
         result = subprocess.run(
@@ -128,9 +130,23 @@ class X11Desktop:
             raise ComputerError(f"{args[0]} failed: {result.stderr.strip()[:180]}")
         return result.stdout.strip()
 
+    # Every captured frame resolves geometry, so xrandr runs at frame rate. A busy
+    # X server can overrun the subprocess timeout; that must not end a live session.
+    MONITOR_CACHE_SECONDS = 2.0
+
     def monitors(self):
+        now = time.monotonic()
+        if self.monitor_cache and now - self.monitor_cached_at < self.MONITOR_CACHE_SECONDS:
+            return self.monitor_cache
+        try:
+            listing = self._run("xrandr", "--listmonitors")
+        except (subprocess.TimeoutExpired, ComputerError):
+            # Layout changes are rare; a stale list beats killing the session.
+            if self.monitor_cache:
+                return self.monitor_cache
+            raise
         result = []
-        for line in self._run("xrandr", "--listmonitors").splitlines()[1:]:
+        for line in listing.splitlines()[1:]:
             match = re.search(r"(\d+)/\d+x(\d+)/\d+([+-]\d+)([+-]\d+)\s+(\S+)", line)
             if match:
                 w, h, x, y, name = match.groups()
@@ -142,7 +158,11 @@ class X11Desktop:
                     }
                 )
         if not result:
+            if self.monitor_cache:
+                return self.monitor_cache
             raise ComputerError("no active monitors")
+        self.monitor_cache = result
+        self.monitor_cached_at = now
         return result
 
     def active_window(self):

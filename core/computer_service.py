@@ -175,8 +175,16 @@ class ComputerServer(ThreadingHTTPServer):
 
         self.controller.indicator = require_indicator
 
+    # A live HUD whose heartbeat is late is a stalled X server or session bus,
+    # not a disconnected indicator; only a dead process ends the session at once.
+    INDICATOR_STALE_SECONDS = 10.0
+    # The lock probe is one gdbus call with a 1 s timeout every 0.5 s. A single
+    # slow answer must not end a healthy session; a probe that keeps failing does.
+    LOCK_PROBE_GRACE_SECONDS = 3.0
+
     def supervise(self):
         last_lock_check = 0.0
+        lock_probe_failing_since = None
         while not self.controller.shutdown.wait(0.05):
             s = self.controller.session
             if s and s.state == "active":
@@ -190,7 +198,10 @@ class ComputerServer(ThreadingHTTPServer):
                     self.indicator_process.poll() is not None
                     # begin waits for its first acknowledgement before capture.
                     # An initial zero heartbeat is not a disconnected indicator.
-                    or (self.indicator_seen and time.monotonic() - self.indicator_seen > 3)
+                    or (
+                        self.indicator_seen
+                        and time.monotonic() - self.indicator_seen > self.INDICATOR_STALE_SECONDS
+                    )
                 ):
                     self.controller.stop("visible indicator disconnected")
                 elif self.controller.authority.lock_state()["engaged"]:
@@ -200,8 +211,13 @@ class ComputerServer(ThreadingHTTPServer):
                     try:
                         if self.controller.desktop.locked():
                             self.controller.stop("desktop locked")
+                        lock_probe_failing_since = None
                     except ComputerError:
-                        self.controller.stop("desktop lock state unavailable")
+                        lock_probe_failing_since = lock_probe_failing_since or time.monotonic()
+                        if time.monotonic() - lock_probe_failing_since >= self.LOCK_PROBE_GRACE_SECONDS:
+                            self.controller.stop("desktop lock state unavailable")
+            else:
+                lock_probe_failing_since = None
 
 
 class Handler(BaseHTTPRequestHandler):
