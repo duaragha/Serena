@@ -385,7 +385,12 @@ if (gotSingleInstanceLock) {
     registerUpdateIpc();
     // The menu needs a live window reference, not the one that existed at
     // startup: the window is recreated when reopened from the tray.
-    appMenu.install(() => mainWindow);
+    let openReleases = null;
+    if (profile.channel === 'dev') {
+      const { createPromotionWindow } = require('./promotion-window.cjs');
+      openReleases = createPromotionWindow({ app, BrowserWindow, ipcMain, dialog, shell, profile });
+    }
+    appMenu.install(() => mainWindow, openReleases);
     // Say when each platform's build lands. A tagged release publishes Linux
     // first and Windows minutes later, so both are worth hearing about.
     releases.start();

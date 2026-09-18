@@ -8,7 +8,7 @@ name: Desktop release
 on:
   push:
     tags:
-      - "v*"
+      - "v*-dev.*"
 
 # Releases land on this repository, which is what publishing a tag needs.
 permissions:
@@ -46,6 +46,9 @@ jobs:
           npm ci
           npm test
 
+      - name: Prove selective publication stays gated
+        run: node --test tests/promotion-publication.test.cjs
+
       - name: Configure the release edition from its tag
         run: node apps/desktop/scripts/configure-release.cjs "$GITHUB_REF_NAME"
 
@@ -53,6 +56,7 @@ jobs:
         run: |
           ./.venv/bin/python -m pip install playwright==1.58.0
           ./.venv/bin/python -m playwright install --with-deps chromium
+          ./.venv/bin/python -m pytest tests/test_promotion_browser.py -q --tb=short
           node --test tests/workspace*.test.mjs
           ./.venv/bin/python -m pytest tests/test_terminal_environment.py tests/test_windows_pty_backend.py -q --tb=short
           ./.venv/bin/python -m pytest tests/test_workspace*.py -q --tb=short --junitxml=workspace-tests.xml

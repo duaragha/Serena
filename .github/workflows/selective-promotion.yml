@@ -1,0 +1,181 @@
+name: Selective stable promotion
+run-name: Promotion ${{ inputs.mode }} ${{ inputs.request }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Verification only, or publish after both platform gates
+        type: choice
+        options: [verify, publish]
+        default: verify
+        required: true
+      source:
+        description: Reviewed catalog source commit (40 hex characters)
+        required: true
+      stable:
+        description: Reviewed current stable tag
+        required: true
+      selected:
+        description: JSON array of selected feature IDs
+        required: true
+      tested:
+        description: JSON array of feature IDs you have tested
+        required: true
+      request:
+        description: Unique request ID (32 hex characters)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: serena-stable-promotion
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check all registered feature combinations
+        run: node --test tests/promotion-composition.test.cjs
+      - name: Validate request and assemble only selected patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTION_SOURCE: ${{ inputs.source }}
+          PROMOTION_STABLE: ${{ inputs.stable }}
+          PROMOTION_SELECTED: ${{ inputs.selected }}
+          PROMOTION_TESTED: ${{ inputs.tested }}
+          PROMOTION_REQUEST: ${{ inputs.request }}
+          PROMOTION_MODE: ${{ inputs.mode }}
+        run: node scripts/prepare-promotion.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-source
+          path: |
+            candidate.bundle
+            promotion-plan.json
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-source
+      - run: git clone --branch candidate candidate.bundle candidate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install candidate dependencies
+        working-directory: candidate
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e '.[dev,workspace]' pyinstaller playwright==1.58.0
+          .venv/bin/python -m playwright install --with-deps chromium
+          npm --prefix apps/desktop ci
+      - name: Candidate shell, sidebar and original CLI regression gates
+        working-directory: candidate
+        run: |
+          npm --prefix apps/desktop test
+          .venv/bin/python -m pytest -q --tb=short tests/test_workspace_browser.py tests/test_fleet_chat_sidebar.py tests/test_voice_created_chat_sidebar.py tests/test_session_sidebar_completeness.py tests/test_workspace_desktop_editions.py tests/test_terminal*.py tests/test_linked_terminal*.py tests/test_pty_terminal_runtime.py tests/test_desktop_shell_parity.py
+      - name: Build stable AppImage without publishing
+        working-directory: candidate/apps/desktop
+        run: |
+          node scripts/configure-release.cjs "v$(node -p 'require("./package.json").version')"
+          npm run build:sidecar
+          npx --no-install electron-builder --linux AppImage --publish never
+      - name: Boot actual packaged stable shell in isolated profile
+        working-directory: candidate/apps/desktop
+        run: xvfb-run -a node tests/smoke-appimage.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-linux
+          path: |
+            candidate/apps/desktop/dist/Serena-*.AppImage
+            candidate/apps/desktop/dist/latest-linux.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-source
+      - run: git clone --branch candidate candidate.bundle candidate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build and smoke-test Windows without publishing
+        working-directory: candidate
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          python -m venv .venv
+          if ($LASTEXITCODE -ne 0) { throw 'venv failed' }
+          npm --prefix apps/desktop ci
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          $Version = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
+          node apps/desktop/scripts/configure-release.cjs "v$Version"
+          if ($LASTEXITCODE -ne 0) { throw 'configure failed' }
+          npm --prefix apps/desktop test
+          if ($LASTEXITCODE -ne 0) { throw 'desktop tests failed' }
+          ./apps/desktop/windows/build-win.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-windows
+          path: |
+            candidate/apps/desktop/dist/windows/Serena-*.exe
+            candidate/apps/desktop/dist/windows/Serena-*.blockmap
+            candidate/apps/desktop/dist/windows/latest.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  finish:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm --prefix apps/desktop ci --ignore-scripts
+      - run: node --test tests/promotion-publication.test.cjs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify checksums; publish only when explicitly requested
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTION_REQUEST: ${{ inputs.request }}
+          PROMOTION_MODE: ${{ inputs.mode }}
+        run: node scripts/publish-promotion.cjs
