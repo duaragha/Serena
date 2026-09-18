@@ -633,6 +633,7 @@ def code_drop():
     _code_call(drop_code_index)
     click.echo("Code index cleared; registry retained.")
 
+
 @code.command('brief')
 @click.argument('repo_key')
 @click.option('--generate', is_flag=True, help='Generate from the indexed corpus.')
