@@ -728,6 +728,16 @@ Later regeneration cannot change that dispatch receipt. `context.budgeted` event
 persist individual `sources` receipts through `record_context_receipt`, while the
 attempt receipt stores aggregate counts and the ordered source-digest hash.
 
+Skills are discovered in the actual worker checkout (`working_directory` when
+isolated, otherwise `run.cwd`): root `SKILL.md`, then `.agents/skills/*/SKILL.md`.
+Nested skills override root skills of the same name; names are sorted. The catalog
+is always injected and meaningful task/name/description token matches add full
+skill text within a 16,000-character cap. Oversized sources have explicit omission
+markers and receipt counts. Invalid skills emit `skill.discovery_warning` and are
+skipped. Both briefs and skills are untrusted evidence, redacted before dispatch;
+they never override worker authority. All providers receive identical prompt text,
+with no native skill flag changes. See [the skill standard](skills-standard.md).
+
 Fleet persistence filters common authorization headers, token/password environment assignments,
 private keys, and high-confidence GitHub, Slack, and AWS credential forms. The filter covers worker
 event logs, provider output/error receipts, handoff context, steering, and durable Fleet events. It

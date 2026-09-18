@@ -3666,6 +3666,17 @@ def _worker_prompt(
             repository_receipts.append({**brief_budget.to_dict(), **brief_version, 'kind': 'repo_brief'})
     except (OSError, ValueError):
         pass
+    from fleet.skills import prompt_context
+    def skill_warning(payload):
+        store.append_event(run['run_id'], 'skill.discovery_warning', payload,
+                           leg_id=leg['leg_id'], attempt_id=attempt['attempt_id'])
+    skills_context, skills_receipts = prompt_context(
+        str(working_directory or run['cwd']),
+        str(run['task']) + '\n' + _assignment_text(leg.get('assignment')),
+        warn=skill_warning)
+    if skills_context:
+        repository_context += ('\n\n' if repository_context else '') + skills_context
+        repository_receipts.extend(skills_receipts)
     for output in outputs:
         text = output["output_text"].strip()
         if not text:

@@ -1415,6 +1415,17 @@ def test_worker_prompt_names_the_actual_isolated_directory(fleet_env, monkeypatc
     leg = run["phases"][0]["legs"][0]
     attempt = store.begin_attempt(leg["leg_id"])
     isolated = str(fleet_env / "isolated" / "codex-a")
+    skill = Path(isolated) / 'SKILL.md'
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text('---\nname: implement\ndescription: implement project changes\n---\nfixture implementation procedure')
+    broken = Path(isolated) / '.agents/skills/broken/SKILL.md'
+    broken.parent.mkdir(parents=True)
+    broken.write_text('not valid frontmatter')
+    # A skill whose frontmatter exhausts the YAML parser must be skipped like
+    # any other malformed skill, never break prompt assembly.
+    nested = Path(isolated) / '.agents/skills/nested/SKILL.md'
+    nested.parent.mkdir(parents=True)
+    nested.write_text('---\n' + '- ' * 1200 + 'x\n---\nbody')
 
     prompt = supervisor._worker_prompt(
         store,
@@ -1426,8 +1437,12 @@ def test_worker_prompt_names_the_actual_isolated_directory(fleet_env, monkeypatc
 
     assert f"Working directory: {isolated}" in prompt
     assert 'fixture architecture brief' in prompt
+    assert 'implement: implement project changes' in prompt
+    assert 'fixture implementation procedure' in prompt
     assert supervisor._worker_prompt(store, run, leg, attempt, working_directory=isolated) == prompt
     events = store.events(run['run_id'])
+    assert any(e['type'] == 'skill.discovery_warning' and 'broken' in e['payload']['path'] for e in events)
+    assert any(e['type'] == 'skill.discovery_warning' and 'nested' in e['payload']['path'] for e in events)
     assert any(e['type'] == 'context.budgeted' and
                e['payload'].get('sources', [{}])[0].get('brief_sha256') == 'version-one'
                for e in events)
