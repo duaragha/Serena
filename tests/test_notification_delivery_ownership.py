@@ -1,8 +1,5 @@
 """Private notification DBs and fake transports; never send an actual notice."""
 
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from pathlib import Path
 import gc
 import os
 import sqlite3
@@ -10,11 +7,18 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from core.control_plane import ControlPlaneStore
-from core.notification_authority import NotificationAuthority, NotificationPolicy, NotificationRequest
+from core.notification_authority import (
+    NotificationAuthority,
+    NotificationPolicy,
+    NotificationRequest,
+)
 
 
 def _queued(tmp_path):
@@ -188,3 +192,64 @@ def test_answering_is_not_a_general_escape(tmp_path):
     assert authority.request(request).decision == "sent"
     assert authority.request(request).decision == "suppressed"
     assert len(sent) == 1
+
+
+# ---- the notice goes out through this install's CLI, not another one -------
+
+
+def test_the_chats_binary_prefers_this_installs_entry_point(tmp_path, monkeypatch):
+    """The runtime sent its notices through a different Serena's CLI.
+
+    _chats_binary looked for a sibling named exactly "chats". Windows entry
+    points are chats.exe, so on the PC the sibling never matched, PATH won, and
+    the deployed runtime shelled out to a user-site chats running the synced
+    dev tree instead of its own code.
+    """
+
+    from core import notification_senders as senders
+
+    scripts = tmp_path / "runtime" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "python.exe").write_text("")
+    mine = scripts / "chats.exe"
+    mine.write_text("")
+    other = tmp_path / "elsewhere" / "chats.exe"
+    other.parent.mkdir()
+    other.write_text("")
+
+    monkeypatch.setattr(senders, "_BINARY_SUFFIXES", ("", ".exe"))
+    monkeypatch.setattr(senders.sys, "executable", str(scripts / "python.exe"))
+    monkeypatch.setattr(senders.shutil, "which", lambda _name: str(other))
+
+    assert senders._chats_binary() == str(mine)
+
+
+def test_path_is_still_used_when_this_install_has_no_cli(tmp_path, monkeypatch):
+    from core import notification_senders as senders
+
+    scripts = tmp_path / "bare"
+    scripts.mkdir()
+    (scripts / "python").write_text("")
+    fallback = tmp_path / "onpath" / "chats"
+    fallback.parent.mkdir()
+    fallback.write_text("")
+
+    monkeypatch.setattr(senders, "_BINARY_SUFFIXES", ("",))
+    monkeypatch.setattr(senders.sys, "executable", str(scripts / "python"))
+    monkeypatch.setattr(senders, "HOME", tmp_path / "nohome")
+    monkeypatch.setattr(senders.shutil, "which", lambda _name: str(fallback))
+
+    assert senders._chats_binary() == str(fallback)
+
+
+def test_a_missing_cli_is_reported_as_no_binary(tmp_path, monkeypatch):
+    """Returning a path that is not there sends the notice nowhere, silently."""
+
+    from core import notification_senders as senders
+
+    monkeypatch.setattr(senders, "_BINARY_SUFFIXES", ("",))
+    monkeypatch.setattr(senders.sys, "executable", str(tmp_path / "gone" / "python"))
+    monkeypatch.setattr(senders, "HOME", tmp_path / "nohome")
+    monkeypatch.setattr(senders.shutil, "which", lambda _name: str(tmp_path / "ghost"))
+
+    assert senders._chats_binary() is None
