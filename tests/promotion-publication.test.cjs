@@ -47,3 +47,41 @@ test('workflow never publishes a platform before both builds pass', () => {
   assert.equal(workflow.permissions.contents, 'read');
   assert.equal(workflow.jobs.finish.permissions.contents, 'write');
 });
+
+for (const failure of [null, 'incomplete upload', 'baseline changed', 'wrong authorization']) {
+  test(`publication stays draft until complete and current: ${failure || 'success'}`, t => {
+    const { dir, plan, names } = fixture(t);
+    plan.mode = 'publish';
+    plan.features = [{ id: 'sidebar-order' }];
+    fs.writeFileSync(path.join(dir, 'promotion-plan.json'), JSON.stringify(plan));
+    const calls = [];
+    let baselineReads = 0;
+    const command = (binary, args) => {
+      calls.push([binary, ...args]);
+      if (binary === 'git') {
+        if (args[0] === 'rev-parse') return plan.commit;
+        if (args[0] === 'show') return JSON.stringify(plan);
+        return '';
+      }
+      if (args[0] === 'api' && args[1].endsWith('/latest')) {
+        baselineReads++;
+        return JSON.stringify({ tag_name: failure === 'baseline changed' && baselineReads > 1 ? 'v0.3.6' : plan.baseTag });
+      }
+      if (args[0] === 'api') return JSON.stringify({ assets: [...names, 'latest.yml', 'latest-linux.yml', 'stable-promotion.json'].map(name => ({
+        name, state: failure === 'incomplete upload' ? 'new' : 'uploaded', size: fs.statSync(path.join(dir, name)).size,
+      })) });
+      return '';
+    };
+    const options = { command, authorization: { request: plan.request, mode: failure === 'wrong authorization' ? 'verify' : 'publish' } };
+    if (failure) assert.throws(() => publish('/isolated', dir, options));
+    else assert.deepEqual(publish('/isolated', dir, options), { published: true, version: plan.version });
+    const exposed = calls.filter(a => a[0] === 'gh' && a[1] === 'release' && a[2] === 'edit');
+    assert.equal(exposed.length, failure ? 0 : 1);
+    if (!failure) {
+      const draft = calls.find(a => a.includes('create'));
+      assert.ok(draft.includes('--draft'));
+      assert.ok(exposed[0].includes('--draft=false'));
+      assert.ok(exposed[0].includes('--latest'));
+    }
+  });
+}
