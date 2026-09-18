@@ -1362,6 +1362,7 @@ def codex_exec(model, effort, work_dir, timeout, danger_full_access, visible,
     title_text = (custom_title or "").strip()
     if not title_text:
         model_names = {
+            "gpt-6-astra": "Astra 6",
             "gpt-5.6-sol": "Sol 5.6",
             "gpt-5.6-terra": "Terra 5.6",
             "gpt-5.6-luna": "Luna 5.6",

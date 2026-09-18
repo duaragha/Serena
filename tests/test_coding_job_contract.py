@@ -397,8 +397,8 @@ def test_model_identity_is_frozen_in_every_accepted_brief(tmp_path) -> None:
     # The model is frozen; the effort is tiered per job and an unjudged job is
     # an ordinary one, so this default is deliberately not the ceiling.
     assert brief.codex_model == CODEX_MODEL
-    assert (brief.complexity, brief.codex_effort) == (DEFAULT_COMPLEXITY, "high")
-    assert (brief.implement_model, brief.implement_effort) == ("gpt-5.6-sol", "high")
+    assert (brief.complexity, brief.codex_effort) == (DEFAULT_COMPLEXITY, "medium")
+    assert (brief.implement_model, brief.implement_effort) == ("gpt-6-astra", "medium")
     assert (brief.review_model, brief.review_effort) == ("gpt-5.6-luna", "high")
     assert brief.model_policy["policy_version"] == 1
     assert brief.commit_authorized is False
@@ -418,13 +418,13 @@ def test_hard_work_still_reaches_the_ceiling_and_ordinary_work_does_not(tmp_path
             context={"complexity": complexity},
         )
 
-    assert make("hard").codex_effort == CODEX_EFFORT == "xhigh"
+    assert make("hard").codex_effort == CODEX_EFFORT == "high"
     assert make("routine").implement_model == "gpt-5.6-terra"
-    assert make("normal").implement_model == "gpt-5.6-sol"
-    assert make("ordinary").codex_effort == "high"
+    assert make("normal").implement_model == "gpt-6-astra"
+    assert make("ordinary").codex_effort == "medium"
     # Nonsense never escalates: an unreadable tier is an ordinary job.
     assert make("catastrophic").complexity == DEFAULT_COMPLEXITY
-    assert make(None).codex_effort == "high"
+    assert make(None).codex_effort == "medium"
 
 
 def test_the_file_map_reaches_the_worker_labelled_as_a_guess(tmp_path) -> None:
@@ -636,11 +636,11 @@ def test_a_brief_accepted_before_tiering_still_runs_at_what_it_froze() -> None:
     legacy = {"codex_model": CODEX_MODEL, "codex_effort": "xhigh"}
     assert frozen_implement_effort(legacy) == "xhigh"
     # A brief that names its tier is decided by the tier, not by the string.
-    assert frozen_implement_effort({"complexity": "ordinary", "codex_effort": "xhigh"}) == "high"
-    assert frozen_implement_effort({"complexity": "hard", "codex_effort": "high"}) == "xhigh"
+    assert frozen_implement_effort({"complexity": "ordinary", "codex_effort": "xhigh"}) == "medium"
+    assert frozen_implement_effort({"complexity": "hard", "codex_effort": "high"}) == "high"
     # Nonsense falls back to ordinary rather than inventing an effort.
-    assert frozen_implement_effort({"codex_effort": "banana"}) == "high"
-    assert frozen_implement_effort(None) == "high"
+    assert frozen_implement_effort({"codex_effort": "banana"}) == "medium"
+    assert frozen_implement_effort(None) == "medium"
 
 
 def test_one_typo_in_a_project_name_still_resolves(tmp_path) -> None:

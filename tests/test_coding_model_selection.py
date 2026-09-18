@@ -191,7 +191,9 @@ def test_selected_model_is_visible_before_launch_and_capacity_fallback_is_truthf
     assert projected[0]["model"] == {
         "selection": CLAUDE_MODEL,
         "requested": CLAUDE_MODEL,
-        "effort": "high",
+        # An unjudged job is ordinary, and ordinary implements below the
+        # ceiling since Astra 6 replaced Sol.
+        "effort": "medium",
         "reported": "",
         "reported_effort": "",
     }

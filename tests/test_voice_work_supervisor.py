@@ -357,8 +357,8 @@ def test_persisted_resume_uses_the_same_codex_session_and_pinned_identity(tmp_pa
     assert command[-3:] == ["resume", "persisted-session-id", "-"]
     assert "-C" not in command
     assert "--skip-git-repo-check" not in command
-    assert command[command.index("-m") + 1] == "gpt-5.6-sol"
-    assert 'model_reasoning_effort="xhigh"' in command
+    assert command[command.index("-m") + 1] == "gpt-6-astra"
+    assert 'model_reasoning_effort="high"' in command
 
 
 def test_private_launch_commands_use_the_model_frozen_by_shared_policy(tmp_path) -> None:
@@ -530,7 +530,7 @@ def test_dead_committed_reuse_route_recovers_privately_and_releases_next_job(
     attempt_id, _number = store.start_attempt(
         first.item_id,
         provider="codex",
-        model="gpt-5.6-sol",
+        model="gpt-6-astra",
         effort="high",
     )
     assert store.set_attempt_session(attempt_id, sid)
@@ -666,7 +666,7 @@ def test_reused_chat_attempt_uses_live_owner_and_captures_exact_turn(
             rollout,
             {
                 "type": "turn_context",
-                "payload": {"model": "gpt-5.6-sol", "effort": "high"},
+                "payload": {"model": "gpt-6-astra", "effort": "medium"},
             },
             {"type": "event_msg", "payload": {"type": "user_message", "message": prompt}},
             {
@@ -764,7 +764,7 @@ def test_reused_chat_attempt_uses_live_owner_and_captures_exact_turn(
     assert {
         attempt["requested_effort"]
         for attempt in store.job_snapshot(item.item_id)["attempts"]
-    } == {"high"}
+    } == {"medium"}
 
 
 def test_busy_automatic_reuse_route_is_requeued_privately_instead_of_failed(
@@ -783,7 +783,7 @@ def test_busy_automatic_reuse_route_is_requeued_privately_instead_of_failed(
         "bridge_port": 45678,
         "title": "busy chat",
         "reason": "automatic exact-project reuse",
-        "effort": "high",
+        "effort": "medium",
     }
     queued = _accepted_item(store, repo, item_id="busy-fallback-job", work_route=route)
     target = "headless-voice-busy-fallback"
@@ -1097,10 +1097,10 @@ def test_steering_before_thread_started_waits_for_resumable_verified_identity(
                 {
                     "type": "thread.settings",
                     "settings": {
-                        "model": "gpt-5.6-sol",
+                        "model": "gpt-6-astra",
                         # An unjudged job is an ordinary job, so this is the
                         # tier the accepted brief really froze.
-                        "reasoning_effort": "high",
+                        "reasoning_effort": "medium",
                     },
                 }
             )
@@ -1233,7 +1233,7 @@ def test_resident_worker_runs_codex_and_persists_result(tmp_path, monkeypatch) -
             json.dumps(
                 {
                     "type": "thread.settings",
-                    "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
+                    "settings": {"model": "gpt-6-astra", "reasoning_effort": "medium"},
                 }
             ),
             json.dumps(
@@ -1326,10 +1326,11 @@ def test_resident_worker_runs_codex_and_persists_result(tmp_path, monkeypatch) -
     assert "Persona.md" in prompt
     assert captured["commands"][0][-1] == "-"
     assert "--skip-git-repo-check" not in captured["commands"][0]
-    assert captured["commands"][0][captured["commands"][0].index("-m") + 1] == "gpt-5.6-sol"
-    # Ordinary work runs at high. It used to run at the ceiling no matter what
-    # it was, which bought maximum deliberation over routine orientation.
-    assert 'model_reasoning_effort="high"' in captured["commands"][0]
+    assert captured["commands"][0][captured["commands"][0].index("-m") + 1] == "gpt-6-astra"
+    # Ordinary work runs below the ceiling. It used to run at the ceiling no
+    # matter what it was, which bought maximum deliberation over routine
+    # orientation; Astra 6 then moved that ladder down a tier.
+    assert 'model_reasoning_effort="medium"' in captured["commands"][0]
     assert "--ignore-user-config" in captured["commands"][0]
     assert titles and titles[0][0] == session_id
     assert residents == [session_id]
@@ -1455,7 +1456,7 @@ def test_a_warm_claude_session_is_reused_only_when_every_guard_holds(
     assert supervisor._warm_claude_session(item, tmp_path / "not-a-repo") == ""
 
 
-def test_ordinary_work_implements_at_high_and_hard_work_at_the_ceiling(
+def test_ordinary_work_implements_below_the_ceiling_and_hard_work_at_it(
     tmp_path,
 ) -> None:
     """Effort is a property of the job, read from the brief it was accepted on."""
@@ -1469,7 +1470,7 @@ def test_ordinary_work_implements_at_high_and_hard_work_at_the_ceiling(
     assert item is not None
     supervisor = _warm_supervisor(tmp_path, store)
 
-    assert supervisor._implement_effort(item) == "high"
+    assert supervisor._implement_effort(item) == "medium"
     command = VoiceWorkSupervisor._claude_implement_command("/fake/claude", effort="high")
     assert command[command.index("--effort") + 1] == "high"
 
@@ -1484,7 +1485,7 @@ def test_ordinary_work_implements_at_high_and_hard_work_at_the_ceiling(
     )
     # The accepted policy wins over a later field mutation. A model must not
     # silently change depth after the job was frozen.
-    assert supervisor._implement_effort(tampered) == "high"
+    assert supervisor._implement_effort(tampered) == "medium"
     legacy_hard = item.__class__(
         item_id=item.item_id,
         request=item.request,
@@ -1498,9 +1499,9 @@ def test_ordinary_work_implements_at_high_and_hard_work_at_the_ceiling(
             if key != "model_policy"
         },
     )
-    assert supervisor._implement_effort(legacy_hard) == "xhigh"
-    assert 'model_reasoning_effort="xhigh"' in VoiceWorkSupervisor._codex_command(
-        "/fake/codex", repo, effort="xhigh"
+    assert supervisor._implement_effort(legacy_hard) == "high"
+    assert 'model_reasoning_effort="high"' in VoiceWorkSupervisor._codex_command(
+        "/fake/codex", repo, effort="high"
     )
 
 

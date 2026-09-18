@@ -19,10 +19,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.coding_model_preferences import AUTO_MODEL, normalise_coding_model
+from core.coding_model_preferences import (
+    AUTO_MODEL,
+    CODEX_MODEL,
+    normalise_coding_model,
+)
 
 SCHEMA_VERSION = 1
-CODEX_MODEL = "gpt-5.6-sol"
 CLAUDE_REVIEW_MODEL = "claude-opus-5"
 CLAUDE_REVIEW_EFFORT = "xhigh"
 
@@ -30,9 +33,17 @@ CLAUDE_REVIEW_EFFORT = "xhigh"
 # to implement at the maximum tier, which means the model deliberated at full
 # depth over routine orientation: on 2026-08-05 job a8bfddf8 spent 7.6 minutes
 # and ninety Bash calls at xhigh before its first edit. The brain judges the
-# job when it accepts it, ordinary work implements at high, and xhigh is kept
-# for work it actually believes is hard. Review is not tiered; a cheaper
-# reviewer is a different risk and is not what was asked for.
+# job when it accepts it, ordinary work implements below the ceiling, and the
+# ceiling is kept for work it actually believes is hard. Review is not tiered;
+# a cheaper reviewer is a different risk and is not what was asked for.
+#
+# These mirror config/serena-policy.json, which is the authority and which
+# resolve_policy already answers from at runtime. Retiring Sol for Astra 6
+# moved that ladder from high/xhigh to medium/high -- Astra is the stronger
+# model, so the tier below the ceiling buys the same work for less -- and
+# leaving these behind made the constants contradict the briefs actually
+# being accepted, which reads as "accepted coding brief model policy is
+# inconsistent".
 ROUTINE_COMPLEXITY = "routine"
 NORMAL_COMPLEXITY = "normal"
 ORDINARY_COMPLEXITY = "ordinary"
@@ -40,11 +51,17 @@ HARD_COMPLEXITY = "hard"
 DEFAULT_COMPLEXITY = ORDINARY_COMPLEXITY
 IMPLEMENT_EFFORT_BY_COMPLEXITY = {
     ROUTINE_COMPLEXITY: "high",
-    NORMAL_COMPLEXITY: "high",
-    ORDINARY_COMPLEXITY: "high",
-    HARD_COMPLEXITY: "xhigh",
+    NORMAL_COMPLEXITY: "medium",
+    ORDINARY_COMPLEXITY: "medium",
+    HARD_COMPLEXITY: "high",
 }
 COMPLEXITY_TIERS = frozenset(IMPLEMENT_EFFORT_BY_COMPLEXITY)
+# What a brief may legitimately have frozen, which is not the same as the tiers
+# above. The ladder moves when the model behind it changes; a brief already in
+# the queue did not. Recognising only the current tiers would silently re-tier
+# work frozen at a retired one -- the outage frozen_implement_effort exists to
+# prevent. These are the efforts core.serena_policy accepts.
+ACCEPTED_FROZEN_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
 DEFAULT_IMPLEMENT_EFFORT = IMPLEMENT_EFFORT_BY_COMPLEXITY[DEFAULT_COMPLEXITY]
 # The ceiling, kept under its old name because the model policy still freezes
 # against it. It is no longer what an ordinary job runs at.
@@ -221,12 +238,12 @@ def frozen_implement_effort(brief: Mapping[str, Any] | None) -> str:
             if isinstance(implement, Mapping)
             else ""
         )
-        if frozen in set(IMPLEMENT_EFFORT_BY_COMPLEXITY.values()):
+        if frozen in ACCEPTED_FROZEN_EFFORTS:
             return frozen
     if "complexity" in data:
         return implement_effort_for(data.get("complexity"))
     frozen = _clean(data.get("codex_effort")).casefold()
-    if frozen in set(IMPLEMENT_EFFORT_BY_COMPLEXITY.values()):
+    if frozen in ACCEPTED_FROZEN_EFFORTS:
         return frozen
     return DEFAULT_IMPLEMENT_EFFORT
 

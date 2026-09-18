@@ -116,8 +116,8 @@ def test_ordinary_asks_are_hers_to_start(spoken: str, tmp_path) -> None:
     assert brief is not None
     assert brief["triggering_request"] == spoken
     assert brief["project_root"] == str(repo)
-    assert brief["codex_model"] == "gpt-5.6-sol"
-    assert brief["codex_effort"] == "high"
+    assert brief["codex_model"] == "gpt-6-astra"
+    assert brief["codex_effort"] == "medium"
     assert brief["complexity"] == "ordinary"
 
 
@@ -237,7 +237,7 @@ def test_safe_exact_project_chat_is_frozen_into_the_accepted_job(
             title="Tightening Serena",
             reason="focused exact-project chat",
             bound_focus=True,
-            effort="high",
+            effort="medium",
         ),
     )
 
@@ -274,7 +274,7 @@ def test_a_reuse_route_at_the_wrong_effort_falls_back_before_acceptance(tmp_path
     assert result.allowed
     assert result.route_mode == "private"
     brief = inbox.accepted_brief(result.item_id)
-    assert brief["codex_effort"] == "high"
+    assert brief["codex_effort"] == "medium"
     assert brief["work_route"]["mode"] == "private"
 
 
@@ -301,7 +301,7 @@ def test_an_explicit_existing_route_at_the_wrong_effort_is_refused(tmp_path) -> 
 
     assert not result.allowed
     assert result.route_mode == "refused"
-    assert "froze high" in result.reason
+    assert "froze medium" in result.reason
     assert inbox.pending_count() == 0
 
 
@@ -628,7 +628,7 @@ def test_the_file_map_and_tier_survive_into_the_durable_brief(tmp_path) -> None:
         "[NOT FOUND, this guess is wrong]",
     ]
     assert brief["complexity"] == "hard"
-    assert brief["codex_effort"] == "xhigh"
+    assert brief["codex_effort"] == "high"
 
 
 def test_a_missing_file_map_slows_the_worker_but_never_refuses_the_job(tmp_path) -> None:

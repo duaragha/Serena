@@ -34,7 +34,7 @@ def test_both_healthy_uses_the_normal_lane_models() -> None:
     plan = choose_providers(_capacity(True, True))
     assert plan.usable
     assert plan.implement_provider == "codex"
-    assert plan.implement_model == "gpt-5.6-sol"
+    assert plan.implement_model == "gpt-6-astra"
     assert plan.review_provider == "codex"
     assert plan.review_model == "gpt-5.6-luna"
     assert plan.implement_model != plan.review_model
