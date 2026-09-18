@@ -780,3 +780,42 @@ def test_a_stale_base_is_recorded_on_the_dispatch(queue, monkeypatch):
 
     assert outcome.output.get("stale_base") is True
     assert outcome.output.get("run_id") == "run-90"
+
+
+def test_a_refused_fleet_start_says_what_refused_it(queue, monkeypatch):
+    """"requires reconciliation: ValueError" hid the actual cause for an hour.
+
+    Fleet's shipped config had drifted from PHASE_MODEL_POLICY, so load_config
+    raised inside start_run and every dispatch reported a bare type name. The
+    message is the whole diagnosis, and it is also what gets texted to him.
+    """
+
+    from core import agent_checkouts, coding_job_contract, scheduler_actions
+    from fleet import supervisor
+
+    store.enqueue_task(BRIEF, source_id="imessage:91")
+    monkeypatch.setattr(coding_job_contract, "resolve_repository_root",
+                        lambda *a, **k: Path("/repo"))
+    monkeypatch.setattr(agent_checkouts, "prepare", lambda *a, **k: SimpleNamespace(
+        path="/checkout", branch="serena/task-91", stale_base=False))
+    monkeypatch.setattr(supervisor, "list_runs", lambda **k: [])
+    monkeypatch.setattr(supervisor, "start_run", Mock(side_effect=ValueError(
+        "research verify workers must match Fleet's fixed model policy")))
+    texts = []
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key, **kw: texts.append(text) or True)
+
+    outcome = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.start"]({})
+
+    assert "ValueError" in outcome.detail
+    assert "fixed model policy" in outcome.detail, outcome.detail
+    # And the same detail is what reaches him, not a bare type name.
+    assert texts and "fixed model policy" in texts[0]
+
+
+def test_a_failure_with_no_message_still_reads_as_something():
+    from core.scheduler_actions import _why
+
+    assert _why(ValueError("boom")) == "ValueError: boom"
+    assert _why(ValueError()) == "ValueError: no detail"
+    assert len(_why(ValueError("x" * 500))) < 240
