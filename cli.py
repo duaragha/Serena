@@ -2168,6 +2168,24 @@ def fleet_result(run_id, as_json):
         click.echo(str(result.get("result_text") or result.get("error") or ""))
 
 
+@fleet_group.command(name="report")
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True)
+def fleet_report(run_id, as_json):
+    """Read post-run analysis, generating it on demand for terminal runs."""
+    import json
+    from fleet.supervisor import get_report
+
+    report = _fleet_call(get_report, run_id)
+    if as_json:
+        _fleet_print(report, as_json=True)
+    else:
+        click.echo(f"{run_id}: {report['score']['score']}/100 ({report['score']['size_class']})")
+        for key in ("score", "timeline", "knowledge", "narrative", "next_prompt", "actions", "generator", "artifacts", "review"):
+            value = report[key]
+            click.echo(f"{key}: " + (value if isinstance(value, str) else json.dumps(value, indent=2)))
+
+
 @fleet_group.command(name="steer")
 @click.argument("run_id")
 @click.argument("message", nargs=-1, required=True)

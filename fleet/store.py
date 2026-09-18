@@ -182,6 +182,21 @@ class FleetStore:
             ).fetchone()
             return self._snapshot(connection, run_id) if row is not None else None
 
+    def get_report(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM fleet_run_reports WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": row["run_id"], "score": json.loads(row["score_json"]),
+            "timeline": json.loads(row["timeline_json"]), "knowledge": json.loads(row["knowledge_json"]),
+            "narrative": row["narrative_text"], "next_prompt": row["next_prompt_text"],
+            "actions": json.loads(row["actions_json"]) if row["actions_json"] else None,
+            "generator": row["generator"], "created_at": row["created_at"],
+            "artifacts": self.artifact_links(run_id),
+            "review": self.review_report(run_id),
+        }
+
     def review_report(self, run_id: str) -> dict[str, Any]:
         from fleet.review import report_review
         return report_review(self, run_id)
@@ -192,6 +207,73 @@ class FleetStore:
             if not connection.execute('SELECT 1 FROM fleet_run_artifacts WHERE run_id=? LIMIT 1', (run_id,)).fetchone():
                 return []
         return FleetArtifacts(self).list(run_id, leg_id=leg_id, attempt_id=attempt_id)
+
+    def report_exists(self, run_id: str) -> bool:
+        with self._connect() as connection:
+            return connection.execute("SELECT 1 FROM fleet_run_reports WHERE run_id = ?", (run_id,)).fetchone() is not None
+
+    def _invalidate_report(self, connection: sqlite3.Connection, run_id: str, reason: str) -> None:
+        """Retire a reopened run's report inside the caller's transaction.
+
+        The report describes a terminal state that no longer holds, and its
+        generation retires with the row: a worker still enriching the previous
+        report finds nothing to update, so a stale narrative can never land on
+        the replacement report.
+        """
+        if connection.execute(
+            "DELETE FROM fleet_run_reports WHERE run_id = ?", (run_id,)
+        ).rowcount == 1:
+            self._insert_event(
+                connection, run_id=run_id, event_type="run.report.invalidated",
+                payload={"run_id": run_id, "reason": reason},
+            )
+
+    def save_report(
+        self, run_id: str, report: dict[str, Any], *, generation: str | None = None
+    ) -> str | None:
+        """Atomically claim a report once; only its pending enrichment may update it.
+
+        The deterministic row and ready event commit together, before model I/O,
+        and the returned generation is the only key that may later enrich that
+        exact row. A concurrent caller observes the row and never starts another
+        provider. Returns the generation on success and ``None`` when the claim
+        or the fenced update was lost.
+        """
+        safe = redact_value(report)[0]
+        if len(json.dumps(safe)) > MAX_OUTPUT_CHARS:
+            raise ValueError("Fleet report exceeds storage limit")
+        values = (
+            json.dumps(safe["score"], sort_keys=True), json.dumps(safe["timeline"], sort_keys=True),
+            json.dumps(safe["knowledge"], sort_keys=True), safe.get("narrative"), safe.get("next_prompt"),
+            json.dumps(safe.get("actions")), str(safe["generator"]),
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if generation is not None:
+                # A fenced update needs no state check: the row it targets is
+                # deleted the moment its run reopens, so a retired generation
+                # simply matches nothing.
+                updated = connection.execute(
+                    "UPDATE fleet_run_reports SET score_json=?, timeline_json=?, knowledge_json=?, "
+                    "narrative_text=?, next_prompt_text=?, actions_json=?, generator=? "
+                    "WHERE run_id=? AND generation=? AND generator='none (generation pending)'",
+                    (*values, run_id, generation),
+                ).rowcount == 1
+                return generation if updated else None
+            run = self._require_run(connection, run_id)
+            if run["state"] not in TERMINAL_RUN_STATES:
+                raise ValueError("Fleet reports require a terminal run")
+            claimed = uuid.uuid4().hex
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO fleet_run_reports "
+                "(score_json,timeline_json,knowledge_json,narrative_text,next_prompt_text,actions_json,generator,run_id,created_at,generation) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)", (*values, run_id, time.time(), claimed),
+            ).rowcount == 1
+            if inserted:
+                self._insert_event(connection, run_id=run_id, event_type="run.report.ready", payload={
+                    "run_id": run_id, "score": safe["score"]["score"], "size_class": safe["score"]["size_class"],
+                })
+            return claimed if inserted else None
 
     def get_result(self, run_id: str) -> dict[str, Any]:
         """Return the potentially large final result only on explicit request."""
@@ -1422,6 +1504,7 @@ class FleetStore:
                 "DELETE FROM fleet_capacity_waits WHERE run_id = ?",
                 (run_id,),
             )
+            self._invalidate_report(connection, run_id, "run reopened by retry")
             self._insert_event(
                 connection,
                 run_id=run_id,
@@ -1547,6 +1630,7 @@ class FleetStore:
                     """,
                     (now, run_id),
                 )
+                self._invalidate_report(connection, run_id, "run reopened by worker retry")
             connection.execute(
                 "UPDATE fleet_legs SET state = 'queued', updated_at = ? WHERE leg_id = ?",
                 (now, leg_id),
@@ -1646,6 +1730,7 @@ class FleetStore:
                     "UPDATE fleet_runs SET state = 'queued', owner_pid = NULL, owner_token = NULL, "
                     "result_text = NULL, completed_at = NULL WHERE run_id = ?", (run_id,),
                 )
+                self._invalidate_report(connection, run_id, "run reopened by difficult retry")
             self._insert_event(connection, run_id=run_id, leg_id=leg_id, attempt_id=attempt_id,
                                event_type="leg.difficult_retry_queued", payload=receipt)
             return self._snapshot(connection, run_id)
@@ -2106,6 +2191,7 @@ class FleetStore:
                     """,
                     (now, run_id),
                 )
+                self._invalidate_report(connection, run_id, "run reopened by provider handoff")
             connection.execute(
                 "DELETE FROM fleet_leg_handoff_requests WHERE leg_id = ?",
                 (leg_id,),
@@ -3353,6 +3439,14 @@ class FleetStore:
                 CREATE INDEX IF NOT EXISTS fleet_runs_state_idx
                     ON fleet_runs(state, created_at);
 
+                CREATE TABLE IF NOT EXISTS fleet_run_reports (
+                    run_id TEXT PRIMARY KEY REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
+                    score_json TEXT NOT NULL, timeline_json TEXT NOT NULL, knowledge_json TEXT NOT NULL,
+                    narrative_text TEXT, next_prompt_text TEXT, actions_json TEXT,
+                    generator TEXT NOT NULL, created_at REAL NOT NULL,
+                    generation TEXT NOT NULL DEFAULT ''
+                );
+
                 CREATE TABLE IF NOT EXISTS fleet_run_artifacts (
                     id INTEGER PRIMARY KEY,
                     run_id TEXT NOT NULL REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
@@ -3364,7 +3458,6 @@ class FleetStore:
                 );
                 CREATE INDEX IF NOT EXISTS fleet_artifacts_run_idx
                     ON fleet_run_artifacts(run_id, leg_id, attempt_id);
-
 
                 CREATE TABLE IF NOT EXISTS fleet_legs (
                     leg_id TEXT PRIMARY KEY,
@@ -3515,6 +3608,16 @@ class FleetStore:
             for name in ("requested_provider", "requested_model", "requested_effort", "script_path", "script_sha256", "replay_of"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE fleet_attempts ADD COLUMN {name} TEXT")
+            report_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(fleet_run_reports)").fetchall()
+            }
+            if "generation" not in report_columns:
+                # Reports written before fencing existed carry the empty
+                # generation, which no pending enrichment can ever claim.
+                connection.execute(
+                    "ALTER TABLE fleet_run_reports ADD COLUMN generation TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(
                 """
                 UPDATE fleet_attempts

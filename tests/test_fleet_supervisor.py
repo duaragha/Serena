@@ -48,6 +48,14 @@ def test_review_loop_runs_to_clean_or_gated_failure(fleet_env, monkeypatch, fixa
 
 @pytest.fixture
 def fleet_env(tmp_path, monkeypatch):
+    # Scheduling assertions count ordinary phase workers only. Report provider
+    # behavior and notification ordering have dedicated coverage in test_fleet_reports.
+    from fleet import reports
+    enrich = reports.enrich_report
+    def offline(*args, **kwargs):
+        raise RuntimeError("report provider disabled in scheduler fixture")
+    monkeypatch.setattr(reports, "enrich_report",
+        lambda run_id, store, work, **kwargs: enrich(run_id, store, work, runner=offline))
     database = tmp_path / "fleet.sqlite3"
     monkeypatch.setenv("SERENA_FLEET_DB_PATH", str(database))
     monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))

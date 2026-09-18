@@ -104,6 +104,75 @@ allowlist accepted. Re-runs go through the proof gate, so a check whose test log
 could not be persisted fails the replay with the capture reason even when the
 test process itself exited zero.
 
+## Run reports
+
+Terminal runs (`completed`, `failed`, `cancelled`, and dry-run `planned`) have
+post-run analysis in `fleet_run_reports` in the existing Fleet database. The
+additive migration creates a run-id primary key/FK with cascading deletion,
+`score_json`, `timeline_json`, `knowledge_json`, nullable `narrative_text`,
+`next_prompt_text`, `actions_json`, `generator`, `created_at`, and `generation`.
+`FleetStore.save_report/get_report/report_exists` redact writes with the same
+filters as final run output. First insertion and `run.report.ready` commit
+together; its payload contains `run_id`, `score`, and `size_class`, and the
+insertion returns the report's `generation`.
+
+Reopening a run retires its report. Retry, worker retry, difficult retry, and
+provider handoff delete the row inside the same transaction that queues the run
+again and emit `run.report.invalidated`, so the next terminal state recomputes
+facts instead of serving a summary of a state that no longer holds. Enrichment
+is fenced by `generation`: a pass still running when the run reopened updates
+nothing, records `run.report.superseded`, and cannot overwrite the report that
+replaced it.
+
+The terminal hook finishes lesson outcomes and commits deterministic facts before
+notification, then performs narrative enrichment after notification delivery has
+been attempted. Facts are therefore available without waiting for the model.
+Errors emit `run.report.failed`; model failure keeps the deterministic report and
+sets `generator` to `none (<reason>)`. The model pass has a 40-second cancellation
+deadline through the existing worker runner, a pinned final-phase model/effort,
+read access, and no adaptive routing. Dry runs, cancelled runs, and runs with no
+completed worker outputs skip it with an explicit reason. The prompt is at most
+8,000 redacted characters, including bounded Fix outputs and lesson summaries.
+Strict JSON is validated, and the returned model identity is checked with the
+same provider-aware family rule the worker runner uses, so dated releases of the
+pinned model are accepted while a substituted model is not. Actions are
+recommendations only.
+
+Score starts at 100: subtract 10 per distinct leg with multiple attempts (cap 30),
+5 per completion-evidence rejection (cap 20), 5 per stall (cap 15), 5 once if
+context delivered/source is below 0.5, 3 per recorded leg/run capacity or resource
+wait event (cap 9), and 15 for failed/cancelled runs. A zero source size is not
+context loss. Size counts all attempt rows: up to 2 XS, 4 S, 8 M, 16 L, else XL.
+The timeline contains the latest 100 matching issues, chronologically ordered,
+with timestamp, leg/attempt identifiers, and 500-character redacted summaries.
+Queries filter on the indexed run id; scoring still counts all matching events.
+
+Attribution covers Fleet lessons only: workers currently retrieve neither full
+knowledge nor memory. The stored lesson outcome is merely terminal run state.
+Votes default to `unclear`; `helped`/`hurt` require a quoted supplied Fix excerpt.
+The lessons section carries whole records inside its own share of the prompt and
+reports `omitted_lesson_count` rather than cutting a record in half, so a run
+with more lessons than the prompt can hold still produces a valid envelope: the
+model votes on exactly the delivered ids and every omitted lesson stays
+`unclear`. The deterministic lesson list preserves every use; narrative votes do
+not change the lesson database or prove causality. No cost rollups, timestamp backfills,
+or automatic knowledge-maintenance actions are introduced.
+
+Read through MCP `fleet_report(run_id)`, `chats fleet report RUN_ID [--json]`,
+or loopback-only `GET /fleet_report/RUN_ID` (also
+`GET /api/fleet/runs/RUN_ID/report`). MCP and HTTP return `{ok, report}`;
+CLI JSON returns the report itself. Live runs are refused, missing ids error,
+and old terminal runs generate on demand. Repeated/concurrent reads return the
+cached row without another ready event or provider call. While the first pass
+is running, the row says `none (generation pending)`; if the process dies, that
+durable deterministic report remains available. Terminal notices include the
+`/fleet_report/RUN_ID` pointer. MCP annotations disclose the on-demand write and
+provider call instead of advertising a strictly read-only operation.
+
+Acceptance uses real private SQLite runs and real MCP/CLI/Flask handlers with a
+mock narrative provider (`tests/test_fleet_reports.py`); this is not a receipt for
+an installed desktop release or a live paid/subscription provider call.
+
 ## Atomic Windows worker ownership
 
 `fleet.windows_process.WindowsProcess` creates every Windows Fleet worker,

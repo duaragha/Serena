@@ -88,6 +88,12 @@ def _online_research_evidence():
 
 @pytest.fixture
 def gate_env(tmp_path, monkeypatch):
+    from fleet import reports
+    enrich = reports.enrich_report
+    def offline(*args, **kwargs):
+        raise RuntimeError('report provider disabled in completion fixture')
+    monkeypatch.setattr(reports, 'enrich_report',
+        lambda run_id, store, work, **kwargs: enrich(run_id, store, work, runner=offline))
     database = tmp_path / "fleet.sqlite3"
     monkeypatch.setenv("SERENA_FLEET_DB_PATH", str(database))
     monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))

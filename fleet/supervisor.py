@@ -246,6 +246,8 @@ def start_run(
         store.flush_control_outbox()
     if not dry_run and run["state"] == "queued":
         _wake_or_launch(str(run["run_id"]))
+    if dry_run:
+        _terminal_outcome(store, run)
     return get_run(str(run["run_id"])) or run
 
 
@@ -283,8 +285,12 @@ def stop_run(run_id: str, *, force: bool = False) -> dict[str, Any]:
 
     clean = _require_id(run_id)
     if force:
-        return _store().force_cancel_run(clean)
-    return _store().request_cancel(clean)
+        run = _store().force_cancel_run(clean)
+    else:
+        run = _store().request_cancel(clean)
+    if run["state"] in TERMINAL_RUN_STATES:
+        return _terminal_outcome(_store(), run)
+    return run
 
 
 def delete_run(run_id: str) -> dict[str, Any]:
@@ -460,6 +466,13 @@ def steer_run(run_id: str, message: str) -> dict[str, Any]:
 
 def get_result(run_id: str) -> dict[str, Any]:
     return _store().get_result(_require_id(run_id))
+
+
+def get_report(run_id: str) -> dict[str, Any]:
+    """Read a cached report or generate one for an older terminal run."""
+    from fleet.reports import generate_report
+
+    return generate_report(_require_id(run_id), store=_store())
 
 
 def inspect_run(run_id: str, focus: str = "", *, event_limit: int = 100) -> dict[str, Any]:
@@ -1429,14 +1442,14 @@ def _terminal_notice_text(run: dict[str, Any]) -> str:
         )
         if task:
             message += f" {task}"
-        return message + " Open the Fleet tab for the result."
+        return message + f" Open the Fleet tab for the result. Report: /fleet_report/{run['run_id']}"
     error = (
         _notice_summary(run.get("error"), limit=320) or "the run stopped without an error detail"
     )
     phase = str(run.get("current_phase_display") or run.get("current_phase") or "its current phase")
     return (
         f"fleet {short} needs you. {activity} in {project} failed during {phase}: "
-        f"{error}. Open the Fleet tab for the worker details."
+        f"{error}. Open the Fleet tab for the worker details. Report: /fleet_report/{run['run_id']}"
     )
 
 
@@ -1449,12 +1462,12 @@ def _terminal_spoken_text(run: dict[str, Any]) -> str:
     if state == "completed":
         return (
             f"Fleet {short} finished the {project} run successfully. "
-            "The result is ready in the Fleet tab."
+            f"The result is ready in the Fleet tab. Report: /fleet_report/{run['run_id']}"
         )
     phase = str(run.get("current_phase_display") or run.get("current_phase") or "its work")
     return (
         f"Fleet {short} failed during {phase} for {project}. "
-        "The details are ready in the Fleet tab."
+        f"The details are ready in the Fleet tab. Report: /fleet_report/{run['run_id']}"
     )
 
 
@@ -1610,6 +1623,35 @@ def _request_terminal_notification(run: dict[str, Any], token: str):
 
 
 def _terminal_outcome(store: FleetStore, run: dict[str, Any]) -> dict[str, Any]:
+    """Persist facts, notify immediately, then run bounded report enrichment."""
+    from fleet.reports import prepare_report, enrich_report
+    from fleet.learning import FleetLearning
+
+    run_id = str(run["run_id"])
+    work = None
+    if run.get("state") in TERMINAL_RUN_STATES:
+        try:
+            FleetLearning(store).finish(run)
+        except Exception as exc:
+            with suppress(Exception):
+                store.append_event(run_id, "learning.finish_failed", {"error": str(exc)[:1000]})
+        try:
+            work = prepare_report(run_id, store)
+        except Exception as exc:
+            with suppress(Exception):
+                store.append_event(run_id, "run.report.failed", {"error": str(exc)[:1000]})
+    try:
+        return _terminal_notification_outcome(store, run)
+    finally:
+        if work is not None:
+            try:
+                enrich_report(run_id, store, work, runner=run_worker)
+            except Exception as exc:
+                with suppress(Exception):
+                    store.append_event(run_id, "run.report.failed", {"error": str(exc)[:1000]})
+
+
+def _terminal_notification_outcome(store: FleetStore, run: dict[str, Any]) -> dict[str, Any]:
     """Route one terminal alert through the shared notification authority."""
 
     state = str(run.get("state") or "")
@@ -1618,12 +1660,6 @@ def _terminal_outcome(store: FleetStore, run: dict[str, Any]) -> dict[str, Any]:
         PeerStore(store).reconcile_outcomes(str(run["run_id"]), terminal=True)
     if state not in {"completed", "failed"} or bool(run.get("dry_run")):
         return run
-    from fleet.learning import FleetLearning
-
-    try:
-        FleetLearning(store).finish(run)
-    except Exception as exc:
-        store.append_event(str(run["run_id"]), "learning.finish_failed", {"error": str(exc)[:1000]})
     token = _notice_token(run)
     run_id = str(run["run_id"])
     try:
