@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 
 
-_schema_ready = False
+_schema_ready: Path | None = None
 _INDEX_THREAD_LOCK = threading.RLock()
 _INDEX_LOCK_PATH = DATA_DIR / "index-update.lock"
 
@@ -102,18 +102,20 @@ def _index_update_lock(skip_if_running: bool = False):
 def _get_db() -> sqlite3.Connection:
     global _schema_ready
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    db_path = Path(DB_PATH).resolve()
     # timeout=30: a full reindex of a few hundred sessions can hold the write
     # lock past sqlite's default 5s — writers (renames, stars, meta) should
     # wait it out, not die with "database is locked".
-    conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    # DDL only once per process — running CREATE/ALTER on every connection
-    # made every caller (even reads) contend for the write lock.
-    if not _schema_ready:
+    # Cache readiness for the selected database, not the whole process.
+    # Repeating CREATE/ALTER on every connection makes even readers contend
+    # for the write lock, but switching databases must initialize the new one.
+    if _schema_ready != db_path:
         _create_tables(conn)
         _migrate(conn)
-        _schema_ready = True
+        _schema_ready = db_path
     return conn
 
 
