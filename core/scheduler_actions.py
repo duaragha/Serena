@@ -63,6 +63,18 @@ DELIVERY_RULES = (
 )
 
 
+def _why(error: BaseException) -> str:
+    """The failure's type and its message, bounded.
+
+    Reporting only the type name turned "the shipped Fleet config no longer
+    matches the model policy" into "requires reconciliation: ValueError",
+    which says nothing to him and nothing to whoever debugs it next. The
+    message is what makes the notice actionable, so it travels with the type.
+    """
+
+    return f"{type(error).__name__}: {' '.join(str(error).split())[:200] or 'no detail'}"
+
+
 def _delivery_rules(task_id: int) -> str:
     """The handoff note, with Fleet's own requirement strings quoted verbatim.
 
@@ -351,7 +363,7 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
                     )
                 marked = store.mark_task_running(task_id, owner, token, found)
             except Exception as error:
-                return hold(f"Fleet start requires reconciliation: {type(error).__name__}")
+                return hold(f"Fleet start requires reconciliation: {_why(error)}")
             return ActionOutcome(
                 True,
                 "Fleet run recorded" if marked
@@ -385,7 +397,7 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
             # Nothing was reserved and nothing was dispatched, so this is an
             # ordinary retry rather than something a human has to unpick.
             return hold(
-                f"Fleet run history is unavailable: {type(error).__name__}", state="ready"
+                f"Fleet run history is unavailable: {_why(error)}", state="ready"
             )
         if previous is not None:
             return attach(found) if found else uncertain()
@@ -435,7 +447,7 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
             if not run_id:
                 raise ValueError("Fleet returned no run id")
         except Exception as error:
-            return hold(f"Fleet start requires reconciliation: {type(error).__name__}")
+            return hold(f"Fleet start requires reconciliation: {_why(error)}")
         return attach(run_id)
 
 
