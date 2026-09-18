@@ -48,8 +48,12 @@ def test_updates_confirm_the_offset_server_side(monkeypatch, tmp_path):
 
     _configure(monkeypatch, tmp_path)
     calls = []
-    monkeypatch.setattr(telegram_line, "_call",
-                        lambda method, payload=None: calls.append((method, payload)) or [])
+
+    def _call(method, payload=None, *, timeout=None):
+        calls.append((method, payload, timeout))
+        return []
+
+    monkeypatch.setattr(telegram_line, "_call", _call)
     telegram_line.updates(offset=41)
     telegram_line.updates(offset=0)
     assert calls[0][1]["offset"] == 42
@@ -433,3 +437,51 @@ def test_nothing_queued_still_reads_as_a_sentence(queue):
 
     assert phone_line._status_text() == "nothing queued"
     assert phone_line._grounding() == "nothing queued"
+
+
+# ---- the wait is where the latency went ----------------------------------
+
+
+def test_the_poll_waits_on_telegram_instead_of_sleeping(monkeypatch, tmp_path):
+    """His text used to sit until the next 60s tick; now a poll is listening."""
+
+    from core import telegram_line
+    from core.serena_scheduler import ACTION_LEASE_SECONDS, MIN_INTERVAL_SECONDS
+
+    _configure(monkeypatch, tmp_path)
+    calls = []
+
+    def _call(method, payload=None, *, timeout=None):
+        calls.append((method, payload, timeout))
+        return []
+
+    monkeypatch.setattr(telegram_line, "_call", _call)
+    telegram_line.updates()
+
+    method, payload, timeout = calls[0]
+    assert method == "getUpdates"
+    assert payload["timeout"] == telegram_line.LONG_POLL_SECONDS
+    # The socket has to outlive the server-side wait, or urlopen raises just
+    # before Telegram would have answered and every poll looks like a fault.
+    assert timeout > telegram_line.LONG_POLL_SECONDS
+
+    # Two invariants the number itself depends on.
+    assert telegram_line.LONG_POLL_SECONDS < MIN_INTERVAL_SECONDS
+    assert telegram_line.LONG_POLL_SECONDS < ACTION_LEASE_SECONDS
+
+
+def test_a_caller_can_still_ask_without_waiting(monkeypatch, tmp_path):
+    from core import telegram_line
+
+    _configure(monkeypatch, tmp_path)
+    calls = []
+
+    def _call(method, payload=None, *, timeout=None):
+        calls.append((method, payload, timeout))
+        return []
+
+    monkeypatch.setattr(telegram_line, "_call", _call)
+    telegram_line.updates(wait_seconds=0)
+    assert calls[0][1]["timeout"] == 0
+    # A no-wait poll must not inherit a long socket timeout either.
+    assert calls[0][2] == telegram_line.TIMEOUT_SECONDS

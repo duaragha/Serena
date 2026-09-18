@@ -17,6 +17,13 @@ can type at it all day and never queue work.
 Long polling (``getUpdates``) is deliberate: it needs no public URL, no webhook
 secret and no inbound port, so it works unchanged from the laptop, the PC, or
 behind any NAT.
+
+It is also what makes the line feel immediate. The scheduler cannot tick
+faster than ``MIN_INTERVAL_SECONDS``, so a poll that asked Telegram "anything
+new?" and returned instantly left his text sitting for up to a minute before
+anyone looked. Asking Telegram to *hold the connection open* until something
+arrives spends that minute waiting on him instead of sleeping, so a text is
+picked up about as fast as it is sent.
 """
 
 from __future__ import annotations
@@ -31,6 +38,11 @@ from typing import Any
 
 API_ROOT = "https://api.telegram.org"
 TIMEOUT_SECONDS = 20
+# How long Telegram holds a getUpdates connection open waiting for a message.
+# Shorter than the scheduler's 60s floor, so consecutive polls cover most of
+# the interval, and the socket must outlive it or urlopen would raise first.
+LONG_POLL_SECONDS = 45
+SOCKET_MARGIN_SECONDS = 15
 MAX_UPDATES = 50
 
 
@@ -86,7 +98,8 @@ def chat_id() -> str:
     return credentials().get("TELEGRAM_CHAT_ID", "")
 
 
-def _call(method: str, payload: dict[str, Any] | None = None) -> Any:
+def _call(method: str, payload: dict[str, Any] | None = None,
+          *, timeout: float | None = None) -> Any:
     token = credentials().get("TELEGRAM_BOT_TOKEN", "")
     if not token:
         raise TelegramLineError("telegram.env has no TELEGRAM_BOT_TOKEN")
@@ -98,7 +111,8 @@ def _call(method: str, payload: dict[str, Any] | None = None) -> Any:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(
+                request, timeout=TIMEOUT_SECONDS if timeout is None else timeout) as response:
             answer = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         # The token is in the URL, so the message carries the code and Telegram's
@@ -138,31 +152,42 @@ def identity() -> dict[str, Any]:
     return result if isinstance(result, dict) else {}
 
 
-def updates(*, offset: int = 0) -> list[dict[str, Any]]:
+def updates(*, offset: int = 0, wait_seconds: float = LONG_POLL_SECONDS) -> list[dict[str, Any]]:
     """Confirmed-and-drained updates, oldest first.
 
     ``offset`` is the last handled ``update_id``; Telegram drops everything up
     to it server-side, which is a second line of defence under the caller's own
     watermark.
+
+    ``wait_seconds`` is how long Telegram may hold the connection open before
+    answering with nothing. Zero makes this a plain "anything new?" and returns
+    at once; the default waits, which is what keeps his texts from sitting in a
+    queue nobody is looking at.
     """
 
+    wait = max(0, int(wait_seconds))
     payload: dict[str, Any] = {
         "limit": MAX_UPDATES,
-        "timeout": 0,
+        "timeout": wait,
         "allowed_updates": ["message"],
     }
     if offset:
         payload["offset"] = int(offset) + 1
-    result = _call("getUpdates", payload)
+    # The socket has to outlive the server-side wait, or urlopen raises just
+    # before Telegram would have answered -- and every poll looks like a
+    # network fault.
+    result = _call("getUpdates", payload,
+                   timeout=max(TIMEOUT_SECONDS, wait + SOCKET_MARGIN_SECONDS))
     return [row for row in (result or []) if isinstance(row, dict)]
 
 
-def recent_messages(*, offset: int = 0) -> list[dict[str, Any]]:
+def recent_messages(*, offset: int = 0,
+                    wait_seconds: float = LONG_POLL_SECONDS) -> list[dict[str, Any]]:
     """Normalised rows for core.phone_line: only his private chat survives."""
 
     mine = str(chat_id())
     rows: list[dict[str, Any]] = []
-    for update in updates(offset=offset):
+    for update in updates(offset=offset, wait_seconds=wait_seconds):
         message = update.get("message")
         if not isinstance(message, dict):
             continue
