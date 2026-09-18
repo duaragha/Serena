@@ -1876,6 +1876,12 @@ async def _handle_http_connection(
                 "model": MODEL,
                 "voice_model": VOICE_MODEL,
                 "reflex_model": REFLEX_MODEL,
+                # Without these there is no way to tell from outside whether the
+                # phone route is configured, which is how a text line silently
+                # keeps answering on the voice model.
+                "phone_model": PHONE_MODEL or MODEL,
+                "phone_effort": PHONE_EFFORT,
+                "phone_route_configured": bool(PHONE_MODEL),
                 "active_model": _active_model,
                 "routing": dict(_last_route),
                 "uptime": round(time.time() - _started),
