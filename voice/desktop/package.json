@@ -1,0 +1,16 @@
+{
+  "name": "serena-overlay",
+  "version": "0.1.0",
+  "description": "Serena desktop overlay — always-on voice AI assistant",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:x11": "electron . --ozone-platform=x11",
+    "start:wayland": "electron . --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations"
+  },
+  "dependencies": {
+    "electron": "^35.0.0",
+    "three": "^0.170.0",
+    "ws": "^8.20.0"
+  }
+}

@@ -1,0 +1,63 @@
+[Unit]
+Description=Serena unified desk voice and dot-field app
+After=graphical-session.target network-online.target pipewire.service wireplumber.service
+Wants=network-online.target pipewire.service wireplumber.service
+ConditionPathExists=%h/.config/serena/models/hey_serena.onnx
+ConditionPathExists=%h/.config/serena/wakeword-acceptance.json
+ConditionPathExists=%h/.config/serena/chat_token
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/serena
+Environment=PYTHONUNBUFFERED=1
+# The bridge speaks her replies for typed turns, so it needs the same local
+# TTS setup serena-mobile-host.service uses. Without the id-mapped trust the
+# sandbox check rejects a perfectly good /usr/bin/bwrap under this unit's
+# user namespace and typed turns come back silent.
+Environment=SERENA_CALL_TRUST_IDMAPPED_SYSTEM=1
+Environment=SERENA_CALL_TTS_BACKEND=remote
+Environment=SERENA_CALL_TTS_REMOTE_URL=https://pc.tail4d6220.ts.net:8812
+Environment=SERENA_CALL_TTS_REMOTE_FALLBACK=1
+Environment=SERENA_CALL_POCKET_PYTHON=%h/Documents/Projects/serena/.venv-pocket/bin/python
+Environment=SERENA_CALL_POCKET_VOICE=anna
+Environment=HF_HOME=%h/.cache/serena/pocket-tts
+EnvironmentFile=-%h/.config/serena/desk.env
+Environment=SERENA_DESK_BARGE_IN=1
+Environment=SERENA_DESK_BARGE_THINKING_SUSTAIN_MS=480
+Environment=SERENA_DESK_BARGE_SUSTAIN_MS=320
+ConfigurationDirectory=serena-overlay serena
+ConfigurationDirectoryMode=0700
+CacheDirectory=serena-overlay serena
+CacheDirectoryMode=0700
+StateDirectory=serena
+StateDirectoryMode=0700
+Environment=GSETTINGS_BACKEND=memory
+# Exactly one of these owns the microphone. Not Conflicts=: that is
+# bidirectional, so the listener started by this unit's own ExecStopPost
+# cancelled the restart that was meant to follow it, and the app never came
+# back. Stopping it here is ordered and cannot race with our own start.
+ExecStartPre=-/usr/bin/systemctl --user stop serena-wake-listener.service
+ExecStart=%h/Documents/Projects/serena/.venv/bin/python -u -m voice.desktop.supervisor
+ExecStopPost=/usr/bin/systemctl --user --no-block start serena-wake-listener.service
+Restart=no
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-%h/.config/serena-overlay -%h/.cache/serena-overlay %h/.config/serena %h/.cache/serena %h/.local/state/serena
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+# Not graphical-session.target: it is never activated on this machine, so a
+# unit wanted by it simply never starts. wireplumber is the session's real
+# audio hook and is what the wake listener already came up on.
+WantedBy=wireplumber.service
