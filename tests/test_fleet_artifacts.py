@@ -1,4 +1,5 @@
 import hashlib
+
 import pytest
 
 from core.artifacts import ArtifactRegistry
@@ -48,7 +49,9 @@ def test_gate_full_log(proof, tmp_path):
 def test_screenshot_and_no_display(proof):
     import base64
     from io import BytesIO
+
     from PIL import Image
+
     from fleet.artifacts import capture_screenshot
     adapter, run, leg, attempt = proof
     stream = BytesIO()
@@ -75,6 +78,7 @@ def test_large_log_and_report_links(proof, monkeypatch):
 
 def test_declared_patch(proof, tmp_path):
     import json
+
     from fleet.artifacts import persist_declared
     adapter, run, leg, attempt = proof
     (tmp_path / 'proof.patch').write_text('patch content')
@@ -85,9 +89,10 @@ def test_declared_patch(proof, tmp_path):
 
 def test_operator_lists_attempt_proof(proof, monkeypatch):
     from flask import Flask
-    from ui.operator_web import operator_bp
-    import fleet.store
+
     import core.artifacts
+    import fleet.store
+    from ui.operator_web import operator_bp
     adapter, run, leg, attempt = proof
     monkeypatch.setattr(fleet.store, 'FleetStore', lambda: adapter.store)
     monkeypatch.setattr(core.artifacts, 'get_default_artifact_registry', lambda: adapter.registry)
@@ -121,6 +126,7 @@ def test_run_delete_cascades_proof_pointers(proof):
 
 def test_log_cap_is_a_failed_gate_so_integration_can_roll_back(proof, tmp_path, monkeypatch):
     import sys
+
     import fleet.artifacts
     adapter, run, leg, attempt = proof
     monkeypatch.setitem(fleet.artifacts.CAPS, 'testlog', 10)

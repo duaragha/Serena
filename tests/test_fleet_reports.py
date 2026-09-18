@@ -132,6 +132,7 @@ def test_deterministic_golden(run_db):
 @pytest.mark.parametrize("dead", [False, True])
 def test_terminal_notification_precedes_provider(run_db, monkeypatch, dead):
     from types import SimpleNamespace
+
     from fleet import supervisor
     store, run = run_db
     finished = finish(store, run)
@@ -158,8 +159,9 @@ def test_terminal_notification_precedes_provider(run_db, monkeypatch, dead):
 def test_all_surfaces_on_demand_and_cached(run_db, monkeypatch):
     from click.testing import CliRunner
     from flask import Flask
+
     from cli import main
-    from fleet import supervisor, mcp
+    from fleet import mcp, supervisor
     from ui.fleet_web import fleet_bp
     store, run = run_db
     finish(store, run)
@@ -191,8 +193,9 @@ def test_all_surfaces_on_demand_and_cached(run_db, monkeypatch):
 def test_live_errors_across_surfaces(run_db, monkeypatch):
     from click.testing import CliRunner
     from flask import Flask
+
     from cli import main
-    from fleet import supervisor, mcp
+    from fleet import mcp, supervisor
     from ui.fleet_web import fleet_bp
     store, run = run_db
     monkeypatch.setattr(supervisor, "_store", lambda: store)

@@ -7,7 +7,8 @@ import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from core import config, knowledge_store as store
+from core import config
+from core import knowledge_store as store
 
 ACTION = 'serena.knowledge.maintenance'
 
@@ -53,7 +54,7 @@ def run_pass(*, root: Path | None = None, now: datetime | None = None) -> dict:
         elif body.strip():
             fingerprints[fingerprint] = rel
         words = re.findall(r'\w+', body.lower())[:10_000]
-        shingles = set(zip(words, words[1:], words[2:]))
+        shingles = set(zip(words, words[1:], words[2:], strict=False))
         if len(shingles) >= 20:
             for previous, prior in shingles_by_file.items():
                 # A conservative lexical signal, not a semantic contradiction

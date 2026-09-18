@@ -1,12 +1,12 @@
 """Fleet proof pointers over the shared, authenticated artifact registry."""
-from contextlib import contextmanager
-from contextvars import ContextVar
-from pathlib import Path
 import base64
 import hashlib
-from io import BytesIO
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
+from io import BytesIO
+from pathlib import Path
 
 CAPS = {'testlog': 32 * 1024 * 1024, 'screenshot': 16 * 1024 * 1024, 'patch': 32 * 1024 * 1024}
 _capture = ContextVar('fleet_artifact_capture', default=None)
@@ -91,7 +91,8 @@ def capture_screenshot(adapter, run, leg, attempt, *, observe=None, session_id='
             from core.computer_client import ComputerClient
             if not session_id:
                 return None
-            observe = lambda: ComputerClient().call('observe', session_id=session_id)
+            def observe():
+                return ComputerClient().call('observe', session_id=session_id)
         frame = observe()
         frame = frame.get('frame', frame)
         from PIL import Image

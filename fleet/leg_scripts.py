@@ -1,14 +1,14 @@
 """Immutable leg inputs and append-only, isolated debugging replays."""
-from dataclasses import asdict, replace
 import difflib
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import time
 import uuid
+from dataclasses import asdict, replace
+from pathlib import Path
 
 from fleet.context import redact_text, redact_value
 from fleet.workers import WorkerRequest, run_worker, worker_command
@@ -157,8 +157,8 @@ def replay_leg(store, run_id, leg_id, attempt_number, *, runner=None, gate=None)
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic(path, base64.b64decode(item['data']))
         path.chmod(item['mode'])
-    from fleet.isolation import FleetIsolationStore
     from fleet.integration_journal import IntegrationJournal
+    from fleet.isolation import FleetIsolationStore
     isolation = FleetIsolationStore(root.parent / f'{replay_id}.isolation.sqlite3', workspace_root=root.parent)
     workspace = isolation.record_workspace(run_id=run_id, worker_key='replay:' + replay_id,
         path=str(root), branch=base, base_head=base)

@@ -1,9 +1,11 @@
 import subprocess
+
 import pytest
+
 from fleet.completion import severity_histogram
-from fleet.policy import builtin_config, build_policy, policy_from_snapshot
-from fleet.supervisor import _findings_block
+from fleet.policy import build_policy, builtin_config, policy_from_snapshot
 from fleet.security_pass import security_pass
+from fleet.supervisor import _findings_block
 
 
 def test_order_histogram_policy():
@@ -42,8 +44,9 @@ def test_loop_converges_and_exhausts():
 @pytest.mark.parametrize('clean,gated', [(True, True), (False, False), (False, True)])
 def test_durable_review_rounds(tmp_path, clean, gated):
     import json
-    from fleet.store import FleetStore
+
     from fleet.review import advance_review
+    from fleet.store import FleetStore
     config = builtin_config()
     config['defaults']['blocker_gates_run'] = gated
     policy = build_policy('coding', 'fix', config=config, worker_count=1)
@@ -75,8 +78,9 @@ def test_durable_review_rounds(tmp_path, clean, gated):
 
 def test_security_merge():
     import json
-    from fleet.security_pass import merge_security_findings
+
     from fleet.completion import extract_envelope
+    from fleet.security_pass import merge_security_findings
     output = '<serena-evidence>' + json.dumps({'units': [{'id': 'ws-1', 'findings': []}]}) + '</serena-evidence>'
     finding = {'unit_id': 'ws-1', 'severity': 'blocker', 'category': 'security'}
     payload, _, _ = extract_envelope(merge_security_findings(output, {'findings': [finding], 'checks': []}))

@@ -57,7 +57,8 @@ def test_backfill_preserves_body_and_is_idempotent(kb):
 
 
 def test_trigger_ranks_and_reads_receipted_without_query(kb):
-    from core import knowledge_store as store, brain_tools
+    from core import brain_tools
+    from core import knowledge_store as store
     from knowledge import reader
     store.save_note('routing', 'README.md', '---\ntrigger: zebra orchestration\n---\n# Routing\nOther content')
     store.save_note('body', 'README.md', '# Body\nzebra orchestration')
@@ -105,13 +106,15 @@ def test_receipt_retention(kb, monkeypatch):
 
 @pytest.mark.parametrize('surface', ['brain', 'cli', 'daemon', 'computer', 'fts'])
 def test_every_read_surface_leaves_receipt(kb, monkeypatch, surface):
-    from core import knowledge_store as store, brain_tools, computer_knowledge, indexer
+    from core import brain_tools, computer_knowledge, indexer
+    from core import knowledge_store as store
     store.save_note('demo', 'README.md', '# Zebra\nZebra cloud account setup instructions.')
     if surface == 'brain':
         assert 'retrieval receipt:' in brain_tools._read_knowledge('demo')
     elif surface == 'cli':
-        from cli import main
         from click.testing import CliRunner
+
+        from cli import main
         result = CliRunner().invoke(main, ['knowledge', 'show', 'demo'])
         assert result.exit_code == 0, result.output
     elif surface == 'daemon':
@@ -166,7 +169,8 @@ def test_knowledge_consent_is_affirmative_bound_and_never_interrogative():
 
 
 def test_broker_requires_genuine_feedback_and_explicit_review(kb, monkeypatch):
-    from core import knowledge_store as store, brain_memory_tools as tools
+    from core import brain_memory_tools as tools
+    from core import knowledge_store as store
     # Same SDK scheduling seam as test_memory_feedback; exercise real storage
     # and broker logic without the sandbox's executor wakeup/shutdown stall.
     async def immediate(function, *args, **kwargs):
@@ -207,7 +211,8 @@ def test_broker_requires_genuine_feedback_and_explicit_review(kb, monkeypatch):
 
 
 def test_deleted_note_never_receipts_even_from_cached_index_content(kb, monkeypatch):
-    from core import knowledge_store as store, indexer
+    from core import indexer
+    from core import knowledge_store as store
     store.save_note('demo', 'n.md', '# Zebra procedure')
     monkeypatch.setattr(indexer, 'DB_PATH', kb.parent / 'chats.db')
     monkeypatch.setattr(indexer, '_schema_ready', False)
@@ -225,7 +230,7 @@ def test_deleted_note_never_receipts_even_from_cached_index_content(kb, monkeypa
 
 
 def test_scheduler_installs_once_and_runs_real_maintenance(kb):
-    from core.knowledge_maintenance import ensure_schedule, ACTION
+    from core.knowledge_maintenance import ACTION, ensure_schedule
     from core.scheduler_actions import register_all
     from core.serena_scheduler import SerenaScheduler
     scheduler = register_all(SerenaScheduler(kb.parent / 'scheduler.db', notifier=None))

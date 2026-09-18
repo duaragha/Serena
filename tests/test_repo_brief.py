@@ -67,7 +67,7 @@ def test_atomic_failure_keeps_complete_previous_brief(repo, monkeypatch):
 
 
 def test_fallback_and_exact_registry_identity(repo):
-    from core import repo_brief, brain_tools
+    from core import brain_tools, repo_brief
     code_index.update_code_index()
     assert repo_brief.for_cwd(str(repo))[0]
     assert not repo_brief.for_cwd(str(repo.parent))[0]
@@ -77,9 +77,10 @@ def test_fallback_and_exact_registry_identity(repo):
 
 
 def test_small_drift_accumulates_and_cli_show_is_read_only(repo):
-    from core import repo_brief
-    from cli import main
     from click.testing import CliRunner
+
+    from cli import main
+    from core import repo_brief
     for index in range(10):
         (repo / f'module{index}.py').write_text(f'x = {index}\n')
     code_index.update_code_index()
@@ -110,6 +111,7 @@ def test_fixture_build_test_commands_and_unknown_repository(repo):
 def test_commands_survive_a_manifest_larger_than_one_index_chunk(repo):
     """A real manifest spans several 50-line chunks; chunk zero is not JSON."""
     import json
+
     from core import repo_brief
     manifest = {'name': 'example', 'version': '1.0.0',
                 'dependencies': {f'dep-{index}': '1.0.0' for index in range(60)},

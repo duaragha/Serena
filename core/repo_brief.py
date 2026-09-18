@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
-from contextlib import closing
+from contextlib import closing, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -155,7 +155,8 @@ def generate(repo_key: str) -> str:
         if 'go.mod' in paths:
             build_commands.append('`go build ./...` (go.mod)')
             test_commands.append('`go test ./...` (go.mod)')
-        listing = lambda items: '\n'.join('- ' + p for p in items[:35]) or 'No evidence found in the indexed corpus.'
+        def listing(items):
+            return '\n'.join('- ' + p for p in items[:35]) or 'No evidence found in the indexed corpus.'
         now = datetime.now(timezone.utc).date().isoformat()
         text = (f'---\ntrigger: Architecture and code navigation for {slug_for_key(repo_key)}\nlast_verified: {now}\n'
                 f'---\n# Repository brief: {repo_key}\n\nGenerated from the guarded code index; verify commands before running.\n\n'
@@ -216,9 +217,8 @@ def fallback(query: str) -> str:
     from core.knowledge_store import record_hit
     for _, path, text in selected:
         slug, filename = path.split('/')
-        try:
+        # A brief deleted since it was read earns no retrieval receipt.
+        with suppress(OSError, ValueError):
             record_hit(slug, filename, query=query, surface='brain', caller='recall_code', content=text)
-        except (OSError, ValueError):
-            # A brief deleted since it was read earns no retrieval receipt.
             pass
     return '\n\n'.join(f'{path}\n{text[:3000]}' for _, path, text in selected)

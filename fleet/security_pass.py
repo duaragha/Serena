@@ -1,10 +1,11 @@
 """Fixed read-only security checks. Secret values never leave this module."""
-from collections import defaultdict
-from pathlib import Path
 import json
 import re
 import shlex
 import subprocess
+from collections import defaultdict
+from pathlib import Path
+
 from fleet.completion_gate import safe_test_argv
 
 SECRET_PATTERN = r'AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'

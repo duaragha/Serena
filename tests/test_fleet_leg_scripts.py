@@ -1,11 +1,13 @@
-from dataclasses import replace
 import hashlib
 import subprocess
+from dataclasses import replace
+
 import pytest
+
+from fleet.leg_scripts import freeze, load_bundle, replay_leg
 from fleet.policy import build_policy, builtin_config
 from fleet.store import FleetStore
 from fleet.workers import WorkerRequest, WorkerResult
-from fleet.leg_scripts import freeze, load_bundle, replay_leg
 
 
 def _open_leg(tmp_path, *, argv=('/bin/echo', 'fixture'), **overrides):
@@ -74,9 +76,9 @@ def test_replay_isolated_append_only_and_diff(frozen):
 def test_missing_base_refuses(frozen):
     store, request, run, leg = frozen
     from unittest.mock import patch
-    with patch('fleet.leg_scripts.load_bundle', return_value={**load_bundle(store, request.attempt_id), 'workspace': {'commit': '0' * 40}}):
-        with pytest.raises(ValueError, match='pinned base'):
-            replay_leg(store, run['run_id'], leg['leg_id'], 1)
+    with (patch('fleet.leg_scripts.load_bundle', return_value={**load_bundle(store, request.attempt_id), 'workspace': {'commit': '0' * 40}}),
+          pytest.raises(ValueError, match='pinned base')):
+        replay_leg(store, run['run_id'], leg['leg_id'], 1)
 
 
 def test_identical_real_gate_verdict(frozen):
@@ -106,6 +108,7 @@ def test_bundle_tamper_refused(frozen):
 def test_real_process_replay_accepts_identical_evidence(frozen, tmp_path, monkeypatch):
     import json
     import sys
+
     from fleet.completion_gate import evaluate_replay_completion
     store, old_request, run, _ = frozen
     monkeypatch.setenv('SERENA_FLEET_STATE_DIR', str(tmp_path / 'state'))
@@ -226,8 +229,8 @@ def _receipt_log(path, command, exit_code):
 
 
 def test_replay_prefers_the_recorded_receipt(frozen, tmp_path, monkeypatch):
-    from fleet.completion_gate import evaluate_replay_completion
     import fleet.isolation as isolation
+    from fleet.completion_gate import evaluate_replay_completion
     command = 'python -m pytest tests/test_fixture.py -q'
     store, request, snapshot, leg, base, output = _replay_context(frozen, command)
     calls = []
@@ -245,8 +248,9 @@ def test_replay_prefers_the_recorded_receipt(frozen, tmp_path, monkeypatch):
 
 def test_replay_keeps_declared_test_environment(frozen, monkeypatch):
     import sys
-    from fleet.completion_gate import evaluate_replay_completion
+
     import fleet.isolation as isolation
+    from fleet.completion_gate import evaluate_replay_completion
     command = f'env -u TMPDIR PYTHONDONTWRITEBYTECODE=1 {sys.executable} -m pytest -q'
     store, request, snapshot, leg, base, output = _replay_context(frozen, command)
     monkeypatch.setenv('TMPDIR', '/tmp/fixture')
@@ -264,8 +268,9 @@ def test_replay_keeps_declared_test_environment(frozen, monkeypatch):
 
 def test_replay_rejects_failed_proof_capture(frozen, monkeypatch):
     import sys
-    from fleet.completion_gate import evaluate_replay_completion
+
     import fleet.isolation as isolation
+    from fleet.completion_gate import evaluate_replay_completion
     command = f'{sys.executable} -m pytest tests/test_fixture.py -q'
     store, request, snapshot, leg, base, output = _replay_context(frozen, command)
     monkeypatch.setattr(isolation, 'run_test_gate', lambda *a, **kw: {
@@ -278,9 +283,10 @@ def test_replay_rejects_failed_proof_capture(frozen, monkeypatch):
 
 def test_replay_rejects_oversize_test_log(frozen, tmp_path, monkeypatch):
     import sys
+
+    import fleet.artifacts as artifacts
     from core.artifacts import ArtifactRegistry
     from fleet.artifacts import FleetArtifacts, artifact_capture
-    import fleet.artifacts as artifacts
     from fleet.completion_gate import evaluate_replay_completion
     command = f'{sys.executable} -m pytest --version'
     store, request, snapshot, leg, base, output = _replay_context(frozen, command)
