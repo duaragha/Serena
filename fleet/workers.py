@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,6 +92,25 @@ def run_worker(
     if provider == "muse":
         return _run_muse(request, cancel_requested=cancel_requested, on_event=on_event)
     raise ValueError(f"unsupported Fleet provider {request.provider}")
+
+
+def _merge_allowed_tools(command: list[str], tools: Sequence[str]) -> list[str]:
+    """Add `tools` to --allowedTools, keeping one flag rather than two.
+
+    A read leg that was granted the account gateway already carries an
+    --allowedTools listing its MCP tools. Appending a second flag would leave
+    the CLI to pick one, so the two lists are merged in place and order is
+    preserved for a stable, comparable argv.
+    """
+
+    merged = list(dict.fromkeys(tools))
+    if "--allowedTools" in command:
+        index = command.index("--allowedTools") + 1
+        existing = [item for item in command[index].split(",") if item]
+        command = list(command)
+        command[index] = ",".join(dict.fromkeys(existing + merged))
+        return command
+    return list(command) + ["--allowedTools", ",".join(merged)]
 
 
 def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> list[str]:
@@ -209,15 +228,30 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
                 "Bash,Read,Glob,Grep,Edit,Write,NotebookEdit",
             ]
         else:
-            tools = "Read,Glob,Grep,Bash"
+            tools = ["Read", "Glob", "Grep", "Bash"]
             if request.phase == "discover" or request.activity == "research":
-                tools += ",WebSearch,WebFetch"
+                tools += ["WebSearch", "WebFetch"]
+            # --tools says which tools exist; it does not grant permission to
+            # use them. Under `dontAsk` anything that would have prompted is
+            # denied instead, and WebSearch prompts -- so a Research leg was
+            # handed WebSearch and then refused it:
+            #
+            #   "Permission to use WebSearch has been denied because Claude
+            #    Code is running in don't ask mode."
+            #
+            # Its contract requires recorded web searches, so it could only
+            # stop and say so, and the run parked at phase one with "Research
+            # requires at least 3 recorded provider web searches; observed 0".
+            # Naming them in the allowlist is what actually pre-approves them.
+            # This grants nothing extra: --tools already bounds the set and
+            # Edit/Write/NotebookEdit stay denied above.
             base += [
                 "--permission-mode",
                 "dontAsk",
                 "--tools",
-                tools,
+                ",".join(tools),
             ]
+            base = _merge_allowed_tools(base, tools)
         if request.resume_session_id:
             base += ["--resume", request.resume_session_id]
         else:

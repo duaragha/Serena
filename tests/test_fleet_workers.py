@@ -164,10 +164,13 @@ def test_read_legs_get_the_read_only_account_gateway_and_writers_do_not(
     # narrower isolation that still keeps hooks, plugins, and user settings out.
     assert "--safe-mode" not in claude
     assert claude[claude.index("--setting-sources") + 1] == ""
-    assert (
-        claude[claude.index("--allowedTools") + 1]
-        == "mcp__serena_read__read_google_ads_search_search"
-    )
+    # The gateway tool is in the allowlist, alongside the built-ins this leg is
+    # also permitted. It used to be the whole list, which is why WebSearch was
+    # declared by --tools and then denied at the moment a Research leg used it.
+    allowed = claude[claude.index("--allowedTools") + 1].split(",")
+    assert "mcp__serena_read__read_google_ads_search_search" in allowed
+    assert {"Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"} <= set(allowed)
+    assert claude.count("--allowedTools") == 1
     assert "--strict-mcp-config" in claude
 
     review = worker_command(
@@ -672,3 +675,89 @@ def test_codex_uses_full_access_only_on_windows(tmp_path, monkeypatch, platform_
         argv = worker_command(_request(tmp_path, "codex", access_mode=mode))
         full = "--sandbox" in argv and argv[argv.index("--sandbox") + 1] == "danger-full-access"
         assert full is expected
+
+
+# ---- a research leg must be permitted the tools its contract requires ------
+
+
+def _claude_request(phase="discover", activity="coding", access_mode="read_only"):
+    from fleet.workers import WorkerRequest
+
+    return WorkerRequest(
+        run_id="r", leg_id="l", attempt_id="a", task="t", activity=activity,
+        phase=phase, role="x", provider="claude", model="claude-opus-5",
+        effort="low", access_mode=access_mode, cwd="/tmp", prompt="p",
+        worker_key="agent:a", worker_label="A", assignment="ws-1",
+        assignment_ids=("ws-1",), review_target_ids=(),
+    )
+
+
+def _flag(command, name):
+    return command[command.index(name) + 1] if name in command else None
+
+
+def test_a_research_leg_is_permitted_the_web_tools_it_is_required_to_use(monkeypatch):
+    """--tools says a tool exists; it does not grant permission to use it.
+
+    Under `dontAsk` anything that would have prompted is denied instead, and
+    WebSearch prompts. So a Research leg was handed WebSearch and then refused
+    it -- "Permission to use WebSearch has been denied because Claude Code is
+    running in don't ask mode" -- and since its contract requires recorded web
+    searches it could only stop, parking the run at phase one with "Research
+    requires at least 3 recorded provider web searches; observed 0".
+    """
+
+    from fleet import workers
+
+    monkeypatch.setattr(workers, "claude_read_mcp_flags", lambda _mode: [])
+
+    command = workers.worker_command(_claude_request())
+    allowed = (_flag(command, "--allowedTools") or "").split(",")
+
+    assert "WebSearch" in allowed and "WebFetch" in allowed
+    assert _flag(command, "--permission-mode") == "dontAsk"
+    # It is still bounded: the allowlist never exceeds what --tools declares.
+    assert set(allowed) <= set((_flag(command, "--tools") or "").split(","))
+
+
+def test_a_review_leg_gets_no_web_tools(monkeypatch):
+    from fleet import workers
+
+    monkeypatch.setattr(workers, "claude_read_mcp_flags", lambda _mode: [])
+
+    command = workers.worker_command(_claude_request(phase="verify", access_mode="review"))
+    allowed = (_flag(command, "--allowedTools") or "").split(",")
+
+    assert "WebSearch" not in allowed and "WebFetch" not in allowed
+    assert "Read" in allowed and "Grep" in allowed
+
+
+def test_the_account_gateway_and_the_builtins_share_one_allowlist(monkeypatch):
+    """Two --allowedTools flags would leave the CLI to pick one of them."""
+
+    from fleet import workers
+
+    monkeypatch.setattr(
+        workers, "claude_read_mcp_flags",
+        lambda _mode: ["--mcp-config", "{}", "--allowedTools", "mcp__serena_read__a,mcp__serena_read__b"],
+    )
+
+    command = workers.worker_command(_claude_request())
+
+    assert command.count("--allowedTools") == 1
+    allowed = (_flag(command, "--allowedTools") or "").split(",")
+    assert "mcp__serena_read__a" in allowed and "mcp__serena_read__b" in allowed
+    assert "WebSearch" in allowed and "Bash" in allowed
+
+
+def test_a_write_leg_is_unchanged(monkeypatch):
+    """Write legs skip permissions outright; they need no allowlist."""
+
+    from fleet import workers
+
+    monkeypatch.setattr(workers, "claude_read_mcp_flags", lambda _mode: [])
+
+    command = workers.worker_command(_claude_request(phase="execute", access_mode="write"))
+
+    assert "--dangerously-skip-permissions" in command
+    assert "--allowedTools" not in command
