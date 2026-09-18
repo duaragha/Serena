@@ -177,6 +177,50 @@ def test_sidebar_pins_fleet_and_voice_above_active_terminals(workspace, width):
     assert not any(path == "/api/spawn-terminal" for path, _ in calls)
 
 
+def test_unchanged_sidebar_keeps_dom_and_refreshes_changed_rows(workspace):
+    page, _, errors, rows = workspace
+    result = page.evaluate('''() => {
+      renderSessionList();
+      const list = document.getElementById('sessionList');
+      const row = list.querySelector('.session-row');
+      const observer = new MutationObserver(() => {});
+      observer.observe(list, {childList:true, subtree:true});
+      for(let i=0;i<10;i++) renderSessionList();
+      const mutations = observer.takeRecords().length;
+      observer.disconnect();
+      window.retainedSidebarRow = row;
+      return {same: row === list.querySelector('.session-row'), mutations};
+    }''')
+    assert result == {"same": True, "mutations": 0}
+    page.evaluate('''() => {
+      setFocus(0, false);
+      renderSessionList();
+      renderSessionList();
+    }''')
+    assert page.locator('#sessionList .session-row.focused').count() == 1
+    page.evaluate('''() => {
+      sessionSource[0].display_title = 'Updated title';
+      renderSessionList();
+    }''')
+    playwright.expect(page.locator('#sessionList')).to_contain_text('Updated title')
+    page.evaluate('''() => { setSessionSource([]); renderSessionList(); }''')
+    playwright.expect(page.locator('#sessionList')).to_have_text('No conversations found')
+    page.evaluate('''rows => { setSessionSource(rows); renderSessionList(); }''', rows)
+    assert page.locator('#sessionList .session-row').count() > 0
+    assert not errors
+
+
+def test_sidebar_date_groups_reuse_formatter_without_changing_labels(workspace):
+    page, _, errors, _ = workspace
+    assert page.evaluate('''() => {
+      const timestamp = '2020-01-15T12:00:00Z';
+      const expected = new Date(timestamp).toLocaleString('default', {month:'long',year:'numeric'});
+      return timeGroup(timestamp) === expected && timeGroup('') === 'Unknown'
+        && timeGroup('invalid') === 'Invalid Date' && timeGroup(new Date().toISOString()) === 'Today';
+    }''')
+    assert not errors
+
+
 def test_navigation_projects_and_drafts_do_not_spawn(workspace):
     page, calls, errors, _ = workspace
     page.get_by_role("button", name="Tooling", exact=True).first.click()

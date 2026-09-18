@@ -140,10 +140,15 @@
     $('workspaceRuntimeCount').textContent = _activeTerms.size ? `${_activeTerms.size} open terminal${_activeTerms.size===1?'':'s'}` : 'No open terminals';
     $('workspaceBreadcrumb').textContent = selected?.cwd || selected?.project_short || '';
     $('convMeta').title = $('convMeta').textContent;
-    $('workspaceContext').replaceChildren();
-    if (selected) {
-      const p = document.createElement('p'); p.textContent = selected.cwd || 'No project directory'; $('workspaceContext').append(p);
-      const identity = document.createElement('p');identity.textContent = 'Session ' + currentSessionId.slice(0,8);identity.title=currentSessionId;$('workspaceContext').append(identity);
+    const context = $('workspaceContext');
+    const contextSignature = JSON.stringify(selected ? [currentSessionId, selected.cwd || ''] : null);
+    if (context.dataset.signature !== contextSignature) {
+      context.dataset.signature = contextSignature;
+      context.replaceChildren();
+      if (selected) {
+        const p = document.createElement('p'); p.textContent = selected.cwd || 'No project directory'; context.append(p);
+        const identity = document.createElement('p');identity.textContent = 'Session ' + currentSessionId.slice(0,8);identity.title=currentSessionId;context.append(identity);
+      }
     }
     const members = currentSessionId ? _linkedGroupSids(currentSessionId) : [];
     if (state.singleSid && !members.includes(state.singleSid)) state.singleSid=null;

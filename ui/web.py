@@ -3764,9 +3764,11 @@ function formatDate(ts) {
   return ts.slice(0, 10);
 }
 
+const _monthGroupFormatter = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
 function timeGroup(ts) {
   if (!ts) return 'Unknown';
   const d = new Date(ts);
+  if (!Number.isFinite(d.getTime())) return 'Invalid Date';
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const diffMs = todayStart - new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -3777,7 +3779,7 @@ function timeGroup(ts) {
   if (days <= 14) return 'Last Week';
   if (days <= 30) return 'This Month';
   if (days <= 60) return 'Last Month';
-  return d.toLocaleString('default', { month: 'long', year: 'numeric' });
+  return _monthGroupFormatter.format(d);
 }
 
 function totalTokens(s) {
@@ -3888,6 +3890,7 @@ function _maybeFollowSpawnedChat() {
 // CHATS: Data Loading
 // ═══════════════════════════════════════════════════════════════
 async function _fetchSidebarSessions(params, dirs) {
+  params.set('view', 'sidebar');
   const response = await fetch('/api/sessions?' + params);
   const primary = await response.json();
   if ((dirs && dirs.length) || primary.length !== 500) return primary;
@@ -4303,10 +4306,12 @@ function updateChatCount() {
 // ═══════════════════════════════════════════════════════════════
 // CHATS: Rendering
 // ═══════════════════════════════════════════════════════════════
+let _sessionListHtml = null;
 function renderSessionList() {
   const el = document.getElementById('sessionList');
   const source = sessionSource.length ? sessionSource : sessions;
   if (!source.length) {
+    _sessionListHtml = null;
     el.innerHTML = '<div class="empty-text">No conversations found</div>';
     focusedIndex = -1;
     focusedSid = null;
@@ -4317,6 +4322,7 @@ function renderSessionList() {
   const topSessions = tree.top;
   const childrenByParent = tree.childrenByParent;
   if (!topSessions.length) {
+    _sessionListHtml = null;
     el.innerHTML = '<div class="empty-text">No conversations found</div>';
     sessions = [];
     focusedIndex = -1;
@@ -4487,13 +4493,16 @@ function renderSessionList() {
 
   // Count per time group up front so the header can show its size.
   const timeGroupCounts = new Map();
+  const timeGroups = new Map();
   for (const s of unstarred) {
-    const g = timeGroup(rowActivityTs(s));
+    const ts = rowActivityTs(s);
+    if (!timeGroups.has(ts)) timeGroups.set(ts, timeGroup(ts));
+    const g = timeGroups.get(ts);
     timeGroupCounts.set(g, (timeGroupCounts.get(g) || 0) + 1);
   }
   let group = null;
   for (const s of unstarred) {
-    const g = timeGroup(rowActivityTs(s));
+    const g = timeGroups.get(rowActivityTs(s));
     if (g !== group) {
       if (group !== null) html += '</div>';
       group = g;
@@ -4522,7 +4531,12 @@ function renderSessionList() {
   }
 
   sessions = rendered;
-  el.innerHTML = html;
+  // Polling often returns identical rows. Keep their DOM, focus and scroll
+  // position instead of paying for parsing and layout again.
+  if (_sessionListHtml !== html) {
+    el.innerHTML = html;
+    _sessionListHtml = html;
+  }
   window.SerenaWorkspace?.refresh();
 
   // Re-attach focus highlight by sid — not by numeric index. Auto-poll
@@ -11966,7 +11980,16 @@ def api_sessions():
     if workspace is not None:
         sessions = workspace.include_pending_sessions(sessions, projects=dirs)
         sessions = workspace.decorate_runtime_sessions(sessions)
-    return jsonify(_decorate_sessions(_include_permanent_serena_session(sessions)))
+    sessions = _decorate_sessions(_include_permanent_serena_session(sessions))
+    if request.args.get("view") == "sidebar":
+        # The sidebar only needs the durable run identity to classify workers.
+        # Assignment text and execution details belong to the Fleet view.
+        sessions = [
+            {**session, "fleet_worker": {"run_id": session["fleet_worker"].get("run_id")}}
+            if isinstance(session.get("fleet_worker"), dict) else session
+            for session in sessions
+        ]
+    return jsonify(sessions)
 
 
 @app.route("/api/search")
