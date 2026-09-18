@@ -1,0 +1,3 @@
+{"line": "{\"payload_type\": \"task.lifecycle.proposed\", \"payload\": {\"event\": {\"kind\": \"proposed\", \"task_id\": \"01a0b629-539e-7ba3-a5db-dde736433dae\", \"task_kind\": \"tool.web_search\"}}}"}
+{"line": "{\"payload_type\": \"task.lifecycle.side_effect_intent\", \"payload\": {\"event\": {\"kind\": \"side_effect_intent\", \"operation\": \"tool:web_search\", \"task_id\": \"01a0b629-539e-7ba3-a5db-dde736433dae\"}}}"}
+{"line": "{\"payload_type\": \"task.lifecycle.completed\", \"payload\": {\"event\": {\"kind\": \"completed\", \"task_id\": \"01a0b629-539e-7ba3-a5db-dde736433dae\"}}}"}

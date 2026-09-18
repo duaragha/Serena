@@ -955,6 +955,9 @@ def _event_log_research_activity(event_log_path: str | None) -> dict[str, int]:
     fetches: set[str] = set()
     reported_searches = 0
     reported_fetches = 0
+    # Muse announces a web tool on one record and finishes it on another, so
+    # the kind has to be remembered by task id until the completion arrives.
+    muse_web_tasks: dict[str, str] = {}
 
     def record_action(action: object, fallback: str) -> None:
         if not isinstance(action, dict):
@@ -982,6 +985,35 @@ def _event_log_research_activity(event_log_path: str | None) -> dict[str, int]:
                 continue
             if not isinstance(event, dict):
                 continue
+
+            # Muse: task.lifecycle.* records, where the kind is named once on
+            # `proposed` (task_kind "tool.web_search") or on the side-effect
+            # intent (operation "tool:web_search"), and success arrives later
+            # as `completed` for the same task id. Without this its searches
+            # were invisible and every Muse Research leg failed the gate with
+            # "observed 0" no matter how much it actually searched.
+            payload_type = str(event.get("payload_type") or "")
+            if payload_type.startswith("task.lifecycle."):
+                payload = event.get("payload")
+                payload = payload if isinstance(payload, dict) else {}
+                lifecycle = payload.get("event")
+                lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+                task_id = str(lifecycle.get("task_id") or "").strip()
+                if task_id:
+                    label = "{} {}".format(
+                        lifecycle.get("task_kind") or "",
+                        lifecycle.get("operation") or "",
+                    ).casefold()
+                    if "web_search" in label:
+                        muse_web_tasks[task_id] = "search"
+                    elif "web_fetch" in label:
+                        muse_web_tasks[task_id] = "fetch"
+                    if str(lifecycle.get("kind") or "").casefold() == "completed":
+                        recorded = muse_web_tasks.get(task_id)
+                        if recorded == "search":
+                            searches.add("muse:" + task_id)
+                        elif recorded == "fetch":
+                            fetches.add("muse:" + task_id)
 
             if event.get("event") == "step_update":
                 step = event.get("step_update")

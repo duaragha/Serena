@@ -1559,3 +1559,72 @@ def test_read_only_git_and_inspectors_are_runnable_and_writes_are_not(gate_env):
         assert _REAL_TEST.search(command), command
     assert not _REAL_TEST.search("git log --oneline")
     assert not _REAL_TEST.search("echo ok")
+
+
+# ---- the gate must be able to see a Muse leg's web searches ----------------
+
+
+def test_a_muse_web_search_is_counted(tmp_path):
+    """Muse searches were invisible, so every Muse Research leg failed the gate.
+
+    It announces a web tool on one record (task_kind "tool.web_search", or the
+    side-effect intent's operation "tool:web_search") and finishes it on
+    another, as `completed` for the same task id. Counting neither, the gate
+    reported "observed 0" no matter how much the leg actually searched.
+
+    This fixture is a real `muse exec --json` stream, trimmed to the records
+    the parser reads.
+    """
+
+    from pathlib import Path
+
+    from fleet.completion_gate import _event_log_research_activity
+
+    fixture = Path(__file__).parent / "fixtures" / "muse_web_search_events.jsonl"
+    assert fixture.is_file(), "the captured Muse stream is part of this test"
+
+    assert _event_log_research_activity(str(fixture)) == {"searches": 1, "fetches": 0}
+
+
+def test_a_muse_web_tool_that_never_completed_is_not_counted(tmp_path):
+    """Proposing a search is not performing one."""
+
+    import json
+
+    from fleet.completion_gate import _event_log_research_activity
+
+    path = tmp_path / "events.jsonl"
+    records = [
+        {"payload_type": "task.lifecycle.proposed",
+         "payload": {"event": {"kind": "proposed", "task_id": "t1",
+                               "task_kind": "tool.web_search"}}},
+        {"payload_type": "task.lifecycle.started",
+         "payload": {"event": {"kind": "started", "task_id": "t1"}}},
+    ]
+    path.write_text(
+        "\n".join(json.dumps({"line": json.dumps(r)}) for r in records),
+        encoding="utf-8",
+    )
+
+    assert _event_log_research_activity(str(path)) == {"searches": 0, "fetches": 0}
+
+
+def test_a_muse_web_fetch_is_counted_separately(tmp_path):
+    import json
+
+    from fleet.completion_gate import _event_log_research_activity
+
+    path = tmp_path / "events.jsonl"
+    records = [
+        {"payload_type": "task.lifecycle.proposed",
+         "payload": {"event": {"kind": "proposed", "task_id": "t2",
+                               "task_kind": "tool.web_fetch"}}},
+        {"payload_type": "task.lifecycle.completed",
+         "payload": {"event": {"kind": "completed", "task_id": "t2"}}},
+    ]
+    path.write_text(
+        "\n".join(json.dumps({"line": json.dumps(r)}) for r in records),
+        encoding="utf-8",
+    )
+
+    assert _event_log_research_activity(str(path)) == {"searches": 0, "fetches": 1}
