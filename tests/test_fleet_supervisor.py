@@ -1401,7 +1401,10 @@ def test_parallel_siblings_receive_only_completed_prior_phase_context(
     assert "peer-research" in prompt
 
 
-def test_worker_prompt_names_the_actual_isolated_directory(fleet_env):
+def test_worker_prompt_names_the_actual_isolated_directory(fleet_env, monkeypatch):
+    from core import repo_brief
+    monkeypatch.setattr(repo_brief, 'for_cwd', lambda cwd: ('fixture architecture brief',
+                        {'brief_sha256': 'version-one', 'path': 'repo-fixture/brief.md'}))
     run = supervisor.start_run(
         "implement without touching the base checkout",
         activity="coding",
@@ -1422,6 +1425,12 @@ def test_worker_prompt_names_the_actual_isolated_directory(fleet_env):
     )
 
     assert f"Working directory: {isolated}" in prompt
+    assert 'fixture architecture brief' in prompt
+    assert supervisor._worker_prompt(store, run, leg, attempt, working_directory=isolated) == prompt
+    events = store.events(run['run_id'])
+    assert any(e['type'] == 'context.budgeted' and
+               e['payload'].get('sources', [{}])[0].get('brief_sha256') == 'version-one'
+               for e in events)
     assert "Work only inside the exact isolated Working directory below" in prompt
     assert "Never cd to or edit the base checkout" in prompt
     assert "Never use pkill, killall, or pattern-based process termination" in prompt

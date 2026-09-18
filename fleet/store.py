@@ -869,7 +869,7 @@ class FleetStore:
                 leg_id=str(attempt["leg_id"]),
                 attempt_id=attempt_id,
                 event_type="context.budgeted",
-                payload=allowed,
+                payload={**allowed, 'sources': receipt.get('sources', [])},
             )
 
     def finish_attempt(

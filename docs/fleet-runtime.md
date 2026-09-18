@@ -715,11 +715,18 @@ run concurrently. Unknown ownership is repository-wide and serial. Integration r
 
 ## Context and inspection
 
-`core/fleet_context.py` gives every worker prompt a deterministic context budget. Context that fits
+`fleet/context.py` gives every worker prompt a deterministic context budget. Context that fits
 is delivered in full. Oversized context is excerpted per source rather than tail-truncated, and a
 durable receipt records source bytes, delivered bytes, omitted bytes, source count, redaction count,
 strategy, budget, and a hash of the complete sanitized source. The native chat remains authoritative,
 while Fleet attempts retain sanitized output; failed or bounded prompt composition rewrites neither.
+
+Repository briefs and skills share the 96,000-character context budget with peer outputs.
+A brief is selected by the exact registered `run.cwd` (never clone-name folding),
+bounded to 12,000 characters, and recorded with the SHA-256 of the exact version read.
+Later regeneration cannot change that dispatch receipt. `context.budgeted` events
+persist individual `sources` receipts through `record_context_receipt`, while the
+attempt receipt stores aggregate counts and the ordered source-digest hash.
 
 Fleet persistence filters common authorization headers, token/password environment assignments,
 private keys, and high-confidence GitHub, Slack, and AWS credential forms. The filter covers worker

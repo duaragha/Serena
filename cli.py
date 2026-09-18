@@ -632,6 +632,18 @@ def code_drop():
     _code_call(drop_code_index)
     click.echo("Code index cleared; registry retained.")
 
+@code.command('brief')
+@click.argument('repo_key')
+@click.option('--generate', is_flag=True, help='Generate from the indexed corpus.')
+@click.option('--refresh', is_flag=True, help='Refresh the index and stale brief.')
+def code_brief(repo_key, generate, refresh):
+    from core import code_index, repo_brief
+    if refresh:
+        _code_call(code_index.update_code_index, repo_key=repo_key)
+    if generate:
+        _code_call(repo_brief.generate, repo_key)
+    text, _receipt = _code_call(repo_brief.read_brief, repo_key, surface='cli', caller='code_brief')
+    click.echo(text or 'No brief; run chats code brief <repo> --refresh.')
 
 
 @main.group(invoke_without_command=True)
