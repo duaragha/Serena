@@ -13,6 +13,7 @@ command. Other user-facing delivery still goes through notification authority.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from core.serena_scheduler import ActionOutcome
@@ -61,6 +62,55 @@ DELIVERY_RULES = (
     "your delivery[] entries exactly as below, copying each requirement string "
     "character for character (only the evidence text is yours to write):\n{answers}"
 )
+
+# A private checkout is a clone. It holds what git tracks and nothing else: no
+# memory/, no .env, no node_modules, no local databases. A worker asked to
+# "audit the task list" once found no task list, invented an unrelated change
+# and reported success, which is worse than failing -- so say plainly what is
+# absent, and that a brief depending on it must stop rather than substitute.
+UNSEEN_STATE_RULES = (
+    "\n\nWhat this checkout does not contain: it is a fresh clone, so only files "
+    "git tracks are present. His task queue (memory/), environment files, "
+    "node_modules, and local databases are NOT here, and neither is anything "
+    "written by a running Serena. If this brief depends on something you cannot "
+    "see, do not substitute different work and do not report success: say "
+    "exactly what you needed and could not read, and stop.{queue}"
+)
+
+# Briefs that are about the queue itself, which a clone cannot show.
+_QUEUE_WORDS = re.compile(
+    r"\b(task list|tasks?|queue|backlog|todo|to-do|open work)\b", re.IGNORECASE)
+MAX_ATTACHED_TASKS = 40
+
+
+def _attached_task_list() -> str:
+    """The open queue, for a brief that talks about it, since git cannot show it."""
+
+    from memory import store
+
+    lines: list[str] = []
+    for state in ("running", "ready", "needs_triage", "blocked", "backlog"):
+        try:
+            rows = store.tasks_in_state(state)
+        except Exception:
+            continue
+        for row in rows[:MAX_ATTACHED_TASKS]:
+            text = " ".join(str(row.get("content") or "").split())[:160]
+            lines.append(f"  #{row['id']} [{state}] {text}")
+            if len(lines) >= MAX_ATTACHED_TASKS:
+                break
+        if len(lines) >= MAX_ATTACHED_TASKS:
+            break
+    if not lines:
+        return ""
+    return ("\n\nHis open tasks, attached because this checkout cannot show them "
+            "(newest states first; this is the whole list you may reason about):\n"
+            + "\n".join(lines))
+
+
+def _unseen_state_rules(brief: str) -> str:
+    queue = _attached_task_list() if _QUEUE_WORDS.search(brief or "") else ""
+    return UNSEEN_STATE_RULES.format(queue=queue)
 
 
 def _why(error: BaseException) -> str:
@@ -439,7 +489,8 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
             output["stale_base"] = True
         try:
             run = start_run(
-                task=task["content"] + _delivery_rules(task_id),
+                task=task["content"] + _delivery_rules(task_id)
+                + _unseen_state_rules(brief),
                 activity="auto", provider_mode="auto",
                 cwd=str(checkout.path), origin_session_id=origin,
             )

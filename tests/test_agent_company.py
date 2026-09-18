@@ -819,3 +819,63 @@ def test_a_failure_with_no_message_still_reads_as_something():
     assert _why(ValueError("boom")) == "ValueError: boom"
     assert _why(ValueError()) == "ValueError: no detail"
     assert len(_why(ValueError("x" * 500))) < 240
+
+
+# ---- the PR that did nothing ----------------------------------------------
+
+
+def test_the_handoff_says_what_the_checkout_cannot_show(queue):
+    """A clone holds what git tracks. memory/ is not tracked, so the queue is absent.
+
+    Task #1077 asked a worker to audit the active task list and complete the
+    highest-impact item. Its checkout had no memory/task directory at all, so
+    it found nothing, invented an unrelated refactor of core/indexer.py and
+    reported success. Reporting success for different work is worse than
+    failing, so the handoff now names what is missing and forbids substituting.
+    """
+
+    from core.scheduler_actions import _unseen_state_rules
+
+    note = _unseen_state_rules("fix the routines list in locket")
+
+    assert "only files git tracks are present" in note
+    assert "memory/" in note
+    assert "do not substitute different work" in note
+    assert "do not report success" in note
+    # Nothing to attach for a brief that is not about his queue.
+    assert "His open tasks" not in note
+
+
+def test_a_brief_about_his_tasks_carries_the_tasks(queue):
+    from core.scheduler_actions import _unseen_state_rules
+
+    store.enqueue_task("Fix the routines list in locket so it shows this week",
+                       source_id="imessage:1")
+    note = _unseen_state_rules("audit the active task list and do the highest impact one")
+
+    assert "His open tasks" in note
+    assert "routines list in locket" in note
+
+
+def test_the_attached_task_list_is_bounded(queue, monkeypatch):
+    from core import scheduler_actions
+
+    monkeypatch.setattr(scheduler_actions, "MAX_ATTACHED_TASKS", 3)
+    for index in range(8):
+        store.enqueue_task(f"Fix thing number {index} in locket right now",
+                           source_id=f"imessage:{index}")
+
+    note = scheduler_actions._unseen_state_rules("work through my backlog")
+
+    assert note.count("\n  #") <= 3, "an unbounded queue would flood the worker's prompt"
+
+
+def test_every_queue_word_pulls_the_list_in(queue):
+    from core.scheduler_actions import _unseen_state_rules
+
+    store.enqueue_task("Fix the routines list in locket so it shows this week",
+                       source_id="imessage:1")
+    for phrasing in ("look through all open tasks", "clear my backlog",
+                     "what is in the queue", "finish my todo list",
+                     "complete the highest impact task"):
+        assert "His open tasks" in _unseen_state_rules(phrasing), phrasing
