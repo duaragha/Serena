@@ -299,13 +299,36 @@ def check_dispatch_visibility() -> list[Finding]:
     ).stdout.strip()
     if tracked:
         return [Finding("dispatch.visibility", True, "a worker's checkout can read the task queue")]
+    # Untracked is the normal, intended state: the queue is local, not source.
+    # What matters is whether the dispatcher compensates, so check the
+    # mitigation rather than nagging forever about the fact.
+    try:
+        from core.scheduler_actions import _attached_task_list, _unseen_state_rules
+
+        handoff = _unseen_state_rules("audit the open task list")
+        warns = "do not substitute different work" in handoff
+        # Capability, not output: an empty queue correctly attaches nothing, so
+        # asking whether tasks appeared would fail on a quiet day.
+        attaches = callable(_attached_task_list)
+    except Exception as error:
+        return [Finding(
+            "dispatch.visibility", False,
+            f"{relative} is untracked and the handoff could not be checked: {error}",
+            fix="verify core.scheduler_actions._unseen_state_rules still exists",
+        )]
+    if attaches and warns:
+        return [Finding(
+            "dispatch.visibility", True,
+            f"{relative} is untracked, as intended, and the handoff both says so and "
+            f"attaches the queue for briefs about it")]
+    missing = "does not attach the task list" if not attaches else "does not warn against substituting"
     return [Finding(
         "dispatch.visibility", False,
         f"{relative} is not tracked by git, so a dispatched worker's private checkout "
-        f"has no task list. A brief that asks it to audit or work through his tasks "
-        f"cannot be satisfied, and the worker invents unrelated work instead.",
-        fix="attach the task list to the handoff, or refuse briefs that depend on it",
-        severity="warn",
+        f"has no task list, and the handoff {missing}. A brief asking it to audit or "
+        f"work through his tasks cannot be satisfied, and the worker invents unrelated "
+        f"work instead -- which is what produced a green run and a pointless PR.",
+        fix="restore the unseen-state note in core.scheduler_actions",
     )]
 
 
