@@ -332,6 +332,48 @@ def check_dispatch_visibility() -> list[Finding]:
     )]
 
 
+def check_repo_freshness() -> list[Finding]:
+    """Code on disk that is behind the branch everything else is deployed from.
+
+    `fleet serve` ran for two days on stale code while fix after fix was
+    merged and deployed, and every one of them looked live because the files
+    on disk were current somewhere else. A checkout that has fallen behind is
+    the quiet half of that: the services started from it are running whatever
+    it holds, not what was shipped.
+    """
+
+    import subprocess
+
+    repo = _repo_root()
+    if not (repo / ".git").exists():
+        return [Finding("repo", True, "not a checkout", severity="warn")]
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                              text=True, check=False).stdout.strip()
+
+    # The remote-tracking ref as of the last fetch: no network from a doctor.
+    upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    target = upstream or "origin/master"
+    if not git("rev-parse", "--verify", "--quiet", target):
+        return [Finding("repo", True, f"no {target} to compare against", severity="warn")]
+    behind = git("rev-list", "--count", f"HEAD..{target}")
+    if not behind.isdigit():
+        return [Finding("repo", True, "could not compare against the remote", severity="warn")]
+    count = int(behind)
+    if count == 0:
+        return [Finding("repo", True, f"up to date with {target}")]
+    newest = git("log", "-1", "--format=%h %s", target)[:90]
+    return [Finding(
+        "repo.behind", False,
+        f"this checkout is {count} commit(s) behind {target} as of the last fetch, so "
+        f"services started from it are not running what was shipped. Newest there: "
+        f"{newest}",
+        fix=f"git fetch origin && git merge --ff-only {target} (check for local work first)",
+        severity="warn",
+    )]
+
+
 def check_notification_backlog(now: float | None = None) -> list[Finding]:
     """Notices queued but never delivered mean he is not being told things."""
 
@@ -365,6 +407,7 @@ CHECKS = (
     check_first_party_imports,
     check_toolchain,
     check_dispatch_visibility,
+    check_repo_freshness,
     check_notification_backlog,
 )
 
