@@ -221,6 +221,76 @@ def test_sidebar_date_groups_reuse_formatter_without_changing_labels(workspace):
     assert not errors
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_sidebar_date_then_project_groups_preserve_chats_and_collapse(workspace, width):
+    page, calls, errors, _ = workspace
+    page.set_viewport_size({"width": width, "height": 900})
+    page.wait_for_function("_collapsedLoaded")
+    page.evaluate('''() => {
+      const row = (id, cwd, date, extra={}) => ({session_id:id, agent:'codex',
+        cwd, project_short:'shared', display_title:id, last_timestamp:date, ...extra});
+      setSessionSource([
+        row('new-a', '/projects/a', '2020-02-04T12:00:00Z'),
+        row('new-b', '/projects/b', '2020-02-03T12:00:00Z'),
+        row('older-a', '/projects/a', '2020-02-02T12:00:00Z'),
+        row('previous-month', '/projects/a', '2020-01-02T12:00:00Z'),
+        row('active', '/projects/a', '2020-02-01T12:00:00Z', {workspace_runtime:{ok:true}}),
+        row('linked-head', '/projects/c', '2020-02-05T12:00:00Z', {group:'pair',agent:'claude'}),
+        row('linked-sibling', '/projects/c', '2020-02-06T12:00:00Z', {group:'pair'}),
+        row('starred', '/projects/a', '2020-02-07T12:00:00Z', {starred:true}),
+        row('quoted', '/projects/"<unsafe>&', '2020-01-01T12:00:00Z'),
+      ]);
+      renderSessionList();
+    }''')
+    if width < 760:
+        page.locator("#workspaceChatsToggle").click()
+    buckets = page.locator("#sessionList > .time-section")
+    assert buckets.count() == 2
+    assert buckets.nth(0).locator(".sidebar-project-header").count() == 3
+    assert buckets.nth(0).locator(".session-row").evaluate_all(
+        "els => els.map(el => el.dataset.sid)"
+    ) == ["linked-head", "new-a", "older-a", "new-b"]
+    assert page.locator('.starred-section .session-row').count() == 1
+    assert page.locator('[data-sid="active"]').locator('..').get_attribute("class") == "sidebar-project-section"
+    assert page.locator('[data-sid="linked-head"] .agent-icon').count() == 2
+    quoted = buckets.nth(1).locator('.sidebar-project-header').nth(1)
+    assert quoted.get_attribute("title") == '/projects/"<unsafe>&'
+    button = buckets.nth(0).locator('.sidebar-project-header').nth(1)
+    key = button.get_attribute("data-project-key")
+    with page.expect_request(lambda r: r.url.endswith('/api/ui-state') and r.method == 'POST') as request:
+        button.click()
+    saved = request.value.post_data_json["collapsed"]
+    assert key in saved["projectGroups"]
+    assert not page.locator('[data-sid="new-a"]').is_visible()
+    assert page.locator('[data-sid="previous-month"]').is_visible()
+    assert page.locator('[data-sid="new-b"]').is_visible()
+    page.evaluate('saved => { _applyCollapsedState(saved); renderSessionList(); }', saved)
+    assert not page.locator('[data-sid="new-a"]').is_visible()
+    assert page.evaluate('''() => {
+      focusedIndex = sessions.findIndex(s => s.session_id === 'linked-head');
+      return sessions[nextVisibleSessionIndex(1)].session_id;
+    }''') == "new-b"
+    page.evaluate("toggleAgentFilter('codex')")
+    assert page.locator('[data-sid="new-a"]').is_visible()
+    page.evaluate("toggleAgentFilter(null)")
+    assert not page.locator('[data-sid="new-a"]').is_visible()
+    page.evaluate("_searchQuery = 'new'; renderSessionList()")
+    assert page.locator('[data-sid="new-a"]').is_visible()
+    page.evaluate("_searchQuery = ''; renderSessionList()")
+    button.focus()
+    button.press("Enter")
+    assert page.locator('[data-sid="new-a"]').is_visible()
+    assert page.evaluate("document.activeElement.classList.contains('sidebar-project-header')")
+    assert page.locator('#sessionList .session-row').count() == 8
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    if output := os.environ.get("SERENA_EVIDENCE_DIR"):
+        path = Path(output)
+        path.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path / f"sidebar-projects-{width}.png"))
+    assert not errors
+    assert not any(path == "/api/spawn-terminal" for path, _ in calls)
+
+
 def test_navigation_projects_and_drafts_do_not_spawn(workspace):
     page, calls, errors, _ = workspace
     page.get_by_role("button", name="Tooling", exact=True).first.click()
