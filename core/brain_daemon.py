@@ -81,6 +81,10 @@ STREAM_TRANSPORT = (
 )
 MODEL = os.environ.get("SERENA_BRAIN_MODEL", "sonnet")
 VOICE_MODEL = os.environ.get("SERENA_BRAIN_VOICE_MODEL", "").strip() or MODEL
+# His text line answers in seconds, not in a spoken beat, so it can afford a
+# reasoning model where voice cannot. Empty keeps the old behaviour exactly.
+PHONE_MODEL = os.environ.get("SERENA_BRAIN_PHONE_MODEL", "").strip()
+PHONE_EFFORT = os.environ.get("SERENA_BRAIN_PHONE_EFFORT", "").strip() or "high"
 REFLEX_MODEL = (
     os.environ.get("SERENA_BRAIN_REFLEX_MODEL", "").strip() or VOICE_MODEL
 )
@@ -532,6 +536,18 @@ def _compose_message(payload: dict) -> str:
         except Exception:
             pass
         parts.append("(front-door turn, reply with the STRICT front-door JSON protocol)")
+    elif protocol == "phone":
+        parts.append(
+            "(text on your own line: his private chat with your bot, read by a "
+            "poller rather than spoken. He is not watching a cursor, so think "
+            "the answer through properly before replying -- correctness beats "
+            "speed here, and a few seconds is fine. Plain text, no markdown, no "
+            "lists, one or two sentences. The facts attached to this turn are "
+            "current; use them rather than guessing, and never say you cannot "
+            "find or verify something that is in front of you. If something "
+            "failed, say what failed in plain words. Take the position yourself "
+            "instead of offering him a menu.)"
+        )
     elif protocol == "voice":
         parts.append(
             "(voice turn, spoken aloud: plain conversational prose, short "
@@ -693,6 +709,8 @@ async def _select_route(client, payload: dict, decision=None):
                 conversation_model=MODEL,
                 voice_model=VOICE_MODEL,
                 reflex_model=REFLEX_MODEL,
+                phone_model=PHONE_MODEL,
+                phone_effort=PHONE_EFFORT,
             )
     runtime_model = decision.runtime_model or decision.model
     if runtime_model != _active_model:
