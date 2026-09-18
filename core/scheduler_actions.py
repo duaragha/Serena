@@ -265,6 +265,7 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
     of a permanent fence around work Fleet never saw.
     """
 
+    import hashlib
     import sqlite3
     from contextlib import closing
     from pathlib import Path
@@ -284,12 +285,25 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
     if task is None:
         return ActionOutcome(True, "no ready task")
     task_id = int(task["id"])
+    brief = str(task["content"])
     token = task["lease_token"]
     origin = f"{DISPATCH_ORIGIN}{task_id}"
     output = {"task_id": task_id}
 
     def hold(detail: str, *, state: str = "blocked") -> ActionOutcome:
         released = store.release_task_claim(task_id, owner, token, state=state)
+        # "blocked" here means the dispatcher could not even open the run, on
+        # something it cannot clear itself -- GitHub auth it cannot renew, a
+        # repository it cannot reach. Left quiet, the task simply never starts
+        # and the queue looks idle. needs_triage is not this: reconcile asks
+        # him its own question about those.
+        if released and state == "blocked" and _he_asked(task):
+            stuck = hashlib.sha256(detail.encode("utf-8")).hexdigest()[:12]
+            output["notified"] = _notify_once(
+                f"#{task_id} can't even start ({' '.join(brief.split())[:60]}): {detail}",
+                f"task:{task_id}:nostart:{stuck}",
+                answers_request=True,
+            )
         return ActionOutcome(
             True, detail,
             output={**output, "state": state if released else "claim_changed"},
