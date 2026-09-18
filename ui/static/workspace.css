@@ -43,6 +43,13 @@
 .serena-workspace .agent-filter-btn .agent-icon{width:10px;height:10px;margin:0}.serena-workspace .agent-filter-btn.active{background:#2c1729;color:var(--accent)}
 .serena-workspace .session-list-header{display:none}.serena-workspace .session-list{padding:0 8px 10px}
 .serena-workspace .group-header{font:10px var(--mono);border:0;background:#0b080c;padding:13px 9px 7px;color:#c4a8c1}
+.sidebar-project-header{display:flex;align-items:center;gap:6px;width:100%;min-height:28px;padding:4px 9px;border:0;background:transparent;color:var(--text-dim);font:11px 'Segoe UI',Arial,sans-serif;text-align:left;letter-spacing:0;cursor:pointer}
+.sidebar-project-header:hover,.sidebar-project-header:focus-visible{background:#20151e;color:var(--text-bright)}
+.sidebar-project-header:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
+.sidebar-project-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.sidebar-project-count{flex-shrink:0;font:10px var(--mono);font-variant-numeric:tabular-nums}
+.sidebar-project-section{margin-left:8px;border-left:1px solid var(--border)}
+.sidebar-project-section.collapsed{display:none}
 .serena-workspace .session-row{display:grid;grid-template-columns:14px 14px minmax(0,1fr) auto;grid-template-rows:auto auto;align-items:center;column-gap:4px;row-gap:5px;padding:10px 9px;margin:2px 0;border:1px solid transparent;border-radius:5px;min-height:55px;background:transparent}
 .serena-workspace .session-row.focused{background:#251323;border-color:#54304b;box-shadow:inset 2px 0 var(--accent)}
 .serena-workspace .session-row.selected{background:#29142d;border-color:#784465}.serena-workspace .session-row.has-group{border-left:1px solid transparent;box-shadow:none}
