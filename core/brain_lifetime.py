@@ -89,6 +89,55 @@ def _secure_file(path: Path) -> None:
         raise RuntimeError(f"failed to restrict brain state ACL: {path}")
 
 
+# Rewriting the ACL of a directory whose children inherit it makes Windows
+# walk those children, and the brain's state directory holds the Fleet
+# worktrees: tens of thousands of files. Ten seconds was never going to be
+# enough once that grew, and the daemon treated the timeout as fatal, so the
+# brain simply stopped starting. Reading the ACL back is cheap whatever the
+# tree looks like, so the expensive write only happens when it is needed.
+ACL_READ_TIMEOUT_SECONDS = 20
+ACL_WRITE_TIMEOUT_SECONDS = 180
+_SYSTEM_PRINCIPALS = ("nt authority\\system", "builtin\\administrators")
+
+
+def _windows_acl_is_private(path: Path, principal: str) -> bool:
+    """True when this directory already grants exactly the three principals.
+
+    An inherited entry means somebody up the tree can still reach it, so an
+    "(I)" anywhere counts as not private and the caller has to enforce.
+    """
+
+    try:
+        result = subprocess.run(
+            ["icacls", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=ACL_READ_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    allowed = (principal.casefold(), *_SYSTEM_PRINCIPALS)
+    entries = 0
+    for line in result.stdout.splitlines():
+        body = line.strip()
+        if not body or body.lower().startswith("successfully processed"):
+            continue
+        if body.lower().startswith(str(path).casefold()):
+            body = body[len(str(path)):].strip()
+        if not body or ":" not in body:
+            continue
+        if "(I)" in body:
+            return False
+        holder = body.rsplit(":", 1)[0].strip().casefold()
+        if not any(holder.endswith(name) or holder == name for name in allowed):
+            return False
+        entries += 1
+    return entries >= 1
+
+
 def secure_directory(path: Path) -> Path:
     """Create one user-only state directory and cache its verified ACL."""
 
@@ -103,23 +152,33 @@ def secure_directory(path: Path) -> Path:
     principal = _windows_current_principal()
     if not principal:
         raise RuntimeError("cannot identify Windows user for brain state directory ACL")
-    result = subprocess.run(
-        [
-            "icacls",
-            str(path),
-            "/inheritance:r",
-            "/grant:r",
-            f"{principal}:(OI)(CI)(F)",
-            "/grant:r",
-            "*S-1-5-18:(OI)(CI)(F)",
-            "/grant:r",
-            "*S-1-5-32-544:(OI)(CI)(F)",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
+    if _windows_acl_is_private(path, principal):
+        _SECURED_DIRECTORIES.add(path)
+        return path
+    try:
+        result = subprocess.run(
+            [
+                "icacls",
+                str(path),
+                "/inheritance:r",
+                "/grant:r",
+                f"{principal}:(OI)(CI)(F)",
+                "/grant:r",
+                "*S-1-5-18:(OI)(CI)(F)",
+                "/grant:r",
+                "*S-1-5-32-544:(OI)(CI)(F)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=ACL_WRITE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        # Still refuse to run with a directory that is not private: this is
+        # where her memory, her tokens and her transcripts live.
+        raise RuntimeError(
+            f"restricting the brain state directory ACL timed out: {path}"
+        ) from error
     if result.returncode != 0:
         raise RuntimeError(f"failed to restrict brain state directory ACL: {path}")
     _SECURED_DIRECTORIES.add(path)
