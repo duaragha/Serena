@@ -134,6 +134,31 @@ def _clean(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
+def _within_one_edit(alias: str, word: str) -> bool:
+    """True when one insertion, deletion or substitution turns one into the other."""
+
+    if alias == word:
+        return True
+    if abs(len(alias) - len(word)) > 1:
+        return False
+    if len(alias) > len(word):
+        alias, word = word, alias
+    short, long = alias, word
+    i = j = edits = 0
+    while i < len(short) and j < len(long):
+        if short[i] == long[j]:
+            i += 1
+            j += 1
+            continue
+        edits += 1
+        if edits > 1:
+            return False
+        if len(short) == len(long):
+            i += 1
+        j += 1
+    return True
+
+
 def _normalise(value: object) -> str:
     return _NORMALISE.sub(" ", str(value or "").casefold()).strip()
 
@@ -371,6 +396,22 @@ def resolve_repository_root(
         except RepositoryResolutionError:
             pass
     if not scored:
+        # He types "Lockit" for locket and "unfied" for unified. A single typo
+        # is not ambiguity, so one project within one edit of one long word
+        # resolves; anything less certain still goes back as a question. Both
+        # sides must be six characters or more, so no short name can be reached
+        # by accident, and two near matches are treated as a real ambiguity.
+        words = {word for word in normalised.split() if len(word) >= 6}
+        near = {
+            root for root, aliases in canonical.items()
+            for alias in aliases if len(alias) >= 6
+            if any(_within_one_edit(alias, word) for word in words)
+        }
+        if len(near) == 1:
+            return next(iter(near))
+        if len(near) > 1:
+            names = ", ".join(sorted(path.name for path in near))
+            raise RepositoryResolutionError(f"which Git project: {names}?")
         if explicit_errors:
             raise RepositoryResolutionError(explicit_errors[0])
         raise RepositoryResolutionError(
