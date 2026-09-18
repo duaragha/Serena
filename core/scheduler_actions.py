@@ -546,6 +546,18 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             except agent_checkouts.CheckoutError as error:
                 # Leave the task running; the next tick retries the delivery.
                 record["error"] = f"delivery failed: {error}"
+                # Retrying silently is how a finished job looks like a hung
+                # one. Delivery fails on things only he can clear -- expired
+                # GitHub auth, a protected branch -- so say it once per reason
+                # instead of pushing every 60 seconds and never mentioning it.
+                reason = " ".join(str(error).split())[:300]
+                stuck = hashlib.sha256(reason.encode("utf-8")).hexdigest()[:12]
+                record["notified"] = _notify_once(
+                    f"#{task_id} is built and its tests passed, but i can't deliver it "
+                    f"({headline}): {reason}",
+                    f"task:{task_id}:delivery:{stuck}",
+                    answers_request=_he_asked(task),
+                )
                 closed.append(record)
                 continue
             record.update(delivery=delivery.status, url=delivery.url)
