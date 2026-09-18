@@ -289,7 +289,51 @@ def test_a_current_checkout_passes(tmp_path, monkeypatch):
 
     findings = doctor.check_repo_freshness()
     assert [f.ok for f in findings] == [True]
-    assert "up to date" in findings[0].detail
+    assert "level with" in findings[0].detail
+
+
+def test_a_side_branch_that_tracks_itself_is_still_measured_against_master(
+    tmp_path, monkeypatch
+):
+    """The exact blind spot that let a checkout run a day behind everything.
+
+    The laptop sat on laptop-master, which tracked origin/laptop-master, which
+    matched it exactly. Comparing HEAD to its own upstream therefore said "up
+    to date" while the tree was far behind origin/master in one direction and
+    far ahead in the other, and both machines ran it.
+    """
+
+    import subprocess
+
+    clone = _repo_with_upstream(tmp_path, commits_behind=3)
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(clone), *args], check=True,
+                       capture_output=True, text=True)
+
+    git("checkout", "-q", "-b", "side")
+    (clone / "b.txt").write_text("only here\n")
+    git("add", "-A")
+    git("commit", "-qm", "unlanded work")
+    # Its own upstream is itself, so the old check had nothing to report.
+    git("push", "-q", "origin", "side")
+    git("branch", "--set-upstream-to=origin/side", "side")
+    monkeypatch.setattr(doctor, "_repo_root", lambda: clone)
+
+    findings = doctor.check_repo_freshness()
+
+    behind = _finding(findings, "repo.behind")
+    assert behind.ok is False
+    assert "3 commit(s) behind origin/master" in behind.detail
+    assert "side" in behind.detail
+
+    unlanded = _finding(findings, "repo.unlanded")
+    assert unlanded.ok is False
+    assert "1 commit(s) on side are not on origin/master" in unlanded.detail
+    assert "unlanded work" in unlanded.detail
+    assert "pull request" in unlanded.fix
+    # Neither is a broken system, so neither may fail the run.
+    assert {behind.severity, unlanded.severity} == {"warn"}
 
 
 def test_the_freshness_check_never_reaches_the_network(tmp_path, monkeypatch):
