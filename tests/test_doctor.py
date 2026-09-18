@@ -233,3 +233,77 @@ def test_render_puts_failures_first_and_pairs_each_with_its_fix():
     assert text.index("broken") < text.index("healthy")
     assert "fix: do the thing" in text
     assert "1 failure(s)" in text
+
+
+# ---- code on disk that is not what was shipped -----------------------------
+
+
+def _repo_with_upstream(tmp_path, commits_behind):
+    """A checkout whose origin/master has moved ahead of it."""
+
+    import subprocess
+
+    def git(where, *args):
+        subprocess.run(["git", "-C", str(where), *args], check=True,
+                       capture_output=True, text=True)
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git(origin, "init", "-q", "-b", "master")
+    git(origin, "config", "user.email", "t@t")
+    git(origin, "config", "user.name", "t")
+    (origin / "a.txt").write_text("one\n")
+    git(origin, "add", "-A")
+    git(origin, "commit", "-qm", "first")
+
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True)
+
+    for index in range(commits_behind):
+        (origin / "a.txt").write_text(f"change {index}\n")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-qm", f"shipped {index}")
+    git(clone, "fetch", "-q", "origin")
+    return clone
+
+
+def test_a_checkout_behind_its_remote_is_reported_with_the_count(tmp_path, monkeypatch):
+    """The laptop ran 43 commits behind while fixes were being deployed."""
+
+    clone = _repo_with_upstream(tmp_path, commits_behind=3)
+    monkeypatch.setattr(doctor, "_repo_root", lambda: clone)
+
+    finding = _finding(doctor.check_repo_freshness(), "repo.behind")
+
+    assert finding.ok is False
+    assert "3 commit(s) behind" in finding.detail
+    assert "not running what was shipped" in finding.detail
+    assert "git fetch" in finding.fix
+    # Behind is a judgement call, not a broken system, so it must not fail the run.
+    assert finding.severity == "warn"
+
+
+def test_a_current_checkout_passes(tmp_path, monkeypatch):
+    clone = _repo_with_upstream(tmp_path, commits_behind=0)
+    monkeypatch.setattr(doctor, "_repo_root", lambda: clone)
+
+    findings = doctor.check_repo_freshness()
+    assert [f.ok for f in findings] == [True]
+    assert "up to date" in findings[0].detail
+
+
+def test_the_freshness_check_never_reaches_the_network(tmp_path, monkeypatch):
+    """A doctor must be safe and instant; it reads the last fetch, not the remote."""
+
+    import subprocess
+
+    clone = _repo_with_upstream(tmp_path, commits_behind=2)
+    monkeypatch.setattr(doctor, "_repo_root", lambda: clone)
+    real_run = subprocess.run
+
+    def _guard(args, *rest, **kwargs):
+        assert "fetch" not in args and "pull" not in args, f"doctor reached the network: {args}"
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _guard)
+    doctor.check_repo_freshness()
