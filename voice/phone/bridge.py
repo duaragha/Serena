@@ -153,9 +153,12 @@ class VoiceGate:
     own voice is on a different sink so it can never trigger this.
     """
 
-    # Measured after RX gain: his line idles in the low hundreds, his speech
-    # sits around 6000-9000.
-    def __init__(self, threshold: float = 3000.0, sustain_ms: int = 300,
+    # Measured after RX gain on a real call: his line idles between 20 and 300
+    # even while she is talking, and his own speech peaks above 20000. The gap
+    # is wide, so the gate sits low and short -- an interruption he has to
+    # repeat is worse than a rare false one, and a false trip only makes her
+    # listen.
+    def __init__(self, threshold: float = 1800.0, sustain_ms: int = 200,
                  chunk_ms: int = 20) -> None:
         self.threshold = threshold
         self.needed = max(1, sustain_ms // chunk_ms)
