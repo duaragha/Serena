@@ -67,7 +67,7 @@ function renderStatus() {
     el('requestStatus').textContent = !run ? 'Awaiting GitHub confirmation. Do not submit again.'
       : run.status !== 'completed' ? `${status.mode === 'publish' ? 'Publication' : 'Verification'}: ${run.status.replaceAll('_', ' ')}`
       : run.conclusion === 'success' ? status.mode === 'publish' ? 'Published. Main can download the update when you choose.' : 'Both platform checks passed. Nothing published.'
-      : `Build ${run.conclusion || 'failed'}. No completed update was published. Open GitHub for details.`;
+      : `Request ${run.conclusion || 'failed'}. Open GitHub to confirm release status. Your running apps were not changed.`;
   }
   controls();
 }

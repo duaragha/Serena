@@ -21,6 +21,8 @@ dependencies = [
     "mcp>=1.28.1,<2",
     "Pillow>=11.0,<13",
     "hjson==3.1.0",
+    # Knowledge maintenance is imported by the base scheduler and desktop.
+    "pyyaml>=6.0",
     # The resident brain is not optional and its tool modules import this at
     # import time (core/brain_tools.py and siblings), so a base install without
     # it is a Serena whose brain cannot start. It was declared only under the
@@ -53,7 +55,6 @@ voice = [
     "beautifulsoup4>=4.12.0",
     "httpx>=0.28.0",
     "websockets>=14.0",
-    "pyyaml>=6.0",
     "numpy>=1.26.0",
 ]
 dev = [
