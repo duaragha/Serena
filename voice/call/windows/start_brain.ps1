@@ -1,13 +1,36 @@
 $ErrorActionPreference = 'Stop'
 $runtime = (Resolve-Path "$PSScriptRoot\..\..\..").Path
 
-$env:MEMORY_DIR = "$runtime\memory"
-$env:KNOWLEDGE_DIR = "$runtime\knowledge"
-$env:PERSONA_FILE = "$runtime\Persona.md"
-$env:SERENA_BRAIN_STATE_SNAPSHOT = "$env:USERPROFILE\.config\serena\canonical_state.json"
 $env:SERENA_PROJECTS_DIR = 'C:\Users\ragha\Projects'
-$env:SERENA_BRAIN_MODEL = 'sonnet'
-$env:SERENA_BRAIN_EFFORT = 'low'
+
+# Her memory and knowledge live in the synced Projects tree, not in whatever
+# checkout happens to be running her. A runtime copy is a snapshot: the brain
+# that read one answered calls with a July view of his life, hundreds of
+# memories and knowledge files behind, and sounded stupid for it.
+$live = Join-Path $env:SERENA_PROJECTS_DIR 'serena'
+foreach ($pair in @(
+    @{ Name = 'MEMORY_DIR';   Live = (Join-Path $live 'memory');      Fallback = "$runtime\memory" },
+    @{ Name = 'KNOWLEDGE_DIR'; Live = (Join-Path $live 'knowledge');  Fallback = "$runtime\knowledge" },
+    @{ Name = 'PERSONA_FILE'; Live = (Join-Path $live 'Persona.md');  Fallback = "$runtime\Persona.md" }
+)) {
+    $value = if (Test-Path $pair.Live) { $pair.Live } else { $pair.Fallback }
+    Set-Item -Path "Env:$($pair.Name)" -Value $value
+}
+$env:SERENA_BRAIN_STATE_SNAPSHOT = "$env:USERPROFILE\.config\serena\canonical_state.json"
+
+# Which brain answers a call is a setting, not a constant. The file is read
+# first so it can name a provider and model, and every value below is a
+# default that only applies when nothing has chosen one.
+$brainEnv = Join-Path $env:USERPROFILE '.config\serena\service-brain.env'
+if (Test-Path $brainEnv) {
+    foreach ($line in Get-Content $brainEnv) {
+        if ($line -match '^\s*#' -or $line -notmatch '=') { continue }
+        $name, $value = $line -split '=', 2
+        Set-Item -Path "Env:$($name.Trim())" -Value $value.Trim().Trim("'", '"')
+    }
+}
+if (-not $env:SERENA_BRAIN_MODEL) { $env:SERENA_BRAIN_MODEL = 'sonnet' }
+if (-not $env:SERENA_BRAIN_EFFORT) { $env:SERENA_BRAIN_EFFORT = 'low' }
 $meteredOverrides = @(
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_AUTH_TOKEN',
