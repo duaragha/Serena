@@ -597,6 +597,29 @@ class SerenaScheduler:
                     _clean(schedule.get("dedupe_key"), 256),
                 ),
             )
+        if state == "disabled" and str(schedule["state"]) == "active":
+            # Switching a schedule off is not a quiet condition. Nothing will
+            # run this action again until someone resumes it, so the task
+            # dispatcher can take itself offline after five transient failures
+            # and the whole queue goes idle looking merely empty. That happened
+            # on 2026-09-18: five "duplicate task id" ticks disabled
+            # serena.fleet.start and serena.fleet.reconcile, and nothing was
+            # dispatched for half an hour with nobody told.
+            self._notify(
+                schedule_id,
+                action,
+                {
+                    "kind": "schedule.disabled",
+                    "summary": (
+                        f"{action} is switched off after {failures} failures in a "
+                        f"row, and nothing will run it until it is resumed. Last "
+                        f"failure: {_clean(outcome.detail, 200)}"
+                    ),
+                    "channel": "imessage",
+                    "urgency": "normal",
+                    "dedupe_key": f"schedule:{schedule_id}:disabled",
+                },
+            )
         if outcome.ok:
             self._wake_chain(schedule, moment, woken, output=outcome.output or {})
         return ScheduleRun(
