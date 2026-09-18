@@ -253,3 +253,65 @@ def test_a_missing_cli_is_reported_as_no_binary(tmp_path, monkeypatch):
     monkeypatch.setattr(senders.shutil, "which", lambda _name: str(tmp_path / "ghost"))
 
     assert senders._chats_binary() is None
+
+
+# ---- a notice must not crash on a machine with no unix sockets ------------
+
+
+def test_no_unix_sockets_is_not_a_crash(monkeypatch, tmp_path):
+    """Windows has no AF_UNIX, and asking for one raises AttributeError.
+
+    The senders caught OSError, so on the PC -- the machine that actually runs
+    Fleet -- a terminal run notice raised "module 'socket' has no attribute
+    'AF_UNIX'" straight out of the code whose whole job is telling him what
+    happened. It showed up in a real run's event log.
+    """
+
+    from core import notification_senders as senders
+
+    target = tmp_path / "brain-events.sock"
+    target.write_text("")
+    monkeypatch.setattr(senders, "UNIX_DATAGRAMS_AVAILABLE", False)
+
+    assert senders.overlay_datagram({"type": "fleet_notice"}, target) is False
+
+
+def test_a_missing_listener_is_not_a_crash(tmp_path):
+    from core import notification_senders as senders
+
+    assert senders.overlay_datagram({"x": 1}, tmp_path / "absent.sock") is False
+
+
+def test_an_oversized_payload_is_refused_not_raised(monkeypatch, tmp_path):
+    from core import notification_senders as senders
+
+    target = tmp_path / "brain-events.sock"
+    target.write_text("")
+    monkeypatch.setattr(senders, "UNIX_DATAGRAMS_AVAILABLE", True)
+
+    assert senders.overlay_datagram({"text": "x" * 70_000}, target) is False
+
+
+def test_fleet_and_the_work_supervisor_share_this_one_sender():
+    """Three copies of the same unguarded socket is how two of them stayed broken."""
+
+    import inspect
+
+    from core import voice_work_supervisor
+    from fleet import supervisor
+
+    for module, name in ((supervisor, "_send_spoken_notice"),
+                         (voice_work_supervisor, "_send_overlay_event")):
+        source = inspect.getsource(getattr(module, name))
+        assert "overlay_datagram" in source, name
+        assert "AF_UNIX" not in source, name
+
+
+def test_fleet_texts_him_through_the_shared_binary_resolver():
+    import inspect
+
+    from fleet import supervisor
+
+    source = inspect.getsource(supervisor._send_raghav_text)
+    assert "_chats_binary" in source
+    assert "shutil.which" not in source

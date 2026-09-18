@@ -10,7 +10,6 @@ import re
 import shlex
 import shutil
 import signal
-import socket
 import sqlite3
 import subprocess
 import sys
@@ -1469,26 +1468,19 @@ def _send_spoken_notice(run: dict[str, Any], token: str) -> bool:
         "token": token,
         "text": _terminal_spoken_text(run),
     }
-    payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        client.sendto(payload, str(OVERLAY_EVENT_SOCKET))
-    except OSError:
-        return False
-    finally:
-        client.close()
-    return True
+    from core.notification_senders import overlay_datagram
+
+    return overlay_datagram(message, OVERLAY_EVENT_SOCKET)
 
 
 def _send_raghav_text(message: str) -> bool:
-    candidates = [
-        shutil.which("chats"),
-        str(Path(sys.executable).resolve().with_name("chats")),
-        str(Path.home() / ".local" / "bin" / "chats"),
-    ]
-    executable = next(
-        (candidate for candidate in candidates if candidate and Path(candidate).is_file()), None
-    )
+    # One resolver, shared with the notification senders. This had its own copy
+    # that looked for a sibling named exactly "chats"; Windows entry points are
+    # chats.exe, so on the PC it fell through to whatever was on PATH -- a
+    # different Serena install -- to deliver Fleet's own notices.
+    from core.notification_senders import _chats_binary
+
+    executable = _chats_binary()
     if not executable:
         return False
     try:

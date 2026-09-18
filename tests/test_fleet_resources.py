@@ -1,8 +1,8 @@
 """Resource failure receipts survive restart without silently abandoning a leg."""
 
-import time
 import os
 import sqlite3
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -416,3 +416,103 @@ def test_honest_blocker_preserves_work_and_allows_scoped_resume(tmp_path, cancel
         assert resumed["state"] == "queued"
         assert resumed["phases"][1]["legs"][0]["state"] == "queued"
         assert resumed["phases"][0]["legs"][0]["current_attempt"]["attempt_id"] == research["attempt_id"]
+
+
+# ---- proof artifacts must also land on a platform without dir_fd -----------
+
+
+def _registry(tmp_path):
+    from core.artifacts import ArtifactRegistry
+
+    return ArtifactRegistry(
+        root=tmp_path / "artifacts",
+        db_path=tmp_path / "artifacts.sqlite3",
+        key_path=tmp_path / "artifact.key",
+    )
+
+
+def test_an_artifact_lands_without_directory_descriptors(tmp_path, monkeypatch):
+    """Windows cannot open a directory as a file descriptor.
+
+    os.open on one raises PermissionError there, and none of the dir_fd
+    arguments the primary path uses exist. Every proof artifact failed, and
+    with it the integration gate, so no Fleet coding run on the PC could
+    finish: "integration gate failed closed: [Errno 13] Permission denied:
+    ...\\state\\serena\\artifacts".
+    """
+
+    import uuid
+
+    from core import artifacts
+
+    monkeypatch.setattr(artifacts, "DIR_FD_WRITES_SUPPORTED", False)
+    registry = _registry(tmp_path)
+    job = str(uuid.uuid4())
+
+    written = registry.write_job_artifact(
+        job_id=job, name="testlog.txt", content="proof body"
+    )
+
+    assert written.read_text(encoding="utf-8") == "proof body"
+    assert written.parent.name == job
+    # The temporary file is not left behind next to it.
+    assert [p.name for p in written.parent.iterdir()] == ["testlog.txt"]
+
+
+def test_both_write_paths_agree(tmp_path, monkeypatch):
+    """The portable path is not a second, subtly different artifact store."""
+
+    import uuid
+
+    from core import artifacts
+
+    job = str(uuid.uuid4())
+    results = {}
+    for label, supported in (("dir_fd", True), ("portable", False)):
+        monkeypatch.setattr(artifacts, "DIR_FD_WRITES_SUPPORTED", supported)
+        registry = _registry(tmp_path / label)
+        path = registry.write_job_artifact(
+            job_id=job, name="patch.diff", content=b"--- a\n+++ b\n"
+        )
+        results[label] = (path.name, path.parent.name, path.read_bytes())
+
+    assert results["dir_fd"] == results["portable"]
+
+
+def test_the_portable_path_refuses_a_linked_job_directory(tmp_path, monkeypatch):
+    import uuid
+
+    import pytest
+
+    from core import artifacts
+
+    monkeypatch.setattr(artifacts, "DIR_FD_WRITES_SUPPORTED", False)
+    registry = _registry(tmp_path)
+    job = str(uuid.uuid4())
+    root = tmp_path / "artifacts"
+    root.mkdir(parents=True, exist_ok=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    try:
+        (root / job).symlink_to(elsewhere, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform will not create a directory symlink here")
+
+    with pytest.raises(ValueError, match="symlink"):
+        registry.write_job_artifact(job_id=job, name="testlog.txt", content="x")
+
+
+def test_the_portable_path_rewrites_an_existing_artifact(tmp_path, monkeypatch):
+    import uuid
+
+    from core import artifacts
+
+    monkeypatch.setattr(artifacts, "DIR_FD_WRITES_SUPPORTED", False)
+    registry = _registry(tmp_path)
+    job = str(uuid.uuid4())
+
+    registry.write_job_artifact(job_id=job, name="testlog.txt", content="first")
+    second = registry.write_job_artifact(job_id=job, name="testlog.txt", content="second")
+
+    assert second.read_text(encoding="utf-8") == "second"
+    assert [p.name for p in second.parent.iterdir()] == ["testlog.txt"]
