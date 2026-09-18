@@ -13,6 +13,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+# It opens a unix socket under ~/.local/state/serena and writes voice state
+# into ~/.config/serena. Under the old arrangement it only ever ran as a child
+# of serena-dot-overlay, which granted these; standalone it died on its first
+# line with "Read-only file system" every two seconds.
+ReadWritePaths=%h/.config/serena %h/.cache/serena %h/.local/state/serena
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
