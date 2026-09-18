@@ -89,3 +89,22 @@ def test_the_phone_line_asks_for_the_phone_protocol():
 
     assert sent["protocol"] == "phone"
     json.dumps(sent)  # the payload has to survive the wire
+
+
+def test_health_exposes_whether_the_phone_route_is_configured():
+    """Without this there is no way to tell the route is live from outside.
+
+    /health reported model, voice_model and reflex_model, so a phone line
+    still answering on the voice model looked identical to one that was not.
+    """
+
+    import re
+    from pathlib import Path
+
+    source = Path("core/brain_daemon.py").read_text(encoding="utf-8")
+    block = source[source.index('"reflex_model": REFLEX_MODEL,'):][:400]
+    assert '"phone_model"' in block
+    assert '"phone_effort"' in block
+    assert '"phone_route_configured"' in block
+    # It reports the effective model, so an unconfigured route is not blank.
+    assert "PHONE_MODEL or MODEL" in block
