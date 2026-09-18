@@ -48,6 +48,11 @@ TERMINAL_BLOCKED_STATUSES = frozenset({"blocked", "stopped"})
 # real, checkable statement that this reviewer found nothing.
 FINDING_SEVERITIES = frozenset({"blocker", "major", "minor"})
 
+
+def severity_histogram(findings: list[dict[str, Any]]) -> dict[str, int]:
+    return {severity: sum(str(item.get('severity', '')).casefold() == severity for item in findings)
+            for severity in ('blocker', 'major', 'minor')}
+
 # A recorded "test" has to look like something that can actually fail. This is
 # the same vocabulary the single-job coding contract uses, kept local so an
 # edit there cannot silently loosen the Fleet gate.
@@ -206,7 +211,18 @@ class CompletionVerdict:
         if self.accepted:
             return "completion evidence satisfied the work-unit contract"
         listed = "; ".join(self.failures[:6])
-        return f"completion evidence rejected: {listed}" if listed else self.reason
+        if not listed:
+            return self.reason
+        # A bare echo of the failures taught workers nothing; the observed
+        # failure mode was deferring to root instead of answering
+        # not_applicable. Point the repair at the correct choice.
+        return (
+            f"completion evidence rejected: {listed}. To repair: answer "
+            "not_applicable with a reason where the unit adds or touches no "
+            "externally reachable surface; defer only to 'root' or an exact "
+            "Fleet worker key, with a reason, for work that owner will "
+            "actually perform"
+        )
 
 
 def _clean(value: object) -> str:
@@ -532,8 +548,14 @@ def _evaluate_unit(
                         f"acceptance criterion was marked met with no evidence ({label[:160]})"
                     )
 
+        # Delivery is owed only by legs that can change the checkout. A read-only
+        # leg (research, review) cannot integrate, deploy, or live-verify, so
+        # asking it to answer delivery requirements parks runs on evidence no
+        # worker output can honestly satisfy. The debt stays on the contract;
+        # write legs must still answer every requirement.
+        deliverable = access_mode == "write"
         delivery_failures, deferred_delivery, verified_delivery = _delivery_failures(
-            _text_list(completion.get("delivery_requirements")),
+            _text_list(completion.get("delivery_requirements")) if deliverable else [],
             entry.get("delivery"),
             unit_id,
             known_owners,
@@ -730,6 +752,8 @@ def _review_findings_failures(value: object) -> list[str]:
         if not _clean(item.get("unit_id")):
             failures.append(f"{prefix} must name the unit_id it was found in")
         severity = _clean(item.get("severity")).casefold()
+        if 'category' in item and (not isinstance(item['category'], str) or not item['category'].strip() or len(item['category']) > 64):
+            failures.append(f'{prefix} category must be a nonempty string of at most 64 characters')
         if severity not in FINDING_SEVERITIES:
             failures.append(
                 f"{prefix} severity must be one of " + ", ".join(sorted(FINDING_SEVERITIES))
@@ -1074,6 +1098,28 @@ def render_evidence_instructions(
     if not owned:
         return ""
     writes = access_mode == "write"
+    delivery_example = (
+        [
+            {
+                "requirement": "the first delivery requirement, copied verbatim",
+                "state": "verified",
+                "evidence": "the deploy or live check you actually observed",
+            },
+            {
+                "requirement": "the second delivery requirement, copied verbatim",
+                "state": "not_applicable",
+                "reason": "this unit has no external surface to deploy",
+            },
+            {
+                "requirement": "the third delivery requirement, copied verbatim",
+                "state": "deferred",
+                "owner": "root",
+                "reason": "only the coordinator can restart the live daemon",
+            },
+        ]
+        if writes
+        else []
+    )
     unit_example = {
         "id": owned[0],
         "status": "completed",
@@ -1084,19 +1130,7 @@ def render_evidence_instructions(
                 "evidence": "what you actually observed that proves it",
             }
         ],
-        "delivery": [
-            {
-                "requirement": "the first delivery requirement, copied verbatim",
-                "state": "verified",
-                "evidence": "the deploy or live check you actually observed",
-            },
-            {
-                "requirement": "the second delivery requirement, copied verbatim",
-                "state": "deferred",
-                "owner": "root coordinator",
-                "reason": "this sandbox cannot reach the live server",
-            },
-        ],
+        "delivery": delivery_example,
         "constraints_respected": True,
         "changed_paths": ["core/example.py"] if writes else [],
         "tests": (
@@ -1172,23 +1206,33 @@ def render_evidence_instructions(
         "exactly once. Put your unit-specific detail in evidence, not in the "
         "criterion text.",
         "- completed is rejected when a declared dependency is not itself complete.",
-        # Stated because the alternative is a worker learning it from a
-        # rejection, and because the run this came from was accepted as
-        # complete while shipping nothing.
-        "- answer EVERY delivery requirement in delivery[], copied verbatim, "
-        "separately from acceptance. Satisfying the acceptance criteria does "
-        "NOT satisfy delivery: implementing a change is not delivering it.",
-        "- each delivery entry is state verified (with observed evidence), "
-        "not_applicable (with a reason), or deferred (with a reason AND the "
-        "owner who now owes it).",
-        "- deferring is allowed and is the honest answer when your sandbox "
-        "cannot deploy or reach a live surface. It is not a way to finish: "
-        "Fleet tracks the debt and the RUN stays incomplete until that owner "
-        "produces verified delivery evidence. Handing work back does not "
-        "close it.",
     ]
     if writes:
         lines += [
+            # Stated because the alternative is a worker learning it from a
+            # rejection, and because the run this came from was accepted as
+            # complete while shipping nothing.
+            "- answer EVERY delivery requirement in delivery[], copied verbatim, "
+            "separately from acceptance. Satisfying the acceptance criteria does "
+            "NOT satisfy delivery: implementing a change is not delivering it.",
+            "- each delivery entry is state verified (with observed evidence), "
+            "not_applicable (with a reason), or deferred (with a reason AND the "
+            "owner who now owes it).",
+            # Workers deferred to the coordinator by default instead of
+            # answering not_applicable, parking runs in tracked debt no one
+            # would ever pay. Name the choice explicitly: no external surface
+            # means not_applicable, and deferred is only for work a real
+            # owner will actually perform.
+            "- when your unit adds or touches NO externally reachable surface "
+            "(no deploy, endpoint, page, integration, or user-visible behavior "
+            "change), answer not_applicable with a reason. That is the honest "
+            "answer, not a deferral.",
+            "- defer ONLY work a real owner will actually perform: a Fleet "
+            "worker key for work a teammate will do, or root when only the "
+            "coordinator outside this run can do it (deploy, commit, daemon "
+            "restart). Debt still owed by root when every step is done is "
+            "handed to the operator as a tracked commitment rather than "
+            "parking the run.",
             "- changed_paths must list every file you changed. Undeclared changes "
             "found in the working tree reject the leg.",
             "- changed files must be covered by an active path claim.",
@@ -1219,6 +1263,9 @@ def render_evidence_instructions(
     else:
         lines += [
             "- this leg is read-only: reporting changed_paths rejects it.",
+            "- delivery is owed by write legs, not by this leg: leave delivery "
+            "as [] (anything there is ignored). Your findings reach the next "
+            "phase through this envelope and your written answer.",
             "- tests is informational on a read-only leg: leave it as [] and "
             "describe any checks you ran inside the acceptance evidence text.",
         ]

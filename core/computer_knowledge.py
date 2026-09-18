@@ -313,6 +313,16 @@ def build_task_pack(
             encoded = encoded[: max(0, remaining - 1)]
             chunk = encoded.decode("utf-8", errors="ignore")
         chunks.append(chunk)
+        if entry.path.resolve().is_relative_to(Path(KNOWLEDGE_DIR).resolve()):
+            from core.knowledge_store import record_hit
+            relative = entry.path.relative_to(KNOWLEDGE_DIR)
+            if len(relative.parts) == 2 and entry.path.suffix == '.md':
+                try:
+                    record_hit(relative.parts[0], relative.parts[1], query=query,
+                               surface='computer', caller='build_task_pack', content=entry.text)
+                except (OSError, ValueError):
+                    # A pack entry deleted since the scan earns no receipt.
+                    pass
         used += len(chunk.encode("utf-8"))
     return "".join(chunks).rstrip()
 

@@ -182,6 +182,99 @@ class FleetStore:
             ).fetchone()
             return self._snapshot(connection, run_id) if row is not None else None
 
+    def get_report(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM fleet_run_reports WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": row["run_id"], "score": json.loads(row["score_json"]),
+            "timeline": json.loads(row["timeline_json"]), "knowledge": json.loads(row["knowledge_json"]),
+            "narrative": row["narrative_text"], "next_prompt": row["next_prompt_text"],
+            "actions": json.loads(row["actions_json"]) if row["actions_json"] else None,
+            "generator": row["generator"], "created_at": row["created_at"],
+            "artifacts": self.artifact_links(run_id),
+            "review": self.review_report(run_id),
+        }
+
+    def review_report(self, run_id: str) -> dict[str, Any]:
+        from fleet.review import report_review
+        return report_review(self, run_id)
+
+    def artifact_links(self, run_id: str, *, leg_id: str = '', attempt_id: str = '') -> list[dict[str, Any]]:
+        from fleet.artifacts import FleetArtifacts
+        with self._connect() as connection:
+            if not connection.execute('SELECT 1 FROM fleet_run_artifacts WHERE run_id=? LIMIT 1', (run_id,)).fetchone():
+                return []
+        return FleetArtifacts(self).list(run_id, leg_id=leg_id, attempt_id=attempt_id)
+
+    def report_exists(self, run_id: str) -> bool:
+        with self._connect() as connection:
+            return connection.execute("SELECT 1 FROM fleet_run_reports WHERE run_id = ?", (run_id,)).fetchone() is not None
+
+    def _invalidate_report(self, connection: sqlite3.Connection, run_id: str, reason: str) -> None:
+        """Retire a reopened run's report inside the caller's transaction.
+
+        The report describes a terminal state that no longer holds, and its
+        generation retires with the row: a worker still enriching the previous
+        report finds nothing to update, so a stale narrative can never land on
+        the replacement report.
+        """
+        if connection.execute(
+            "DELETE FROM fleet_run_reports WHERE run_id = ?", (run_id,)
+        ).rowcount == 1:
+            self._insert_event(
+                connection, run_id=run_id, event_type="run.report.invalidated",
+                payload={"run_id": run_id, "reason": reason},
+            )
+
+    def save_report(
+        self, run_id: str, report: dict[str, Any], *, generation: str | None = None
+    ) -> str | None:
+        """Atomically claim a report once; only its pending enrichment may update it.
+
+        The deterministic row and ready event commit together, before model I/O,
+        and the returned generation is the only key that may later enrich that
+        exact row. A concurrent caller observes the row and never starts another
+        provider. Returns the generation on success and ``None`` when the claim
+        or the fenced update was lost.
+        """
+        safe = redact_value(report)[0]
+        if len(json.dumps(safe)) > MAX_OUTPUT_CHARS:
+            raise ValueError("Fleet report exceeds storage limit")
+        values = (
+            json.dumps(safe["score"], sort_keys=True), json.dumps(safe["timeline"], sort_keys=True),
+            json.dumps(safe["knowledge"], sort_keys=True), safe.get("narrative"), safe.get("next_prompt"),
+            json.dumps(safe.get("actions")), str(safe["generator"]),
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if generation is not None:
+                # A fenced update needs no state check: the row it targets is
+                # deleted the moment its run reopens, so a retired generation
+                # simply matches nothing.
+                updated = connection.execute(
+                    "UPDATE fleet_run_reports SET score_json=?, timeline_json=?, knowledge_json=?, "
+                    "narrative_text=?, next_prompt_text=?, actions_json=?, generator=? "
+                    "WHERE run_id=? AND generation=? AND generator='none (generation pending)'",
+                    (*values, run_id, generation),
+                ).rowcount == 1
+                return generation if updated else None
+            run = self._require_run(connection, run_id)
+            if run["state"] not in TERMINAL_RUN_STATES:
+                raise ValueError("Fleet reports require a terminal run")
+            claimed = uuid.uuid4().hex
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO fleet_run_reports "
+                "(score_json,timeline_json,knowledge_json,narrative_text,next_prompt_text,actions_json,generator,run_id,created_at,generation) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)", (*values, run_id, time.time(), claimed),
+            ).rowcount == 1
+            if inserted:
+                self._insert_event(connection, run_id=run_id, event_type="run.report.ready", payload={
+                    "run_id": run_id, "score": safe["score"]["score"], "size_class": safe["score"]["size_class"],
+                })
+            return claimed if inserted else None
+
     def get_result(self, run_id: str) -> dict[str, Any]:
         """Return the potentially large final result only on explicit request."""
 
@@ -545,7 +638,7 @@ class FleetStore:
             if active is not None and _process_alive(active["pid"], active["process_token"]):
                 raise RuntimeError("Fleet leg already has a live attempt")
             previous = connection.execute(
-                "SELECT * FROM fleet_attempts WHERE leg_id = ? "
+                "SELECT * FROM fleet_attempts WHERE leg_id = ? AND replay_of IS NULL "
                 "ORDER BY attempt_number DESC LIMIT 1",
                 (leg_id,),
             ).fetchone()
@@ -562,7 +655,7 @@ class FleetStore:
                 ).fetchone()
                 if not source or not queued or json.loads(queued[0]).get("source_attempt_id") != integration_replay_source:
                     raise RuntimeError("saved integration replay has no matching durable source")
-            number = int(previous["attempt_number"] or 0) + 1 if previous else 1
+            number = connection.execute('SELECT COALESCE(MAX(attempt_number),0)+1 FROM fleet_attempts WHERE leg_id=?', (leg_id,)).fetchone()[0]
             resume_sid = ""
             resume_kind: str | None = None
             resume_source_phase: str | None = None
@@ -745,7 +838,7 @@ class FleetStore:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT error FROM fleet_attempts WHERE leg_id = ? AND attempt_number < ? "
-                "AND error IS NOT NULL AND error != '' "
+                "AND replay_of IS NULL AND error IS NOT NULL AND error != '' "
                 "ORDER BY attempt_number DESC LIMIT 1",
                 (str(leg_id), int(before_attempt_number)),
             ).fetchone()
@@ -763,7 +856,7 @@ class FleetStore:
             rows = connection.execute(
                 "SELECT a.event_log_path FROM fleet_attempts a "
                 "JOIN fleet_legs l ON l.leg_id = a.leg_id "
-                "WHERE l.run_id = ? AND a.leg_id = ? "
+                "WHERE l.run_id = ? AND a.leg_id = ? AND a.replay_of IS NULL "
                 "AND a.event_log_path IS NOT NULL AND a.event_log_path != '' "
                 "ORDER BY a.attempt_number",
                 (str(run_id), str(leg_id)),
@@ -869,8 +962,72 @@ class FleetStore:
                 leg_id=str(attempt["leg_id"]),
                 attempt_id=attempt_id,
                 event_type="context.budgeted",
-                payload=allowed,
+                payload={**allowed, 'sources': receipt.get('sources', [])},
             )
+
+    def record_loopback_verification(
+        self, attempt_id: str, *, verifier: str, detail: str = ""
+    ) -> dict[str, Any]:
+        """Record an operator-side check that a loopback-dependent result holds.
+
+        Fleet workers run inside provider sandboxes (Codex ``--sandbox``,
+        Claude permission flags) that Serena does not control, so a worker
+        that needs 127.0.0.1 reports its result unverified and the check
+        happens on the host instead. Flow: the worker defers the
+        loopback-dependent claim, the operator (or a host-side probe) runs
+        the check against localhost, then calls this once per checked
+        attempt. Readers use :meth:`loopback_verified`. Repeat calls append
+        another event; the latest one wins.
+        """
+
+        clean_verifier = str(verifier or "").strip()[:128]
+        if not clean_verifier:
+            raise ValueError("loopback verification requires a verifier")
+        clean_detail = str(detail or "").strip()[:2_000]
+        payload = {
+            "verifier": clean_verifier,
+            "detail": clean_detail,
+            "verified_at": time.time(),
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            attempt = connection.execute(
+                """
+                SELECT a.attempt_id, l.run_id, l.leg_id
+                FROM fleet_attempts a JOIN fleet_legs l ON l.leg_id = a.leg_id
+                WHERE a.attempt_id = ?
+                """,
+                (attempt_id,),
+            ).fetchone()
+            if attempt is None:
+                raise KeyError(f"unknown Fleet attempt {attempt_id}")
+            self._insert_event(
+                connection,
+                run_id=str(attempt["run_id"]),
+                leg_id=str(attempt["leg_id"]),
+                attempt_id=attempt_id,
+                event_type="attempt.loopback_verified",
+                payload=payload,
+            )
+        return dict(payload)
+
+    def loopback_verified(self, attempt_id: str) -> dict[str, Any] | None:
+        """Latest operator loopback verification for one attempt, if any."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM fleet_events "
+                "WHERE attempt_id = ? AND type = 'attempt.loopback_verified' "
+                "ORDER BY event_seq DESC LIMIT 1",
+                (attempt_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def finish_attempt(
         self,
@@ -904,11 +1061,14 @@ class FleetStore:
                 raise KeyError(f"unknown Fleet attempt {attempt_id}")
             run = self._require_run(connection, str(attempt["run_id"]))
             latest = connection.execute(
+                # A debugging replay is an append-only observation, never a
+                # generation of live work; it must not fence out the worker.
                 "SELECT attempt_id FROM fleet_attempts WHERE leg_id = ? "
-                "ORDER BY attempt_number DESC LIMIT 1", (attempt["leg_id"],),
+                "AND replay_of IS NULL ORDER BY attempt_number DESC LIMIT 1",
+                (attempt["leg_id"],),
             ).fetchone()
             if (attempt["state"] in TERMINAL_ATTEMPT_STATES
-                    or latest["attempt_id"] != attempt_id):
+                    or latest is None or latest["attempt_id"] != attempt_id):
                 # A duplicate callback or old process generation has no authority
                 # over a replacement attempt's leg/DAG state.
                 self._insert_event(
@@ -1408,6 +1568,7 @@ class FleetStore:
                 "DELETE FROM fleet_capacity_waits WHERE run_id = ?",
                 (run_id,),
             )
+            self._invalidate_report(connection, run_id, "run reopened by retry")
             self._insert_event(
                 connection,
                 run_id=run_id,
@@ -1533,6 +1694,7 @@ class FleetStore:
                     """,
                     (now, run_id),
                 )
+                self._invalidate_report(connection, run_id, "run reopened by worker retry")
             connection.execute(
                 "UPDATE fleet_legs SET state = 'queued', updated_at = ? WHERE leg_id = ?",
                 (now, leg_id),
@@ -1632,6 +1794,7 @@ class FleetStore:
                     "UPDATE fleet_runs SET state = 'queued', owner_pid = NULL, owner_token = NULL, "
                     "result_text = NULL, completed_at = NULL WHERE run_id = ?", (run_id,),
                 )
+                self._invalidate_report(connection, run_id, "run reopened by difficult retry")
             self._insert_event(connection, run_id=run_id, leg_id=leg_id, attempt_id=attempt_id,
                                event_type="leg.difficult_retry_queued", payload=receipt)
             return self._snapshot(connection, run_id)
@@ -2092,6 +2255,7 @@ class FleetStore:
                     """,
                     (now, run_id),
                 )
+                self._invalidate_report(connection, run_id, "run reopened by provider handoff")
             connection.execute(
                 "DELETE FROM fleet_leg_handoff_requests WHERE leg_id = ?",
                 (leg_id,),
@@ -2290,7 +2454,7 @@ class FleetStore:
             honest_stop = "work stopped before completion" in clean_error.lower()
             input_wait = connection.execute(
                 "SELECT a.error FROM fleet_legs l JOIN fleet_attempts a ON a.leg_id = l.leg_id "
-                "AND a.attempt_number = l.current_attempt WHERE l.run_id = ? "
+                "AND a.attempt_number = l.current_attempt AND a.replay_of IS NULL WHERE l.run_id = ? "
                 "AND l.state = 'waiting_for_input' ORDER BY l.phase_index, l.ordinal LIMIT 1",
                 (run_id,),
             ).fetchone()
@@ -2436,8 +2600,10 @@ class FleetStore:
                 WHERE """
                 + where
                 + " "
+                "AND a.replay_of IS NULL "
                 "AND a.attempt_number = (SELECT MAX(a2.attempt_number) "
-                "FROM fleet_attempts a2 WHERE a2.leg_id = l.leg_id AND a2.state = 'completed') "
+                "FROM fleet_attempts a2 WHERE a2.leg_id = l.leg_id AND a2.state = 'completed' "
+                "AND a2.replay_of IS NULL) "
                 "ORDER BY l.phase_index, l.ordinal",
                 tuple(params),
             ).fetchall()
@@ -2496,7 +2662,8 @@ class FleetStore:
                     l.role, l.requested_model, l.requested_effort
                 FROM fleet_attempts a
                 JOIN fleet_legs l ON l.leg_id = a.leg_id
-                WHERE l.run_id = ? AND a.session_id IS NOT NULL AND a.session_id != ''
+                WHERE l.run_id = ? AND a.replay_of IS NULL
+                    AND a.session_id IS NOT NULL AND a.session_id != ''
                 ORDER BY l.phase_index, l.ordinal, a.attempt_number
                 """,
                 (run_id,),
@@ -2956,10 +3123,11 @@ class FleetStore:
                 a.session_id, a.actual_model, a.actual_effort, a.pid,
                 substr(a.output_text, 1, ?) AS output_text,
                 length(a.output_text) > ? AS output_truncated,
-                a.error, a.exit_code, a.event_log_path, a.started_at, a.completed_at
+                a.error, a.exit_code, a.event_log_path, a.started_at, a.completed_at,
+                a.script_path, a.script_sha256
             FROM fleet_attempts a
             JOIN fleet_legs l ON l.leg_id = a.leg_id
-            WHERE l.run_id = ? ORDER BY a.attempt_number
+            WHERE l.run_id = ? AND a.replay_of IS NULL ORDER BY a.attempt_number
             """,
             (MAX_PUBLIC_PREVIEW_CHARS, MAX_PUBLIC_PREVIEW_CHARS, run_id),
         ).fetchall()
@@ -3181,6 +3349,8 @@ class FleetStore:
             "error": row["error"],
             "exit_code": row["exit_code"],
             "event_log_path": row["event_log_path"],
+            "script_path": row['script_path'],
+            "script_sha256": row['script_sha256'],
             "started_at": float(row["started_at"]) if row["started_at"] else None,
             "completed_at": float(row["completed_at"]) if row["completed_at"] else None,
         }
@@ -3333,6 +3503,26 @@ class FleetStore:
                 CREATE INDEX IF NOT EXISTS fleet_runs_state_idx
                     ON fleet_runs(state, created_at);
 
+                CREATE TABLE IF NOT EXISTS fleet_run_reports (
+                    run_id TEXT PRIMARY KEY REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
+                    score_json TEXT NOT NULL, timeline_json TEXT NOT NULL, knowledge_json TEXT NOT NULL,
+                    narrative_text TEXT, next_prompt_text TEXT, actions_json TEXT,
+                    generator TEXT NOT NULL, created_at REAL NOT NULL,
+                    generation TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS fleet_run_artifacts (
+                    id INTEGER PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
+                    leg_id TEXT NOT NULL REFERENCES fleet_legs(leg_id) ON DELETE CASCADE,
+                    attempt_id TEXT NOT NULL REFERENCES fleet_attempts(attempt_id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL CHECK(kind IN ('screenshot','testlog','patch')),
+                    artifact_id TEXT NOT NULL UNIQUE,
+                    sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS fleet_artifacts_run_idx
+                    ON fleet_run_artifacts(run_id, leg_id, attempt_id);
+
                 CREATE TABLE IF NOT EXISTS fleet_legs (
                     leg_id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL REFERENCES fleet_runs(run_id) ON DELETE CASCADE,
@@ -3479,9 +3669,19 @@ class FleetStore:
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(fleet_attempts)").fetchall()
             }
-            for name in ("requested_provider", "requested_model", "requested_effort"):
+            for name in ("requested_provider", "requested_model", "requested_effort", "script_path", "script_sha256", "replay_of"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE fleet_attempts ADD COLUMN {name} TEXT")
+            report_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(fleet_run_reports)").fetchall()
+            }
+            if "generation" not in report_columns:
+                # Reports written before fencing existed carry the empty
+                # generation, which no pending enrichment can ever claim.
+                connection.execute(
+                    "ALTER TABLE fleet_run_reports ADD COLUMN generation TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(
                 """
                 UPDATE fleet_attempts
@@ -3575,8 +3775,11 @@ def _stale_review_legs(
         if review_state != "completed" or not targets:
             continue
         review_attempt = connection.execute(
+            # Freshness compares live generations only. A debugging replay is an
+            # append-only observation, so counting it would reopen a review that
+            # did receive its target's final Code output.
             "SELECT started_at FROM fleet_attempts WHERE leg_id = ? "
-            "ORDER BY attempt_number DESC LIMIT 1",
+            "AND replay_of IS NULL ORDER BY attempt_number DESC LIMIT 1",
             (review_leg_id,),
         ).fetchone()
         review_started = (
@@ -3590,7 +3793,7 @@ def _stale_review_legs(
             code_attempt = (
                 connection.execute(
                     "SELECT state, completed_at FROM fleet_attempts WHERE leg_id = ? "
-                    "ORDER BY attempt_number DESC LIMIT 1",
+                    "AND replay_of IS NULL ORDER BY attempt_number DESC LIMIT 1",
                     (code_leg_id,),
                 ).fetchone()
                 if code_leg_id

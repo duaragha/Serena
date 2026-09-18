@@ -560,11 +560,15 @@ def test_missing_supervisor_is_a_clear_service_error(monkeypatch):
     assert "Fleet supervisor unavailable" in response.get_json()["error"]
 
 
-def test_main_serena_shell_registers_fleet_and_opens_workers_read_only():
+def test_main_serena_shell_registers_fleet_and_opens_workers_read_only(tmp_path, monkeypatch):
+    from core import config
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("SERENA_CALL_RUNTIME", "lazy")
     from ui import web
 
     rules = {rule.rule for rule in web.app.url_map.iter_rules()}
     assert "/fleet/view" in rules
+    assert "/fleet_report/<run_id>" in rules
     assert "/api/fleet/runs/<run_id>/stop" in rules
     assert "/api/fleet/runs/<run_id>" in rules
     assert "/api/fleet/runs/<run_id>/legs/<leg_id>/retry" in rules

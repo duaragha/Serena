@@ -636,6 +636,113 @@ def _run_git_diff_check(
         return 127
 
 
+def _declared_test_commands(output_text: str) -> list[str] | None:
+    """Every distinct check the envelope declares, or None when it is unreadable."""
+
+    payload, _prose, error = extract_envelope(output_text)
+    if error or not isinstance(payload, dict):
+        return None
+    commands: list[str] = []
+    for unit in payload.get("units") or []:
+        if not isinstance(unit, dict):
+            continue
+        for item in unit.get("tests") or []:
+            if isinstance(item, dict):
+                command = " ".join(str(item.get("command") or "").split())
+                if command and command not in commands:
+                    commands.append(command)
+    return commands
+
+
+def _test_gate_timeout() -> int:
+    try:
+        configured_timeout = int(os.environ.get("SERENA_FLEET_TEST_TIMEOUT_SECONDS", "300"))
+    except ValueError:
+        configured_timeout = 300
+    return min(900, max(10, configured_timeout))
+
+
+def _run_declared_tests(
+    commands: list[str],
+    workspace_path: str,
+    receipts: dict[str, int],
+    *,
+    allow_rerun: bool,
+    tool_root: str | None = None,
+    runner=None,
+) -> tuple[dict[str, int], list[str]]:
+    """Receipt-first evaluation of declared checks, shared by live and replay.
+
+    A replay that re-ran what the live gate accepted from a receipt, or that
+    silently dropped a declared command's environment, is not a replay of the
+    same leg. One evaluator is what keeps the two verdicts comparable.
+    """
+
+    timeout = _test_gate_timeout()
+    observed: dict[str, int] = {}
+    refusals: list[str] = []
+    for command in commands:
+        if allow_rerun and workspace_path:
+            no_index_result = _run_git_no_index_checks(
+                command, workspace_path, timeout=timeout
+            )
+            if no_index_result is not None:
+                observed[command] = no_index_result
+                continue
+        if command in receipts:
+            observed[command] = receipts[command]
+            continue
+        if not allow_rerun or not workspace_path:
+            continue
+        git_diff_result = _run_git_diff_check(command, workspace_path, timeout=timeout)
+        if git_diff_result is not None:
+            observed[command] = git_diff_result
+            continue
+        spec = _test_spec(command, workspace_path, tool_root=tool_root)
+        if spec is None:
+            observed[command] = 126
+            continue
+        argv, environment_overrides, environment_unsets = spec
+        environment = _test_environment(environment_overrides, environment_unsets)
+        if runner is None:
+            observed[command] = _run_declared_test(
+                argv, workspace_path, environment, tool_root=tool_root, timeout=timeout
+            )
+            continue
+        code, refusal = runner(command, argv, environment, timeout)
+        observed[command] = code
+        if refusal:
+            refusals.append(refusal)
+    return observed, refusals
+
+
+def _run_declared_test(
+    argv: list[str],
+    workspace_path: str,
+    environment: dict[str, str],
+    *,
+    tool_root: str | None,
+    timeout: int,
+) -> int:
+    try:
+        with _base_node_modules_link(workspace_path, tool_root, argv):
+            completed = subprocess.run(
+                argv,
+                cwd=workspace_path,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+            )
+        return int(completed.returncode)
+    except subprocess.TimeoutExpired:
+        return 124
+    except OSError:
+        return 127
+
+
 def _observed_test_results(
     run_id: str,
     worker_key: str,
@@ -650,67 +757,16 @@ def _observed_test_results(
     from fleet.isolation import FleetIsolationStore
 
     workspace = FleetIsolationStore().get_workspace(run_id, worker_key)
-    payload, _prose, error = extract_envelope(output_text)
-    if error or not isinstance(payload, dict):
+    commands = _declared_test_commands(output_text)
+    if commands is None:
         return {}
-    commands: list[str] = []
-    for unit in payload.get("units") or []:
-        if not isinstance(unit, dict):
-            continue
-        for item in unit.get("tests") or []:
-            if isinstance(item, dict):
-                command = " ".join(str(item.get("command") or "").split())
-                if command and command not in commands:
-                    commands.append(command)
-    try:
-        configured_timeout = int(os.environ.get("SERENA_FLEET_TEST_TIMEOUT_SECONDS", "300"))
-    except ValueError:
-        configured_timeout = 300
-    timeout = min(900, max(10, configured_timeout))
-    observed: dict[str, int] = {}
-    receipts = _event_log_test_results(event_log_path)
-    for command in commands:
-        if allow_rerun and workspace is not None:
-            no_index_result = _run_git_no_index_checks(
-                command, workspace.path, timeout=timeout
-            )
-            if no_index_result is not None:
-                observed[command] = no_index_result
-                continue
-        if command in receipts:
-            observed[command] = receipts[command]
-            continue
-        if not allow_rerun or workspace is None:
-            continue
-        git_diff_result = _run_git_diff_check(
-            command, workspace.path, timeout=timeout
-        )
-        if git_diff_result is not None:
-            observed[command] = git_diff_result
-            continue
-        spec = _test_spec(command, workspace.path, tool_root=tool_root)
-        if spec is None:
-            observed[command] = 126
-            continue
-        argv, environment_overrides, environment_unsets = spec
-        environment = _test_environment(environment_overrides, environment_unsets)
-        try:
-            with _base_node_modules_link(workspace.path, tool_root, argv):
-                completed = subprocess.run(
-                    argv,
-                    cwd=workspace.path,
-                    env=environment,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=timeout,
-                    check=False,
-                )
-            observed[command] = int(completed.returncode)
-        except subprocess.TimeoutExpired:
-            observed[command] = 124
-        except OSError:
-            observed[command] = 127
+    observed, _refusals = _run_declared_tests(
+        commands,
+        workspace.path if workspace is not None else "",
+        _event_log_test_results(event_log_path),
+        allow_rerun=allow_rerun,
+        tool_root=tool_root,
+    )
     return observed
 
 
@@ -1085,6 +1141,68 @@ def _run_worker_keys(snapshot: dict[str, Any]) -> list[str]:
             if key and key not in keys:
                 keys.append(key)
     return keys
+
+
+def _replay_test_runner(workspace: str):
+    """Run a replay check through the proof gate and keep capture failures fatal.
+
+    run_test_gate deliberately reports a failed gate with exit code 0 when the
+    test log could not be persisted. Reading only the exit code would accept a
+    replay whose proof does not exist, so the refusal travels into the verdict.
+    """
+
+    def run(command: str, argv: list[str], environment: dict[str, str], timeout: int):
+        from fleet.isolation import run_test_gate
+
+        result = run_test_gate(workspace, list(argv), timeout=timeout, env=environment)
+        raw = result.get('exit_code')
+        code = int(raw) if isinstance(raw, int) else 127
+        reason = str(result.get('artifact_error') or '')
+        if reason:
+            return code, f'replay proof capture failed for {command!r}: {reason}'
+        if not result.get('ran', False):
+            return 127, (f'replay could not run {command!r}: '
+                         f'{result.get("reason") or "test gate did not start"}')
+        if not result.get('ok', False) and code == 0:
+            return code, (f'replay test gate did not complete cleanly for {command!r}: '
+                          f'{result.get("reason") or "unknown gate failure"}')
+        return code, None
+
+    return run
+
+
+def evaluate_replay_completion(snapshot, leg, output_text, *, workspace, base, event_log_path=None):
+    """Use the same contract validator, with observations from the replay only."""
+    phase_index, phase_name = _leg_phase(snapshot, leg)
+    ids = completion_unit_ids(leg, phase_name)
+    access = str(leg.get('access_mode') or 'read')
+    tests, refusals = _run_declared_tests(
+        _declared_test_commands(output_text) or [], workspace,
+        _event_log_test_results(event_log_path), allow_rerun=access == 'write',
+        runner=_replay_test_runner(workspace))
+    changed = subprocess.run(['git', '-C', workspace, 'diff', '--name-only', base], capture_output=True, text=True, timeout=30, check=True).stdout.splitlines()
+    changed += subprocess.run(['git', '-C', workspace, 'ls-files', '--others', '--exclude-standard'], capture_output=True, text=True, timeout=30, check=True).stdout.splitlines()
+    claims = []
+    for unit in _work_units(snapshot):
+        if unit.get('id') in ids:
+            ownership = unit.get('file_ownership', {})
+            claims.extend(['*'] if ownership.get('mode') == 'repository_serialized' else ownership.get('declared_paths', []))
+    verdict = evaluate_completion(output_text=output_text, units=_work_units(snapshot), assignment_ids=ids,
+        access_mode=access, activity=str(snapshot.get('activity') or 'coding'), phase=phase_name,
+        claimed_paths=claims if access == 'write' else None,
+        observed_changed_paths=changed if access == 'write' else None, observed_test_results=tests,
+        observed_research_activity=_event_log_research_activity(event_log_path),
+        dependency_states=_dependency_states(snapshot, phase_index),
+        research_depth=str(snapshot.get('policy', {}).get('research_depth') or 'full'),
+        known_owners=_run_worker_keys(snapshot))
+    problems = list(refusals)
+    if _event_log_unsafe_process_cleanup(event_log_path):
+        problems.append('unsafe broad process termination executed during replay')
+    if problems:
+        from dataclasses import replace
+        return replace(verdict, accepted=False, enforced=True,
+                       failures=(*verdict.failures, *problems))
+    return verdict
 
 
 def evaluate_leg_completion(

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import click
+import json
 from pathlib import Path
+
+import click
 from rich.console import Console
 
 console = Console()
@@ -48,9 +50,9 @@ def serve(host, port):
     import time as _time
 
     def _reindex_loop():
-        from core.indexer import update_index
-        from core.chat_daemon import heal_sync_conflicts
         from core.autolink import auto_link_codex_chains
+        from core.chat_daemon import heal_sync_conflicts
+        from core.indexer import update_index
         while True:
             _time.sleep(20)
             try:
@@ -82,8 +84,8 @@ def serve(host, port):
 @click.option("--limit", "-n", default=50, help="Max results (default 50)")
 def list(project, device, tag, starred, limit):
     """List all conversations, grouped by time."""
-    from core.indexer import update_index, list_sessions
     from chats.formatter import format_session_table
+    from core.indexer import list_sessions, update_index
 
     with console.status("[cyan]Updating index..."):
         new, updated = update_index()
@@ -104,7 +106,7 @@ def list(project, device, tag, starred, limit):
 @click.option("--limit", "-n", default=20, help="Max results (default 20)")
 def search(query, limit):
     """Full-text search across all conversations."""
-    from core.indexer import update_index, search_fts, build_fts
+    from core.indexer import build_fts, search_fts, update_index
 
     with console.status("[cyan]Updating index..."):
         update_index()
@@ -135,9 +137,10 @@ def recall(query, limit, no_update):
     they matched.
     """
     import sqlite3
-    from core.indexer import update_index, search_fts, build_fts
-    from core.config import DB_PATH
     from datetime import datetime
+
+    from core.config import DB_PATH
+    from core.indexer import build_fts, search_fts, update_index
 
     if not no_update:
         update_index()
@@ -226,9 +229,9 @@ def project_context_cmd(cwd, limit, exclude):
 @click.argument("session_id")
 def show(session_id):
     """Show a full conversation by ID (or partial ID)."""
-    from core.indexer import update_index, get_session
-    from core.parser import parse_full
     from chats.formatter import format_conversation
+    from core.indexer import get_session, update_index
+    from core.parser import parse_full
 
     with console.status("[cyan]Updating index..."):
         update_index()
@@ -260,7 +263,7 @@ def show(session_id):
 @click.option("--remove", "-r", is_flag=True, help="Remove the tag instead of adding it")
 def tag(session_id, tag_name, remove):
     """Add or remove a tag on a session."""
-    from core.indexer import update_index, add_tag, remove_tag
+    from core.indexer import add_tag, remove_tag, update_index
 
     with console.status("[cyan]Updating index..."):
         update_index()
@@ -280,7 +283,7 @@ def tag(session_id, tag_name, remove):
 @click.argument("session_id")
 def star(session_id):
     """Toggle star/pin on a conversation."""
-    from core.indexer import update_index, toggle_star
+    from core.indexer import toggle_star, update_index
 
     with console.status("[cyan]Updating index..."):
         update_index()
@@ -300,7 +303,7 @@ def star(session_id):
 @click.argument("title")
 def rename(session_id, title):
     """Give a conversation a custom name."""
-    from core.indexer import update_index, set_title
+    from core.indexer import set_title, update_index
 
     with console.status("[cyan]Updating index..."):
         update_index()
@@ -315,8 +318,8 @@ def rename(session_id, title):
 @main.command()
 def projects():
     """List all projects with conversation counts."""
-    from core.indexer import update_index, list_projects
     from chats.formatter import format_projects
+    from core.indexer import list_projects, update_index
 
     with console.status("[cyan]Updating index..."):
         update_index()
@@ -331,8 +334,8 @@ def projects():
 @click.option("--tag", "-t", help="Filter by tag")
 def export(output, project, tag):
     """Export conversations to markdown files."""
-    from core.indexer import update_index, list_sessions
     from chats.exporter import export_all
+    from core.indexer import list_sessions, update_index
 
     with console.status("[cyan]Updating index..."):
         update_index()
@@ -418,6 +421,7 @@ main.add_command(memory)
 
 
 from memory.store import MEMORY_TYPES as _MEMORY_TYPE_NAMES
+
 MEMORY_TYPES = click.Choice(_MEMORY_TYPE_NAMES)
 
 
@@ -450,8 +454,8 @@ def memory_add(content, mem_type):
 )
 def memory_sync(dry_run, prune_stale_laptop, type_filter):
     """Sync memory/task changes between local files and Locket."""
-    from memory.locket_mirror import pull, push_local
     from core.locket_sync_state import last_success
+    from memory.locket_mirror import pull, push_local
     r = pull(dry_run=dry_run)
     if not r.get("ok"):
         console.print("[yellow]Could not reach Locket memory API.[/yellow]")
@@ -542,7 +546,7 @@ def memory_ledger(key, goal, facts, decision, promise, risk, next_action):
     'persona-tuning'). Only options you pass get changed — the rest keep
     their current value. Run with just KEY and no options to print current
     state without changing anything."""
-    from memory.store import find_ledger, upsert_ledger, LEDGER_FIELDS
+    from memory.store import LEDGER_FIELDS, find_ledger, upsert_ledger
     passed = {
         "goal": goal, "facts": facts, "decision": decision,
         "promise": promise, "risk": risk, "next_action": next_action,
@@ -561,12 +565,98 @@ def memory_ledger(key, goal, facts, decision, promise, risk, next_action):
             console.print(f"  [dim]{f}:[/dim] {v}")
 
 
+@main.group()
+def code():
+    """Manage the explicit local code corpus (separate from chats)."""
+
+
+def _code_call(operation, *args, **kwargs):
+    try:
+        return operation(*args, **kwargs)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@code.command("add")
+@click.argument("path", type=click.Path())
+@click.option("--key", default=None, help="Stable identity, including after relocation.")
+def code_add(path, key):
+    from core.code_index import add_repo
+    click.echo(_code_call(add_repo, path, repo_key=key))
+
+
+@code.command("remove")
+@click.argument("repo_key")
+def code_remove(repo_key):
+    from core.code_index import remove_repo
+    _code_call(remove_repo, repo_key)
+    click.echo(f"Removed {repo_key}")
+
+
+@code.command("list")
+def code_list():
+    from core.code_index import load_registry
+    for key, root in _code_call(load_registry).items():
+        click.echo(f"{key}\t{root}")
+
+
+@code.command("status")
+def code_status_command():
+    from core.code_index import code_status
+    for row in _code_call(code_status):
+        click.echo(f"{row['repo_key']}\t{row['root_path']}\t"
+                   f"files={row.get('file_count', 0)} bytes={row.get('total_size', 0)} "
+                   f"indexed={row.get('indexed_at') or 'never'} "
+                   f"skipped={row.get('skip_counts', '{}')}")
+
+
+@code.command("refresh")
+@click.option("--force", is_flag=True, help="Read files even if size and mtime match.")
+@click.option("--repo", "repo_key", default=None, help="Refresh only this registered key.")
+def code_refresh(force, repo_key):
+    from core.code_index import update_code_index
+    stats = _code_call(update_code_index, force=force, repo_key=repo_key)
+    click.echo(" ".join(f"{key}={value}" for key, value in stats.items()))
+
+
+@code.command("search")
+@click.argument("query")
+@click.option("--repo", "repo_key", default=None)
+@click.option("--limit", type=click.IntRange(1, 100), default=20)
+def code_search(query, repo_key, limit):
+    from core.code_index import search_code_fts
+    for hit in _code_call(search_code_fts, query, limit=limit, repo_key=repo_key):
+        click.echo(f"{hit['citation']}\n{hit['snippet']}\n")
+
+
+@code.command("drop")
+def code_drop():
+    """Clear derived code rows only; retain the repository registry."""
+    from core.code_index import drop_code_index
+    _code_call(drop_code_index)
+    click.echo("Code index cleared; registry retained.")
+
+
+@code.command('brief')
+@click.argument('repo_key')
+@click.option('--generate', is_flag=True, help='Generate from the indexed corpus.')
+@click.option('--refresh', is_flag=True, help='Refresh the index and stale brief.')
+def code_brief(repo_key, generate, refresh):
+    from core import code_index, repo_brief
+    if refresh:
+        _code_call(code_index.update_code_index, repo_key=repo_key)
+    if generate:
+        _code_call(repo_brief.generate, repo_key)
+    text, _receipt = _code_call(repo_brief.read_brief, repo_key, surface='cli', caller='code_brief')
+    click.echo(text or 'No brief; run chats code brief <repo> --refresh.')
+
+
 @main.group(invoke_without_command=True)
 @click.pass_context
 def knowledge(ctx):
     """Browse and manage the knowledge base."""
     if ctx.invoked_subcommand is None:
-        from knowledge.reader import list_topics, format_size
+        from knowledge.reader import format_size, list_topics
         topics = list_topics()
         if not topics:
             console.print("[yellow]No knowledge topics found.[/yellow]")
@@ -589,7 +679,7 @@ main.add_command(knowledge)
 def knowledge_show(slug):
     """Show all content for a knowledge topic."""
     from knowledge.reader import get_topic_content
-    content = get_topic_content(slug)
+    content = get_topic_content(slug, surface='cli', caller='knowledge_show')
     console.print(content)
 
 
@@ -617,14 +707,14 @@ def knowledge_delete(slug, yes):
 @click.argument("query")
 def knowledge_search(query):
     """Search across all knowledge files."""
-    from core.indexer import search_knowledge_fts, build_knowledge_fts, update_knowledge_index
+    from core.indexer import build_knowledge_fts, search_knowledge_fts, update_knowledge_index
 
     update_knowledge_index()
-    results = search_knowledge_fts(query, limit=20)
+    results = search_knowledge_fts(query, limit=20, surface='cli', caller='knowledge_search')
     if not results:
         console.print("[yellow]Building knowledge search index...[/yellow]")
         build_knowledge_fts()
-        results = search_knowledge_fts(query, limit=20)
+        results = search_knowledge_fts(query, limit=20, surface='cli', caller='knowledge_search')
 
     if not results:
         console.print("[yellow]No results found.[/yellow]")
@@ -635,6 +725,36 @@ def knowledge_search(query):
             f"  [bold]{r['topic_title']}[/bold] / [dim]{r['filename']}[/dim]"
         )
         console.print(f"    {r['snippet']}\n")
+
+
+@knowledge.command('backfill')
+def knowledge_backfill():
+    """Add missing trigger/verification metadata without changing note bodies."""
+    from core.knowledge_store import backfill
+    click.echo(json.dumps(backfill(), indent=2))
+
+
+@knowledge.command('maintenance')
+def knowledge_maintenance():
+    """Run the scheduled audit now and print its report location/counts."""
+    from core.knowledge_maintenance import scheduled_pass
+    click.echo(json.dumps(scheduled_pass({}).output, indent=2))
+
+
+@knowledge.command('proposals')
+def knowledge_proposals():
+    """Show receipt-bound knowledge feedback proposals."""
+    from core.knowledge_store import proposals
+    click.echo(json.dumps(proposals(), indent=2))
+
+
+@knowledge.command('review')
+@click.argument('proposal_id')
+@click.argument('action', type=click.Choice(['approve', 'reject']))
+def knowledge_review(proposal_id, action):
+    """Explicitly approve or reject one displayed knowledge proposal."""
+    from core.knowledge_store import review_proposal
+    click.echo(json.dumps(review_proposal(proposal_id, action), indent=2))
 
 
 @knowledge.command("link")
@@ -658,9 +778,10 @@ def knowledge_link(session_id, topic_slug):
 def retitle(all_, batch, limit, model):
     """Regenerate session titles with Claude (batched for speed)."""
     from pathlib import Path
-    from core.indexer import list_sessions, set_title, _get_db
-    from core.parser import parse_full
+
     from chats.llm_titles import generate_titles_batch
+    from core.indexer import _get_db, list_sessions, set_title
+    from core.parser import parse_full
 
     # Pull everything (custom_title too) so we can filter precisely
     conn = _get_db()
@@ -947,10 +1068,10 @@ def text(message):
 @click.option("--dry-run", is_flag=True, help="Show chat sync counts without writing files")
 def locket_sync(dry_run):
     """Pull Serena's in-app Locket chats into the local index store."""
-    from core.locket_scanner import sync_locket_chats, scan_locket_sessions, LOCKET_SYNC_ROOT
-    from core.indexer import update_index, _get_db
-    from core.parser import parse_messages_for_search
+    from core.indexer import _get_db, update_index
+    from core.locket_scanner import LOCKET_SYNC_ROOT, scan_locket_sessions, sync_locket_chats
     from core.locket_sync_state import last_success
+    from core.parser import parse_messages_for_search
 
     details = sync_locket_chats(dry_run=dry_run, return_details=True)
     if not details.get("ok"):
@@ -1036,7 +1157,13 @@ def archive_sync(dry_run, force):
 @click.option("--force", "-f", is_flag=True, help="Force full reindex")
 def reindex(force):
     """Rebuild the session and knowledge index."""
-    from core.indexer import drop_index, update_index, build_fts, update_knowledge_index, build_knowledge_fts
+    from core.indexer import (
+        build_fts,
+        build_knowledge_fts,
+        drop_index,
+        update_index,
+        update_knowledge_index,
+    )
     from core.locket_scanner import sync_locket_chats
 
     # Locket in-app chats ride the same index; refresh them first (fail-soft).
@@ -1096,7 +1223,10 @@ def mark_done(sid, port):
     """Notify Serena that a chat finished a turn. Called from claude's Stop
     hook so the sidebar entry highlights. Reads `CLAUDE_CODE_SESSION_ID` env
     var if no sid is passed."""
-    import os, json, urllib.request, socket
+    import json
+    import os
+    import socket
+    import urllib.request
     sid = (sid or os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
     if not sid:
         return  # silently no-op; the hook fires in many contexts where there's no sid
@@ -1136,7 +1266,12 @@ def gen_image(out, timeout, reasoning, prompt):
       chats gen-image "photorealistic mountain at sunset"
       chats gen-image -o ~/Pictures/hero.png "wide hero banner, dark blue gradient"
     """
-    import os, subprocess, shutil, time, glob, re
+    import glob
+    import os
+    import re
+    import shutil
+    import subprocess
+    import time
     text = " ".join(prompt).strip()
     if not text:
         console.print("[red]prompt is required[/red]"); return
@@ -1590,6 +1725,215 @@ def codex_exec(model, effort, work_dir, timeout, danger_full_access, visible,
     emit(True, result_text, session_id, code, None)
 
 
+@main.command(name="plan")
+@click.option("--repo", "repo_hint", default=None, help="Absolute repo path for the run (required).")
+@click.option("--activity", type=click.Choice(["auto", "coding", "research"]), default="auto", show_default=True)
+@click.option("--provider", "provider_mode", type=click.Choice(["auto", "balanced", "codex", "claude", "muse"]), default="auto", show_default=True)
+@click.option("--workers", "worker_count", type=click.IntRange(min=1, max=4), default=None)
+@click.option("--approve", is_flag=True, help="Approve the launch without an interactive confirm (clarifiers still apply).")
+@click.option("--json", "as_json", is_flag=True, help="Print machine-readable JSON.")
+@click.argument("query", nargs=-1, required=True)
+def plan_command(repo_hint, activity, provider_mode, worker_count, approve, as_json, query):
+    """Explore read-only, review the plan, then approve a Fleet launch."""
+    import os
+    import sys
+
+    from core.plan_mode import (
+        build_fleet_prompt,
+        gather_evidence,
+        resolve_repo_cwd,
+        suggest_clarifiers,
+    )
+    from fleet.supervisor import start_run
+
+    text = " ".join(query).strip()
+    interactive = sys.stdin.isatty() and not as_json
+    try:
+        evidence = gather_evidence(text)
+    except Exception as exc:
+        raise click.ClickException(f"evidence gathering failed: {exc}") from exc
+
+    findings = [c.line() for c in evidence.all_citations()]
+    if not as_json:
+        if findings:
+            console.print("[bold]Findings[/bold]")
+            for line in findings:
+                console.print(f"  {line}")
+        else:
+            console.print("[dim]no findings in chats, memory, knowledge, or ledgers[/dim]")
+        if evidence.receipt_ids:
+            console.print(f"[dim]receipts: {', '.join(evidence.receipt_ids)}[/dim]")
+
+    clarifiers = suggest_clarifiers(evidence, repo_hint=repo_hint or "")
+    answers: dict[str, str] = {}
+    repo = (repo_hint or "").strip()
+    if not repo:
+        if not interactive:
+            raise click.ClickException("no --repo given and no interactive terminal: refusing to guess the repo")
+        repo = click.prompt("repo (absolute path)", type=str).strip()
+    answers["repo"] = repo
+    try:
+        resolve_repo_cwd(repo)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    # Ask at most the context/done questions; repo is handled above.
+    if interactive and (not evidence.memory and not evidence.ledgers):
+        answers["context"] = click.prompt("prior context (empty to skip)", default="", show_default=False)
+    if interactive and not evidence.knowledge:
+        answers.setdefault("context", "")
+        extra_ctx = click.prompt("reference material (empty to skip)", default="", show_default=False)
+        if extra_ctx.strip():
+            answers["context"] = ((answers["context"] + " ") if answers["context"] else "") + extra_ctx.strip()
+    if interactive and evidence.is_empty():
+        answers["done"] = click.prompt("what does 'done' look like", type=str)
+
+    try:
+        artifact = build_fleet_prompt(
+            evidence, answers, activity=activity,
+            provider_mode=provider_mode, worker_count=worker_count,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not as_json:
+        console.print("\n[bold]Fleet prompt[/bold]")
+        console.print(artifact.task)
+        console.print(f"\n[dim]activity={artifact.activity} provider={artifact.provider_mode} "
+                      f"workers={artifact.worker_count or 'auto'} cwd={artifact.cwd}[/dim]")
+
+    preview = _fleet_call(
+        start_run,
+        artifact.task,
+        activity=artifact.activity,
+        provider_mode=artifact.provider_mode,
+        worker_count=artifact.worker_count,
+        cwd=artifact.cwd,
+        origin_session_id=None,
+        origin_agent=None,
+        dry_run=True,
+    )
+    if not as_json:
+        console.print("\n[bold]Dry-run preview[/bold]")
+        _fleet_print(_plan_preview_summary(preview))
+
+    approved = approve
+    if not approved and not interactive:
+        if not as_json:
+            console.print("[dim]declined (non-interactive without --approve): nothing launched[/dim]")
+        else:
+            _fleet_print(_plan_json(findings, clarifiers, artifact, preview, None), as_json=True)
+        return
+    if not approved:
+        approved = click.confirm("launch this fleet run?", default=False)
+    if not approved:
+        if not as_json:
+            console.print("[dim]declined: nothing launched[/dim]")
+        else:
+            _fleet_print(_plan_json(findings, clarifiers, artifact, preview, None), as_json=True)
+        return
+
+    _plan_authorize_launch(artifact)
+    origin_session_id = None
+    origin_agent = None
+    if os.environ.get("CODEX_THREAD_ID"):
+        origin_session_id = _detect_codex_sid()
+        origin_agent = "codex"
+    elif os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        origin_session_id = _detect_claude_sid()
+        origin_agent = "claude"
+    run = _fleet_call(
+        start_run,
+        artifact.task,
+        activity=artifact.activity,
+        provider_mode=artifact.provider_mode,
+        worker_count=artifact.worker_count,
+        cwd=artifact.cwd,
+        origin_session_id=origin_session_id,
+        origin_agent=origin_agent,
+        dry_run=False,
+    )
+    if as_json:
+        _fleet_print(_plan_json(findings, clarifiers, artifact, preview, run), as_json=True)
+        return
+    _fleet_print(run)
+
+
+def _plan_preview_summary(preview: object) -> dict:
+    if isinstance(preview, dict):
+        policy = preview.get("policy") if isinstance(preview.get("policy"), dict) else {}
+        return {
+            "run_id": str(preview.get("run_id") or ""),
+            "activity": str(preview.get("activity") or ""),
+            "agents": preview.get("agent_count", preview.get("agents", "?")),
+            "phases": policy.get("phases", ["discover", "execute", "verify", "finalize"]),
+            "provider_mode": str(policy.get("provider_mode", preview.get("provider_mode", ""))),
+        }
+    return {"preview": str(preview)[:2000]}
+
+
+def _plan_json(findings, clarifiers, artifact, preview, run):
+    return {
+        "findings": findings,
+        "clarifiers": clarifiers,
+        "artifact": {
+            "task": artifact.task,
+            "activity": artifact.activity,
+            "provider_mode": artifact.provider_mode,
+            "worker_count": artifact.worker_count,
+            "cwd": artifact.cwd,
+            "repo_key": artifact.repo_key,
+            "citations": artifact.citations,
+        },
+        "dry_run": preview,
+        "launched": run,
+    }
+
+
+def _plan_authorize_launch(artifact) -> None:
+    """Authority-gate the launch. Raises ClickException on denial. No run without it."""
+    from core.action_authority import (
+        BASIS_CONFIRMATION,
+        ActionAuthority,
+        build_request,
+    )
+
+    auth = ActionAuthority()
+    request = build_request(
+        capability="fleet.start_run",
+        intent=f"launch fleet run from chats plan: {artifact.task[:160]}",
+        source="cli",
+        effect="external",
+        target=artifact.cwd,
+    )
+    decision = auth.authorize(request)
+    if decision.allowed and not decision.requires_confirmation:
+        return
+    record = auth.request_confirmation(
+        capability="fleet.start_run",
+        target=artifact.cwd,
+        tier=decision.tier,
+        prompt=f"approve fleet launch in {artifact.cwd} ({artifact.activity})?",
+    )
+    # The interactive approve above IS the human; record it as the resolution.
+    # _plan_authorize_launch is only reached after explicit approval.
+    resolved = auth.resolve_confirmation(record.confirmation_id, approved=True)
+    if resolved.state != "approved":
+        raise click.ClickException("launch not approved")
+    confirmed = build_request(
+        capability="fleet.start_run",
+        intent=request.intent,
+        source="cli",
+        effect="external",
+        target=artifact.cwd,
+        authorization_basis=BASIS_CONFIRMATION,
+        confirmation_id=record.confirmation_id,
+    )
+    final = auth.authorize(confirmed)
+    if not final.allowed:
+        raise click.ClickException(f"launch denied by action authority: {final.reason}")
+
+
 @main.group(name="fleet")
 def fleet_group():
     """Run and inspect durable provider-routed workflows."""
@@ -1687,6 +2031,17 @@ def fleet_start(
         dry_run=dry_run,
     )
     _fleet_print(run, as_json=as_json)
+
+
+@fleet_group.command(name='replay-leg')
+@click.option('--run', 'run_id', required=True)
+@click.option('--leg', 'leg_id', required=True)
+@click.option('--attempt', 'attempt_number', type=click.IntRange(min=1), required=True)
+def fleet_replay_leg(run_id, leg_id, attempt_number):
+    """Replay frozen inputs in a private checkout, recording a new attempt."""
+    from fleet.leg_scripts import replay_leg
+    from fleet.store import FleetStore
+    _fleet_print(_fleet_call(replay_leg, FleetStore(), run_id, leg_id, attempt_number), as_json=True)
 
 
 @fleet_group.command(name="list")
@@ -1831,6 +2186,25 @@ def fleet_result(run_id, as_json):
         _fleet_print(result, as_json=True)
     else:
         click.echo(str(result.get("result_text") or result.get("error") or ""))
+
+
+@fleet_group.command(name="report")
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True)
+def fleet_report(run_id, as_json):
+    """Read post-run analysis, generating it on demand for terminal runs."""
+    import json
+
+    from fleet.supervisor import get_report
+
+    report = _fleet_call(get_report, run_id)
+    if as_json:
+        _fleet_print(report, as_json=True)
+    else:
+        click.echo(f"{run_id}: {report['score']['score']}/100 ({report['score']['size_class']})")
+        for key in ("score", "timeline", "knowledge", "narrative", "next_prompt", "actions", "generator", "artifacts", "review"):
+            value = report[key]
+            click.echo(f"{key}: " + (value if isinstance(value, str) else json.dumps(value, indent=2)))
 
 
 @fleet_group.command(name="steer")
@@ -2583,7 +2957,11 @@ def ask_claude(sid, from_sid, timeout, port, prompt):
       chats ask-claude "thoughts on this approach?"          # auto-finds linked claude
       chats ask-claude --sid 572aa6c9 "thoughts on this?"    # explicit target
     """
-    import json, os, urllib.request, urllib.error, socket
+    import json
+    import os
+    import socket
+    import urllib.error
+    import urllib.request
     if os.environ.get("SERENA_FLEET_WORKER", "").strip().lower() in {"1", "true", "on"}:
         raise click.ClickException("linked-agent bridges are disabled inside Fleet workers")
     text = " ".join(prompt).strip()
@@ -2652,7 +3030,11 @@ def ask_codex(sid, from_sid, timeout, port, prompt):
       chats ask-codex --sid 019ddecb "what does this file do?"
       chats ask-codex "your sid is auto-detected"   # finds linked codex
     """
-    import os, json, urllib.request, urllib.error, socket
+    import json
+    import os
+    import socket
+    import urllib.error
+    import urllib.request
     from pathlib import Path
 
     if os.environ.get("SERENA_FLEET_WORKER", "").strip().lower() in {"1", "true", "on"}:
@@ -2729,7 +3111,10 @@ def _detect_claude_sid() -> str | None:
          for an open file under ~/.claude/projects/<slug>/<UUID>.jsonl;
          the filename UUID is the session id.
     """
-    import os, re, glob, sys
+    import glob
+    import os
+    import re
+    import sys
     env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
     if env_sid and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", env_sid):
         return env_sid
@@ -2799,7 +3184,10 @@ def _detect_claude_sid() -> str | None:
 def _spawn_linked_codex(claude_sid: str, serena_port: int, timeout: int = 30) -> str | None:
     """Ask Serena to spawn a codex VTE in split view next to claude_sid and
     link them. Blocks until codex is up + linked, returns the new codex sid."""
-    import json, urllib.request, urllib.error, socket
+    import json
+    import socket
+    import urllib.error
+    import urllib.request
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{serena_port}/api/spawn-linked-codex",
@@ -2839,7 +3227,9 @@ def _detect_codex_sid() -> str | None:
     """Find the codex session id of the codex chat we're running inside.
     Mirror of _detect_claude_sid but for codex. Tries env vars first, then
     walks /proc looking for a `codex resume <sid>` ancestor."""
-    import os, re, sys
+    import os
+    import re
+    import sys
     for var in ("CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_COMPANION_SESSION_ID"):
         v = os.environ.get(var) or ""
         if v and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", v):
@@ -2894,7 +3284,11 @@ def _detect_serena_ports() -> list[int]:
     Cross-platform: uses `ss` on Linux + `netstat`/`Get-NetTCPConnection` on
     Windows. Falls back to a port-probe of common ranges if neither works.
     """
-    import os, re, subprocess, sys, time
+    import os
+    import re
+    import subprocess
+    import sys
+    import time
     candidates: list[tuple[float, int]] = []  # (start_time, port)
 
     if sys.platform == "linux":
@@ -2976,6 +3370,10 @@ def _detect_serena_port() -> int | None:
 from core.computer_cli import computer
 
 main.add_command(computer)
+
+from core.browser_cli import browser
+
+main.add_command(browser)
 
 if __name__ == "__main__":
     main()

@@ -49,6 +49,7 @@ class Session:
     source_agent: str = ""
     context_message_count: int = 0
     action_deadline: float = 0
+    browser_checks: dict | None = None
 
 
 def number(value, name, minimum, maximum):
@@ -153,6 +154,7 @@ class ComputerController:
         operator_confirmed=False,
         source_session_id="",
         source_agent="",
+        browser_checks=None,
     ):
         if not operator_confirmed:
             raise ComputerError(
@@ -160,6 +162,11 @@ class ComputerController:
             )
         if mode not in {"watch", "control"}:
             raise ComputerError("mode must be watch or control")
+        from core.computer_browser import validate_plan
+
+        browser_checks = validate_plan(browser_checks)
+        if browser_checks is not None and mode != "watch":
+            raise ComputerError("scripted browser conditions currently require watch mode")
         number(seconds, "seconds", 1, MAX_SESSION_SECONDS)
         if not isinstance(request, str) or not request.strip() or len(request) > 4000:
             raise ComputerError("a session needs the user's bounded task description")
@@ -200,6 +207,7 @@ class ComputerController:
                 grant_id=grant.grant_id if grant else "",
                 source_session_id=source_session_id,
                 source_agent=source_agent,
+                browser_checks=browser_checks,
             )
             self.session = s
         try:

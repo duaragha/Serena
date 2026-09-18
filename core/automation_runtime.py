@@ -117,6 +117,8 @@ class AutomationRuntime:
             self._scheduler = register_all(
                 SerenaScheduler(notifier=self.authority())
             )
+            from core.knowledge_maintenance import ensure_schedule
+            ensure_schedule(self._scheduler)
         return self._scheduler
 
     def authority(self) -> Any:

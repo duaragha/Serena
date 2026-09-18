@@ -398,6 +398,7 @@ def test_brain_server_exposes_exact_annotated_read_only_surface() -> None:
         "git_latest",
         "github_activity",
         "recall_chats",
+        "recall_code",
         "read_ledger",
         # Read-only recall over everything she knows, added 2026-08-01: only
         # active tasks/loops/ledgers are injected, the rest was unreachable.
