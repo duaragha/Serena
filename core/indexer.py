@@ -1780,35 +1780,25 @@ def unified_search(query: str, limit: int = 30) -> list[dict]:
     k_results = search_knowledge_fts(query, limit=limit)
     results.extend(k_results)
 
-    # Memories
+    # Memories. One call, whichever authority is live: retrieve_memory already
+    # dispatches between v2 and the legacy markdown store, so choosing here as
+    # well meant this surface could disagree with every other one about what a
+    # hit even is. memory_record_id is the canonical id a hit can be matched on
+    # across surfaces; memory_id stays the number he reads off the CLI.
     try:
-        from memory.v2 import MemoryV2Store
+        from memory.retrieval import search_memory_records
 
-        if MemoryV2Store.authority_is_active():
-            store = MemoryV2Store()
-            for hit in store.retrieve(query, limit=limit, surface="private"):
-                results.append(
-                    {
-                        "source": "memory",
-                        "snippet": hit.record.content[:200],
-                        "memory_id": hit.record.record_id,
-                        "memory_type": hit.record.record_type,
-                        "score": hit.score,
-                    }
-                )
-        else:
-            from memory.store import search_memories
-
-            mem_results = search_memories(query)
-            for m in mem_results:
-                results.append(
-                    {
-                        "source": "memory",
-                        "snippet": m["content"][:200],
-                        "memory_id": m["id"],
-                        "memory_type": m["type"],
-                    }
-                )
+        for record in search_memory_records(query, limit=limit, surface="private"):
+            results.append(
+                {
+                    "source": "memory",
+                    "snippet": str(record.get("content", ""))[:200],
+                    "memory_id": record.get("id"),
+                    "memory_record_id": record.get("record_id"),
+                    "memory_type": record.get("type"),
+                    "score": record.get("score"),
+                }
+            )
     except Exception:
         pass
 

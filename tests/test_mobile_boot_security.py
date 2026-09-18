@@ -6,8 +6,35 @@ import threading
 import uuid
 from pathlib import Path
 
+import pytest
 
-def test_mobile_bootstrap_does_not_disclose_bearer_token():
+
+@pytest.fixture
+def mobile_dist(tmp_path, monkeypatch):
+    """A built phone client, stood up for the test.
+
+    dist is a build output and is not committed, so pinning these assertions
+    to whatever the checkout happens to have built means they pass by not
+    running. This is the shape the route reads: an index.html with a head to
+    inject into, and one asset beside it.
+    """
+
+    from ui import web
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text(
+        '<html><head><link href="./assets/app.css"></head><body></body></html>',
+        encoding="utf-8",
+    )
+    (dist / "assets").mkdir()
+    (dist / "assets" / "app.css").write_text("body{}", encoding="utf-8")
+    (tmp_path / "package.json").write_text('{"secret": "not yours"}', encoding="utf-8")
+    monkeypatch.setattr(web, "_mobile_dist_root", lambda: dist)
+    return dist
+
+
+def test_mobile_bootstrap_does_not_disclose_bearer_token(mobile_dist):
     from ui.web import app
 
     response = app.test_client().get("/app")
@@ -33,13 +60,20 @@ def test_mobile_chat_websocket_accepts_private_token_only():
         assert not web._chat_websocket_is_authorized("secret")
 
 
-def test_mobile_static_route_does_not_escape_dist():
+def test_mobile_static_route_does_not_escape_dist(mobile_dist):
     from ui.web import app, serve_mobile_app
 
     with app.test_request_context("/app/../package.json"):
         response = serve_mobile_app("../package.json")
     html = response.get_data(as_text=True)
+    # The traversal is not served: it falls through to index.html.
     assert "window.SERENA_BOOT" in html
+    assert "not yours" not in html
+
+    # A real asset inside dist still is.
+    with app.test_request_context("/app/assets/app.css"):
+        served = serve_mobile_app("assets/app.css")
+    assert served.status_code == 200
 
 
 def test_call_websocket_rejects_query_token(monkeypatch):
