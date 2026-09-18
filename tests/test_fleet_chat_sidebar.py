@@ -47,7 +47,7 @@ def test_fleet_chats_have_one_collapsible_home_outside_normal_buckets() -> None:
     assert partition < active_bucket < done_bucket < starred_bucket
 
     active_section = html.index("if (active.length)")
-    fleet_section = html.index("if (fleetChats.length)")
+    fleet_section = html.index('data-testid="fleet-chats-header"')
     starred_section = html.index("if (starred.length)")
     serena_section = html.index("if (serenaVoice.length)")
     voice_section = html.index('data-testid="voice-chats-header"')

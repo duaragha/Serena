@@ -210,6 +210,49 @@ def test_unchanged_sidebar_keeps_dom_and_refreshes_changed_rows(workspace):
     assert not errors
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_sidebar_utility_rows_keyboard_empty_states_and_counts(workspace, width):
+    page, calls, errors, rows = workspace
+    page.set_viewport_size({"width": width, "height": 850})
+    page.wait_for_function("_collapsedLoaded")
+    rows.insert(0, dict(session_id="serena-voice-main", agent="serena-voice", display_title="Serena"))
+    page.evaluate('rows => { setSessionSource(rows); renderSessionList(); }', rows)
+    if width < 760:
+        page.locator("#workspaceChatsToggle").click()
+    fleet = page.get_by_test_id("fleet-chats-header")
+    voice = page.get_by_test_id("voice-chats-header")
+    assert fleet.evaluate('el => el.tagName') == 'BUTTON'
+    assert fleet.bounding_box()['height'] == 30
+    assert voice.bounding_box()['height'] == 30
+    assert fleet.locator('.sidebar-utility-count').bounding_box()['x'] == voice.locator('.sidebar-utility-count').bounding_box()['x']
+    assert fleet.bounding_box()['y'] >= page.locator('.serena-voice').bounding_box()['y'] + 32
+    fleet.focus()
+    fleet.press('Enter')
+    playwright.expect(page.get_by_test_id('fleet-chats-section')).to_have_text('No fleet chats')
+    playwright.expect(fleet).to_be_focused()
+    fleet.press('Space')
+    playwright.expect(fleet).to_have_attribute('aria-expanded', 'false')
+    voice.focus()
+    voice.press('Enter')
+    playwright.expect(page.get_by_test_id('voice-chats-section')).to_be_visible()
+    playwright.expect(page.get_by_test_id('voice-chats-section')).to_have_text('No voice chats')
+    voice.press('Space')
+    assert not page.get_by_test_id('voice-chats-section').is_visible()
+    rows.extend(dict(session_id=f'fleet-{i}', agent='codex', display_title=f'Worker {i}',
+                     fleet_worker={'run_id':f'run-{i}'}) for i in range(115))
+    page.evaluate('rows => { setSessionSource(rows); renderSessionList(); }', rows)
+    playwright.expect(fleet.locator('.sidebar-utility-count')).to_have_text('(115)')
+    assert fleet.bounding_box()['height'] == 30
+    assert page.locator('#sessionList .session-row').count() == 118
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    if output := os.environ.get("SERENA_EVIDENCE_DIR"):
+        path = Path(output)
+        path.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path / f"sidebar-utilities-{width}.png"))
+    assert not errors
+    assert not any(path == "/api/spawn-terminal" for path, _ in calls)
+
+
 def test_sidebar_date_groups_reuse_formatter_without_changing_labels(workspace):
     page, _, errors, _ = workspace
     assert page.evaluate('''() => {

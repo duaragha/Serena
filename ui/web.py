@@ -4457,15 +4457,17 @@ function renderSessionList() {
     for (const s of serenaVoice) appendRow(s);
   }
 
-  if (fleetChats.length) {
+  {
     const chev = _collapsedState.fleetChats ? '▸' : '▾';
-    html += '<div class="group-header fleet-header" data-testid="fleet-chats-header" role="button" aria-expanded="'
-      + (!_collapsedState.fleetChats) + '" onclick="toggleFleetChatsCollapsed()">'
-      + chev + ' Fleet Chats (' + fleetChats.length + ')</div>';
+    html += '<button type="button" class="group-header fleet-header sidebar-utility-header" data-testid="fleet-chats-header" aria-expanded="'
+      + (!_collapsedState.fleetChats) + '" aria-controls="fleetChatsSection" onclick="toggleFleetChatsCollapsed()"'
+      + ' onkeydown="if(event.key === \'Enter\' || event.key === \' \') event.stopPropagation()">'
+      + '<span aria-hidden="true">' + chev + '</span> <span class="sidebar-utility-label">Fleet Chats</span> '
+      + '<span class="sidebar-utility-count">(' + fleetChats.length + ')</span></button>';
     // Keep rows mounted so focus, search, and direct Fleet deep-links retain
     // their real session indexes while the visual section is collapsed.
     html += '<div class="fleet-chats-section' + (_collapsedState.fleetChats ? ' collapsed' : '')
-      + '" data-testid="fleet-chats-section">';
+      + '" id="fleetChatsSection" data-testid="fleet-chats-section">';
     // Fleet runs pile up fast, and one flat list of forty-nine worker chats
     // says nothing about what they were for. Group them by the project each
     // run targeted, newest project first, so the section reads like the rest
@@ -4489,15 +4491,18 @@ function renderSessionList() {
       }
       for (const s of rows) appendRow(s);
     }
+    if (!fleetChats.length) html += '<div class="sidebar-section-empty">No fleet chats</div>';
     html += '</div>';
   }
 
   const voiceChev = _collapsedState.voiceChats ? '▸' : '▾';
-  html += '<div class="group-header voice-chats-header" data-testid="voice-chats-header" role="button" aria-expanded="'
-    + (!_collapsedState.voiceChats) + '" onclick="toggleVoiceChatsCollapsed()">'
-    + voiceChev + ' Voice Chats (' + voiceChats.length + ')</div>';
+  html += '<button type="button" class="group-header voice-chats-header sidebar-utility-header" data-testid="voice-chats-header" aria-expanded="'
+    + (!_collapsedState.voiceChats) + '" aria-controls="voiceChatsSection" onclick="toggleVoiceChatsCollapsed()"'
+    + ' onkeydown="if(event.key === \'Enter\' || event.key === \' \') event.stopPropagation()">'
+    + '<span aria-hidden="true">' + voiceChev + '</span> <span class="sidebar-utility-label">Voice Chats</span> '
+    + '<span class="sidebar-utility-count">(' + voiceChats.length + ')</span></button>';
   html += '<div class="voice-chats-section' + (_collapsedState.voiceChats ? ' collapsed' : '')
-    + '" data-testid="voice-chats-section"></div>';
+    + '" id="voiceChatsSection" data-testid="voice-chats-section"><div class="sidebar-section-empty">No voice chats</div></div>';
 
   if (active.length) {
     html += '<div class="group-header active-header">\u25CF Active Terminals</div>';
@@ -4643,12 +4648,14 @@ function toggleFleetChatsCollapsed() {
   _collapsedState.fleetChats = !_collapsedState.fleetChats;
   _saveCollapsedState();
   renderSessionList();
+  document.querySelector('[data-testid="fleet-chats-header"]')?.focus({preventScroll:true});
 }
 
 function toggleVoiceChatsCollapsed() {
   _collapsedState.voiceChats = !_collapsedState.voiceChats;
   _saveCollapsedState();
   renderSessionList();
+  document.querySelector('[data-testid="voice-chats-header"]')?.focus({preventScroll:true});
 }
 
 function toggleStarredCollapsed() {
