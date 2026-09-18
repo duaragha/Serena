@@ -9,7 +9,6 @@ from core.process_probe import probe_process
 import re
 import shutil
 import signal
-import socket
 import subprocess
 import threading
 import time
@@ -573,18 +572,9 @@ def _narration_line(text: str) -> str:
 
 
 def _send_overlay_event(message: dict) -> None:
-    payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8"
-    )
-    if len(payload) > 60_000:
-        return
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        client.sendto(payload, str(OVERLAY_EVENT_SOCKET))
-    except OSError:
-        pass
-    finally:
-        client.close()
+    from core.notification_senders import overlay_datagram
+
+    overlay_datagram(message, OVERLAY_EVENT_SOCKET)
 
 
 def _ignore_overlay_event(_message: dict) -> None:

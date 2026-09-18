@@ -45,22 +45,51 @@ OVERLAY_EVENT_SOCKET = HOME / ".local" / "state" / "serena" / "brain-events.sock
 TEXT_TIMEOUT_SECONDS = 15
 
 
-def _overlay_datagram(message: dict[str, object]) -> bool:
-    """Hand one event to the overlay/voice bridge over its unix socket."""
+# Windows has no AF_UNIX, and asking for one raises AttributeError rather than
+# the OSError these senders were catching. Every caller of this is a "tell him
+# what happened" path, so an unguarded socket turned a Fleet notice into a
+# crash on the one machine Fleet runs on.
+UNIX_DATAGRAMS_AVAILABLE = hasattr(socket, "AF_UNIX")
+MAX_OVERLAY_DATAGRAM_BYTES = 60_000
 
-    if not OVERLAY_EVENT_SOCKET.exists():
+
+def overlay_datagram(
+    message: dict[str, object],
+    socket_path: Path | None = None,
+) -> bool:
+    """Hand one event to the overlay/voice bridge over its unix socket.
+
+    Returns False rather than raising when this machine has no unix sockets,
+    when nothing is listening, or when the payload is too large to send. A
+    notice that cannot be delivered is not an error worth unwinding a run for;
+    the caller falls back to another channel.
+    """
+
+    target = OVERLAY_EVENT_SOCKET if socket_path is None else socket_path
+    if not UNIX_DATAGRAMS_AVAILABLE or not target.exists():
         return False
     payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8"
     )
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    if len(payload) > MAX_OVERLAY_DATAGRAM_BYTES:
+        return False
     try:
-        client.sendto(payload, str(OVERLAY_EVENT_SOCKET))
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    except (AttributeError, OSError):
+        return False
+    try:
+        client.sendto(payload, str(target))
     except OSError:
         return False
     finally:
         client.close()
     return True
+
+
+def _overlay_datagram(message: dict[str, object]) -> bool:
+    """Kept for existing callers."""
+
+    return overlay_datagram(message)
 
 
 def send_voice(request: NotificationRequest) -> bool:
