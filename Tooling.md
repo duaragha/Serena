@@ -150,6 +150,26 @@ ssh docker-vm docker logs <container>          # when already inside
 ```
 Pipe scripts via stdin (Windows cmd mangles quotes and braces). The VM sees this Projects tree at `/mnt/projects` as a VirtualBox shared folder (vboxsf).
 
+## Calling the docker MCPs programmatically
+The 12 dockerized MCPs (`https://pc.tail4d6220.ts.net/mcp/<name>`) are callable from any agent session through Serena's capability broker — no MCP client tools needed:
+```bash
+cd ~/Documents/Projects/serena && .venv/bin/python -c "
+import asyncio
+from core.mcp.capability_broker import catalog, find_capabilities, invoke_capability
+async def main():
+    caps, unavailable = await catalog(refresh=True)   # all live tools
+    print(await find_capabilities('linear issues'))   # search by words
+    print(await invoke_capability('linear', 'list_issues', {'limit': 5}))
+asyncio.run(main())
+"
+```
+- MUST use `.venv/bin/python` — the `mcp` SDK lives in the venv, not system python.
+- Reads go through freely. Writes are classified per-tool and refused without fresh direct turn authority from Raghav (3 denials trips a circuit breaker needing explicit reset).
+- Broker serves **http servers only** (stdio like `playwright` is out of scope) and skips `enabled: false` entries.
+- Two config prerequisites in `~/.config/serena/mcp.json`, both set 2026-09-16: tailnet http servers need `allow_private_network: true` (100.x is non-public, URLPolicy refuses otherwise) and every http server needs `allowed_domains`. Fix via `core.mcp.config.upsert_server` (master config only, no client sync).
+- Known states: `netsuite` is a direct NetSuite cloud URL that 401s until credentials are configured; `beeper` is `enabled: false`.
+- Never hand-roll MCP json-rpc over curl when the broker exists — it handles headers, secrets, session negotiation, and output truncation.
+
 ## Launching a GUI app on Windows, from a pane
 Always detach GUI applications: `Start-Process app.exe` in PowerShell, or `start "" app.exe` in cmd. Never run the bare executable.
 - **Why**: Windows console is a shared object. A non-detached GUI process attaches to the pane's console buffer and spews logs directly into the agent's TUI display even after the launching shell exits.
