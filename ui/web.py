@@ -4844,15 +4844,18 @@ function renderSessionRow(s, idx, opts) {
   const snippetHtml = s.search_snippet
     ? '<span class="session-snippet">' + _snippetHtml(s.search_snippet) + '</span>'
     : '';
+  const title = _isSerenaVoiceSession(s) ? 'Serena' : (s.display_title || 'Untitled');
+  const project = s.project_trail || s.project_short || 'Other';
+  const path = s.cwd || s.last_cwd || '';
+  const details = [title, project, path, rowActivityTs(s)].filter(Boolean).join('\n');
   return '<div class="' + cls + '" data-idx="' + idx + '" data-sid="' + s.session_id + '"' + childAttr + groupStyle + ' '
+    + 'title="' + escAttr(esc(details)) + '" aria-label="' + escAttr(esc(details)) + '" '
     + 'onclick="onRowClick(event,' + idx + ')" ondblclick="openConv(\'' + s.session_id + '\')"'
     + ' oncontextmenu="showSessionContextMenu(event,' + idx + ')">'
     + '<span class="' + starCls + '" onclick="event.stopPropagation();toggleStar(\'' + s.session_id + '\')">' + starChar + '</span>'
     + disclosure
     + linkGlyph
-    + '<span class="session-title"><span class="session-title-main">' + liveIndicator + agentBadges + esc(_isSerenaVoiceSession(s) ? 'Serena' : (s.display_title || 'Untitled')) + childBadge + threadBadge + '</span>' + snippetHtml + '</span>'
-    + '<span class="workspace-row-project">' + esc(s.project_trail || s.project_short || '') + '</span>'
-    + '<span class="session-date" title="Last activity">' + formatDate(rowActivityTs(s)) + '</span>'
+    + '<span class="session-title"><span class="session-title-main">' + liveIndicator + agentBadges + esc(title) + childBadge + threadBadge + '</span>' + snippetHtml + '</span>'
     + '</div>';
 }
 
