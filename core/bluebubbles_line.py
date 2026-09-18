@@ -15,6 +15,13 @@ Configuration lives in ~/.config/serena/phone-line.json:
 
 The address is his Apple ID email rather than his number, so the line keeps
 working whether or not his number is currently registered with iMessage.
+
+Until her own Apple ID is activated, the same client also drives *his* server
+and his self-thread, with `"self_thread": true` and his own number or email as
+the address. In that mode every message in the chat is `isFromMe`, so hers are
+the ones carrying her `serena:` prefix and his are everything else. That is
+how the phone line reads his briefs without the Unified bridge, which does not
+sync his own self-thread messages inward.
 """
 
 from __future__ import annotations
@@ -59,6 +66,13 @@ def enabled() -> bool:
         data.get("address"))
 
 
+def self_thread(data: dict[str, Any] | None = None) -> bool:
+    """True when this line is his own thread on his own server."""
+
+    data = data if data is not None else settings()
+    return bool(data.get("self_thread"))
+
+
 def _password(data: dict[str, Any]) -> str:
     try:
         return Path(str(data.get("password_file") or "")).expanduser().read_text(
@@ -101,10 +115,19 @@ def _request(method: str, endpoint: str, *, body: bytes | None = None,
 
 
 def ping() -> bool:
+    """True when the server answers its health probe.
+
+    BlueBubbles replies `{"message": "Ping received!", "data": "pong"}`, so the
+    pong lives in `data`; reading only `message` reported a healthy server as
+    down and had the health check crying wolf.
+    """
+
     try:
-        return _request("GET", "ping", timeout=10).get("message") == "pong"
+        response = _request("GET", "ping", timeout=10)
     except BlueBubblesLineError:
         return False
+    return "pong" in {str(response.get("data") or "").lower(),
+                      str(response.get("message") or "").lower()}
 
 
 def server_info() -> dict[str, Any]:
@@ -174,8 +197,12 @@ def send_attachment(path: Path, *, name: str = "") -> str:
     return str((response.get("data") or {}).get("guid") or "")
 
 
-def recent_messages(limit: int = 50) -> list[dict[str, Any]]:
-    """Newest messages in Serena's chat with Raghav, oldest first, normalized."""
+def recent_messages(limit: int = 50, *, own_prefix: str = "") -> list[dict[str, Any]]:
+    """Newest messages in the chat with Raghav, oldest first, normalized.
+
+    `own_prefix` marks hers by text instead of by `isFromMe`, which is what a
+    self-thread needs: there, every message is from his account.
+    """
 
     try:
         response = _request("GET", f"chat/{urllib.parse.quote(chat_guid(), safe='')}/message",
@@ -185,13 +212,17 @@ def recent_messages(limit: int = 50) -> list[dict[str, Any]]:
             return []
         raise
     rows = []
+    prefix = own_prefix.strip().lower()
     for message in response.get("data") or []:
         created = int(message.get("dateCreated") or 0)
+        text = str(message.get("text") or "")
+        own = (text.strip().lower().startswith(prefix) if prefix
+               else bool(message.get("isFromMe")))
         rows.append({
             "id": str(message.get("guid") or ""),
-            "text": str(message.get("text") or ""),
+            "text": text,
             "created": created,
-            "own": bool(message.get("isFromMe")),
+            "own": own,
             "deleted": bool(message.get("dateRetracted")),
             "kind": "text" if message.get("text") else "other",
         })
