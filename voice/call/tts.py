@@ -1262,7 +1262,13 @@ ELEVEN_DEFAULT_MODEL = "eleven_flash_v2_5"
 # One minute of speech is roughly a thousand characters, so a ten minute call
 # where she talks for three costs about 1,500 credits of a 10,000 month.
 ELEVEN_SAMPLE_RATE = 24_000
-ELEVEN_CHUNK_BYTES = 4_096
+ELEVEN_READ_BYTES = 4_096
+# The desk protocol refuses any PCM16 payload longer than 50 ms, so whatever
+# size the socket hands back is re-cut to 40 ms frames. Reading 4 kB and
+# forwarding it whole is 85 ms at 24 kHz, which the host rejected frame by
+# frame: she had a voice and every sentence of it was thrown away.
+ELEVEN_FRAME_MS = 40
+ELEVEN_FRAME_BYTES = ELEVEN_SAMPLE_RATE * 2 * ELEVEN_FRAME_MS // 1000
 
 
 class ElevenLabsTTSBackend(AsyncTTSBackend):
@@ -1355,7 +1361,7 @@ class ElevenLabsTTSBackend(AsyncTTSBackend):
             with urllib.request.urlopen(
                     self._request(sentence), timeout=self.first_audio_timeout + 30) as response:
                 while not stop.is_set():
-                    chunk = response.read(ELEVEN_CHUNK_BYTES)
+                    chunk = response.read(ELEVEN_READ_BYTES)
                     if not chunk:
                         break
                     queue.put_nowait(chunk)
@@ -1389,6 +1395,7 @@ class ElevenLabsTTSBackend(AsyncTTSBackend):
         loop = asyncio.get_running_loop()
         first = True
         produced = False
+        buffer = bytearray()
         try:
             while True:
                 if self._cancel_all or generation in self._cancelled:
@@ -1408,9 +1415,16 @@ class ElevenLabsTTSBackend(AsyncTTSBackend):
                 first = False
                 produced = True
                 self.last_backend = self.name
-                yield PCMChunk(pcm=item, sample_rate=self.sample_rate)
+                buffer += item
+                while len(buffer) >= ELEVEN_FRAME_BYTES:
+                    frame, buffer = (buffer[:ELEVEN_FRAME_BYTES],
+                                     buffer[ELEVEN_FRAME_BYTES:])
+                    yield PCMChunk(pcm=bytes(frame), sample_rate=self.sample_rate)
         finally:
             stop.set()
+        if buffer:
+            # The tail is shorter than a frame, which is under the limit.
+            yield PCMChunk(pcm=bytes(buffer), sample_rate=self.sample_rate)
         if not produced:
             # Nothing was heard, so the sentence still owes him a voice.
             async for chunk in self._speak_locally(spoken, generation):

@@ -63,7 +63,9 @@ def _drain(backend, sentence="hey, raghav.", generation=1):
 def test_her_voice_streams_pcm_at_the_rate_the_call_already_speaks(monkeypatch):
     eleven, local = _backend(monkeypatch, chunks=[b"\x01\x02" * 64, b"\x03\x04" * 64])
     chunks = _drain(eleven)
-    assert [c.sample_rate for c in chunks] == [24_000, 24_000]
+    # Socket reads are re-cut into protocol-sized frames, so what matters is
+    # the rate and that every byte arrives, not how the reads were split.
+    assert {c.sample_rate for c in chunks} == {24_000}
     assert b"".join(c.pcm for c in chunks) == b"\x01\x02" * 64 + b"\x03\x04" * 64
     assert local.spoken == []
     assert eleven.last_backend == "elevenlabs"
@@ -132,3 +134,27 @@ def test_warming_reaches_the_local_engine(monkeypatch):
     assert local.warmed is True
     assert eleven.metadata["voice"] == "voice-1"
     assert eleven.metadata["model"] == "eleven_flash_v2_5"
+
+
+def test_frames_never_exceed_the_fifty_millisecond_protocol_limit(monkeypatch):
+    """The host rejected every 4 kB chunk: "payload exceeds 50 ms frame limit"."""
+
+    from voice.call.tts import ELEVEN_FRAME_BYTES, ELEVEN_SAMPLE_RATE
+
+    # One 4 kB socket read, the size the service actually returns.
+    eleven, local = _backend(monkeypatch, chunks=[b"\x01\x02" * 2048])
+    chunks = _drain(eleven)
+
+    assert chunks, "audio must still be produced"
+    for chunk in chunks:
+        milliseconds = len(chunk.pcm) / 2 / ELEVEN_SAMPLE_RATE * 1000
+        assert milliseconds <= 50, f"{milliseconds:.0f} ms frame would be refused"
+    # Nothing is lost in the re-cutting.
+    assert b"".join(c.pcm for c in chunks) == b"\x01\x02" * 2048
+    assert ELEVEN_FRAME_BYTES == 1920
+
+
+def test_a_tail_shorter_than_a_frame_is_still_spoken(monkeypatch):
+    eleven, _ = _backend(monkeypatch, chunks=[b"\x05\x06" * 100])
+    chunks = _drain(eleven)
+    assert b"".join(c.pcm for c in chunks) == b"\x05\x06" * 100
