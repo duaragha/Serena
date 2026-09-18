@@ -22,6 +22,7 @@ from core.fleet_isolation import (
     assess_isolation,
     cleanup_workspace,
     dependency_sync_command,
+    run_dependency_sync,
     ensure_workspace,
     integrate_workspace,
     is_protected_path,
@@ -754,6 +755,45 @@ def test_node_dependency_sync_is_lockfile_bounded(tmp_path):
         "--no-audit",
         "--no-fund",
     ]
+
+
+def test_an_absent_dependency_tree_installs_even_when_nothing_changed(tmp_path):
+    """A private checkout starts with no node_modules, because git never had it.
+
+    Task #1054 died here: the worker touched no manifest, so the graph counted
+    as "unchanged", the gate ran `npm test` against a tree that did not exist,
+    jest failed on a missing preset, and work whose own checks had passed was
+    rolled back.
+    """
+
+    root = tmp_path / "node"
+    root.mkdir()
+    (root / "package.json").write_text("{}\n")
+    (root / "package-lock.json").write_text("{}\n")
+    install = ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
+
+    assert dependency_sync_command(root, ["src/feature.ts"]) == install
+
+    # With a tree present and nothing dependency-shaped touched, still a no-op.
+    (root / "node_modules").mkdir()
+    assert dependency_sync_command(root, ["src/feature.ts"]) is None
+    assert dependency_sync_command(root, ["package-lock.json"]) == install
+
+
+def test_an_absent_tree_without_a_lockfile_does_not_fail_integration(tmp_path):
+    """Nothing reproducible to install, and no manifest change to report."""
+
+    root = tmp_path / "node"
+    root.mkdir()
+    (root / "package.json").write_text("{}\n")
+
+    # None skips the install; [] would have failed the gate for every worker
+    # in a manifest-only repository that merely touched source.
+    assert dependency_sync_command(root, ["src/feature.ts"]) is None
+    assert run_dependency_sync(root, ["src/feature.ts"])["ok"] is True
+    # A changed manifest with no lockfile is still a problem worth reporting.
+    assert dependency_sync_command(root, ["package.json"]) == []
+    assert run_dependency_sync(root, ["package.json"])["ok"] is False
 
 
 def test_new_files_and_deletions_integrate(tmp_path):
