@@ -904,10 +904,17 @@ def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
     """
 
     from core import doctor
+    from core.machine_context import machine_name
 
-    if _configuration(payload):
-        return ActionOutcome(False, "serena.doctor accepts no schedule payload")
+    # `channel` is the one thing worth configuring per machine; anything else
+    # in the payload is a schedule trying to narrow what gets checked, which is
+    # how a doctor stops covering the thing that breaks.
+    unknown = set(_configuration(payload)) - {"channel"}
+    if unknown:
+        return ActionOutcome(
+            False, f"serena.doctor takes no {', '.join(sorted(unknown))}")
 
+    where = machine_name()
     report = doctor.run()
     broken = report.failures + report.warnings
     output = {
@@ -920,21 +927,26 @@ def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
 
     lead = broken[0]
     extra = f" (+{len(broken) - 1} more)" if len(broken) > 1 else ""
-    summary = f"{lead.name}: {lead.detail}"[:DOCTOR_SUMMARY_LIMIT] + extra
+    # Name the machine: this runs on both, and "the repo is behind" means
+    # something different depending on which one is saying it.
+    summary = f"{where}: {lead.name}: {lead.detail}"[:DOCTOR_SUMMARY_LIMIT] + extra
     return ActionOutcome(
         True,
         summary,
         notify={
             "kind": "serena.doctor",
             "summary": summary,
-            "channel": str(payload.get("channel") or "voice"),
+            # Telegram by default: a machine that has gone wrong is worth
+            # hearing about wherever he is, not only if he happens to be
+            # sitting in front of the one that broke.
+            "channel": str(payload.get("channel") or "telegram"),
             # A failure stops work; a warning is a drift he should know about
             # before it becomes one. Neither is worth waking him for.
             "urgency": "normal" if report.failures else "low",
             # One notice per distinct shape of breakage, so a problem that
             # persists for a day does not become an hourly nag. A new or fixed
             # check changes the shape, and he hears about it then.
-            "dedupe_key": "doctor:" + ",".join(
+            "dedupe_key": f"doctor:{where}:" + ",".join(
                 sorted(finding.name for finding in broken)),
         },
         output=output,

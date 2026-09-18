@@ -755,6 +755,7 @@ def test_a_broken_check_reaches_him_once_per_shape(monkeypatch):
 
     from core import doctor
 
+    monkeypatch.setattr("core.machine_context.machine_name", lambda: "test-machine")
     monkeypatch.setattr(doctor, "run", lambda: _doctor_report(
         _finding("fleet.config", False, "Fleet refuses its own config"),
         _finding("repo.behind", False, "35 commit(s) behind", severity="warn"),
@@ -768,9 +769,14 @@ def test_a_broken_check_reaches_him_once_per_shape(monkeypatch):
     assert "Fleet refuses its own config" in outcome.notify["summary"]
     assert "+1 more" in outcome.notify["summary"]
     assert outcome.notify["urgency"] == "normal"
-    # One notice per distinct shape, so a problem that persists all day does
-    # not become an hourly nag, and a new or fixed check is heard about.
-    assert outcome.notify["dedupe_key"] == "doctor:fleet.config,repo.behind"
+    # It runs on both machines, and "the repo is behind" means something
+    # different depending on which one is saying it.
+    assert outcome.notify["summary"].startswith("test-machine: ")
+    # Telegram, so a machine that has gone wrong reaches him wherever he is.
+    assert outcome.notify["channel"] == "telegram"
+    # One notice per distinct shape, per machine, so a problem that persists
+    # all day is not an hourly nag and a new or fixed check is heard about.
+    assert outcome.notify["dedupe_key"] == "doctor:test-machine:fleet.config,repo.behind"
     assert outcome.output["failures"] == ["fleet.config"]
     assert outcome.output["warnings"] == ["repo.behind"]
 
@@ -811,7 +817,23 @@ def test_the_doctor_takes_no_configuration_but_tolerates_its_context(monkeypatch
         _finding("schedules", True, "fine"),
     ))
 
-    assert REVIEWED_ACTIONS["serena.doctor"]({"checks": ["only-mine"]}).ok is False
+    refused = REVIEWED_ACTIONS["serena.doctor"]({"checks": ["only-mine"]})
+    assert refused.ok is False and "checks" in refused.detail
     chained = {"chain_input": {"from_action": "serena.phone.poll", "output": {}},
                "workdir": "/srv/x"}
     assert REVIEWED_ACTIONS["serena.doctor"](chained).ok is True
+
+
+def test_the_channel_is_the_one_thing_a_schedule_may_choose(monkeypatch):
+    """It read payload["channel"] while refusing every payload that had one."""
+
+    from core import doctor
+
+    monkeypatch.setattr(doctor, "run", lambda: _doctor_report(
+        _finding("fleet.config", False, "broken"),
+    ))
+
+    outcome = REVIEWED_ACTIONS["serena.doctor"]({"channel": "voice"})
+
+    assert outcome.ok is True
+    assert outcome.notify["channel"] == "voice"
