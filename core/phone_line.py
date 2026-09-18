@@ -18,11 +18,13 @@ also match the small grammar below: everything else there is conversation and
 is ignored, so a stray text can never queue work.
 
 A *dedicated* line has no such conversation to confuse. Her Telegram bot owns
-its own chat and the only reason that chat exists is to hand her work, so
-anything he types into it is a brief whether or not he remembered to write
-``task:``. Silence is the failure mode that matters on a dedicated line -- a
+its own chat and the only reason that chat exists is for him to reach her, so
+prose there is addressed to her and gets read rather than dropped -- but read
+by Serena herself, through `core.phone_intent`, not by a regex. A regex cannot
+tell work from a question, and the one time it tried it filed "what's the cue
+right now?" as a task. Silence is the other failure mode that matters here: a
 text that queues nothing and answers nothing is indistinguishable from a dead
-bot -- so every message he sends there gets an answer.
+bot, so every message he sends gets an answer.
 
 The thread is his own number, so everything in it is authored by his account.
 That is the authentication: the hub only shows this conversation to paired
@@ -257,12 +259,12 @@ def available() -> bool:
     return _backend().available()
 
 
-def parse(text: str, *, plain_is_brief: bool = False) -> tuple[str, dict[str, Any]] | None:
-    """Read one message as a command.
+def parse(text: str) -> tuple[str, dict[str, Any]] | None:
+    """Read one message as an explicit command, or None to let her read it.
 
-    ``plain_is_brief`` is the dedicated-line rule: on her own bot's chat, text
-    that matches nothing above is the brief itself, because he came there to
-    give her work and phrased it the way a person phrases work.
+    This is the deterministic half: the commands he types on purpose, matched
+    for free. Anything it does not claim is not "not a command", it is prose,
+    and prose goes to `core.phone_intent` rather than to a guess.
     """
 
     text = (text or "").strip()
@@ -279,13 +281,34 @@ def parse(text: str, *, plain_is_brief: bool = False) -> tuple[str, dict[str, An
         return "swapped", {}
     if match := _RETRY.match(text):
         return "retry", {"task_id": int(match.group("id"))}
-    return ("task", {"brief": text}) if plain_is_brief else None
+    return None
 
 
 @dataclass
 class PollReport:
     seen: int = 0
     commands: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _read_with_her_brain(text: str) -> tuple[str, dict[str, Any]] | None:
+    """Let Serena herself read prose he texted, and degrade safely if she can't.
+
+    Her reply is either work to queue or the answer to send back. When the
+    resident brain cannot be reached, `triage` still queues text that is plainly
+    actionable and asks about anything else, because filing a question as a task
+    is the mistake that wastes his time.
+    """
+
+    from core import phone_intent
+
+    try:
+        read = phone_intent.read(text, queue=_status_text())
+    except Exception:
+        read = None
+    if read is None:
+        read = phone_intent.triage(text)
+    kind, body = read
+    return ("task", {"brief": body}) if kind == "task" else ("say", {"say": body})
 
 
 def _fingerprint(text: str) -> str:
@@ -373,13 +396,25 @@ def poll(*, now: float | None = None) -> PollReport:
         command = None
         his = bool(message_id) and not message["own"] and not message["deleted"]
         if his and message["kind"] == "text":
-            command = parse(text, plain_is_brief=line.dedicated)
+            command = parse(text)
+            if command is None and line.dedicated:
+                command = _read_with_her_brain(text)
         fingerprint = _fingerprint(text)
         if command is not None and len(report.commands) >= MAX_COMMANDS_PER_POLL:
             # The watermark stops before this one, so the next pass takes it.
             break
         newest = max(newest, created)
         report.seen += 1
+        if command is not None and command[0] == "say":
+            # She already wrote the answer; there is nothing to queue.
+            if fingerprint in handled and moment - float(handled[fingerprint]) < DUPLICATE_WINDOW_SECONDS:
+                continue
+            handled[fingerprint] = moment
+            report.commands.append({
+                "kind": "say", "message_id": message_id,
+                "replied": send(command[1]["say"], key=f"serena-reply-{message_id}"),
+            })
+            continue
         if command is None:
             # Only a dedicated line owes an answer to everything: on a shared
             # thread most messages are not addressed to her at all. What lands
