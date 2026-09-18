@@ -1024,3 +1024,17 @@ navigation, PTY lifecycle, desktop split restoration, control outbox, and obliga
 | Scheduler and notification authority | implemented | The resident bounded loop registers only reviewed actions. Quiet hours, dedup, limits, approvals, retries, delivery history, Fleet alerts, voice, and Telegram fallback are enforced through one authority. |
 | Signed webhooks | implemented | Signed ingress, replay rejection, held-request approval with exact-body replay, loopback-only management routes, and the public HTTP mount are tested. |
 | Worker supervision, memory v2 | implemented | Worker leases, stalled-run recovery, reviewed memory proposals, typed records, retrieval receipts, retention, contradiction, supersession, and normal-surface routing are enforced and tested. |
+
+## Plan mode (CLI plan → approve → launch)
+
+`chats plan "query" --repo <abs-path>` runs the read-only evidence searches
+(chats FTS, memory retrieval, knowledge FTS, ledger retrieval via
+`core/plan_mode.py`), prints normalized citations
+(`chat:<sid8>`, `kb:<slug>`, `mem:<type>:<id>`, `ledger:<key>`), asks
+clarifiers (repo pin mandatory — never guessed), composes the fleet prompt,
+shows the exact `start_run(dry_run=True)` policy preview, and launches only
+after explicit approval through an `ActionAuthority` confirmation
+(`fleet.start_run`, source `cli`, effect `external`). Decline creates no run
+row (dry-run rows excepted). `--json` emits findings + clarifiers + artifact +
+preview + launched (null unless approved). Brain `"plan"` protocol, web
+approval card, and mobile/voice approval are follow-ups reusing the module.

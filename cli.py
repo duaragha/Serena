@@ -1589,6 +1589,215 @@ def codex_exec(model, effort, work_dir, timeout, danger_full_access, visible,
     emit(True, result_text, session_id, code, None)
 
 
+@main.command(name="plan")
+@click.option("--repo", "repo_hint", default=None, help="Absolute repo path for the run (required).")
+@click.option("--activity", type=click.Choice(["auto", "coding", "research"]), default="auto", show_default=True)
+@click.option("--provider", "provider_mode", type=click.Choice(["auto", "balanced", "codex", "claude", "muse"]), default="auto", show_default=True)
+@click.option("--workers", "worker_count", type=click.IntRange(min=1, max=4), default=None)
+@click.option("--approve", is_flag=True, help="Approve the launch without an interactive confirm (clarifiers still apply).")
+@click.option("--json", "as_json", is_flag=True, help="Print machine-readable JSON.")
+@click.argument("query", nargs=-1, required=True)
+def plan_command(repo_hint, activity, provider_mode, worker_count, approve, as_json, query):
+    """Explore read-only, review the plan, then approve a Fleet launch."""
+    import os
+    import sys
+
+    from core.plan_mode import (
+        build_fleet_prompt,
+        gather_evidence,
+        resolve_repo_cwd,
+        suggest_clarifiers,
+    )
+    from fleet.supervisor import start_run
+
+    text = " ".join(query).strip()
+    interactive = sys.stdin.isatty() and not as_json
+    try:
+        evidence = gather_evidence(text)
+    except Exception as exc:
+        raise click.ClickException(f"evidence gathering failed: {exc}") from exc
+
+    findings = [c.line() for c in evidence.all_citations()]
+    if not as_json:
+        if findings:
+            console.print("[bold]Findings[/bold]")
+            for line in findings:
+                console.print(f"  {line}")
+        else:
+            console.print("[dim]no findings in chats, memory, knowledge, or ledgers[/dim]")
+        if evidence.receipt_ids:
+            console.print(f"[dim]receipts: {', '.join(evidence.receipt_ids)}[/dim]")
+
+    clarifiers = suggest_clarifiers(evidence, repo_hint=repo_hint or "")
+    answers: dict[str, str] = {}
+    repo = (repo_hint or "").strip()
+    if not repo:
+        if not interactive:
+            raise click.ClickException("no --repo given and no interactive terminal: refusing to guess the repo")
+        repo = click.prompt("repo (absolute path)", type=str).strip()
+    answers["repo"] = repo
+    try:
+        resolve_repo_cwd(repo)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    # Ask at most the context/done questions; repo is handled above.
+    if interactive and (not evidence.memory and not evidence.ledgers):
+        answers["context"] = click.prompt("prior context (empty to skip)", default="", show_default=False)
+    if interactive and not evidence.knowledge:
+        answers.setdefault("context", "")
+        extra_ctx = click.prompt("reference material (empty to skip)", default="", show_default=False)
+        if extra_ctx.strip():
+            answers["context"] = ((answers["context"] + " ") if answers["context"] else "") + extra_ctx.strip()
+    if interactive and evidence.is_empty():
+        answers["done"] = click.prompt("what does 'done' look like", type=str)
+
+    try:
+        artifact = build_fleet_prompt(
+            evidence, answers, activity=activity,
+            provider_mode=provider_mode, worker_count=worker_count,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not as_json:
+        console.print("\n[bold]Fleet prompt[/bold]")
+        console.print(artifact.task)
+        console.print(f"\n[dim]activity={artifact.activity} provider={artifact.provider_mode} "
+                      f"workers={artifact.worker_count or 'auto'} cwd={artifact.cwd}[/dim]")
+
+    preview = _fleet_call(
+        start_run,
+        artifact.task,
+        activity=artifact.activity,
+        provider_mode=artifact.provider_mode,
+        worker_count=artifact.worker_count,
+        cwd=artifact.cwd,
+        origin_session_id=None,
+        origin_agent=None,
+        dry_run=True,
+    )
+    if not as_json:
+        console.print("\n[bold]Dry-run preview[/bold]")
+        _fleet_print(_plan_preview_summary(preview))
+
+    approved = approve
+    if not approved and not interactive:
+        if not as_json:
+            console.print("[dim]declined (non-interactive without --approve): nothing launched[/dim]")
+        else:
+            _fleet_print(_plan_json(findings, clarifiers, artifact, preview, None), as_json=True)
+        return
+    if not approved:
+        approved = click.confirm("launch this fleet run?", default=False)
+    if not approved:
+        if not as_json:
+            console.print("[dim]declined: nothing launched[/dim]")
+        else:
+            _fleet_print(_plan_json(findings, clarifiers, artifact, preview, None), as_json=True)
+        return
+
+    _plan_authorize_launch(artifact)
+    origin_session_id = None
+    origin_agent = None
+    if os.environ.get("CODEX_THREAD_ID"):
+        origin_session_id = _detect_codex_sid()
+        origin_agent = "codex"
+    elif os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        origin_session_id = _detect_claude_sid()
+        origin_agent = "claude"
+    run = _fleet_call(
+        start_run,
+        artifact.task,
+        activity=artifact.activity,
+        provider_mode=artifact.provider_mode,
+        worker_count=artifact.worker_count,
+        cwd=artifact.cwd,
+        origin_session_id=origin_session_id,
+        origin_agent=origin_agent,
+        dry_run=False,
+    )
+    if as_json:
+        _fleet_print(_plan_json(findings, clarifiers, artifact, preview, run), as_json=True)
+        return
+    _fleet_print(run)
+
+
+def _plan_preview_summary(preview: object) -> dict:
+    if isinstance(preview, dict):
+        policy = preview.get("policy") if isinstance(preview.get("policy"), dict) else {}
+        return {
+            "run_id": str(preview.get("run_id") or ""),
+            "activity": str(preview.get("activity") or ""),
+            "agents": preview.get("agent_count", preview.get("agents", "?")),
+            "phases": policy.get("phases", ["discover", "execute", "verify", "finalize"]),
+            "provider_mode": str(policy.get("provider_mode", preview.get("provider_mode", ""))),
+        }
+    return {"preview": str(preview)[:2000]}
+
+
+def _plan_json(findings, clarifiers, artifact, preview, run):
+    return {
+        "findings": findings,
+        "clarifiers": clarifiers,
+        "artifact": {
+            "task": artifact.task,
+            "activity": artifact.activity,
+            "provider_mode": artifact.provider_mode,
+            "worker_count": artifact.worker_count,
+            "cwd": artifact.cwd,
+            "repo_key": artifact.repo_key,
+            "citations": artifact.citations,
+        },
+        "dry_run": preview,
+        "launched": run,
+    }
+
+
+def _plan_authorize_launch(artifact) -> None:
+    """Authority-gate the launch. Raises ClickException on denial. No run without it."""
+    from core.action_authority import (
+        BASIS_CONFIRMATION,
+        ActionAuthority,
+        build_request,
+    )
+
+    auth = ActionAuthority()
+    request = build_request(
+        capability="fleet.start_run",
+        intent=f"launch fleet run from chats plan: {artifact.task[:160]}",
+        source="cli",
+        effect="external",
+        target=artifact.cwd,
+    )
+    decision = auth.authorize(request)
+    if decision.allowed and not decision.requires_confirmation:
+        return
+    record = auth.request_confirmation(
+        capability="fleet.start_run",
+        target=artifact.cwd,
+        tier=decision.tier,
+        prompt=f"approve fleet launch in {artifact.cwd} ({artifact.activity})?",
+    )
+    # The interactive approve above IS the human; record it as the resolution.
+    # _plan_authorize_launch is only reached after explicit approval.
+    resolved = auth.resolve_confirmation(record.confirmation_id, approved=True)
+    if resolved.state != "approved":
+        raise click.ClickException("launch not approved")
+    confirmed = build_request(
+        capability="fleet.start_run",
+        intent=request.intent,
+        source="cli",
+        effect="external",
+        target=artifact.cwd,
+        authorization_basis=BASIS_CONFIRMATION,
+        confirmation_id=record.confirmation_id,
+    )
+    final = auth.authorize(confirmed)
+    if not final.allowed:
+        raise click.ClickException(f"launch denied by action authority: {final.reason}")
+
+
 @main.group(name="fleet")
 def fleet_group():
     """Run and inspect durable provider-routed workflows."""
