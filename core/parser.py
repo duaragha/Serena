@@ -116,6 +116,12 @@ def parse_metadata(file_path: Path, project_dir: str) -> SessionMeta:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                # A transcript line is normally an object, but a truncated or
+                # hand-edited file can hold a bare scalar or list. One of those
+                # used to raise and abort the whole index build, which shows up
+                # as `chats recall` dying on an unrelated chat.
+                if not isinstance(record, dict):
+                    continue
 
                 rec_type = record.get("type")
                 timestamp_str = record.get("timestamp")
@@ -241,6 +247,12 @@ def parse_full(file_path: Path) -> list[Message]:
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                # A transcript line is normally an object, but a truncated or
+                # hand-edited file can hold a bare scalar or list. One of those
+                # used to raise and abort the whole index build, which shows up
+                # as `chats recall` dying on an unrelated chat.
+                if not isinstance(record, dict):
                     continue
 
                 rec_type = record.get("type")
@@ -384,6 +396,12 @@ def parse_messages_for_search(file_path: Path) -> list[tuple[str, str, str]]:
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                # A transcript line is normally an object, but a truncated or
+                # hand-edited file can hold a bare scalar or list. One of those
+                # used to raise and abort the whole index build, which shows up
+                # as `chats recall` dying on an unrelated chat.
+                if not isinstance(record, dict):
                     continue
 
                 rec_type = record.get("type")
