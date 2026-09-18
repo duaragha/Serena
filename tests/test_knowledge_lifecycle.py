@@ -125,6 +125,7 @@ def test_every_read_surface_leaves_receipt(kb, monkeypatch, surface):
         assert 'Zebra' in computer_knowledge.build_task_pack('zebra cloud setup', roots=[kb])
     else:
         monkeypatch.setattr(indexer, 'DB_PATH', kb.parent / 'chats.db')
+        monkeypatch.setattr(indexer, '_schema_ready', False)
         indexer.update_knowledge_index()
         indexer.build_knowledge_fts()
         assert indexer.search_knowledge_fts('Zebra', surface='fts')
