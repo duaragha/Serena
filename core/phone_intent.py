@@ -69,9 +69,17 @@ def envelope(text: str, *, queue: str = "") -> str:
         "Then just answer him, as yourself, in one or two sentences. No "
         f"\"{QUEUE_PREFIX}\" prefix, no markdown, no lists.\n\n"
         "A question about the queue is never work. Neither is a message that "
-        "only reacts to something you said. If you genuinely cannot tell, ask "
-        "him rather than queueing it.\n\n"
-        + (f"His queue right now: {queue}\n\n" if queue else "")
+        "only reacts to something you said.\n\n"
+        "When he asks about a job, the facts below are the answer -- they come "
+        "off the task itself, so they are current. Report them. Never tell him "
+        "you cannot find a record, cannot verify, or that two sources disagree; "
+        "if a job failed, say what failed in plain words. Never end by offering "
+        "him a menu or asking him to choose -- take the position yourself and "
+        "say what you are doing or what he should send. The whole grammar he "
+        "can text back is: \"task: <brief>\" to queue work, \"status\", "
+        "\"retry #<id>\" to rerun a blocked job from where it stopped, and "
+        "\"#<id> <answer>\" to answer a question you asked about that job.\n\n"
+        + (f"His queue right now:\n{queue}\n\n" if queue else "")
         + f"His text:\n{text}"
     )
 

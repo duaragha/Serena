@@ -367,3 +367,69 @@ def test_triage_is_the_floor_when_her_brain_is_unreachable(monkeypatch):
     assert kind == "task" and body.startswith("fix the journal")
     kind, body = phone_intent.triage("What's the cue right now?")
     assert kind == "say" and "task:" in body
+
+
+# ---- a status has to carry why, or it is a riddle -------------------------
+
+
+RUN = "8ba9ee7a-f1fa-416d-b7d0-6d02e893d3bd"
+
+
+def _blocked_task(brief="fix the routines list in locket so it shows this week"):
+    """Walk a task the way the dispatcher does, ending on a failed run."""
+
+    from memory import store
+
+    task = store.enqueue_task(brief)
+    claimed = store.claim_next_task("test-dispatcher")
+    assert claimed and claimed["id"] == task["id"]
+    assert store.mark_task_running(task["id"], "test-dispatcher", claimed["lease_token"], RUN)
+    assert store.finish_task_run(
+        task["id"], RUN, "blocked",
+        "failed: execute: test gate failed after integration; changes were rolled back")
+    return task["id"]
+
+
+def test_status_names_the_failure_not_just_the_state(queue):
+    from core import phone_line
+
+    task_id = _blocked_task()
+    text = phone_line._status_text()
+
+    assert f"#{task_id} blocked" in text
+    assert "test gate failed after integration" in text
+    # The word "failed:" is already carried by "blocked"; don't say it twice.
+    assert "blocked — failed:" not in text
+
+
+def test_her_turn_is_grounded_in_the_run_not_a_state_word(queue):
+    """"blocked: #1054" is what made her hedge; she gets the run and the brief."""
+
+    from core import phone_line
+
+    task_id = _blocked_task()
+    grounding = phone_line._grounding()
+
+    assert f"#{task_id} blocked" in grounding
+    assert "fleet 8ba9ee7a" in grounding
+    assert "test gate failed after integration" in grounding
+    assert "he asked for: fix the routines list in locket" in grounding
+
+
+def test_the_envelope_forbids_the_menu_and_names_the_grammar():
+    from core import phone_intent
+
+    envelope = phone_intent.envelope("hows 1054?", queue="#1054 blocked | fleet 8ba9ee7a")
+    # The two failures she actually shipped: hedging, then asking him to pick.
+    assert "cannot find a record" in envelope
+    assert "offering" in envelope and "menu" in envelope
+    # She can only point at a command that exists.
+    assert "retry #<id>" in envelope
+    assert "#1054 blocked | fleet 8ba9ee7a" in envelope
+
+
+def test_nothing_queued_still_reads_as_a_sentence(queue):
+    from core import phone_line
+
+    assert phone_line._status_text() == "nothing queued"
+    assert phone_line._grounding() == "nothing queued"
