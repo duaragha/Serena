@@ -32,7 +32,6 @@ def control(tmp_path, monkeypatch):
 
 def test_the_registry_is_a_fixed_set_of_named_actions():
     assert set(REVIEWED_ACTIONS) == {
-        'serena.knowledge.maintenance',
         "serena.obligations.sweep",
         "serena.obligations.report",
         "serena.notifications.flush",
@@ -40,6 +39,7 @@ def test_the_registry_is_a_fixed_set_of_named_actions():
         "serena.fleet.start",
         "serena.fleet.reconcile",
         "serena.phone.poll",
+        "serena.phone.nudge",
         "serena.phone.health",
     }
     assert all(callable(handler) for handler in REVIEWED_ACTIONS.values())
@@ -689,21 +689,18 @@ def test_reserved_context_keys_are_not_configuration():
     assert _configuration({"chain_input": {}, "cwd": "/etc"}) == {"cwd": "/etc"}
 
 
-def test_a_chained_phone_poll_and_fleet_start_still_run(monkeypatch):
+def test_every_payless_action_tolerates_being_chained(monkeypatch):
+    """Each guard, against the payload the scheduler actually hands a chain."""
+
     from core import phone_line, scheduler_actions
-    from core.scheduler_actions import poll_phone_line, start_ready_fleet_task
 
     chained = {"chain_input": {"from_action": "serena.phone.poll", "output": {}}}
-
     monkeypatch.setattr(phone_line, "available", lambda: False)
-    outcome = poll_phone_line(chained)
-    assert outcome.ok, outcome.detail
-    assert "accepts no schedule payload" not in outcome.detail
 
-    monkeypatch.setattr(scheduler_actions, "_max_active_task_runs", lambda: 1, raising=False)
-    outcome = start_ready_fleet_task(chained)
-    assert "accepts no schedule payload" not in outcome.detail
-
-    # A payload that is real configuration is still refused by both.
-    assert "accepts no schedule payload" in poll_phone_line({"cwd": "/etc"}).detail
-    assert "accepts no schedule payload" in start_ready_fleet_task({"cwd": "/etc"}).detail
+    for name in ("serena.phone.poll", "serena.fleet.start",
+                 "serena.fleet.reconcile", "serena.phone.health",
+                 "serena.phone.nudge"):
+        handler = scheduler_actions.REVIEWED_ACTIONS[name]
+        assert "accepts no schedule payload" not in handler(chained).detail, name
+        # Real configuration is still refused, so the guard still guards.
+        assert "accepts no schedule payload" in handler({"cwd": "/etc"}).detail, name
