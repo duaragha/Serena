@@ -7,8 +7,19 @@ from typing import Any
 PREFIX = "Fleet delivery evidence: "
 INTEGRATION = "the change is integrated into the run's base checkout"
 
+_WORKER_DELIVERY_TYPES = (
+    "leg.completion_evidence_accepted",
+    "leg.completion_evidence_stopped",
+)
+
+
 class DeliveryLedgerUnavailable(RuntimeError):
     """The delivery debts could not be read, so nothing may be concluded."""
+
+
+def evidence_sha256(evidence):
+    """Content key for one attested observation."""
+    return hashlib.sha256(evidence.encode()).hexdigest()
 
 
 HANDOFF_SOURCE = "fleet/delivery"
@@ -61,24 +72,101 @@ def accept_operator_evidence(store, run_id, message, *, allow_running=False):
             raise ValueError("receipt must name an exact frozen delivery requirement")
         if not isinstance(evidence, str) or not 40 <= len(evidence.strip()) <= 4000:
             raise ValueError("receipt requires 40–4000 characters of observed evidence")
-        receipts.append({"unit_id": unit_id, "requirement": requirement, "evidence": evidence.strip()})
+        receipts.append({"unit_id": unit_id, "requirement": requirement, "evidence": evidence.strip(),
+                         "evidence_sha256": evidence_sha256(evidence.strip())})
     store.append_event(run_id, "run.delivery_verified", {
         "authority": "operator", "receipts": receipts, "receipt_key": receipt_key})
     return True
 
 
 def consume_operator_steering(store, run_id):
-    """Rolling-upgrade compatibility for MCP connections predating receipts.
+    """Replay steering-carried operator receipts that are still live.
 
-    Only operator steering is considered. A receipt from before a new model
-    attempt is stale; repeating finalization never reapplies an old proof.
+    Rolling-upgrade compatibility for MCP connections predating receipts: only
+    operator steering is considered. A receipt is content-keyed by (unit_id,
+    requirement, evidence-hash), so it survives later model attempts unchanged.
+    It is invalidated only when a newer worker delivery entry for the same
+    requirement exists — the worker re-answered, so the old attestation no
+    longer describes the debt — or the requirement text no longer matches the
+    frozen contract. A bare retry that starts new attempts leaves live receipts
+    standing; repeating finalization never reapplies an old proof.
     """
-    with store._connect() as db:
-        messages = db.execute("SELECT message,created_at FROM fleet_steering WHERE run_id=? ORDER BY steering_seq", (run_id,)).fetchall()
-        latest = db.execute("SELECT MAX(a.started_at) FROM fleet_attempts a JOIN fleet_legs l ON l.leg_id=a.leg_id WHERE l.run_id=?", (run_id,)).fetchone()[0] or 0
-    for message, created in messages:
-        if message.startswith(PREFIX) and created >= latest:
-            accept_operator_evidence(store, run_id, message, allow_running=True)
+    try:
+        with store._connect() as db:
+            messages = db.execute("SELECT message,created_at FROM fleet_steering WHERE run_id=? ORDER BY steering_seq", (run_id,)).fetchall()
+            worker_rows = db.execute(
+                "SELECT payload_json,created_at FROM fleet_events WHERE run_id=? AND type IN (?,?)",
+                (run_id, *_WORKER_DELIVERY_TYPES)).fetchall()
+    except Exception as exc:
+        raise DeliveryLedgerUnavailable(
+            f"could not read this run's delivery evidence: {exc}"
+        ) from exc
+    candidates = [(message, created) for message, created in messages if message.startswith(PREFIX)]
+    if not candidates:
+        return
+    run = store.get_run(run_id)
+    if run is None:
+        return
+    contracts = {unit["id"]: unit["completion_contract"] for unit in run["policy"]["work_units"]}
+    superseded_after = _newest_worker_deferrals(worker_rows)
+    for message, attested_at in candidates:
+        if len(message) > 16000:
+            continue
+        try:
+            entries = json.loads(message[len(PREFIX):])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 12:
+            continue
+        live = [entry for entry in entries
+                if _receipt_still_live(entry, contracts, superseded_after, attested_at)]
+        if live:
+            accept_operator_evidence(store, run_id, PREFIX + json.dumps(live), allow_running=True)
+
+
+def _newest_worker_deferrals(rows):
+    """Newest deferral instant per (unit_id, requirement), in ledger terms."""
+    newest = {}
+    for payload_json, created in rows:
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for unit in payload.get("units") or []:
+            if not isinstance(unit, dict):
+                continue
+            unit_id = str(unit.get("unit_id") or "")
+            for item in unit.get("deferred_delivery") or []:
+                if not isinstance(item, dict):
+                    continue
+                requirement = str(item.get("requirement") or "").strip()
+                if not requirement:
+                    continue
+                scope = str(item.get("unit_id") or unit_id)
+                key = (scope, requirement.casefold())
+                if key not in newest or created >= newest[key]:
+                    newest[key] = created
+    return newest
+
+
+def _receipt_still_live(entry, contracts, superseded_after, attested_at):
+    """A steering receipt stands unless the worker re-answered or the text moved."""
+    if not isinstance(entry, dict):
+        return False
+    unit_id = entry.get("unit_id")
+    requirement = entry.get("requirement")
+    evidence = entry.get("evidence")
+    if unit_id not in contracts:
+        return False
+    if requirement not in contracts[unit_id].get("delivery_requirements", []):
+        return False
+    if not isinstance(evidence, str) or not 40 <= len(evidence.strip()) <= 4000:
+        return False
+    newest = superseded_after.get((unit_id, requirement.casefold()))
+    superseded = newest is not None and newest >= attested_at
+    return not superseded
 
 
 def reconcile_event(event, owed, attempts):
