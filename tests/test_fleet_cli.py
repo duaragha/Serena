@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from click.testing import CliRunner
 
@@ -140,3 +141,62 @@ def test_fleet_cli_inspect_forwards_focus_and_event_limit(monkeypatch):
     assert result.exit_code == 0, result.output
     assert '"focus": "ws-2"' in result.output
     assert captured == {"run_id": "fleet-1", "focus": "ws-2", "event_limit": 12}
+
+
+# ---- the supervisor check must not cry wolf on the machine Fleet runs on ----
+
+
+def test_the_service_check_asks_the_manager_this_machine_actually_has(monkeypatch):
+    """The PC has no systemd, so asking systemctl called a running Fleet down.
+
+    `fleet doctor` reported service ok=False on the one machine that actually
+    runs Fleet, every single time it was read, because _service_active shelled
+    out to systemctl and Windows has none.
+    """
+
+    from fleet import supervisor
+
+    monkeypatch.setattr(supervisor.os, "name", "nt")
+    monkeypatch.setattr(supervisor.shutil, "which",
+                        lambda name: "C:\\powershell.exe" if "powershell" in name else None)
+    monkeypatch.setattr(
+        supervisor.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="Running\n", stderr=""),
+    )
+
+    state = supervisor._service_state()
+
+    assert state["manager"] == "scheduled-task"
+    assert state["ok"] is True and state["active"] is True
+    assert state["task"] == supervisor.WINDOWS_FLEET_TASK
+
+
+def test_a_stopped_windows_task_is_reported_as_down(monkeypatch):
+    from fleet import supervisor
+
+    monkeypatch.setattr(supervisor.os, "name", "nt")
+    monkeypatch.setattr(supervisor.shutil, "which", lambda name: "C:\\powershell.exe")
+    monkeypatch.setattr(
+        supervisor.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="Ready\n", stderr=""),
+    )
+
+    state = supervisor._service_state()
+
+    assert state["ok"] is False and state["active"] is False
+    assert state["state"] == "Ready"
+
+
+def test_a_machine_with_no_service_manager_is_not_reported_as_broken(monkeypatch):
+    """Absence of a manager is not a supervisor being down."""
+
+    from fleet import supervisor
+
+    monkeypatch.setattr(supervisor.os, "name", "posix")
+    monkeypatch.setattr(supervisor.shutil, "which", lambda _name: None)
+
+    state = supervisor._service_state()
+
+    assert state["ok"] is True
+    assert state["active"] is None
+    assert state["manager"] == "none"

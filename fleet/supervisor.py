@@ -1976,8 +1976,7 @@ def doctor() -> dict[str, Any]:
         checks["store"] = {"ok": False, "error": str(exc)}
         checks["control_plane"] = {"ok": False, "error": str(exc)}
     checks["runtimes"] = runtime_doctor()
-    service = _service_active()
-    checks["service"] = {"ok": service, "active": service}
+    checks["service"] = _service_state()
     return {
         "ok": bool(
             checks["policy"]["ok"]
@@ -4285,19 +4284,59 @@ def _wake_or_launch(run_id: str) -> bool:
     return True
 
 
-def _service_active() -> bool:
+# What supervises Fleet on this machine. The PC runs it as a scheduled task and
+# has no systemd at all, so asking systemctl there answered "not active" for a
+# supervisor that was running fine -- a health check crying wolf on the one
+# machine Fleet actually runs on, every time anyone read it.
+SERVICE = "serena-fleet.service"
+WINDOWS_FLEET_TASK = "Serena Fleet Supervisor"
+
+
+def _service_state() -> dict[str, Any]:
+    """Whether Fleet's supervisor is up, and which manager was asked."""
+
+    if os.name == "nt":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not powershell:
+            return {"ok": True, "active": None, "manager": "unknown",
+                    "detail": "no supervisor manager to ask on this machine"}
+        try:
+            result = subprocess.run(
+                [powershell, "-NoProfile", "-Command",
+                 f"(Get-ScheduledTask -TaskName '{WINDOWS_FLEET_TASK}')"
+                 ".State"],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return {"ok": True, "active": None, "manager": "scheduled-task",
+                    "detail": f"could not ask the task scheduler: {error}"}
+        state = result.stdout.strip()
+        active = state.casefold() == "running"
+        return {"ok": active, "active": active, "manager": "scheduled-task",
+                "task": WINDOWS_FLEET_TASK, "state": state or "unknown"}
+
     systemctl = shutil.which("systemctl")
     if not systemctl:
-        return False
+        # Neither manager exists here, so there is nothing to be down.
+        return {"ok": True, "active": None, "manager": "none",
+                "detail": "no service manager on this machine"}
     try:
         result = subprocess.run(
-            [systemctl, "--user", "is-active", "--quiet", "serena-fleet.service"],
+            [systemctl, "--user", "is-active", "--quiet", SERVICE],
             timeout=5,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"ok": True, "active": None, "manager": "systemd",
+                "detail": f"could not ask systemd: {error}"}
+    active = result.returncode == 0
+    return {"ok": active, "active": active, "manager": "systemd", "unit": SERVICE}
+
+
+def _service_active() -> bool:
+    """Kept for callers that only want the boolean."""
+
+    return bool(_service_state().get("active"))
 
 
 def _resolve_cwd(value: str | None) -> Path:
