@@ -1897,7 +1897,6 @@ def test_doctor_reports_the_locked_phase_model_matrix(fleet_env, monkeypatch):
     luna = [{"provider": "codex", "model": "gpt-5.6-luna", "effort": "max"}]
     opus = [{"provider": "claude", "model": "claude-opus-5", "effort": "high"}]
     astra_medium = [{"provider": "codex", "model": "gpt-6-astra", "effort": "medium"}]
-    sol = [{"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"}]
     assert policy["coding_phase_models"] == {
         "Research": luna,
         "Code": astra_medium,
@@ -1907,7 +1906,7 @@ def test_doctor_reports_the_locked_phase_model_matrix(fleet_env, monkeypatch):
     assert policy["research_phase_models"] == {
         "Research": luna,
         "Analyze": opus,
-        "Review": sol,
+        "Review": astra_medium,
         "Refine": opus,
     }
 

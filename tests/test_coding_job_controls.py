@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from core.coding_job_contract import DEFAULT_IMPLEMENT_EFFORT
+from core.coding_model_preferences import CODEX_MODEL
 from core.coding_job_controls import (
     JobResolutionError,
     control_job,
@@ -38,8 +40,8 @@ def _brief(item_id: str, *, root: str = "/tmp/serena", request: str = "fix the d
         "ledger_guidance": [],
         "handoff_guidance": [],
         "requested_outcome": request,
-        "codex_model": "gpt-5.6-sol",
-        "codex_effort": "high",
+        "codex_model": CODEX_MODEL,
+        "codex_effort": DEFAULT_IMPLEMENT_EFFORT,
         "review_model": "claude-opus-5",
         "review_effort": "xhigh",
         "accepted_at": 10.0,
@@ -100,7 +102,7 @@ def test_how_is_it_going_reads_the_real_job_not_her_own_earlier_words(tmp_path) 
     assert "voice/brain_bridge.py" in result.spoken
     assert "1 test command exited clean" in result.spoken
     assert "1 live proof command recorded" in result.spoken
-    assert result.job["model"]["requested"] == "gpt-5.6-sol"
+    assert result.job["model"]["requested"] == CODEX_MODEL
 
 
 def test_cancel_that_stops_the_running_job_durably(tmp_path) -> None:

@@ -155,6 +155,18 @@ class VoiceInboxItem:
         )
 
 
+def _codex_model() -> str:
+    """The current Codex coding model, read from its one definition.
+
+    Imported lazily, like the other coding-stack uses in this module, so the
+    inbox keeps no import-time dependency on it.
+    """
+
+    from core.coding_model_preferences import CODEX_MODEL
+
+    return CODEX_MODEL
+
+
 class VoiceInboxStore:
     """Small SQLite outbox shared by the voice host and Serena desktop app."""
 
@@ -522,7 +534,7 @@ class VoiceInboxStore:
             ):
                 raise ValueError("accepted coding brief model policy is inconsistent")
         elif (
-            payload.get("codex_model") != "gpt-5.6-sol"
+            payload.get("codex_model") != _codex_model()
             or payload.get("codex_effort") != frozen_implement_effort(payload)
             or payload.get("review_model") != "claude-opus-5"
             or payload.get("review_effort") != "xhigh"

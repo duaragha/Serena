@@ -23,7 +23,7 @@ def _session(sid: str, **overrides) -> dict:
     record = {
         "session_id": sid,
         "agent": "codex",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-astra",
         "effort": "xhigh",
         "work_project_root": PROJECT,
         "last_timestamp": "2026-08-03T12:00:00Z",
@@ -297,9 +297,14 @@ def test_group_membership_alone_never_supplies_project_identity() -> None:
     assert route.session_id == "exact"
 
 
-@pytest.mark.parametrize("effort", ["high", "xhigh", "max", "ultra"])
-def test_all_allowed_sol_reasoning_efforts_can_be_reused(effort: str) -> None:
-    """Valid high-effort Sol chats must not be rejected by a stale allowlist."""
+@pytest.mark.parametrize("effort", ["medium", "high", "xhigh", "max", "ultra"])
+def test_all_allowed_reasoning_efforts_can_be_reused(effort: str) -> None:
+    """A live chat must not be refused by an allowlist the ladder outgrew.
+
+    Astra 6 implements ordinary work at medium, so medium belongs here: an
+    allowlist that starts at high refuses the tier most jobs freeze, which
+    turns every reuse into a private chat without ever saying so.
+    """
 
     focused = _session("focused", effort=effort)
 
@@ -326,7 +331,7 @@ def test_all_allowed_sol_reasoning_efforts_can_be_reused(effort: str) -> None:
         {"draft": "unsent words"},
         {"reserved": True},
         {"model": "gpt-5.6-terra"},
-        {"effort": "medium"},
+        {"effort": "low"},
     ],
 )
 def test_unsafe_focused_sessions_are_never_reused(overrides: dict) -> None:
@@ -575,7 +580,7 @@ def test_discovery_reads_each_live_context_and_the_index_once(tmp_path) -> None:
     assert bound == ["selected"]
 
 
-def test_fresh_focused_chat_can_prove_sol_identity_before_indexing(
+def test_fresh_focused_chat_can_prove_codex_identity_before_indexing(
     tmp_path, monkeypatch
 ) -> None:
     """A just-opened pane must not miss reuse only because SQLite is stale."""
@@ -591,7 +596,7 @@ def test_fresh_focused_chat_can_prove_sol_identity_before_indexing(
         json.dumps(
             {
                 "type": "turn_context",
-                "payload": {"model": "gpt-5.6-sol", "effort": "max"},
+                "payload": {"model": "gpt-6-astra", "effort": "max"},
             }
         )
         + "\n",
