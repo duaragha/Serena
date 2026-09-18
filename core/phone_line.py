@@ -13,9 +13,16 @@ which one owns the line:
 Outbound on a self-thread, every text starts with "serena:" and its hub message
 id is recorded.
 Inbound, a message counts as a command only when it is new, is not one of
-Serena's own, does not start with that prefix, and matches the small grammar
-below. Everything else in the thread is conversation and is ignored, so a
-stray text can never queue work.
+Serena's own, and does not start with that prefix. On a shared thread it must
+also match the small grammar below: everything else there is conversation and
+is ignored, so a stray text can never queue work.
+
+A *dedicated* line has no such conversation to confuse. Her Telegram bot owns
+its own chat and the only reason that chat exists is to hand her work, so
+anything he types into it is a brief whether or not he remembered to write
+``task:``. Silence is the failure mode that matters on a dedicated line -- a
+text that queues nothing and answers nothing is indistinguishable from a dead
+bot -- so every message he sends there gets an answer.
 
 The thread is his own number, so everything in it is authored by his account.
 That is the authentication: the hub only shows this conversation to paired
@@ -61,6 +68,10 @@ class _HubBackend:
 
     name = "hub"
     initial_watermark = ""
+    # A thread he also uses for his own notes: only the grammar queues work.
+    dedicated = False
+    # Hub history predates the line, so connecting must not replay it.
+    replays_pending_on_connect = False
 
     def available(self) -> bool:
         from core import unified_hub
@@ -144,6 +155,8 @@ class _BlueBubblesBackend(_FileStateBackend):
 
     name = "bluebubbles"
     initial_watermark = 0
+    dedicated = False
+    replays_pending_on_connect = False
 
     def available(self) -> bool:
         from core import bluebubbles_line
@@ -180,6 +193,12 @@ class _TelegramBackend(_FileStateBackend):
     name = "telegram"
     initial_watermark = 0
     state_file = "phone-line-telegram.json"
+    # Her bot's chat exists for one purpose, so plain text is a brief.
+    dedicated = True
+    # getUpdates only ever returns updates no one has confirmed yet, so what is
+    # waiting on connect is unhandled work, not history. Adopting it as a
+    # watermark would eat the very message that made him set the line up.
+    replays_pending_on_connect = True
 
     def available(self) -> bool:
         from core import telegram_line
@@ -238,7 +257,14 @@ def available() -> bool:
     return _backend().available()
 
 
-def parse(text: str) -> tuple[str, dict[str, Any]] | None:
+def parse(text: str, *, plain_is_brief: bool = False) -> tuple[str, dict[str, Any]] | None:
+    """Read one message as a command.
+
+    ``plain_is_brief`` is the dedicated-line rule: on her own bot's chat, text
+    that matches nothing above is the brief itself, because he came there to
+    give her work and phrased it the way a person phrases work.
+    """
+
     text = (text or "").strip()
     if not text or text.lower().startswith(PREFIX):
         return None
@@ -253,7 +279,7 @@ def parse(text: str) -> tuple[str, dict[str, Any]] | None:
         return "swapped", {}
     if match := _RETRY.match(text):
         return "retry", {"task_id": int(match.group("id"))}
-    return None
+    return ("task", {"brief": text}) if plain_is_brief else None
 
 
 @dataclass
@@ -324,9 +350,13 @@ def poll(*, now: float | None = None) -> PollReport:
     line = _backend()
     state = line.load_state()
     messages = line.messages(state)
-    # The first poll only sets the watermark. History from before the line was
-    # connected is never replayed as fresh commands.
+    # On a shared thread the first poll only sets the watermark: history from
+    # before the line was connected is never replayed as fresh commands. A
+    # dedicated line has no such history -- what is waiting there is work he
+    # sent her -- so it starts from zero and handles it.
     watermark = state.get("inbound_watermark")
+    if watermark in (None, "") and line.replays_pending_on_connect:
+        watermark = line.initial_watermark
     if watermark in (None, ""):
         newest = max((m["created"] for m in messages), default=line.initial_watermark)
         line.save_state(inbound_watermark=newest if newest else (
@@ -341,9 +371,9 @@ def poll(*, now: float | None = None) -> PollReport:
         message_id = message["id"]
         text = message["text"]
         command = None
-        if (message_id and not message["own"] and not message["deleted"]
-                and message["kind"] == "text"):
-            command = parse(text)
+        his = bool(message_id) and not message["own"] and not message["deleted"]
+        if his and message["kind"] == "text":
+            command = parse(text, plain_is_brief=line.dedicated)
         fingerprint = _fingerprint(text)
         if command is not None and len(report.commands) >= MAX_COMMANDS_PER_POLL:
             # The watermark stops before this one, so the next pass takes it.
@@ -351,6 +381,13 @@ def poll(*, now: float | None = None) -> PollReport:
         newest = max(newest, created)
         report.seen += 1
         if command is None:
+            # Only a dedicated line owes an answer to everything: on a shared
+            # thread most messages are not addressed to her at all. What lands
+            # here is a sticker, a photo or an empty caption -- nothing she can
+            # read as work, and saying so beats looking dead.
+            if his and line.dedicated:
+                send("i can only read text. type what you want done.",
+                     key=f"serena-unreadable-{message_id}")
             continue
         if fingerprint in handled and moment - float(handled[fingerprint]) < DUPLICATE_WINDOW_SECONDS:
             continue

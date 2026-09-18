@@ -165,8 +165,13 @@ def classify_task(text: str, project_hint: str | None = None) -> str:
     text = _task_text(text, "text", 4000)
     _task_text(project_hint, "project", 512, optional=True)  # validated, never evidence
     words = re.findall(r"\b\w+\b", text.lower())
+    # He writes the verb he means, not the verb a triager expects. "enable
+    # workouts in Locket" and "research why X happens" are as actionable as
+    # "fix X"; leaving them out parked real work as needs_triage.
     action = re.search(r"\b(fix|add|implement|build|update|remove|repair|test|create|"
-                       r"investigate|diagnose|refactor|replace|resolve)\b", text, re.I)
+                       r"investigate|diagnose|refactor|replace|resolve|enable|disable|"
+                       r"research|change|make|migrate|integrate|connect|wire|rename|"
+                       r"ship|support)\b", text, re.I)
     substantive = {word for word in words if len(word) > 2 and word not in _TASK_PADDING}
     return "ready" if action and len(words) >= 8 and len(substantive) >= 4 else "needs_triage"
 
