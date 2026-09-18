@@ -163,7 +163,7 @@ def test_imports_that_all_resolve_pass(tmp_path, monkeypatch):
 # ---- the PR that did nothing ----------------------------------------------
 
 
-def test_an_untracked_task_queue_warns_that_a_worker_cannot_see_it(tmp_path, monkeypatch):
+def _untracked_queue(tmp_path, monkeypatch):
     import subprocess
 
     from memory import store
@@ -172,11 +172,36 @@ def test_an_untracked_task_queue_warns_that_a_worker_cannot_see_it(tmp_path, mon
     (repo / "memory" / "task").mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     monkeypatch.setattr(store, "MEMORY_DIR", repo / "memory")
+    return repo
+
+
+def test_an_untracked_queue_passes_while_the_handoff_compensates(tmp_path, monkeypatch):
+    """Untracked is the intended state; what matters is the dispatcher's note.
+
+    Warning forever about a handled condition trains him to ignore warnings,
+    so this checks the mitigation rather than the fact.
+    """
+
+    _untracked_queue(tmp_path, monkeypatch)
+
+    finding = _finding(doctor.check_dispatch_visibility(), "dispatch.visibility")
+
+    assert finding.ok is True
+    assert "as intended" in finding.detail
+
+
+def test_an_untracked_queue_fails_when_the_handoff_stops_compensating(tmp_path, monkeypatch):
+    """The regression this guards: someone drops the unseen-state note."""
+
+    from core import scheduler_actions
+
+    _untracked_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(scheduler_actions, "_unseen_state_rules", lambda brief: "")
 
     finding = _finding(doctor.check_dispatch_visibility(), "dispatch.visibility")
 
     assert finding.ok is False
-    assert "invents unrelated work" in finding.detail
+    assert "invents unrelated" in finding.detail
 
 
 # ---- the report itself -----------------------------------------------------
