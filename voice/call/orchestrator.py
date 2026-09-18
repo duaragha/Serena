@@ -39,7 +39,7 @@ from .protocol import (
 )
 from .sentences import IncrementalSentenceSplitter
 from .spoken_text import prepare_spoken_text
-from .stt import FasterWhisperWorker
+from .stt import create_stt_backend
 from .tailnet import TailnetPathMeasurement, normalize_tailnet_peer, probe_tailscale_path
 from .tasking import (
     CallTaskDispatcher,
@@ -379,7 +379,7 @@ class CallRuntime:
 def build_default_runtime() -> CallRuntime:
     vad_pool = SileroProcessPool()
     return CallRuntime(
-        stt=FasterWhisperWorker(),
+        stt=create_stt_backend(),
         brain=BrainClient(),
         tts=create_tts_backend(),
         endpoint_factory=vad_pool.endpoint,
