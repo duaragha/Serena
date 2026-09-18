@@ -50,7 +50,6 @@ OPENWAKEWORD_FEATURE_MODELS = {
 _MAX_FEATURE_MODEL_BYTES = 64 * 1024 * 1024
 UNITS = (
     "serena-brain-bridge.service",
-    "serena-dot-overlay.service",
     "serena-desk.service",
     "serena-wake-listener.service",
     "serena-work-supervisor.service",
@@ -58,16 +57,21 @@ UNITS = (
     "serena-wakeword-acceptance-report.service",
     "serena-wakeword-acceptance-report.timer",
 )
+# serena-desk owns the microphone outright now. The old split -- a small
+# listener always on, handing off to the Electron app on the phrase -- existed
+# to avoid holding a window open for nothing. There is no window any more, and
+# the full client is the lighter of the two anyway: 74 MB against the phrase
+# listener's 511 MB peak, because that one loads whisper-tiny to double-check
+# the phrase. One process hears and answers, so there is no handoff to lose.
 START_UNITS = (
-    "serena-wake-listener.service",
+    "serena-desk.service",
     "serena-work-supervisor.service",
     "serena-wakeword-acceptance.service",
     "serena-wakeword-acceptance-report.timer",
 )
 NON_BOOT_UNITS = (
     "serena-brain-bridge.service",
-    "serena-desk.service",
-    "serena-dot-overlay.service",
+    "serena-wake-listener.service",
 )
 
 

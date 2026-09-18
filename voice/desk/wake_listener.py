@@ -42,7 +42,7 @@ from voice.desk.io import (
 from voice.desk.input_mute import read_voice_input_muted
 
 WAKE_FRAME_BYTES = 2_560
-FULL_VOICE_UNIT = "serena-dot-overlay.service"
+FULL_VOICE_UNIT = "serena-desk.service"
 DEFAULT_PHRASE_MODEL = (
     Path(__file__).resolve().parents[1] / "models" / "faster-whisper-tiny.en"
 )

@@ -64,15 +64,16 @@ def test_activation_is_one_model_to_frozen_live_services(
     freeze = next(command for command in commands if "freeze" in command)
     assert freeze[freeze.index("--threshold") + 1] == "0.55"
     start = next(command for command in commands if "enable" in command)
-    assert "serena-wake-listener.service" in start
+    assert "serena-desk.service" in start
     assert "serena-work-supervisor.service" in start
-    assert "serena-dot-overlay.service" not in start
-    assert "serena-desk.service" not in start
     assert "serena-wakeword-acceptance.service" in start
+    # The deleted Electron overlay must never be reached for again.
+    assert "serena-dot-overlay.service" not in start
     stop_legacy = next(command for command in commands if "disable" in command)
-    assert "serena-desk.service" in stop_legacy
+    # One owner of the microphone: the phrase-only listener is the legacy half.
+    assert "serena-wake-listener.service" in stop_legacy
     assert "serena-brain-bridge.service" in stop_legacy
-    assert "serena-dot-overlay.service" in stop_legacy
+    assert "serena-desk.service" not in stop_legacy
 
 
 def test_feature_model_bootstrap_is_pinned_atomic_and_cached(

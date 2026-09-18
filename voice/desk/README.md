@@ -137,9 +137,8 @@ Install the units only after the real model exists and port 8765 is available:
 ```bash
 install -Dm644 systemd/serena-brain-bridge.service ~/.config/systemd/user/serena-brain-bridge.service
 install -Dm644 systemd/serena-desk.service ~/.config/systemd/user/serena-desk.service
-install -Dm644 systemd/serena-dot-overlay.service ~/.config/systemd/user/serena-dot-overlay.service
 systemctl --user daemon-reload
-systemctl --user enable --now serena-brain-bridge.service serena-dot-overlay.service serena-desk.service
+systemctl --user enable --now serena-desk.service
 ```
 
 The service conditions keep `serena-desk.service` stopped while the production

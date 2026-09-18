@@ -34,7 +34,7 @@ fi
 # Only the units whose lifetime owns the panes. Anything else should be
 # restarted directly, where the caller can see the result immediately.
 case "$UNIT" in
-  serena-mobile-host.service | serena-desk.service | serena-dot-overlay.service) ;;
+  serena-mobile-host.service | serena-desk.service) ;;
   *)
     echo "refusing to detach-restart $UNIT; restart it directly instead" >&2
     exit 2
