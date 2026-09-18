@@ -54,7 +54,10 @@ DELIVERY_RULES = (
     "checkout. Leave your finished changes in its working tree. Do not push, open "
     "pull requests, merge, tag, release, or deploy; after the run the dispatcher "
     "commits the working tree, pushes the branch and opens the pull request, and "
-    "any release follows that pull request. Never defer delivery to root. Report "
+    "any release follows that pull request. That dispatcher is \"root\", so a "
+    "delivery requirement it owns rather than you is deferred with owner exactly "
+    "\"root\" -- not a description like \"Fleet supervisor\", which Fleet cannot "
+    "route to and rejects. Report "
     "your delivery[] entries exactly as below, copying each requirement string "
     "character for character (only the evidence text is yours to write):\n{answers}"
 )
