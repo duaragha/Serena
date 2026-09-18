@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import click
+import json
 from pathlib import Path
 from rich.console import Console
 
@@ -674,7 +675,7 @@ main.add_command(knowledge)
 def knowledge_show(slug):
     """Show all content for a knowledge topic."""
     from knowledge.reader import get_topic_content
-    content = get_topic_content(slug)
+    content = get_topic_content(slug, surface='cli', caller='knowledge_show')
     console.print(content)
 
 
@@ -705,11 +706,11 @@ def knowledge_search(query):
     from core.indexer import search_knowledge_fts, build_knowledge_fts, update_knowledge_index
 
     update_knowledge_index()
-    results = search_knowledge_fts(query, limit=20)
+    results = search_knowledge_fts(query, limit=20, surface='cli', caller='knowledge_search')
     if not results:
         console.print("[yellow]Building knowledge search index...[/yellow]")
         build_knowledge_fts()
-        results = search_knowledge_fts(query, limit=20)
+        results = search_knowledge_fts(query, limit=20, surface='cli', caller='knowledge_search')
 
     if not results:
         console.print("[yellow]No results found.[/yellow]")
@@ -720,6 +721,36 @@ def knowledge_search(query):
             f"  [bold]{r['topic_title']}[/bold] / [dim]{r['filename']}[/dim]"
         )
         console.print(f"    {r['snippet']}\n")
+
+
+@knowledge.command('backfill')
+def knowledge_backfill():
+    """Add missing trigger/verification metadata without changing note bodies."""
+    from core.knowledge_store import backfill
+    click.echo(json.dumps(backfill(), indent=2))
+
+
+@knowledge.command('maintenance')
+def knowledge_maintenance():
+    """Run the scheduled audit now and print its report location/counts."""
+    from core.knowledge_maintenance import scheduled_pass
+    click.echo(json.dumps(scheduled_pass({}).output, indent=2))
+
+
+@knowledge.command('proposals')
+def knowledge_proposals():
+    """Show receipt-bound knowledge feedback proposals."""
+    from core.knowledge_store import proposals
+    click.echo(json.dumps(proposals(), indent=2))
+
+
+@knowledge.command('review')
+@click.argument('proposal_id')
+@click.argument('action', type=click.Choice(['approve', 'reject']))
+def knowledge_review(proposal_id, action):
+    """Explicitly approve or reject one displayed knowledge proposal."""
+    from core.knowledge_store import review_proposal
+    click.echo(json.dumps(review_proposal(proposal_id, action), indent=2))
 
 
 @knowledge.command("link")

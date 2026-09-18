@@ -647,7 +647,10 @@ def check_phone_health(payload: dict[str, Any]) -> ActionOutcome:
 
 
 # The whole registry. A schedule may name exactly one of these keys.
+from core.knowledge_maintenance import scheduled_pass as maintain_knowledge
+
 REVIEWED_ACTIONS = {
+    'serena.knowledge.maintenance': maintain_knowledge,
     "serena.obligations.sweep": sweep_obligations,
     "serena.obligations.report": report_outstanding,
     "serena.notifications.flush": flush_notifications,

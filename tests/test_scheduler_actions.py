@@ -32,6 +32,7 @@ def control(tmp_path, monkeypatch):
 
 def test_the_registry_is_a_fixed_set_of_named_actions():
     assert set(REVIEWED_ACTIONS) == {
+        'serena.knowledge.maintenance',
         "serena.obligations.sweep",
         "serena.obligations.report",
         "serena.notifications.flush",

@@ -563,6 +563,7 @@ def _search_memory(query: str) -> str:
 
 def _search_knowledge(query: str) -> str:
     from knowledge.reader import KNOWLEDGE_DIR, list_topics
+    from core.knowledge_store import metadata, record_hit, note_path
 
     topics = list_topics()
     terms = _terms(query)
@@ -574,17 +575,26 @@ def _search_knowledge(query: str) -> str:
         )[:4000]
 
     bodies = []
+    triggers = []
+    documents = {}
     for topic in topics:
         body = ""
+        routing = []
+        documents[topic['slug']] = []
         directory = KNOWLEDGE_DIR / topic["slug"]
         for path in sorted(directory.glob("*.md"))[:8]:
-            with contextlib.suppress(OSError):
-                body += path.read_text(errors="replace")[:20_000]
+            with contextlib.suppress(OSError, ValueError):
+                note_path(topic['slug'], path.name, KNOWLEDGE_DIR)
+                text = path.read_text(errors='replace')
+                body += text[:20_000]
+                routing.append(str(metadata(text).get('trigger') or ''))
+                documents[topic['slug']].append((path.name, text))
         bodies.append(body)
+        triggers.append(' '.join(routing))
 
     headings = [
-        f"{topic['slug']} {topic['title']} {topic.get('description', '')}"
-        for topic in topics
+        f"{topic['slug']} {topic['title']} {topic.get('description', '')} {trigger}"
+        for topic, trigger in zip(topics, triggers)
     ]
     heading_weights = _weights(terms, headings)
     body_weights = _weights(terms, bodies)
@@ -601,6 +611,15 @@ def _search_knowledge(query: str) -> str:
     if not hits:
         return f"nothing in the knowledge base about {query!r}"
     lines = [f"- {_label(topic)}" for _score, topic in hits]
+    for _score, topic in hits:
+        for filename, text in documents[topic['slug']]:
+            try:
+                receipt_id = record_hit(topic['slug'], filename, query=query, surface='brain',
+                                        caller='search_knowledge', content=text, root=KNOWLEDGE_DIR)
+            except (OSError, ValueError):
+                # Deleted between the scan and the receipt: no receipt, no citation.
+                continue
+            lines.append(f"retrieval receipt: {receipt_id} {topic['slug']}/{filename}")
     lines.append("(read_knowledge <slug> for the full write-up)")
     return "\n".join(lines)[:4000]
 
@@ -624,7 +643,7 @@ def _read_knowledge(slug: str) -> str:
     known = {topic["slug"] for topic in list_topics()}
     if slug not in known:
         return f"no knowledge topic called {slug!r}. Use search_knowledge first."
-    return get_topic_content(slug)[:12_000]
+    return get_topic_content(slug, surface='brain', caller='read_knowledge', include_receipts=True)[:12_000]
 
 
 @tool("search_memory", "Search everything Serena has saved about Raghav: his "

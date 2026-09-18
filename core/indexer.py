@@ -1726,7 +1726,7 @@ def build_knowledge_fts(progress_callback=None):
     conn.close()
 
 
-def search_knowledge_fts(query: str, limit: int = 20) -> list[dict]:
+def search_knowledge_fts(query: str, limit: int = 20, *, surface: str = 'search', caller: str = 'indexer') -> list[dict]:
     """Search knowledge FTS index."""
     conn = _get_db()
     try:
@@ -1739,7 +1739,7 @@ def search_knowledge_fts(query: str, limit: int = 20) -> list[dict]:
         return []
 
     results = conn.execute("""
-        SELECT topic_slug, filename,
+        SELECT topic_slug, filename, content,
                snippet(knowledge_fts, 0, '>>>', '<<<', '...', 40) as snippet
         FROM knowledge_fts
         WHERE content MATCH ?
@@ -1749,6 +1749,13 @@ def search_knowledge_fts(query: str, limit: int = 20) -> list[dict]:
 
     out = []
     for r in results:
+        from core.knowledge_store import record_hit
+        try:
+            receipt_id = record_hit(r['topic_slug'], r['filename'], query=query, surface=surface, caller=caller,
+                                    content=r['content'])
+        except (OSError, ValueError):
+            # A stale FTS row is not a successful retrieval of a present file.
+            continue
         topic = conn.execute(
             "SELECT title, description FROM knowledge_topics WHERE slug = ?",
             (r["topic_slug"],),
@@ -1756,6 +1763,7 @@ def search_knowledge_fts(query: str, limit: int = 20) -> list[dict]:
         out.append({
             "source": "knowledge",
             "topic_slug": r["topic_slug"],
+            "receipt_id": receipt_id,
             "filename": r["filename"],
             "snippet": r["snippet"],
             "topic_title": topic["title"] if topic else r["topic_slug"],
