@@ -689,11 +689,16 @@ def test_reserved_context_keys_are_not_configuration():
     assert _configuration({"chain_input": {}, "cwd": "/etc"}) == {"cwd": "/etc"}
 
 
-def test_every_payless_action_tolerates_being_chained(monkeypatch):
+def test_every_payless_action_tolerates_being_chained(monkeypatch, tmp_path):
     """Each guard, against the payload the scheduler actually hands a chain."""
 
     from core import phone_line, scheduler_actions
+    from memory import store
 
+    # The real memory directory is shared with live chats and Syncthing, and a
+    # conflicted duplicate id there made this fail for reasons of its own.
+    monkeypatch.setattr(store, "MEMORY_DIR", tmp_path / "memory")
+    monkeypatch.setattr(store, "_active_v2_store", lambda: None)
     chained = {"chain_input": {"from_action": "serena.phone.poll", "output": {}}}
     monkeypatch.setattr(phone_line, "available", lambda: False)
 

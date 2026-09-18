@@ -421,6 +421,10 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
                 db.execute("DELETE FROM dispatches WHERE task_id = ? AND run_id = ''",
                            (task_id,))
             return hold(f"no private checkout: {error}")
+        if getattr(checkout, "stale_base", False):
+            # The run is real work on a base that could not be refreshed. Say
+            # so in the record rather than letting a stale branch look current.
+            output["stale_base"] = True
         try:
             run = start_run(
                 task=task["content"] + _delivery_rules(task_id),

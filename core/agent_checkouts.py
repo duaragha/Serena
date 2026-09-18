@@ -133,6 +133,9 @@ class TaskCheckout:
     remote: str
     branch: str
     default_branch: str
+    # True when the base could not be refreshed from GitHub, so this worktree
+    # branches from whatever origin/<default> was last fetched.
+    stale_base: bool = False
 
 
 def task_branch(task_id: int) -> str:
@@ -154,8 +157,16 @@ def prepare(source: Path, task_id: int, *, projects_root: Path | None = None) ->
     if not (base / ".git").exists():
         root.mkdir(parents=True, exist_ok=True)
         _run(["git", "clone", "--quiet", remote, str(base)])
+        stale = False
     else:
-        _git(base, "fetch", "--prune", "--quiet", "origin")
+        # Fetching keeps the base current, and it is the only step here that
+        # needs credentials. Failing it used to block the task before any work
+        # started, which is how expired GitHub auth turned into a queue that
+        # silently never ran. An existing origin/<default> is a real commit to
+        # branch from, so an unreachable remote degrades to a stale base rather
+        # than a dead queue. Delivery still needs auth and still says so.
+        fetched = _git(base, "fetch", "--prune", "--quiet", "origin", check=False)
+        stale = fetched.returncode != 0
         _git(base, "worktree", "prune")
     default = _default_branch(base)
     branch = task_branch(task_id)
@@ -167,7 +178,7 @@ def prepare(source: Path, task_id: int, *, projects_root: Path | None = None) ->
         shutil.rmtree(path, ignore_errors=True)
     _git(base, "worktree", "add", "--force", "-B", branch, str(path), f"origin/{default}")
     return TaskCheckout(path=path, base=base, remote=remote, branch=branch,
-                        default_branch=default)
+                        default_branch=default, stale_base=stale)
 
 
 def locate(checkout_path: str | Path) -> TaskCheckout:
