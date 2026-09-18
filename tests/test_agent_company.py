@@ -350,7 +350,7 @@ def test_reconcile_delivers_notifies_and_asks_once(queue, monkeypatch):
     monkeypatch.setattr(agent_checkouts, "cleanup", cleanup)
     texts = []
     monkeypatch.setattr(scheduler_actions, "_notify_phone",
-                        lambda text, key: texts.append((key, text)) or True)
+                        lambda text, key, **kw: texts.append((key, text, kw.get('answers_request'))) or True)
 
     action = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]
     first = action({})
@@ -364,9 +364,11 @@ def test_reconcile_delivers_notifies_and_asks_once(queue, monkeypatch):
     assert store.get_memory(task["id"])["state"] == "done"
     assert store.get_memory(task["id"])["result"] == "pr: https://pr/1"
     cleanup.assert_called_once_with(checkout)
-    keys = [key for key, _ in texts]
+    keys = [key for key, _text, _reply in texts]
     assert keys == [f"task:{thin['id']}:question", f"task:{task['id']}:done"]
     assert "https://pr/1" in texts[-1][1]
+    # Both answer briefs he texted, so quiet hours must not hold them.
+    assert [reply for _key, _text, reply in texts] == [True, True]
     assert store.get_memory(note["id"])["asked_at"] == ""
     assert action({}).output["closed"] == []
 
@@ -385,7 +387,7 @@ def test_reconcile_keeps_a_failed_run_for_inspection(queue, monkeypatch):
     monkeypatch.setattr(agent_checkouts, "cleanup", cleanup)
     texts = []
     monkeypatch.setattr(scheduler_actions, "_notify_phone",
-                        lambda text, key: texts.append(text) or True)
+                        lambda text, key, **kw: texts.append(text) or True)
     scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]({})
     assert store.get_memory(task["id"])["state"] == "blocked"
     assert "tests failed" in texts[0]
@@ -516,7 +518,7 @@ def test_a_run_waiting_for_input_texts_once_and_frees_its_slot(queue, monkeypatc
         "state": "waiting_for_input", "error": "delivery requirements were not answered"})
     keys = []
     monkeypatch.setattr(scheduler_actions, "_notify_phone",
-                        lambda text, key: keys.append(key) or True)
+                        lambda text, key, **kw: keys.append(key) or True)
     reconcile = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]
     reconcile({})
     reconcile({})

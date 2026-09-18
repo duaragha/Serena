@@ -418,13 +418,24 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
         return attach(run_id)
 
 
-def _notify_phone(text: str, key: str) -> bool:
+def _he_asked(task: dict[str, Any]) -> bool:
+    """True when the task came from him, so telling him how it went is a reply.
+
+    A queue write with nobody on the other end is a different thing: no one is
+    waiting on it, and it can keep until morning like any other notice.
+    """
+
+    return str(task.get("source_id") or "").startswith(("imessage:", "webhook:"))
+
+
+def _notify_phone(text: str, key: str, *, answers_request: bool = False) -> bool:
     """Tell Raghav on his phone line, through the one notification authority."""
 
     from core.notification_senders import notify
 
     result = notify("task.update", text, channel="imessage", dedupe_key=key,
-                    source_surface="dispatch", fallback_channel=None)
+                    source_surface="dispatch", fallback_channel=None,
+                    answers_request=answers_request)
     return bool(result.sent)
 
 
@@ -447,7 +458,7 @@ def _ring_phone(text: str, key: str) -> bool:
     return bool(result.sent)
 
 
-def _notify_once(text: str, key: str) -> bool:
+def _notify_once(text: str, key: str, *, answers_request: bool = False) -> bool:
     """Send a notice at most once ever, beyond the authority's hourly dedupe."""
 
     import sqlite3
@@ -461,7 +472,7 @@ def _notify_once(text: str, key: str) -> bool:
         db.execute("CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY)")
         if db.execute("SELECT 1 FROM notices WHERE key = ?", (key,)).fetchone():
             return False
-        if not _notify_phone(text, key):
+        if not _notify_phone(text, key, answers_request=answers_request):
             return False
         with db:
             db.execute("INSERT OR IGNORE INTO notices(key) VALUES (?)", (key,))
@@ -512,6 +523,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             if _notify_once(
                 f"#{task['id']} is stuck waiting on input (fleet {run_id[:8]}): {reason}",
                 f"task:{task['id']}:waiting:{digest}",
+                answers_request=_he_asked(task),
             ):
                 closed.append({"task_id": int(task["id"]), "run_state": state,
                                "waiting": True})
@@ -560,7 +572,8 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             message = f"#{task_id} {state} ({headline}). {reason}"
             final = "blocked"
         if store.finish_task_run(task_id, run_id, final, result):
-            record["notified"] = _notify_phone(message, f"task:{task_id}:{final}")
+            record["notified"] = _notify_phone(
+                message, f"task:{task_id}:{final}", answers_request=_he_asked(task))
             record["called"] = _ring_phone(_spoken_summary(task_id, final, headline),
                                            f"task:{task_id}:{final}")
             if checkout is not None and final == "done":
@@ -582,7 +595,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
         question = (f"#{task_id} needs one detail before i hand it off: \"{headline}\". "
                     f"what exactly should change, and in which project? "
                     f"reply \"#{task_id} <details>\".")
-        if _notify_phone(question, f"task:{task_id}:question"):
+        if _notify_phone(question, f"task:{task_id}:question", answers_request=True):
             store.mark_task_asked(task_id)
             asked.append(task_id)
     return ActionOutcome(

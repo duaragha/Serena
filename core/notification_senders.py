@@ -233,6 +233,7 @@ def notify(
     source_surface: str = "system",
     job_id: str | None = None,
     fallback_channel: str | None = "imessage",
+    answers_request: bool = False,
     authority: NotificationAuthority | None = None,
 ):
     """Ask the authority to tell Raghav something, with one fallback hop.
@@ -253,6 +254,7 @@ def notify(
             dedupe_key=dedupe_key,
             source_surface=source_surface,
             job_id=job_id,
+            answers_request=answers_request,
         )
     )
     if result.sent or not fallback_channel or fallback_channel == channel:
@@ -272,5 +274,6 @@ def notify(
             dedupe_key=f"{dedupe_key}:{fallback_channel}" if dedupe_key else "",
             source_surface=source_surface,
             job_id=job_id,
+            answers_request=answers_request,
         )
     )
