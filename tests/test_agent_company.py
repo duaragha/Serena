@@ -698,3 +698,39 @@ def test_the_handoff_names_the_owner_the_validator_accepts():
     answers[0]["owner"] = "Fleet supervisor"
     failures, _deferred, _verified = _delivery_failures(required, answers)
     assert any("cannot route to" in f for f in failures)
+
+
+def test_a_task_that_cannot_even_start_is_not_blocked_in_silence(queue, monkeypatch):
+    """No GitHub credential on the PC means no private checkout, so no run.
+
+    The dispatcher held the task as blocked and said why only in its own run
+    record, so the queue looked idle while a brief he texted never started.
+    """
+
+    from core import agent_checkouts, coding_job_contract, scheduler_actions
+
+    task = store.enqueue_task(BRIEF, source_id="imessage:77")
+    monkeypatch.setattr(coding_job_contract, "resolve_repository_root",
+                        lambda *a, **k: Path("/repo"))
+    monkeypatch.setattr(scheduler_actions, "resolve_repository_root",
+                        lambda *a, **k: Path("/repo"), raising=False)
+    monkeypatch.setattr(agent_checkouts, "prepare", Mock(
+        side_effect=agent_checkouts.CheckoutError(
+            "git -C failed: fatal: could not read Username for 'https://github.com'")))
+    texts = []
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key, **kw: texts.append((key, text, kw.get("answers_request"))) or True)
+
+    outcome = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.start"]({})
+
+    assert outcome.output["state"] == "blocked"
+    assert texts, "a task that cannot start has to say so"
+    assert "can't even start" in texts[0][1]
+    assert "could not read Username" in texts[0][1]
+    assert texts[0][2] is True
+    assert store.get_memory(task["id"])["state"] == "blocked"
+
+    # The same wall does not text him again every minute.
+    store.enqueue_task(BRIEF + " again", source_id="imessage:78")
+    scheduler_actions.REVIEWED_ACTIONS["serena.fleet.start"]({})
+    assert len(texts) == 2, "a different task is a different notice"
