@@ -27,11 +27,35 @@ CLI surface this contract is pinned to (``muse exec --help``, 1.3.0):
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 MODEL = "muse-spark"
-EFFORT = "high"
+# A Muse run is an explicit downgrade to a single stack, so it does not also
+# get a cheaper effort: every phase runs at the top of the CLI's usable range.
+# (``ultra`` exists but is not one of Serena's efforts; ``max`` is.)
+EFFORT = "max"
+
+# Muse's JSONL stream reports the model it ran but never the reasoning effort,
+# so Fleet falls back to "whatever we asked for" — which would record a gated
+# effort as if it had been honoured. The CLI does announce the downgrade, but
+# only on stderr: "reasoning effort ultra is not available (gate
+# ultra_reasoning_effort is closed); using xhigh". Reading it back turns a
+# silent substitution into a loud identity mismatch.
+_EFFORT_GATE = re.compile(
+    r"reasoning effort\s+`?(?P<requested>[a-z]+)`?\s+is not available"
+    r".*?using\s+`?(?P<actual>[a-z]+)`?",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def downgraded_effort(stderr: str | None) -> str | None:
+    """Return the effort Muse actually used when a gate downgraded the request."""
+
+    match = _EFFORT_GATE.search(stderr or "")
+    return match.group("actual").casefold() if match else None
+
 
 _SESSION_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId")
 _MODEL_KEYS = ("model", "model_id", "modelId")

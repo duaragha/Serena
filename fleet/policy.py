@@ -129,16 +129,16 @@ PROVIDER_ONLY_POLICY = {
     # stacks this is an explicit downgrade target, never a silent pick.
     "muse": {
         "coding": {
-            "discover": (("muse", "muse-spark", "high"),),
-            "execute": (("muse", "muse-spark", "high"),),
-            "verify": (("muse", "muse-spark", "high"),),
-            "finalize": (("muse", "muse-spark", "high"),),
+            "discover": (("muse", "muse-spark", "max"),),
+            "execute": (("muse", "muse-spark", "max"),),
+            "verify": (("muse", "muse-spark", "max"),),
+            "finalize": (("muse", "muse-spark", "max"),),
         },
         "research": {
-            "discover": (("muse", "muse-spark", "high"),),
-            "execute": (("muse", "muse-spark", "high"),),
-            "verify": (("muse", "muse-spark", "high"),),
-            "finalize": (("muse", "muse-spark", "high"),),
+            "discover": (("muse", "muse-spark", "max"),),
+            "execute": (("muse", "muse-spark", "max"),),
+            "verify": (("muse", "muse-spark", "max"),),
+            "finalize": (("muse", "muse-spark", "max"),),
         },
     },
 }

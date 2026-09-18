@@ -231,7 +231,9 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
             _binary("muse"),
             "exec",
             "--json",
-            "--no-session-log",
+            # No --no-session-log: Fleet pins --session-id so the transcript is
+            # addressable, and Muse 1.3 refuses the pair ("a session id needs
+            # retained logging; remove --no-session-log").
         ]
         if request.model != _MUSE_MODEL:
             # An explicit Meta model pin travels verbatim. Serena's own
@@ -707,7 +709,10 @@ def _run_muse(
     # Serena's own muse-spark identity runs on the CLI default model, so an
     # absent report contradicts nothing. An explicit pin must be reported.
     actual_model = stream.model or (_muse.MODEL if request.model == _muse.MODEL else None)
-    actual_effort = stream.effort or request.effort
+    # A gated effort is downgraded on stderr and nowhere else, so read it back
+    # before trusting the request; otherwise the receipt claims an effort the
+    # model never ran.
+    actual_effort = stream.effort or _muse.downgraded_effort(process.stderr) or request.effort
     if process.cancelled:
         return WorkerResult(
             False,

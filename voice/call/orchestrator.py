@@ -39,7 +39,7 @@ from .protocol import (
 )
 from .sentences import IncrementalSentenceSplitter
 from .spoken_text import prepare_spoken_text
-from .stt import FasterWhisperWorker
+from .stt import create_stt_backend
 from .tailnet import TailnetPathMeasurement, normalize_tailnet_peer, probe_tailscale_path
 from .tasking import (
     CallTaskDispatcher,
@@ -379,7 +379,7 @@ class CallRuntime:
 def build_default_runtime() -> CallRuntime:
     vad_pool = SileroProcessPool()
     return CallRuntime(
-        stt=FasterWhisperWorker(),
+        stt=create_stt_backend(),
         brain=BrainClient(),
         tts=create_tts_backend(),
         endpoint_factory=vad_pool.endpoint,
@@ -1315,11 +1315,13 @@ class CallSession:
         if not self._mirror_speech_active:
             self._mirror_speech_active = True
             self._mirror_utterance = bytearray()
+            self._reset_stream(generation)
             for chunk in self._mirror_pre_roll:
                 self._mirror_utterance.extend(chunk)
             self._mirror_pre_roll.clear()
             self._mirror_pre_roll_samples = 0
         self._mirror_utterance.extend(pcm)
+        self._stream_frame(pcm, generation)
         self._harvest_speculative_result()
         if (
             self._speculative_task is not None or self._speculative_text is not None
@@ -1368,7 +1370,39 @@ class CallSession:
             dropped = self._mirror_pre_roll.popleft()
             self._mirror_pre_roll_samples -= len(dropped) // 2
 
+    def _stream_frame(self, pcm: bytes, generation: int) -> None:
+        """Hand one mic frame to a streaming recognizer, if we have one."""
+
+        feed = getattr(self.runtime.stt, "feed", None)
+        if feed is None:
+            return
+        feed(pcm, self._stt_generation(generation))
+
+    def _reset_stream(self, generation: int) -> None:
+        reset = getattr(self.runtime.stt, "reset", None)
+        if reset is not None:
+            reset(self._stt_generation(generation))
+
+    def _streaming_partial(self, generation: int) -> str | None:
+        partial = getattr(self.runtime.stt, "partial_text", None)
+        if partial is None:
+            return None
+        return partial(self._stt_generation(generation))
+
     def _start_speculative_transcribe(self, generation: int) -> None:
+        if getattr(self.runtime.stt, "supports_streaming", False):
+            # The stream already holds a transcript of everything he has said,
+            # so guessing at it with a second decode would only cost latency.
+            text = self._streaming_partial(generation)
+            if text:
+                self._speculative_text = text
+                self._speculative_stale = False
+                self.telemetry.record(
+                    "stt.streaming_partial",
+                    generation=generation,
+                    characters=len(text),
+                )
+            return
         pcm = bytes(self._mirror_utterance)
         if not pcm:
             return
