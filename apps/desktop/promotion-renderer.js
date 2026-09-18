@@ -2,6 +2,7 @@
 const api = window.serenaReleases;
 const el = id => document.getElementById(id);
 let snapshot = null;
+let reviewedSource = null;
 let status = null;
 let busy = false;
 let polling = false;
@@ -77,7 +78,8 @@ async function refresh() {
   try {
     const next = await api.load();
     // Test acknowledgements never survive a change to the exact reviewed source.
-    if (snapshot && snapshot.source !== next.source) { selected.clear(); tested.clear(); }
+    if (reviewedSource && reviewedSource !== next.source) { selected.clear(); tested.clear(); }
+    reviewedSource = next.source;
     snapshot = next; status = next.status;
     el('stable').textContent = next.stable; el('dev').textContent = next.version;
     renderFeatures(); renderStatus();
