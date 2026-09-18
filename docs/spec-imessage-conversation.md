@@ -8,13 +8,13 @@
 
 ## Requirements
 
-- [ ] WHEN a text is not a command THEN it goes to the resident brain with memory context and gets a real answer, instead of being dropped
-- [ ] WHEN a text is a command THEN it behaves exactly as today — commands are the fast path and must not regress
-- [ ] WHEN a message arrives THEN it is handled within ~3 s via webhook, with the 60 s poll kept only as a fallback
-- [ ] WHEN he sends three bubbles in a row THEN they are answered as one turn, not three
-- [ ] WHEN she is composing THEN the typing indicator is live and refreshed, and the reply arrives in at most 3 bubbles
-- [ ] WHEN he texts a photo or a voice note THEN the photo reaches the brain as an image and the voice note is transcribed
-- [ ] WHEN a message is not from his allowlisted handle over iMessage THEN it is ignored, and forwarded content is treated as data, never instructions
+- [x] WHEN a text is not a command THEN it goes to the resident brain with memory context and gets a real answer, instead of being dropped
+- [x] WHEN a text is a command THEN it behaves exactly as today — commands are the fast path and must not regress
+- [x] WHEN a message arrives THEN it is handled within ~3 s via webhook, with the 60 s poll kept only as a fallback
+- [x] WHEN he sends three bubbles in a row THEN they are answered as one turn, not three
+- [x] WHEN she is composing THEN the typing indicator is live and refreshed, and the reply arrives in at most 3 bubbles
+- [x] WHEN he texts a photo or a voice note THEN the photo reaches the brain as an image and the voice note is transcribed
+- [x] WHEN a message is not from his allowlisted handle over iMessage THEN it is ignored, and forwarded content is treated as data, never instructions
 
 ## Architecture / Design
 
@@ -37,17 +37,17 @@
 > Execution: fleet, one run. This is the first thing built after the specs land — highest value per hour in the roadmap.
 
 ### Phase 1: Conversation core
-- [ ] `core/text_conversation.py` + the `phone_line` hand-off + bubble splitting
+- [x] `core/text_conversation.py` + the `phone_line` hand-off + bubble splitting
   - accept: a free-form text gets a brain answer with memory context; commands unchanged (existing `tests/test_phone_line.py` stays green); bursts merge into one turn
   - engine: fleet
 
 ### Phase 2: Instant delivery
-- [ ] BlueBubbles webhook route + GUID dedupe + poll fallback no-op
+- [x] BlueBubbles webhook route + GUID dedupe + poll fallback no-op
   - accept: message-to-reply under 3 s; a replayed webhook produces no second reply; with the webhook disabled the poll still answers
   - engine: fleet
 
 ### Phase 3: Feel
-- [ ] Typing keep-alive, read receipts, tapback on commands, inbound images and voice notes
+- [x] Typing keep-alive, read receipts, tapback on commands, inbound images and voice notes
   - accept: typing shows within 1 s and persists while composing; a texted photo is answered about its content; a voice note is transcribed and answered
   - engine: fleet
 
@@ -63,21 +63,22 @@
 
 ## Testing
 
-- [ ] Command-regression suite (all five commands still parse and act)
-- [ ] Non-command routes to brain (with a faked brain socket) and returns ≤3 bubbles
-- [ ] Debounce test: three rapid messages produce one turn
-- [ ] Dedupe test: `new-message` + `updated-message` for one GUID replies once
-- [ ] Security tests: SMS service refused, non-allowlisted handle ignored, forwarded text with an imperative is not obeyed
-- [ ] Attachment tests: image reaches the brain as an image; audio path calls whisper
+- [x] Command-regression suite (all five commands still parse and act)
+- [x] Non-command routes to brain (with a faked brain socket) and returns ≤3 bubbles
+- [x] Debounce test: three rapid messages produce one turn
+- [x] Dedupe test: `new-message` + `updated-message` for one GUID replies once
+- [x] Security tests: SMS service refused, non-allowlisted handle ignored, forwarded text with an imperative is not obeyed
+- [x] Attachment tests: image reaches the brain as an image; audio path calls whisper
 
 ---
 
 ## Progress Log
 
-**Status**: Not started
-**Branch**: — (created at execution)
-**Current phase**: —
-**Last completed task**: —
-**Files modified**: —
-**Blockers**: —
-**Review**: —
+**Status**: Complete (2026-09-18)
+**Branch**: `serena/fleet/115b59e9-a603-481e-be11-e99652a32b18/agent-a`
+**Current phase**: Done — all 3 phases
+**Last completed task**: Phase 3 feel (typing keep-alive, read receipts, tapback, images, voice notes)
+**Files modified**: `core/text_conversation.py` (added), `core/phone_line.py`, `core/bluebubbles_line.py`, `core/webhook_ingress.py`, `ui/webhook_web.py`, `tests/test_text_conversation.py` (added), `tests/test_bluebubbles_webhook.py` (added), `tests/test_phone_line.py`, `tests/test_webhook_tasks.py`
+**Blockers**: none
+**Review**: Fix leg 2026-09-18 closed 6 review findings on this spec: webhook debounce for chat bursts (commands stay fast), attachment-GUID dedupe fingerprints, poll-side sender gate matching the webhook, honest reply on unreadable attachments, ellipsis-marked bubble truncation. 178 focused tests green.
+**Notes**: (1) BlueBubbles webhooks carry no HMAC, so the route authenticates with a URL token via a new per-route `auth` hook; the token must be configured at `SERENA_BLUEBUBBLES_WEBHOOK_TOKEN` and the server kept tailnet-only. (2) The webhook handler triggers `phone_line.poll()` rather than duplicating its logic; GUID claim prevents the `new-message` + `updated-message` double-fire. (3) `serena.phone.poll` needed no change — the watermark + fingerprint logic already no-ops after a webhook-handled message. (4) Voice notes need a staged faster-whisper model (`SERENA_VOICE_NOTE_MODEL`, else `SERENA_CALL_WHISPER_MODEL`); without one the turn falls back honestly.

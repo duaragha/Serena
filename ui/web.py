@@ -54,11 +54,13 @@ app = Flask(__name__)
 sock = Sock(app)
 
 from core.sidestore_source import sidestore_bp  # noqa: E402
+from ui.approvals_web import approvals_bp  # noqa: E402
 from ui.fleet_web import fleet_bp  # noqa: E402
 from ui.operator_web import operator_bp  # noqa: E402
 from ui.webhook_web import webhook_bp  # noqa: E402
 
 app.register_blueprint(sidestore_bp)
+app.register_blueprint(approvals_bp)
 app.register_blueprint(fleet_bp)
 app.register_blueprint(operator_bp)
 app.register_blueprint(webhook_bp)

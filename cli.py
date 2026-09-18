@@ -1898,7 +1898,8 @@ def _plan_authorize_launch(artifact) -> None:
     )
     # The interactive approve above IS the human; record it as the resolution.
     # _plan_authorize_launch is only reached after explicit approval.
-    resolved = auth.resolve_confirmation(record.confirmation_id, approved=True)
+    resolved = auth.resolve_confirmation(
+        record.confirmation_id, approved=True, surface="cli")
     if resolved.state != "approved":
         raise click.ClickException("launch not approved")
     confirmed = build_request(

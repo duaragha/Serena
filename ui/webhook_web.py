@@ -69,7 +69,9 @@ def _local_only():
 def receive_webhook(name: str):
     """The signed front door. Open to the network; the signature is the gate."""
 
-    result = _ingress().handle(name, request.get_data(), dict(request.headers))
+    result = _ingress().handle(
+        name, request.get_data(), dict(request.headers),
+        query=dict(request.args))
     body: dict[str, Any] = {"ok": result.accepted, "delivery_id": result.delivery_id}
     if result.decision == "held":
         body["status"] = "held for approval"

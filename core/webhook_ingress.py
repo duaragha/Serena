@@ -27,9 +27,11 @@ web server and keeps the mounting decision out of this module.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -56,6 +58,10 @@ MAX_TASK_PROJECT_CHARS = 512
 DECISIONS = ("accepted", "held", "rejected")
 
 RouteHandler = Callable[[dict[str, Any], "WebhookRequest"], "RouteOutcome"]
+# A route that cannot HMAC-sign (BlueBubbles posts plain JSON) authenticates
+# another way: called with the request's query parameters and headers, raising
+# ValueError when the caller has not proven itself.
+RouteAuth = Callable[[dict[str, str], dict[str, str]], None]
 
 
 class WebhookIngressError(ValueError):
@@ -86,6 +92,7 @@ class Route:
     description: str = ""
     validator: Callable[[dict[str, Any]], None] | None = None
     max_body_bytes: int = MAX_BODY_BYTES
+    auth: RouteAuth | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +202,7 @@ class WebhookIngress:
         description: str = "",
         validator: Callable[[dict[str, Any]], None] | None = None,
         max_body_bytes: int = MAX_BODY_BYTES,
+        auth: RouteAuth | None = None,
     ) -> None:
         """Add one reviewed route. This is the only way a route can exist."""
 
@@ -205,6 +213,8 @@ class WebhookIngress:
             raise WebhookIngressError("a webhook route needs a callable handler")
         if validator is not None and not callable(validator):
             raise WebhookIngressError("a webhook validator must be callable")
+        if auth is not None and not callable(auth):
+            raise WebhookIngressError("a webhook auth must be callable")
         if not 0 < max_body_bytes <= MAX_BODY_BYTES:
             raise WebhookIngressError("a webhook body limit must fit the ingress limit")
         self._routes[route] = Route(
@@ -214,6 +224,7 @@ class WebhookIngress:
             description=_clean(description, 200),
             validator=validator,
             max_body_bytes=max_body_bytes,
+            auth=auth,
         )
 
     @property
@@ -232,6 +243,7 @@ class WebhookIngress:
         headers: dict[str, Any] | None = None,
         *,
         now: float | None = None,
+        query: dict[str, Any] | None = None,
     ) -> IngressResult:
         """Decide what happens to one inbound request, and record it."""
 
@@ -240,6 +252,7 @@ class WebhookIngress:
         name = _clean(route, 64)
         raw = body if isinstance(body, bytes) else str(body or "").encode("utf-8")
         lowered = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+        params = {str(k): str(v) for k, v in (query or {}).items()}
 
         if len(raw) > MAX_BODY_BYTES:
             return self._record(
@@ -272,19 +285,31 @@ class WebhookIngress:
                 decision="rejected", reason="body is too large for this route", status=413,
             )
 
-        verified, why = verify_headers(
-            raw,
-            secret,
-            lowered,
-            tolerance_seconds=self.tolerance_seconds,
-            now=moment,
-            replay_store=self._replay_store or WebhookReplayStore(),
-        )
-        if not verified:
-            return self._record(
-                delivery_id, name, raw, moment,
-                decision="rejected", reason=why, status=401,
+        if registered.auth is not None:
+            # The route authenticates its own way (a query token for a
+            # caller that cannot HMAC-sign). A failure here is a 401 like
+            # any other failed authentication, and is audited the same way.
+            try:
+                registered.auth(params, lowered)
+            except ValueError as error:
+                return self._record(
+                    delivery_id, name, raw, moment,
+                    decision="rejected", reason=str(error), status=401,
+                )
+        else:
+            verified, why = verify_headers(
+                raw,
+                secret,
+                lowered,
+                tolerance_seconds=self.tolerance_seconds,
+                now=moment,
+                replay_store=self._replay_store or WebhookReplayStore(),
             )
+            if not verified:
+                return self._record(
+                    delivery_id, name, raw, moment,
+                    decision="rejected", reason=why, status=401,
+                )
 
         try:
             parsed = json.loads(
@@ -748,11 +773,157 @@ def route_task(payload: dict[str, Any], request: WebhookRequest) -> RouteOutcome
     return RouteOutcome(True, f"queued task {task['id']} ({task['state']})")
 
 
+BLUEBUBBLES_EVENTS = ("new-message", "updated-message")
+BLUEBUBBLES_SERVICE = "iMessage"
+# BlueBubbles fires `new-message` and `updated-message` for the same message.
+# The first event claims the GUID; the second is a duplicate, answered never.
+BLUEBUBBLES_GUID_WINDOW_SECONDS = 600.0
+_BLUEBUBBLES_SEEN: dict[str, float] = {}
+_BLUEBUBBLES_SEEN_LOCK = threading.Lock()
+
+
+def configured_bluebubbles_token() -> str:
+    """The token the BlueBubbles server puts in its webhook URL."""
+
+    raw = os.environ.get("SERENA_BLUEBUBBLES_WEBHOOK_TOKEN", "").strip()
+    if raw:
+        return raw
+    path = os.environ.get("SERENA_BLUEBUBBLES_WEBHOOK_TOKEN_FILE", "").strip()
+    if path:
+        with suppress(OSError):
+            return Path(path).expanduser().read_text(encoding="utf-8").strip()
+    with suppress(OSError):
+        return (Path.home() / ".config" / "serena"
+                / "bluebubbles-webhook-token").read_text(
+                    encoding="utf-8").strip()
+    return ""
+
+
+def authenticate_bluebubbles(query: dict[str, str],
+                             headers: dict[str, str]) -> None:
+    """Prove the POST came from his BlueBubbles server, via URL token.
+
+    BlueBubbles cannot HMAC-sign, so the secret rides in the configured
+    webhook URL (`.../webhooks/bluebubbles?token=...`) instead. Keep the
+    server tailnet-only: the token lands in HTTP access logs otherwise.
+    """
+
+    _ = headers
+    expected = configured_bluebubbles_token()
+    if not expected:
+        raise ValueError("bluebubbles webhook token is not configured")
+    presented = str((query or {}).get("token") or "")
+    if not presented or not hmac.compare_digest(presented, expected):
+        raise ValueError("bluebubbles webhook token is invalid")
+
+
+def validate_bluebubbles_payload(payload: dict[str, Any]) -> None:
+    """Shape-gate one BlueBubbles event. Policy lives in the handler."""
+
+    if payload.get("type") not in BLUEBUBBLES_EVENTS:
+        raise ValueError("bluebubbles event is not a message event")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("bluebubbles event has no message")
+    if not str(data.get("guid") or ""):
+        raise ValueError("bluebubbles message has no guid")
+    handle = data.get("handle")
+    handle = handle if isinstance(handle, dict) else {}
+    # The service field, never the chat GUID prefix: modern macOS stores
+    # `any;-;` for every chat, and SMS arrives through the same Mac. SMS is
+    # spoofable, so anything that is not iMessage is refused outright.
+    service = str(handle.get("service") or data.get("service") or "")
+    if service != BLUEBUBBLES_SERVICE:
+        raise ValueError("only the iMessage service is accepted")
+    if not str(handle.get("address") or ""):
+        raise ValueError("bluebubbles message names no sender")
+
+
+def _claim_bluebubbles_guid(guid: str, moment: float) -> bool:
+    """True once per GUID: the second event for a message loses."""
+
+    with _BLUEBUBBLES_SEEN_LOCK:
+        cutoff = moment - BLUEBUBBLES_GUID_WINDOW_SECONDS
+        for seen in [g for g, at in _BLUEBUBBLES_SEEN.items() if at < cutoff]:
+            del _BLUEBUBBLES_SEEN[seen]
+        if guid in _BLUEBUBBLES_SEEN:
+            return False
+        _BLUEBUBBLES_SEEN[guid] = moment
+        return True
+
+
+def _bluebubbles_participants(data: dict[str, Any]) -> list[str]:
+    """Best-effort group signal across BlueBubbles payload shapes."""
+
+    for container in (data, data.get("chat"), (data.get("chats") or [None])[0]):
+        if not isinstance(container, dict):
+            continue
+        members = container.get("participants")
+        if isinstance(members, list) and members:
+            return [str(m) for m in members]
+    return []
+
+
+def route_bluebubbles(payload: dict[str, Any],
+                      request: WebhookRequest) -> RouteOutcome:
+    """Turn one pushed iMessage into a fast poll of the phone line.
+
+    The handler does not answer the message itself: `phone_line.poll()`
+    already owns commands, conversation, watermarks and fingerprints, and a
+    second copy of that logic would drift. The webhook only hurries the poll
+    up, after proving the event is his iMessage and claiming its GUID.
+    """
+
+    from core import bluebubbles_line, phone_line
+
+    data = payload["data"]
+    guid = str(data.get("guid") or "")
+    if not _claim_bluebubbles_guid(guid, request.received_at):
+        return RouteOutcome(True, f"duplicate bluebubbles event {guid[:8]}")
+    settings = bluebubbles_line.settings()
+    allowed = str(settings.get("address") or "")
+    handle = data.get("handle")
+    handle = handle if isinstance(handle, dict) else {}
+    address = str(handle.get("address") or "")
+    if not bluebubbles_line.same_handle(address, allowed):
+        return RouteOutcome(True, f"ignored bluebubbles event {guid[:8]}")
+    if len(_bluebubbles_participants(data)) > 2:
+        return RouteOutcome(True, f"ignored group event {guid[:8]}")
+    if data.get("associatedMessageGuid"):
+        # A tapback or reaction echo, not a message to answer.
+        return RouteOutcome(True, f"ignored reaction event {guid[:8]}")
+    text = str(data.get("text") or "")
+    if bluebubbles_line.self_thread(settings):
+        # On his own thread every message is his, so hers are prefixed.
+        if text.strip().lower().startswith(phone_line.PREFIX):
+            return RouteOutcome(True, f"ignored own event {guid[:8]}")
+    elif data.get("isFromMe"):
+        return RouteOutcome(True, f"ignored own event {guid[:8]}")
+    if phone_line.parse(text) is None:
+        # Chat, not a command: his next bubble is probably already on its
+        # way, so let the burst land before the poll reads it — one turn,
+        # not three. Commands skip the wait and stay on the fast path.
+        from core.text_conversation import DEBOUNCE_SECONDS
+
+        time.sleep(DEBOUNCE_SECONDS)
+    report = phone_line.poll()
+    return RouteOutcome(
+        True, f"bluebubbles poll: {report.seen} message(s), "
+        f"{len(report.commands)} handled")
+
+
 def default_ingress(**kwargs: Any) -> WebhookIngress:
     """An ingress with the reviewed routes already mounted."""
 
     ingress = WebhookIngress(**kwargs)
     ingress.register("ping", route_ping, description="liveness check")
+    ingress.register(
+        "bluebubbles",
+        route_bluebubbles,
+        description="pushed iMessage events from his BlueBubbles server",
+        validator=validate_bluebubbles_payload,
+        auth=authenticate_bluebubbles,
+    )
     ingress.register(
         "notify",
         route_notify,
@@ -774,6 +945,7 @@ __all__ = [
     "TIMESTAMP_HEADER",
     "IngressResult",
     "Route",
+    "RouteAuth",
     "RouteOutcome",
     "WebhookIngress",
     "WebhookIngressError",

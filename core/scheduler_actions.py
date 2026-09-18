@@ -34,6 +34,20 @@ IDLE_RUN_STATES = TERMINAL_RUN_STATES | {"waiting_for_input"}
 # Reconciliation work per tick: deliveries push to GitHub, so keep it small.
 MAX_RECONCILE_PER_TICK = 3
 DISPATCH_ORIGIN = "serena-task:"
+# The scheduler adds these to every handler payload out of its own context --
+# where to run, and what the previous link produced -- never from anything a
+# caller supplied. An action that takes no configuration still has to tolerate
+# them: without this, chaining one of them would fail it on every run and
+# `MAX_CONSECUTIVE_FAILURES` would quietly disable the schedule.
+RESERVED_PAYLOAD_KEYS = frozenset({"chain_input", "workdir"})
+
+
+def _configuration(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """The part of a payload that is actually configuration, if any."""
+
+    return {key: value for key, value in (payload or {}).items()
+            if key not in RESERVED_PAYLOAD_KEYS}
+
 DELIVERY_RULES = (
     "\n\n---\nDispatcher handoff for this task: you are working in a private "
     "checkout on branch serena/task-{task_id}, and that checkout is this run's base "
@@ -259,7 +273,7 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
 
     from core import agent_checkouts
 
-    if payload:
+    if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.start accepts no schedule payload")
 
     owner = f"scheduler:{uuid4().hex}"
@@ -404,17 +418,28 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
         return attach(run_id)
 
 
-def _notify_phone(text: str, key: str) -> bool:
+def _he_asked(task: dict[str, Any]) -> bool:
+    """True when the task came from him, so telling him how it went is a reply.
+
+    A queue write with no human on the other end is a different thing: nobody
+    is waiting on it, and it can keep until morning like any other notice.
+    """
+
+    return str(task.get("source_id") or "").startswith(("imessage:", "webhook:"))
+
+
+def _notify_phone(text: str, key: str, *, answers_request: bool = False) -> bool:
     """Tell Raghav on his phone line, through the one notification authority."""
 
     from core.notification_senders import notify
 
     result = notify("task.update", text, channel="imessage", dedupe_key=key,
-                    source_surface="dispatch", fallback_channel=None)
+                    source_surface="dispatch", fallback_channel=None,
+                    answers_request=answers_request)
     return bool(result.sent)
 
 
-def _notify_once(text: str, key: str) -> bool:
+def _notify_once(text: str, key: str, *, answers_request: bool = False) -> bool:
     """Send a notice at most once ever, beyond the authority's hourly dedupe."""
 
     import sqlite3
@@ -428,7 +453,7 @@ def _notify_once(text: str, key: str) -> bool:
         db.execute("CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY)")
         if db.execute("SELECT 1 FROM notices WHERE key = ?", (key,)).fetchone():
             return False
-        if not _notify_phone(text, key):
+        if not _notify_phone(text, key, answers_request=answers_request):
             return False
         with db:
             db.execute("INSERT OR IGNORE INTO notices(key) VALUES (?)", (key,))
@@ -449,7 +474,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     from fleet.supervisor import get_run
     from memory import store
 
-    if payload:
+    if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.reconcile accepts no schedule payload")
     closed: list[dict[str, Any]] = []
     for task in store.tasks_in_state("running"):
@@ -471,6 +496,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             if _notify_once(
                 f"#{task['id']} is stuck waiting on input (fleet {run_id[:8]}): {reason}",
                 f"task:{task['id']}:waiting:{digest}",
+                answers_request=_he_asked(task),
             ):
                 closed.append({"task_id": int(task["id"]), "run_state": state,
                                "waiting": True})
@@ -519,7 +545,8 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             message = f"#{task_id} {state} ({headline}). {reason}"
             final = "blocked"
         if store.finish_task_run(task_id, run_id, final, result):
-            record["notified"] = _notify_phone(message, f"task:{task_id}:{final}")
+            record["notified"] = _notify_phone(
+                message, f"task:{task_id}:{final}", answers_request=_he_asked(task))
             if checkout is not None and final == "done":
                 # A failed run keeps its worktree so the partial work can be read.
                 agent_checkouts.cleanup(checkout)
@@ -539,7 +566,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
         question = (f"#{task_id} needs one detail before i hand it off: \"{headline}\". "
                     f"what exactly should change, and in which project? "
                     f"reply \"#{task_id} <details>\".")
-        if _notify_phone(question, f"task:{task_id}:question"):
+        if _notify_phone(question, f"task:{task_id}:question", answers_request=True):
             store.mark_task_asked(task_id)
             asked.append(task_id)
     return ActionOutcome(
@@ -549,13 +576,57 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     )
 
 
+def sweep_approvals(payload: dict[str, Any]) -> ActionOutcome:
+    """Push unannounced approvals, deny expired ones, remind within caps.
+
+    Runs on the scheduler tick: `scan()` announces anything new on its one
+    channel, `deny_expired()` closes what silence denied (telling him once),
+    and aging pendings get one reminder — the notification authority's own
+    dedupe key makes the "once" durable, not this function's memory.
+    """
+
+    import time
+
+    from core import approvals
+
+    if _configuration(payload):
+        return ActionOutcome(False, "serena.approvals.sweep accepts no schedule payload")
+    broker = approvals.ApprovalBroker()
+    announced = sum(1 for entry in broker.scan() if entry.get("notified"))
+    denied = broker.authority.deny_expired()
+    for record in denied:
+        _notify_phone(
+            f"that approval expired, so it's denied: {record.capability} "
+            f"— {record.target}.",
+            f"approval:{record.confirmation_id}:expired")
+    reminded = 0
+    for confirmation in broker.authority.pending_confirmations():
+        if confirmation.requested_at + 60.0 > time.time():
+            continue
+        if _notify_phone(
+                approvals.prompt_text(
+                    confirmation,
+                    broker.mint_nonce(confirmation),
+                    channel=broker.scan_channel(confirmation)),
+                f"approval:{confirmation.confirmation_id}:reminder"):
+            reminded += 1
+    return ActionOutcome(
+        True,
+        f"announced {announced}, denied {len(denied)} expired, "
+        f"reminded {reminded}",
+        output={"announced": announced,
+                "denied": [d.confirmation_id for d in denied],
+                "reminded": reminded},
+    )
+
+
 def poll_phone_line(payload: dict[str, Any]) -> ActionOutcome:
     """Read new iMessage commands from Raghav's thread into the queue."""
 
     from core import phone_line
     from core.unified_hub import UnifiedHubError
 
-    if payload:
+    if _configuration(payload):
         return ActionOutcome(False, "serena.phone.poll accepts no schedule payload")
     if not phone_line.available():
         return ActionOutcome(True, "phone line is not configured on this machine")
@@ -589,7 +660,7 @@ def check_phone_health(payload: dict[str, Any]) -> ActionOutcome:
 
     from core import bluebubbles_line, phone_line
 
-    if payload:
+    if _configuration(payload):
         return ActionOutcome(False, "serena.phone.health accepts no schedule payload")
     if not bluebubbles_line.enabled():
         return ActionOutcome(True, "Serena's own iMessage line is not configured here")
@@ -659,6 +730,7 @@ REVIEWED_ACTIONS = {
     "serena.fleet.reconcile": reconcile_fleet_tasks,
     "serena.phone.poll": poll_phone_line,
     "serena.phone.health": check_phone_health,
+    "serena.approvals.sweep": sweep_approvals,
 }
 
 

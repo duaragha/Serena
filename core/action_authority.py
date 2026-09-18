@@ -898,6 +898,7 @@ class ActionAuthority:
         *,
         approved: bool,
         resolved_by: str = "raghav",
+        surface: str = "",
         now: float | None = None,
     ) -> Confirmation:
         moment = time.time() if now is None else float(now)
@@ -910,18 +911,52 @@ class ActionAuthority:
             if row is None:
                 raise ActionAuthorityError(f"unknown confirmation {identifier}")
             if str(row["state"]) != "pending":
-                raise ActionAuthorityError("this confirmation was already resolved")
+                # Networks retry: answering twice resolves once, first wins.
+                # The retry is still audited: the losing attempt's surface is
+                # exactly what a replay investigation needs.
+                record = _confirmation_from_row(row)
+                self._audit("confirmation.duplicate", {
+                    "confirmation_id": identifier,
+                    "state": record.state,
+                    "approved": bool(approved),
+                    "surface": _clean(surface, 16),
+                    "actor": _clean(resolved_by, 64) or "raghav",
+                })
+                return record
+            tier = int(row["tier"])
+            if tier >= TIER_SECRET and surface not in TYPED_SOURCES:
+                # Fail closed on a missing surface too: an omitted surface is
+                # not a typed one, so tier 4 refuses it like voice or text.
+                raise ActionAuthorityError(
+                    f"a tier {tier} confirmation needs a typed surface, "
+                    f"not {surface or 'an unrecorded surface'}")
             if moment >= float(row["expires_at"]):
+                # One terminal state for silence, wherever it is noticed: the
+                # sweep denies and this late answer denies too, so the audit
+                # never has to explain 'expired' versus 'denied'.
                 connection.execute(
-                    "UPDATE action_confirmations SET state='expired', resolved_at=? "
-                    "WHERE confirmation_id=?",
+                    "UPDATE action_confirmations SET state='denied', resolved_at=?, "
+                    "resolved_by='timeout' WHERE confirmation_id=?",
                     (moment, identifier),
                 )
+                expired = connection.execute(
+                    "SELECT * FROM action_confirmations WHERE confirmation_id=?",
+                    (identifier,),
+                ).fetchone()
+                # Commit before raising AND before auditing: the context
+                # manager rolls back on exceptions, so the denial must be
+                # durable first — and the audit must never claim a denial
+                # the database does not have.
+                connection.commit()
+                self._audit("confirmation.resolved",
+                            _confirmation_from_row(expired).to_dict())
                 raise ActionAuthorityError("this confirmation expired before it was answered")
+            actor = _clean(resolved_by, 64) or "raghav"
+            by = f"{actor} via {_clean(surface, 16)}" if surface else actor
             connection.execute(
                 "UPDATE action_confirmations SET state=?, resolved_at=?, resolved_by=? "
                 "WHERE confirmation_id=?",
-                ("approved" if approved else "denied", moment, _clean(resolved_by, 64), identifier),
+                ("approved" if approved else "denied", moment, by[:64], identifier),
             )
             updated = connection.execute(
                 "SELECT * FROM action_confirmations WHERE confirmation_id=?", (identifier,)
@@ -929,6 +964,39 @@ class ActionAuthority:
         record = _confirmation_from_row(updated)
         self._audit("confirmation.resolved", record.to_dict())
         return record
+
+    def deny_expired(self, *, now: float | None = None) -> list[Confirmation]:
+        """Deny every confirmation that expired unanswered. Silence is not
+        consent: the sweep calls this, tells him once, and never retries."""
+
+        moment = time.time() if now is None else float(now)
+        denied: list[Confirmation] = []
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM action_confirmations WHERE state='pending' "
+                "AND expires_at <= ? ORDER BY requested_at",
+                (moment,),
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    "UPDATE action_confirmations SET state='denied', "
+                    "resolved_at=?, resolved_by='timeout' "
+                    "WHERE confirmation_id=? AND state='pending'",
+                    (moment, str(row["confirmation_id"])),
+                )
+                updated = connection.execute(
+                    "SELECT * FROM action_confirmations WHERE confirmation_id=?",
+                    (str(row["confirmation_id"]),),
+                ).fetchone()
+                denied.append(_confirmation_from_row(updated))
+        for record in denied:
+            self._audit("confirmation.resolved", record.to_dict())
+        return denied
+
+    def audit(self, event: str, payload: Mapping[str, Any]) -> str:
+        """Append one hash-chained audit line. Brokers record refusals here."""
+
+        return self._audit(event, payload)
 
     def confirmation(self, confirmation_id: str) -> Confirmation | None:
         with self._connect() as connection:

@@ -324,7 +324,8 @@ def _authorize_attach(slug: str, *, authority_path=None, confirm_fn=None) -> Non
         prompt=f"attach sealed browser profile '{slug}'?",
     )
     resolved = auth.resolve_confirmation(
-        record.confirmation_id, approved=bool(confirm_fn(f"attach sealed browser profile '{slug}'?"))
+        record.confirmation_id, approved=bool(confirm_fn(f"attach sealed browser profile '{slug}'?")),
+        surface="cli",
     )
     if resolved.state != "approved":
         raise BrowserProfileError("attach not approved")

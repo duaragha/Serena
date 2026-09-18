@@ -41,6 +41,7 @@ def test_the_registry_is_a_fixed_set_of_named_actions():
         "serena.fleet.reconcile",
         "serena.phone.poll",
         "serena.phone.health",
+        "serena.approvals.sweep",
     }
     assert all(callable(handler) for handler in REVIEWED_ACTIONS.values())
 
@@ -665,3 +666,47 @@ def test_real_queue_capacity_hold_preserves_ready_task(real_fleet_queue, tmp_pat
     assert runtime.run_pass(now=1002).ran == ["serena.fleet.start:ok"]
     assert queue.store.get_memory(task["id"])["state"] == "running"
     queue.start.assert_called_once()
+
+
+# ---- chaining must not fail the actions it chains -------------------------
+
+
+def test_reserved_context_keys_are_not_configuration():
+    """`chain_input` and `workdir` come from the scheduler, not from a caller.
+
+    Every "accepts no schedule payload" guard used to reject any payload at
+    all. Chaining `serena.phone.poll` into `serena.fleet.start` injects
+    `chain_input`, so each chained run would have failed and three of them in
+    a row would have disabled the schedule -- turning a latency fix into a
+    dead dispatcher.
+    """
+
+    from core.scheduler_actions import _configuration
+
+    assert _configuration(None) == {}
+    assert _configuration({}) == {}
+    assert _configuration({"chain_input": {"output": {}}, "workdir": "/srv/x"}) == {}
+    # Anything else is still configuration, and still refused by the guards.
+    assert _configuration({"chain_input": {}, "cwd": "/etc"}) == {"cwd": "/etc"}
+
+
+def test_a_chained_phone_poll_and_fleet_start_still_run(monkeypatch, tmp_path):
+    from core import phone_line, scheduler_actions
+    from core.scheduler_actions import poll_phone_line, start_ready_fleet_task
+    from memory import store
+
+    monkeypatch.setattr(store, "MEMORY_DIR", tmp_path / "memory")
+    chained = {"chain_input": {"from_action": "serena.phone.poll", "output": {}}}
+
+    monkeypatch.setattr(phone_line, "available", lambda: False)
+    outcome = poll_phone_line(chained)
+    assert outcome.ok, outcome.detail
+    assert "accepts no schedule payload" not in outcome.detail
+
+    monkeypatch.setattr(scheduler_actions, "_max_active_task_runs", lambda: 1, raising=False)
+    outcome = start_ready_fleet_task(chained)
+    assert "accepts no schedule payload" not in outcome.detail
+
+    # A payload that is real configuration is still refused by both.
+    assert "accepts no schedule payload" in poll_phone_line({"cwd": "/etc"}).detail
+    assert "accepts no schedule payload" in start_ready_fleet_task({"cwd": "/etc"}).detail
