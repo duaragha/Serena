@@ -2043,6 +2043,24 @@ def plugin_set_state(plugin_id, state, actor):
     _emit_json(_operator_call(_plugin_registry().transition, plugin_id, state, actor=actor))
 
 
+@main.command(name="doctor")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable findings.")
+def doctor_command(as_json):
+    """Check the things that actually break, and say how to fix each one.
+
+    Read-only: nothing is dispatched, resumed or restarted. Exits non-zero when
+    something is broken, so it can gate a deploy.
+    """
+
+    import sys
+
+    from core import doctor as doctor_module
+
+    report = doctor_module.run()
+    click.echo(doctor_module.as_json(report) if as_json else doctor_module.render(report))
+    sys.exit(0 if report.ok else 1)
+
+
 @main.group(name="schedule")
 def schedule_group():
     """Inspect and approve Serena's bounded schedules."""
