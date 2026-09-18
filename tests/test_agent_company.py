@@ -734,3 +734,49 @@ def test_a_task_that_cannot_even_start_is_not_blocked_in_silence(queue, monkeypa
     store.enqueue_task(BRIEF + " again", source_id="imessage:78")
     scheduler_actions.REVIEWED_ACTIONS["serena.fleet.start"]({})
     assert len(texts) == 2, "a different task is a different notice"
+
+
+def test_a_base_that_cannot_be_refreshed_still_produces_a_checkout(github):
+    """Expired GitHub auth must not stop work from starting.
+
+    `prepare` fetches origin every time the base already exists, and that is
+    the only credential-dependent step before a run. On the PC it failed with
+    "could not read Username for 'https://github.com'", so a brief he texted
+    was held blocked with no run at all. origin/<default> is already a real
+    commit, so an unreachable remote is a stale base, not a dead queue.
+    """
+
+    from core import agent_checkouts
+
+    first = agent_checkouts.prepare(github.synced, 5, projects_root=github.projects)
+    assert first.stale_base is False
+
+    # Point the base at a remote that cannot be reached, exactly as an expired
+    # credential does, and prepare a second task against the same base.
+    agent_checkouts._git(first.base, "remote", "set-url", "origin",
+                         "https://github.com/duaragha/does-not-exist-offline.git")
+    second = agent_checkouts.prepare(github.synced, 6, projects_root=github.projects)
+
+    assert second.stale_base is True, "an unreachable remote is a stale base"
+    assert second.branch == "serena/task-6"
+    assert (second.path / "README.md").read_text() == "demo\n"
+    assert agent_checkouts.locate(second.path).branch == "serena/task-6"
+
+
+def test_a_stale_base_is_recorded_on_the_dispatch(queue, monkeypatch):
+    from core import agent_checkouts, coding_job_contract, scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task(BRIEF, source_id="imessage:90")
+    monkeypatch.setattr(coding_job_contract, "resolve_repository_root",
+                        lambda *a, **k: Path("/repo"))
+    checkout = SimpleNamespace(path="/checkout", branch=f"serena/task-{task['id']}",
+                               stale_base=True)
+    monkeypatch.setattr(agent_checkouts, "prepare", lambda *a, **k: checkout)
+    monkeypatch.setattr(supervisor, "list_runs", lambda **k: [])
+    monkeypatch.setattr(supervisor, "start_run", lambda **k: {"run_id": "run-90"})
+
+    outcome = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.start"]({})
+
+    assert outcome.output.get("stale_base") is True
+    assert outcome.output.get("run_id") == "run-90"
