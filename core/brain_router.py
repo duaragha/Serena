@@ -222,6 +222,11 @@ def route_turn(
         role="execute",
         manual_override=override,
         capacity=capacity,
+        # He hears a spoken answer sentence by sentence, so the lane has to
+        # prefer a model that streams even when the question is a work
+        # question. A stronger model that answers all at once reads as a dead
+        # line: preamble, silence, then everything at once.
+        require_streaming=protocol == "voice",
         policy=policy,
     )
     fast_fallback_reason = (

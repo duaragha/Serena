@@ -32,6 +32,7 @@ class ModelCandidate:
     effort: str
     label: str
     strength: int
+    streams: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -342,6 +343,7 @@ def _candidate(
         effort=str(effort or raw["effort"]),
         label=str(spec["label"]),
         strength=int(spec["strength"]),
+        streams=bool(spec.get("streams", True)),
     )
 
 
@@ -378,6 +380,7 @@ def resolve_policy(
     manual_override: object = "auto",
     capacity: Mapping[str, Any] | None = None,
     avoid_provider: str = "",
+    require_streaming: bool = False,
     policy: Mapping[str, Any] | None = None,
 ) -> PolicyDecision:
     """Select and freeze one capacity-aware model decision."""
@@ -425,6 +428,13 @@ def resolve_policy(
             )
         else:
             candidates = [manual, *(item for item in candidates if item.model != requested)]
+
+    if require_streaming and requested == "auto":
+        # A spoken turn is heard one sentence at a time, so a model that only
+        # answers all at once leaves him listening to silence. Streaming
+        # candidates come first, and the rest stay behind them rather than
+        # being dropped: a slow answer still beats no answer.
+        candidates.sort(key=lambda item: not item.streams)
 
     if avoid_provider and requested == "auto":
         candidates.sort(key=lambda item: item.provider == avoid_provider)

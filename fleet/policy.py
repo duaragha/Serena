@@ -48,6 +48,10 @@ REPOSITORY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "fleet
 #   claude-opus-5 medium  69% +/-1   $3.29    52 turns
 #   gpt-5.6-sol high      69% +/-1   $3.47    37 turns   (leanest of the top tier)
 #   gpt-5.6-sol xhigh     71% +/-1   $4.70    44 turns
+# Superseded 2026-09-18: Sol is retired from every automatic path at
+# Raghav's instruction and Astra 6 takes its rungs. The numbers above are
+# kept as the record of what it was measured against, and the sol entry in
+# COMPARISON_PROFILES stays so the A/B can be re-run on demand.
 #   gpt-5.6-luna max      67% +/-4   $0.61   102 turns   (chatty, but 1/5 the price)
 #   claude-sonnet-5 high  48% +/-5   $7.43   147 turns   (dominated everywhere)
 #
@@ -82,7 +86,7 @@ PHASE_MODEL_POLICY = {
     "research": {
         "discover": (("codex", "gpt-5.6-luna", "max"),),
         "execute": (("claude", "claude-opus-5", "high"),),
-        "verify": (("codex", "gpt-5.6-sol", "high"),),
+        "verify": (("codex", "gpt-6-astra", "medium"),),
         "finalize": (("claude", "claude-opus-5", "high"),),
     },
 }
@@ -104,9 +108,9 @@ PROVIDER_ONLY_POLICY = {
         },
         "research": {
             "discover": (("codex", "gpt-5.6-luna", "max"),),
-            "execute": (("codex", "gpt-5.6-sol", "xhigh"),),
-            "verify": (("codex", "gpt-5.6-sol", "high"),),
-            "finalize": (("codex", "gpt-5.6-sol", "xhigh"),),
+            "execute": (("codex", "gpt-6-astra", "high"),),
+            "verify": (("codex", "gpt-6-astra", "medium"),),
+            "finalize": (("codex", "gpt-6-astra", "high"),),
         },
     },
     # Opus 5 medium replaces what used to be Sonnet here: 69% at $3.29 over 52

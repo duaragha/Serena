@@ -92,7 +92,9 @@ def test_policy_routes_exact_models_and_safe_coding_writers():
     ] == [
         [("gpt-5.6-luna", "max")],
         [("claude-opus-5", "high")],
-        [("gpt-5.6-sol", "high")],
+        # Luna still reads and Opus still analyses and refines;
+        # Astra took the review leg when Sol was retired.
+        [("gpt-6-astra", "medium")],
         [("claude-opus-5", "high")],
     ]
     assert all(phase.execution == "parallel" for phase in research.phases)
