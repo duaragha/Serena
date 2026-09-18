@@ -235,3 +235,38 @@ def test_the_chain_is_scribe_then_groq_then_local(monkeypatch):
     monkeypatch.setenv("SERENA_CALL_STT_BACKEND", "scribe")
     with pytest.raises(RuntimeError, match="ELEVENLABS_API_KEY"):
         create_stt_backend()
+
+
+def test_health_names_the_recognizer_and_its_fallbacks(monkeypatch):
+    """A hosted chain used to vanish from /health, which hid what was hearing him."""
+
+    from voice.call.orchestrator import CallRuntime
+
+    class _Middle:
+        name = "groq-whisper-large-v3-turbo"
+        execution = "remote"
+        model_source = "hosted"
+
+        def __init__(self, fallback):
+            self.fallback = fallback
+
+    local = _Fallback()
+    chain = ScribeRealtimeWorker(fallback=_Middle(local), api_key="xi-test", keyterms=[])
+    runtime = CallRuntime(stt=chain, brain=None, tts=None, endpoint_factory=None)
+    stt = runtime.model_details["stt"]
+    assert stt["backend"] == "elevenlabs-scribe-v2-realtime"
+    assert stt["execution"] == "remote"
+    assert stt["streaming"] is True
+    assert stt["fallbacks"] == ["groq-whisper-large-v3-turbo", "faster-whisper"]
+    # A local-only runtime still reports its device, as it always did.
+    from voice.call.stt import WhisperDevice
+
+    class _LocalOnly(_Fallback):
+        execution = "local"
+        model_source = "local_path"
+        device = WhisperDevice("cpu", "int8", "test")
+
+    plain = CallRuntime(stt=_LocalOnly(), brain=None, tts=None, endpoint_factory=None)
+    assert plain.model_details["stt"]["device"] == "cpu"
+    assert plain.model_details["stt"]["compute_type"] == "int8"
+    assert plain.model_details["stt"]["streaming"] is False

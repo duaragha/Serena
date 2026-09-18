@@ -330,15 +330,28 @@ class CallRuntime:
     @property
     def model_details(self) -> dict[str, dict[str, Any]]:
         details: dict[str, dict[str, Any]] = {}
+        # Which recognizer is listening is the single most useful thing in this
+        # payload, so it is reported for every backend. Only a local model has
+        # a device and a compute type, and a hosted one names its fallback
+        # instead: "scribe, and whisper underneath if the socket dies".
+        stt_details: dict[str, Any] = {
+            "backend": getattr(self.stt, "name", "unknown"),
+            "execution": getattr(self.stt, "execution", "unknown"),
+            "model_source": getattr(self.stt, "model_source", "unknown"),
+            "streaming": bool(getattr(self.stt, "supports_streaming", False)),
+        }
         device = getattr(self.stt, "device", None)
         if device is not None:
-            details["stt"] = {
-                "backend": getattr(self.stt, "name", "unknown"),
-                "execution": getattr(self.stt, "execution", "unknown"),
-                "model_source": getattr(self.stt, "model_source", "unknown"),
-                "device": getattr(device, "device", "unknown"),
-                "compute_type": getattr(device, "compute_type", "unknown"),
-            }
+            stt_details["device"] = getattr(device, "device", "unknown")
+            stt_details["compute_type"] = getattr(device, "compute_type", "unknown")
+        fallbacks: list[str] = []
+        layer = getattr(self.stt, "fallback", None)
+        while layer is not None and len(fallbacks) < 4:
+            fallbacks.append(str(getattr(layer, "name", "unknown")))
+            layer = getattr(layer, "fallback", None)
+        if fallbacks:
+            stt_details["fallbacks"] = fallbacks
+        details["stt"] = stt_details
         tts_details: dict[str, Any] = {
             "backend": getattr(self.tts, "name", "unknown"),
             "execution": getattr(self.tts, "execution", "unknown"),
