@@ -3089,5 +3089,9 @@ from core.computer_cli import computer
 
 main.add_command(computer)
 
+from core.browser_cli import browser
+
+main.add_command(browser)
+
 if __name__ == "__main__":
     main()
