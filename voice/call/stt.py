@@ -13,6 +13,7 @@ from typing import Any
 
 from .process_worker import CancellableModelProcess
 from .protocol import MIC_SAMPLE_RATE
+from .stack_config import voice_setting
 
 log_stt = logging.getLogger("serena.call.stt")
 
@@ -356,7 +357,8 @@ def create_stt_backend() -> Any:
     network only costs accuracy, never the call.
     """
 
-    backend = os.environ.get("SERENA_CALL_STT_BACKEND", "auto").strip().lower()
+    backend = voice_setting(
+        "stt", "backend", env="SERENA_CALL_STT_BACKEND", default="auto").lower()
     if backend in {"local", "faster-whisper"}:
         return FasterWhisperWorker()
 

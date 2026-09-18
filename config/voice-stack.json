@@ -1,0 +1,12 @@
+{
+  "_comment": "Her voice, shared by every machine. The phone host on the PC and the desk host on the laptop both read this, so she cannot sound like two different people. Environment variables still override it per machine.",
+  "tts": {
+    "backend": "elevenlabs",
+    "voice_id": "LZAcK8Cx5QjdQhfBsJQZ",
+    "voice_name": "Croft Grace",
+    "model": "eleven_flash_v2_5"
+  },
+  "stt": {
+    "backend": "auto"
+  }
+}

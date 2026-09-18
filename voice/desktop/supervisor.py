@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -24,6 +25,92 @@ DOT_DISPLAY_DELAY_SECONDS = 1.0
 START_AWAKE = "--start-awake"
 REARM_MIN_UPTIME_SECONDS = 5.0
 REARM_MAX_CONSECUTIVE_FAILURES = 3
+# Cinnamon publishes DISPLAY into the user manager only once the desktop is
+# up, which is strictly after wireplumber pulls this unit in at login. So the
+# app can be started into a session that has a perfectly healthy X server it
+# simply cannot see yet, and Electron aborts on sight. Waiting is the whole
+# fix; two minutes is far longer than a cold boot to desktop.
+DISPLAY_WAIT_SECONDS = 120.0
+DISPLAY_POLL_SECONDS = 1.0
+DISPLAY_CONNECT_TIMEOUT_SECONDS = 2.0
+DOT_DISPLAY_MAX_RESTARTS = 3
+DOT_DISPLAY_RESTART_BACKOFF_SECONDS = 5.0
+
+
+def session_display_environment() -> dict[str, str]:
+    """DISPLAY and XAUTHORITY exactly as the desktop session published them.
+
+    The session pushes them into the systemd user manager when it comes up.
+    Reading them back is how a unit that started before the desktop finds the
+    screen it is supposed to draw on, instead of inheriting an empty DISPLAY
+    for the rest of its life.
+    """
+
+    try:
+        result = subprocess.run(
+            ("systemctl", "--user", "show-environment"),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    published: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() in ("DISPLAY", "XAUTHORITY") and value.strip():
+            published[key.strip()] = value.strip()
+    return published
+
+
+def display_is_listening(display: str) -> bool:
+    """True when something actually answers on that display.
+
+    An exported DISPLAY says the session means to have an X server, not that
+    it has one yet. PrivateTmp hides /tmp/.X11-unix from this unit, so the
+    abstract socket is the one that can be reached from in here; the path is
+    tried anyway for the sandboxes that do pass it through.
+    """
+
+    number = display.strip().partition(":")[2].partition(".")[0]
+    if not number.isdigit():
+        return False
+    for address in (f"\0/tmp/.X11-unix/X{number}", f"/tmp/.X11-unix/X{number}"):
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(DISPLAY_CONNECT_TIMEOUT_SECONDS)
+            probe.connect(address)
+            return True
+        except OSError:
+            continue
+        finally:
+            probe.close()
+    return False
+
+
+def wait_for_display(
+    environment: dict[str, str], *, timeout: float = DISPLAY_WAIT_SECONDS
+) -> bool:
+    """Block until a window can actually be opened, filling in the address.
+
+    ``environment`` is updated in place, so the caller hands the resolved
+    DISPLAY and XAUTHORITY straight to Electron.
+    """
+
+    deadline = time.monotonic() + timeout
+    while True:
+        if not (environment.get("DISPLAY") or "").strip() or not (
+                environment.get("XAUTHORITY") or "").strip():
+            for key, value in session_display_environment().items():
+                if not (environment.get(key) or "").strip():
+                    environment[key] = value
+        display = (environment.get("DISPLAY") or "").strip()
+        if display and display_is_listening(display):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(DISPLAY_POLL_SECONDS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,15 +166,27 @@ class VoiceAppSupervisor:
         self.stopping = threading.Event()
         self.rearm_failures = 0
         self._rearmed_at = 0.0
+        self.environment = os.environ.copy()
+        self.environment["PYTHONUNBUFFERED"] = "1"
+        self.dot_restarts = 0
 
     def start(self) -> None:
-        environment = os.environ.copy()
-        environment["PYTHONUNBUFFERED"] = "1"
+        environment = self.environment
         for item in self.items:
             if item.name == "dot-display":
                 # Electron can monopolize the laptop during its cold start.
                 # Let the awake voice process reach first PCM before opening it.
                 time.sleep(DOT_DISPLAY_DELAY_SECONDS)
+                if not wait_for_display(environment):
+                    # Her voice is the point; the dot field is how it looks.
+                    # A headless or still-booting session costs the overlay,
+                    # never the ears.
+                    print(
+                        "[voice-app] no X server to draw on; running voice and "
+                        "the bridge without the dot field",
+                        flush=True,
+                    )
+                    continue
             process = subprocess.Popen(
                 item.command,
                 cwd=item.cwd,
@@ -129,8 +228,7 @@ class VoiceAppSupervisor:
         if item is None:
             return False
         command = tuple(part for part in item.command if part != START_AWAKE)
-        environment = os.environ.copy()
-        environment["PYTHONUNBUFFERED"] = "1"
+        environment = self.environment
         try:
             process = subprocess.Popen(
                 command, cwd=item.cwd, env=environment, start_new_session=True
@@ -144,6 +242,36 @@ class VoiceAppSupervisor:
             f"[voice-app] listening for 'hey serena' again pid={process.pid}",
             flush=True,
         )
+        return True
+
+    def restart_dot_display(self) -> bool:
+        """Reopen the overlay after a crash, bounded so it cannot spin.
+
+        A crashed overlay used to take her voice down with it, which is the
+        wrong trade every time: the ears work with or without a window.
+        """
+
+        item = next(
+            (entry for entry in self.items if entry.name == "dot-display"), None)
+        if item is None or self.dot_restarts >= DOT_DISPLAY_MAX_RESTARTS:
+            return False
+        self.dot_restarts += 1
+        if self.stopping.wait(DOT_DISPLAY_RESTART_BACKOFF_SECONDS):
+            return False
+        if not wait_for_display(self.environment):
+            return False
+        try:
+            process = subprocess.Popen(
+                item.command,
+                cwd=item.cwd,
+                env=self.environment,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            print(f"[voice-app] could not reopen the dot field: {exc}", flush=True)
+            return False
+        self.processes["dot-display"] = process
+        print(f"[voice-app] reopened the dot field pid={process.pid}", flush=True)
         return True
 
     def forward_session_close(self) -> None:
@@ -195,6 +323,18 @@ class VoiceAppSupervisor:
                     if not self.rearm_wake():
                         print(
                             "[voice-app] keeping the overlay and bridge up for typing",
+                            flush=True,
+                        )
+                    break
+                if name == "dot-display" and return_code != 0:
+                    # Exit zero is the tray's own Quit and still ends the app.
+                    # Anything else is a crash, and a crash is the overlay's
+                    # problem alone.
+                    self.processes.pop(name, None)
+                    if not self.restart_dot_display():
+                        print(
+                            "[voice-app] the dot field stays down; voice and "
+                            "the bridge keep running",
                             flush=True,
                         )
                     break
