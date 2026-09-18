@@ -965,6 +965,70 @@ class FleetStore:
                 payload={**allowed, 'sources': receipt.get('sources', [])},
             )
 
+    def record_loopback_verification(
+        self, attempt_id: str, *, verifier: str, detail: str = ""
+    ) -> dict[str, Any]:
+        """Record an operator-side check that a loopback-dependent result holds.
+
+        Fleet workers run inside provider sandboxes (Codex ``--sandbox``,
+        Claude permission flags) that Serena does not control, so a worker
+        that needs 127.0.0.1 reports its result unverified and the check
+        happens on the host instead. Flow: the worker defers the
+        loopback-dependent claim, the operator (or a host-side probe) runs
+        the check against localhost, then calls this once per checked
+        attempt. Readers use :meth:`loopback_verified`. Repeat calls append
+        another event; the latest one wins.
+        """
+
+        clean_verifier = str(verifier or "").strip()[:128]
+        if not clean_verifier:
+            raise ValueError("loopback verification requires a verifier")
+        clean_detail = str(detail or "").strip()[:2_000]
+        payload = {
+            "verifier": clean_verifier,
+            "detail": clean_detail,
+            "verified_at": time.time(),
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            attempt = connection.execute(
+                """
+                SELECT a.attempt_id, l.run_id, l.leg_id
+                FROM fleet_attempts a JOIN fleet_legs l ON l.leg_id = a.leg_id
+                WHERE a.attempt_id = ?
+                """,
+                (attempt_id,),
+            ).fetchone()
+            if attempt is None:
+                raise KeyError(f"unknown Fleet attempt {attempt_id}")
+            self._insert_event(
+                connection,
+                run_id=str(attempt["run_id"]),
+                leg_id=str(attempt["leg_id"]),
+                attempt_id=attempt_id,
+                event_type="attempt.loopback_verified",
+                payload=payload,
+            )
+        return dict(payload)
+
+    def loopback_verified(self, attempt_id: str) -> dict[str, Any] | None:
+        """Latest operator loopback verification for one attempt, if any."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM fleet_events "
+                "WHERE attempt_id = ? AND type = 'attempt.loopback_verified' "
+                "ORDER BY event_seq DESC LIMIT 1",
+                (attempt_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def finish_attempt(
         self,
         attempt_id: str,
