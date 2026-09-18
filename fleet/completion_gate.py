@@ -995,6 +995,22 @@ def _event_log_research_activity(event_log_path: str | None) -> dict[str, int]:
                         elif step.get("tool_name") == "read_url_content":
                             fetches.add("gemini:" + key)
 
+            # Muse records each finished tool call as its own envelope, with the
+            # tool named in correlation_facts rather than in the event type, so
+            # none of the branches above can see its searches.
+            if event.get("payload_type") == "tool.result":
+                payload = event.get("payload")
+                payload = payload if isinstance(payload, dict) else {}
+                facts = payload.get("correlation_facts")
+                facts = facts if isinstance(facts, dict) else {}
+                if str(facts.get("outcome") or "").casefold() == "success":
+                    tool = str(facts.get("tool_name") or "").casefold()
+                    key = str(payload.get("call_id") or len(searches) + len(fetches) + 1)
+                    if tool == "web_search":
+                        searches.add("muse:" + key)
+                    elif tool == "web_fetch":
+                        fetches.add("muse:" + key)
+
             if event.get("type") == "item.completed":
                 item = event.get("item")
                 if isinstance(item, dict) and str(item.get("type") or "").casefold() in {

@@ -1559,3 +1559,65 @@ def test_read_only_git_and_inspectors_are_runnable_and_writes_are_not(gate_env):
         assert _REAL_TEST.search(command), command
     assert not _REAL_TEST.search("git log --oneline")
     assert not _REAL_TEST.search("echo ok")
+
+
+def test_muse_tool_results_count_as_research_activity(tmp_path) -> None:
+    """Muse names the tool in correlation_facts, not in the event type."""
+
+    event_log = tmp_path / "muse-attempt.jsonl"
+    events = [
+        {
+            "payload_type": "tool.result",
+            "payload": {
+                "call_id": "call_a",
+                "correlation_facts": {"outcome": "success", "tool_name": "web_search"},
+            },
+        },
+        {
+            "payload_type": "tool.result",
+            "payload": {
+                "call_id": "call_b",
+                "correlation_facts": {"outcome": "success", "tool_name": "web_search"},
+            },
+        },
+        # Same call replayed: a repeat must not inflate the count.
+        {
+            "payload_type": "tool.result",
+            "payload": {
+                "call_id": "call_b",
+                "correlation_facts": {"outcome": "success", "tool_name": "web_search"},
+            },
+        },
+        {
+            "payload_type": "tool.result",
+            "payload": {
+                "call_id": "call_c",
+                "correlation_facts": {"outcome": "success", "tool_name": "web_fetch"},
+            },
+        },
+        # A failed search is not evidence of anything.
+        {
+            "payload_type": "tool.result",
+            "payload": {
+                "call_id": "call_d",
+                "correlation_facts": {"outcome": "error", "tool_name": "web_search"},
+            },
+        },
+        {
+            "payload_type": "tool.result",
+            "payload": {
+                "call_id": "call_e",
+                "correlation_facts": {"outcome": "success", "tool_name": "bash"},
+            },
+        },
+    ]
+    event_log.write_text(
+        "".join(
+            json.dumps({"stream": "stdout", "line": json.dumps(event)}) + "\n"
+            for event in events
+        ),
+        encoding="utf-8",
+    )
+
+    counts = _event_log_research_activity(str(event_log))
+    assert counts == {"searches": 2, "fetches": 1}

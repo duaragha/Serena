@@ -247,6 +247,11 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
             request.cwd,
             "--session-id",
             sid,
+            # One Fleet worker keeps one session across all four phases, and
+            # Fleet moves it from the base checkout into its write worktree.
+            # Muse pins a session to the workspace it was created in and
+            # refuses to resume elsewhere without this.
+            "--allow-workspace-switch",
             "--approval-mode",
             "never",
         ]

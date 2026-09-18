@@ -120,6 +120,8 @@ def test_muse_worker_argv_uses_exec_json_and_bounds_authority(tmp_path, monkeypa
     # Muse 1.3 refuses --no-session-log alongside the --session-id Fleet pins.
     assert "--no-session-log" not in write
     assert "--session-id" in write
+    # One worker session spans phases, and Fleet moves it into a worktree.
+    assert "--allow-workspace-switch" in write
     assert "--model" not in write  # default Serena identity uses the CLI default
     assert write[write.index("--reasoning-effort") + 1] == "high"
     assert write[write.index("--workspace") + 1] == str(tmp_path)
