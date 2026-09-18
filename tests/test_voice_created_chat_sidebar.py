@@ -12,12 +12,13 @@ def test_voice_chats_placeholder_stays_empty_directly_below_fleet() -> None:
     assert "voiceSet" not in html
     assert 'data-testid="voice-chats-header"' in html
     assert 'data-testid="voice-chats-section"' in html
-    assert "Voice Chats (' + voiceChats.length + ')" in html
+    assert 'sidebar-utility-label">Voice Chats</span>' in html
+    assert "' + voiceChats.length + ')</span>" in html
     assert "fleetChats: true, voiceChats: true" in html
     assert "typeof c.voiceChats === 'boolean'" in html
     assert "function toggleVoiceChatsCollapsed()" in html
 
-    fleet_section = html.index("if (fleetChats.length)")
+    fleet_section = html.index('data-testid="fleet-chats-header"')
     voice_section = html.index('data-testid="voice-chats-header"')
     starred_section = html.index("if (starred.length)")
     assert fleet_section < voice_section < starred_section
