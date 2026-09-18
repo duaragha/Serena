@@ -302,7 +302,7 @@ def _read_with_her_brain(text: str) -> tuple[str, dict[str, Any]] | None:
     from core import phone_intent
 
     try:
-        read = phone_intent.read(text, queue=_status_text())
+        read = phone_intent.read(text, queue=_grounding())
     except Exception:
         read = None
     if read is None:
@@ -315,17 +315,57 @@ def _fingerprint(text: str) -> str:
     return hashlib.sha256(" ".join(text.lower().split()).encode("utf-8")).hexdigest()[:24]
 
 
-def _status_text() -> str:
+_TASK_LABELS = (("running", "running"), ("ready", "queued"),
+                ("needs_triage", "waiting on you"), ("blocked", "blocked"))
+
+
+def _task_rows() -> list[tuple[str, dict[str, Any]]]:
     from memory import store
 
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for state, label in _TASK_LABELS:
+        for row in store.tasks_in_state(state)[:8]:
+            rows.append((label, row))
+    return rows
+
+
+def _status_text() -> str:
+    """His `status` reply: one line a task, carrying why a failure failed.
+
+    "blocked: #1054" is not a status, it is a riddle. The reason is already on
+    the task row, put there by the dispatcher when the run ended.
+    """
+
     lines = []
-    for state, label in (("running", "running"), ("ready", "queued"),
-                         ("needs_triage", "waiting on you"), ("blocked", "blocked")):
-        rows = store.tasks_in_state(state)
-        if rows:
-            items = ", ".join(f"#{row['id']}" for row in rows[:8])
-            lines.append(f"{label}: {items}")
-    return "; ".join(lines) or "nothing queued"
+    for label, row in _task_rows():
+        reason = " ".join(str(row.get("result") or "").split())
+        reason = reason[len("failed:"):].strip() if reason.lower().startswith("failed:") else reason
+        lines.append(f"#{row['id']} {label}" + (f" — {reason[:160]}" if reason else ""))
+    return "\n".join(lines) or "nothing queued"
+
+
+def _grounding() -> str:
+    """The same facts, plus what each task actually asked for, for her turn.
+
+    She cannot answer "how's 1054?" from a state word. Everything here is read
+    off the task row, so a reply never depends on a tool call that might come
+    back empty for a run that has already finished.
+    """
+
+    lines = []
+    for label, row in _task_rows():
+        bits = [f"#{row['id']} {label}"]
+        run = str(row.get("run_id") or "")
+        if run:
+            bits.append(f"fleet {run[:8]}")
+        reason = " ".join(str(row.get("result") or "").split())
+        if reason:
+            bits.append(reason[:200])
+        brief = " ".join(str(row.get("content") or "").split())
+        if brief:
+            bits.append(f"he asked for: {brief[:160]}")
+        lines.append(" | ".join(bits))
+    return "\n".join(lines) or "nothing queued"
 
 
 def _retry(task_id: int) -> str:

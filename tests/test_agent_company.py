@@ -176,7 +176,9 @@ def test_poll_queues_answers_and_ignores_its_own_words(hub):
     report = phone_line.poll(now=1020)
     assert [c["kind"] for c in report.commands] == ["answer", "status"]
     assert store.get_memory(thin["id"])["state"] == "ready"
-    assert "queued:" in hub.sent[-1]
+    # One line a task, so a failure reason has somewhere to go.
+    assert f"#{thin['id']} queued" in hub.sent[-1]
+    assert f"#{ready['id']} queued" in hub.sent[-1]
     assert store.get_memory(ready["id"])["source_id"] == "imessage:a"
 
 
