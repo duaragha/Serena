@@ -42,6 +42,7 @@ def test_the_registry_is_a_fixed_set_of_named_actions():
         "serena.phone.poll",
         "serena.phone.nudge",
         "serena.phone.health",
+        "serena.doctor",
     }
     assert all(callable(handler) for handler in REVIEWED_ACTIONS.values())
 
@@ -712,3 +713,105 @@ def test_every_payless_action_tolerates_being_chained(monkeypatch, tmp_path):
         assert "accepts no schedule payload" not in handler(chained).detail, name
         # Real configuration is still refused, so the guard still guards.
         assert "accepts no schedule payload" in handler({"cwd": "/etc"}).detail, name
+
+
+# ---- the doctor runs on a schedule, or it is not a check -------------------
+
+
+def _doctor_report(*findings):
+    from core import doctor
+
+    return doctor.Report(findings=list(findings))
+
+
+def _finding(name, ok, detail, severity="fail"):
+    from core import doctor
+
+    return doctor.Finding(name, ok, detail, fix="do the thing", severity=severity)
+
+
+def test_the_doctor_is_a_reviewed_action():
+    """It existed for a month with nothing calling it, which is not a check."""
+
+    assert REVIEWED_ACTIONS["serena.doctor"] is not None
+
+
+def test_a_clean_doctor_run_says_nothing(monkeypatch):
+    from core import doctor
+
+    monkeypatch.setattr(doctor, "run", lambda: _doctor_report(
+        _finding("schedules", True, "6 active"),
+    ))
+
+    outcome = REVIEWED_ACTIONS["serena.doctor"]({})
+
+    assert outcome.ok is True
+    assert outcome.notify is None, "a healthy system must not interrupt him"
+    assert outcome.output == {"ok": True, "failures": [], "warnings": []}
+
+
+def test_a_broken_check_reaches_him_once_per_shape(monkeypatch):
+    """The PC ran 35 commits behind with a policy that refused every brief."""
+
+    from core import doctor
+
+    monkeypatch.setattr(doctor, "run", lambda: _doctor_report(
+        _finding("fleet.config", False, "Fleet refuses its own config"),
+        _finding("repo.behind", False, "35 commit(s) behind", severity="warn"),
+    ))
+
+    outcome = REVIEWED_ACTIONS["serena.doctor"]({})
+
+    assert outcome.ok is True, "reporting breakage is a successful run"
+    assert outcome.notify is not None
+    assert outcome.notify["kind"] == "serena.doctor"
+    assert "Fleet refuses its own config" in outcome.notify["summary"]
+    assert "+1 more" in outcome.notify["summary"]
+    assert outcome.notify["urgency"] == "normal"
+    # One notice per distinct shape, so a problem that persists all day does
+    # not become an hourly nag, and a new or fixed check is heard about.
+    assert outcome.notify["dedupe_key"] == "doctor:fleet.config,repo.behind"
+    assert outcome.output["failures"] == ["fleet.config"]
+    assert outcome.output["warnings"] == ["repo.behind"]
+
+
+def test_drift_alone_is_reported_quietly(monkeypatch):
+    from core import doctor
+
+    monkeypatch.setattr(doctor, "run", lambda: _doctor_report(
+        _finding("repo.unlanded", False, "25 commit(s) are on no shipped branch",
+                 severity="warn"),
+    ))
+
+    outcome = REVIEWED_ACTIONS["serena.doctor"]({})
+
+    assert outcome.notify["urgency"] == "low"
+    assert "+" not in outcome.notify["summary"]
+
+
+def test_a_long_finding_is_cut_before_it_is_spoken(monkeypatch):
+    from core import doctor
+    from core.scheduler_actions import DOCTOR_SUMMARY_LIMIT
+
+    monkeypatch.setattr(doctor, "run", lambda: _doctor_report(
+        _finding("imports", False, "x" * 4000),
+    ))
+
+    summary = REVIEWED_ACTIONS["serena.doctor"]({}).notify["summary"]
+
+    assert len(summary) <= DOCTOR_SUMMARY_LIMIT
+
+
+def test_the_doctor_takes_no_configuration_but_tolerates_its_context(monkeypatch):
+    """A chained schedule hands every action chain_input; refusing it disables it."""
+
+    from core import doctor
+
+    monkeypatch.setattr(doctor, "run", lambda: _doctor_report(
+        _finding("schedules", True, "fine"),
+    ))
+
+    assert REVIEWED_ACTIONS["serena.doctor"]({"checks": ["only-mine"]}).ok is False
+    chained = {"chain_input": {"from_action": "serena.phone.poll", "output": {}},
+               "workdir": "/srv/x"}
+    assert REVIEWED_ACTIONS["serena.doctor"](chained).ok is True

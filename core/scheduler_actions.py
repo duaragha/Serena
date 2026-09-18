@@ -18,6 +18,8 @@ from typing import Any
 
 from core.serena_scheduler import ActionOutcome
 
+# A spoken notice is read aloud, so the doctor's lead line has to stay short.
+DOCTOR_SUMMARY_LIMIT = 220
 # Below this, telling him about outstanding work is noise rather than useful.
 OWED_NOTICE_THRESHOLD = 1
 # Only complain about something that has genuinely been sitting.
@@ -333,11 +335,10 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
     from pathlib import Path
     from uuid import uuid4
 
+    from core import agent_checkouts
     from core.coding_job_contract import resolve_repository_root
     from fleet.supervisor import list_runs, start_run
     from memory import store
-
-    from core import agent_checkouts
 
     if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.start accepts no schedule payload")
@@ -889,6 +890,57 @@ def check_phone_health(payload: dict[str, Any]) -> ActionOutcome:
 # The whole registry. A schedule may name exactly one of these keys.
 from core.knowledge_maintenance import scheduled_pass as maintain_knowledge
 
+
+def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
+    """Run the system doctor and tell him only when the answer changes.
+
+    core.doctor existed for a month and nothing ran it. It was written after
+    `fleet serve` spent two days on stale code, and then it sat as a module
+    somebody had to remember to call -- so on 2026-09-18 the PC runtime was
+    thirty-five commits behind with a model policy that refused every coding
+    brief, and the tool that says exactly that in one line went unread.
+
+    A check nobody runs is not a check. This is how it runs.
+    """
+
+    from core import doctor
+
+    if _configuration(payload):
+        return ActionOutcome(False, "serena.doctor accepts no schedule payload")
+
+    report = doctor.run()
+    broken = report.failures + report.warnings
+    output = {
+        "ok": report.ok,
+        "failures": [finding.name for finding in report.failures],
+        "warnings": [finding.name for finding in report.warnings],
+    }
+    if not broken:
+        return ActionOutcome(True, "nothing broken", output=output)
+
+    lead = broken[0]
+    extra = f" (+{len(broken) - 1} more)" if len(broken) > 1 else ""
+    summary = f"{lead.name}: {lead.detail}"[:DOCTOR_SUMMARY_LIMIT] + extra
+    return ActionOutcome(
+        True,
+        summary,
+        notify={
+            "kind": "serena.doctor",
+            "summary": summary,
+            "channel": str(payload.get("channel") or "voice"),
+            # A failure stops work; a warning is a drift he should know about
+            # before it becomes one. Neither is worth waking him for.
+            "urgency": "normal" if report.failures else "low",
+            # One notice per distinct shape of breakage, so a problem that
+            # persists for a day does not become an hourly nag. A new or fixed
+            # check changes the shape, and he hears about it then.
+            "dedupe_key": "doctor:" + ",".join(
+                sorted(finding.name for finding in broken)),
+        },
+        output=output,
+    )
+
+
 REVIEWED_ACTIONS = {
     'serena.knowledge.maintenance': maintain_knowledge,
     "serena.obligations.sweep": sweep_obligations,
@@ -900,6 +952,7 @@ REVIEWED_ACTIONS = {
     "serena.phone.poll": poll_phone_line,
     "serena.phone.nudge": nudge_phone_line,
     "serena.phone.health": check_phone_health,
+    "serena.doctor": run_doctor,
 }
 
 
