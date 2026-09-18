@@ -47,7 +47,7 @@ def test_invalid_model_reference_fails_validation() -> None:
         validate_policy(policy)
 
 
-def test_brain_casual_defaults_to_terra_and_capacity_falls_back_truthfully() -> None:
+def test_brain_casual_defaults_to_astra_and_capacity_falls_back_truthfully() -> None:
     automatic = resolve_policy(
         "brain",
         activity="chat",
@@ -61,8 +61,8 @@ def test_brain_casual_defaults_to_terra_and_capacity_falls_back_truthfully() -> 
 
     assert (automatic.provider, automatic.model, automatic.effort) == (
         "codex",
-        "gpt-5.6-terra",
-        "high",
+        "gpt-6-astra",
+        "medium",
     )
     assert (fallback.provider, fallback.model) == ("claude", "claude-sonnet-5")
     assert "Codex usage exhausted" in fallback.fallback_reason

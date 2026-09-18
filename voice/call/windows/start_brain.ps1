@@ -29,6 +29,18 @@ if (Test-Path $brainEnv) {
         Set-Item -Path "Env:$($name.Trim())" -Value $value.Trim().Trim("'", '"')
     }
 }
+# A headless brain cannot complete an interactive OAuth flow, so the Claude
+# providers need a long-lived setup token on disk. Without it every turn ends
+# as "OAuth session expired" -- an answer he hears, not an error he sees.
+$oauth = Join-Path $env:USERPROFILE '.config\serena\claude-oauth.env'
+if (Test-Path $oauth) {
+    foreach ($line in Get-Content $oauth) {
+        $name, $value = $line -split '=', 2
+        if ($name -eq 'CLAUDE_CODE_OAUTH_TOKEN' -and $value) {
+            $env:CLAUDE_CODE_OAUTH_TOKEN = $value.Trim().Trim("'", '"')
+        }
+    }
+}
 if (-not $env:SERENA_BRAIN_MODEL) { $env:SERENA_BRAIN_MODEL = 'sonnet' }
 if (-not $env:SERENA_BRAIN_EFFORT) { $env:SERENA_BRAIN_EFFORT = 'low' }
 $meteredOverrides = @(
