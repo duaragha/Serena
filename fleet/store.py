@@ -182,6 +182,10 @@ class FleetStore:
             ).fetchone()
             return self._snapshot(connection, run_id) if row is not None else None
 
+    def review_report(self, run_id: str) -> dict[str, Any]:
+        from fleet.review import report_review
+        return report_review(self, run_id)
+
     def artifact_links(self, run_id: str, *, leg_id: str = '', attempt_id: str = '') -> list[dict[str, Any]]:
         from fleet.artifacts import FleetArtifacts
         with self._connect() as connection:

@@ -48,6 +48,11 @@ TERMINAL_BLOCKED_STATUSES = frozenset({"blocked", "stopped"})
 # real, checkable statement that this reviewer found nothing.
 FINDING_SEVERITIES = frozenset({"blocker", "major", "minor"})
 
+
+def severity_histogram(findings: list[dict[str, Any]]) -> dict[str, int]:
+    return {severity: sum(str(item.get('severity', '')).casefold() == severity for item in findings)
+            for severity in ('blocker', 'major', 'minor')}
+
 # A recorded "test" has to look like something that can actually fail. This is
 # the same vocabulary the single-job coding contract uses, kept local so an
 # edit there cannot silently loosen the Fleet gate.
@@ -730,6 +735,8 @@ def _review_findings_failures(value: object) -> list[str]:
         if not _clean(item.get("unit_id")):
             failures.append(f"{prefix} must name the unit_id it was found in")
         severity = _clean(item.get("severity")).casefold()
+        if 'category' in item and (not isinstance(item['category'], str) or not item['category'].strip() or len(item['category']) > 64):
+            failures.append(f'{prefix} category must be a nonempty string of at most 64 characters')
         if severity not in FINDING_SEVERITIES:
             failures.append(
                 f"{prefix} severity must be one of " + ", ".join(sorted(FINDING_SEVERITIES))

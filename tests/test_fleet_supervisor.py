@@ -6,6 +6,8 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+import json
+from dataclasses import replace
 
 import pytest
 
@@ -15,6 +17,33 @@ from core.fleet_completion import CompletionVerdict, UnitVerdict
 from core.fleet_isolation import FleetIsolationStore, ensure_workspace
 from core.fleet_policy import build_policy, builtin_config
 from core.fleet_workers import WorkerRequest, WorkerResult
+
+
+@pytest.mark.parametrize('fixable', [True, False])
+def test_review_loop_runs_to_clean_or_gated_failure(fleet_env, monkeypatch, fixable):
+    config = builtin_config()
+    config['defaults']['blocker_gates_run'] = True
+    policy = build_policy('coding', 'review loop fixture', config=config, worker_count=1, provider_mode='codex')
+    store = supervisor.FleetStore()
+    run = store.create_run(task='review loop fixture', activity='coding', cwd=str(fleet_env),
+        origin_session_id=None, origin_agent='codex', dry_run=False, policy=policy.to_dict())
+    calls = []
+    normal = _successful_fake(calls)
+    reviews = []
+    def worker(request, **kwargs):
+        result = normal(request, **kwargs)
+        if request.phase == 'verify':
+            reviews.append(request.attempt_id)
+            findings = [] if fixable and len(reviews) > 1 else [
+                {'unit_id': 'ws-1', 'severity': 'blocker', 'summary': 'fixture defect', 'evidence': 'fixture.py:1'}]
+            output = '<serena-evidence>' + json.dumps({'units': [{'id': 'ws-1', 'findings': findings}]}) + '</serena-evidence>'
+            return replace(result, output_text=output)
+        return result
+    monkeypatch.setattr(supervisor, 'run_worker', worker)
+    completed = supervisor.run_supervisor(run['run_id'])
+    assert completed['state'] == ('completed' if fixable else 'failed'), completed.get('error')
+    assert len(reviews) == (2 if fixable else 3)
+    assert store.has_event(run['run_id'], 'run.review.unresolved') is (not fixable)
 
 
 @pytest.fixture

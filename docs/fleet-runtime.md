@@ -25,6 +25,45 @@ proof after Verify. This never starts a desktop session. Missing sessions or
 displays are a clean no-op; JPEG observations are converted to PNG. No video is
 captured.
 
+Findings may include `category`, including `security`. Fix prompts order
+blockers before majors before minors. Verify receives a fixed secret-pattern
+grep and an offline npm dependency audit for package-lock projects. Missing
+tools, lockfiles, or advisory caches are recorded as unavailable, not clean.
+Secret values are omitted from findings. These narrow checks supplement the
+reviewer checklist; they do not replace a full vulnerability scanner.
+
+The secret grep excludes `node_modules`, `.venv`, `.git`, and `site-packages`
+recursively at any depth, so vendored and packaged-sidecar copies of a
+dependency no longer scan. Every surviving match carries a deterministic
+`classification`, and only `first-party source` is a blocker.
+
+Matched content is always inspected before any downgrade, so a source path is
+never on its own a reason to downgrade: unexplained credential material gates
+in `tests/`, in `docs/`, and in a Markdown file exactly as it does in
+`core/`. Two content verdicts can lower a match to `minor`. A PEM header with
+no base64 key body is `private-key header without key material` — a header
+compared as a string, or an abbreviated example. Key bytes count wherever the
+representation puts them: physical following lines, a body joined onto the
+header, and escaped separators (`\n`, `\r\n`, `%0A`, `&#10;`) that keep a whole
+key on one source line. A match inside a test path is `verified synthetic
+fixture` only with positive evidence at the match: the file asserts that exact
+value absent or redacted, a narrow synthetic marker (`synthetic`, `not-real`,
+`placeholder`, `dummy`, `fake`, `fixture`, `redact`, `test-only`, `nonexistent`)
+sits within three lines, or the value is filler no credential uses (a single
+repeated run, or AWS's `…EXAMPLE` form). Bare `example` and `sample` are
+deliberately not markers. Anything unreadable or unparsable keeps the stricter
+answer. Classification reads the file locally and reports only the verdict —
+never the matched bytes.
+
+After Fix, blockers and majors trigger scoped Verify/Fix rounds. The default
+`review_rounds` budget is two additional Verify rounds (0–10 configurable);
+provider attempt retries do not consume rounds. A clean review stops at once.
+Claims of fixing a finding are conservatively re-reviewed rather than treated
+as proof of resolution. Exhaustion emits `run.review.unresolved`. With
+`blocker_gates_run: true`, remaining blockers fail the run; the default false
+records them. Minor findings never force a round. Reports include a severity
+histogram, unresolved findings, and a solo-review limitation note.
+
 ## Atomic Windows worker ownership
 
 `fleet.windows_process.WindowsProcess` creates every Windows Fleet worker,

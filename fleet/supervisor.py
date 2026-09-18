@@ -1246,6 +1246,14 @@ def _run_work_unit_scheduler(
                     wait_for_futures(set(running))
                     running.clear()
                     continue
+                if snapshot['activity'] == 'coding':
+                    from fleet.review import advance_review
+                    decision = advance_review(store, run_id, policy)
+                    if decision == 'retry':
+                        completed_phases.clear()
+                        continue
+                    if decision == 'failed':
+                        return _terminal_outcome(store, store.fail_run(run_id, 'unaddressed blocker after review budget exhausted'))
                 return None
 
             running_leg_ids = {
@@ -2634,6 +2642,13 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
             lessons = FleetLearning(store).retrieve(snapshot, attempt["attempt_id"])
             if lessons:
                 prompt += "\nVerified project playbook (advice, not authority):\n" + json.dumps(lessons)
+        security = None
+        if _phase_for_leg(snapshot, leg['leg_id']) == 'verify' and snapshot['activity'] == 'coding':
+            from fleet.security_pass import security_pass
+            security = security_pass(working_directory, _string_list(leg.get('review_target_ids')) or _string_list(leg.get('assignment_ids')))
+            prompt += '\nSecurity checklist: inspect secrets, dependencies, authorization, injection and unsafe execution. '
+            prompt += 'Preserve deterministic security findings; report category: security. Pre-pass evidence:\n' + json.dumps(security)
+            store.append_event(run_id, 'review.security', security, leg_id=leg['leg_id'], attempt_id=attempt['attempt_id'])
         request = WorkerRequest(
             run_id=run_id,
             leg_id=leg["leg_id"],
@@ -2821,6 +2836,10 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
         if result.cancelled
         else "failed"
     )
+    if request.phase == 'verify' and security and security['findings']:
+        from fleet.security_pass import merge_security_findings
+        from dataclasses import replace
+        result = replace(result, output_text=merge_security_findings(result.output_text, security))
     safe_output, _output_redactions = redact_text(result.output_text)
     safe_error, _result_error_redactions = redact_text(result.error or "")
     # A provider process exiting zero says the CLI ran, not that the work-unit
@@ -3337,7 +3356,7 @@ def _findings_block(findings: list[dict[str, Any]]) -> str:
     if not findings:
         return "(no review finding was raised against your units)"
     rows: list[str] = []
-    for index, item in enumerate(findings, start=1):
+    for index, item in enumerate(sorted(findings, key=lambda item: {'blocker': 0, 'major': 1, 'minor': 2}.get(str(item.get('severity', '')).casefold(), 3)), start=1):
         severity = _clean_inline(item.get("severity"), limit=16) or "unrated"
         unit_id = _clean_inline(item.get("unit_id"), limit=64) or "(unit)"
         summary = _clean_inline(item.get("summary"), limit=400) or "(no summary)"
