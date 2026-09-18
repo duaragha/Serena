@@ -1,0 +1,102 @@
+'use strict';
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const policy = require('../promotion-policy.cjs');
+const { PromotionService } = require('../promotion-service.cjs');
+const catalog = require('../../../config/promotion-features.json');
+const source = 'a'.repeat(40);
+const ids = catalog.features.map(f => f.id);
+
+test('selection refuses unknown features, duplicates, missing dependencies and untested additions', () => {
+  assert.throws(() => policy.selection(catalog, ['invented'], [], []), /Unknown/);
+  assert.throws(() => policy.selection(catalog, [ids[0], ids[0]], [ids[0]]), /duplicate/);
+  assert.throws(() => policy.selection(catalog, [ids[2]], [ids[2]]), /requires/);
+  assert.throws(() => policy.selection(catalog, [ids[0]], []), /tested/);
+  assert.deepEqual(policy.selection(catalog, ids, ids).all.map(f => f.id), ids);
+});
+test('already shipped features are retained and cannot be revised silently', () => {
+  const receipt = { schema: 1, version: 'v0.3.5', features: [catalog.features[0]] };
+  assert.deepEqual(policy.installedFeatures(catalog, 'v0.3.5', receipt), [ids[0]]);
+  const result = policy.selection(catalog, [ids[1]], [ids[1]], [ids[0]]);
+  assert.deepEqual(result.all.map(f => f.id), ids.slice(0, 2));
+  assert.throws(() => policy.installedFeatures(catalog, 'v0.3.5', { ...receipt, features: [{ ...catalog.features[0], commit: source }] }), /revision changed/);
+  assert.throws(() => policy.installedFeatures(catalog, 'v0.3.5', null), /receipt/);
+});
+test('catalog disallows paths outside source, duplicate IDs, cycles and mutable commits', () => {
+  for (const change of [{ paths: ['../secret'] }, { paths: ['/tmp/x'] }, { commit: 'master' }, { requires: [ids[0]] }]) {
+    const altered = structuredClone(catalog); Object.assign(altered.features[0], change);
+    assert.throws(() => policy.catalogFeatures(altered), /catalog/);
+  }
+  assert.equal(policy.nextVersion('v0.3.4'), 'v0.3.5');
+  assert.throws(() => policy.nextVersion('v0.3.4; echo bad'));
+});
+
+async function fixture(t, options = {}) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'serena-promotion-test-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const calls = [];
+  let revision = source;
+  let runs = [];
+  const service = new PromotionService({ directory, version: '0.3.9-dev.1', confirm: options.confirm || (async () => true),
+    run: async args => {
+      calls.push(args);
+      if (args[0] === 'api') {
+        if (args[1].endsWith('commits/master')) return JSON.stringify({ sha: revision });
+        if (args[1].endsWith('releases/latest')) return JSON.stringify({ tag_name: 'v0.3.4' });
+        if (args[1].includes('/contents/')) return JSON.stringify({ encoding: 'base64', content: Buffer.from(JSON.stringify(catalog)).toString('base64') });
+      }
+      if (args[0] === 'workflow') { if (options.failDispatch) throw new Error('Network lost'); return ''; }
+      if (args[0] === 'run') return JSON.stringify(runs);
+      throw new Error(`Unexpected command ${args}`);
+    } });
+  const request = { mode: 'verify', source, stable: 'v0.3.4', selected: [ids[0]], tested: [ids[0]] };
+  return { service, calls, request, changeSource: () => { revision = 'b'.repeat(40); }, setRuns: value => { runs = value; } };
+}
+test('service sends only validated fixed workflow arguments and never invokes installer or backend', async t => {
+  const { service, calls, request } = await fixture(t);
+  await service.load();
+  const result = await service.submit(request);
+  assert.match(result.request, /^[a-f0-9]{32}$/);
+  const dispatch = calls.find(a => a[0] === 'workflow');
+  assert.deepEqual(dispatch.slice(0, 7), ['workflow', 'run', 'selective-promotion.yml', '--repo', 'duaragha/Serena', '--ref', 'master']);
+  assert.ok(dispatch.includes('mode=verify'));
+  assert.equal((await service.pending()).request, result.request);
+  assert.ok(calls.every(a => ['api', 'workflow', 'run'].includes(a[0])));
+  await assert.rejects(service.submit(request), /previous request/);
+});
+test('native cancellation sends no workflow; stale source is rejected before dispatch', async t => {
+  const cancelled = await fixture(t, { confirm: async () => false });
+  await cancelled.service.load();
+  assert.deepEqual(await cancelled.service.submit(cancelled.request), { cancelled: true });
+  assert.ok(!cancelled.calls.some(a => a[0] === 'workflow'));
+  const stale = await fixture(t); await stale.service.load(); stale.changeSource();
+  await assert.rejects(stale.service.submit(stale.request), /changed/);
+  assert.ok(!stale.calls.some(a => a[0] === 'workflow'));
+});
+test('uncertain dispatch retains request for recovery rather than permitting duplicate publication', async t => {
+  const { service, request } = await fixture(t, { failDispatch: true });
+  await service.load();
+  await assert.rejects(service.submit(request), /Network lost/);
+  assert.ok((await service.pending()).request);
+  await assert.rejects(service.submit(request), /previous request/);
+});
+test('concurrent clicks cannot submit twice; completed verification permits explicit publication', async t => {
+  let releaseConfirm;
+  const gate = new Promise(resolve => { releaseConfirm = resolve; });
+  const f = await fixture(t, { confirm: () => gate }); await f.service.load();
+  const first = f.service.submit(f.request);
+  await assert.rejects(f.service.submit(f.request), /already being submitted/);
+  releaseConfirm(true); const result = await first;
+  f.setRuns([{ displayTitle: `Promotion verify ${result.request}`, status: 'completed', conclusion: 'success' }]);
+  await f.service.submit({ ...f.request, mode: 'publish' });
+  assert.equal(f.calls.filter(a => a[0] === 'workflow').length, 2);
+});
+test('invalid input and untested selections never reach GitHub dispatch', async t => {
+  const f = await fixture(t); await f.service.load();
+  for (const value of [null, { ...f.request, mode: 'install' }, { ...f.request, selected: ['--exec=rm'] }, { ...f.request, tested: [] }])
+    await assert.rejects(f.service.submit(value));
+  assert.ok(!f.calls.some(a => a[0] === 'workflow'));
+});

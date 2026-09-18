@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Serena Dev - Releases</title>
+  <link rel="stylesheet" href="promotion.css">
+</head>
+<body>
+  <header><div><span class="eyebrow">SERENA DEV</span><h1>Releases</h1></div><button id="refresh" type="button">Refresh</button></header>
+  <main>
+    <dl class="versions"><div><dt>Main</dt><dd id="stable">Checking...</dd></div><div><dt>Dev</dt><dd id="dev">Checking...</dd></div></dl>
+    <div id="error" role="alert" hidden></div>
+    <section aria-labelledby="featuresHeading">
+      <h2 id="featuresHeading">Feature selection</h2>
+      <div class="table-head"><span>Include</span><span>Feature</span><span>Tested</span></div>
+      <div id="features" aria-busy="true"><p>Loading releases...</p></div>
+    </section>
+    <div id="validation" role="status"></div>
+    <section id="request" hidden aria-labelledby="requestHeading"><h2 id="requestHeading">Latest request</h2><p id="requestStatus" role="status"></p><code id="requestId"></code><button id="dismiss" type="button">Dismiss tracking</button></section>
+  </main>
+  <footer><button id="github" type="button">Open GitHub</button><div class="actions"><button id="verify" type="button" disabled>Check selection</button><button id="publish" type="button" disabled>Build and publish to main</button></div></footer>
+  <script src="promotion-renderer.js"></script>
+</body>
+</html>
