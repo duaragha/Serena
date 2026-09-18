@@ -47,7 +47,7 @@ def test_invalid_model_reference_fails_validation() -> None:
         validate_policy(policy)
 
 
-def test_brain_casual_defaults_to_astra_and_capacity_falls_back_truthfully() -> None:
+def test_brain_casual_streams_first_and_capacity_falls_back_truthfully() -> None:
     automatic = resolve_policy(
         "brain",
         activity="chat",
@@ -56,16 +56,18 @@ def test_brain_casual_defaults_to_astra_and_capacity_falls_back_truthfully() -> 
     fallback = resolve_policy(
         "brain",
         activity="chat",
-        capacity=_capacity(codex=False),
+        capacity=_capacity(claude=False),
     )
 
+    # A spoken turn needs a model that streams: Astra answers well but emits
+    # no deltas, so it waits behind the streaming model rather than leading.
     assert (automatic.provider, automatic.model, automatic.effort) == (
-        "codex",
-        "gpt-6-astra",
-        "medium",
+        "claude",
+        "claude-sonnet-5",
+        "high",
     )
-    assert (fallback.provider, fallback.model) == ("claude", "claude-sonnet-5")
-    assert "Codex usage exhausted" in fallback.fallback_reason
+    assert (fallback.provider, fallback.model) == ("codex", "gpt-6-astra")
+    assert "Claude" in fallback.fallback_reason
 
 
 def test_brain_voice_chat_prefers_haiku_but_respects_model_health() -> None:
