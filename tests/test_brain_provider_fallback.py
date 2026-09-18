@@ -239,10 +239,10 @@ def test_complex_brain_turn_switches_the_codex_worker_for_that_turn(
         )
 
         assert out["provider"] == "codex"
-        assert out["model"] == "gpt-5.6-sol"
+        assert out["model"] == "gpt-6-astra"
         assert out["effort"] == "high"
         assert out["route_lane"] == "complex"
-        assert codex.model == "gpt-5.6-sol"
+        assert codex.model == "gpt-6-astra"
         assert codex.effort == "high"
         await manager._close_codex_brain()
 

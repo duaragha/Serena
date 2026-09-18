@@ -71,21 +71,32 @@ def test_how_are_you_uses_haiku_without_weakening_work_turns() -> None:
     )
     assert casual.lane == "fast"
 
+    # Spoken work turns keep their work lane and their strength, but take the
+    # streaming model in it: he is listening, and a codex model cannot speak
+    # until the whole answer exists.
     expected = {
         "research the latest turn detection work": (
             "research",
-            "gpt-5.6-terra",
+            "claude-sonnet-5",
             "high",
         ),
-        "implement the fix in the serena repo": ("coding", "gpt-5.6-sol", "high"),
+        "implement the fix in the serena repo": ("coding", "claude-sonnet-5", "high"),
         "review the implementation and check the diff": (
             "review",
-            "gpt-5.6-sol",
+            "claude-sonnet-5",
             "high",
         ),
-        "design the architecture for this system": ("planning", "gpt-5.6-sol", "high"),
-        "make a polished proposal document": ("documents", "gpt-5.6-terra", "high"),
-        "start Serena Fleet for this change": ("fleet", "gpt-5.6-sol", "high"),
+        "design the architecture for this system": (
+            "planning",
+            "claude-sonnet-5",
+            "high",
+        ),
+        "make a polished proposal document": (
+            "documents",
+            "claude-sonnet-5",
+            "high",
+        ),
+        "start Serena Fleet for this change": ("fleet", "claude-sonnet-5", "high"),
     }
     for text, wanted in expected.items():
         decision = route_turn({"protocol": "voice", "text": text}, capacity=capacity)
@@ -138,10 +149,12 @@ def test_fast_voice_model_unavailability_restores_the_previous_route() -> None:
         },
     )
 
+    # Terra sits next in the lane but cannot stream, so the spoken turn takes
+    # the streaming model of the same strength instead.
     assert (decision.provider, decision.model, decision.runtime_model) == (
-        "codex",
-        "gpt-5.6-terra",
-        "gpt-5.6-terra",
+        "muse",
+        "muse-spark",
+        "muse-spark",
     )
     assert "not available on this subscription" in decision.fallback_reason
 
@@ -181,3 +194,40 @@ def test_non_voice_chat_keeps_the_previous_casual_route() -> None:
         "claude-sonnet-5",
         "high",
     )
+
+
+def test_a_spoken_work_question_takes_a_model_that_streams() -> None:
+    """She answered a spoken Fleet question on a non-streaming model and he
+    heard the preamble, then silence, then the whole reply at once."""
+
+    capacity = {
+        "codex": {"usable": True, "reason": "available"},
+        "claude": {"usable": True, "reason": "available"},
+    }
+    question = "What fleet is currently running?"
+
+    spoken = route_turn({"protocol": "voice", "text": question}, capacity=capacity)
+    typed = route_turn({"protocol": "frontdoor", "text": question}, capacity=capacity)
+
+    assert spoken.provider == "claude"
+    assert spoken.model == "claude-sonnet-5"
+    # Typed surfaces keep the stronger model: nobody is waiting on a sentence.
+    assert typed.provider == "codex"
+    assert typed.model == "gpt-6-astra"
+    assert spoken.lane == typed.lane == "complex"
+
+
+def test_a_non_streaming_model_still_answers_when_it_is_all_that_is_left() -> None:
+    """Preferring streaming must never turn into refusing to answer."""
+
+    decision = route_turn(
+        {"protocol": "voice", "text": "What fleet is currently running?"},
+        capacity={
+            "codex": {"usable": True, "reason": "available"},
+            "claude": {"usable": False, "reason": "Claude usage exhausted"},
+            "muse": {"usable": False, "reason": "muse is offline"},
+        },
+    )
+
+    assert decision.provider == "codex"
+    assert "Claude usage exhausted" in decision.fallback_reason

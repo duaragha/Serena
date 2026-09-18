@@ -130,13 +130,13 @@ def test_coding_lanes_apply_routine_normal_and_hard_floors() -> None:
     )
     assert (normal.lane, normal.model, normal.effort) == (
         "normal",
-        "gpt-5.6-sol",
-        "high",
+        "gpt-6-astra",
+        "medium",
     )
     assert (hard.lane, hard.model, hard.effort) == (
         "hard",
-        "gpt-5.6-sol",
-        "xhigh",
+        "gpt-6-astra",
+        "high",
     )
 
 
@@ -152,7 +152,7 @@ def test_high_risk_overrides_a_weak_manual_model_but_keeps_tool_authority_extern
 
     assert risk == "high"
     assert "systemd" in reason
-    assert decision.model == "gpt-5.6-sol"
+    assert decision.model == "gpt-6-astra"
     assert "below the high safety floor" in decision.fallback_reason
     assert "permission" not in decision.as_dict()
     assert "tools" not in decision.as_dict()
@@ -172,7 +172,7 @@ def test_coding_options_come_from_policy_and_frozen_decisions_revalidate() -> No
     assert values == [
         "auto",
         "gpt-5.6-terra",
-        "gpt-5.6-sol",
+        "gpt-6-astra",
         "claude-sonnet-5",
         "claude-opus-5",
         "muse-spark",
