@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "initialStable": "v0.3.4",
+  "features": [
+    {
+      "id": "sidebar-order",
+      "title": "Fleet and Voice above active terminals",
+      "devTag": "v0.3.4-dev.2",
+      "commit": "f394389723452e869e45bf66a4ed4297d8dcb6c8",
+      "requires": [],
+      "paths": ["ui/web.py", "tests/test_fleet_chat_sidebar.py", "tests/test_workspace_browser.py"]
+    },
+    {
+      "id": "sidebar-performance",
+      "title": "Lighter sidebar refreshes",
+      "devTag": "v0.3.7-dev.1",
+      "commit": "2da23bf6f6aa71f1d32fd6e4904e8ca4aa3b6dc2",
+      "requires": ["sidebar-order"],
+      "paths": ["ui/web.py", "ui/static/workspace.js", "tests/test_fleet_chat_sidebar.py", "tests/test_workspace_browser.py"]
+    },
+    {
+      "id": "sidebar-projects",
+      "title": "Date, then project grouping",
+      "devTag": "v0.3.8-dev.1",
+      "commit": "83e6fb68059b29c53f11cf537f249aa8e8cca6a6",
+      "requires": ["sidebar-performance"],
+      "paths": ["ui/web.py", "ui/static/workspace.css", "tests/test_workspace_browser.py"]
+    },
+    {
+      "id": "sidebar-compact",
+      "title": "Compact rows and hover details",
+      "devTag": "v0.3.8-dev.2",
+      "commit": "9e5d5d7697c2477a4642b3e286cdd8cfbd7d99b9",
+      "requires": ["sidebar-projects"],
+      "paths": ["ui/web.py", "ui/static/workspace.css", "tests/test_workspace_browser.py"]
+    },
+    {
+      "id": "sidebar-utilities",
+      "title": "Compact Fleet and Voice sections",
+      "devTag": "v0.3.8-dev.3",
+      "commit": "dbe304a30c010878ed8e27c303f88b8b65ad66c3",
+      "requires": ["sidebar-compact"],
+      "paths": ["ui/web.py", "ui/static/workspace.css", "tests/test_workspace_browser.py", "tests/test_fleet_chat_sidebar.py", "tests/test_voice_created_chat_sidebar.py"]
+    }
+  ]
+}

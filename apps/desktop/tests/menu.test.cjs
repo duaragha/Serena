@@ -119,6 +119,16 @@ test('installing the menu builds it once from the template', () => {
   assert.ok(labels(built[0]).includes('About'));
 });
 
+test('release manager is absent from stable and enabled only by Dev startup', async () => {
+  const { api } = loadMenu();
+  assert.ok(!find(api.template(() => null), 'Releases'));
+  let opened = 0;
+  const menu = find(api.template(() => null, async () => { opened++; }), 'Releases');
+  menu.submenu[0].click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(opened, 1);
+});
+
 test('About offers a way to reach the log file', () => {
   // On Windows this file is the only record a backend crash leaves, and it
   // lives somewhere nobody would find by hand.
