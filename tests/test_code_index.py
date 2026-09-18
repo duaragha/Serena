@@ -120,8 +120,15 @@ def test_read_only_surfaces_and_drop(corpus, monkeypatch):
     assert len(result["content"][0]["text"]) <= 4000
     monkeypatch.setattr(indexer, "search_fts", lambda *a, **k: [{"snippet": "chat"}])
     monkeypatch.setattr(indexer, "search_knowledge_fts", lambda *a, **k: [{"source": "knowledge"}])
-    monkeypatch.setattr("memory.v2.MemoryV2Store.authority_is_active", lambda: False)
-    monkeypatch.setattr("memory.store.search_memories", lambda *a: [{"id": 1, "content": "memory", "type": "project"}])
+    # unified_search reads memory through the one retrieval authority now, not
+    # through memory.store's own scan: retrieve_memory already chooses between
+    # v2 and the legacy store, and choosing again here is how this surface came
+    # to disagree with the others about what a hit is.
+    monkeypatch.setattr(
+        "memory.retrieval.search_memory_records",
+        lambda *a, **k: [{"id": 1, "record_id": "legacy:project:1",
+                          "content": "memory", "type": "project", "score": 1.0}],
+    )
     assert [r["source"] for r in indexer.unified_search("surfaceIdentifier")] == ["chat", "knowledge", "memory", "code"]
     assert index.DB_PATH.read_bytes() == before
     assert not Path(str(index.DB_PATH) + "-wal").exists()
