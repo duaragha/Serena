@@ -92,6 +92,45 @@ def scan_timeline_issues(store: FleetStore, run_id: str):
         return _facts(db, run_id)[2]
 
 
+def _handoff_items(store: FleetStore, run_id: str):
+    """Handed-off delivery from every run.delivery.handed_off event, deduped.
+
+    A crash between filing and completion can leave two events over the same
+    commitments; filing is idempotent, so the commitment id dedupes them.
+    """
+    try:
+        events = store.events(run_id, limit=2_000)
+    except Exception:
+        return []
+    items = []
+    seen = set()
+    for event in events:
+        if event.get("type") != "run.delivery.handed_off":
+            continue
+        payload = event.get("payload") or {}
+        entries = payload.get("handoffs") or []
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key = str(entry.get("commitment_id") or entry.get("source_ref") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            items.append(entry)
+    return items
+
+
+def handoff_actions(store: FleetStore, run_id: str):
+    from fleet.delivery import handoff_report_actions
+
+    try:
+        return handoff_report_actions(_handoff_items(store, run_id))
+    except Exception:
+        return []
+
+
 def _lessons(db, run_id):
     # Older terminal runs may predate the learning schema entirely.
     exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='fleet_lesson_uses'").fetchone()
@@ -207,9 +246,10 @@ def prepare_report(run_id: str, store: FleetStore):
             "WHERE l.run_id=? AND l.phase='finalize' AND a.state='completed' AND a.replay_of IS NULL "
             "AND a.output_text IS NOT NULL ORDER BY l.ordinal,a.attempt_number DESC LIMIT 4", (run_id,),
         ))
+    handoffs = handoff_actions(store, run_id)
     report = {"score": score, "timeline": timeline, "knowledge": knowledge,
               "artifacts": store.artifact_links(run_id), "review": store.review_report(run_id),
-              "narrative": None, "next_prompt": None, "actions": None,
+              "narrative": None, "next_prompt": None, "actions": handoffs or None,
               "generator": "none (generation pending)"}
     generation = store.save_report(run_id, report)
     if not generation:
@@ -275,8 +315,16 @@ def enrich_report(run_id: str, store: FleetStore, work, *, runner=None):
             if vote:
                 lesson["vote"] = vote["vote"]
                 lesson["evidence"] = vote["evidence"]
+        # Handed-off delivery is owed work, not a suggestion: it leads the
+        # actions section ahead of the model's recommendations.
+        merged = list(handoff_actions(store, run_id))
+        seen_actions = {str(item.get("action") or "") for item in merged}
+        for item in value["actions"]:
+            if str(item.get("action") or "") not in seen_actions:
+                seen_actions.add(str(item.get("action") or ""))
+                merged.append(item)
         report.update(narrative=value["narrative"], next_prompt=value["next_prompt"],
-                      actions=value["actions"], generator=request.model)
+                      actions=merged[:20], generator=request.model)
     except Exception as exc:
         error = redact_text(str(exc))[0][:500]
         report["generator"] = f"none ({error})"

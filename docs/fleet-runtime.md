@@ -173,6 +173,29 @@ Acceptance uses real private SQLite runs and real MCP/CLI/Flask handlers with a
 mock narrative provider (`tests/test_fleet_reports.py`); this is not a receipt for
 an installed desktop release or a live paid/subscription provider call.
 
+## Delivery handoff at terminal (complete-with-handoff)
+
+When every agent step has finished but root-owed delivery debt remains —
+genuine ship steps with no Fleet owner (daemon restart, commit, release), or a
+worker that deferred instead of answering `not_applicable` — the run completes
+with a tracked handoff instead of parking in `waiting_for_input` forever.
+Terminal evaluation files one commitment per (unit, requirement) with
+`source="fleet/delivery"` and an idempotent
+`<run_id>:<unit_id>:<requirement-hash>` source ref, emits
+`run.delivery.handed_off` with the commitment ids, and appends a handoff
+listing to the result text under the `completed_with_handoff` marker. The run
+state stays `completed`, so learning outcomes, notifications, and reports treat
+it as success; the report's actions section leads with the handoff items.
+Resolve handed-off debt through commitments (`chats owed`), not delivery
+receipts.
+
+Parking is unchanged for every other case: debt owed by a real Fleet owner
+still parks the run with the usual "verify and submit coordinator receipts"
+copy, mid-run operator delivery evidence works exactly as before, and a
+commitments failure at terminal fails open to parked rather than completing
+without the handoff. Runs with no remaining debt complete byte-identically to
+before: no commitments, no marker, no event.
+
 ## Atomic Windows worker ownership
 
 `fleet.windows_process.WindowsProcess` creates every Windows Fleet worker,

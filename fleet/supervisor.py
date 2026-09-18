@@ -35,6 +35,14 @@ from fleet.completion import CompletionVerdict, render_evidence_instructions
 from fleet.completion_gate import evaluate_leg_completion
 from fleet.context import budget_context, redact_text, redact_value
 from fleet.contracts import completion_unit_ids
+from fleet.delivery import (
+    HANDOFF_EVENT,
+    HANDOFF_MARKER,
+    DeliveryLedgerUnavailable,
+    file_delivery_handoffs,
+    format_handoff_section,
+    is_root_owed,
+)
 from fleet.policy import (
     PHASE_MODEL_POLICY,
     PHASES,
@@ -1024,30 +1032,66 @@ def run_supervisor(run_id: str) -> dict[str, Any]:
                 ),
             )
         if outstanding:
-            # Successful coding is retained while coordinator-owned delivery
-            # waits. Do not mislabel a deployment/authority wait as an agent
-            # failure or rerun already accepted worker turns.
-            detail = "; ".join(
-                f"{item['requirement'][:120]} (owed by {item['owner'][:60]})"
-                for item in outstanding[:6]
-            )
-            with suppress(Exception):
-                store.append_event(
-                    clean_id,
-                    "run.delivery_outstanding",
-                    {"outstanding": outstanding[:20], "count": len(outstanding)},
+            handoffs: list[dict[str, Any]] | None = None
+            if all(is_root_owed(item) for item in outstanding):
+                # Every remaining debt is owed by root, who has no Fleet legs
+                # left to run: genuinely operator-owned ship steps, or a worker
+                # that deferred instead of saying not_applicable. Hand the
+                # remainder to the operator as tracked commitments and complete
+                # instead of parking finished work on paperwork. Anything owed
+                # by a real Fleet owner still parks below.
+                try:
+                    handoffs = file_delivery_handoffs(store, clean_id, outstanding)
+                except Exception:
+                    # Commitments failure fails open to parked, today's
+                    # behavior: never silently complete without the handoff.
+                    handoffs = None
+                else:
+                    if handoffs:
+                        store.append_event(
+                            clean_id,
+                            HANDOFF_EVENT,
+                            {
+                                "marker": HANDOFF_MARKER,
+                                "run_id": clean_id,
+                                "count": len(handoffs),
+                                "handoffs": handoffs,
+                            },
+                        )
+                        return _terminal_outcome(
+                            store,
+                            store.complete_run(
+                                clean_id, result_text + format_handoff_section(handoffs)
+                            ),
+                        )
+                    # Operator evidence landed between evaluation and filing and
+                    # cleared everything: no debt left, complete normally.
+                    return _terminal_outcome(store, store.complete_run(clean_id, result_text))
+            if handoffs is None:
+                # Successful coding is retained while coordinator-owned delivery
+                # waits. Do not mislabel a deployment/authority wait as an agent
+                # failure or rerun already accepted worker turns.
+                detail = "; ".join(
+                    f"{item['requirement'][:120]} (owed by {item['owner'][:60]})"
+                    for item in outstanding[:6]
                 )
-            return _terminal_outcome(
-                store,
-                store.wait_for_delivery(
-                    clean_id,
-                    f"{len(outstanding)} delivery requirement"
-                    + ("" if len(outstanding) == 1 else "s")
-                    + " remain outstanding after all agent steps completed: "
-                    f"{detail}. Finish that work and retry, or record "
-                    "verified delivery evidence for it.",
-                ),
-            )
+                with suppress(Exception):
+                    store.append_event(
+                        clean_id,
+                        "run.delivery_outstanding",
+                        {"outstanding": outstanding[:20], "count": len(outstanding)},
+                    )
+                return _terminal_outcome(
+                    store,
+                    store.wait_for_delivery(
+                        clean_id,
+                        f"{len(outstanding)} delivery requirement"
+                        + ("" if len(outstanding) == 1 else "s")
+                        + " remain outstanding after all agent steps completed: "
+                        f"{detail}. Finish that work and retry, or record "
+                        "verified delivery evidence for it.",
+                    ),
+                )
         return _terminal_outcome(store, store.complete_run(clean_id, result_text))
     except BaseException as exc:
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
@@ -1094,70 +1138,16 @@ def _stale_fleet_modules() -> list[str]:
     return sorted(set(stale))
 
 
-class DeliveryLedgerUnavailable(RuntimeError):
-    """The delivery debts could not be read, so nothing may be concluded."""
-
-
-def _outstanding_delivery(store: FleetStore, run_id: str) -> list[dict[str, str]]:
+def _outstanding_delivery(store: FleetStore, run_id: str) -> list[dict[str, Any]]:
     """Delivery this run deferred and nobody has since verified.
 
-    Three things this has to get right, each of which was wrong first time:
-
-    Identity is the unit plus the full requirement text. The contract wording is
-    generic on purpose, so every unit carries the same three sentences; keying
-    on the text alone let one bridge's deployment discharge another bridge's
-    debt.
-
-    Order matters. Deferrals and verifications are applied in event order, so a
-    verification that happened before a later deferral cannot cancel it. The
-    previous set-subtraction cleared debts that were incurred afterwards.
-
-    And it fails closed. An unreadable ledger used to return "nothing owed",
-    which is the one answer that must never be a guess: the gate exists to stop
-    a run completing undelivered, so losing the evidence blocks completion
-    rather than waving it through.
+    The ledger lives in :mod:`fleet.delivery`; this wrapper keeps the
+    supervisor's existing call sites and tests on one query.
     """
 
-    owed: dict[tuple[str, str], dict[str, str]] = {}
-    attempts: dict[str, list[str]] = {}
-    from fleet.delivery import reconcile_event
-    after = 0
-    try:
-        while True:
-            events = store.events(run_id, after=after, limit=2_000)
-            if not events:
-                break
-            for event in events:
-                after = max(after, int(event.get("event_seq") or 0))
-                reconcile_event(event, owed, attempts)
-                if str(event.get("type") or "") not in {
-                    "leg.completion_evidence_accepted",
-                    "leg.completion_evidence_stopped",
-                }:
-                    continue
-                for unit in (event.get("payload") or {}).get("units") or []:
-                    if not isinstance(unit, dict):
-                        continue
-                    unit_id = str(unit.get("unit_id") or "")
-                    for item in unit.get("deferred_delivery") or []:
-                        if not isinstance(item, dict):
-                            continue
-                        requirement = str(item.get("requirement") or "").strip()
-                        if not requirement:
-                            continue
-                        scope = str(item.get("unit_id") or unit_id)
-                        owed[(scope, requirement.casefold())] = dict(item)
-                    for requirement in unit.get("verified_delivery") or []:
-                        key = str(requirement or "").strip().casefold()
-                        if key:
-                            owed.pop((unit_id, key), None)
-            if len(events) < 2_000:
-                break
-    except Exception as exc:  # noqa: BLE001 - re-raised as a blocking failure
-        raise DeliveryLedgerUnavailable(
-            f"could not read this run's delivery evidence: {exc}"
-        ) from exc
-    return list(owed.values())
+    from fleet.delivery import outstanding_delivery
+
+    return outstanding_delivery(store, run_id)
 
 
 def _refresh_read_mcp_catalog(store: FleetStore, run_id: str) -> None:

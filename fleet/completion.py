@@ -1107,9 +1107,14 @@ def render_evidence_instructions(
             },
             {
                 "requirement": "the second delivery requirement, copied verbatim",
+                "state": "not_applicable",
+                "reason": "this unit has no external surface to deploy",
+            },
+            {
+                "requirement": "the third delivery requirement, copied verbatim",
                 "state": "deferred",
-                "owner": "root coordinator",
-                "reason": "this sandbox cannot reach the live server",
+                "owner": "root",
+                "reason": "only the coordinator can restart the live daemon",
             },
         ]
         if writes
@@ -1221,14 +1226,13 @@ def render_evidence_instructions(
             "- when your unit adds or touches NO externally reachable surface "
             "(no deploy, endpoint, page, integration, or user-visible behavior "
             "change), answer not_applicable with a reason. That is the honest "
-            "answer, not a deferral. Defer ONLY when real delivery work "
-            "remains that a specific owner will actually perform — never to "
-            "hand work back with nobody to do it.",
-            "- deferring is allowed and is the honest answer when your sandbox "
-            "cannot deploy or reach a live surface. It is not a way to finish: "
-            "Fleet tracks the debt and the RUN stays incomplete until that owner "
-            "produces verified delivery evidence. Handing work back does not "
-            "close it.",
+            "answer, not a deferral.",
+            "- defer ONLY work a real owner will actually perform: a Fleet "
+            "worker key for work a teammate will do, or root when only the "
+            "coordinator outside this run can do it (deploy, commit, daemon "
+            "restart). Debt still owed by root when every step is done is "
+            "handed to the operator as a tracked commitment rather than "
+            "parking the run.",
             "- changed_paths must list every file you changed. Undeclared changes "
             "found in the working tree reject the leg.",
             "- changed files must be covered by an active path claim.",

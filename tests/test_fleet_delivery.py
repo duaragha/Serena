@@ -9,11 +9,11 @@ from fleet.delivery import PREFIX, accept_operator_evidence
 # ruff: noqa: F811
 
 
-def debt_run(fleet_env):
+def debt_run(fleet_env, owner="root"):
     store = supervisor._store()
     run = supervisor.start_run("implement bounded behavior", activity="coding", cwd=str(fleet_env), worker_count=1)
     requirement = run["policy"]["work_units"][0]["completion_contract"]["delivery_requirements"][0]
-    debt = {"unit_id": "ws-1", "requirement": requirement, "owner": "root", "reason": "integration pending"}
+    debt = {"unit_id": "ws-1", "requirement": requirement, "owner": owner, "reason": "integration pending"}
     store.append_event(run["run_id"], "leg.completion_evidence_accepted", {
         "units": [{"unit_id": "ws-1", "accepted": True, "deferred_delivery": [debt]}]}, attempt_id="writer")
     return store, run, debt
@@ -28,7 +28,9 @@ def test_integration_receipts_are_scoped_and_require_success(fleet_env, ok, appl
 
 
 def test_all_steps_complete_parks_delivery_then_receipt_retry_runs_no_workers(fleet_env, monkeypatch):
-    store, run, debt = debt_run(fleet_env)
+    # Debt owed by a real Fleet owner still parks: only root-owed remainder
+    # completes with a handoff (see tests/test_fleet_handoff.py).
+    store, run, debt = debt_run(fleet_env, owner="codex:0")
     calls = []
     monkeypatch.setattr(supervisor, "run_worker", _successful_fake(calls))
     parked = supervisor.run_supervisor(run["run_id"])

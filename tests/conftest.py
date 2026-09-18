@@ -20,5 +20,6 @@ def fleet_private_proof_state(request, tmp_path, monkeypatch):
     monkeypatch.setenv('SERENA_ARTIFACT_ROOT', str(tmp_path / 'artifacts'))
     monkeypatch.setenv('SERENA_ARTIFACT_DB', str(tmp_path / 'artifacts.db'))
     monkeypatch.setenv('SERENA_ARTIFACT_KEY', str(tmp_path / 'artifact.key'))
+    monkeypatch.setenv('SERENA_COMMITMENTS_DB_PATH', str(tmp_path / 'commitments.sqlite3'))
     import core.artifacts
     monkeypatch.setattr(core.artifacts, '_DEFAULT_REGISTRY', None)
