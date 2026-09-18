@@ -211,7 +211,18 @@ class CompletionVerdict:
         if self.accepted:
             return "completion evidence satisfied the work-unit contract"
         listed = "; ".join(self.failures[:6])
-        return f"completion evidence rejected: {listed}" if listed else self.reason
+        if not listed:
+            return self.reason
+        # A bare echo of the failures taught workers nothing; the observed
+        # failure mode was deferring to root instead of answering
+        # not_applicable. Point the repair at the correct choice.
+        return (
+            f"completion evidence rejected: {listed}. To repair: answer "
+            "not_applicable with a reason where the unit adds or touches no "
+            "externally reachable surface; defer only to 'root' or an exact "
+            "Fleet worker key, with a reason, for work that owner will "
+            "actually perform"
+        )
 
 
 def _clean(value: object) -> str:
@@ -1202,6 +1213,17 @@ def render_evidence_instructions(
             "- each delivery entry is state verified (with observed evidence), "
             "not_applicable (with a reason), or deferred (with a reason AND the "
             "owner who now owes it).",
+            # Workers deferred to the coordinator by default instead of
+            # answering not_applicable, parking runs in tracked debt no one
+            # would ever pay. Name the choice explicitly: no external surface
+            # means not_applicable, and deferred is only for work a real
+            # owner will actually perform.
+            "- when your unit adds or touches NO externally reachable surface "
+            "(no deploy, endpoint, page, integration, or user-visible behavior "
+            "change), answer not_applicable with a reason. That is the honest "
+            "answer, not a deferral. Defer ONLY when real delivery work "
+            "remains that a specific owner will actually perform — never to "
+            "hand work back with nobody to do it.",
             "- deferring is allowed and is the honest answer when your sandbox "
             "cannot deploy or reach a live surface. It is not a way to finish: "
             "Fleet tracks the debt and the RUN stays incomplete until that owner "
