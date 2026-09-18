@@ -21,7 +21,7 @@ spec.
 | 6 | `spec-repo-briefs.md` | 2 knowledge | BUILT, verified 107-suite |
 | 7 | `spec-knowledge-triggers.md` | 2 knowledge | BUILT, verified 107-suite |
 | 8 | `spec-skills-standard.md` | 2 knowledge | BUILT, verified 107-suite |
-| 9 | `spec-browser-profiles.md` | 3 browser | spec'd, engine direct |
+| 9 | `spec-browser-profiles.md` | 3 browser | BUILT direct, 10/10, pending review |
 | 10 | `spec-scripted-browser.md` | 3 browser | spec'd |
 | 11 | `spec-workflow-scripts.md` | 1 verify | BUILT (fleet, revised), verified |
 | 12 | `spec-automation-templates.md` | 4 platform | spec'd |
