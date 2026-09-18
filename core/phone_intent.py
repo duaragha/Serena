@@ -100,7 +100,11 @@ def read(text: str, *, queue: str = "") -> tuple[str, str] | None:
     payload: dict[str, Any] = {
         "text": envelope(body, queue=queue),
         "memory_query": body,
-        "protocol": "plain",
+        # Not "plain": the daemon routes a phone turn to its own model and
+        # role, so a text can be reasoned through instead of answered at
+        # spoken-turn speed. A daemon that does not know the protocol falls
+        # back to the plain behaviour, so this is safe to send either way.
+        "protocol": "phone",
     }
     try:
         answer = _post(url, payload, token)
