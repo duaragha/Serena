@@ -1045,3 +1045,50 @@ def test_delivering_everything_leaves_no_debt():
     )
     assert verdict.accepted is True
     assert verdict.deferred_delivery == ()
+
+
+def test_read_only_leg_owes_no_delivery_answers():
+    """A findings-only leg cannot integrate, deploy, or live-verify.
+
+    A coding run once parked its Research leg in waiting_for_input because the
+    gate demanded deployment evidence no honest research output could supply.
+    Delivery stays on the unit contract; only write legs are asked to pay it.
+    """
+    units = _units()  # coding activity: delivery requirements present
+    assert units[0]["completion_contract"]["delivery_requirements"]
+    verdict = _evaluate(
+        _good_unit(units[0], delivery=[], online_research=_online_research()),
+        units=units,
+        access_mode="read_only",
+        activity="coding",
+        phase="discover",
+        observed_research_activity={"searches": 3, "fetches": 5},
+    )
+    assert verdict.accepted is True, verdict.failures
+    assert not any("delivery" in failure for failure in verdict.failures)
+
+
+def test_stray_delivery_section_on_read_only_leg_is_ignored():
+    units = _units()
+    verdict = _evaluate(
+        _good_unit(
+            units[0],
+            delivery=[{"requirement": "not a real requirement", "state": "verified"}],
+            online_research=_online_research(),
+        ),
+        units=units,
+        access_mode="read_only",
+        activity="coding",
+        phase="discover",
+        observed_research_activity={"searches": 3, "fetches": 5},
+    )
+    assert verdict.accepted is True, verdict.failures
+
+
+def test_rendered_instructions_scope_delivery_to_write_legs():
+    units = _units()
+    write_text = render_evidence_instructions(units, ["ws-1"], access_mode="write")
+    assert "answer EVERY delivery requirement" in write_text
+    read_text = render_evidence_instructions(units, ["ws-1"], access_mode="read_only")
+    assert "answer EVERY delivery requirement" not in read_text
+    assert "owed by write legs" in read_text

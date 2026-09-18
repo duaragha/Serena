@@ -537,8 +537,14 @@ def _evaluate_unit(
                         f"acceptance criterion was marked met with no evidence ({label[:160]})"
                     )
 
+        # Delivery is owed only by legs that can change the checkout. A read-only
+        # leg (research, review) cannot integrate, deploy, or live-verify, so
+        # asking it to answer delivery requirements parks runs on evidence no
+        # worker output can honestly satisfy. The debt stays on the contract;
+        # write legs must still answer every requirement.
+        deliverable = access_mode == "write"
         delivery_failures, deferred_delivery, verified_delivery = _delivery_failures(
-            _text_list(completion.get("delivery_requirements")),
+            _text_list(completion.get("delivery_requirements")) if deliverable else [],
             entry.get("delivery"),
             unit_id,
             known_owners,
@@ -1081,17 +1087,8 @@ def render_evidence_instructions(
     if not owned:
         return ""
     writes = access_mode == "write"
-    unit_example = {
-        "id": owned[0],
-        "status": "completed",
-        "acceptance": [
-            {
-                "criterion": "the first acceptance criterion, copied verbatim",
-                "met": True,
-                "evidence": "what you actually observed that proves it",
-            }
-        ],
-        "delivery": [
+    delivery_example = (
+        [
             {
                 "requirement": "the first delivery requirement, copied verbatim",
                 "state": "verified",
@@ -1103,7 +1100,21 @@ def render_evidence_instructions(
                 "owner": "root coordinator",
                 "reason": "this sandbox cannot reach the live server",
             },
+        ]
+        if writes
+        else []
+    )
+    unit_example = {
+        "id": owned[0],
+        "status": "completed",
+        "acceptance": [
+            {
+                "criterion": "the first acceptance criterion, copied verbatim",
+                "met": True,
+                "evidence": "what you actually observed that proves it",
+            }
         ],
+        "delivery": delivery_example,
         "constraints_respected": True,
         "changed_paths": ["core/example.py"] if writes else [],
         "tests": (
@@ -1179,23 +1190,23 @@ def render_evidence_instructions(
         "exactly once. Put your unit-specific detail in evidence, not in the "
         "criterion text.",
         "- completed is rejected when a declared dependency is not itself complete.",
-        # Stated because the alternative is a worker learning it from a
-        # rejection, and because the run this came from was accepted as
-        # complete while shipping nothing.
-        "- answer EVERY delivery requirement in delivery[], copied verbatim, "
-        "separately from acceptance. Satisfying the acceptance criteria does "
-        "NOT satisfy delivery: implementing a change is not delivering it.",
-        "- each delivery entry is state verified (with observed evidence), "
-        "not_applicable (with a reason), or deferred (with a reason AND the "
-        "owner who now owes it).",
-        "- deferring is allowed and is the honest answer when your sandbox "
-        "cannot deploy or reach a live surface. It is not a way to finish: "
-        "Fleet tracks the debt and the RUN stays incomplete until that owner "
-        "produces verified delivery evidence. Handing work back does not "
-        "close it.",
     ]
     if writes:
         lines += [
+            # Stated because the alternative is a worker learning it from a
+            # rejection, and because the run this came from was accepted as
+            # complete while shipping nothing.
+            "- answer EVERY delivery requirement in delivery[], copied verbatim, "
+            "separately from acceptance. Satisfying the acceptance criteria does "
+            "NOT satisfy delivery: implementing a change is not delivering it.",
+            "- each delivery entry is state verified (with observed evidence), "
+            "not_applicable (with a reason), or deferred (with a reason AND the "
+            "owner who now owes it).",
+            "- deferring is allowed and is the honest answer when your sandbox "
+            "cannot deploy or reach a live surface. It is not a way to finish: "
+            "Fleet tracks the debt and the RUN stays incomplete until that owner "
+            "produces verified delivery evidence. Handing work back does not "
+            "close it.",
             "- changed_paths must list every file you changed. Undeclared changes "
             "found in the working tree reject the leg.",
             "- changed files must be covered by an active path claim.",
@@ -1226,6 +1237,9 @@ def render_evidence_instructions(
     else:
         lines += [
             "- this leg is read-only: reporting changed_paths rejects it.",
+            "- delivery is owed by write legs, not by this leg: leave delivery "
+            "as [] (anything there is ignored). Your findings reach the next "
+            "phase through this envelope and your written answer.",
             "- tests is informational on a read-only leg: leave it as [] and "
             "describe any checks you ran inside the acceptance evidence text.",
         ]
