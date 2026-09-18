@@ -49,9 +49,14 @@ class _Local:
 
 @pytest.fixture(autouse=True)
 def no_ambient_key(monkeypatch, tmp_path):
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.delenv("SERENA_CALL_STT_BACKEND", raising=False)
+    # Every key the selector can read has to be neutralised, or these tests
+    # pass or fail depending on which machine they run on: a real
+    # elevenlabs.env in the developer's config is enough to change the answer.
+    for name in ("GROQ_API_KEY", "ELEVENLABS_API_KEY", "XI_API_KEY",
+                 "SERENA_CALL_STT_BACKEND"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("SERENA_CALL_GROQ_ENV", str(tmp_path / "absent.env"))
+    monkeypatch.setenv("SERENA_CALL_ELEVENLABS_ENV", str(tmp_path / "absent.env"))
     monkeypatch.setenv("SERENA_CALL_PRIVATE_VOCABULARY", str(tmp_path / "absent.txt"))
 
 
