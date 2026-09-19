@@ -57,12 +57,18 @@ _IRREVERSIBLE = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
 # and navigations are spaced.
 MIN_GAP_SECONDS = 2.5
 BLOCK_COOLDOWN_SECONDS = 20
+# Edge is ~20 processes and a GPU context. The brain daemon is resident for
+# weeks, so a browser opened for one grocery question and never closed is a
+# permanent cost on his laptop for a thing he asked about once.
+IDLE_SHUTDOWN_SECONDS = 600
 
 _ctx = None
 _pw = None
 _page = None
 _last_nav = 0.0
+_last_use = 0.0
 _warmed = False
+_reaper: asyncio.Task | None = None
 _lock = asyncio.Lock()
 _nav_lock = asyncio.Lock()
 _order_tokens: dict[str, dict] = {}
@@ -145,8 +151,41 @@ def refresh_profile() -> str:
     return ""
 
 
+async def close_browser() -> None:
+    """Shut the browser down and forget the session state that went with it."""
+
+    global _ctx, _page, _warmed
+    async with _lock:
+        if _ctx is None:
+            return
+        with contextlib.suppress(Exception):
+            await _ctx.close()
+        _ctx, _page, _warmed = None, None, False
+
+
+async def _reap() -> None:
+    """Close Edge once it has gone unused long enough."""
+
+    while True:
+        await asyncio.sleep(30)
+        if _ctx is None:
+            return
+        if time.monotonic() - _last_use >= IDLE_SHUTDOWN_SECONDS:
+            await close_browser()
+            return
+
+
+def _touch() -> None:
+    global _last_use, _reaper
+    _last_use = time.monotonic()
+    if _reaper is None or _reaper.done():
+        with contextlib.suppress(RuntimeError):  # no running loop, in tests
+            _reaper = asyncio.get_running_loop().create_task(_reap())
+
+
 async def get_context():
     global _ctx, _pw
+    _touch()
     async with _lock:
         if _ctx is not None:
             try:
@@ -266,6 +305,7 @@ async def open_page(url: str):
     """
 
     global _warmed
+    _touch()
     async with _nav_lock:
         try:
             page = await get_page()
@@ -613,12 +653,7 @@ async def walmart_place_order(args):
       "starts asking to sign in, or right after he signs in again.",
       {"detail": str}, annotations=_WRITES)
 async def walmart_refresh_session(_args):
-    global _ctx, _page, _warmed
-    async with _lock:
-        if _ctx is not None:
-            with contextlib.suppress(Exception):
-                await _ctx.close()
-        _ctx, _page, _warmed = None, None, False
+    await close_browser()
     problem = refresh_profile()
     if problem:
         return failed(problem)

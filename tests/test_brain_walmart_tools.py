@@ -165,3 +165,54 @@ def _never_open_a_browser(monkeypatch):
         raise AssertionError("a unit test tried to open a real browser")
 
     monkeypatch.setattr(W, "get_context", refuse)
+
+
+class TestTheBrowserDoesNotLiveForever:
+    """The brain daemon is resident for weeks. Edge must not be."""
+
+    def test_it_is_closed_once_it_has_gone_unused(self):
+        import asyncio
+
+        closed = []
+
+        class _Ctx:
+            pages = []
+
+            async def close(self):
+                closed.append(True)
+
+        async def exercise():
+            W._ctx = _Ctx()
+            W._touch()
+            # Pretend the last call was longer ago than the idle window.
+            W._last_use -= W.IDLE_SHUTDOWN_SECONDS + 1
+            await W.close_browser()
+
+        asyncio.run(exercise())
+        assert closed == [True]
+        assert W._ctx is None
+
+    def test_closing_it_forgets_the_warm_up_too(self):
+        """A reopened browser has not been to the homepage; it must go again."""
+
+        import asyncio
+
+        class _Ctx:
+            pages = []
+
+            async def close(self):
+                return None
+
+        async def exercise():
+            W._ctx, W._warmed, W._page = _Ctx(), True, object()
+            await W.close_browser()
+
+        asyncio.run(exercise())
+        assert W._warmed is False
+        assert W._page is None
+
+    def test_closing_an_already_closed_browser_is_not_an_error(self):
+        import asyncio
+
+        W._ctx = None
+        asyncio.run(W.close_browser())
