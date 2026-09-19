@@ -9,11 +9,10 @@ Type=simple
 WorkingDirectory=%h/Documents/Projects/serena
 Environment=PYTHONUNBUFFERED=1
 Environment=SERENA_CALL_TRUST_IDMAPPED_SYSTEM=1
-# Remote on purpose: the PC hosts the voice so the phone and laptop can
-# reach Serena while this machine is off. Measured 2026-08-21 the remote
-# is 0.10s p50 over 15 runs, so it is not slow, it STALLS occasionally.
-# The guard is the first-audio deadline below, not moving off the PC.
-Environment=SERENA_CALL_TTS_BACKEND=remote
+# The engine is NOT pinned here. config/voice-stack.json decides it, and a
+# unit file beats that config, which is how one host kept speaking with the
+# old remote voice long after the switch to Grace. The remote settings below
+# still apply when the stack selects it, or as the fallback underneath.
 # Give up on a stalled remote in 1.5s and speak locally instead. The
 # inference timeout is 60s, which left him in silence for nearly a
 # minute while her finished reply sat on screen.

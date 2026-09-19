@@ -104,17 +104,20 @@ def _next_generation() -> int:
 
 
 def _tts_environment() -> None:
-    """Match serena-mobile-host.service: remote engine first, local fallback."""
+    """Only what the local fallback needs; the engine comes from the stack."""
     import os
 
-    os.environ.setdefault("SERENA_CALL_TTS_BACKEND", "remote")
+    # Deliberately not setting SERENA_CALL_TTS_BACKEND. config/voice-stack.json
+    # is what decides which engine speaks, and environment beats it by design,
+    # so forcing "remote" here quietly overrode Grace -- he heard her in one
+    # sentence and Pocket's anna in the next and had no way to tell why. Only
+    # the plumbing the local fallback needs is set below.
     os.environ.setdefault(
         "SERENA_CALL_TTS_REMOTE_URL", "https://pc.tail4d6220.ts.net:8812"
     )
     pocket_python = Path.home() / "Documents/Projects/serena/.venv-pocket/bin/python"
     if pocket_python.exists():
         os.environ.setdefault("SERENA_CALL_POCKET_PYTHON", str(pocket_python))
-    os.environ.setdefault("SERENA_CALL_POCKET_VOICE", "anna")
     os.environ.setdefault("HF_HOME", str(Path.home() / ".cache/serena/pocket-tts"))
 
 
@@ -375,7 +378,11 @@ async def speak(text: str) -> None:
     if read_voice_output_muted():
         return
 
-    os.environ.setdefault("SERENA_CALL_TTS_BACKEND", "remote")
+    # Deliberately not setting SERENA_CALL_TTS_BACKEND. config/voice-stack.json
+    # is what decides which engine speaks, and environment beats it by design,
+    # so forcing "remote" here quietly overrode Grace -- he heard her in one
+    # sentence and Pocket's anna in the next and had no way to tell why. Only
+    # the plumbing the local fallback needs is set below.
     os.environ.setdefault(
         "SERENA_CALL_TTS_REMOTE_URL", "https://pc.tail4d6220.ts.net:8812"
     )
@@ -385,7 +392,6 @@ async def speak(text: str) -> None:
     pocket_python = Path.home() / "Documents/Projects/serena/.venv-pocket/bin/python"
     if pocket_python.exists():
         os.environ.setdefault("SERENA_CALL_POCKET_PYTHON", str(pocket_python))
-    os.environ.setdefault("SERENA_CALL_POCKET_VOICE", "anna")
     os.environ.setdefault("HF_HOME", str(Path.home() / ".cache/serena/pocket-tts"))
     from voice.call.tts import create_tts_backend
 
