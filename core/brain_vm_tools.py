@@ -21,6 +21,8 @@ import subprocess
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from mcp.types import ToolAnnotations
 
+from core.brain_tool_result import failed, ok
+
 # The PC's own loopback, from the PC. VirtualBox NAT publishes the guest there.
 PC_HOST = "pc"
 GUEST_SSH_PORT = 2224
@@ -85,8 +87,10 @@ def _render(code: int, out: str, err: str) -> dict:
     if err:
         body = f"{body}\n[stderr] {err}" if out else f"[stderr] {err}"
     if code != 0:
-        body = f"[exit {code}] {body}"
-    return {"content": [{"type": "text", "text": body[:20000]}]}
+        # Flagged, not narrated. A command that did not run must not come back
+        # looking like a command that ran and said something.
+        return failed(f"[exit {code}] {body}"[:20000])
+    return ok(body[:20000])
 
 
 @tool(
@@ -121,7 +125,7 @@ async def mac_status(_args):
 async def mac_run(args):
     command = str((args or {}).get("command") or "").strip()
     if not command:
-        return _render(1, "", "no command given")
+        return failed("no command given")
     code, out, err = await asyncio.to_thread(_guest, command)
     return _render(code, out, err)
 
@@ -137,8 +141,8 @@ async def mac_run(args):
 async def mac_control(args):
     action = str((args or {}).get("action") or "status").strip().lower()
     if action not in _CONTROL_VERBS:
-        return _render(1, "", f"unknown action {action!r}; "
-                              f"try {', '.join(sorted(_CONTROL_VERBS))}")
+        return failed(f"unknown action {action!r}; "
+                      f"try {', '.join(sorted(_CONTROL_VERBS))}")
     if action == "status":
         return await mac_status({})
     argv = list(_CONTROL_VERBS[action])

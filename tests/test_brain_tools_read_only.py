@@ -395,6 +395,10 @@ def test_brain_server_exposes_exact_annotated_read_only_surface() -> None:
 
     assert server["name"] == "serena-ro"
     assert names == [
+        # Shallow directory listing, added 2026-09-18: Glob times out walking
+        # his Projects tree, and a folder question answered from imagination
+        # is what that cost.
+        "list_dir",
         "git_latest",
         "github_activity",
         "recall_chats",

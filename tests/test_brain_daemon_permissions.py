@@ -7,10 +7,7 @@ from types import SimpleNamespace
 import tomllib
 from mcp import types
 
-import pytest
-
 from core import brain_daemon, brain_laptop_tools, brain_tools
-
 
 
 def test_completed_brain_turn_emits_bounded_plugin_metadata(monkeypatch):
@@ -114,7 +111,16 @@ def test_brain_instance_lock_is_process_exclusive(tmp_path: Path):
 def test_runtime_declares_the_claude_agent_sdk_dependency():
     project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
     dependencies = project["project"]["dependencies"]
-    assert any(value.startswith("claude-agent-sdk>=0.2.120") for value in dependencies)
+    # The requirement is that the SDK is declared at a version new enough for
+    # the resident surface. This asserted ">=" against the core dependency
+    # list, and went red on both counts: the project pins "==" and declares
+    # it under the optional "workspace" group.
+    for group in project["project"].get("optional-dependencies", {}).values():
+        dependencies = [*dependencies, *group]
+    declared = [value for value in dependencies if value.startswith("claude-agent-sdk")]
+    assert declared, "claude-agent-sdk must be declared"
+    version = declared[0].split("=")[-1]
+    assert tuple(int(part) for part in version.split(".")) >= (0, 2, 120)
 
 
 def test_windows_acl_principal_prefers_resolvable_whoami(monkeypatch):
@@ -175,9 +181,14 @@ def test_brain_options_are_unattended_and_read_only(monkeypatch, tmp_path: Path)
     assert options.add_dirs
     assert all("Projects" in str(path) for path in options.add_dirs)
     assert exposed_names == [
+        # Shallow directory listing, added 2026-09-18: Glob times out walking
+        # his Projects tree, and a folder question answered from imagination
+        # is what that cost.
+        "list_dir",
         "git_latest",
         "github_activity",
         "recall_chats",
+        "recall_code",
         "read_ledger",
         # Read-only recall over everything she knows, added 2026-08-01: only
         # active tasks/loops/ledgers are injected, the rest was unreachable.
@@ -185,29 +196,23 @@ def test_brain_options_are_unattended_and_read_only(monkeypatch, tmp_path: Path)
         "search_knowledge",
         "read_knowledge",
     ]
-    assert options.allowed_tools == allowed_names == brain_tools.BRAIN_TOOL_NAMES
+    mcp_allowed = [name for name in options.allowed_tools
+                   if name not in brain_daemon._BRAIN_BUILTIN_TOOLS]
+    assert mcp_allowed == allowed_names == brain_tools.BRAIN_TOOL_NAMES
     assert options.setting_sources == []
     assert options.skills == []
     assert options.env["SERENA_BRAIN_PROCESS_ROLE"] == "resident-sdk"
     assert options.env["SERENA_BRAIN_PROCESS_TOKEN"] == "unassigned"
-    assert {
-        "Bash",
-        "Edit",
-        "Write",
-        "Read",
-        "Grep",
-        "Glob",
-        "ToolSearch",
-    }.isdisjoint(options.tools)
-    assert {
-        "Bash",
-        "Edit",
-        "Write",
-        "Read",
-        "Grep",
-        "Glob",
-        "ToolSearch",
-    }.isdisjoint(options.allowed_tools)
+    # The original control plane (5da2930, 2026-07-20) banned the file tools
+    # along with the writing ones. Raghav asked for reading over his own tree
+    # on 2026-09-18, so the line moved from "no files" to "no changing
+    # anything": Read, Grep and Glob cannot write, edit or execute, and the
+    # surface is still unattended and reversible by construction.
+    mutating = {"Bash", "BashOutput", "KillShell", "Edit", "Write",
+                "NotebookEdit", "ToolSearch", "Task"}
+    assert mutating.isdisjoint(options.tools)
+    assert mutating.isdisjoint(options.allowed_tools)
+    assert set(options.tools) == {"Read", "Grep", "Glob"}
 
 
 def test_laptop_tools_are_separate_and_capability_brokered(

@@ -24,6 +24,7 @@ from pathlib import Path
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from mcp.types import ToolAnnotations
 
+from core.brain_tool_result import failed, ok
 from core.config import DB_PATH
 from core.security_policy import bounded_output, build_child_environment
 
@@ -269,7 +270,7 @@ async def git_latest(args):
         return {"content": [{"type": "text",
                              "text": f"no repo matching '{args.get('repo')}' found"}]}
     if not _GIT_BINARY:
-        return {"content": [{"type": "text", "text": "trusted git CLI not installed"}]}
+        return failed("trusted git CLI not installed")
     log = await _run_ro(
         [*_GIT_READ_ONLY_PREFIX, "log", "--oneline", "-10", "--decorate"],
         cwd=path,
@@ -291,7 +292,7 @@ async def github_activity(args):
         return {"content": [{"type": "text",
                              "text": f"no repo matching '{args.get('repo')}' found"}]}
     if not _GH_BINARY:
-        return {"content": [{"type": "text", "text": "trusted gh CLI not installed"}]}
+        return failed("trusted gh CLI not installed")
     prs = await _run_ro([_GH_BINARY, "pr", "list", "--limit", "5"], cwd=path)
     issues = await _run_ro([_GH_BINARY, "issue", "list", "--limit", "5"], cwd=path)
     return {"content": [{"type": "text",
@@ -449,7 +450,7 @@ async def read_ledger(args):
     try:
         from core.brain_state import format_ledgers
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"(memory unavailable: {e})"}]}
+        return failed(f"memory unavailable: {e}")
     return {"content": [{"type": "text",
                          "text": format_ledgers(args.get("name") or "")}]}
 
@@ -562,8 +563,8 @@ def _search_memory(query: str) -> str:
 
 
 def _search_knowledge(query: str) -> str:
+    from core.knowledge_store import metadata, note_path, record_hit
     from knowledge.reader import KNOWLEDGE_DIR, list_topics
-    from core.knowledge_store import metadata, record_hit, note_path
 
     topics = list_topics()
     terms = _terms(query)
@@ -674,7 +675,47 @@ async def read_knowledge(args):
     return {"content": [{"type": "text", "text": out}]}
 
 
+@tool(
+    "list_dir",
+    "List one directory: its immediate entries only, never a recursive walk. "
+    "Use this instead of Glob for anything under his Projects tree -- Glob "
+    "tries to walk 7.5GB of node_modules and times out, which is how a "
+    "question about his folders ended up being answered from imagination. "
+    "Read-only. path may be absolute or relative to his Projects root.",
+    {"path": str},
+    annotations=_LOCAL_READ_ONLY,
+)
+async def list_dir(args):
+    import os
+
+    raw = str((args or {}).get("path") or "").strip() or "."
+    root = Path.home() / "Documents" / "Projects"
+    if not root.is_dir():
+        root = Path.home() / "Projects"
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        target = root / raw
+    try:
+        target = target.resolve()
+    except OSError as exc:
+        return failed(f"cannot resolve {raw}: {exc}")
+    # His own tree only, the same boundary the file tools get.
+    if root.resolve() not in (target, *target.parents):
+        return failed(f"{target} is outside {root}")
+    if not target.is_dir():
+        return failed(f"{target} is not a directory")
+    try:
+        entries = sorted(
+            os.scandir(target), key=lambda e: (not e.is_dir(), e.name.lower()))
+    except OSError as exc:
+        return failed(f"cannot list {target}: {exc}")
+    lines = [f"{e.name}/" if e.is_dir() else e.name for e in entries[:400]]
+    more = "" if len(entries) <= 400 else f"\n... and {len(entries) - 400} more"
+    return ok(f"{target} ({len(entries)} entries)\n" + "\n".join(lines) + more)
+
+
 BRAIN_TOOLS = (
+    list_dir,
     git_latest,
     github_activity,
     recall_chats,
