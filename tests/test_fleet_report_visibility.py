@@ -1,6 +1,7 @@
 """Report transcripts remain readable, but never become sidebar conversations."""
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 
 import pytest
 
@@ -102,6 +103,8 @@ def test_session_api_omits_reports_from_sidebar_and_total(chat_index, monkeypatc
 
 
 def test_real_report_generator_prompt_is_classified(chat_index, tmp_path):
+    if not (Path(__file__).resolve().parents[1] / "fleet/reports.py").is_file():
+        pytest.skip("This release predates Fleet report generation; persisted-report filtering is tested above.")
     from fleet import reports
     from fleet.policy import build_policy, builtin_config
     from fleet.store import FleetStore
