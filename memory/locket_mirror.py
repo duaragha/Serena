@@ -97,7 +97,7 @@ def mirror_add(
     if locket_id and memory_id is not None:
         try:
             from memory.store import set_locket_id
-            set_locket_id(memory_id, int(locket_id))
+            set_locket_id(memory_id, int(locket_id), mem_type)
         except Exception:
             pass
 
@@ -347,7 +347,7 @@ def push_local(
         exact = remote_exact.get((remote_type, content))
         if exact and exact.get("id") is not None:
             if not dry_run:
-                set_locket_id(memory["id"], int(exact["id"]))
+                set_locket_id(memory["id"], int(exact["id"]), memory.get("type"))
             local_seen_locket.add(int(exact["id"]))
             result["linked"] += 1
             continue
@@ -364,7 +364,7 @@ def push_local(
             })
             new_id = ((resp or {}).get("data") or {}).get("id")
             if new_id is not None:
-                set_locket_id(memory["id"], int(new_id))
+                set_locket_id(memory["id"], int(new_id), memory.get("type"))
                 local_seen_locket.add(int(new_id))
         result["pushed"] += 1
 
@@ -498,7 +498,7 @@ def pull(dry_run: bool = False) -> dict:
                 source_title=row.get("sourceTitle") or "",
                 source_message_timestamp=row.get("sourceMessageTimestamp") or "",
             )
-            set_locket_id(new_id, lid)
+            set_locket_id(new_id, lid, mem_type)
         result["created"] += 1
 
     result["ok"] = True

@@ -417,13 +417,36 @@ def memory_active():
         click.echo(out)
 
 
+def _resolve_memory_id(memory_id, as_task, kind):
+    """Pick the id space when a bare number names both a task and a memory.
+
+    Tasks and memories number themselves separately, so ids overlap by
+    design. Rather than guess, say so and name the flag that decides.
+    """
+    from memory.store import AmbiguousMemoryId, _find_path
+    if as_task:
+        return "task"
+    try:
+        _find_path(memory_id)
+    except AmbiguousMemoryId:
+        console.print(
+            f"[red]#{memory_id} is both a task and a memory.[/red] "
+            f"Re-run with [bold]--task[/bold] to {kind} the task, or "
+            f"[bold]--memory[/bold] for the memory.")
+        raise SystemExit(2) from None
+    return None
+
+
 @memory.command("snooze")
 @click.argument("memory_id", type=int)
 @click.option("--days", "-d", default=7.0, help="How long to defer (default 7).")
-def memory_snooze(memory_id, days):
+@click.option("--task/--memory", "as_task", default=None,
+              help="Which id space, when a number names both.")
+def memory_snooze(memory_id, days, as_task):
     """Defer a task/loop: hide it from the nudge rail for N days."""
     from memory.store import snooze_memory
-    result = snooze_memory(memory_id, days)
+    find_type = _resolve_memory_id(memory_id, as_task, "snooze")
+    result = snooze_memory(memory_id, days, find_type)
     if isinstance(result, str):
         console.print(f"[yellow]Snooze proposed, not applied: {result}[/yellow]")
     elif result:
@@ -505,10 +528,13 @@ def memory_sync(dry_run, prune_stale_laptop, type_filter):
 
 @memory.command("remove")
 @click.argument("memory_id", type=int)
-def memory_remove(memory_id):
+@click.option("--task/--memory", "as_task", default=None,
+              help="Which id space, when a number names both.")
+def memory_remove(memory_id, as_task):
     """Remove a memory by ID."""
     from memory.store import delete_memory
-    result = delete_memory(memory_id)
+    find_type = _resolve_memory_id(memory_id, as_task, "delete")
+    result = delete_memory(memory_id, find_type)
     if isinstance(result, str):
         console.print(f"[yellow]Forgetting proposed, not applied: {result}[/yellow]")
     elif result:
@@ -522,13 +548,17 @@ def memory_remove(memory_id):
 @click.argument("content")
 @click.option("--type", "-t", "mem_type", default=None, type=MEMORY_TYPES,
               help="Change memory type")
-def memory_edit(memory_id, content, mem_type):
+@click.option("--task/--memory", "as_task", default=None,
+              help="Which id space, when a number names both.")
+def memory_edit(memory_id, content, mem_type, as_task):
     """Edit an existing memory."""
     from memory.store import get_memory, update_memory
-    if not get_memory(memory_id):
+    find_type = _resolve_memory_id(memory_id, as_task, "edit")
+    if not get_memory(memory_id, find_type):
         console.print(f"[red]Memory #{memory_id} not found[/red]")
         return
-    result = update_memory(memory_id, content=content, mem_type=mem_type)
+    result = update_memory(memory_id, content=content, mem_type=mem_type,
+                           find_type=find_type)
     if isinstance(result, str):
         console.print(f"[yellow]Edit proposed, not applied: {result}[/yellow]")
     else:

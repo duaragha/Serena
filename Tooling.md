@@ -81,6 +81,23 @@ Memories persist what you've learned about Raghav across sessions. They're injec
 - `chats memory add "..." --type project` — ongoing work, decisions, constraints
 - `chats memory add "..." --type reference` — tool/workflow/API pointers
 
+### Task numbers are their own sequence
+Tasks count `1, 2, 3...` in their own space; every other memory type shares the
+older counter (now past 1100). Both are monotonic: finishing #53 never frees
+#53, because a scheduler's dispatch receipt outlives the task it names — after
+73 tasks the next one is #74 whatever you deleted. Renumbered 2026-09-19 from
+the shared counter, which had pushed a 73-item todo list into the 1000s; the
+old-to-new map is `memory/.task-id-map.json`, so a task id quoted in an older
+chat can still be traced.
+
+Because the two spaces overlap, a bare number can name both a task and a
+memory. `chats memory remove|edit|snooze <id>` then refuses and asks for
+`--task` or `--memory` rather than guessing; in code, `_find_path(id)` raises
+`AmbiguousMemoryId` unless you pass a type. Counters live in
+`memory/.task-next-id` and `memory/.memory-next-id` — never hand-edit one to a
+value at or below an id already in use.
+
+
 ### Auto-capture (do this without being asked)
 Save immediately when you detect:
 - **Corrections**: "no, not that", "I meant X", "don't do Y" → `--type feedback`
