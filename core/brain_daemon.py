@@ -2171,6 +2171,8 @@ def _build_agent_options(
     gideon_tool_names: list[str] | None = None,
     vm_tools=None,
     vm_tool_names: list[str] | None = None,
+    walmart_tools=None,
+    walmart_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
@@ -2193,6 +2195,7 @@ def _build_agent_options(
         *(fleet_tool_names or []),
         *(gideon_tool_names or []),
         *(vm_tool_names or []),
+        *(walmart_tool_names or []),
     ]
     if laptop_tools is not None:
         mcp_servers["serena-laptop"] = laptop_tools
@@ -2210,6 +2213,8 @@ def _build_agent_options(
         mcp_servers["serena-gideon"] = gideon_tools
     if vm_tools is not None:
         mcp_servers["serena-vm"] = vm_tools
+    if walmart_tools is not None:
+        mcp_servers["serena-walmart"] = walmart_tools
     remote_servers, remote_allow = _remote_mcp_servers()
     mcp_servers.update(remote_servers)
     print(f"[brain] {len(mcp_servers)} mcp servers, "
@@ -2324,6 +2329,8 @@ class ResidentClientManager:
         gideon_tool_names: list[str] | None = None,
         vm_tools_factory=None,
         vm_tool_names: list[str] | None = None,
+        walmart_tools_factory=None,
+        walmart_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
         voice_transcripts: VoiceTranscriptStore | None = None,
@@ -2355,6 +2362,8 @@ class ResidentClientManager:
         self.gideon_tool_names = list(gideon_tool_names or [])
         self.vm_tools_factory = vm_tools_factory
         self.vm_tool_names = list(vm_tool_names or [])
+        self.walmart_tools_factory = walmart_tools_factory
+        self.walmart_tool_names = list(walmart_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.voice_transcripts = voice_transcripts or VoiceTranscriptStore()
@@ -2978,6 +2987,12 @@ class ResidentClientManager:
                 else None
             ),
             vm_tool_names=self.vm_tool_names,
+            walmart_tools=(
+                self.walmart_tools_factory()
+                if self.walmart_tools_factory is not None
+                else None
+            ),
+            walmart_tool_names=self.walmart_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -3554,17 +3569,18 @@ async def _run_daemon() -> None:
     from core.brain_document_tools import DOCUMENT_TOOL_NAMES, document_tools_server
     from core.brain_fleet_tools import FLEET_TOOL_NAMES, fleet_tools_server
     from core.brain_gideon_tools import GIDEON_TOOL_NAMES, gideon_tools_server
-    from core.brain_vm_tools import VM_TOOL_NAMES, vm_tools_server
     from core.brain_laptop_tools import LAPTOP_TOOL_NAMES, laptop_tools_server
     from core.brain_memory_tools import MEMORY_TOOL_NAMES, memory_tools_server
     from core.brain_tools import BRAIN_TOOL_NAMES, brain_tools_server
+    from core.brain_vm_tools import VM_TOOL_NAMES, vm_tools_server
+    from core.brain_walmart_tools import WALMART_TOOL_NAMES, walmart_tools_server
     from core.brain_work_tools import WORK_TOOL_NAMES, work_tools_server
     from core.codex_brain import CodexBrainClient
-    from core.muse_brain import MuseBrainClient
     from core.codex_brain_tools import build_serena_codex_brain_tools
-    from fleet.capacity import read_fleet_capacity
     from core.local_model_fallback import LocalBrain
+    from core.muse_brain import MuseBrainClient
     from core.provider_health import ContinuityStore
+    from fleet.capacity import read_fleet_capacity
 
     codex_tools = build_serena_codex_brain_tools()
 
@@ -3589,6 +3605,8 @@ async def _run_daemon() -> None:
         gideon_tool_names=GIDEON_TOOL_NAMES,
         vm_tools_factory=vm_tools_server,
         vm_tool_names=VM_TOOL_NAMES,
+        walmart_tools_factory=walmart_tools_server,
+        walmart_tool_names=WALMART_TOOL_NAMES,
         codex_brain_factory=lambda: CodexBrainClient(
             cwd=BRAIN_CWD,
             developer_instructions=_persona_context(),
