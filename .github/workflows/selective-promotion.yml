@@ -93,6 +93,9 @@ jobs:
         working-directory: candidate
         run: |
           npm --prefix apps/desktop test
+          if [ -f tests/test_fleet_report_visibility.py ]; then
+            .venv/bin/python -m pytest -q --tb=short tests/test_fleet_report_visibility.py tests/test_web_terminal_performance.py
+          fi
           .venv/bin/python -m pytest -q --tb=short tests/test_workspace_browser.py tests/test_fleet_chat_sidebar.py tests/test_voice_created_chat_sidebar.py tests/test_session_sidebar_completeness.py tests/test_workspace_desktop_editions.py tests/test_terminal*.py tests/test_linked_terminal*.py tests/test_pty_terminal_runtime.py tests/test_desktop_shell_parity.py
       - name: Build stable AppImage without publishing
         working-directory: candidate/apps/desktop
@@ -145,6 +148,10 @@ jobs:
           npm --prefix apps/desktop test
           if ($LASTEXITCODE -ne 0) { throw 'desktop tests failed' }
           ./apps/desktop/windows/build-win.ps1
+          if (Test-Path tests/test_fleet_report_visibility.py) {
+            ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_report_visibility.py
+            if ($LASTEXITCODE -ne 0) { throw 'report visibility tests failed' }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: candidate-windows
