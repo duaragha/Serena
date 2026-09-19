@@ -117,6 +117,7 @@ async def _answer(send, text: str, turn: int) -> None:
         if not pcm:
             return
         index += 1
+        publish_state("speaking")
         send({
             "type": "audio",
             "seq": index,
@@ -143,6 +144,7 @@ async def _answer(send, text: str, turn: int) -> None:
     except Exception as exc:  # the demo says so rather than going quiet
         send({"type": "error", "message": f"brain: {exc}"})
     finally:
+        publish_state("idle")
         send({"type": "speech_end"})
 
 
@@ -197,6 +199,23 @@ class UtteranceSessions:
             session, self._session = self._session, None
         if session is not None:
             session.close()
+
+
+VOICE_STATE = Path.home() / ".config" / "serena" / "voice_state"
+
+
+def publish_state(state: str) -> None:
+    """Announce what the orb is doing, for anything else that speaks.
+
+    ~/.config/serena/voice_state is the shared "is she busy" flag. The brain
+    bridge waits on it before announcing a Fleet run out loud, and the orb
+    never wrote it -- so the bridge read "idle" all through a conversation and
+    talked straight over her. Two voices at once, one of them the fallback.
+    """
+
+    with contextlib.suppress(OSError):
+        VOICE_STATE.parent.mkdir(parents=True, exist_ok=True)
+        VOICE_STATE.write_text(state, encoding="utf-8")
 
 
 app = Flask(__name__)
@@ -282,6 +301,8 @@ def ws_mic(ws) -> None:
             if message is None:
                 break
             if isinstance(message, (bytes, bytearray)):
+                if sessions.current is None:
+                    publish_state("listening")
                 session = sessions.for_audio()
                 if session is None:
                     with send_lock:
@@ -305,10 +326,12 @@ def ws_mic(ws) -> None:
             if not text.strip():
                 # Nothing usable came back. Silence here reads as her ignoring
                 # him, so the surface is told rather than left guessing.
+                publish_state("idle")
                 with send_lock:
                     ws.send(json.dumps({"type": "unheard"}))
             if text.strip():
                 turns["n"] += 1
+                publish_state("thinking")
                 ws.send(json.dumps({"type": "thinking"}))
                 # Its own thread: the receive loop must stay free so he can
                 # interrupt, and so the next utterance is not blocked behind
@@ -325,6 +348,7 @@ def ws_mic(ws) -> None:
     finally:
         stop.set()
         sessions.close()
+        publish_state("idle")
 
 
 def main() -> int:
