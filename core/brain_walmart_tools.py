@@ -28,6 +28,7 @@ import random
 import re
 import secrets
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
@@ -151,6 +152,121 @@ def refresh_profile() -> str:
     return ""
 
 
+# Chromium epoch is 1601-01-01; unix is 1970-01-01.
+CHROMIUM_EPOCH_OFFSET = 11_644_473_600
+SAMESITE = {0: "None", 1: "Lax", 2: "Strict"}
+
+
+def _safe_storage_secrets() -> list[bytes]:
+    """Every Chromium-family keyring secret on this machine.
+
+    There are eight of them here, all labelled "Chromium Safe Storage" -- one
+    per Chromium-family browser he has ever installed, Edge included, since
+    none of them rebrand the label. Which one Edge picks for a profile at a
+    path it did not create is not something to assume, so all of them are
+    collected and the one that actually works is chosen by trying it.
+    """
+
+    try:
+        import secretstorage
+    except ImportError:
+        return []
+    found: list[bytes] = []
+    try:
+        conn = secretstorage.dbus_init()
+        for collection in secretstorage.get_all_collections(conn):
+            if collection.is_locked():
+                continue
+            for item in collection.get_all_items():
+                if "safe storage" not in item.get_label().casefold():
+                    continue
+                secret = item.get_secret()
+                if secret and secret not in found:
+                    found.append(secret)
+    except Exception:
+        return found
+    return found
+
+
+def _decrypt(blob: bytes, key: bytes) -> str | None:
+    from Crypto.Cipher import AES
+
+    try:
+        data = bytes(blob)
+        if not data.startswith(b"v1"):
+            return data.decode()
+        plain = AES.new(key, AES.MODE_CBC, IV=b" " * 16).decrypt(data[3:])
+        if plain and plain[-1] <= 16:
+            plain = plain[: -plain[-1]]
+        try:
+            return plain.decode()
+        except UnicodeDecodeError:
+            # Newer Chromium prefixes the plaintext with a 32-byte SHA-256 of
+            # the cookie's domain.
+            return plain[32:].decode()
+    except (ValueError, UnicodeDecodeError, IndexError):
+        return None
+
+
+def edge_cookies(domain_like: str = "%walmart%") -> list[dict]:
+    """His real Walmart session, decrypted out of Edge's cookie store.
+
+    Letting the browser read its own copied database looked like the obvious
+    route and quietly loses the login: the profile copy carries all 87 cookies,
+    Edge fails to decrypt the v11 ones under a key it did not choose, and drops
+    them rather than erroring. The result is a browser that loads walmart.ca
+    perfectly as a signed-out stranger, with a $0.00 cart -- and every account
+    page then answers with the bot wall, which reads like a detection problem
+    and is really a login problem. Decrypting here removes the guess.
+    """
+
+    from Crypto.Protocol.KDF import PBKDF2
+
+    source = SOURCE_PROFILE / "Default" / "Cookies"
+    if not source.exists():
+        return []
+    scratch = EDGE_PROFILE / ".cookies-read"
+    try:
+        EDGE_PROFILE.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, scratch)
+        connection = sqlite3.connect(f"file:{scratch}?mode=ro", uri=True)
+        try:
+            rows = connection.execute(
+                "SELECT host_key, name, encrypted_value, path, expires_utc, "
+                "is_secure, is_httponly, samesite FROM cookies "
+                "WHERE host_key LIKE ?", (domain_like,)).fetchall()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error):
+        return []
+    finally:
+        with contextlib.suppress(OSError):
+            scratch.unlink()
+
+    best: list[dict] = []
+    for secret in _safe_storage_secrets():
+        key = PBKDF2(secret, b"saltysalt", 16, count=1)
+        jar: list[dict] = []
+        for host, name, blob, path, expires, secure, http_only, same in rows:
+            value = _decrypt(blob, key)
+            if value is None:
+                continue
+            cookie = {"name": name, "value": value, "domain": host,
+                      "path": path or "/", "secure": bool(secure),
+                      "httpOnly": bool(http_only),
+                      "sameSite": SAMESITE.get(same, "Lax")}
+            if expires:
+                unix = expires / 1_000_000 - CHROMIUM_EPOCH_OFFSET
+                if unix > time.time():
+                    cookie["expires"] = unix
+            jar.append(cookie)
+        if len(jar) > len(best):
+            best = jar
+        if len(best) == len(rows):
+            break
+    return best
+
+
 async def close_browser() -> None:
     """Shut the browser down and forget the session state that went with it."""
 
@@ -211,6 +327,10 @@ async def get_context():
             timezone_id="America/Toronto",
         )
         _ctx.set_default_timeout(NAV_TIMEOUT_MS)
+        jar = edge_cookies()
+        if jar:
+            with contextlib.suppress(Exception):
+                await _ctx.add_cookies(jar)
     return _ctx
 
 
