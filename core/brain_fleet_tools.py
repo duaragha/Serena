@@ -55,6 +55,18 @@ _ID = re.compile(r"^[0-9a-f]{4,}(?:-[0-9a-f]+)*$", re.IGNORECASE)
 _WORD = re.compile(r"[a-z0-9]+")
 _STOPWORDS = frozenset(
     {
+        # Generic enough that matching on one of them is not evidence of
+        # anything: "a run about penguins on mars" scored a real run because
+        # "about" appeared in its task.
+        "about",
+        "run",
+        "runs",
+        "job",
+        "task",
+        "thing",
+        "one",
+        "going",
+        "status",
         "a",
         "an",
         "and",
@@ -197,6 +209,11 @@ def resolve_fleet_run(
     if not scored:
         raise FleetResolutionError("nothing in Fleet matches that reference")
     best = max(score for score, _run in scored)
+    # One incidental word in common is not a reference. A project name is
+    # worth three, so anything he actually means still resolves; a single
+    # shared task word no longer returns a confident wrong run.
+    if best < 2:
+        raise FleetResolutionError("nothing in Fleet matches that reference")
     winners = [run for score, run in scored if score == best]
     if len(winners) > 1:
         names = ", ".join(_label(run) for run in winners[:4])
@@ -314,12 +331,47 @@ def _spoken_status(run: Mapping[str, Any]) -> str:
 
 
 def fleet_status(reference: object = "") -> dict[str, Any]:
+    """Status for a run on either machine.
+
+    Each machine keeps its own Fleet store and nothing merges them, so a run
+    dispatched to the PC is simply absent here. Asked about one on 2026-09-19
+    she searched this laptop, found nothing, and concluded it was never
+    dispatched or had aged out -- while it was running on the PC. The lookup
+    now crosses the gap, and when it still finds nothing it says which
+    machines it actually looked at.
+    """
+
+    from core.fleet_remote import find_pc_run, pc_reachable
+
     summaries = list_runs(limit=50)
-    selected = resolve_fleet_run(reference, action="status", runs=summaries)
+    try:
+        selected = resolve_fleet_run(reference, action="status", runs=summaries)
+    except FleetResolutionError:
+        remote = find_pc_run(str(reference or ""))
+        if remote is not None:
+            state = str(remote.get("state") or "unknown")
+            task = str(remote.get("task") or "").strip()
+            return {
+                "ok": True,
+                "found": True,
+                "machine": "pc",
+                "run_id": remote.get("run_id"),
+                "state": state,
+                "task": task,
+                # Said plainly, because "it is on the PC" is the whole point.
+                "spoken": (f"That one is on your PC, not this laptop: it is {state}. "
+                           f"{task[:160]}").strip(),
+                "controllable_here": False,
+            }
+        where = ("this laptop and your PC" if pc_reachable()
+                 else "this laptop; I could not reach your PC to check it")
+        raise FleetResolutionError(
+            f"no Fleet run matching that on {where}") from None
     run = get_run(str(selected["run_id"]))
     if run is None:
         raise FleetResolutionError("that Fleet run is no longer on record")
     projection = _run_projection(run)
+    projection["machine"] = "laptop"
     projection["spoken"] = _spoken_status(run)
     return projection
 
