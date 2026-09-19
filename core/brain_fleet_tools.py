@@ -59,12 +59,8 @@ _STOPWORDS = frozenset(
         # anything: "a run about penguins on mars" scored a real run because
         # "about" appeared in its task.
         "about",
-        "run",
         "runs",
-        "job",
-        "task",
         "thing",
-        "one",
         "going",
         "status",
         "a",
