@@ -17,6 +17,11 @@ const net = require('node:net');
 const path = require('node:path');
 const fs = require('node:fs');
 
+// There is no button to press any more, so nothing supplies the user gesture
+// Chromium normally waits for before it will play audio. Without this her
+// first reply is decoded, scheduled, and silently never heard.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 const HERE = __dirname;
 const REPO = path.resolve(HERE, '..', '..');
 
