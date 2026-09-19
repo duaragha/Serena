@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -68,6 +69,15 @@ def test_existing_reports_disappear_at_first_open_without_rescanning(chat_index,
     indexer._hide_internal_sessions(chat_index)
     chat_index.commit()
     assert [s["session_id"] for s in indexer.list_sessions()] == ["human"]
+
+
+def test_schema_only_migration_does_not_require_chat_content():
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT, file_path TEXT, agent TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('existing', '/sessions/existing.jsonl', 'codex')")
+        indexer._migrate(conn)
+        indexer._migrate(conn)
+        assert conn.execute("SELECT session_id,is_archived FROM sessions").fetchall() == [("existing", 0)]
 
 
 @pytest.mark.parametrize("message", [
