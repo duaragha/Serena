@@ -69,28 +69,77 @@ _order_tokens: dict[str, dict] = {}
 ORDER_TOKEN_TTL_SECONDS = 300
 
 
+DATABASES = ("Cookies", "Web Data", "Login Data")
+PLAIN_FILES = ("Preferences", "Secure Preferences")
+
+
+def _snapshot_db(src: Path, dest: Path) -> None:
+    """Copy a live SQLite file the only way that is safe while Edge holds it.
+
+    Edge runs these in WAL mode, so the .db on disk lags whatever is still in
+    the -wal. Copying the .db alone silently loses the most RECENT writes --
+    precisely the cookie that matters, the token Walmart sets the moment he
+    finishes its press-and-hold check. That would have made his one manual
+    step look like it did nothing.
+
+    The sqlite3 backup API reads through the WAL correctly and was the first
+    thing tried here; it blocks indefinitely on the lock Edge holds whenever it
+    is running, which is most of the time. Taking the journal sidecars along
+    with the database reaches the same settled state and never waits on a lock.
+    """
+
+    # -wal/-shm for WAL mode, -journal for rollback mode; this Edge build uses
+    # the latter, and which one is in force is not ours to assume.
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        source = Path(str(src) + suffix)
+        target = Path(str(dest) + suffix)
+        if source.exists():
+            shutil.copy2(source, target)
+        elif target.exists():
+            # A sidecar left from an older copy would be replayed over the
+            # fresh database and undo it.
+            target.unlink()
+
+
 def refresh_profile() -> str:
     """Re-copy the parts of his Edge profile that carry the session.
 
-    Only what a session needs, because the live profile is 1.7GB and almost
-    all of that is cache. Edge must not be holding the files open mid-write,
-    so a failure here is reported rather than producing a torn copy.
+    Only what a session needs: the live profile is 1.7GB and nearly all of it
+    is cache.
     """
 
     try:
         EDGE_PROFILE.mkdir(parents=True, exist_ok=True)
         (EDGE_PROFILE / "Default").mkdir(exist_ok=True)
         shutil.copy2(SOURCE_PROFILE / "Local State", EDGE_PROFILE / "Local State")
-        for name in ("Cookies", "Preferences", "Secure Preferences", "Web Data"):
+        for name in PLAIN_FILES:
             src = SOURCE_PROFILE / "Default" / name
             if src.exists():
                 shutil.copy2(src, EDGE_PROFILE / "Default" / name)
-        for folder in ("Network", "Local Storage"):
-            src = SOURCE_PROFILE / "Default" / folder
-            if src.is_dir():
-                shutil.rmtree(EDGE_PROFILE / "Default" / folder, ignore_errors=True)
-                shutil.copytree(src, EDGE_PROFILE / "Default" / folder,
-                                dirs_exist_ok=True)
+        for name in DATABASES:
+            src = SOURCE_PROFILE / "Default" / name
+            if src.exists():
+                _snapshot_db(src, EDGE_PROFILE / "Default" / name)
+        # Cookies live here on current Edge; older layouts keep them one level
+        # up, and _snapshot_db above already covered that.
+        network = SOURCE_PROFILE / "Default" / "Network"
+        if network.is_dir():
+            (EDGE_PROFILE / "Default" / "Network").mkdir(exist_ok=True)
+            for name in ("Cookies", "Network Persistent State", "TransportSecurity"):
+                src = network / name
+                if not src.exists():
+                    continue
+                dest = EDGE_PROFILE / "Default" / "Network" / name
+                if name == "Cookies":
+                    _snapshot_db(src, dest)
+                else:
+                    shutil.copy2(src, dest)
+        storage = SOURCE_PROFILE / "Default" / "Local Storage"
+        if storage.is_dir():
+            shutil.rmtree(EDGE_PROFILE / "Default" / "Local Storage",
+                          ignore_errors=True)
+            shutil.copytree(storage, EDGE_PROFILE / "Default" / "Local Storage",
+                            dirs_exist_ok=True)
     except OSError as exc:
         return f"profile refresh failed: {exc}"
     return ""
