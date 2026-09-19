@@ -254,11 +254,38 @@ def test_queue_capacity(queue, monkeypatch):
 
 
 def test_deleted_ids_are_not_reused_by_any_writer(queue):
+    # Each space is monotonic on its own: finishing a task frees nothing,
+    # because a dispatch receipt outlives the task it names.
     task = store.enqueue_task(BRIEF)
-    assert store.delete_memory(task["id"])
-    memory_id = store.add_memory("reference", _no_mirror=True)
-    assert memory_id > task["id"]
-    assert store.enqueue_task(BRIEF)["id"] > memory_id
+    assert store.delete_memory(task["id"], "task")
+    assert store.enqueue_task(BRIEF)["id"] > task["id"]
+    memory_id = store.add_memory("a note", _no_mirror=True)
+    assert store.delete_memory(memory_id, "general")
+    assert store.add_memory("another note", _no_mirror=True) > memory_id
+
+
+def test_tasks_and_memories_count_in_separate_sequences(queue):
+    """His todo list numbers itself. A passing note never pushes it along."""
+    first = store.enqueue_task(BRIEF)["id"]
+    for i in range(5):
+        store.add_memory(f"note {i}", _no_mirror=True)
+    assert store.enqueue_task(BRIEF, source_id="second")["id"] == first + 1
+
+
+def test_an_id_naming_both_spaces_refuses_to_resolve(queue):
+    """A bare number is a question once the two spaces overlap."""
+    task = store.enqueue_task(BRIEF)
+    memory_id = store.add_memory("a note", _no_mirror=True)
+    assert memory_id == task["id"]
+    with pytest.raises(store.AmbiguousMemoryId):
+        store._find_path(task["id"])
+    assert store._find_path(task["id"], "task").parent.name == "task"
+    assert store._find_path(memory_id, "general").parent.name == "general"
+    # Deleting one leaves the other untouched.
+    assert store.delete_memory(task["id"], "task")
+    assert store.get_memory(memory_id, "general")["content"] == "a note"
+
+
 
 
 def test_duplicate_task_identity_fails_closed(queue):

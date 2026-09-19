@@ -372,7 +372,7 @@ def _retry(task_id: int) -> str:
     from fleet.supervisor import retry_run
     from memory import store
 
-    task = store.get_memory(task_id)
+    task = store.get_memory(task_id, "task")
     if not task or task.get("type") != "task" or task.get("state") != "blocked":
         return f"#{task_id} isn't blocked, nothing to retry."
     run_id = str(task.get("run_id") or "")
