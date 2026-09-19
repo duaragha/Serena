@@ -8,14 +8,14 @@
 
 ## Requirements
 
-- [ ] WHEN the active window or its title changes THEN an event is recorded within 1 s, event-driven, with no polling loop burning CPU
-- [ ] WHEN he is idle THEN idle is recorded, and periods where Serena herself drove the mouse or keyboard are tagged as agent-driven rather than counted as him being active
-- [ ] WHEN the active app or URL is on the denylist THEN nothing about it is recorded at all — filtered before capture, not redacted after
-- [ ] WHEN the browser is focused THEN the active tab's URL and title are recorded, and incognito windows are skipped entirely
-- [ ] WHEN the clipboard changes THEN only a hash, size and owner are stored, and anything marked as a password-manager secret is skipped
-- [ ] WHEN `chats ambient forget --minutes 15` runs THEN those events are gone from memory and disk immediately
-- [ ] WHEN the store exceeds its caps THEN the oldest events are dropped (ring buffer of 2,000 events; 30-day and size ceiling on disk)
-- [ ] WHEN two or more struggle signals coincide within 10–15 minutes THEN the classifier marks "stuck" — and that is the only thing that may wake a model
+- [x] WHEN the active window or its title changes THEN an event is recorded within 1 s, event-driven, with no polling loop burning CPU
+- [x] WHEN he is idle THEN idle is recorded, and periods where Serena herself drove the mouse or keyboard are tagged as agent-driven rather than counted as him being active
+- [x] WHEN the active app or URL is on the denylist THEN nothing about it is recorded at all — filtered before capture, not redacted after
+- [x] WHEN the browser is focused THEN the active tab's URL and title are recorded, and incognito windows are skipped entirely
+- [x] WHEN the clipboard changes THEN only a hash, size and owner are stored, and anything marked as a password-manager secret is skipped
+- [x] WHEN `chats ambient forget --minutes 15` runs THEN those events are gone from memory and disk immediately
+- [x] WHEN the store exceeds its caps THEN the oldest events are dropped (ring buffer of 2,000 events; 30-day and size ceiling on disk)
+- [x] WHEN two or more struggle signals coincide within 10–15 minutes THEN the classifier marks "stuck" — and that is the only thing that may wake a model
 
 ## Architecture / Design
 
@@ -41,17 +41,17 @@
 > Execution: fleet, one run. Privacy-sensitive: the denylist and forget controls land in Phase 1, before any storage of real activity.
 
 ### Phase 1: Sensor + store + controls
-- [ ] `ambient_sensor.py`, `ambient_store.py`, denylist, retention, forget controls, CLI, systemd unit
+- [x] `ambient_sensor.py`, `ambient_store.py`, denylist, retention, forget controls, CLI, systemd unit
   - accept: window and idle events recorded event-driven with negligible CPU over an hour; a denylisted app produces zero rows; `forget --minutes 15` provably removes rows from memory and disk
   - engine: fleet
 
 ### Phase 2: Browser tabs
-- [ ] MV3 extension + native messaging host + incognito skip
+- [x] MV3 extension + native messaging host + incognito skip
   - accept: switching tabs records URL and title within 1 s; an incognito window records nothing; the host refuses any origin but the extension
   - engine: fleet
 
 ### Phase 3: Classifier
-- [ ] `ambient_classify.py` with the activity classes and the two-signal stuck rule
+- [x] `ambient_classify.py` with the activity classes and the two-signal stuck rule
   - accept: replaying a recorded "stuck" session fires once; a recorded focused session never fires; agent-driven periods never count as activity
   - engine: fleet
 
@@ -66,21 +66,23 @@
 
 ## Testing
 
-- [ ] Sensor tests against a faked X connection (switch, title change, window close, BadWindow)
-- [ ] Denylist tests: denylisted app, denylisted URL pattern, incognito
-- [ ] Heartbeat-merge and retention tests
-- [ ] Forget tests (minutes and all), including the in-memory buffer
-- [ ] Classifier fixtures: stuck session fires once, focused session never fires
-- [ ] Agent-driven tagging test: XTest input does not register as user activity
+- [x] Sensor tests against a faked X connection (switch, title change, window close, BadWindow)
+- [x] Denylist tests: denylisted app, denylisted URL pattern, incognito
+- [x] Heartbeat-merge and retention tests
+- [x] Forget tests (minutes and all), including the in-memory buffer
+- [x] Classifier fixtures: stuck session fires once, focused session never fires
+- [x] Agent-driven tagging test: XTest input does not register as user activity
 
 ---
 
 ## Progress Log
 
-**Status**: Not started
-**Branch**: — (created at execution)
-**Current phase**: —
-**Last completed task**: —
-**Files modified**: —
-**Blockers**: —
-**Review**: privacy review of the denylist before Phase 2
+**Status**: Complete (Phases 1–3, fleet run 7b743f12)
+**Branch**: serena/fleet/7b743f12-c5cd-42fb-a1fe-f09b1cfcf8d5/agent-a
+**Current phase**: Done
+**Last completed task**: Phase 3 classifier with two-signal stuck rule + latch
+**Files modified**: core/ambient_denylist.py, core/ambient_store.py, core/ambient_sensor.py, core/ambient_classify.py, core/visual_context.py (AmbientAccessibilityAdapter), cli.py (chats ambient), systemd/serena-ambient.service, integrations/browser-extension/ (manifest, background, native host, installer, README), tests/test_ambient_*.py
+**Blockers**: none. Ops-time verifications for enablement: Cinnamon LockedHint behavior (screensaver fallback wired), Edge extension id install step, git-hook install per repo (`scripts/ambient-git-hook.py --install --repo <path>`).
+**Review**: denylist landed in Phase 1 before any storage, per spec; PID falls back to _NET_WM_PID (this python-xlib has no XRes binding)
+**Fix (run 7b743f12)**: wired agent-driven tagging into computer_platform injection paths (fail-soft, 2 s re-arm); removed the tautological XFixes drain branch + stash replay for mid-fetch events; bounded the size-cap trim (one batch/sweep, 1000-row floor, post-commit VACUUM); long_dwell reads a 30-min slice with a per-window quiet gate; vcs stream ships as scripts/ambient-git-hook.py (operator installs the links); disk reads return newest-first; system sampler seeds without emitting; window PID kept in meta; background.js reports foreground tabs only; dwell clamped to the window. 258 focused tests green.
+**Fix-2 (run 7b743f12)**: git hook tolerates git's own hook parameters (parse_known_args; hook-name mapping wins, so pre-push can no longer abort a push); background.js gates tab reports on the focused window, not just tab.active. Focused suites green.

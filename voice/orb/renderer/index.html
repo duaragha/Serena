@@ -466,6 +466,10 @@ void main(){
         } else if (m.type === 'final') {
           committedEl.textContent = m.text || '';
           partialEl.textContent = '';
+        } else if (m.type === 'unheard') {
+          // She did not get it. Say so briefly instead of sitting there.
+          say('didn\u2019t catch that');
+          setTimeout(() => say(''), 2600);
         } else if (m.type === 'thinking') {
           herSpeaking = true; ended = false; pending = 0; cursor = 0;
           replyEl.textContent = '';

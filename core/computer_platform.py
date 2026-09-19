@@ -19,6 +19,35 @@ class ComputerError(RuntimeError):
     pass
 
 
+AGENT_INPUT_TAG_SECONDS = 5.0
+_AGENT_TAG_REARM_SECONDS = 2.0
+_AGENT_TAG_STATE = {"at": 0.0}
+
+
+def _tag_agent_input() -> None:
+    """Tell the ambient store Serena herself is driving input right now.
+
+    Synthetic XTest/xdotool input resets the X idle timer exactly like his
+    does, so every injection path calls this first: without the tag, her
+    working reads as him working and every "is he here?" decision downstream
+    is wrong. Fail-soft and re-armed at most every 2 s, so a burst of mouse
+    moves is one cheap settings-row write, never a hot loop.
+    """
+
+    try:
+        moment = time.time()
+        if moment - _AGENT_TAG_STATE["at"] < _AGENT_TAG_REARM_SECONDS:
+            return
+        from core.ambient_store import AmbientStore
+
+        AmbientStore().mark_agent_active(
+            until=moment + AGENT_INPUT_TAG_SECONDS, now=moment
+        )
+        _AGENT_TAG_STATE["at"] = moment
+    except Exception:
+        pass
+
+
 class ComputerTransientError(ComputerError):
     """The foreground changed during capture; retry with a fresh screen check."""
 
@@ -278,6 +307,7 @@ class X11Desktop:
         from Xlib import X
         from Xlib.ext import xtest
 
+        _tag_agent_input()
         with self.lock:
             xtest.fake_input(self.display, X.MotionNotify, x=int(x), y=int(y))
             self.display.sync()
@@ -286,6 +316,7 @@ class X11Desktop:
         from Xlib import X
         from Xlib.ext import xtest
 
+        _tag_agent_input()
         with self.lock:
             xtest.fake_input(
                 self.display, X.ButtonPress if down else X.ButtonRelease, detail=button
@@ -322,6 +353,7 @@ class X11Desktop:
             "PAGEDOWN": "Next",
         }
         keysym = XK.string_to_keysym(aliases.get(name.upper(), name))
+        _tag_agent_input()
         with self.lock:
             code = self.display.keysym_to_keycode(keysym)
             if not code:
@@ -333,6 +365,7 @@ class X11Desktop:
     def type_text(self, text, cancelled):
         # Short complete chunks bound takeover latency without killing xdotool
         # between a synthetic key-down and its key-up. stdin hides text from ps.
+        _tag_agent_input()
         legacy = legacy_unicode_keys() if any(ord(char) > 255 for char in text) else {}
         chunks = re.findall(r"[\x00-\x7f]{1,8}|[^\x00-\x7f]", text)
         for chunk in chunks:
@@ -357,6 +390,7 @@ class X11Desktop:
         from Xlib import X
         from Xlib.ext import xtest
 
+        _tag_agent_input()
         with self.lock:
             for code in tuple(self.held_keys):
                 xtest.fake_input(self.display, X.KeyRelease, detail=code)

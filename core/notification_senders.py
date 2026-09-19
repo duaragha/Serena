@@ -9,9 +9,11 @@ Four channels, fixed:
 
 - `voice` puts a line in front of the desktop voice bridge, which is how she
   actually talks to him when he is at the machine.
-- `imessage` is the fallback for when he is not: his own iMessage thread,
-  through the Unified hub he runs. No third-party service is involved.
-- `telegram` is the legacy bot, kept only so old queued notices can drain.
+- `imessage` is the fallback for when he is not: whichever text line
+  `phone-line.json` points at (her Telegram bot, her Apple ID, or his own
+  self-thread through the Unified hub). The channel name predates the switch.
+- `telegram` is the legacy bot path through `chats text`, kept for old queued
+  notices; new ones reach the bot as `imessage` when the line points there.
 - `desktop` is the silent overlay notice, for things worth showing but not
   worth saying out loud.
 
@@ -120,7 +122,7 @@ def send_telegram(request: NotificationRequest) -> bool:
 
 
 def send_imessage(request: NotificationRequest) -> bool:
-    """Text his phone through his own Unified hub."""
+    """Text his phone on whichever line phone-line.json owns."""
 
     from core import phone_line
 
@@ -179,7 +181,7 @@ def _policy_from_environment() -> NotificationPolicy:
             return fallback
 
     return NotificationPolicy(
-        quiet_start_hour=number("SERENA_QUIET_START_HOUR", 22),
+        quiet_start_hour=number("SERENA_QUIET_START_HOUR", 23),
         quiet_end_hour=number("SERENA_QUIET_END_HOUR", 8),
         hourly_limit=number("SERENA_NOTIFY_HOURLY_LIMIT", 12),
     )
@@ -198,10 +200,13 @@ def default_authority(*, refresh: bool = False) -> NotificationAuthority:
 
     global _AUTHORITY
     if _AUTHORITY is None or refresh:
+        from core.interrupt_policy import presence_now
+
         _AUTHORITY = NotificationAuthority(
             policy=_policy_from_environment(),
             senders=dict(DEFAULT_SENDERS),
             result_observer=observe_notification_result,
+            presence=presence_now,
         )
     return _AUTHORITY
 
@@ -216,6 +221,7 @@ def notify(
     source_surface: str = "system",
     job_id: str | None = None,
     fallback_channel: str | None = "imessage",
+    answers_request: bool = False,
     authority: NotificationAuthority | None = None,
 ):
     """Ask the authority to tell Raghav something, with one fallback hop.
@@ -236,6 +242,7 @@ def notify(
             dedupe_key=dedupe_key,
             source_surface=source_surface,
             job_id=job_id,
+            answers_request=answers_request,
         )
     )
     if result.sent or not fallback_channel or fallback_channel == channel:
@@ -255,5 +262,6 @@ def notify(
             dedupe_key=f"{dedupe_key}:{fallback_channel}" if dedupe_key else "",
             source_surface=source_surface,
             job_id=job_id,
+            answers_request=answers_request,
         )
     )

@@ -1,0 +1,26 @@
+# Serena ambient sensor: cheap always-on activity metadata (docs/spec-ambient-sensing.md).
+# Opt-in: enable only after Raghav asks. Pause any time with `chats ambient pause`.
+# Install:
+#   cp systemd/serena-ambient.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now serena-ambient.service
+[Unit]
+Description=Serena ambient sensor (activity metadata, opt-in)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+WorkingDirectory=/home/raghav/Documents/Projects/serena
+ExecStart=/home/raghav/Documents/Projects/serena/.venv/bin/python3 -m core.ambient_sensor
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+StateDirectory=serena
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

@@ -34,21 +34,38 @@ from typing import Any
 from core.file_lock import exclusive_lock
 from core.sqlite_connection import connect_database
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "notifications.sqlite3"
+
+# Over-cap proactive items batch into one of these at the next breakpoint.
+# A digest skips the caps (it is the cap mechanism) but keeps quiet hours,
+# typing holds, and dedupe like everything else.
+DIGEST_KIND = "proactive.digest"
 
 # Fixed, reviewed, and small. Not extensible at runtime.
 CHANNELS = ("voice", "imessage", "telegram", "desktop")
+# The documented "3 phone/day" is one budget across these three, not each.
+PHONE_CHANNELS = ("voice", "imessage", "telegram")
 DECISIONS = ("sent", "suppressed", "deferred", "pending_approval", "failed")
 
 # Urgency decides what quiet hours may hold back. `critical` is for things that
 # are worse to withhold than to interrupt with; it is not a general escape.
 URGENCIES = ("low", "normal", "critical")
 
-DEFAULT_QUIET_START_HOUR = 22
+# Quiet hours exist so Serena does not interrupt him. Answering something he
+# asked for is not an interruption, and holding the answer until morning is
+# indistinguishable from the line being broken -- which is exactly how a task
+# that failed at 23:56 went unmentioned while he sat there asking about it.
+# `answers_request` marks a notice as a reply, not an approach. It skips quiet
+# hours only: dedupe, the hourly limit, and approval all still apply, so it
+# cannot become the general escape `critical` refuses to be.
+
+DEFAULT_QUIET_START_HOUR = 23
 DEFAULT_QUIET_END_HOUR = 8
 DEFAULT_DEDUPE_WINDOW_SECONDS = 3_600
 DEFAULT_HOURLY_LIMIT = 12
+DEFAULT_PROACTIVE_DAILY_LIMIT = 3
+DEFAULT_CHANNEL_HOURLY_LIMITS = {"desktop": 1}
 DEFAULT_MAX_ATTEMPTS = 3
 MAX_SUMMARY_CHARS = 2_000
 
@@ -65,6 +82,10 @@ class NotificationPolicy:
     hourly_limit: int = DEFAULT_HOURLY_LIMIT
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     approval_required_kinds: tuple[str, ...] = ()
+    daily_limit: int = DEFAULT_PROACTIVE_DAILY_LIMIT
+    channel_hourly_limits: dict[str, int] = field(
+        default_factory=lambda: dict(DEFAULT_CHANNEL_HOURLY_LIMITS)
+    )
 
     def in_quiet_hours(self, moment: float) -> bool:
         hour = datetime.fromtimestamp(moment).hour
@@ -106,6 +127,18 @@ class NotificationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PresenceState:
+    """What the interrupt policy knows about him right now.
+
+    Typing is an idle-timer proxy (recent input, content never observed),
+    never keylogging. `activity_class` comes from the ambient classifier.
+    """
+
+    typing: bool = False
+    activity_class: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class NotificationRequest:
     kind: str
     summary: str
@@ -116,10 +149,20 @@ class NotificationRequest:
     job_id: str | None = None
     session_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    answers_request: bool = False
+    proactive: bool = False
 
 
 def _clean(value: object, limit: int = MAX_SUMMARY_CHARS) -> str:
     return " ".join(str(value or "").split())[:limit]
+
+
+def _day_start(moment: float) -> float:
+    return (
+        datetime.fromtimestamp(moment)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .timestamp()
+    )
 
 
 class NotificationAuthority:
@@ -134,6 +177,7 @@ class NotificationAuthority:
         control_store: Any | None = None,
         result_observer: Callable[[NotificationRequest, NotificationResult], None]
         | None = None,
+        presence: Callable[[], PresenceState] | None = None,
     ) -> None:
         configured = os.environ.get("SERENA_NOTIFICATION_DB_PATH", "").strip()
         self.path = Path(path or configured or DEFAULT_DB_PATH).expanduser()
@@ -141,6 +185,7 @@ class NotificationAuthority:
         self._senders = dict(senders or {})
         self._control_store = control_store
         self._result_observer = result_observer
+        self._presence = presence
         self._initialize()
         from core.control_plane import SurfaceOutbox
 
@@ -217,6 +262,39 @@ class NotificationAuthority:
                     moment=moment,
                 )
 
+            proactive = bool(getattr(request, "proactive", False))
+            is_digest = kind == DIGEST_KIND
+            if proactive and urgency != "critical":
+                presence = self._presence_now()
+                if presence.typing:
+                    return self._record(
+                        connection,
+                        notification_id=notification_id,
+                        request=request,
+                        kind=kind,
+                        summary=summary,
+                        channel=channel,
+                        urgency=urgency,
+                        dedupe_key=dedupe_key,
+                        decision="deferred",
+                        reason="typing; held for breakpoint",
+                        moment=moment,
+                    )
+                if presence.activity_class == "focused":
+                    return self._record(
+                        connection,
+                        notification_id=notification_id,
+                        request=request,
+                        kind=kind,
+                        summary=summary,
+                        channel=channel,
+                        urgency=urgency,
+                        dedupe_key=dedupe_key,
+                        decision="deferred",
+                        reason="focused; held for breakpoint",
+                        moment=moment,
+                    )
+
             recent = int(
                 connection.execute(
                     "SELECT COUNT(*) AS total FROM notifications "
@@ -225,7 +303,7 @@ class NotificationAuthority:
                 ).fetchone()["total"]
                 or 0
             )
-            if recent >= self.policy.hourly_limit and urgency != "critical":
+            if recent >= self.policy.hourly_limit and urgency != "critical" and not is_digest:
                 return self._record(
                     connection,
                     notification_id=notification_id,
@@ -240,7 +318,26 @@ class NotificationAuthority:
                     moment=moment,
                 )
 
-            if urgency != "critical" and self.policy.in_quiet_hours(moment):
+            if proactive and urgency != "critical" and not is_digest:
+                held = self._over_proactive_cap(connection, channel, moment)
+                if held is not None:
+                    return self._record(
+                        connection,
+                        notification_id=notification_id,
+                        request=request,
+                        kind=kind,
+                        summary=summary,
+                        channel=channel,
+                        urgency=urgency,
+                        dedupe_key=dedupe_key,
+                        decision="deferred",
+                        reason=f"{held}; will join the next digest",
+                        moment=moment,
+                    )
+
+            answering = bool(getattr(request, "answers_request", False))
+            if (urgency != "critical" and not answering
+                    and self.policy.in_quiet_hours(moment)):
                 return self._record(
                     connection,
                     notification_id=notification_id,
@@ -272,6 +369,78 @@ class NotificationAuthority:
             )
 
         return self._attempt_delivery(notification_id, request, moment=moment)
+
+    def held_items(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Notices held for a breakpoint (deferred with no time deadline)."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM notifications "
+                "WHERE decision = 'deferred' AND deliver_after IS NULL "
+                "ORDER BY created_at, rowid LIMIT ?",
+                (min(500, max(1, int(limit))),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def release_at_breakpoint(
+        self, *, now: float | None = None, limit: int = 20
+    ) -> list[NotificationResult]:
+        """Deliver held notices oldest-first. Breakpoints obey quiet hours too."""
+
+        moment = float(time.time() if now is None else now)
+        results: list[NotificationResult] = []
+        for row in self.held_items(limit=max(1, int(limit)) * 2):
+            request = _request_from_row(_row_proxy(row))
+            if (
+                request.proactive
+                and request.urgency != "critical"
+                and not request.answers_request
+            ):
+                if self.policy.in_quiet_hours(moment):
+                    continue
+                presence = self._presence_now()
+                if presence.typing or presence.activity_class == "focused":
+                    continue
+            notification_id = str(row["notification_id"])
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    "UPDATE notifications SET deliver_after = ?, updated_at = ? "
+                    "WHERE notification_id = ? AND decision = 'deferred' "
+                    "AND deliver_after IS NULL",
+                    (moment, moment, notification_id),
+                )
+                connection.commit()
+                if not cursor.rowcount:
+                    continue
+            results.append(
+                self._attempt_delivery(notification_id, request, moment=moment)
+            )
+            if len(results) >= max(1, int(limit)):
+                break
+        return results
+
+    def consume_held_as_digest(
+        self, notification_ids: list[str], digest_id: str, *, now: float | None = None
+    ) -> int:
+        """Mark held rows delivered-inside-digest so history stays readable."""
+
+        if not notification_ids:
+            return 0
+        moment = float(time.time() if now is None else now)
+        reason = f"delivered inside digest {_clean(digest_id, 64)}"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE notifications SET decision = 'sent', reason = ?, "
+                "delivered_at = ?, updated_at = ? "
+                "WHERE notification_id IN ("
+                + ",".join("?" for _ in notification_ids)
+                + ") AND decision = 'deferred' AND deliver_after IS NULL",
+                (reason, moment, moment, *notification_ids),
+            )
+            connection.commit()
+            return cursor.rowcount
 
     def approve(self, notification_id: str, *, now: float | None = None) -> NotificationResult:
         """Release one notice that was held for approval."""
@@ -311,9 +480,15 @@ class NotificationAuthority:
             ).fetchall()
         results: list[NotificationResult] = []
         for row in rows:
+            request = _request_from_row(row)
+            held = self._rehold_if_interruptible(request, str(row["notification_id"]),
+                                                 moment=moment)
+            if held is not None:
+                results.append(held)
+                continue
             results.append(
                 self._attempt_delivery(
-                    str(row["notification_id"]), _request_from_row(row), moment=moment
+                    str(row["notification_id"]), request, moment=moment
                 )
             )
         return results
@@ -335,7 +510,11 @@ class NotificationAuthority:
         deliver_after = row["deliver_after"]
         if deliver_after is None or float(deliver_after) > moment:
             return None
-        return self._attempt_delivery(notification_id, _request_from_row(row), moment=moment)
+        request = _request_from_row(row)
+        held = self._rehold_if_interruptible(request, notification_id, moment=moment)
+        if held is not None:
+            return held
+        return self._attempt_delivery(notification_id, request, moment=moment)
 
     def flush_control_outbox(self) -> int:
         return self._outbox.flush(self._control_store)
@@ -374,6 +553,97 @@ class NotificationAuthority:
         return self.history(decision="pending_approval", limit=100)
 
     # -- internals ----------------------------------------------------------
+
+    def _presence_now(self) -> PresenceState:
+        if self._presence is None:
+            return PresenceState()
+        try:
+            return self._presence()
+        except Exception:
+            return PresenceState()
+
+    def _rehold_if_interruptible(
+        self, request: NotificationRequest, notification_id: str, *, moment: float
+    ) -> NotificationResult | None:
+        """Timed-resume rows rejoin the breakpoint queue while he is busy.
+
+        A proactive notice whose quiet-hours deadline expires at 08:00 must
+        not go out mid-typing: the hold that `request()` applies on the way
+        in applies again on the way out. Clearing `deliver_after` hands the
+        row to `held_items()`/`release_at_breakpoint()` instead of dropping it.
+        """
+
+        if not request.proactive or request.urgency == "critical":
+            return None
+        if request.answers_request:
+            return None
+        presence = self._presence_now()
+        if presence.typing:
+            reason = "typing; held for breakpoint"
+        elif presence.activity_class == "focused":
+            reason = "focused; held for breakpoint"
+        else:
+            return None
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE notifications SET decision = 'deferred', reason = ?, "
+                "deliver_after = NULL, updated_at = ? "
+                "WHERE notification_id = ? AND decision IN ('deferred', 'failed')",
+                (reason, moment, notification_id),
+            )
+            connection.commit()
+        return NotificationResult(
+            notification_id=notification_id,
+            decision="deferred",
+            reason=reason,
+            channel=request.channel,
+            deliver_after=None,
+        )
+
+    def _over_proactive_cap(
+        self, connection: sqlite3.Connection, channel: str, moment: float
+    ) -> str | None:
+        """Which proactive cap (if any) this send would break. Digests exempt."""
+
+        # The documented policy budgets phone surfaces together (3 phone
+        # pings a day), not 3 per phone channel: voice, imessage and
+        # telegram share one daily budget. Desktop keeps its own.
+        group = PHONE_CHANNELS if channel in PHONE_CHANNELS else (channel,)
+        group_name = "phone" if channel in PHONE_CHANNELS else channel
+        daily = int(
+            connection.execute(
+                "SELECT COUNT(*) AS total FROM notifications "
+                "WHERE channel IN ("
+                + ",".join("?" for _ in group)
+                + ") AND proactive = 1 AND decision = 'sent' "
+                "AND kind != ? AND created_at >= ?",
+                (*group, DIGEST_KIND, _day_start(moment)),
+            ).fetchone()["total"]
+            or 0
+        )
+        if daily >= self.policy.daily_limit:
+            return (
+                f"daily cap of {self.policy.daily_limit} proactive sends "
+                f"reached on {group_name}"
+            )
+        hourly_cap = (self.policy.channel_hourly_limits or {}).get(channel)
+        if hourly_cap is not None:
+            recent = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS total FROM notifications "
+                    "WHERE channel = ? AND proactive = 1 AND decision = 'sent' "
+                    "AND kind != ? AND created_at >= ?",
+                    (channel, DIGEST_KIND, moment - 3_600),
+                ).fetchone()["total"]
+                or 0
+            )
+            if recent >= hourly_cap:
+                return (
+                    f"hourly cap of {hourly_cap} proactive sends "
+                    f"reached on {channel}"
+                )
+        return None
 
     def _attempt_delivery(
         self,
@@ -545,8 +815,9 @@ class NotificationAuthority:
             INSERT INTO notifications(
                 notification_id, kind, summary, channel, urgency, dedupe_key,
                 source_surface, job_id, session_id, metadata_json, decision, reason,
-                attempts, deliver_after, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                attempts, deliver_after, created_at, updated_at,
+                proactive, answers_request
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
             """,
             (
                 notification_id,
@@ -564,6 +835,8 @@ class NotificationAuthority:
                 deliver_after,
                 moment,
                 moment,
+                int(bool(getattr(request, "proactive", False))),
+                int(bool(getattr(request, "answers_request", False))),
             ),
         )
         result = NotificationResult(
@@ -625,7 +898,9 @@ class NotificationAuthority:
                     delivered_at REAL,
                     approved_at REAL,
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    proactive INTEGER NOT NULL DEFAULT 0,
+                    answers_request INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS notifications_dedupe_idx
                     ON notifications(dedupe_key, created_at);
@@ -635,12 +910,60 @@ class NotificationAuthority:
                     ON notifications(channel, created_at);
                 """
             )
+            columns = {
+                info[1]
+                for info in connection.execute("PRAGMA table_info(notifications)")
+            }
+            if "proactive" not in columns:
+                connection.execute(
+                    "ALTER TABLE notifications ADD COLUMN proactive "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            if "answers_request" not in columns:
+                connection.execute(
+                    "ALTER TABLE notifications ADD COLUMN answers_request "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            # After the migration, never inside the script above: an index over
+            # `proactive` fails on a table that predates the column, and that
+            # failure takes the whole script down -- including the ALTER that
+            # would have added it. A database from before proactive sends then
+            # raises "no such column: proactive" on every open, for good.
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS notifications_proactive_idx "
+                "ON notifications(channel, proactive, decision, created_at)"
+            )
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         if os.name != "nt":
             with suppress(OSError):
                 self.path.chmod(0o600)
 
 
-def _request_from_row(row: sqlite3.Row) -> NotificationRequest:
+def _flag(row, name: str) -> bool:
+    try:
+        return bool(row[name])
+    except (KeyError, IndexError):
+        return False
+
+
+class _RowView:
+    """A dict dressed as a row so held items reuse the same decoder."""
+
+    def __init__(self, mapping: dict) -> None:
+        self._mapping = mapping
+
+    def __getitem__(self, key: str):
+        return self._mapping[key]
+
+    def keys(self):
+        return self._mapping.keys()
+
+
+def _row_proxy(mapping: dict) -> _RowView:
+    return _RowView(mapping)
+
+
+def _request_from_row(row) -> NotificationRequest:
     try:
         metadata = json.loads(str(row["metadata_json"] or "{}"))
     except json.JSONDecodeError:
@@ -655,6 +978,8 @@ def _request_from_row(row: sqlite3.Row) -> NotificationRequest:
         job_id=row["job_id"],
         session_id=row["session_id"],
         metadata=metadata if isinstance(metadata, dict) else {},
+        answers_request=_flag(row, "answers_request"),
+        proactive=_flag(row, "proactive"),
     )
 
 

@@ -145,6 +145,60 @@ async def _answer(send, text: str, turn: int) -> None:
     finally:
         send({"type": "speech_end"})
 
+
+class UtteranceSessions:
+    """One Scribe session per utterance, opened when the utterance starts.
+
+    Measured 2026-09-19: a realtime session left idle for ten seconds is dead.
+    feed() drops into it silently and commit() returns "", which reaches the
+    surface as an empty transcript and therefore as no reply at all. Opening
+    the next session the moment the previous turn committed meant it spent her
+    entire answer going stale, so the second thing he said was fed to a corpse.
+
+    Nothing is opened until his voice arrives, and a session that has failed is
+    replaced rather than reused.
+    """
+
+    def __init__(self, factory) -> None:
+        self._factory = factory
+        self._session = None
+        self._lock = threading.Lock()
+
+    @property
+    def current(self):
+        return self._session
+
+    def for_audio(self):
+        """The session this audio belongs to, opening one if needed."""
+
+        with self._lock:
+            session = self._session
+            if session is not None and not session.failed:
+                return session
+            if session is not None:
+                session.close()
+            self._session = self._factory()
+            return self._session
+
+    def commit(self, timeout: float) -> str:
+        """Close the utterance and hand back its text. Opens nothing."""
+
+        with self._lock:
+            session, self._session = self._session, None
+        if session is None:
+            return ""
+        try:
+            return session.commit(timeout)
+        finally:
+            session.close()
+
+    def close(self) -> None:
+        with self._lock:
+            session, self._session = self._session, None
+        if session is not None:
+            session.close()
+
+
 app = Flask(__name__)
 app.config["SOCK_SERVER_OPTIONS"] = {"ping_interval": 20}
 sock = Sock(app)
@@ -187,9 +241,7 @@ def ws_mic(ws) -> None:
 
     url = scribe_url()
     headers = [f"xi-api-key: {key}"]
-    state: dict[str, _ScribeSession | None] = {"session": None}
     turns = {"n": 0}
-    lock = threading.Lock()
     send_lock = threading.Lock()
     stop = threading.Event()
 
@@ -199,11 +251,8 @@ def ws_mic(ws) -> None:
             return None
         return session
 
-    with lock:
-        state["session"] = open_session()
-    if state["session"] is None:
-        ws.send(json.dumps({"type": "error", "message": "Scribe would not connect"}))
-        return
+    sessions = UtteranceSessions(open_session)
+
     ws.send(json.dumps({"type": "ready", "model": SCRIBE_MODEL,
                         "rate": MIC_SAMPLE_RATE, "keyterms": len(load_keyterms())}))
 
@@ -212,7 +261,7 @@ def ws_mic(ws) -> None:
 
         last = ("", "")
         while not stop.is_set():
-            session = state["session"]
+            session = sessions.current
             if session is not None:
                 now = (session.partial, session.committed)
                 if now != last:
@@ -233,9 +282,13 @@ def ws_mic(ws) -> None:
             if message is None:
                 break
             if isinstance(message, (bytes, bytearray)):
-                session = state["session"]
-                if session is not None:
-                    session.feed(bytes(message))
+                session = sessions.for_audio()
+                if session is None:
+                    with send_lock:
+                        ws.send(json.dumps({"type": "error",
+                                            "message": "Scribe would not connect"}))
+                    continue
+                session.feed(bytes(message))
                 continue
             try:
                 payload = json.loads(message)
@@ -243,17 +296,17 @@ def ws_mic(ws) -> None:
                 continue
             if payload.get("type") != "commit":
                 continue
-            # End of utterance. Commit closes this session's sender thread, so
-            # the next utterance gets a fresh one.
-            with lock:
-                session = state["session"]
-                state["session"] = None
-            if session is None:
-                continue
-            text = session.commit(COMMIT_TIMEOUT_SECONDS)
-            session.close()
-            ws.send(json.dumps({"type": "final", "text": text}))
+            # End of utterance. Committing closes this session; the next one
+            # is not opened until he speaks again.
+            text = sessions.commit(COMMIT_TIMEOUT_SECONDS)
+            with send_lock:
+                ws.send(json.dumps({"type": "final", "text": text}))
 
+            if not text.strip():
+                # Nothing usable came back. Silence here reads as her ignoring
+                # him, so the surface is told rather than left guessing.
+                with send_lock:
+                    ws.send(json.dumps({"type": "unheard"}))
             if text.strip():
                 turns["n"] += 1
                 ws.send(json.dumps({"type": "thinking"}))
@@ -267,18 +320,11 @@ def ws_mic(ws) -> None:
                     asyncio.run(_answer(send, payload, turn))
                 threading.Thread(target=run, name="orb-answer", daemon=True).start()
 
-            with lock:
-                state["session"] = open_session()
-            if state["session"] is None:
-                ws.send(json.dumps({"type": "error",
-                                    "message": "Scribe dropped the next session"}))
-                break
+            # Deliberately not opening the next one here: it would go stale
+            # while she answers. The next frame of his voice opens it.
     finally:
         stop.set()
-        with lock:
-            session, state["session"] = state["session"], None
-        if session is not None:
-            session.close()
+        sessions.close()
 
 
 def main() -> int:

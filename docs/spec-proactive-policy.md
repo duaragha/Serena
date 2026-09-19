@@ -8,13 +8,13 @@
 
 ## Requirements
 
-- [ ] WHEN he is typing or classified as focused THEN nothing non-critical is delivered — it waits for a breakpoint
-- [ ] WHEN a breakpoint occurs (unlock, return from idle, after a commit or push, an app switch after a long focus block) THEN anything queued is delivered, oldest first
-- [ ] WHEN the daily or hourly cap is reached THEN further items are batched into a single digest rather than dropped silently
-- [ ] WHEN quiet hours apply THEN only critical items pass, and the rest resume at the end of quiet hours (one policy, matching the documented 23–08, with the code's 22 corrected or the doc changed — not both)
-- [ ] WHEN he dismisses or ignores a proactive item THEN that is recorded and the same kind is suppressed harder next time
-- [ ] WHEN a brain turn runs THEN a short summary of the last ~20 minutes of activity is available as context, without evicting memory context
-- [ ] WHEN check-ins are enabled and one is due THEN it is delivered through the same policy as everything else, and never during quiet hours
+- [x] WHEN he is typing or classified as focused THEN nothing non-critical is delivered — it waits for a breakpoint
+- [x] WHEN a breakpoint occurs (unlock, return from idle, after a commit or push, an app switch after a long focus block) THEN anything queued is delivered, oldest first
+- [x] WHEN the daily or hourly cap is reached THEN further items are batched into a single digest rather than dropped silently
+- [x] WHEN quiet hours apply THEN only critical items pass, and the rest resume at the end of quiet hours (one policy, matching the documented 23–08, with the code's 22 corrected or the doc changed — not both)
+- [x] WHEN he dismisses or ignores a proactive item THEN that is recorded and the same kind is suppressed harder next time
+- [x] WHEN a brain turn runs THEN a short summary of the last ~20 minutes of activity is available as context, without evicting memory context
+- [x] WHEN check-ins are enabled and one is due THEN it is delivered through the same policy as everything else, and never during quiet hours
 
 ## Architecture / Design
 
@@ -37,17 +37,17 @@
 > Execution: fleet, one run, after spec-ambient-sensing Phase 3 (needs breakpoints and activity classes).
 
 ### Phase 1: Policy engine
-- [ ] `core/interrupt_policy.py` + caps, typing check, quiet-hours alignment in `notification_authority`
+- [x] `core/interrupt_policy.py` + caps, typing check, quiet-hours alignment in `notification_authority`
   - accept: unit tests cover typing-suppression, each cap, quiet hours, deferral and resume; existing notification tests stay green
   - engine: fleet
 
 ### Phase 2: Batching + learning
-- [ ] Digest on over-cap, dismissal feedback with decay
+- [x] Digest on over-cap, dismissal feedback with decay
   - accept: over-cap items appear once as a digest at the next breakpoint; a kind dismissed three times is visibly suppressed
   - engine: fleet
 
 ### Phase 3: Context + check-ins
-- [ ] `core/ambient_context.py` injection with its own budget; `serena.support.checkin` action
+- [x] `core/ambient_context.py` injection with its own budget; `serena.support.checkin` action
   - accept: a turn shows she knows what he was just doing; memory retrieval is unchanged in size; a due check-in arrives at a breakpoint, never mid-focus
   - engine: fleet
 
@@ -67,21 +67,23 @@
 
 ## Testing
 
-- [ ] Policy unit tests for every branch (typing, focus, caps, quiet hours, critical bypass)
-- [ ] Digest batching test
-- [ ] Dismissal-decay test
-- [ ] Cross-channel dedupe test
-- [ ] Context budget test: ambient summary present, memory context unchanged
-- [ ] Check-in scheduling test with quiet hours and breakpoints
+- [x] Policy unit tests for every branch (typing, focus, caps, quiet hours, critical bypass)
+- [x] Digest batching test
+- [x] Dismissal-decay test
+- [x] Cross-channel dedupe test
+- [x] Context budget test: ambient summary present, memory context unchanged
+- [x] Check-in scheduling test with quiet hours and breakpoints
 
 ---
 
 ## Progress Log
 
-**Status**: Not started
-**Branch**: — (created at execution)
-**Current phase**: —
-**Last completed task**: —
-**Files modified**: —
-**Blockers**: needs spec-ambient-sensing Phase 3
-**Review**: —
+**Status**: Phases 1–3 complete (fleet run 7b743f12); Phase 4 pending real-operation soak
+**Branch**: serena/fleet/7b743f12-c5cd-42fb-a1fe-f09b1cfcf8d5/agent-a
+**Current phase**: Phase 4 (direct, operator-owned)
+**Last completed task**: Phase 3 ambient_context injection + serena.support.checkin action
+**Files modified**: core/interrupt_policy.py (decide, breakpoints, dismissals, digest scan, presence), core/notification_authority.py (proactive caps, typing/focus holds, quiet 23–08, breakpoint release, digest kind), core/notification_senders.py (quiet default 23, live presence), core/ambient_context.py, core/brain_daemon.py (ambient block injection), core/scheduler_actions.py (serena.proactive.scan, serena.support.checkin), tests/test_interrupt_policy.py, tests/test_notification_proactive.py, tests/test_policy_learning.py, tests/test_ambient_context.py, tests/test_proactive_actions.py, tests/test_scheduler_actions.py (registry pin)
+**Blockers**: Phase 4 needs a week of live operation with the suppression log; engine direct. L3-O5 also names heavy-lane exclusion and the Serena-owned mobile path, which this spec did not task — confirm scope before closing the objective.
+**Review**: quiet hours aligned code→23 to match docs; supportive_mode.py needed no change (checkin_due/record_checkin API already sufficient)
+**Fix (run 7b743f12)**: deliver_due/redeliver re-hold proactive items while typing/focused (they rejoin the breakpoint queue instead of sending at quiet-end); daily cap is one shared 3/day budget across voice/imessage/telegram per the documented "3 phone/day" (desktop keeps its own); suppression is 3 strikes in 30 days → a week of silence (replaces the sub-day half-life decay); dismissal surface is the phone line's `stop` (dismiss_latest_proactive strikes the newest proactive kind; "ignored" stays unwired — no observable signal exists); policy_log returns newest-first; decide() contract corrected (digest lives in scan_and_release). 258 focused tests green.
+**Fix-2 (run 7b743f12)**: dismiss_latest_proactive strikes sent rows only, so a held/deferred/suppressed row can no longer absorb a stop meant for a delivered nudge. Focused suites green.

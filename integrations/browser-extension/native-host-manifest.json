@@ -1,0 +1,9 @@
+{
+  "name": "com.serena.ambient",
+  "description": "Serena ambient tab reporter (local only)",
+  "path": "HOST_PATH",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://EXTENSION_ID/"
+  ]
+}

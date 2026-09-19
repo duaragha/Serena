@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Serena Ambient Tabs",
+  "version": "1.0",
+  "description": "Reports the active tab (URL and title, never page contents) to Serena's local ambient sensor over native messaging.",
+  "permissions": ["tabs", "nativeMessaging"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "minimum_chrome_version": "116"
+}

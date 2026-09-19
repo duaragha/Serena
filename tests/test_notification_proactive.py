@@ -283,3 +283,51 @@ def test_quiet_expired_items_send_at_resume_when_idle(tmp_path):
 
     assert [item.decision for item in resumed] == ["sent"]
     assert sent == ["you look stuck"]
+
+
+def test_a_database_from_before_proactive_sends_still_opens(tmp_path):
+    """The proactive column arrived after the table; the index must wait for it.
+
+    Creating notifications_proactive_idx inside the schema script killed the
+    whole script on any existing database, ALTER included, so every open after
+    that raised "no such column: proactive" -- and Fleet stopped being able to
+    tell him a run was blocked.
+    """
+
+    import sqlite3
+
+    path = tmp_path / "notices.sqlite3"
+    legacy = sqlite3.connect(path)
+    legacy.executescript(
+        """
+        CREATE TABLE notifications (
+            notification_id TEXT PRIMARY KEY, kind TEXT NOT NULL,
+            summary TEXT NOT NULL, channel TEXT NOT NULL, urgency TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL, source_surface TEXT NOT NULL, job_id TEXT,
+            session_id TEXT, metadata_json TEXT NOT NULL DEFAULT '{}',
+            decision TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0, deliver_after REAL,
+            delivered_at REAL, approved_at REAL, created_at REAL NOT NULL,
+            updated_at REAL NOT NULL);
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    sent = []
+    authority = NotificationAuthority(
+        path,
+        policy=awake_policy(),
+        senders={"telegram": lambda request: sent.append(request.summary) or True},
+        control_store=ControlPlaneStore(tmp_path / "control.sqlite3"),
+    )
+    decision = authority.request(proactive(dedupe_key="legacy-db"), now=at_hour(10))
+
+    assert decision.decision == "sent"
+    assert sent == ["you look stuck"]
+
+    columns = {
+        info[1]
+        for info in sqlite3.connect(path).execute("PRAGMA table_info(notifications)")
+    }
+    assert {"proactive", "answers_request"} <= columns

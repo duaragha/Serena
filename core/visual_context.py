@@ -206,6 +206,41 @@ class CaptureIndicator(Protocol):
     def end(self, request_id: str) -> None: ...
 
 
+class AmbientAccessibilityAdapter:
+    """The ambient sensor as an accessibility-shaped source.
+
+    Same protocol the screenshot path already speaks, but backed by the
+    always-on metadata buffer instead of a fresh capture. Fail-soft: a
+    missing or paused store yields an empty tree, never an exception.
+    """
+
+    name = "ambient-sensor"
+
+    def snapshot(self) -> Mapping[str, Any]:
+        try:
+            from core.ambient_store import AmbientStore
+
+            store = AmbientStore()
+            events = store.recent_from_disk(limit=20, seconds=1_200.0)
+            if not events:
+                events = store.recent_from_disk(limit=20, seconds=None)
+        except Exception:
+            return {}
+        return {
+            "source": "ambient-sensor",
+            "events": [
+                {
+                    "kind": event.kind,
+                    "app": event.app,
+                    "title": event.title,
+                    "url": event.url,
+                    "duration": round(event.duration, 1),
+                }
+                for event in events
+            ],
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class VerificationResult:
     verified: bool
