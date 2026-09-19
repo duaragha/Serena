@@ -1,0 +1,14 @@
+{
+  "name": "serena-orb",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Serena's voice orb: listen, think, speak, drawn as one swarm",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "bridge": "python3 bridge.py 8908"
+  },
+  "dependencies": {
+    "electron": "^35.0.0"
+  }
+}
