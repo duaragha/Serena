@@ -57,6 +57,7 @@ jobs:
           ./.venv/bin/python -m pip install playwright==1.58.0
           ./.venv/bin/python -m playwright install --with-deps chromium
           ./.venv/bin/python -m pytest tests/test_promotion_browser.py -q --tb=short
+          ./.venv/bin/python -m pytest tests/test_fleet_report_visibility.py tests/test_web_terminal_performance.py -q --tb=short
           node --test tests/workspace*.test.mjs
           ./.venv/bin/python -m pytest tests/test_desktop_dependencies.py tests/test_terminal_environment.py tests/test_windows_pty_backend.py -q --tb=short
           ./.venv/bin/python -m pytest tests/test_workspace*.py -q --tb=short --junitxml=workspace-tests.xml
