@@ -37,7 +37,9 @@ function prepare({ root, destination, source, stable, selected, tested, request,
     // Exact commits and exact paths only. Three-way conflicts abort the entire candidate.
     git(root, ['merge-base', '--is-ancestor', f.commit, source]);
     git(root, ['merge-base', '--is-ancestor', f.commit, `${f.devTag}^{commit}`]);
-    const patch = git(root, ['diff', '--binary', `${f.commit}^`, f.commit, '--', ...f.paths]);
+    const baseCommit = f.base || `${f.commit}^`;
+    git(root, ['merge-base', '--is-ancestor', baseCommit, f.commit]);
+    const patch = git(root, ['diff', '--binary', baseCommit, f.commit, '--', ...f.paths]);
     if (!patch.trim()) throw new Error(`Empty feature patch: ${f.id}`);
     git(destination, ['apply', '--3way', '--index', '-'], patch);
     patches.push({ id: f.id, sha256: createHash('sha256').update(patch).digest('hex') });
@@ -51,7 +53,8 @@ function prepare({ root, destination, source, stable, selected, tested, request,
     fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
   }
   const receipt = { schema: 1, version, baseTag: stable, baseCommit: base, source, request,
-    features: plan.all.map(f => ({ id: f.id, commit: f.commit, devTag: f.devTag })), patches };
+    features: plan.all.map(f => ({ id: f.id, commit: f.commit, devTag: f.devTag,
+      ...(f.base ? { base: f.base } : {}) })), patches };
   fs.writeFileSync(path.join(destination, receiptPath), `${JSON.stringify(receipt, null, 2)}\n`);
   git(destination, ['add', 'apps/desktop/package.json', 'apps/desktop/package-lock.json', receiptPath]);
   git(destination, ['-c', 'user.name=Serena Release', '-c', 'user.email=release@serena.invalid',

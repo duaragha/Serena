@@ -11,6 +11,7 @@ function catalogFeatures(catalog) {
   const seen = new Set();
   for (const f of catalog.features) {
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(f.id) || seen.has(f.id) || !SHA.test(f.commit)
+        || (f.base !== undefined && (!SHA.test(f.base) || f.base === f.commit))
         || !DEV.test(f.devTag) || typeof f.title !== 'string' || !f.title || f.title.length > 160
         || !Array.isArray(f.requires) || f.requires.some(id => !seen.has(id))
         || !Array.isArray(f.paths) || !f.paths.length
@@ -48,7 +49,8 @@ function installedFeatures(catalog, tag, receipt) {
     throw new Error('Main has no compatible promotion receipt; review its baseline before promoting');
   const known = new Map(catalog.features.map(f => [f.id, f]));
   const ids = receipt.features.map(f => {
-    if (known.get(f.id)?.commit !== f.commit) throw new Error('A previously shipped feature revision changed');
+    if (known.get(f.id)?.commit !== f.commit || known.get(f.id)?.base !== f.base)
+      throw new Error('A previously shipped feature revision changed');
     return f.id;
   });
   if (new Set(ids).size !== ids.length) throw new Error('Duplicate shipped feature');

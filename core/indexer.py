@@ -120,6 +120,8 @@ def _get_db() -> sqlite3.Connection:
     if not _schema_ready:
         _create_tables(conn)
         _migrate(conn)
+        _hide_internal_sessions(conn)
+        conn.commit()
         _schema_ready = True
     return conn
 
@@ -245,7 +247,6 @@ def _migrate(conn: sqlite3.Connection):
         conn.execute("""UPDATE sessions SET is_archived = 1
                         WHERE agent = 'codex'
                         AND instr('/' || replace(file_path, char(92), '/'), '/archived_sessions/') > 0""")
-    _hide_internal_sessions(conn)
     conn.commit()
 
 
