@@ -28,7 +28,7 @@ async def main():
         async def publish(event):
             events.append(event)
         async def checkpoint(identity):
-            (root / 'identity.json').write_text(json.dumps(identity))
+            (root / 'identity.json').write_text(json.dumps(identity), encoding="utf-8")
         def make(sid):
             return CodexWorkspace(session_id=sid, cwd=root, publish=publish,
                                   lease_factory=lambda identity: SessionLease(identity, directory=root / 'leases'))

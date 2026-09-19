@@ -63,7 +63,7 @@ def test_install_preserves_optional_training_metadata(tmp_path: Path) -> None:
     source = tmp_path / "model.onnx"
     source.write_bytes(b"model")
     metadata = tmp_path / "training.json"
-    metadata.write_text(json.dumps({"colab": "official", "phrase": "hey serena"}))
+    metadata.write_text(json.dumps({"colab": "official", "phrase": "hey serena"}), encoding="utf-8")
     models = tmp_path / "models"
 
     install_exported_model(

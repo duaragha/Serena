@@ -533,7 +533,7 @@ async def launch(executable, profile_dir, *, headless=False):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             if active.exists():
-                port = int(active.read_text().splitlines()[0])
+                port = int(active.read_text(encoding="utf-8").splitlines()[0])
                 if not 1 <= port <= 65535:
                     raise BrowserError("invalid Chromium debugging port")
                 _verify_listener(port, process.pid)

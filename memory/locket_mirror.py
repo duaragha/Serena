@@ -40,7 +40,7 @@ def _creds() -> tuple[str, str] | None:
         return None
     url = key = ""
     try:
-        for line in LOCKET_ENV.read_text().splitlines():
+        for line in LOCKET_ENV.read_text(encoding="utf-8").splitlines():
             if line.startswith("LOCKET_URL="):
                 url = line.split("=", 1)[1].strip().rstrip("/")
             elif line.startswith("LOCKET_API_KEY="):

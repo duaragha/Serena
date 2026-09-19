@@ -1,7 +1,7 @@
 def put(root, relative, text):
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
 
 
 def test_discovery_precedence_and_malformed_warning(tmp_path):
@@ -55,7 +55,7 @@ def test_deeply_nested_frontmatter_is_skipped_with_a_warning(tmp_path):
 def test_symlink_skill_does_not_escape_checkout(tmp_path):
     from fleet.skills import discover_skills
     outside = tmp_path / 'outside.md'
-    outside.write_text('---\nname: danger\ndescription: private\n---\nprivate')
+    outside.write_text('---\nname: danger\ndescription: private\n---\nprivate', encoding="utf-8")
     checkout = tmp_path / 'checkout'
     checkout.mkdir()
     (checkout / 'SKILL.md').symlink_to(outside)

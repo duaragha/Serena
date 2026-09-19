@@ -169,7 +169,7 @@ def test_brain_discovery_uses_loopback_tcp_stream(tmp_path: Path) -> None:
                     },
                 }
             )
-        )
+        , encoding="utf-8")
         client = BrainDiscoveryClient(
             discovery_path=discovery,
             socket_path=tmp_path / "missing.sock",
@@ -206,7 +206,7 @@ def test_brain_discovery_rejects_non_loopback_stream(tmp_path: Path) -> None:
                     }
                 }
             )
-        )
+        , encoding="utf-8")
         client = BrainDiscoveryClient(
             discovery_path=discovery,
             socket_path=tmp_path / "missing.sock",

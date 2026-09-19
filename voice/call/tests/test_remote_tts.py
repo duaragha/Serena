@@ -303,7 +303,7 @@ def test_the_deadline_only_guards_audio_he_has_not_heard_yet() -> None:
     chunk only; after that the long inference timeout is correct."""
     from pathlib import Path as _P
 
-    source = _P("voice/call/tts.py").read_text()
+    source = _P("voice/call/tts.py").read_text(encoding="utf-8")
     loop = source.split("failure: str | None = None", 1)[1][:1400]
     assert "if emitted:" in loop
     assert "first_audio_timeout" in loop

@@ -85,7 +85,7 @@ def test_packaged_build_ignores_old_checkout_even_when_present(monkeypatch, tmp_
     for folder in ("Documents/Projects", "Projects"):
         source = tmp_path / folder / "serena/ui/web.py"
         source.parent.mkdir(parents=True)
-        source.write_text('HTML = r"""<!DOCTYPE html><html>old terminal</html>"""')
+        source.write_text('HTML = r"""<!DOCTYPE html><html>old terminal</html>"""', encoding="utf-8")
     assert web._ui_source_path() is None
     assert web.ui_hot_reload_enabled() is False
     body = web.app.test_client().get("/").get_data(as_text=True)

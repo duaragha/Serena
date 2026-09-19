@@ -183,7 +183,7 @@ def test_provider_readiness_is_written_only_after_real_cli_process_starts(
         SESSION_ID,
     ]
     assert launches[0][1]["cwd"] == str(project)
-    ready = json.loads((lock_dir / f"{SESSION_ID}.{token}.ready").read_text())
+    ready = json.loads((lock_dir / f"{SESSION_ID}.{token}.ready").read_text(encoding='utf-8'))
     assert ready == {
         "token": token,
         "session_id": SESSION_ID,
@@ -260,7 +260,7 @@ def test_broker_lock_prevents_a_second_interactive_writer(tmp_path: Path) -> Non
     emitted = []
     launches = []
 
-    with (lock_dir / f"{SESSION_ID}.lock").open("a+", encoding="utf-8") as lock_file:
+    with (lock_dir / f"{SESSION_ID}.lock").open("a+", encoding='utf-8') as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = run_terminal(
             ITEM_ID,

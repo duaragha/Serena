@@ -180,7 +180,7 @@ def _settled_comm(pid: int, timeout: float = 5.0) -> str:
     deadline = time.monotonic() + timeout
     comm = ""
     while time.monotonic() < deadline:
-        with open(f"/proc/{pid}/comm", encoding="utf-8") as handle:
+        with open(f"/proc/{pid}/comm", encoding='utf-8') as handle:
             comm = handle.read().strip()
         if comm != "systemd-run":
             return comm

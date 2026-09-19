@@ -276,7 +276,7 @@ def test_capacity_resolves_a_binary_the_same_way_a_worker_will(monkeypatch, tmp_
 
     monkeypatch.setattr(capacity.shutil, "which", lambda _name: None)
     found = tmp_path / "muse"
-    found.write_text("#!/bin/sh\n")
+    found.write_text("#!/bin/sh\n", encoding="utf-8")
     found.chmod(0o755)
 
     seen = provider_binary("muse", {"SERENA_FLEET_MUSE_BIN": str(found)})

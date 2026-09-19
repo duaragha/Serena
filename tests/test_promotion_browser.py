@@ -7,7 +7,7 @@ from playwright.sync_api import expect, sync_playwright
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-CATALOG = json.loads((ROOT / "config/promotion-features.json").read_text())
+CATALOG = json.loads((ROOT / "config/promotion-features.json").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("width", [800, 390])

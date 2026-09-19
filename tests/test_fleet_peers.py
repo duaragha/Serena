@@ -218,7 +218,7 @@ def test_capability_not_in_command_or_repr_and_mcp_is_available_to_both_provider
 
 def test_lesson_requires_independent_review_success_and_real_gate(team, tmp_path):
     store, run, peers, legs, attempts, tokens = team
-    (tmp_path / "rules.txt").write_text("empty input returns an empty list\n")
+    (tmp_path / "rules.txt").write_text("empty input returns an empty list\n", encoding="utf-8")
     learning = FleetLearning(store)
     lesson = learning.propose(
         peers.identity(tokens[0]),
@@ -249,7 +249,7 @@ def test_lesson_requires_independent_review_success_and_real_gate(team, tmp_path
     learning.finish(terminal)
     assert learning.projection(run["run_id"])["candidates"][0]["state"] == "verified"
     assert len(learning.retrieve(run, "next-attempt")) == 1
-    (tmp_path / "rules.txt").write_text("changed contract\n")
+    (tmp_path / "rules.txt").write_text("changed contract\n", encoding="utf-8")
     assert learning.retrieve(run, "changed-attempt") == []
     learning.rollback(lesson["lesson_id"], "contract changed")
     assert learning.projection(run["run_id"])["candidates"][0]["state"] == "revoked"
@@ -262,7 +262,7 @@ def test_lesson_path_escape_and_unreviewed_text_never_reused(team, tmp_path):
         learning.propose(
             peers.identity(tokens[0]), "A bogus lesson trying to leave the project", ["../secret"]
         )
-    (tmp_path / "rules.txt").write_text("evidence")
+    (tmp_path / "rules.txt").write_text("evidence", encoding="utf-8")
     learning.propose(
         peers.identity(tokens[0]),
         "A candidate alone is not reliable evidence for future fleets",
@@ -285,10 +285,10 @@ def test_supervisor_recovers_through_peer_advice_with_real_git_and_test_gate(
         ["config", "user.name", "Test"],
     ):
         subprocess.run(["git", "-C", str(root), *command], check=True)
-    (root / "value.txt").write_text("good\n")
+    (root / "value.txt").write_text("good\n", encoding="utf-8")
     (root / "test_value.py").write_text(
         "from pathlib import Path\nassert Path('value.txt').read_text() == 'good\\n'\n"
-    )
+    , encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -309,7 +309,7 @@ def test_supervisor_recovers_through_peer_advice_with_real_git_and_test_gate(
             )
         if request.phase == "execute" and request.worker_key == "agent:a":
             advice = "Restore the exact good" in request.prompt
-            (Path(request.cwd) / "value.txt").write_text("good\n" if advice and repair else "bad\n")
+            (Path(request.cwd) / "value.txt").write_text("good\n" if advice and repair else "bad\n", encoding="utf-8")
         return WorkerResult(True, "done", None, request.model, request.effort, 0)
 
     monkeypatch.setattr(supervisor, "run_worker", worker)
@@ -324,7 +324,7 @@ def test_supervisor_recovers_through_peer_advice_with_real_git_and_test_gate(
     assert outcome["state"] == ("completed" if repair else "failed"), outcome.get("error")
     state = PeerStore(FleetStore()).projection(run["run_id"])
     assert any(job["auto_retry"] and job["retry_applied"] for job in state["help"]), (calls, state)
-    assert (root / "value.txt").read_text() == "good\n"
+    assert (root / "value.txt").read_text(encoding="utf-8") == "good\n"
     assert len([call for call in calls if call[0] == "peer-consultant"]) == 1
     assert len([call for call in calls if call[1:] == ("execute", "agent:a")]) == (
         2 if repair else 3
@@ -386,7 +386,7 @@ def test_concurrent_resends_persist_once_and_message_budget_is_atomic(team):
 
 def test_held_out_lesson_retrieval_is_project_hash_and_time_scoped(team, tmp_path):
     store, run, peers, _legs, _attempts, tokens = team
-    (tmp_path / "rules.txt").write_text("A stable project invariant.")
+    (tmp_path / "rules.txt").write_text("A stable project invariant.", encoding="utf-8")
     learning = FleetLearning(store)
     lesson = learning.propose(
         peers.identity(tokens[0]),

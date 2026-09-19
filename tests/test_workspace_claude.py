@@ -493,7 +493,7 @@ def test_reload_skills_requires_idle_and_discards_stale_catalog(tmp_path):
 def test_file_search_requires_attached_owner_and_does_not_submit(tmp_path):
     async def run():
         owner, _ = make(tmp_path)
-        (tmp_path / "selected.py").write_text("contents not returned")
+        (tmp_path / "selected.py").write_text("contents not returned", encoding="utf-8")
         with pytest.raises(RuntimeError, match="unavailable"):
             await owner.search_files("selected")
         await owner.open()
@@ -963,8 +963,8 @@ def test_model_catalog_reports_configured_effort(tmp_path, monkeypatch):
             monkeypatch.setattr(Path, 'home', staticmethod(lambda: tmp_path / 'home'))
             folder = owner.cwd / '.claude'
             folder.mkdir(exist_ok=True)
-            (folder / 'settings.json').write_text('{"effortLevel":"high"}')
-            (folder / 'settings.local.json').write_text('{"effortLevel":"xhigh"}')
+            (folder / 'settings.json').write_text('{"effortLevel":"high"}', encoding="utf-8")
+            (folder / 'settings.local.json').write_text('{"effortLevel":"xhigh"}', encoding="utf-8")
             result = await owner.list_models()
             assert result['settings']['reasoningEffort'] == 'xhigh'
         finally:

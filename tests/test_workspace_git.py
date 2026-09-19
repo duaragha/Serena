@@ -9,11 +9,11 @@ def test_changes_are_read_only_and_preserve_paths(tmp_path):
         return subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
 
     git("init")
-    (tmp_path / "old name.txt").write_text("original\n")
+    (tmp_path / "old name.txt").write_text("original\n", encoding="utf-8")
     git("add", ".")
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
     git("mv", "old name.txt", "new name.txt")
-    (tmp_path / "untracked.txt").write_text("untracked\n")
+    (tmp_path / "untracked.txt").write_text("untracked\n", encoding="utf-8")
     before = (tmp_path / ".git" / "index").read_bytes()
     result = repository_changes(str(tmp_path))
     assert result["is_git"] is True

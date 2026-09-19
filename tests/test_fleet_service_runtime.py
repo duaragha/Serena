@@ -17,12 +17,12 @@ def _fixture(tmp_path):
     shutil.copyfile(ROOT / "scripts/serena-fleet-service.sh", script)
     cli = tmp_path / ".venv/bin/chats"
     cli.parent.mkdir(parents=True)
-    cli.write_text('#!/bin/bash\nprintf "cli:%s\\n" "$*"\nnode --version\n')
+    cli.write_text('#!/bin/bash\nprintf "cli:%s\\n" "$*"\nnode --version\n', encoding="utf-8")
     cli.chmod(0o755)
     default = tmp_path / "selected/bin"
     default.mkdir(parents=True)
     node = default / "node"
-    node.write_text('#!/bin/bash\necho v24.15.0\n')
+    node.write_text('#!/bin/bash\necho v24.15.0\n', encoding="utf-8")
     node.chmod(0o755)
     nvm = tmp_path / "nvm"
     nvm.mkdir()
@@ -30,7 +30,7 @@ def _fixture(tmp_path):
         '[[ "$1" == "--no-use" ]] || return 1\n'
         'nvm() { [[ "$*" == "use --silent default" ]] || return 1; '
         f'export PATH="{default}:$PATH"; }}\n'
-    )
+    , encoding="utf-8")
     env = dict(os.environ, NVM_DIR=str(nvm), PATH="/usr/bin:/bin")
     return script, nvm, env
 
@@ -52,7 +52,7 @@ def test_runtime_check_never_starts_fleet(tmp_path):
 
 def test_missing_configured_default_refuses_instead_of_using_wrong_node(tmp_path):
     script, nvm, env = _fixture(tmp_path)
-    (nvm / "nvm.sh").write_text('nvm() { return 3; }\n')
+    (nvm / "nvm.sh").write_text('nvm() { return 3; }\n', encoding="utf-8")
     result = subprocess.run(["bash", str(script)], env=env, text=True, capture_output=True, timeout=10)
     assert result.returncode != 0
     assert "configured NVM default is unavailable" in result.stderr
@@ -69,7 +69,7 @@ def test_without_nvm_preserves_operator_path(tmp_path):
 
 
 def test_unit_has_no_versioned_node_pin_and_keeps_security_contract():
-    unit = (ROOT / "systemd/serena-fleet.service").read_text()
+    unit = (ROOT / "systemd/serena-fleet.service").read_text(encoding="utf-8")
     assert ".nvm/versions/node/" not in unit
     assert "ExecStart=%h/Documents/Projects/serena/scripts/serena-fleet-service.sh" in unit
     assert "Type=simple" in unit

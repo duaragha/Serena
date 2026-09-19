@@ -17,7 +17,7 @@ def run_pass(*, root: Path | None = None, now: datetime | None = None) -> dict:
     root = Path(root or config.KNOWLEDGE_DIR).resolve()
     now = now or datetime.now(timezone.utc)
     report = dict(stale=[], orphans=[], overlap=[], invalid_triggers=[], contradictions=[])
-    index = (root / 'INDEX.md').read_text() if (root / 'INDEX.md').exists() else ''
+    index = (root / 'INDEX.md').read_text(encoding="utf-8") if (root / 'INDEX.md').exists() else ''
     linked = set(re.findall(r'\]\(\./([^/)]+)', index))
     fingerprints = {}
     shingles_by_file = {}
@@ -26,7 +26,7 @@ def run_pass(*, root: Path | None = None, now: datetime | None = None) -> dict:
             continue
         try:
             store.note_path(path.parent.name, path.name, root)
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8")
         except (OSError, ValueError):
             continue
         rel = path.relative_to(root).as_posix()

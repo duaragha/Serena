@@ -32,7 +32,7 @@ def fixture(path, x):
 
     def save():
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(state))
+        temporary.write_text(json.dumps(state), encoding="utf-8")
         temporary.replace(path)
 
     tk.Label(root, text="SERENA · COMPUTER TEST", font=("sans", 22)).pack(pady=20)
@@ -95,7 +95,7 @@ def fixture(path, x):
 
     def change():
         if change_path.exists():
-            status.set(change_path.read_text())
+            status.set(change_path.read_text(encoding="utf-8"))
             change_path.unlink()
         root.after(100, change)
 
@@ -136,7 +136,7 @@ def main():
         deadline = time.monotonic() + 10
         while not state_path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
-        state = json.loads(state_path.read_text())
+        state = json.loads(state_path.read_text(encoding="utf-8"))
         window_id = subprocess.check_output(
             ["xdotool", "search", "--onlyvisible", "--name", "^Serena computer acceptance test$"],
             env=env,
@@ -182,11 +182,11 @@ def main():
         assert typed["ok"], typed
         deadline = time.monotonic() + 3
         while (
-            json.loads(state_path.read_text())["text"] != "Serena Ω café"
+            json.loads(state_path.read_text(encoding="utf-8"))["text"] != "Serena Ω café"
             and time.monotonic() < deadline
         ):
             time.sleep(0.05)
-        actual_text = json.loads(state_path.read_text())["text"]
+        actual_text = json.loads(state_path.read_text(encoding="utf-8"))["text"]
         assert actual_text == "Serena Ω café", actual_text
         receipt["checks"]["unicode_typing"] = True
         frame = typed["frame"]
@@ -202,12 +202,12 @@ def main():
         action_result = client.call("act", **batch)
         receipt["action"] = {k: v for k, v in action_result.items() if k != "frame"}
         time.sleep(0.2)
-        actual = json.loads(state_path.read_text())
+        actual = json.loads(state_path.read_text(encoding="utf-8"))
         assert action_result["ok"], action_result
         assert actual["confirmed"] and actual["dragged"] and actual["scrolls"] == 2, actual
         receipt["checks"].update(click=True, type=True, keypress=True, scroll=True, drag=True)
         replay = client.call("act", **batch)
-        assert replay["replayed"] and json.loads(state_path.read_text())["clicks"] == 1
+        assert replay["replayed"] and json.loads(state_path.read_text(encoding="utf-8"))["clicks"] == 1
         receipt["checks"]["idempotent_retry"] = True
         import base64
 
@@ -252,7 +252,7 @@ def main():
                         observations.append(event)
                 if client.call("status")["session"]["state"] != "active":
                     break
-            actual = json.loads(state_path.read_text())
+            actual = json.loads(state_path.read_text(encoding="utf-8"))
             receipt["model_observations"] = observations
             assert actual["confirmed"] and actual["clicks"] == 2, (actual, observations)
             assert any(
@@ -282,7 +282,7 @@ def main():
                     observations.append(event)
                     print("\nwatch: " + event["text"], flush=True)
                     if len(observations) == 1:
-                        state_path.with_suffix(".change").write_text("phase two: purple triangle")
+                        state_path.with_suffix(".change").write_text("phase two: purple triangle", encoding="utf-8")
                 if any("purple triangle" in event["text"].lower() for event in observations):
                     break
                 if client.call("status")["session"]["state"] != "active":
@@ -297,7 +297,7 @@ def main():
         client.call("stop", reason="acceptance test cleanup")
         process.terminate()
         process.wait(timeout=3)
-        (directory / "receipt.json").write_text(json.dumps(receipt, indent=2))
+        (directory / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
     print("\n" + json.dumps(receipt["checks"], indent=2))
 
 

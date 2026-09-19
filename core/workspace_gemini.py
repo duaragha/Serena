@@ -124,7 +124,7 @@ class GeminiWorkspace:
         auth = settings.get("auth") if isinstance(settings, dict) else None
         if not isinstance(auth, dict) or auth.get("type") != "oauth-personal":
             raise ValueError("Gemini workspace requires existing Google-account subscription settings")
-        saved = json.loads(metadata.read_text())
+        saved = json.loads(metadata.read_text(encoding="utf-8"))
         if not isinstance(saved.get("cwd"), str) or Path(saved["cwd"]).resolve() != self.cwd:
             raise ValueError("ACP session belongs to a different project")
         return transcript

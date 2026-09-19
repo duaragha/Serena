@@ -321,7 +321,7 @@ def serve():
     }
     discovery = directory / "service.json"
     temporary = directory / "service.json.tmp"
-    temporary.write_text(json.dumps(info))
+    temporary.write_text(json.dumps(info), encoding="utf-8")
     temporary.chmod(0o600)
     temporary.replace(discovery)
 

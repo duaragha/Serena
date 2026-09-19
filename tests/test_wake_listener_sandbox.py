@@ -20,7 +20,7 @@ UNIT = Path(__file__).resolve().parents[1] / "systemd" / "serena-wake-listener.s
 
 
 def _directive(name: str) -> str:
-    for line in UNIT.read_text().splitlines():
+    for line in UNIT.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line.startswith(f"{name}="):
             return line.split("=", 1)[1].strip()
@@ -38,7 +38,7 @@ def test_the_listener_can_open_loopback_tcp_for_its_greeting() -> None:
 
 def test_the_sandbox_is_still_a_sandbox() -> None:
     """Widening one directive must not quietly drop the rest of the hardening."""
-    text = UNIT.read_text()
+    text = UNIT.read_text(encoding="utf-8")
     assert "NoNewPrivileges=true" in text
     assert "ProtectSystem=strict" in text
     assert "ProtectHome=read-only" in text

@@ -139,7 +139,7 @@ def test_model_worker_close_kills_its_descendant_group(tmp_path: Path) -> None:
         except ProcessLookupError:
             break
         try:
-            if Path(f"/proc/{child_pid}/stat").read_text().split()[2] == "Z":
+            if Path(f"/proc/{child_pid}/stat").read_text(encoding='utf-8').split()[2] == "Z":
                 break
         except (OSError, IndexError):
             break

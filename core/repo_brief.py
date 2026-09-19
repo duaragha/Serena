@@ -75,7 +75,7 @@ def snapshot(key: str) -> dict:
 
 def _state(key: str) -> dict:
     try:
-        value = json.loads((directory(key) / 'drift.json').read_text())
+        value = json.loads((directory(key) / 'drift.json').read_text(encoding="utf-8"))
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}

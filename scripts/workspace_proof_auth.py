@@ -16,7 +16,7 @@ def read_test_auth(auth_home):
         auth_file = home.resolve() / "auth.json"
         if source == auth_file or (source.exists() and auth_file.exists() and source.samefile(auth_file)):
             raise ValueError("The proof cannot use the normal or active Codex login; use a separate test profile")
-    auth = json.loads(source.read_text())
+    auth = json.loads(source.read_text(encoding="utf-8"))
     if auth.get("auth_mode") != "chatgpt" or not auth.get("tokens"):
         raise RuntimeError("An existing ChatGPT subscription login is required")
     return auth

@@ -43,7 +43,7 @@ def main():
         assert value.bridge(sid, "claude", "/effort low", "in-flight", timeout=0.02)["pending"]
         assert value.bridge(sid, "claude", "/effort high", "queued", timeout=1)["queued"]
         children = [{"pid": child.pid, "born": child.create_time()} for child in psutil.Process().children(recursive=True)]
-        ready.write_text(json.dumps({"native": pid, "children": children}))
+        ready.write_text(json.dumps({"native": pid, "children": children}), encoding="utf-8")
         while True:
             time.sleep(1)
     process = subprocess.Popen([sys.executable, __file__, *sys.argv[1:6], "--worker"], env=dict(os.environ), start_new_session=True)
@@ -54,7 +54,7 @@ def main():
             assert process.poll() is None, "Crash worker exited before ready"
             assert time.monotonic() < deadline, "Crash worker did not become ready"
             time.sleep(0.02)
-        snapshot = json.loads(ready.read_text())
+        snapshot = json.loads(ready.read_text(encoding="utf-8"))
         children = snapshot["children"]
         assert journal.recoverable_bridge_queue(sid, "claude") == [{"id": "queued", "prompt": "/effort high"}]
     finally:

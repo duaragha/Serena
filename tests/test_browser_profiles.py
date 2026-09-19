@@ -80,7 +80,7 @@ def test_expired_session_yields_reenroll_signal(store):
 def test_audit_is_metadata_only(store):
     _sealed()
     bp.attach("demo", confirm_fn=lambda prompt: True, _launcher=lambda: 7, _verifier=lambda: (True, "cdp"))
-    rows = (bp._slug_dir("demo") / "audit.jsonl").read_text()
+    rows = (bp._slug_dir("demo") / "audit.jsonl").read_text(encoding="utf-8")
     assert "cookie" not in rows.lower()
     for line in rows.splitlines():
         assert set(json.loads(line)) <= {"ts", "slug", "action", "ok", "method", "signal", "pid", "marker_hint"}
@@ -103,7 +103,7 @@ def test_authority_lock_denies_attach(store, tmp_path):
 
 def test_remove_wipes_everything(store):
     _sealed()
-    (bp._slug_dir("demo") / "Cookies").write_text("secret-bytes")
+    (bp._slug_dir("demo") / "Cookies").write_text("secret-bytes", encoding="utf-8")
     assert bp.remove("demo") == {"slug": "demo", "removed": True}
     assert not (store / "demo").exists()
 
@@ -196,7 +196,7 @@ def test_existing_profile_uses_scripted_checks_without_screenshots(monkeypatch, 
     from core.computer_browser import BrowserChecks
     profile = tmp_path / "profile"
     profile.mkdir(mode=0o700)
-    (profile / "DevToolsActivePort").write_text("12345\n/devtools/browser/fixture\n")
+    (profile / "DevToolsActivePort").write_text("12345\n/devtools/browser/fixture\n", encoding="utf-8")
     seen, bound = [], []
     # Discovery is only trusted once the port belongs to this profile's browser.
     monkeypatch.setattr(
@@ -209,7 +209,7 @@ def test_existing_profile_uses_scripted_checks_without_screenshots(monkeypatch, 
     @asynccontextmanager
     async def attach(port_file):
         assert port_file.stat().st_mode & 0o777 == 0o600
-        assert json.loads(port_file.read_text()) == {"port": 12345}
+        assert json.loads(port_file.read_text(encoding="utf-8")) == {"port": 12345}
         yield Browser()
     monkeypatch.setattr(BrowserChecks, "attach", attach)
     monkeypatch.setattr(bp, "_focused_window_title", lambda: pytest.fail("no screenshots or desktop"))

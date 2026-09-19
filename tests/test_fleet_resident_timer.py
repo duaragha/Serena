@@ -96,7 +96,7 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
         assert helper == launched or helper in launched.children(recursive=True)
         assert helper.pid not in {os.getpid(), os.getppid()}
         assert process_start_token(helper.pid) == lease["owner_token"]
-        gate_process = psutil.Process(int(marker.read_text()))
+        gate_process = psutil.Process(int(marker.read_text(encoding="utf-8")))
         assert gate_process in helper.children(recursive=True)
         assert (root / "core/alpha.py").read_bytes() == b"alpha = 2\n"
         helper.kill()

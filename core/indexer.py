@@ -1716,7 +1716,7 @@ def build_knowledge_fts(progress_callback=None):
         fp = Path(row["file_path"])
         if not fp.exists():
             continue
-        text = fp.read_text(errors="replace")
+        text = fp.read_text(errors="replace", encoding="utf-8")
         conn.execute(
             "INSERT INTO knowledge_fts (content, topic_slug, filename) VALUES (?, ?, ?)",
             (text, row["topic_slug"], row["filename"]),

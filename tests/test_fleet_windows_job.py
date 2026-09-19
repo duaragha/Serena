@@ -85,7 +85,7 @@ def test_owner_kill_closes_noninherited_job_handle(tmp_path):
         while not marker.exists() and owner.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
         assert marker.exists(), "job owner never published its child"
-        handle = api.OpenProcess(0x100001, False, int(marker.read_text()))
+        handle = api.OpenProcess(0x100001, False, int(marker.read_text(encoding="utf-8")))
         assert handle, ctypes.get_last_error()
         owner.kill()
         owner.wait(timeout=5)

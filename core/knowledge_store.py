@@ -101,7 +101,7 @@ def _recover(root: Path) -> None:
     journal = root / '.knowledge-write.json'
     if not journal.exists():
         return
-    value = json.loads(journal.read_text())
+    value = json.loads(journal.read_text(encoding="utf-8"))
     path = note_path(value['slug'], value['file'], root)
     # Roll forward after a process interruption. Both new values were durably
     # prepared before either canonical path was changed.
@@ -151,8 +151,8 @@ def _save_note(slug: str, filename: str, text: str, root: Path) -> str:
     index = root / 'INDEX.md'
     if index.is_symlink():
         raise ValueError('INDEX must not be a symlink')
-    old_note = path.read_text() if path.exists() else None
-    old_index = index.read_text() if index.exists() else None
+    old_note = path.read_text(encoding="utf-8") if path.exists() else None
+    old_index = index.read_text(encoding="utf-8") if index.exists() else None
     new_index = index_upsert(old_index or '# Knowledge Base\n\n## Topics\n\n', slug,
                              str(meta.get('title') or slug), str(meta['trigger']))
     journal = root / '.knowledge-write.json'
@@ -191,7 +191,7 @@ def backfill(root: Path | None = None) -> dict:
                 continue
             try:
                 note_path(path.parent.name, path.name, root)
-                original = path.read_text()
+                original = path.read_text(encoding="utf-8")
                 updated = with_metadata(original, path.parent.name, path.name)
                 result['checked'] += 1
                 if updated != original:
@@ -229,7 +229,7 @@ def record_hit(slug: str, filename: str, *, query: str = '', surface: str, calle
                content: str | None = None, root: Path | None = None) -> str:
     path = note_path(slug, filename, root)
     if content is None:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     else:
         # Cached index content is not proof of a present file. A receipt for a
         # deleted note would be a false retrieval record, and callers rely on
@@ -285,7 +285,7 @@ def review_proposal(identity: str, action: str) -> dict:
             raise ValueError('No pending knowledge proposal')
         if action == 'approve' and proposal['kind'] == 'factual_correction':
             path = note_path(proposal['slug'], proposal['file'], root)
-            if digest(path.read_text()) != proposal['before_sha256']:
+            if digest(path.read_text(encoding="utf-8")) != proposal['before_sha256']:
                 raise ValueError('Canonical knowledge changed since retrieval; review a fresh proposal')
             _save_note(proposal['slug'], proposal['file'], proposal['candidate'], root)
         db.execute('UPDATE knowledge_proposals SET state=?,reviewed_at=? WHERE id=?',
@@ -298,6 +298,6 @@ def read_note(slug: str, filename: str, *, query: str = '', surface: str = 'know
     root = Path(root or config.KNOWLEDGE_DIR).resolve()
     path = note_path(slug, filename, root)
     with locked(root):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         receipt = record_hit(slug, filename, query=query, surface=surface, caller=caller, content=text, root=root)
         return f'retrieval receipt: {receipt} {slug}/{filename}\n{text}' if include_receipt else text

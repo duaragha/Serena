@@ -147,7 +147,7 @@ async def main():
         assert indexer.DB_PATH.resolve().is_relative_to(Path(root).resolve())
         assert metadata.METADATA_DIR.resolve().is_relative_to(Path(root).resolve())
         web_source = repo / "ui/web.py"
-        definitions = [item for item in ast.parse(web_source.read_text()).body
+        definitions = [item for item in ast.parse(web_source.read_text(encoding="utf-8")).body
                        if isinstance(item, ast.FunctionDef) and item.name in {"api_rename", "api_sessions", "_decorate_sessions",
                                                                             "_pending_workspace_meta", "_toggle_workspace_done",
                                                                             "api_star", "api_done", "api_bulk_done", "api_conversation"}]
@@ -246,7 +246,7 @@ async def main():
                     read = page.evaluate("async sid => (await fetch('/api/conversation/'+sid)).json()", target)
                     assert not read.get("native_persistence_pending") and read["session_id"] == target
                     assert read["messages"] and read["title"] == title
-                    assert matching[0]["starred"] and not matching[0]["is_done"], {"row": matching[0], "native": Path(indexed["file_path"]).read_text()}
+                    assert matching[0]["starred"] and not matching[0]["is_done"], {"row": matching[0], "native": Path(indexed["file_path"]).read_text(encoding="utf-8")}
                     assert not browser_host.journal.uncataloged_clears()
                     assert not errors, errors
                     assert not failures, failures

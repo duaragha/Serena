@@ -364,7 +364,7 @@ def _pid_alive(pid: int) -> bool:
 
 def _write_pid(name: str, pid: int) -> None:
     PIDFILE_DIR.mkdir(parents=True, exist_ok=True)
-    (PIDFILE_DIR / f"{name}.pid").write_text(str(pid))
+    (PIDFILE_DIR / f"{name}.pid").write_text(str(pid), encoding='utf-8')
 
 
 def _read_pid(name: str) -> int | None:
@@ -372,7 +372,7 @@ def _read_pid(name: str) -> int | None:
     if not p.exists():
         return None
     try:
-        return int(p.read_text().strip())
+        return int(p.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
 
@@ -392,7 +392,7 @@ def _reap_dead_pidfiles() -> None:
         return
     for f in PIDFILE_DIR.glob("*.pid"):
         try:
-            pid = int(f.read_text().strip())
+            pid = int(f.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             try:
                 f.unlink()

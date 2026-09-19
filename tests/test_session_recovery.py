@@ -30,7 +30,7 @@ def test_parse_full_reads_codex_event_messages(tmp_path: Path):
             "payload": {"type": "agent_message", "message": "starting now"},
         },
     ]
-    rollout.write_text("".join(json.dumps(record) + "\n" for record in records))
+    rollout.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
     messages = parse_full(rollout)
 
@@ -58,7 +58,7 @@ def test_delete_session_retains_recovery_copy(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SERENA_RUNTIME_LEASE_DIR", str(tmp_path / "leases"))
     sid = "019f5bbd-2597-7800-8840-e5f2aa7619b8"
     rollout = tmp_path / "rollout.jsonl"
-    rollout.write_text('{"type":"session_meta"}\n')
+    rollout.write_text('{"type":"session_meta"}\n', encoding="utf-8")
     deleted_meta = []
     monkeypatch.setattr(indexer, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(
@@ -76,7 +76,7 @@ def test_delete_session_retains_recovery_copy(tmp_path: Path, monkeypatch):
     assert original == str(rollout)
     assert not rollout.exists()
     assert (recovery_dir / "rollout.jsonl").exists()
-    manifest = json.loads((recovery_dir / "recovery.json").read_text())
+    manifest = json.loads((recovery_dir / "recovery.json").read_text(encoding="utf-8"))
     assert manifest["original_path"] == str(rollout)
     assert manifest["deleted_via"] == "test-ui"
     assert manifest["metadata"]["custom_title"] == "Mobile"
@@ -88,14 +88,14 @@ def test_owned_session_delete_cannot_modify_index_transcript_or_metadata(tmp_pat
 
     monkeypatch.setenv("SERENA_RUNTIME_LEASE_DIR", str(tmp_path / "leases"))
     path = tmp_path / "chat.jsonl"
-    path.write_text("original\n")
+    path.write_text("original\n", encoding="utf-8")
     monkeypatch.setattr(indexer, "get_session", lambda sid: {"session_id": "exact", "file_path": str(path)})
     monkeypatch.setattr(indexer, "_get_db", lambda: pytest.fail("Deletion reached database while owned"))
     owner = SessionLease("exact")
     try:
         with pytest.raises(SessionOwnedError):
             indexer.delete_session("exact")
-        assert path.read_text() == "original\n"
+        assert path.read_text(encoding="utf-8") == "original\n"
     finally:
         owner.release()
 
@@ -122,7 +122,7 @@ def test_delete_retains_lock_through_archive_and_releases_on_failure(tmp_path, m
 def test_failed_delete_keeps_original_transcript_and_metadata(tmp_path, monkeypatch, failure):
     sid = "failure-proof"
     path = tmp_path / "chat.jsonl"
-    path.write_text("original history\n")
+    path.write_text("original history\n", encoding="utf-8")
     monkeypatch.setattr(indexer, "get_session", lambda value: {"session_id": sid, "file_path": str(path)})
     monkeypatch.setattr(indexer.meta_sync, "get_meta", lambda value: {"custom_title": "Keep me"})
     monkeypatch.setattr(indexer.meta_sync, "delete_meta", lambda value: pytest.fail("Metadata must not be removed"))
@@ -155,5 +155,5 @@ def test_failed_delete_keeps_original_transcript_and_metadata(tmp_path, monkeypa
         monkeypatch.setattr(indexer.shutil, "move", move)
     with pytest.raises(OSError, match=failure):
         indexer.delete_session(sid)
-    assert path.read_text() == "original history\n"
+    assert path.read_text(encoding="utf-8") == "original history\n"
     assert calls == (["execute", "rollback", "close"] if failure == "database" else [])

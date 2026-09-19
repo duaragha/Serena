@@ -15,7 +15,7 @@ def rollout(root, messages, *, parent=None, archived=False, legacy=False):
     meta = {"id": sid}
     start = 0
     if parent:
-        rows = [json.loads(line) for line in parent.read_text().splitlines()]
+        rows = [json.loads(line) for line in parent.read_text(encoding="utf-8").splitlines()]
         start = rows[-1]["ordinal"] + 1
         meta["history_base"] = {"thread_id": rows[0]["payload"]["id"],
                                 "end_byte_offset": parent.stat().st_size,
@@ -28,15 +28,15 @@ def rollout(root, messages, *, parent=None, archived=False, legacy=False):
         else:
             rows.append({"ordinal": number, "type": "response_item", "payload": {
                 "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}})
-    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     return path
 
 
 def alter_base(path, **updates):
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     first = json.loads(lines[0])
     first["payload"]["history_base"].update(updates)
-    path.write_text(json.dumps(first) + "\n" + "\n".join(lines[1:]) + "\n")
+    path.write_text(json.dumps(first) + "\n" + "\n".join(lines[1:]) + "\n", encoding="utf-8")
 
 
 def test_nested_archived_prefix_excludes_later_parent_messages(tmp_path):
@@ -66,10 +66,10 @@ def test_untrustworthy_ancestry_is_unavailable(tmp_path, case):
         parent.rename(outside)
         parent.symlink_to(outside)
     elif case == "cycle":
-        sid = json.loads(fork.read_text().splitlines()[0])["payload"]["id"]
+        sid = json.loads(fork.read_text(encoding="utf-8").splitlines()[0])["payload"]["id"]
         alter_base(fork, thread_id=sid, end_byte_offset=fork.stat().st_size, end_ordinal_exclusive=999)
     elif case == "identity":
-        parent.write_text(parent.read_text().replace(json.loads(parent.read_text().splitlines()[0])["payload"]["id"], str(uuid4())))
+        parent.write_text(parent.read_text(encoding="utf-8").replace(json.loads(parent.read_text(encoding="utf-8").splitlines()[0])["payload"]["id"], str(uuid4())), encoding="utf-8")
     elif case == "offset":
         alter_base(fork, end_byte_offset=999999)
     elif case == "ordinal":

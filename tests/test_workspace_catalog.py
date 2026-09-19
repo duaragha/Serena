@@ -56,7 +56,7 @@ def test_native_archive_index_preserves_custom_metadata_and_restores_exact_row(t
     sid, sibling = str(uuid4()), str(uuid4())
     path = home / 'sessions' / f'rollout-2026-09-10T00-00-00-{sid}.jsonl'
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': sid, 'cwd': str(tmp_path)}}) + '\n')
+    path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': sid, 'cwd': str(tmp_path)}}) + '\n', encoding="utf-8")
     target = {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)}
     metadata._save_one(sid, {'custom_title': 'Keep my title', 'group': 'linked-group', 'starred': True,
                              'done': True, 'done_at': '2099-01-01T00:00:00+00:00'})
@@ -124,7 +124,7 @@ def test_claude_native_title_reindexes_without_overwriting_custom_title(tmp_path
     ]
     for invalid in (None, {}, "", "  ", "bad\nname", "x" * 1001):
         records.append({"type": "custom-title", "sessionId": sid, "customTitle": invalid})
-    path.write_text("\n".join(map(json.dumps, records)) + "\n{partial\n")
+    path.write_text("\n".join(map(json.dumps, records)) + "\n{partial\n", encoding="utf-8")
     meta = parse_metadata(path, "project")
     assert meta.native_title == "Native rename"
     assert meta.message_count == 1
@@ -245,7 +245,7 @@ def test_claude_registration_waits_for_exact_completed_prompt(tmp_path, monkeypa
     config = tmp_path / "config"
     path = config / "projects" / "project" / f"{sid}.jsonl"
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"type": "user", field: "old-prompt"}) + "\n{partial\n")
+    path.write_text(json.dumps({"type": "user", field: "old-prompt"}) + "\n{partial\n", encoding="utf-8")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
     monkeypatch.setattr("core.parser.parse_metadata", lambda *args: SimpleNamespace(session_id=sid, cwd=str(tmp_path)))
     calls = []
@@ -256,10 +256,10 @@ def test_claude_registration_waits_for_exact_completed_prompt(tmp_path, monkeypa
     with pytest.raises(NativeTranscriptPending):
         register_fork(target)
     assert not calls
-    path.write_text(json.dumps({"type": "assistant", field: prompt}) + "\n")
+    path.write_text(json.dumps({"type": "assistant", field: prompt}) + "\n", encoding="utf-8")
     with pytest.raises(NativeTranscriptPending):
         register_fork(target)
-    path.write_text(json.dumps({"type": "user", field: prompt}) + "\n")
+    path.write_text(json.dumps({"type": "user", field: prompt}) + "\n", encoding="utf-8")
     register_fork(target)
     assert calls == ["indexed"]
 
@@ -269,7 +269,7 @@ def test_codex_registration_marks_owned_before_upsert(tmp_path, monkeypatch):
     home = tmp_path / "codex"
     path = home / "sessions" / f"rollout-2026-09-09T00-00-00-{sid}.jsonl"
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"type": "session_meta", "payload": {"id": sid, "cwd": str(tmp_path)}}) + "\n")
+    path.write_text(json.dumps({"type": "session_meta", "payload": {"id": sid, "cwd": str(tmp_path)}}) + "\n", encoding="utf-8")
     calls = []
     monkeypatch.setenv("CODEX_HOME", str(home))
     monkeypatch.setattr("core.metadata.set_resident_work", lambda target: calls.append(("owned", target)))
@@ -299,7 +299,7 @@ def test_claude_explicit_rename_replaces_only_after_native_confirmation(tmp_path
         {'type': 'user', 'cwd': str(tmp_path), 'timestamp': '2026-09-10T12:00:00Z',
          'message': {'role': 'user', 'content': 'Original request'}},
         {'type': 'custom-title', 'sessionId': sid, 'customTitle': 'Native replacement'},
-    ])) + '\n')
+    ])) + '\n', encoding="utf-8")
     metadata.set_custom_title(sid, 'Previous explicit title')
     metadata.set_custom_title(sibling, 'Sibling title')
     target = {'session_id': sid, 'provider': 'claude', 'cwd': str(tmp_path)}
@@ -334,7 +334,7 @@ def test_confirmed_native_codex_rename_updates_only_exact_metadata_and_index(tmp
     home = tmp_path / 'codex'
     path = home / 'sessions' / f'rollout-2026-09-10T00-00-00-{sid}.jsonl'
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': sid, 'cwd': str(tmp_path)}}) + '\n')
+    path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': sid, 'cwd': str(tmp_path)}}) + '\n', encoding="utf-8")
     monkeypatch.setenv('CODEX_HOME', str(home))
     metadata.set_custom_title(sid, 'Previous explicit title')
     metadata.set_custom_title(other, 'Unrelated title')
@@ -356,7 +356,7 @@ def test_invalid_codex_fork_never_writes_catalog(tmp_path, monkeypatch, case):
     if case == "missing-history":
         payload["history_base"] = {"thread_id": str(uuid4()), "end_byte_offset": 1, "end_ordinal_exclusive": 1}
     if case != "missing":
-        path.write_text(json.dumps({"type": "session_meta", "payload": payload}) + "\n")
+        path.write_text(json.dumps({"type": "session_meta", "payload": payload}) + "\n", encoding="utf-8")
     if case == "ambiguous":
         other = home / "archived_sessions" / path.name
         other.parent.mkdir()
@@ -379,14 +379,14 @@ def test_invalid_native_fork_never_writes_catalog(tmp_path, monkeypatch, case):
     path = projects / "project" / f"{sid}.jsonl"
     path.parent.mkdir(parents=True)
     if case != "missing":
-        path.write_text("{}\n")
+        path.write_text("{}\n", encoding="utf-8")
     if case == "ambiguous":
         other = projects / "other" / path.name
         other.parent.mkdir()
-        other.write_text("{}\n")
+        other.write_text("{}\n", encoding="utf-8")
     if case == "outside":
         outside = tmp_path / "external.jsonl"
-        outside.write_text("{}\n")
+        outside.write_text("{}\n", encoding="utf-8")
         path.unlink()
         path.symlink_to(outside)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))

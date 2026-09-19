@@ -56,7 +56,7 @@ def test_internal_logs_are_not_listed_or_resumable(tmp_path, monkeypatch):
     for family in ("subagent", "reminder", "approval-review"):
         child = path.parent / family / "22222222-2222-4222-8222-222222222222" / "session.jsonl"
         child.parent.mkdir(parents=True)
-        child.write_text(path.read_text())
+        child.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
     assert list(muse_scanner.scan_muse_sessions()) == [("muse", path)]
     assert muse_scanner.resumable_session_path("22222222-2222-4222-8222-222222222222") is None
 
@@ -86,7 +86,7 @@ def test_upgrade_reparses_unchanged_untitled_rows_and_removes_empty_rows(tmp_pat
                     ("child", path.parent / "subagent/child/session.jsonl")]:
         if not fp.exists():
             fp.parent.mkdir(parents=True, exist_ok=True)
-            fp.write_text('{"type":"ping"}\n')
+            fp.write_text('{"type":"ping"}\n', encoding="utf-8")
         stat = fp.stat()
         conn.execute("INSERT INTO sessions (session_id,project_dir,agent,title,file_path,file_size,file_mtime,raw_message_count) VALUES (?,?,?,?,?,?,?,?)",
                      (sid, "muse", "muse", "Untitled chat", str(fp), stat.st_size, stat.st_mtime, 0))

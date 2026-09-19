@@ -81,7 +81,7 @@ def test_declared_patch(proof, tmp_path):
 
     from fleet.artifacts import persist_declared
     adapter, run, leg, attempt = proof
-    (tmp_path / 'proof.patch').write_text('patch content')
+    (tmp_path / 'proof.patch').write_text('patch content', encoding="utf-8")
     output = '<serena-evidence>' + json.dumps({'units': [{'artifacts': [{'path': 'proof.patch', 'kind': 'patch'}]}]}) + '</serena-evidence>'
     persist_declared(adapter, run, leg, attempt, output, tmp_path)
     assert adapter.list(run)[0]['kind'] == 'patch'

@@ -29,7 +29,7 @@ def _get_service():
                 return None
             flow = InstalledAppFlow.from_client_secrets_file(str(GOOGLE_CREDS_PATH), SCOPES)
             creds = flow.run_local_server(port=0)
-        GOOGLE_TOKEN_PATH.write_text(creds.to_json())
+        GOOGLE_TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
 
     return build("tasks", "v1", credentials=creds)
 

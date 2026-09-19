@@ -71,11 +71,11 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_active_v2_store", lambda: None)
     monkeypatch.setattr(store, "_source_context", lambda: ("", "", "", ""))
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / "pw").write_text("pw\n")
+    (tmp_path / "pw").write_text("pw\n", encoding="utf-8")
     config = tmp_path / "phone-line.json"
     config.write_text(json.dumps({
         "backend": "bluebubbles", "url": "http://bb", "password_file": str(tmp_path / "pw"),
-        "address": "him@example.com", "watch_number": "+14165550100"}))
+        "address": "him@example.com", "watch_number": "+14165550100"}), encoding="utf-8")
     monkeypatch.setenv("SERENA_PHONE_LINE_CONFIG", str(config))
     fake = FakeServer()
     monkeypatch.setattr(urllib.request, "urlopen", fake.urlopen)
@@ -127,7 +127,7 @@ def test_swapped_command_arms_the_reminder_clock(server):
                             "dateCreated": 50})
     report = phone_line.poll(now=500)
     assert report.commands[0]["kind"] == "swapped"
-    health = json.loads((server_home(server) / "phone-health.json").read_text())
+    health = json.loads((server_home(server) / "phone-health.json").read_text(encoding="utf-8"))
     assert health["number_swapped_at"] == 500
 
 
@@ -178,9 +178,9 @@ def test_health_reports_a_dropped_number_and_the_swap_due(server, monkeypatch):
     assert len(server.sent) == count  # asked once until it recovers
 
     state_file = server_home(server) / "phone-health.json"
-    state = json.loads(state_file.read_text())
+    state = json.loads(state_file.read_text(encoding="utf-8"))
     state.update(number_swapped_at=clock[0] - 43 * 86400, swap_reminded=False)
-    state_file.write_text(json.dumps(state))
+    state_file.write_text(json.dumps(state), encoding="utf-8")
     action({})
     assert "sim refresh" in server.sent[-1]["message"]
 
@@ -190,7 +190,7 @@ def test_documents_use_her_line(server, tmp_path):
 
     root = tmp_path / "Serena"
     root.mkdir(mode=0o700)
-    (root / "Notes.txt").write_text("x\n")
+    (root / "Notes.txt").write_text("x\n", encoding="utf-8")
     result = send_document_to_imessage(
         "Notes.txt", origin={"text": "send it to my phone", "protocol": "voice"},
         root=root, audit_path=tmp_path / "audit.jsonl")

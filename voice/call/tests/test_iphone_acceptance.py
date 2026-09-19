@@ -66,7 +66,7 @@ def test_verify_closes_both_gates_and_requires_roam(tmp_path: Path, monkeypatch)
     report_path = tmp_path / "report.json"
     handoff.write_text(
         json.dumps({"schema_version": 2, "ok": True, "metrics": {"ok": True}})
-    )
+    , encoding="utf-8")
     rows = [{"event": "call.start", "call_id": "one-call"}]
     monkeypatch.setattr(
         acceptance,
@@ -127,7 +127,7 @@ def test_verify_fails_without_a_network_roam(tmp_path: Path, monkeypatch) -> Non
     handoff = tmp_path / "handoff.json"
     handoff.write_text(
         json.dumps({"schema_version": 2, "ok": True, "metrics": {"ok": True}})
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(
         acceptance,
         "load_metrics_append",
@@ -190,7 +190,7 @@ def test_verify_keeps_cost_gate_open_without_dashboard_attestation(
     handoff = tmp_path / "handoff.json"
     handoff.write_text(
         json.dumps({"schema_version": 2, "ok": True, "metrics": {"ok": True}})
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(
         acceptance,
         "load_metrics_append",

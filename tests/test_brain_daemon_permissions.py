@@ -118,7 +118,7 @@ def test_runtime_declares_the_claude_agent_sdk_dependency():
 
     from packaging.requirements import Requirement
 
-    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     declared = [Requirement(value) for value in project["project"]["dependencies"]]
     sdk = next(
         (requirement for requirement in declared if requirement.name == "claude-agent-sdk"),
@@ -1018,6 +1018,6 @@ def test_discovery_token_file_is_user_only_on_posix(monkeypatch, tmp_path):
     path = tmp_path / "config" / "brain.json"
     monkeypatch.setattr(brain_daemon, "BRAIN_FILE", path)
     brain_daemon._write_discovery({"token": "secret"})
-    assert json.loads(path.read_text())["token"] == "secret"
+    assert json.loads(path.read_text(encoding="utf-8"))["token"] == "secret"
     assert path.stat().st_mode & 0o077 == 0
     assert path.parent.stat().st_mode & 0o077 == 0

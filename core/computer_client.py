@@ -37,7 +37,7 @@ class ComputerClient:
 
     def call(self, method, **params):
         try:
-            info = json.loads((state_dir() / "service.json").read_text())
+            info = json.loads((state_dir() / "service.json").read_text(encoding="utf-8"))
             port = int(info["port"])
             token = (
                 info["operator_token"] if method in {"begin", "run", "confirm"} else info["token"]

@@ -65,7 +65,7 @@ def scope_supported() -> bool:
 def owned_cgroup(pid: int) -> str | None:
     """The Serena-created scope holding *pid*, never any other cgroup."""
     try:
-        with open(f"/proc/{pid}/cgroup", encoding="utf-8") as handle:
+        with open(f"/proc/{pid}/cgroup", encoding='utf-8') as handle:
             for line in handle:
                 hierarchy, _, rest = line.strip().partition(":")
                 if hierarchy != "0":

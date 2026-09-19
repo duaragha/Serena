@@ -71,7 +71,7 @@ for line in sys.stdin:
             'itemId': 'answer', 'kind': 'agentMessage', 'turnId': 'proof-turn',
             'status': 'completed', 'revision': 1, 'text': 'Development request completed'}}})
         emit({'method': 'turn/completed', 'params': {'sessionId': sid, 'turnId': 'proof-turn', 'terminal': 'completed'}})
-''')
+''', encoding="utf-8")
         fake.chmod(0o755)
         cli = binary_dir / "claude"
         cli.write_text(f"#!{sys.executable}\n" + '''
@@ -84,7 +84,7 @@ assert 'NO_COLOR' not in os.environ
 print('\\033[38;2;18;180;90mNative CLI terminal ready\\033[0m', flush=True)
 for line in sys.stdin:
     print('CLI received: ' + line.strip(), flush=True)
-''')
+''', encoding="utf-8")
         cli.chmod(0o755)
         env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
                "PATH": str(binary_dir) + os.pathsep + os.environ["PATH"],
@@ -153,8 +153,8 @@ for line in sys.stdin:
                     'client_session_id': sid, 'cwd': str(home), 'agent': 'claude'})
                 assert response.status >= 400
                 assert 'owner' in response.json()['error'].lower()
-                cli_pid = int((home / 'cli-proof.pid').read_text())
-                muse_pid = int((home / 'muse-proof.pid').read_text())
+                cli_pid = int((home / 'cli-proof.pid').read_text(encoding="utf-8"))
+                muse_pid = int((home / 'muse-proof.pid').read_text(encoding="utf-8"))
                 # Quit Dev normally. Stable's backend and its live PTY must survive.
                 processes[1][0].send_signal(signal.SIGTERM)
                 processes[1][0].wait(timeout=35)
@@ -168,7 +168,7 @@ for line in sys.stdin:
                 else:
                     raise AssertionError('Dev left its provider alive after quit')
                 proof['coexistence'] = 'Dev quit left stable backend and CLI alive; Dev provider exited'
-                (args.output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
+                (args.output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n', encoding="utf-8")
                 print(json.dumps(proof, indent=2))
         finally:
             for logfile in home.glob('.config/serena-desktop-*/logs/backend.log'):

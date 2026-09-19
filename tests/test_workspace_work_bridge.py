@@ -15,7 +15,7 @@ def test_native_http_dispatch_never_falls_back_or_repeats(tmp_path, monkeypatch,
     from ui import web
 
     path = tmp_path / 'rollout.jsonl'
-    path.write_text('')
+    path.write_text('', encoding="utf-8")
     submitted = []
     states = []
 

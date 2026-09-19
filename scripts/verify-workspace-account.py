@@ -28,7 +28,7 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
         (home / ".codex").mkdir(parents=True)
         project.mkdir()
         if signed_apps:
-            (home / '.codex' / 'config.toml').write_text('[features]\napps = true\n')
+            (home / '.codex' / 'config.toml').write_text('[features]\napps = true\n', encoding="utf-8")
         if signed_limits or signed_apps:
             with open(home / ".codex" / "auth.json", "x",
                       opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
@@ -41,7 +41,7 @@ async def main(browser_login=False, pause=False, modes=False, limits=False, sign
         async def publish(event):
             events.append(event)
         async def checkpoint(identity):
-            (root / "identity.json").write_text(json.dumps(identity))
+            (root / "identity.json").write_text(json.dumps(identity), encoding="utf-8")
         owner = CodexWorkspace(session_id="new:" + str(uuid4()), cwd=project, publish=publish,
                                lease_factory=lambda sid: SessionLease(sid, directory=root / "leases"))
         process = None

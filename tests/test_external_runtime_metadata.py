@@ -72,7 +72,7 @@ def test_external_runtime_metadata_is_serializable(monkeypatch, tmp_path):
         lease_seconds=120,
     )
 
-    stored = json.loads((metadata.METADATA_DIR / f"{sid}.json").read_text())
+    stored = json.loads((metadata.METADATA_DIR / f"{sid}.json").read_text(encoding='utf-8'))
     assert stored["external_runtime"]["kind"] == "codex-exec"
 
 

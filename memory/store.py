@@ -647,7 +647,7 @@ def _next_id() -> int:
     # recycle that identity. Persist before publication: a crash may leave a
     # harmless gap, but cannot make two different tasks share a receipt.
     counter = MEMORY_DIR / ".memory-next-id"
-    floor = int(counter.read_text()) if counter.exists() else 1
+    floor = int(counter.read_text(encoding="utf-8")) if counter.exists() else 1
     mid = max(floor, max((m["id"] for m in _scan_all()), default=0) + 1)
     _atomic_text(counter, str(mid + 1))
     return mid

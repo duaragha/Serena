@@ -85,7 +85,7 @@ async def prove(root):
         assert force_reload["total_cost_usd"] == 0
         title_records = []
         for path in (root / "config").rglob(f"{sid}.jsonl"):
-            for line in path.read_text().splitlines():
+            for line in path.read_text(encoding="utf-8").splitlines():
                 record = json.loads(line)
                 if record.get("type") == "custom-title":
                     title_records.append(record)

@@ -97,7 +97,7 @@ class WorkspaceUploads:
             metadata = directory / "metadata.json"
             if metadata.is_symlink():
                 raise ValueError("Attachment metadata changed")
-            record = json.loads(metadata.read_text())
+            record = json.loads(metadata.read_text(encoding="utf-8"))
             if not re.fullmatch(r"content\.[a-z0-9]{1,12}", record["file"]):
                 raise ValueError("Invalid attachment path")
             path = directory / record["file"]

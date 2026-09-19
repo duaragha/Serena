@@ -44,7 +44,7 @@ def test_a_legacy_writer_ready_note_without_a_source_is_not_claimed(queue):
     path.parent.mkdir(parents=True)
     path.write_text("---\nid: 1\ntype: task\ncreated: 2026-01-01 00:00:00\n"
                     "updated: 2026-01-01 00:00:00\nstate: ready\nsource_id: \n---\n\n"
-                    "Fix the flaky login test in locket before friday\n")
+                    "Fix the flaky login test in locket before friday\n", encoding="utf-8")
     assert store.claim_next_task("dispatcher") is None
     assert store.get_memory(1)["state"] == "backlog"
     assert store.tasks_in_state("ready") == []
@@ -211,13 +211,13 @@ def github(tmp_path, monkeypatch):
     _git("init", "--bare", "-b", "main", str(bare))
     seed = tmp_path / "seed"
     _git("clone", str(bare), str(seed))
-    (seed / "README.md").write_text("demo\n")
+    (seed / "README.md").write_text("demo\n", encoding="utf-8")
     _git("-c", "user.name=t", "-c", "user.email=t@t", "add", ".", cwd=seed)
     _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init", cwd=seed)
     _git("push", "origin", "main", cwd=seed)
     config = tmp_path / "gitconfig"
     config.write_text(f'[url "file://{remotes}/"]\n\tinsteadOf = https://github.com/\n'
-                      "[protocol \"file\"]\n\tallow = always\n")
+                      "[protocol \"file\"]\n\tallow = always\n", encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     synced = tmp_path / "Projects" / "demo"
     _git("clone", str(bare), str(synced))
@@ -231,11 +231,11 @@ def github(tmp_path, monkeypatch):
 def test_prepare_never_uses_the_synced_tree(github):
     from core import agent_checkouts
 
-    (github.synced / "README.md").write_text("laptop edit in progress\n")
+    (github.synced / "README.md").write_text("laptop edit in progress\n", encoding="utf-8")
     checkout = agent_checkouts.prepare(github.synced, 5, projects_root=github.projects)
     assert checkout.remote == "https://github.com/duaragha/demo.git"
     assert checkout.branch == "serena/task-5"
-    assert (checkout.path / "README.md").read_text() == "demo\n"
+    assert (checkout.path / "README.md").read_text(encoding="utf-8") == "demo\n"
     assert not str(checkout.path).startswith(str(github.projects))
     assert agent_checkouts.locate(checkout.path).branch == "serena/task-5"
 
@@ -280,7 +280,7 @@ def test_deliver_pushes_a_task_branch_and_opens_one_pr(github, monkeypatch):
 
     calls = _fake_gh(monkeypatch, gh)
     checkout = agent_checkouts.prepare(github.synced, 9, projects_root=github.projects)
-    (checkout.path / "fix.txt").write_text("fixed\n")
+    (checkout.path / "fix.txt").write_text("fixed\n", encoding="utf-8")
     (checkout.path / "__pycache__").mkdir()
     (checkout.path / "__pycache__" / "fix.cpython-313.pyc").write_bytes(b"junk")
     first = agent_checkouts.deliver(checkout, task_id=9, brief=BRIEF, run_id="run-9")
@@ -310,7 +310,7 @@ def test_automerge_is_opt_in_per_repository(github, monkeypatch):
 
     from core import agent_checkouts
 
-    (github.root / "dispatch.json").write_text(json.dumps({"automerge_repos": ["duaragha/demo"]}))
+    (github.root / "dispatch.json").write_text(json.dumps({"automerge_repos": ["duaragha/demo"]}), encoding="utf-8")
 
     def gh(args):
         if args[1:3] == ["pr", "view"]:
@@ -323,7 +323,7 @@ def test_automerge_is_opt_in_per_repository(github, monkeypatch):
 
     _fake_gh(monkeypatch, gh)
     checkout = agent_checkouts.prepare(github.synced, 4, projects_root=github.projects)
-    (checkout.path / "x.txt").write_text("x\n")
+    (checkout.path / "x.txt").write_text("x\n", encoding="utf-8")
     assert agent_checkouts.deliver(checkout, task_id=4, brief=BRIEF, run_id="r").status == "merged"
 
 
@@ -493,7 +493,7 @@ def test_ship_triggers_only_configured_codemagic_builds(tmp_path, monkeypatch):
     assert agent_checkouts.ship(checkout) == ""
 
     config.write_text(json.dumps({"ship": {"duaragha/locket": {
-        "codemagic_app_id": "app", "codemagic_workflow": "ios"}}}))
+        "codemagic_app_id": "app", "codemagic_workflow": "ios"}}}), encoding="utf-8")
     seen = []
 
     def urlopen(request, timeout=0):
@@ -759,7 +759,7 @@ def test_a_base_that_cannot_be_refreshed_still_produces_a_checkout(github):
 
     assert second.stale_base is True, "an unreachable remote is a stale base"
     assert second.branch == "serena/task-6"
-    assert (second.path / "README.md").read_text() == "demo\n"
+    assert (second.path / "README.md").read_text(encoding="utf-8") == "demo\n"
     assert agent_checkouts.locate(second.path).branch == "serena/task-6"
 
 

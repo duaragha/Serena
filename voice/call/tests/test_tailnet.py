@@ -146,7 +146,7 @@ def test_call_pong_carries_server_measured_route(monkeypatch, tmp_path: Path) ->
             }
         )
         for _ in range(20):
-            rows = [json.loads(line) for line in metrics.read_text().splitlines()]
+            rows = [json.loads(line) for line in metrics.read_text(encoding="utf-8").splitlines()]
             if any(row["event"] == "network.rtt" for row in rows):
                 break
             await asyncio.sleep(0.01)
@@ -169,7 +169,7 @@ def test_call_pong_carries_server_measured_route(monkeypatch, tmp_path: Path) ->
                 "sample_id": "forged",
             }
         )
-        rows = [json.loads(line) for line in metrics.read_text().splitlines()]
+        rows = [json.loads(line) for line in metrics.read_text(encoding="utf-8").splitlines()]
         assert any(
             row["event"] == "network.path_probe"
             and row["path"] == "relay"

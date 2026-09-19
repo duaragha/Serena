@@ -807,7 +807,7 @@ def test_a_declared_path_can_be_written(project_plugin):
     )
 
     assert outcome.ok is True, outcome.error
-    assert (project / "docs" / "notes" / "new.md").read_text() == "written"
+    assert (project / "docs" / "notes" / "new.md").read_text(encoding="utf-8") == "written"
 
 
 def test_a_write_outside_the_declared_paths_is_refused(project_plugin, tmp_path):
@@ -818,7 +818,7 @@ def test_a_write_outside_the_declared_paths_is_refused(project_plugin, tmp_path)
     )
 
     assert outcome.ok is False
-    assert (project / "core" / "work_authority.py").read_text() == "authority"
+    assert (project / "core" / "work_authority.py").read_text(encoding="utf-8") == "authority"
 
 
 @pytest.mark.parametrize(

@@ -22,9 +22,9 @@ def test_generated_types_are_rebuilt_and_original_failure_is_retained(tmp_path, 
         "if not p.exists():\n"
         "    print(\"app.ts: error TS2307: Cannot find module 'storefrontapi.generated' or its corresponding type declarations.\")\n"
         f"    sys.exit({failure_exit})\n"
-    )
+    , encoding="utf-8")
     npm.chmod(0o755)
-    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"codegen": "local generator"}}))
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"codegen": "local generator"}}), encoding="utf-8")
     if os.name == "nt":
         pytest.skip("POSIX executable fixture")
     gate = run_test_gates(tmp_path, [[str(npm), "run", "typecheck"]])
@@ -42,7 +42,7 @@ def test_generated_types_are_rebuilt_and_original_failure_is_retained(tmp_path, 
     "error TS2307: Cannot find module 'some-generated-package'",
 ])
 def test_unrelated_failures_do_not_trigger_codegen(tmp_path, output, failure_exit):
-    (tmp_path / "package.json").write_text('{"scripts":{"codegen":"anything"}}')
+    (tmp_path / "package.json").write_text('{"scripts":{"codegen":"anything"}}', encoding="utf-8")
     assert _generated_types_preparation(tmp_path, ["npm", "run", "typecheck"], {
         "ok": False, "exit_code": failure_exit, "output_tail": output,
     }) is None
@@ -50,7 +50,7 @@ def test_unrelated_failures_do_not_trigger_codegen(tmp_path, output, failure_exi
 
 @pytest.mark.parametrize("preparation_ok", [True, False])
 def test_recovery_is_bounded_and_never_hides_persistent_failure(tmp_path, monkeypatch, preparation_ok):
-    (tmp_path / "package.json").write_text('{"scripts":{"codegen":"generator"}}')
+    (tmp_path / "package.json").write_text('{"scripts":{"codegen":"generator"}}', encoding="utf-8")
     calls = []
 
     def run(root, command, **kwargs):
@@ -76,7 +76,7 @@ def test_missing_codegen_script_does_not_invent_preparation(tmp_path):
 
 @pytest.mark.parametrize("exit_code", [None, 0, -9, 124, 127])
 def test_process_failures_do_not_trigger_codegen(tmp_path, exit_code):
-    (tmp_path / "package.json").write_text('{"scripts":{"codegen":"generator"}}')
+    (tmp_path / "package.json").write_text('{"scripts":{"codegen":"generator"}}', encoding="utf-8")
     assert _generated_types_preparation(tmp_path, ["npm", "run", "typecheck"], {
         "ok": False, "exit_code": exit_code,
         "output_tail": "error TS2307: Cannot find module 'storefrontapi.generated'",

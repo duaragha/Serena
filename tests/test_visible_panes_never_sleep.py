@@ -31,7 +31,7 @@ WEB_SOURCE = Path(__file__).resolve().parents[1] / "ui" / "web.py"
 
 def _state(pid: int) -> str:
     """The kernel's view, not ours: 'T' is a stopped process."""
-    return Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[0]
+    return Path(f"/proc/{pid}/stat").read_text(encoding='utf-8').rsplit(") ", 1)[1].split()[0]
 
 
 @pytest.fixture()

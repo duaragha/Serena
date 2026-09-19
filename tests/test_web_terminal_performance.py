@@ -202,7 +202,7 @@ def test_renderer_terminal_opens_at_tail_without_trapping_manual_scrollback():
 
 def test_renderer_terminal_dependencies_are_local_and_pinned():
     root = Path(web.__file__).resolve().parents[1]
-    package = json.loads((root / "ui" / "renderer" / "package.json").read_text())
+    package = json.loads((root / "ui" / "renderer" / "package.json").read_text(encoding="utf-8"))
     assert "cdn.jsdelivr.net" not in web.HTML
     assert package["dependencies"] == {
         "@xterm/addon-canvas": "0.7.0",

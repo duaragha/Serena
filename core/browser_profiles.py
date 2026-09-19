@@ -129,13 +129,13 @@ def _read_manifest(slug: str) -> Manifest:
     path = _slug_dir(slug) / MANIFEST_NAME
     if not path.exists():
         raise BrowserProfileError(f"unknown browser profile: {slug}")
-    return Manifest.from_dict(json.loads(path.read_text()))
+    return Manifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _write_manifest(manifest: Manifest) -> None:
     path = _slug_dir(manifest.slug) / MANIFEST_NAME
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
+    tmp.write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
     os.chmod(tmp, 0o600)
     tmp.replace(path)
 
@@ -267,7 +267,7 @@ def _quit_profile(slug: str) -> None:
     path = _slug_dir(slug) / AUDIT_NAME
     pid: int | None = None
     try:
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             try:
                 row = json.loads(line)
             except ValueError:

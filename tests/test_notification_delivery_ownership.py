@@ -210,12 +210,12 @@ def test_the_chats_binary_prefers_this_installs_entry_point(tmp_path, monkeypatc
 
     scripts = tmp_path / "runtime" / "Scripts"
     scripts.mkdir(parents=True)
-    (scripts / "python.exe").write_text("")
+    (scripts / "python.exe").write_text("", encoding="utf-8")
     mine = scripts / "chats.exe"
-    mine.write_text("")
+    mine.write_text("", encoding="utf-8")
     other = tmp_path / "elsewhere" / "chats.exe"
     other.parent.mkdir()
-    other.write_text("")
+    other.write_text("", encoding="utf-8")
 
     monkeypatch.setattr(senders, "_BINARY_SUFFIXES", ("", ".exe"))
     monkeypatch.setattr(senders.sys, "executable", str(scripts / "python.exe"))
@@ -229,10 +229,10 @@ def test_path_is_still_used_when_this_install_has_no_cli(tmp_path, monkeypatch):
 
     scripts = tmp_path / "bare"
     scripts.mkdir()
-    (scripts / "python").write_text("")
+    (scripts / "python").write_text("", encoding="utf-8")
     fallback = tmp_path / "onpath" / "chats"
     fallback.parent.mkdir()
-    fallback.write_text("")
+    fallback.write_text("", encoding="utf-8")
 
     monkeypatch.setattr(senders, "_BINARY_SUFFIXES", ("",))
     monkeypatch.setattr(senders.sys, "executable", str(scripts / "python"))
@@ -270,7 +270,7 @@ def test_no_unix_sockets_is_not_a_crash(monkeypatch, tmp_path):
     from core import notification_senders as senders
 
     target = tmp_path / "brain-events.sock"
-    target.write_text("")
+    target.write_text("", encoding="utf-8")
     monkeypatch.setattr(senders, "UNIX_DATAGRAMS_AVAILABLE", False)
 
     assert senders.overlay_datagram({"type": "fleet_notice"}, target) is False
@@ -286,7 +286,7 @@ def test_an_oversized_payload_is_refused_not_raised(monkeypatch, tmp_path):
     from core import notification_senders as senders
 
     target = tmp_path / "brain-events.sock"
-    target.write_text("")
+    target.write_text("", encoding="utf-8")
     monkeypatch.setattr(senders, "UNIX_DATAGRAMS_AVAILABLE", True)
 
     assert senders.overlay_datagram({"text": "x" * 70_000}, target) is False

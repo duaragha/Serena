@@ -39,7 +39,7 @@ def test_proof_never_reads_personal_auth_by_default(tmp_path, monkeypatch, sourc
     monkeypatch.setenv("CODEX_HOME", str(active))
     normal = tmp_path / ".codex"
     normal.mkdir()
-    (normal / "auth.json").write_text("not even parsed")
+    (normal / "auth.json").write_text("not even parsed", encoding="utf-8")
     linked = tmp_path / "linked"
     linked.mkdir()
     (linked / "auth.json").symlink_to(normal / "auth.json")
@@ -49,7 +49,7 @@ def test_proof_never_reads_personal_auth_by_default(tmp_path, monkeypatch, sourc
     read_auth = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / script))["read_test_auth"]
     with pytest.raises(ValueError, match="separate"):
         read_auth({None: None, "default": normal, "active": active, "linked": linked, "hardlinked": hardlinked}[source])
-    assert (normal / "auth.json").read_text() == "not even parsed"
+    assert (normal / "auth.json").read_text(encoding="utf-8") == "not even parsed"
 
 
 @pytest.mark.parametrize("script", ["verify-workspace-live-agent.py", "verify-workspace-account.py"])
@@ -60,10 +60,10 @@ def test_proof_reads_explicit_separate_profile_without_rewriting(tmp_path, monke
     dedicated.mkdir()
     auth = {"auth_mode": "chatgpt", "tokens": {"access_token": "fake-test-token"}}
     raw = json.dumps(auth)
-    (dedicated / "auth.json").write_text(raw)
+    (dedicated / "auth.json").write_text(raw, encoding="utf-8")
     read_auth = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / script))["read_test_auth"]
     assert read_auth(dedicated) == auth
-    assert (dedicated / "auth.json").read_text() == raw
+    assert (dedicated / "auth.json").read_text(encoding="utf-8") == raw
 
 
 @pytest.mark.parametrize("flag", ["--signed-limits", "--signed-apps"])

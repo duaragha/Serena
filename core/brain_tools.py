@@ -585,7 +585,7 @@ def _search_knowledge(query: str) -> str:
         for path in sorted(directory.glob("*.md"))[:8]:
             with contextlib.suppress(OSError, ValueError):
                 note_path(topic['slug'], path.name, KNOWLEDGE_DIR)
-                text = path.read_text(errors='replace')
+                text = path.read_text(errors='replace', encoding="utf-8")
                 body += text[:20_000]
                 routing.append(str(metadata(text).get('trigger') or ''))
                 documents[topic['slug']].append((path.name, text))

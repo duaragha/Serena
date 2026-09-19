@@ -1021,7 +1021,7 @@ class ChatsApp(Gtk.Window):
     @staticmethod
     def _runtime_cgroup_dir(pid: int) -> str | None:
         try:
-            with open(f"/proc/{pid}/cgroup", "r", encoding="utf-8") as fh:
+            with open(f"/proc/{pid}/cgroup", "r", encoding='utf-8') as fh:
                 for line in fh:
                     if line.startswith("0::"):
                         rel = line.split("::", 1)[1].strip()
@@ -1061,7 +1061,7 @@ class ChatsApp(Gtk.Window):
     @staticmethod
     def _runtime_rss_mb(pid: int) -> int:
         try:
-            with open(f"/proc/{pid}/statm", "r", encoding="utf-8") as fh:
+            with open(f"/proc/{pid}/statm", "r", encoding='utf-8') as fh:
                 pages = int(fh.read().split()[1])
             return pages * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
         except (OSError, ValueError, IndexError):

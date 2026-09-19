@@ -149,7 +149,7 @@ def test_empty_description_keeps_backward_compatible_requirements():
 
 def test_build_contracts_scopes_each_unit_independently(tmp_path):
     (tmp_path / "fleet").mkdir()
-    (tmp_path / "fleet" / "parser.py").write_text("x = 1\n")
+    (tmp_path / "fleet" / "parser.py").write_text("x = 1\n", encoding="utf-8")
     workstreams = [
         {"id": "ws-1", "title": "lib", "description": "Own only fleet/parser.py."},
         {
