@@ -208,6 +208,37 @@ def _decrypt(blob: bytes, key: bytes) -> str | None:
         return None
 
 
+def _derive_key(secret: bytes) -> bytes:
+    from Crypto.Protocol.KDF import PBKDF2
+
+    return PBKDF2(secret, b"saltysalt", 16, count=1)
+
+
+def _read_cookie_rows(domain_like: str) -> list[tuple]:
+    """Read the live store through a copy, so Edge's lock is never contended."""
+
+    source = SOURCE_PROFILE / "Default" / "Cookies"
+    if not source.exists():
+        return []
+    scratch = EDGE_PROFILE / ".cookies-read"
+    try:
+        EDGE_PROFILE.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, scratch)
+        connection = sqlite3.connect(f"file:{scratch}?mode=ro", uri=True)
+        try:
+            return connection.execute(
+                "SELECT host_key, name, encrypted_value, path, expires_utc, "
+                "is_secure, is_httponly, samesite FROM cookies "
+                "WHERE host_key LIKE ?", (domain_like,)).fetchall()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error):
+        return []
+    finally:
+        with contextlib.suppress(OSError):
+            scratch.unlink()
+
+
 def edge_cookies(domain_like: str = "%walmart%") -> list[dict]:
     """His real Walmart session, decrypted out of Edge's cookie store.
 
@@ -220,32 +251,13 @@ def edge_cookies(domain_like: str = "%walmart%") -> list[dict]:
     and is really a login problem. Decrypting here removes the guess.
     """
 
-    from Crypto.Protocol.KDF import PBKDF2
-
-    source = SOURCE_PROFILE / "Default" / "Cookies"
-    if not source.exists():
+    rows = _read_cookie_rows(domain_like)
+    if not rows:
         return []
-    scratch = EDGE_PROFILE / ".cookies-read"
-    try:
-        EDGE_PROFILE.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, scratch)
-        connection = sqlite3.connect(f"file:{scratch}?mode=ro", uri=True)
-        try:
-            rows = connection.execute(
-                "SELECT host_key, name, encrypted_value, path, expires_utc, "
-                "is_secure, is_httponly, samesite FROM cookies "
-                "WHERE host_key LIKE ?", (domain_like,)).fetchall()
-        finally:
-            connection.close()
-    except (OSError, sqlite3.Error):
-        return []
-    finally:
-        with contextlib.suppress(OSError):
-            scratch.unlink()
 
     best: list[dict] = []
     for secret in _safe_storage_secrets():
-        key = PBKDF2(secret, b"saltysalt", 16, count=1)
+        key = _derive_key(secret)
         jar: list[dict] = []
         for host, name, blob, path, expires, secure, http_only, same in rows:
             value = _decrypt(blob, key)

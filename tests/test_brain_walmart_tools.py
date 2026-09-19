@@ -216,3 +216,54 @@ class TestTheBrowserDoesNotLiveForever:
 
         W._ctx = None
         asyncio.run(W.close_browser())
+
+
+class TestHisSession:
+    """Signed in, or the account pages answer like a bot wall for no reason."""
+
+    def test_the_right_key_is_found_by_trying_not_by_the_label(self, monkeypatch):
+        """Eight keyring entries share the label "Chromium Safe Storage"."""
+
+        rows = [("www.walmart.ca", "_auth", b"v11XX", "/", 0, 1, 1, 1)]
+        monkeypatch.setattr(W, "_safe_storage_secrets",
+                            lambda: [b"wrong-1", b"wrong-2", b"right"])
+        monkeypatch.setattr(W, "_read_cookie_rows", lambda _like: rows)
+        monkeypatch.setattr(
+            W, "_decrypt",
+            lambda blob, key: "session-token" if key == b"derived-right" else None)
+        monkeypatch.setattr(W, "_derive_key", lambda secret: b"derived-" + secret)
+
+        jar = W.edge_cookies()
+        assert [c["name"] for c in jar] == ["_auth"]
+        assert jar[0]["value"] == "session-token"
+
+    def test_a_cookie_that_will_not_decrypt_is_dropped_not_faked(self, monkeypatch):
+        monkeypatch.setattr(W, "_safe_storage_secrets", lambda: [b"k"])
+        monkeypatch.setattr(W, "_derive_key", lambda secret: secret)
+        monkeypatch.setattr(W, "_read_cookie_rows", lambda _like: [
+            ("www.walmart.ca", "good", b"v11A", "/", 0, 1, 1, 1),
+            ("www.walmart.ca", "bad", b"v11B", "/", 0, 1, 1, 1),
+        ])
+        monkeypatch.setattr(W, "_decrypt",
+                            lambda blob, key: "v" if blob == b"v11A" else None)
+        assert [c["name"] for c in W.edge_cookies()] == ["good"]
+
+    def test_an_expired_cookie_carries_no_expiry_rather_than_a_past_one(
+            self, monkeypatch):
+        """Playwright rejects a jar whose expiry is already behind it."""
+
+        past = int((time.time() - 86_400 + W.CHROMIUM_EPOCH_OFFSET) * 1_000_000)
+        monkeypatch.setattr(W, "_safe_storage_secrets", lambda: [b"k"])
+        monkeypatch.setattr(W, "_derive_key", lambda secret: secret)
+        monkeypatch.setattr(W, "_read_cookie_rows", lambda _like: [
+            ("www.walmart.ca", "stale", b"v11A", "/", past, 1, 1, 1)])
+        monkeypatch.setattr(W, "_decrypt", lambda blob, key: "v")
+        assert "expires" not in W.edge_cookies()[0]
+
+    def test_no_keyring_is_an_empty_jar_not_a_crash(self, monkeypatch):
+        """A locked keyring must degrade to signed-out, never take her down."""
+
+        monkeypatch.setattr(W, "_safe_storage_secrets", lambda: [])
+        monkeypatch.setattr(W, "_read_cookie_rows", lambda _like: [
+            ("www.walmart.ca", "_auth", b"v11A", "/", 0, 1, 1, 1)])
+        assert W.edge_cookies() == []
