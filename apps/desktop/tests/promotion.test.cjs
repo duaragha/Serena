@@ -34,6 +34,21 @@ test('catalog disallows paths outside source, duplicate IDs, cycles and mutable 
   assert.throws(() => policy.nextVersion('v0.3.4; echo bad'));
 });
 
+test('reviewed feature ranges require immutable endpoints and preserve their receipt identity', () => {
+  const ranged = structuredClone(catalog);
+  ranged.features[0].base = 'b'.repeat(40);
+  assert.doesNotThrow(() => policy.catalogFeatures(ranged));
+  const receipt = { schema: 1, version: 'v0.3.5', features: [ranged.features[0]] };
+  assert.deepEqual(policy.installedFeatures(ranged, 'v0.3.5', receipt), [ids[0]]);
+  const changed = structuredClone(ranged);
+  changed.features[0].base = 'c'.repeat(40);
+  assert.throws(() => policy.installedFeatures(changed, 'v0.3.5', receipt), /revision changed/);
+  for (const base of ['master', ranged.features[0].commit, null]) {
+    changed.features[0].base = base;
+    assert.throws(() => policy.catalogFeatures(changed), /catalog/);
+  }
+});
+
 async function fixture(t, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'serena-promotion-test-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));

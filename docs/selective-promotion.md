@@ -73,6 +73,11 @@ before resubmitting. Failed gates leave main unchanged.
 The catalog is intentionally reviewed code. Calling arbitrary commits independent
 features would provide a false safety guarantee.
 
+Features spanning a reviewed fix series may declare an immutable `base` SHA.
+Only the declared paths between that base and the feature commit are applied;
+the base must be an ancestor. Single-commit entries still use the commit's parent.
+Receipts retain both endpoints, and neither may change after a feature ships.
+
 ## Local Verification
 
 ```sh

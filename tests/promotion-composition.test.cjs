@@ -38,6 +38,8 @@ test('every valid feature subset composes onto stable without importing unselect
       const result = prepare({ root: fixture.root, destination, artifacts: dir, source, stable: catalog.initialStable,
         latest: catalog.initialStable, selected, tested: selected, request: 'a'.repeat(32), mode: 'verify' });
       assert.deepEqual(result.features.map(f => f.id), selected);
+      for (const feature of catalog.features.filter(f => selected.includes(f.id)))
+        assert.equal(result.features.find(f => f.id === feature.id).base, feature.base);
       const changed = git(['diff', '--name-only', `${catalog.initialStable}..HEAD`], destination).split('\n');
       const allowed = new Set(['apps/desktop/package.json', 'apps/desktop/package-lock.json', 'config/stable-promotion.json',
         ...catalog.features.filter(f => selected.includes(f.id)).flatMap(f => f.paths)]);
