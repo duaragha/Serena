@@ -185,6 +185,10 @@ def test_brain_options_are_unattended_and_read_only(monkeypatch, tmp_path: Path)
         # his Projects tree, and a folder question answered from imagination
         # is what that cost.
         "list_dir",
+        # Her only way to the public web; the SDK builtins never
+        # materialised with setting_sources empty.
+        "web_search",
+        "web_read",
         "git_latest",
         "github_activity",
         "recall_chats",

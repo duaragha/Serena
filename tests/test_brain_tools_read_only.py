@@ -399,6 +399,8 @@ def test_brain_server_exposes_exact_annotated_read_only_surface() -> None:
         # his Projects tree, and a folder question answered from imagination
         # is what that cost.
         "list_dir",
+        "web_search",
+        "web_read",
         "git_latest",
         "github_activity",
         "recall_chats",
@@ -414,11 +416,17 @@ def test_brain_server_exposes_exact_annotated_read_only_surface() -> None:
     assert all(item.annotations.readOnlyHint is True for item in exposed)
     assert all(item.annotations.destructiveHint is False for item in exposed)
     assert all(item.annotations.idempotentHint is True for item in exposed)
-    assert next(
-        item for item in exposed if item.name == "github_activity"
-    ).annotations.openWorldHint is True
+    # openWorldHint marks the tools that leave this machine for somewhere
+    # nobody here controls. github_activity always did; web_search and web_read
+    # are the public internet, which is as open as the world gets.
+    open_world = {"github_activity", "web_search", "web_read"}
+    assert all(
+        item.annotations.openWorldHint is True
+        for item in exposed
+        if item.name in open_world
+    )
     assert all(
         item.annotations.openWorldHint is False
         for item in exposed
-        if item.name != "github_activity"
+        if item.name not in open_world
     )

@@ -111,6 +111,12 @@ _instance_lock_handle: BinaryIO | None = None
 # recall a chat about a file and quote her own memory of it, but never open the
 # file and read what it says now, which is the difference between remembering
 # and knowing.
+# WebSearch and WebFetch are deliberately absent. Listing them here and in
+# allowed_tools was not enough to make them exist -- she reported them present
+# when asked in the abstract and absent when told to call one, which is the
+# confabulation pattern, and disabling every MCP server did not bring them back
+# either. The SDK does not surface them with setting_sources empty. Her web
+# access is mcp__serena-ro__web_search and web_read instead, which are ours.
 _BRAIN_BUILTIN_TOOLS: list[str] = ["Read", "Grep", "Glob"]
 
 
@@ -316,6 +322,13 @@ def _persona_context() -> str:
         "promise he then waits on and nothing happens. Say what you can see "
         "and what you cannot change, and leave the doing to him or to the "
         "terminal. Noticing something is wrong is worth saying on its own. "
+        "For anything about the world rather than about him -- a price, a "
+        "release, who won, what a company announced, how something works -- "
+        "use mcp__serena-ro__web_search, and web_read to open a page it "
+        "turns up. Saying you have no live access is simply wrong, and "
+        "reaching for context7 or a capability broker instead is the long way "
+        "round: those carry library documentation, not the world. Search "
+        "first, then answer, and say where it came from. "
         "Only active tasks, loops and ledgers are in your context; the rest of "
         "what you know about him is not. Before you tell him you do not know "
         "something about him, his preferences, his projects or anything you have "

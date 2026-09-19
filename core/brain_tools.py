@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html as html_mod
 import math
 import os
 import re
@@ -714,8 +715,94 @@ async def list_dir(args):
     return ok(f"{target} ({len(entries)} entries)\n" + "\n".join(lines) + more)
 
 
+
+@tool(
+    "web_search",
+    "Search the public web and return the top results with titles, snippets "
+    "and URLs. Use this for anything about the world rather than about him: a "
+    "price, a release, who won, what a company announced. Read-only.",
+    {"query": str},
+    annotations=_REMOTE_READ_ONLY,
+)
+async def web_search(args):
+    import urllib.parse
+    import urllib.request
+
+    query = str((args or {}).get("query") or "").strip()
+    if not query:
+        return failed("web_search needs a query")
+    url = ("https://html.duckduckgo.com/html/?q="
+           + urllib.parse.quote_plus(query))
+    request = urllib.request.Request(url, headers={
+        "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+        "Accept-Language": "en-CA,en;q=0.9",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            html = response.read().decode("utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001 - every failure reads the same to her
+        return failed(f"web search failed: {type(exc).__name__}: {exc}")
+
+    rows = re.findall(
+        r'result__a[^>]*href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>'
+        r'.*?result__snippet[^>]*>(?P<snippet>.*?)</a>',
+        html, re.S)
+    def clean(value: str) -> str:
+        return html_mod.unescape(re.sub(r"<[^>]+>", "", value)).strip()
+
+    results = []
+    for href, title, snippet in rows[:8]:
+        target = href
+        if "uddg=" in href:
+            parsed = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+            target = (parsed.get("uddg") or [href])[0]
+        results.append({"title": clean(title)[:200],
+                        "url": target[:400],
+                        "snippet": clean(snippet)[:400]})
+    if not results:
+        return failed("web search returned no parsable results; the page shape "
+                      "may have changed, so treat this as not having looked")
+    lines = [f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet']}"
+             for i, r in enumerate(results, 1)]
+    return ok(f"results for {query!r}:\n\n" + "\n\n".join(lines))
+
+
+@tool(
+    "web_read",
+    "Fetch one URL and return its readable text. Use after web_search when a "
+    "snippet is not enough. Read-only.",
+    {"url": str},
+    annotations=_REMOTE_READ_ONLY,
+)
+async def web_read(args):
+    import urllib.request
+
+    url = str((args or {}).get("url") or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return failed("web_read needs an http or https URL")
+    request = urllib.request.Request(url, headers={
+        "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            raw = response.read(2_000_000).decode("utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        return failed(f"could not read {url}: {type(exc).__name__}: {exc}")
+    body = re.sub(r"(?is)<(script|style|nav|footer|header)[^>]*>.*?</\1>", " ", raw)
+    text = html_mod.unescape(re.sub(r"<[^>]+>", " ", body))
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+    if not text:
+        return failed(f"{url} returned nothing readable")
+    return ok(text[:12000])
+
+
 BRAIN_TOOLS = (
     list_dir,
+    web_search,
+    web_read,
     git_latest,
     github_activity,
     recall_chats,
