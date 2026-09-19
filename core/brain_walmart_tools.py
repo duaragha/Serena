@@ -152,6 +152,27 @@ def refresh_profile() -> str:
     return ""
 
 
+# Cookies that are not his session but his bot-detection standing: PerimeterX
+# (px), Akamai Bot Manager (ak/bm/_abck) and F5 (TS*). These are deliberately
+# NOT carried over, for two reasons that point the same way.
+#
+# His reputation is not ours to spend. Those ids are how walmart.ca recognises
+# his ordinary browsing as human, and a day of automated traffic under them is
+# charged to the identity he shops with -- he starts getting press-and-hold
+# checks in his own browser for something the automation did.
+#
+# And borrowing a known-good human token to walk an automated session past a
+# bot check is defeating the check rather than passing it, which is not a thing
+# to do quietly in a helper function. Without them the session is judged on its
+# own behaviour, which is the honest arrangement even though it means being
+# walled sooner.
+REPUTATION_PREFIXES = ("_px", "__px", "pxcts", "ak_bm", "bm_s", "_abck", "TS")
+
+
+def _is_reputation_cookie(name: str) -> bool:
+    return name.startswith(REPUTATION_PREFIXES)
+
+
 # Chromium epoch is 1601-01-01; unix is 1970-01-01.
 CHROMIUM_EPOCH_OFFSET = 11_644_473_600
 SAMESITE = {0: "None", 1: "Lax", 2: "Strict"}
@@ -260,6 +281,8 @@ def edge_cookies(domain_like: str = "%walmart%") -> list[dict]:
         key = _derive_key(secret)
         jar: list[dict] = []
         for host, name, blob, path, expires, secure, http_only, same in rows:
+            if _is_reputation_cookie(name):
+                continue
             value = _decrypt(blob, key)
             if value is None:
                 continue
@@ -274,8 +297,6 @@ def edge_cookies(domain_like: str = "%walmart%") -> list[dict]:
             jar.append(cookie)
         if len(jar) > len(best):
             best = jar
-        if len(best) == len(rows):
-            break
     return best
 
 

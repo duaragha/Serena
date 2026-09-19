@@ -267,3 +267,30 @@ class TestHisSession:
         monkeypatch.setattr(W, "_read_cookie_rows", lambda _like: [
             ("www.walmart.ca", "_auth", b"v11A", "/", 0, 1, 1, 1)])
         assert W.edge_cookies() == []
+
+
+class TestHisReputationIsNotOursToSpend:
+    """Bot-detection ids stay in his browser, where they were earned."""
+
+    def test_his_session_is_carried_and_his_standing_is_not(self, monkeypatch):
+        rows = [("www.walmart.ca", name, b"v11A", "/", 0, 1, 1, 1) for name in
+                ("_auth", "CID", "customer", "_pxvid", "__pxvid", "_pxhd",
+                 "ak_bmsc", "bm_sv", "_abck", "TS010110a1", "pxcts")]
+        monkeypatch.setattr(W, "_safe_storage_secrets", lambda: [b"k"])
+        monkeypatch.setattr(W, "_derive_key", lambda secret: secret)
+        monkeypatch.setattr(W, "_read_cookie_rows", lambda _like: rows)
+        monkeypatch.setattr(W, "_decrypt", lambda blob, key: "v")
+
+        carried = {c["name"] for c in W.edge_cookies()}
+        assert carried == {"_auth", "CID", "customer"}
+
+    def test_every_detector_family_seen_on_walmart_is_covered(self):
+        """PerimeterX, Akamai Bot Manager and F5, all present in his jar."""
+
+        for name in ("_pxvid", "__pxvid", "_pxhd", "pxcts", "ak_bmsc",
+                     "bm_sv", "bm_sz", "_abck", "TS0180da25"):
+            assert W._is_reputation_cookie(name), name
+
+    def test_an_ordinary_cookie_is_not_swept_up_with_them(self):
+        for name in ("_auth", "CID", "customer", "_ga", "assortmentStoreId"):
+            assert not W._is_reputation_cookie(name), name
