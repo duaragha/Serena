@@ -350,7 +350,11 @@ def test_resident_options_mount_only_the_small_capability_surface(monkeypatch, t
     )
 
     assert set(options.mcp_servers) == {"serena-ro", "serena-capabilities"}
-    assert options.allowed_tools == [
+    # The read-only file tools lead every allow list; these cases are about
+    # the MCP surface mounted beside them.
+    mounted = [name for name in options.allowed_tools
+               if name not in brain_daemon._BRAIN_BUILTIN_TOOLS]
+    assert mounted == [
         "mcp__serena-capabilities__find_pc_capability",
         "mcp__serena-capabilities__use_pc_capability",
     ]

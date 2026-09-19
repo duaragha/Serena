@@ -281,8 +281,12 @@ def test_document_tools_are_explicitly_allowed_by_the_brain(
     )
 
     assert set(options.mcp_servers) == {"serena-ro", "serena-documents"}
-    assert options.allowed_tools == brain_document_tools.DOCUMENT_TOOL_NAMES
-    assert set(name.rsplit("__", 1)[-1] for name in options.allowed_tools) == {
+    # The read-only file tools lead every allow list; these cases are about
+    # the MCP surface mounted beside them.
+    mounted = [name for name in options.allowed_tools
+               if name not in brain_daemon._BRAIN_BUILTIN_TOOLS]
+    assert mounted == brain_document_tools.DOCUMENT_TOOL_NAMES
+    assert {name.rsplit("__", 1)[-1] for name in mounted} == {
         "create_document",
         "send_document_to_imessage",
         "send_document_to_beeper",

@@ -318,7 +318,11 @@ def test_resident_brain_mounts_only_the_bounded_fleet_surface(monkeypatch, tmp_p
     assert "provider_mode" not in start_tool.inputSchema["required"]
     assert "worker_count" not in start_tool.inputSchema["required"]
     assert set(options.mcp_servers) == {"serena-ro", "serena-fleet"}
-    assert options.allowed_tools == brain_fleet_tools.FLEET_TOOL_NAMES
+    # The read-only file tools lead every allow list; these cases are about
+    # the MCP surface mounted beside them.
+    mounted = [name for name in options.allowed_tools
+               if name not in brain_daemon._BRAIN_BUILTIN_TOOLS]
+    assert mounted == brain_fleet_tools.FLEET_TOOL_NAMES
 
 
 def test_voice_fleet_status_must_override_recalled_conversation(monkeypatch) -> None:

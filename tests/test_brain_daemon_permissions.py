@@ -157,7 +157,17 @@ def test_brain_options_are_unattended_and_read_only(monkeypatch, tmp_path: Path)
         assert prompt_path.stat().st_mode & 0o777 == 0o600
     assert options.strict_mcp_config is True
     assert options.mcp_servers == {"serena-ro": server}
-    assert options.tools == []
+    # She can look at his files, and only look. The point of this assertion is
+    # not the list but the boundary: anything that writes, edits or executes
+    # must never appear here, because this surface runs unattended and there is
+    # nobody to answer a permission prompt.
+    assert options.tools == ["Read", "Grep", "Glob"]
+    forbidden = {"Write", "Edit", "NotebookEdit", "Bash", "BashOutput",
+                 "KillShell", "Task"}
+    assert not forbidden.intersection(options.tools)
+    # And only over his own tree, never the whole filesystem.
+    assert options.add_dirs
+    assert all("Projects" in str(path) for path in options.add_dirs)
     assert exposed_names == [
         "git_latest",
         "github_activity",
@@ -213,7 +223,11 @@ def test_laptop_tools_are_separate_and_capability_brokered(
 
     assert set(options.mcp_servers) == {"serena-ro", "serena-laptop"}
     assert options.permission_mode == "dontAsk"
-    assert options.allowed_tools == [
+    # The read-only file tools lead every allow list; these cases are about
+    # the MCP surface mounted beside them.
+    mounted = [name for name in options.allowed_tools
+               if name not in brain_daemon._BRAIN_BUILTIN_TOOLS]
+    assert mounted == [
         *brain_tools.BRAIN_TOOL_NAMES,
         *brain_laptop_tools.LAPTOP_TOOL_NAMES,
     ]

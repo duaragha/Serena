@@ -105,7 +105,27 @@ _last_route = {
 }
 _instance_lock_handle: BinaryIO | None = None
 
-_BRAIN_BUILTIN_TOOLS: list[str] = []
+# Read-only file access over his own tree. The rule this daemon is built on is
+# that the resident surface cannot change anything without review -- these three
+# cannot: no Write, no Edit, no Bash. Leaving the list empty meant she could
+# recall a chat about a file and quote her own memory of it, but never open the
+# file and read what it says now, which is the difference between remembering
+# and knowing.
+_BRAIN_BUILTIN_TOOLS: list[str] = ["Read", "Grep", "Glob"]
+
+
+def _readable_roots() -> list[str]:
+    """His Projects tree, wherever it lives on this machine.
+
+    Passed as extra roots rather than moving cwd: the working directory stays
+    the scratch dir so nothing she does can litter a repository.
+    """
+
+    roots: list[Path] = []
+    for candidate in (Path.home() / "Documents" / "Projects", Path.home() / "Projects"):
+        if candidate.is_dir():
+            roots.append(candidate)
+    return [str(path) for path in roots]
 INTERRUPT_TIMEOUT_SECONDS = 1.0
 TURN_CANCEL_TIMEOUT_SECONDS = 5.0
 SDK_DISCONNECT_TIMEOUT_SECONDS = 30.0
@@ -466,6 +486,17 @@ def _supportive_context_block(text: str) -> str:
         return ""
 
 
+def _ambient_context_block() -> str:
+    """Trailing activity summary with its own budget. Never touches memory."""
+
+    try:
+        from core.ambient_context import ambient_context_block
+
+        return ambient_context_block()
+    except Exception:
+        return ""
+
+
 def _memory_context_block(
     text: str,
     protocol: str,
@@ -528,6 +559,9 @@ def _compose_message(payload: dict) -> str:
     supportive = _supportive_context_block(str(payload.get("text") or ""))
     if supportive:
         parts.append(f"<supportive-context>\n{supportive}\n</supportive-context>")
+    ambient = _ambient_context_block()
+    if ambient:
+        parts.append(f"<ambient-context>\n{ambient}\n</ambient-context>")
     if protocol == "frontdoor":
         try:
             from core.frontdoor import _ROLE
@@ -2056,6 +2090,11 @@ def _build_agent_options(
 ):
     """Build the narrow, unattended options used by every daemon session."""
     allowed_tools = [
+        # `tools` enables these; `allowed_tools` is what actually permits them.
+        # Under permission_mode="dontAsk" anything missing here is denied
+        # silently, so listing them in one place only reads as working and
+        # quietly is not: she answers from memory instead of opening the file.
+        *_BRAIN_BUILTIN_TOOLS,
         *brain_tool_names,
         *(laptop_tool_names or []),
         *(work_tool_names or []),
@@ -2100,6 +2139,7 @@ def _build_agent_options(
         setting_sources=[],
         skills=[],
         cwd=str(BRAIN_CWD),
+        add_dirs=_readable_roots(),
         env={
             "SERENA_FRONTDOOR": "1",
             BRAIN_SDK_ROLE_ENV: BRAIN_SDK_ROLE,
