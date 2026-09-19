@@ -94,9 +94,9 @@ def test_duplicate_task_ids_are_reported_with_both_filenames(tmp_path, monkeypat
 
     tasks = tmp_path / "task"
     tasks.mkdir(parents=True)
-    (tasks / "1069-workout.md").write_text("---\nid: 1069\ntype: task\n---\n\nwork\n")
-    (tasks / "1069-github.md").write_text("---\nid: 1069\ntype: task\n---\n\nother\n")
-    (tasks / "1070-fine.md").write_text("---\nid: 1070\ntype: task\n---\n\nfine\n")
+    (tasks / "1069-workout.md").write_text("---\nid: 1069\ntype: task\n---\n\nwork\n", encoding="utf-8")
+    (tasks / "1069-github.md").write_text("---\nid: 1069\ntype: task\n---\n\nother\n", encoding="utf-8")
+    (tasks / "1070-fine.md").write_text("---\nid: 1070\ntype: task\n---\n\nfine\n", encoding="utf-8")
     monkeypatch.setattr(store, "MEMORY_DIR", tmp_path)
 
     finding = _finding(doctor.check_task_store(), "tasks.duplicate_ids")
@@ -111,8 +111,8 @@ def test_unique_task_ids_pass(tmp_path, monkeypatch):
 
     tasks = tmp_path / "task"
     tasks.mkdir(parents=True)
-    (tasks / "1.md").write_text("---\nid: 1\ntype: task\n---\n\na\n")
-    (tasks / "2.md").write_text("---\nid: 2\ntype: task\n---\n\nb\n")
+    (tasks / "1.md").write_text("---\nid: 1\ntype: task\n---\n\na\n", encoding="utf-8")
+    (tasks / "2.md").write_text("---\nid: 2\ntype: task\n---\n\nb\n", encoding="utf-8")
     monkeypatch.setattr(store, "MEMORY_DIR", tmp_path)
 
     assert [f.ok for f in doctor.check_task_store()] == [True]
@@ -140,7 +140,7 @@ def test_a_config_the_policy_refuses_is_a_failure(monkeypatch):
 def test_an_import_of_an_uncommitted_module_is_caught(tmp_path, monkeypatch):
     package = tmp_path / "fleet"
     package.mkdir()
-    (package / "isolation.py").write_text("from fleet.artifacts import spill_testlog\n")
+    (package / "isolation.py").write_text("from fleet.artifacts import spill_testlog\n", encoding="utf-8")
     monkeypatch.setattr(doctor, "_repo_root", lambda: tmp_path)
 
     finding = _finding(doctor.check_first_party_imports(roots=("fleet",)), "imports")
@@ -153,8 +153,8 @@ def test_an_import_of_an_uncommitted_module_is_caught(tmp_path, monkeypatch):
 def test_imports_that_all_resolve_pass(tmp_path, monkeypatch):
     package = tmp_path / "fleet"
     package.mkdir()
-    (package / "isolation.py").write_text("from fleet.helper import thing\n")
-    (package / "helper.py").write_text("thing = 1\n")
+    (package / "isolation.py").write_text("from fleet.helper import thing\n", encoding="utf-8")
+    (package / "helper.py").write_text("thing = 1\n", encoding="utf-8")
     monkeypatch.setattr(doctor, "_repo_root", lambda: tmp_path)
 
     assert [f.ok for f in doctor.check_first_party_imports(roots=("fleet",))] == [True]
@@ -252,7 +252,7 @@ def _repo_with_upstream(tmp_path, commits_behind):
     git(origin, "init", "-q", "-b", "master")
     git(origin, "config", "user.email", "t@t")
     git(origin, "config", "user.name", "t")
-    (origin / "a.txt").write_text("one\n")
+    (origin / "a.txt").write_text("one\n", encoding="utf-8")
     git(origin, "add", "-A")
     git(origin, "commit", "-qm", "first")
 
@@ -260,7 +260,7 @@ def _repo_with_upstream(tmp_path, commits_behind):
     subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True)
 
     for index in range(commits_behind):
-        (origin / "a.txt").write_text(f"change {index}\n")
+        (origin / "a.txt").write_text(f"change {index}\n", encoding='utf-8')
         git(origin, "add", "-A")
         git(origin, "commit", "-qm", f"shipped {index}")
     git(clone, "fetch", "-q", "origin")
@@ -312,7 +312,7 @@ def test_a_side_branch_that_tracks_itself_is_still_measured_against_master(
                        capture_output=True, text=True)
 
     git("checkout", "-q", "-b", "side")
-    (clone / "b.txt").write_text("only here\n")
+    (clone / "b.txt").write_text("only here\n", encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "unlanded work")
     # Its own upstream is itself, so the old check had nothing to report.

@@ -305,7 +305,7 @@ def test_sparse_frames_and_unconfirmed_windows_cannot_fake_background_evidence(
 def test_report_write_is_atomic_and_private(tmp_path: Path) -> None:
     output = tmp_path / "report.json"
     write_report_atomic({"ok": True}, output)
-    assert json.loads(output.read_text()) == {"ok": True}
+    assert json.loads(output.read_text(encoding="utf-8")) == {"ok": True}
     assert output.stat().st_mode & 0o777 == 0o600
 
 

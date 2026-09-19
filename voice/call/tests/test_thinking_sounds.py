@@ -504,7 +504,7 @@ def test_the_preamble_rides_the_reply_worker_so_audio_stays_in_order() -> None:
     is queued into the reply's own worker instead of playing beside it."""
     from pathlib import Path as _P
 
-    source = _P("voice/call/orchestrator.py").read_text()
+    source = _P("voice/call/orchestrator.py").read_text(encoding="utf-8")
     body = source.split("async def _brain_to_tts", 1)[1][:1200]
     assert "if preamble is not None:" in body
     assert "sentences.put_nowait(" in body

@@ -1010,7 +1010,7 @@ def _cgroup_dir(pid: int) -> str | None:
     """The unified-hierarchy cgroup holding this process, if there is one."""
 
     try:
-        with open(f"/proc/{pid}/cgroup", encoding="utf-8") as handle:
+        with open(f"/proc/{pid}/cgroup", encoding='utf-8') as handle:
             for line in handle:
                 hierarchy, _, path = line.strip().partition(":")
                 if hierarchy == "0":
@@ -1024,7 +1024,7 @@ def _cgroup_dir(pid: int) -> str | None:
 
 def _rss_mb(pid: int) -> float:
     try:
-        with open(f"/proc/{pid}/statm", encoding="utf-8") as handle:
+        with open(f"/proc/{pid}/statm", encoding='utf-8') as handle:
             pages = int(handle.read().split()[1])
         return pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
     except (OSError, ValueError, IndexError):
@@ -1515,7 +1515,7 @@ def _proc_field(pid: int, index: int) -> int | None:
     relative to the LAST ')' rather than by splitting the whole line.
     """
     try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
+        with open(f"/proc/{pid}/stat", encoding='utf-8', errors="replace") as handle:
             raw = handle.read()
     except OSError:
         return None
@@ -1535,7 +1535,7 @@ def _proc_field(pid: int, index: int) -> int | None:
 
 def _is_stopped(pid: int) -> bool:
     try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
+        with open(f"/proc/{pid}/stat", encoding='utf-8', errors="replace") as handle:
             raw = handle.read()
     except OSError:
         return False

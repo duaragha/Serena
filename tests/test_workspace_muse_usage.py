@@ -27,7 +27,7 @@ def isolated_reader(monkeypatch, tmp_path):
     auth.parent.mkdir()
     auth.write_text(json.dumps({"providers": {"meta": {
         "mechanism": "oauth", "access_token": "test-secret",
-    }}}))
+    }}}), encoding="utf-8")
     monkeypatch.setenv("MUSE_AUTH_PATH", str(auth))
     monkeypatch.setattr(reader, "_CACHE", {"at": 0.0, "data": None})
     monkeypatch.setattr(reader, "_REFRESHING", False)

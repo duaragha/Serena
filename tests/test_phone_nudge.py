@@ -116,4 +116,4 @@ def test_a_corrupt_state_file_does_not_silence_her(line, monkeypatch, tmp_path):
     (tmp_path / "phone-nudge.json").write_text("{not json", encoding="utf-8")
     _tasks(monkeypatch, [_task(15, "blocked")])
     assert scheduler_actions.nudge_phone_line({}).output["task_id"] == 15
-    assert json.loads((tmp_path / "phone-nudge.json").read_text())["task_id"] == 15
+    assert json.loads((tmp_path / "phone-nudge.json").read_text(encoding="utf-8"))["task_id"] == 15

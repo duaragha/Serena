@@ -19,7 +19,7 @@ def _parse_index() -> dict[str, str]:
         return {}
 
     descriptions: dict[str, str] = {}
-    text = INDEX_PATH.read_text()
+    text = INDEX_PATH.read_text(encoding="utf-8")
 
     for match in re.finditer(r"- \[([^\]]+)\]\(\./([^/]+)/?\)\s*-\s*(.+)", text):
         _title, slug, desc = match.groups()
@@ -50,7 +50,7 @@ def list_topics(*, surface: str = '', caller: str = '') -> list[dict]:
         if readme.exists() and not readme.is_symlink():
             from core.knowledge_store import metadata, read_note
             text = (read_note(entry.name, readme.name, surface=surface, caller=caller,
-                              root=KNOWLEDGE_DIR) if surface else readme.read_text())
+                              root=KNOWLEDGE_DIR) if surface else readme.read_text(encoding="utf-8"))
             first_line = next((line for line in text.splitlines() if line.startswith('# ')), '')
             title = str(metadata(text).get('title') or title)
             if first_line.startswith("# "):
@@ -141,7 +141,7 @@ def delete_topic(slug: str) -> bool:
 
     # Remove from INDEX.md
     if INDEX_PATH.exists():
-        lines = INDEX_PATH.read_text().splitlines()
+        lines = INDEX_PATH.read_text(encoding="utf-8").splitlines()
         pattern = re.compile(rf"- \[[^\]]+\]\(\./\s*{re.escape(slug)}\s*/?\)")
         filtered = [line for line in lines if not pattern.search(line)]
         # Clean up double blank lines left behind
@@ -150,7 +150,7 @@ def delete_topic(slug: str) -> bool:
             if line.strip() == "" and cleaned and cleaned[-1].strip() == "":
                 continue
             cleaned.append(line)
-        INDEX_PATH.write_text("\n".join(cleaned) + "\n")
+        INDEX_PATH.write_text("\n".join(cleaned) + "\n", encoding="utf-8")
 
     return True
 

@@ -92,13 +92,13 @@ def main():
             deadline = time.monotonic() + 20
             while True:
                 if process.poll() is not None:
-                    raise AssertionError(log.read_text())
+                    raise AssertionError(log.read_text(encoding="utf-8"))
                 try:
                     request("/api/health")
                     break
                 except (URLError, TimeoutError):
                     if time.monotonic() > deadline:
-                        raise AssertionError(log.read_text()) from None
+                        raise AssertionError(log.read_text(encoding="utf-8")) from None
                     time.sleep(0.1)
             page = request(f"/workspace/{sid}")
             parser = BootParser()
@@ -112,7 +112,7 @@ def main():
             attached = json.loads(request(f"/api/workspace/{sid}/attach", {}))
             assert attached["ok"], attached
             lease_path = Path(env["SERENA_RUNTIME_LEASE_DIR"]) / (hashlib.sha256(sid.encode()).hexdigest() + ".json")
-            lease = json.loads(lease_path.read_text())
+            lease = json.loads(lease_path.read_text(encoding="utf-8"))
             native = psutil.Process(lease["child"]["pid"])
             assert native.create_time() == lease["child"]["born"]
             children = [native]
@@ -156,7 +156,7 @@ def main():
                         expect(page.locator('#workspace-connect')).to_be_hidden()
                         skill = config / "skills/browser-proof/SKILL.md"
                         skill.parent.mkdir(parents=True, exist_ok=True)
-                        skill.write_text("---\nname: browser-proof\ndescription: Isolated browser reload proof\n---\nReturn proof.\n")
+                        skill.write_text("---\nname: browser-proof\ndescription: Isolated browser reload proof\n---\nReturn proof.\n", encoding="utf-8")
                         page.get_by_role("button", name="Commands and skills", exact=True).click()
                         dialog = page.get_by_role("dialog", name="Commands and skills", exact=True)
                         dialog.get_by_role("button", name="Reload plugins from disk", exact=True).click()
@@ -196,7 +196,7 @@ def main():
                                     and item["event"]["params"]["item"].get("text") == result_text]
                         assert len(matching) == 1, "Frozen native command result duplicated"
                         mention_file = root / "workspace-claude-mention-proof.py"
-                        mention_file.write_text("# Isolated names-only file picker proof\n")
+                        mention_file.write_text("# Isolated names-only file picker proof\n", encoding="utf-8")
                         try:
                             page.get_by_role("button", name="Mention project file", exact=True).click()
                             picker = page.get_by_role("dialog", name="Mention project file")
@@ -267,7 +267,7 @@ def main():
                 finally:
                     browser.close()
         except HTTPError as error:
-            raise AssertionError(f"HTTP {error.code}: {error.read().decode()}\n{log.read_text()}") from error
+            raise AssertionError(f"HTTP {error.code}: {error.read().decode()}\n{log.read_text(encoding='utf-8')}") from error
         finally:
             if process.poll() is None:
                 if windows_job is not None:

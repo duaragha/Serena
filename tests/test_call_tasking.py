@@ -777,7 +777,7 @@ def test_gate_crash_kills_the_contained_claude_process(
     final = evidence[-1]
     gate_pid = adopted[0]
     exec_pid = int(final["exec_pid"])
-    assert exec_pid == int(started.read_text())
+    assert exec_pid == int(started.read_text(encoding="utf-8"))
     os.kill(gate_pid, signal.SIGKILL)
     thread.join(timeout=5)
     deadline = time.monotonic() + 5
@@ -1178,7 +1178,7 @@ def test_claude_binary_resolves_without_a_login_path(monkeypatch, tmp_path):
     home = tmp_path
     installed = home / ".local" / "bin" / "claude"
     installed.parent.mkdir(parents=True)
-    installed.write_text("#!/bin/sh\n")
+    installed.write_text("#!/bin/sh\n", encoding="utf-8")
     installed.chmod(0o755)
 
     monkeypatch.setattr(vws, "HOME", home)

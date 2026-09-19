@@ -1991,7 +1991,7 @@ def test_pending_delete_retains_recovery_and_rejects_owned_target(tmp_path, monk
     if case != "missing":
         transcript = tmp_path / "claude/projects/project" / f"{sid}.jsonl"
         transcript.parent.mkdir(parents=True)
-        transcript.write_text(json.dumps({"type": "user", "cwd": str(tmp_path), "message": {"content": "Native history"}}) + "\n")
+        transcript.write_text(json.dumps({"type": "user", "cwd": str(tmp_path), "message": {"content": "Native history"}}) + "\n", encoding="utf-8")
         if case == "ambiguous":
             other = transcript.parent.parent / "other" / transcript.name
             other.parent.mkdir()
@@ -2014,7 +2014,7 @@ def test_pending_delete_retains_recovery_and_rejects_owned_target(tmp_path, monk
     assert not metadata.get_meta(sid)
     assert journal.read(sid)["events"][0]["event"]["params"]["text"] == "retained"
     manifests = list(tmp_path.rglob("recovery.json"))
-    assert len(manifests) == 1 and json.loads(manifests[0].read_text())["metadata"]["custom_title"] == "Keep title"
+    assert len(manifests) == 1 and json.loads(manifests[0].read_text(encoding="utf-8"))["metadata"]["custom_title"] == "Keep title"
     assert host.delete_pending_session(sid, source="proof") is None
     assert host._loop is None and not host._sessions
 

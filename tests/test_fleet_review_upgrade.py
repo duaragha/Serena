@@ -23,9 +23,9 @@ def test_order_histogram_policy():
 
 def test_security_secret_and_clean(tmp_path):
     subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
-    (tmp_path / 'safe.txt').write_text('normal data')
+    (tmp_path / 'safe.txt').write_text('normal data', encoding="utf-8")
     assert security_pass(tmp_path, ['ws-1'])['findings'] == []
-    (tmp_path / 'unsafe.txt').write_text('key=AKIA' + 'A' * 16)
+    (tmp_path / 'unsafe.txt').write_text('key=AKIA' + 'A' * 16, encoding="utf-8")
     result = security_pass(tmp_path, ['ws-1'])
     assert result['findings'][0]['category'] == 'security'
     assert result['findings'][0]['severity'] == 'blocker'

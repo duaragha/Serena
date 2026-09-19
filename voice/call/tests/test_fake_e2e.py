@@ -505,7 +505,7 @@ def test_slow_brain_gets_labelled_backchannel_before_content(
             ("acknowledgement", 0),
             ("content", 2),
         ]
-        metrics = [json.loads(line) for line in path.read_text().splitlines()]
+        metrics = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         first = next(row for row in metrics if row["event"] == "audio.first_send")
         content = next(
             row for row in metrics if row["event"] == "audio.first_content_send"
@@ -644,7 +644,7 @@ def test_cancel_drops_mic_batches_already_queued_for_vad(tmp_path: Path) -> None
         assert stt.inputs == []
         metrics = [
             json.loads(line)
-            for line in (tmp_path / "cancelled-input.jsonl").read_text().splitlines()
+            for line in (tmp_path / "cancelled-input.jsonl").read_text(encoding="utf-8").splitlines()
         ]
         assert any(row["event"] == "receive.cancelled_drop" for row in metrics)
 
@@ -745,7 +745,7 @@ def test_full_audio_queue_fails_generation_before_stt_can_use_corrupt_audio(
         await session._turn_task
         assert stt.inputs == [fresh_pcm]
 
-        metrics = [json.loads(line) for line in path.read_text().splitlines()]
+        metrics = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         assert any(
             row["event"] == "queue.depth" and row.get("full") is True
             for row in metrics
@@ -834,7 +834,7 @@ def test_playback_ack_requires_current_server_pcm(tmp_path: Path) -> None:
         await session._message_queue.join()
         await session.close()
 
-        metrics = [json.loads(line) for line in path.read_text().splitlines()]
+        metrics = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         assert any(row["event"] == "playback.ack_rejected" for row in metrics)
         assert not any(
             row["event"] == "latency.eou_first_playable_phone"
@@ -893,7 +893,7 @@ def test_first_playback_ack_before_later_pcm_does_not_reset_first_audio(
             )
         )
 
-        metrics = [json.loads(line) for line in path.read_text().splitlines()]
+        metrics = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         assert sum(row["event"] == "audio.first_send" for row in metrics) == 1
         assert session._first_output_sequence[1] == 0
         assert 1 in session.telemetry._speech_end_ns
@@ -968,7 +968,7 @@ def test_acknowledgement_and_content_playback_are_measured_separately(
             )
         )
 
-        metrics = [json.loads(line) for line in path.read_text().splitlines()]
+        metrics = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         first_phone = next(
             row
             for row in metrics
@@ -1032,7 +1032,7 @@ def test_call_hello_is_one_shot_across_duplicate_acks_and_reconnect(
         await acknowledge(reconnect, 2)
         await reconnect.close(reusable_endpoint=True)
 
-        metrics = [json.loads(line) for line in path.read_text().splitlines()]
+        metrics = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         hellos = [row for row in metrics if row["event"] == "call.hello"]
         assert len(hellos) == 1
         assert hellos[0]["app_uptime_ms"] == 3_900

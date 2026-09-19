@@ -18,7 +18,7 @@ from fleet.workers import WorkerResult
 
 def test_scheduler_refreshes_two_waiters_and_preserves_their_patches(fleet_env, monkeypatch):
     root = _repo(fleet_env)
-    (root / "private-note.txt").write_text("user-owned sentinel\n")
+    (root / "private-note.txt").write_text("user-owned sentinel\n", encoding="utf-8")
     monkeypatch.setenv("SERENA_FLEET_ISOLATION", "on")
     monkeypatch.setenv("SERENA_FLEET_WORKSPACE_ROOT", str(fleet_env / "worktrees"))
     task = "tasks:\n- scheduler\n- webhook\n- queue"
@@ -36,16 +36,16 @@ def test_scheduler_refreshes_two_waiters_and_preserves_their_patches(fleet_env, 
         if request.phase == "execute":
             unit = request.assignment_ids[0]
             if unit == "ws-3":
-                (cwd / "queue_api.py").write_text("def enqueue_task(): return 42\n")
+                (cwd / "queue_api.py").write_text("def enqueue_task(): return 42\n", encoding="utf-8")
             else:
                 patch = cwd / f"consumer_{unit[-1]}.py"
                 if not (cwd / "queue_api.py").exists():
-                    patch.write_text("# preserved worker patch\n")
+                    patch.write_text("# preserved worker patch\n", encoding="utf-8")
                     declare_dependency(PeerStore(store), request.peer_token, unit, "ws-3", "queue API missing")
                     output = "blocked:" + unit
                 else:
-                    assert patch.read_text() == "# preserved worker patch\n"
-                    patch.write_text(patch.read_text() + "from queue_api import enqueue_task\nassert enqueue_task() == 42\n")
+                    assert patch.read_text(encoding="utf-8") == "# preserved worker patch\n"
+                    patch.write_text(patch.read_text(encoding="utf-8") + "from queue_api import enqueue_task\nassert enqueue_task() == 42\n", encoding="utf-8")
         return WorkerResult(True, output, "session-" + request.worker_key, request.model, request.effort, 0)
 
     def verdict(store, snapshot, leg, attempt, output, **kwargs):
@@ -70,7 +70,7 @@ def test_scheduler_refreshes_two_waiters_and_preserves_their_patches(fleet_env, 
     import sys
     for index in (1, 2):
         subprocess.run([sys.executable, str(root / f"consumer_{index}.py")], cwd=root, check=True)
-    assert (root / "private-note.txt").read_text() == "user-owned sentinel\n"
+    assert (root / "private-note.txt").read_text(encoding="utf-8") == "user-owned sentinel\n"
     assert len([e for e in store.events(run["run_id"]) if e["type"] == "leg.dependencies_resumed"]) == 2
 
 

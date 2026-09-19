@@ -55,7 +55,7 @@ def test_replay_isolated_append_only_and_diff(frozen):
     def runner(req, **kwargs):
         from pathlib import Path
         assert req.cwd != request.cwd
-        (Path(req.cwd) / 'replay-only').write_text('x')
+        (Path(req.cwd) / 'replay-only').write_text('x', encoding="utf-8")
         return WorkerResult(True, 'different', None, req.model, req.effort, 0)
     from fleet.completion import CompletionVerdict
     result = replay_leg(store, run['run_id'], leg['leg_id'], 1, runner=runner,
@@ -100,7 +100,7 @@ def test_bundle_tamper_refused(frozen):
     store, request, run, leg = frozen
     with store._connect() as db:
         path = db.execute('SELECT script_path FROM fleet_attempts WHERE attempt_id=?', (request.attempt_id,)).fetchone()[0]
-    Path(path).write_text('{}')
+    Path(path).write_text('{}', encoding="utf-8")
     with pytest.raises(ValueError, match='integrity'):
         load_bundle(store, request.attempt_id)
 
@@ -224,7 +224,7 @@ def _replay_context(frozen, command):
 def _receipt_log(path, command, exit_code):
     import json
     path.write_text(json.dumps({'line': json.dumps({'type': 'item.completed', 'item': {
-        'type': 'command_execution', 'command': command, 'exit_code': exit_code}})}) + '\n')
+        'type': 'command_execution', 'command': command, 'exit_code': exit_code}})}) + '\n', encoding="utf-8")
     return str(path)
 
 

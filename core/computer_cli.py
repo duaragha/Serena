@@ -276,7 +276,7 @@ def install():
         "PartOf=graphical-session.target\n[Service]\nType=simple\n"
         f"ExecStart={command}\nWorkingDirectory={Path(__file__).resolve().parents[1]}\n"
         "Restart=on-failure\nRestartSec=3\nUMask=0077\n[Install]\nWantedBy=graphical-session.target\n"
-    )
+    , encoding="utf-8")
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "serena-computer.service"], check=True)
     # A detached CLI-started service already owns the desktop: never kill a live lease to install.

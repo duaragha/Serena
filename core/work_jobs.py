@@ -582,7 +582,7 @@ def _process_alive(value: object, token: object = None) -> bool:
 
 def process_start_token(pid: int) -> str | None:
     try:
-        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding='utf-8')
         fields = raw[raw.rfind(")") + 2 :].split()
         start_time = fields[19]
     except (OSError, IndexError, ValueError):

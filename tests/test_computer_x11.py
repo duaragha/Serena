@@ -62,7 +62,7 @@ def test_unicode_input_and_key_release_on_isolated_x11(tmp_path, monkeypatch, ty
         deadline = time.monotonic() + 5
         while not state.exists() and time.monotonic() < deadline:
             time.sleep(0.03)
-        values = json.loads(state.read_text())
+        values = json.loads(state.read_text(encoding="utf-8"))
         desktop = X11Desktop()
         window = desktop._run(
             "xdotool", "search", "--onlyvisible", "--name", "^Serena computer acceptance test$"
@@ -74,17 +74,17 @@ def test_unicode_input_and_key_release_on_isolated_x11(tmp_path, monkeypatch, ty
         desktop.button(1, False)
         desktop.type_text(typed_text, lambda: False)
         deadline = time.monotonic() + 3
-        while json.loads(state.read_text())["text"] != typed_text and time.monotonic() < deadline:
+        while json.loads(state.read_text(encoding="utf-8"))["text"] != typed_text and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert json.loads(state.read_text())["text"] == typed_text
+        assert json.loads(state.read_text(encoding="utf-8"))["text"] == typed_text
         desktop.key("CTRL", True)
         desktop.key("a", True)
         desktop.release()
         desktop.type_text("verified", lambda: False)
         deadline = time.monotonic() + 3
-        while json.loads(state.read_text())["text"] != "verified" and time.monotonic() < deadline:
+        while json.loads(state.read_text(encoding="utf-8"))["text"] != "verified" and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert json.loads(state.read_text())["text"] == "verified"
+        assert json.loads(state.read_text(encoding="utf-8"))["text"] == "verified"
         assert not desktop.held_keys and not desktop.held_buttons
     finally:
         os.close(read_fd)

@@ -29,7 +29,7 @@ def corpus(tmp_path, monkeypatch):
 def put(root, name, text):
     path = root / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -101,7 +101,7 @@ def test_identity_survives_relocation(corpus, tmp_path):
     before = rows()
     moved = tmp_path / "other-os"
     corpus.rename(moved)
-    index.REGISTRY_PATH.write_text(json.dumps({key: str(moved)}))
+    index.REGISTRY_PATH.write_text(json.dumps({key: str(moved)}), encoding="utf-8")
     index.update_code_index()
     assert rows() == before
     hit = index.search_code_fts("portableIdentifier")[0]
@@ -166,7 +166,7 @@ def test_registry_rejects_missing_and_nonrepo(corpus):
     with pytest.raises(ValueError):
         index.add_repo(corpus.parent)
     index.REGISTRY_PATH.parent.mkdir(parents=True)
-    index.REGISTRY_PATH.write_text('[]')
+    index.REGISTRY_PATH.write_text('[]', encoding="utf-8")
     with pytest.raises(ValueError):
         index.load_registry()
 
@@ -210,7 +210,7 @@ def test_cross_os_identity_and_explicit_clones(corpus, monkeypatch):
     put(corpus, "a.py", "cross_os_identifier\n")
     index.update_code_index()
     before = rows()
-    index.REGISTRY_PATH.write_text(json.dumps({key: windows}))
+    index.REGISTRY_PATH.write_text(json.dumps({key: windows}), encoding="utf-8")
     monkeypatch.setattr(index, "canonical_cwd", lambda value: value)
     monkeypatch.setattr(index, "resolve_session_cwd", lambda value: str(corpus))
     original_key = index.portable_key
@@ -231,7 +231,7 @@ def test_foreign_root_uses_real_layout_translator(corpus, tmp_path, monkeypatch)
     key = index.add_repo(foreign)
     index.update_code_index()
     before = rows()
-    index.REGISTRY_PATH.write_text(json.dumps({key: foreign}))
+    index.REGISTRY_PATH.write_text(json.dumps({key: foreign}), encoding="utf-8")
     index.update_code_index()
     assert rows() == before
     assert index.search_code_fts("mappedIdentifier")[0]["file_path"] == str(native / "mapped.py")
@@ -261,7 +261,7 @@ def test_snippets_quote_source_text_only(corpus):
     index.add_repo(corpus)
     put(corpus, "camel.py", "def someFunction():\n    return 42\n")
     index.update_code_index()
-    source = (corpus / "camel.py").read_text()
+    source = (corpus / "camel.py").read_text(encoding="utf-8")
     for query in ("some_function", "someFunction"):
         hit = index.search_code_fts(query)[0]
         text = hit["snippet"].replace(">>>", "").replace("<<<", "")

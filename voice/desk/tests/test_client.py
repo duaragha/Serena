@@ -1135,7 +1135,7 @@ def test_interrupting_her_is_scored_on_her_name_not_loudness() -> None:
     a wake model needs no prefilter; it IS the filter."""
     from pathlib import Path as _P
 
-    source = _P(__file__).resolve().parents[1].joinpath("client.py").read_text()
+    source = _P(__file__).resolve().parents[1].joinpath("client.py").read_text(encoding="utf-8")
     loop = source.split("if self.barge_scorer is not None:", 1)[1]
     head = loop[:1600]
     assert "score_frame" in head

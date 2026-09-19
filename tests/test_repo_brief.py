@@ -16,9 +16,9 @@ def repo(tmp_path, monkeypatch):
     root = tmp_path / 'repo'
     root.mkdir()
     (root / '.git').mkdir()
-    (root / 'main.py').write_text('import sqlite3\ndef main(): pass\n')
-    (root / 'README.md').write_text('# Example\nRun python main.py\n')
-    (root / '.env').write_text('password=NEVER_DELIVER')
+    (root / 'main.py').write_text('import sqlite3\ndef main(): pass\n', encoding="utf-8")
+    (root / 'README.md').write_text('# Example\nRun python main.py\n', encoding="utf-8")
+    (root / '.env').write_text('password=NEVER_DELIVER', encoding="utf-8")
     code_index.add_repo(root, 'example')
     return root
 
@@ -40,7 +40,7 @@ def test_drift_is_durable_before_refresh_and_head_move(repo, monkeypatch):
     original = repo_brief.read_brief('example')[1]['brief_sha256']
     real_refresh = repo_brief.refresh_if_needed
     monkeypatch.setattr(repo_brief, 'refresh_if_needed', lambda key: None)
-    (repo / 'main.py').write_text('def changed_entry(): pass\n')
+    (repo / 'main.py').write_text('def changed_entry(): pass\n', encoding="utf-8")
     code_index.update_code_index()
     assert repo_brief.is_stale('example')
     real_refresh('example')
@@ -82,17 +82,17 @@ def test_small_drift_accumulates_and_cli_show_is_read_only(repo):
     from cli import main
     from core import repo_brief
     for index in range(10):
-        (repo / f'module{index}.py').write_text(f'x = {index}\n')
+        (repo / f'module{index}.py').write_text(f'x = {index}\n', encoding="utf-8")
     code_index.update_code_index()
     digest = repo_brief.read_brief('example')[1]['brief_sha256']
-    (repo / 'module0.py').write_text('x = 99\n')
+    (repo / 'module0.py').write_text('x = 99\n', encoding="utf-8")
     stats = code_index.update_code_index()
     assert not stats['briefs']['example']['stale']
     assert repo_brief.read_brief('example')[1]['brief_sha256'] == digest
     result = CliRunner().invoke(main, ['code', 'brief', 'example'])
     assert result.exit_code == 0 and '## Layout' in result.output
     for index in range(1, 5):
-        (repo / f'module{index}.py').write_text('x = 100\n')
+        (repo / f'module{index}.py').write_text('x = 100\n', encoding="utf-8")
     stats = code_index.update_code_index()
     assert stats['briefs']['example']['changed_file_ratio'] > repo_brief.DRIFT_RATIO
     assert not repo_brief.is_stale('example')
@@ -100,7 +100,7 @@ def test_small_drift_accumulates_and_cli_show_is_read_only(repo):
 
 def test_fixture_build_test_commands_and_unknown_repository(repo):
     from core import repo_brief
-    (repo / 'package.json').write_text('{"scripts":{"build":"tsc", "test":"vitest"}}')
+    (repo / 'package.json').write_text('{"scripts":{"build":"tsc", "test":"vitest"}}', encoding="utf-8")
     code_index.update_code_index()
     text, _ = repo_brief.read_brief('example')
     assert 'npm run build' in text and 'npm run test' in text
@@ -116,11 +116,11 @@ def test_commands_survive_a_manifest_larger_than_one_index_chunk(repo):
     manifest = {'name': 'example', 'version': '1.0.0',
                 'dependencies': {f'dep-{index}': '1.0.0' for index in range(60)},
                 'scripts': {'build': 'tsc', 'test': 'vitest'}}
-    (repo / 'package.json').write_text(json.dumps(manifest, indent=2))
+    (repo / 'package.json').write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     (repo / 'Makefile').write_text(''.join(f'task{index}:\n\t@true\n' for index in range(40))
-                                   + 'build:\n\t@true\ncheck:\n\t@true\n')
+                                   + 'build:\n\t@true\ncheck:\n\t@true\n', encoding="utf-8")
     code_index.update_code_index()
     text, _ = repo_brief.read_brief('example')
-    assert len((repo / 'package.json').read_text().splitlines()) > 50
+    assert len((repo / 'package.json').read_text(encoding="utf-8").splitlines()) > 50
     assert 'npm run build' in text and 'npm run test' in text
     assert 'make build' in text and 'make check' in text

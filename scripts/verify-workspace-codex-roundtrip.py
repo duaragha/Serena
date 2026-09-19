@@ -33,10 +33,10 @@ async def main(review=False, compact=False, permissions=False, bridge=False, ski
         skill_path = project / ".agents" / "skills" / "workspace-proof" / "SKILL.md"
         if skills:
             skill_path.parent.mkdir(parents=True)
-            skill_path.write_text("---\nname: workspace-proof\ndescription: Explicit transport proof skill only.\n---\nWhen explicitly selected, reply exactly SERENA_NATIVE_SKILL_PROOF. Do not use tools.\n")
+            skill_path.write_text("---\nname: workspace-proof\ndescription: Explicit transport proof skill only.\n---\nWhen explicitly selected, reply exactly SERENA_NATIVE_SKILL_PROOF. Do not use tools.\n", encoding="utf-8")
         initial_files = {str(path.relative_to(project)): path.read_bytes() for path in project.rglob('*') if path.is_file()}
         if permissions:
-            (home / "config.toml").write_text("[features]\nrequest_permissions_tool = true\n")
+            (home / "config.toml").write_text("[features]\nrequest_permissions_tool = true\n", encoding="utf-8")
         target = home / "auth.json"
         with open(target, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
             json.dump({"auth_mode": "chatgpt", "tokens": auth["tokens"]}, stream)

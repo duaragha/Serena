@@ -1625,7 +1625,7 @@ def _generated_types_preparation(
     ):
         return None
     try:
-        manifest = json.loads((Path(root) / "package.json").read_text())
+        manifest = json.loads((Path(root) / "package.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     scripts = manifest.get("scripts") if isinstance(manifest, dict) else None

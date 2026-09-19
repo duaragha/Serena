@@ -17,6 +17,6 @@ def test_claude_relative_sdk_is_resolved_before_authentication(monkeypatch, tmp_
     monkeypatch.setattr(module.shutil, "which", lambda name: None)
     with pytest.raises(FileNotFoundError):
         asyncio.run(module.main(typescript_sdk="missing-sdk.mjs"))
-    (tmp_path / "sdk.mjs").write_text("export {};")
+    (tmp_path / "sdk.mjs").write_text("export {};", encoding="utf-8")
     with pytest.raises(RuntimeError, match="Installed Claude unavailable"):
         asyncio.run(module.main(typescript_sdk="sdk.mjs"))

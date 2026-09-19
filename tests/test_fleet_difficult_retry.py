@@ -189,10 +189,10 @@ def test_supervisor_real_integration_failure_retries_once(
         ["config", "user.name", "Test"],
     ):
         subprocess.run(["git", "-C", str(root), *command], check=True)
-    (root / "value.txt").write_text("good\n")
+    (root / "value.txt").write_text("good\n", encoding="utf-8")
     (root / "test_value.py").write_text(
         "from pathlib import Path\nassert Path('value.txt').read_text() == 'good\\n'\n"
-    )
+    , encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -220,10 +220,10 @@ def test_supervisor_real_integration_failure_retries_once(
             if improved:
                 assert "single escalated difficult retry" in request.prompt
                 assert "AssertionError" in request.prompt
-                assert (root / "value.txt").read_text() == "good\n"  # failed patch rolled back
+                assert (root / "value.txt").read_text(encoding="utf-8") == "good\n"  # failed patch rolled back
             (Path(request.cwd) / "value.txt").write_text(
                 "good\n" if improved and repair else "bad\n"
-            )
+            , encoding="utf-8")
         return WorkerResult(True, "implementation result", None, request.model, request.effort, 0)
 
     monkeypatch.setattr(supervisor, "run_worker", fake)
@@ -238,5 +238,5 @@ def test_supervisor_real_integration_failure_retries_once(
     if codex_available:
         expected.append(("execute", "gpt-6-astra", "xhigh"))
     assert [call for call in calls if call[0] == "execute"] == expected
-    assert (root / "value.txt").read_text() == "good\n"
+    assert (root / "value.txt").read_text(encoding="utf-8") == "good\n"
     assert len(result["policy"]["difficult_retries"]) == (1 if codex_available else 0)

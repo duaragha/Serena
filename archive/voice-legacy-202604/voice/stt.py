@@ -73,7 +73,7 @@ class SpeechToText:
             cfg_path = Path.home() / ".claude.json"
             if not cfg_path.exists():
                 return None
-            cfg = json.loads(cfg_path.read_text())
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
             for server_cfg in cfg.get("mcpServers", {}).values():
                 env = server_cfg.get("env", {})
                 key = env.get("GROQ_API_KEY")

@@ -95,7 +95,7 @@ async def main():
         native_pid = owner.client.owned_pid
         assert native_pid and psutil.pid_exists(native_pid)
         assert checkpointed == [{"session_id": owner.session_id, "provider": "claude", "cwd": cwd}]
-        assert json.loads((Path(cwd) / "creation.json").read_text()) == checkpointed[0]
+        assert json.loads((Path(cwd) / "creation.json").read_text(encoding="utf-8")) == checkpointed[0]
         await owner.submit([{"type": "text", "text": "/effort low"}])
         await asyncio.wait_for(completed.wait(), 20)
         assert owner.state == "ready" and owner.client.owned_pid == native_pid
@@ -121,7 +121,7 @@ async def main():
     host = install_workspace(app, Path(cwd) / "ui.db", describe=indexer.get_session,
                              factories={"claude": owner_factory})
     web_source = Path(__file__).resolve().parents[1] / "ui/web.py"
-    definitions = [item for item in ast.parse(web_source.read_text()).body
+    definitions = [item for item in ast.parse(web_source.read_text(encoding="utf-8")).body
                    if isinstance(item, ast.FunctionDef) and item.name in {"api_rename", "api_sessions", "_decorate_sessions",
                                                                         "_pending_workspace_meta", "api_conversation"}]
     namespace = {"app": app, "jsonify": jsonify, "request": request, "Path": Path, "parse_full": parse_full,

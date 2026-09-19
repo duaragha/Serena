@@ -46,7 +46,7 @@ def test_git_status_disables_index_refresh_and_fsmonitor(
 
     marker = tmp_path / "fsmonitor-ran"
     hook = tmp_path / "fsmonitor.sh"
-    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding='utf-8')
     hook.chmod(0o700)
     subprocess.run(
         ["git", "-C", str(repo), "config", "core.fsmonitor", str(hook)],
@@ -133,7 +133,7 @@ def test_read_only_subprocess_timeout_kills_descendant_group(tmp_path: Path) -> 
 
     assert result == "(timed out after 0.5s)"
     assert child_pid.is_file()
-    pid = int(child_pid.read_text())
+    pid = int(child_pid.read_text(encoding="utf-8"))
     for _ in range(40):
         try:
             os.kill(pid, 0)
@@ -177,7 +177,7 @@ def test_read_only_subprocess_cancellation_kills_descendant_group(
 
     asyncio.run(cancel_running_tree())
 
-    pid = int(child_pid.read_text())
+    pid = int(child_pid.read_text(encoding="utf-8"))
     for _ in range(40):
         try:
             os.kill(pid, 0)

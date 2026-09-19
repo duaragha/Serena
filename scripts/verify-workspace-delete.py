@@ -28,7 +28,7 @@ def main():
         contents = json.dumps({"type": "user", "sessionId": sid, "cwd": str(root),
                                "timestamp": "2026-09-09T12:00:00Z",
                                "message": {"role": "user", "content": "Deletion proof"}}) + "\n"
-        transcript.write_text(contents)
+        transcript.write_text(contents, encoding="utf-8")
         metadata.set_custom_title(sid, "Recoverable proof")
         conn = indexer._get_db()
         try:
@@ -49,7 +49,7 @@ def main():
                 pass
             else:
                 raise AssertionError("Live owner did not prevent deletion")
-            assert transcript.read_text() == contents and indexer.get_session(sid)
+            assert transcript.read_text(encoding="utf-8") == contents and indexer.get_session(sid)
             assert metadata.get_meta(sid)["custom_title"] == "Recoverable proof"
             child.communicate("release\n", timeout=5)
             assert child.returncode == 0
@@ -65,7 +65,7 @@ def main():
                 assert "proof rollback" in str(error)
             else:
                 raise AssertionError("Database rejection was ignored")
-            assert transcript.read_text() == contents and indexer.get_session(sid)
+            assert transcript.read_text(encoding="utf-8") == contents and indexer.get_session(sid)
             assert metadata.get_meta(sid)["custom_title"] == "Recoverable proof"
             conn = indexer._get_db()
             try:
@@ -79,8 +79,8 @@ def main():
             copies = list((indexer.DATA_DIR / "deleted-sessions").glob(f"{sid}*/{transcript.name}"))
             assert len(copies) == 1
             recovery = copies[0].parent
-            assert (recovery / transcript.name).read_text() == contents
-            assert json.loads((recovery / "recovery.json").read_text())["metadata"]["custom_title"] == "Recoverable proof"
+            assert (recovery / transcript.name).read_text(encoding="utf-8") == contents
+            assert json.loads((recovery / "recovery.json").read_text(encoding='utf-8'))["metadata"]["custom_title"] == "Recoverable proof"
             print("PASS: real cross-process owner blocked deletion without mutation; released owner allowed recoverable deletion from real SQLite catalog")
         finally:
             if child.poll() is None:

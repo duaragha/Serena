@@ -78,7 +78,7 @@ def test_registered_runtime_identity_does_not_block_unrelated_chat(session, monk
     sid = 'exact' if lease_state == 'same' else 'other'
     (tmp_path / (hashlib.sha256(sid.encode()).hexdigest() + '.json')).write_text(json.dumps({
         'phase': 'bound', 'child': {'pid': 321, 'born': 9.0 if lease_state == 'reused' else 1.0},
-        'owner': {'pid': 320, 'born': 4.0}}))
+        'owner': {'pid': 320, 'born': 4.0}}), encoding="utf-8")
     if lease_state == 'other':
         assert admission.resolve_workspace_session('exact')['session_id'] == 'exact'
         process.open_files = lambda: [SimpleNamespace(path=session['file_path'])]
@@ -115,7 +115,7 @@ def session(tmp_path, monkeypatch):
     from ui import pty_terminal
 
     transcript = tmp_path / "rollout-exact.jsonl"
-    transcript.write_text("{}\n")
+    transcript.write_text("{}\n", encoding="utf-8")
     row = {
         "session_id": "exact",
         "agent": "codex",

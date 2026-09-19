@@ -21,7 +21,7 @@ def _failed(tmp_path, monkeypatch, phase_index=3, failure_exit=2):
     monkeypatch.setenv("SERENA_FLEET_ISOLATION_DB_PATH", str(tmp_path / "isolation.sqlite3"))
     monkeypatch.setenv("SERENA_FLEET_WORKSPACE_ROOT", str(tmp_path / "worktrees"))
     monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "events"))
-    (root / "package.json").write_text('{"scripts":{"codegen":"generator"}}')
+    (root / "package.json").write_text('{"scripts":{"codegen":"generator"}}', encoding="utf-8")
     _git(root, "add", "package.json")
     _git(root, "commit", "-qm", "generator contract")
     store = FleetStore(tmp_path / "fleet.sqlite3")
@@ -100,7 +100,7 @@ def test_replay_checks_real_patch_and_never_calls_provider(tmp_path, monkeypatch
     store, rid, leg, _, workspace, _ = _failed(tmp_path, monkeypatch)
     assert recovery.resume_saved_integrations(store) == [rid]
     if changed:
-        (Path(workspace.path) / "core/alpha.py").write_text("alpha = 999\n")
+        (Path(workspace.path) / "core/alpha.py").write_text("alpha = 999\n", encoding="utf-8")
     monkeypatch.setattr(supervisor, "run_worker", lambda *a, **kw: pytest.fail("provider called during replay"))
     fresh = store.get_run(rid)["phases"][3]["legs"][0]
     result = supervisor._execute_leg(store, rid, fresh)
@@ -117,7 +117,7 @@ def test_replay_checks_real_patch_and_never_calls_provider(tmp_path, monkeypatch
     assert not _process_may_live(lease["owner_pid"], lease["owner_token"])
     assert lease["state"] in {"failed", "completed"}
     assert current["state"] == ("waiting_for_input" if changed else "completed")
-    assert (Path(store.get_run(rid)["cwd"]) / "core/alpha.py").read_text() == ("alpha = 1\n" if changed else "alpha = 2\n")
+    assert (Path(store.get_run(rid)["cwd"]) / "core/alpha.py").read_text(encoding="utf-8") == ("alpha = 1\n" if changed else "alpha = 2\n")
     assert recovery.resume_saved_integrations(store) == []
     finished = [e for e in store.events(rid) if e["type"] == "worker.integration_replay_finished"]
     assert finished[-1]["payload"]["native_turn"] is False

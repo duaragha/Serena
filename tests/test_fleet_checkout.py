@@ -22,13 +22,13 @@ from fleet.store import FleetStore
 def setup_run(tmp_path, worker_count=1, branch_template=None):
     root = _repo(tmp_path)
     _git(root, "checkout", "-b", "team-baseline")
-    (root / "required.txt").write_text("required baseline\n")
+    (root / "required.txt").write_text("required baseline\n", encoding="utf-8")
     _git(root, "add", "required.txt")
     _git(root, "commit", "-qm", "team baseline")
     baseline = _git(root, "rev-parse", "HEAD").strip()
     _git(root, "checkout", "main")
-    (root / "README.md").write_text("user dirty file\n")
-    (root / "private-note.txt").write_text("user untracked file\n")
+    (root / "README.md").write_text("user dirty file\n", encoding="utf-8")
+    (root / "private-note.txt").write_text("user untracked file\n", encoding="utf-8")
     store = FleetStore(tmp_path / "fleet.sqlite3")
     run = store.create_run(
         task=(f"- MANDATORY start point: branch `team-baseline` at commit {baseline}. DO NOT start from main."
@@ -50,15 +50,15 @@ def test_pin_before_research_preserves_original_and_survives_retry(tmp_path):
     checkout = Path(snapshot["cwd"])
     assert checkout != root
     assert _git(checkout, "rev-parse", "HEAD").strip() == baseline
-    assert (checkout / "required.txt").read_text() == "required baseline\n"
+    assert (checkout / "required.txt").read_text(encoding="utf-8") == "required baseline\n"
     assert not (checkout / "private-note.txt").exists()
-    (checkout / "accepted-work.txt").write_text("preserve integration\n")
+    (checkout / "accepted-work.txt").write_text("preserve integration\n", encoding="utf-8")
     ensure_run_checkout(FleetStore(store.path), run["run_id"])
-    assert (checkout / "accepted-work.txt").read_text() == "preserve integration\n"
+    assert (checkout / "accepted-work.txt").read_text(encoding="utf-8") == "preserve integration\n"
     assert before == (_git(root, "status", "--porcelain"), _git(root, "rev-parse", "HEAD"),
                       (root / ".git" / "index").read_bytes())
-    assert (root / "README.md").read_text() == "user dirty file\n"
-    assert (root / "private-note.txt").read_text() == "user untracked file\n"
+    assert (root / "README.md").read_text(encoding="utf-8") == "user dirty file\n"
+    assert (root / "private-note.txt").read_text(encoding="utf-8") == "user untracked file\n"
 
 
 def test_baseline_directive_not_arbitrary_citation(tmp_path):
@@ -90,7 +90,7 @@ def test_real_scheduler_uses_baseline_for_every_phase(fleet_env, monkeypatch, wo
             assert "Fleet already provisioned your task branch" in request.prompt
             branches.add(_git(Path(request.cwd), "branch", "--show-current").strip())
             owned = Path(request.cwd) / (request.worker_key.replace(":", "-") + ".txt")
-            owned.write_text((owned.read_text() if owned.exists() else "") + request.phase + "\n")
+            owned.write_text((owned.read_text(encoding="utf-8") if owned.exists() else "") + request.phase + "\n", encoding="utf-8")
         return WorkerResult(True, "baseline verified", "baseline-session", request.model,
                             request.effort, 0)
 
@@ -101,13 +101,13 @@ def test_real_scheduler_uses_baseline_for_every_phase(fleet_env, monkeypatch, wo
         assert seen.count(phase) == worker_count
     delivered = list(Path(result["cwd"]).glob("agent-*.txt"))
     assert len(delivered) == worker_count
-    assert all(path.read_text() == "execute\nfinalize\n" for path in delivered)
+    assert all(path.read_text(encoding="utf-8") == "execute\nfinalize\n" for path in delivered)
     assert not list(root.glob("agent-*.txt"))
     if branch_template:
         assert branches == {"codex/team-raghav-hyd-01", "codex/team-raghav-hyd-02", "codex/team-raghav-hyd-03"}
         assert _git(root, "remote") == ""
     assert _git(root, "branch", "--show-current").strip() == "main"
-    assert (root / "README.md").read_text() == "user dirty file\n"
+    assert (root / "README.md").read_text(encoding="utf-8") == "user dirty file\n"
 
 
 def test_deletion_preserves_accepted_work_and_only_removes_clean_fixture(tmp_path):
@@ -115,7 +115,7 @@ def test_deletion_preserves_accepted_work_and_only_removes_clean_fixture(tmp_pat
     ensure_run_checkout(store, run["run_id"])
     run = store.get_run(run["run_id"])
     target = Path(run["cwd"])
-    (target / "accepted.txt").write_text("accepted work\n")
+    (target / "accepted.txt").write_text("accepted work\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="retains delivered"):
         check_checkout_deletable(run)
     _git(target, "add", "accepted.txt")
@@ -131,7 +131,7 @@ def test_empty_baseline_checkout_cleanup_preserves_source(tmp_path):
     run = store.get_run(run["run_id"])
     cleanup_run_checkout(run)
     assert not Path(run["cwd"]).exists()
-    assert (root / "README.md").read_text() == "user dirty file\n"
+    assert (root / "README.md").read_text(encoding="utf-8") == "user dirty file\n"
 
 
 def test_learning_identity_requires_matching_checkout_receipt(tmp_path):
@@ -173,7 +173,7 @@ def test_legacy_baseline_adoption_preserves_completed_research(tmp_path):
     assert repaired["checkout"]["baseline"] == baseline
     assert repaired["phases"][0]["legs"][0]["current_attempt"]["attempt_id"] == research["attempt_id"]
     assert repaired["phases"][0]["legs"][0]["state"] == "completed"
-    assert (root / "README.md").read_text() == "user dirty file\n"
+    assert (root / "README.md").read_text(encoding="utf-8") == "user dirty file\n"
 
 
 @pytest.mark.parametrize("state", ["running", "completed"])

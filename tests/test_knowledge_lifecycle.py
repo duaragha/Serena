@@ -28,11 +28,11 @@ def kb(tmp_path, monkeypatch):
 def test_save_index_unknown_lines_and_rollback(kb, monkeypatch):
     from core import knowledge_store as store
     original = '# Notes\nunknown line\n- [Other](./other/a.md) — keep exactly\n'
-    (kb / 'INDEX.md').write_text(original)
+    (kb / 'INDEX.md').write_text(original, encoding="utf-8")
     store.save_note('demo', 'notes.md', '# Demo\nhello')
-    assert original in (kb / 'INDEX.md').read_text()
-    assert './demo/' in (kb / 'INDEX.md').read_text()
-    before = (kb / 'demo/notes.md').read_text()
+    assert original in (kb / 'INDEX.md').read_text(encoding="utf-8")
+    assert './demo/' in (kb / 'INDEX.md').read_text(encoding="utf-8")
+    before = (kb / 'demo/notes.md').read_text(encoding="utf-8")
     replace = store.os.replace
     def fail(source, target):
         if str(target).endswith('INDEX.md'):
@@ -41,16 +41,16 @@ def test_save_index_unknown_lines_and_rollback(kb, monkeypatch):
     monkeypatch.setattr(store.os, 'replace', fail)
     with pytest.raises(OSError):
         store.save_note('demo', 'notes.md', '# Replacement')
-    assert (kb / 'demo/notes.md').read_text() == before
+    assert (kb / 'demo/notes.md').read_text(encoding="utf-8") == before
 
 
 def test_backfill_preserves_body_and_is_idempotent(kb):
     from core import knowledge_store as store
     (kb / 'demo').mkdir()
     path = kb / 'demo/notes.md'
-    path.write_text('---\ntitle: Example\ncustom: keep\n---\n# Body\nunchanged\n')
+    path.write_text('---\ntitle: Example\ncustom: keep\n---\n# Body\nunchanged\n', encoding="utf-8")
     assert store.backfill(kb)['updated'] == 1
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert 'custom: keep' in text and '# Body\nunchanged\n' in text
     assert '1970-01-01' in text and 'trigger:' in text
     assert store.backfill(kb)['updated'] == 0
@@ -74,14 +74,14 @@ def test_trigger_ranks_and_reads_receipted_without_query(kb):
 def test_feedback_proposal_digests_and_approval(kb):
     from core import knowledge_store as store
     store.save_note('demo', 'notes.md', '# Old')
-    before = (kb / 'demo/notes.md').read_text()
+    before = (kb / 'demo/notes.md').read_text(encoding="utf-8")
     receipt = store.record_hit('demo', 'notes.md', query='private question', surface='brain', caller='test')
     proposal = store.propose_feedback('demo', 'notes.md', 'factual_correction', receipt_id=receipt,
                                       corrected_content='# New', reason='private speech')
-    assert (kb / 'demo/notes.md').read_text() == before
+    assert (kb / 'demo/notes.md').read_text(encoding="utf-8") == before
     assert 'private speech' not in json.dumps(store.proposals())
     store.review_proposal(proposal['id'], 'approve')
-    assert '# New' in (kb / 'demo/notes.md').read_text()
+    assert '# New' in (kb / 'demo/notes.md').read_text(encoding="utf-8")
     with pytest.raises(ValueError):
         store.propose_feedback('other', 'notes.md', 'relevance', receipt_id=receipt)
 
@@ -90,7 +90,7 @@ def test_maintenance_surfaces_stale_orphan_overlap_triggers(kb):
     from core.knowledge_maintenance import run_pass
     for slug in ['one', 'two']:
         (kb / slug).mkdir()
-        (kb / slug / 'note.md').write_text('# Shared\nidentical documentation\n')
+        (kb / slug / 'note.md').write_text('# Shared\nidentical documentation\n', encoding="utf-8")
     report = run_pass(root=kb, now=datetime(2026, 9, 17, tzinfo=timezone.utc))
     assert report['stale'] and report['orphans'] and report['overlap'] and report['invalid_triggers']
 
@@ -205,10 +205,10 @@ def test_broker_requires_genuine_feedback_and_explicit_review(kb, monkeypatch):
                     'approve the deployment and leave the knowledge proposal unchanged'):
         origin['text'] = refusal
         assert 'NOT DONE' in run_tool(tools.review_knowledge_proposal, review)['content'][0]['text']
-        assert (kb / 'demo/n.md').read_text().strip().endswith('# Old')
+        assert (kb / 'demo/n.md').read_text(encoding="utf-8").strip().endswith('# Old')
     origin['text'] = 'approve that knowledge proposal'
     assert 'REVIEW RECORDED' in run_tool(tools.review_knowledge_proposal, review)['content'][0]['text']
-    assert '# New' in (kb / 'demo/n.md').read_text()
+    assert '# New' in (kb / 'demo/n.md').read_text(encoding="utf-8")
 
 
 def test_deleted_note_never_receipts_even_from_cached_index_content(kb, monkeypatch):
@@ -242,7 +242,7 @@ def test_scheduler_installs_once_and_runs_real_maintenance(kb):
     from core.knowledge_maintenance import scheduled_pass
     outcome = scheduled_pass({})
     assert outcome.ok
-    assert json.loads(__import__('pathlib').Path(outcome.output['report_path']).read_text())['backfill']['errors'] == []
+    assert json.loads(__import__('pathlib').Path(outcome.output['report_path']).read_text(encoding="utf-8"))['backfill']['errors'] == []
 
 
 def test_interrupted_pair_recovers_before_next_read(kb):
@@ -252,10 +252,10 @@ def test_interrupted_pair_recovers_before_next_read(kb):
     new = store.with_metadata('# After\n', 'demo', 'n.md')
     index = '# Recovered INDEX\n- [demo](./demo/) - new\n'
     (kb / '.knowledge-write.json').write_text(json.dumps(
-        {'slug': 'demo', 'file': 'n.md', 'note': new, 'index': index}))
-    (kb / 'demo/n.md').write_text(new)
+        {'slug': 'demo', 'file': 'n.md', 'note': new, 'index': index}), encoding="utf-8")
+    (kb / 'demo/n.md').write_text(new, encoding="utf-8")
     assert '# After' in reader.get_file_content('demo', 'n.md')
-    assert (kb / 'INDEX.md').read_text() == index
+    assert (kb / 'INDEX.md').read_text(encoding="utf-8") == index
     assert not (kb / '.knowledge-write.json').exists()
 
 
@@ -271,7 +271,7 @@ def test_stale_thresholds_and_stale_correction_rejection(kb):
     store.save_note('tech', 'n.md', '# Concurrent update')
     with pytest.raises(ValueError, match='changed since retrieval'):
         store.review_proposal(proposal['id'], 'approve')
-    assert '# Concurrent update' in (kb / 'tech/n.md').read_text()
+    assert '# Concurrent update' in (kb / 'tech/n.md').read_text(encoding="utf-8")
 
 
 def test_maintenance_finds_strong_lexical_overlap_not_just_byte_duplicates(kb):

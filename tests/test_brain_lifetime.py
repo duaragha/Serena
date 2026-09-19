@@ -359,7 +359,7 @@ def test_lifetime_ledger_closes_superseded_epoch_and_stays_bounded(
     lifetime.start_epoch("two", reason="rotation", now=20)
     lifetime.start_epoch("three", reason="rotation", now=30)
 
-    document = json.loads(path.read_text())
+    document = json.loads(path.read_text(encoding="utf-8"))
     assert [row["session_id"] for row in document["epochs"]] == ["two", "three"]
     assert document["epochs"][0]["end_reason"] == "superseded"
     assert document["epochs"][0]["ended_at"] == 30
@@ -403,7 +403,7 @@ def test_session_store_snapshot_uses_claudes_dot_munging(monkeypatch, tmp_path: 
     project = tmp_path / ".claude" / "projects" / slug
     project.mkdir(parents=True)
     session_id = "11111111-1111-4111-8111-111111111111"
-    (project / f"{session_id}.jsonl").write_text("{}\n", encoding="utf-8")
+    (project / f"{session_id}.jsonl").write_text("{}\n", encoding='utf-8')
 
     snapshot = brain_daemon._session_store_snapshot(session_id)
 

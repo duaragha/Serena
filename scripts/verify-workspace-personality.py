@@ -37,7 +37,7 @@ def main():
                 processes.append(owner.rpc.process)
                 models = (await owner.list_models())['data']
                 model = next(item['model'] for item in models if item.get('supportsPersonality') is True)
-                (root / '.codex' / 'config.toml').write_text('model = ' + json.dumps(model) + '\n')
+                (root / '.codex' / 'config.toml').write_text('model = ' + json.dumps(model) + '\n', encoding="utf-8")
                 await owner.rpc.request('thread/settings/update', {'threadId':owner.session_id,'model':model})
                 await owner.shell_command('echo personality-proof', True)
                 async with asyncio.timeout(10):

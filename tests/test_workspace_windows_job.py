@@ -168,7 +168,7 @@ Path(sys.argv[1]).write_text(str(child.pid))
         assert not marker.exists()
         leader.communicate(b"start\n", timeout=10)
         assert leader.returncode == 0
-        child = psutil.Process(int(marker.read_text()))
+        child = psutil.Process(int(marker.read_text(encoding="utf-8")))
         assert child.is_running()
         assert job.active_processes() == 1
         if operation == "suspend":

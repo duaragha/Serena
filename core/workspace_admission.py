@@ -52,7 +52,7 @@ def _registered_other_runtime(process, sid: str) -> bool:
             if path.name == target:
                 continue
             try:
-                record = json.loads(path.read_text())
+                record = json.loads(path.read_text(encoding="utf-8"))
                 child, owner = record.get("child", {}), record.get("owner", {})
                 if record.get("phase") != "bound" or (child.get("pid"), child.get("born")) not in identities:
                     continue

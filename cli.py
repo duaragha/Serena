@@ -1056,7 +1056,7 @@ def text(message):
         console.print("[red]no telegram.env — see serena memory 'notification rail'[/red]")
         raise SystemExit(1)
     creds = {}
-    for line in env_path.read_text().splitlines():
+    for line in env_path.read_text(encoding="utf-8").splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
             creds[k.strip()] = v.strip()

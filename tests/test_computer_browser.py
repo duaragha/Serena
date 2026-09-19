@@ -55,7 +55,7 @@ def test_attach_selects_target_and_disconnects_without_browser_mutation(tmp_path
     import websockets.legacy.client
 
     port_file = tmp_path / "cdp.json"
-    port_file.write_text('{"port": 1234}')
+    port_file.write_text('{"port": 1234}', encoding="utf-8")
     port_file.chmod(0o600)
     connections = []
 
@@ -129,7 +129,7 @@ def test_unreachable_fast_fail(tmp_path, monkeypatch):
     import httpx
 
     port_file = tmp_path / "cdp.json"
-    port_file.write_text(json.dumps({"port": 12345}))
+    port_file.write_text(json.dumps({"port": 12345}), encoding="utf-8")
     port_file.chmod(0o600)
     calls = []
 
@@ -153,7 +153,7 @@ def test_unreachable_fast_fail(tmp_path, monkeypatch):
 @pytest.mark.parametrize("data", [{"port": True}, {"port": 0}, {"port": 65536}, {"port": "1234"}])
 def test_invalid_discovery(tmp_path, data):
     port_file = tmp_path / "cdp.json"
-    port_file.write_text(json.dumps(data))
+    port_file.write_text(json.dumps(data), encoding="utf-8")
     port_file.chmod(0o600)
 
     async def run():
@@ -205,7 +205,7 @@ def test_launch_refuses_an_unowned_existing_profile(tmp_path, monkeypatch):
 
     directory = tmp_path / "daily-profile"
     directory.mkdir(mode=0o700)
-    (directory / "Local State").write_text("existing browser data")
+    (directory / "Local State").write_text("existing browser data", encoding="utf-8")
 
     def unexpected(*args, **kwargs):
         pytest.fail("must refuse existing unrelated data before spawning")
@@ -275,7 +275,7 @@ def test_plan_is_validated_and_copied():
 
 def test_discovery_permissions_and_symlink(tmp_path):
     port_file = tmp_path / "cdp.json"
-    port_file.write_text('{"port": 1234}')
+    port_file.write_text('{"port": 1234}', encoding="utf-8")
     port_file.chmod(0o644)
 
     async def run():
@@ -305,7 +305,7 @@ def test_discovery_cannot_redirect_off_profile(tmp_path, monkeypatch, endpoint):
     import httpx
 
     port_file = tmp_path / "cdp.json"
-    port_file.write_text('{"port": 1234}')
+    port_file.write_text('{"port": 1234}', encoding="utf-8")
     port_file.chmod(0o600)
 
     async def pages(*args, **kwargs):
@@ -342,7 +342,7 @@ def test_launch_private_ephemeral_port_and_cleanup(tmp_path, monkeypatch):
 
     def popen(args, **kwargs):
         calls.append((args, kwargs))
-        (directory / "DevToolsActivePort").write_text("43210\n/devtools/browser/test\n")
+        (directory / "DevToolsActivePort").write_text("43210\n/devtools/browser/test\n", encoding="utf-8")
         return Process()
 
     monkeypatch.setattr(module.subprocess, "Popen", popen)
@@ -354,7 +354,7 @@ def test_launch_private_ephemeral_port_and_cleanup(tmp_path, monkeypatch):
         assert browser.process.pid == 12345
         assert browser.port_file.stat().st_mode & 0o777 == 0o600
         assert directory.stat().st_mode & 0o777 == 0o700
-        assert json.loads(browser.port_file.read_text()) == {"port": 43210, "pid": 12345}
+        assert json.loads(browser.port_file.read_text(encoding="utf-8")) == {"port": 43210, "pid": 12345}
         args, kwargs = calls[0]
         assert "--remote-debugging-address=127.0.0.1" in args
         assert "--remote-debugging-port=0" in args and "--disable-sync" in args
@@ -381,7 +381,7 @@ def test_check_session_refuses_stale_discovery_until_the_profile_owns_the_listen
     profile = tmp_path / "profile"
     profile.mkdir(mode=0o700)
     active = profile / "DevToolsActivePort"
-    active.write_text("4321\n/devtools/browser/stale\n")
+    active.write_text("4321\n/devtools/browser/stale\n", encoding="utf-8")
     inspected, attached = [], []
 
     def listener(port, user_data_dir):
@@ -395,7 +395,7 @@ def test_check_session_refuses_stale_discovery_until_the_profile_owns_the_listen
 
     @asynccontextmanager
     async def attach(port_file, **kwargs):
-        attached.append(json.loads(Path(port_file).read_text()))
+        attached.append(json.loads(Path(port_file).read_text(encoding="utf-8")))
         yield Browser()
 
     monkeypatch.setattr(module, "_verify_profile_listener", listener)
@@ -411,7 +411,7 @@ def test_check_session_refuses_stale_discovery_until_the_profile_owns_the_listen
 
     def late(port, user_data_dir):
         if port != 5555:
-            active.write_text("5555\n/devtools/browser/fresh\n")
+            active.write_text("5555\n/devtools/browser/fresh\n", encoding="utf-8")
             raise BrowserError("profile CDP listener is not owned by this profile")
         inspected.append((port, Path(user_data_dir)))
 
@@ -500,12 +500,12 @@ def test_real_chromium_fixture(tmp_path, monkeypatch, request):
     fixture = tmp_path / "fixture.html"
     fixture.write_text(
         '<title>Dashboard</title><p id="total">42</p><i class="row"></i><i class="row"></i>'
-    )
+    , encoding="utf-8")
 
     async def run():
         browser = await launch(executable, tmp_path / "profile", headless=True)
         print(f"fixture browser pid/pgid={browser.process.pid}")
-        port = json.loads(browser.port_file.read_text())["port"]
+        port = json.loads(browser.port_file.read_text(encoding="utf-8"))["port"]
         try:
             async with BrowserChecks.attach(browser.port_file) as checks:
                 # Fixture setup alone navigates. The public check API cannot.

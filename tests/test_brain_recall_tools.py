@@ -142,10 +142,10 @@ def test_knowledge_search_finds_the_topic_that_is_about_the_thing(tmp_path, monk
     monkeypatch.setattr(reader, 'INDEX_PATH', tmp_path / 'kb/INDEX.md')
     topic = tmp_path / 'kb/outlander-phev'
     topic.mkdir(parents=True)
-    (topic / 'README.md').write_text('# Outlander PHEV\nBattery charging and range.')
+    (topic / 'README.md').write_text('# Outlander PHEV\nBattery charging and range.', encoding="utf-8")
     other = tmp_path / 'kb/coffee'
     other.mkdir()
-    (other / 'README.md').write_text('# Coffee\nRoasting recipes.')
+    (other / 'README.md').write_text('# Coffee\nRoasting recipes.', encoding="utf-8")
     out = _search_knowledge("outlander phev")
     assert "outlander-phev" in out
 

@@ -305,7 +305,7 @@ def test_the_greeting_prompt_forbids_invented_pet_names() -> None:
     reach for a stock phrase', which is what produced an invented nickname."""
     from pathlib import Path as _P
 
-    source = _P("voice/desk/greetings.py").read_text()
+    source = _P("voice/desk/greetings.py").read_text(encoding="utf-8")
     prompt = source.split("desk-wake-greeting", 1)[1][:2000]
     # the old novelty pressure is gone as an instruction; it survives only
     # inside the incident note that explains why it was removed

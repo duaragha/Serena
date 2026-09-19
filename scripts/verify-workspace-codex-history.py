@@ -350,7 +350,7 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
             print("PASS: local runtime context reports exact real Codex owner without launching or replacing it")
             for fork_id in forks:
                 metadata_path = Path(env["HOME"]) / ".claude" / "projects" / ".chats-meta" / f"{fork_id}.json"
-                assert json.loads(metadata_path.read_text())["resident_work"] is True
+                assert json.loads(metadata_path.read_text(encoding="utf-8"))["resident_work"] is True
             assert forks
             print(f"PASS: {backend_mode} native fork created/indexed through UI, persisted scanner ownership and opened without a second owner")
             if os.environ.get("SERENA_PROOF_ELECTRON"):
@@ -366,7 +366,7 @@ register_fork({'session_id':metadata.session_id, 'provider':'codex', 'cwd':metad
                         if target["provider"] != "claude":
                             continue
                         key = hashlib.sha256(target["session_id"].encode()).hexdigest()
-                        record = json.loads((Path(env["SERENA_RUNTIME_LEASE_DIR"]) / (key + ".json")).read_text())
+                        record = json.loads((Path(env["SERENA_RUNTIME_LEASE_DIR"]) / (key + ".json")).read_text(encoding="utf-8"))
                         assert record["phase"] == "bound"
                         child = psutil.Process(record["child"]["pid"])
                         assert child.create_time() == record["child"]["born"] and child.status() != psutil.STATUS_ZOMBIE
@@ -437,10 +437,10 @@ async def main():
         (home / ".codex").mkdir(parents=True)
         skill = home / ".codex" / "skills" / "workspace-setting-proof" / "SKILL.md"
         skill.parent.mkdir(parents=True)
-        skill.write_text("---\nname: workspace-setting-proof\ndescription: Isolated skill configuration proof\n---\nNo model invocation is needed.\n")
+        skill.write_text("---\nname: workspace-setting-proof\ndescription: Isolated skill configuration proof\n---\nNo model invocation is needed.\n", encoding="utf-8")
         project.mkdir()
         mention_fixture = project / "workspace-mention-proof.py"
-        mention_fixture.write_text("# Isolated native file-search fixture\n")
+        mention_fixture.write_text("# Isolated native file-search fixture\n", encoding="utf-8")
         env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home),
                "CODEX_HOME": str(home / ".codex"), "XDG_CONFIG_HOME": str(home / ".config"),
                "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}

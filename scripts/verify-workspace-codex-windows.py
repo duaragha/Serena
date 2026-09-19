@@ -23,10 +23,10 @@ async def main():
     with tempfile.TemporaryDirectory(prefix="serena-codex-windows-") as temporary:
         root = Path(temporary)
         (root / "codex").mkdir()
-        (root / "workspace-mention-proof.py").write_text("# Isolated file mention fixture\n")
+        (root / "workspace-mention-proof.py").write_text("# Isolated file mention fixture\n", encoding="utf-8")
         skill = root / "codex" / "skills" / "workspace-setting-proof" / "SKILL.md"
         skill.parent.mkdir(parents=True)
-        skill.write_text("---\nname: workspace-setting-proof\ndescription: Isolated skill proof\n---\nNo inference.\n")
+        skill.write_text("---\nname: workspace-setting-proof\ndescription: Isolated skill proof\n---\nNo inference.\n", encoding="utf-8")
         env = {key: value for key, value in os.environ.items()
                if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}}
         env.update(HOME=str(root), USERPROFILE=str(root), CODEX_HOME=str(root / "codex"),

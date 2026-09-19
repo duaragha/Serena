@@ -254,7 +254,7 @@ def test_every_control_decision_including_refusals_is_audited(tmp_path) -> None:
     control_job("cancel", origin=VOICE, inbox=store, audit_path=audit)
     control_job("steer", text="", origin=VOICE, inbox=store, audit_path=audit)
 
-    records = [json.loads(line) for line in audit.read_text().splitlines() if line.strip()]
+    records = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert [record["allowed"] for record in records] == [True, False]
     assert all("cancel" in record["reason"] or "steer" in record["reason"] for record in records)
     # Raw speech never lands in the ledger, only its digest.
@@ -326,7 +326,7 @@ def test_local_cli_control_is_audited_as_cli_not_fake_desk_voice(tmp_path) -> No
 
     assert result.ok
     assert store.pending_controls(item.item_id)
-    assert json.loads(audit.read_text().splitlines()[-1])["protocol"] == "cli"
+    assert json.loads(audit.read_text(encoding="utf-8").splitlines()[-1])["protocol"] == "cli"
 
 
 def test_status_reports_the_model_that_actually_ran_not_the_one_requested() -> None:

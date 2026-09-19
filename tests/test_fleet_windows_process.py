@@ -101,7 +101,7 @@ def test_owner_death_reaps_atomically_owned_worker(tmp_path):
         while not marker.exists() and owner.poll() is None and time.monotonic() < deadline:
             time.sleep(.05)
         assert marker.exists(), "job owner did not publish its worker"
-        actual_owner_pid, child_pid = map(int, marker.read_text().split(':'))
+        actual_owner_pid, child_pid = map(int, marker.read_text(encoding="utf-8").split(':'))
         actual_owner = psutil.Process(actual_owner_pid)
         launched_owner = psutil.Process(owner.pid)
         assert actual_owner == launched_owner or actual_owner in launched_owner.children(recursive=True)

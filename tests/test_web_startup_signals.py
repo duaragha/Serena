@@ -20,7 +20,7 @@ def test_web_server_starts_with_only_the_platforms_available_signals(tmp_path, h
     wanted = ("_shutdown_owned_runtimes", "run_web")
     body = [
         node
-        for node in ast.parse(source.read_text()).body
+        for node in ast.parse(source.read_text(encoding="utf-8")).body
         if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
     assert [node.name for node in body] == list(wanted)

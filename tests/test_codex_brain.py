@@ -397,7 +397,7 @@ def test_fast_mode_preserves_model_and_reasoning_on_every_turn(tmp_path):
             assert client.accepted_service_tier == "fast"
         finally:
             await client.close()
-        records = [json.loads(line) for line in log.read_text().splitlines()]
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         starts = [r["params"] for r in records if r.get("method") in {"thread/start", "turn/start"}]
         assert len(starts) == 3
         assert all(p["serviceTier"] == "fast" and p["model"] == "gpt-6-astra" for p in starts)

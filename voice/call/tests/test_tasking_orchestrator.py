@@ -137,7 +137,7 @@ def test_explicit_task_submission_uses_exact_call_and_turn(tmp_path) -> None:
         assert accepted == "job-1"
         assert ignored is None
         metrics = [
-            json.loads(line) for line in (tmp_path / "metrics.jsonl").read_text().splitlines()
+            json.loads(line) for line in (tmp_path / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
         ]
         assert [row["event"] for row in metrics] == ["task.accepted"]
 
@@ -265,7 +265,7 @@ def test_phone_ack_cursor_and_in_app_open_are_recorded(tmp_path) -> None:
         )
         await session._accept_job_cursor(7)
 
-        rows = [json.loads(line) for line in (tmp_path / "metrics.jsonl").read_text().splitlines()]
+        rows = [json.loads(line) for line in (tmp_path / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
         assert [row["event"] for row in rows] == [
             "task.event_acknowledged",
             "task.artifact_opened",

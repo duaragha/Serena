@@ -26,7 +26,7 @@ def legacy(root, mid=1, extra=""):
     directory.mkdir(exist_ok=True)
     path = directory / f"{mid:03d}-old.md"
     path.write_text(f"---\nid: {mid}\ntype: task\ncreated: 2026-01-01 00:00:00\n"
-                    f"updated: 2026-01-01 00:00:00\n{extra}---\n\nlegacy task\n")
+                    f"updated: 2026-01-01 00:00:00\n{extra}---\n\nlegacy task\n", encoding='utf-8')
     return path
 
 
@@ -209,10 +209,10 @@ def test_legacy_rewriters_preserve_operational_fields(queue):
 
 def test_claim_preserves_unknown_frontmatter_and_body(queue):
     path = legacy(queue, extra="custom: keep me\nsource_session_id: abc\n")
-    body = path.read_text().split("---", 2)[2]
+    body = path.read_text(encoding="utf-8").split("---", 2)[2]
     store.claim_next_task("worker")
-    assert "custom: keep me" in path.read_text()
-    assert path.read_text().split("---", 2)[2] == body
+    assert "custom: keep me" in path.read_text(encoding="utf-8")
+    assert path.read_text(encoding="utf-8").split("---", 2)[2] == body
     assert store.get_memory(1)["source_session_id"] == "abc"
 
 

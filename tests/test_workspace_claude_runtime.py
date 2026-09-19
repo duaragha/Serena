@@ -11,8 +11,8 @@ def provision(tmp_path):
     sdk = runtime / "node_modules" / "@anthropic-ai" / "claude-agent-sdk" / "sdk.mjs"
     sdk.parent.mkdir(parents=True)
     sdk.write_text("export {};", encoding="utf-8")
-    (runtime / "package.json").write_text(json.dumps({"dependencies": {"@anthropic-ai/claude-agent-sdk": "0.3.266"}}))
-    (sdk.parent / "package.json").write_text(json.dumps({"name": "@anthropic-ai/claude-agent-sdk", "version": "0.3.266"}))
+    (runtime / "package.json").write_text(json.dumps({"dependencies": {"@anthropic-ai/claude-agent-sdk": "0.3.266"}}), encoding="utf-8")
+    (sdk.parent / "package.json").write_text(json.dumps({"name": "@anthropic-ai/claude-agent-sdk", "version": "0.3.266"}), encoding="utf-8")
     return runtime, sdk
 
 
@@ -26,7 +26,7 @@ def test_missing_or_wrong_sdk_fails_without_fallback(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="SDK is missing"):
         runtime_paths(root=tmp_path, env={})
     _, sdk = provision(tmp_path)
-    (sdk.parent / "package.json").write_text(json.dumps({"name": "@anthropic-ai/claude-agent-sdk", "version": "0.0.0"}))
+    (sdk.parent / "package.json").write_text(json.dumps({"name": "@anthropic-ai/claude-agent-sdk", "version": "0.0.0"}), encoding="utf-8")
     with pytest.raises(RuntimeError, match="pinned"):
         runtime_paths(root=tmp_path, env={})
 
@@ -50,9 +50,9 @@ def test_explicit_runtime_location_and_node_are_honored(monkeypatch, tmp_path):
 
 def test_standalone_sidecar_builds_include_sdk_and_validate_runtime():
     root = Path(__file__).resolve().parents[1]
-    linux = (root / 'apps/desktop/scripts/build-sidecar.sh').read_text()
-    windows = (root / 'apps/desktop/windows/sidecar-win.spec').read_text()
-    entry = (root / 'apps/desktop/sidecar.py').read_text()
+    linux = (root / 'apps/desktop/scripts/build-sidecar.sh').read_text(encoding="utf-8")
+    windows = (root / 'apps/desktop/windows/sidecar-win.spec').read_text(encoding="utf-8")
+    entry = (root / 'apps/desktop/sidecar.py').read_text(encoding="utf-8")
     assert '--add-data "$repo_root/runtimes/claude-sdk:runtimes/claude-sdk"' in linux
     assert '(REPO_ROOT / "runtimes" / "claude-sdk", "runtimes/claude-sdk")' in windows
     check = entry.split('"--workspace-runtime-check"]:', 1)[1].split('raise SystemExit(0)', 1)[0]

@@ -18,13 +18,13 @@ def test_workspace_assets_stay_paired_with_runtime_until_restart(tmp_path):
     static = tmp_path / 'static'
     static.mkdir()
     asset = static / 'workspace-page.mjs'
-    asset.write_text('export const version = 1;')
+    asset.write_text('export const version = 1;', encoding="utf-8")
     app = Flask(__name__, static_folder=str(static))
     host = install_workspace(app, tmp_path / 'assets.db')
     try:
         client = app.test_client()
         assert client.get('/static/workspace-page.mjs').data == b'export const version = 1;'
-        asset.write_text('export const version = 2;')
+        asset.write_text('export const version = 2;', encoding="utf-8")
         result = client.get('/static/workspace-page.mjs')
         assert result.data == b'export const version = 1;'
         assert result.headers['Cache-Control'] == 'no-store'
