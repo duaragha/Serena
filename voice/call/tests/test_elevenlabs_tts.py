@@ -37,6 +37,18 @@ class _Local:
         return None
 
 
+
+def _engine(backend):
+    """The engine under the speed wrapper.
+
+    ElevenLabs is wrapped in SpeedAdjustedTTSBackend so the one speed slider
+    reaches her, which means create_tts_backend no longer hands back the
+    engine itself.
+    """
+
+    return getattr(backend, "_inner", backend)
+
+
 def _backend(monkeypatch, chunks=None, error=None, **kwargs):
     local = _Local()
     eleven = ElevenLabsTTSBackend(
@@ -121,7 +133,7 @@ def test_the_backend_is_never_selected_implicitly(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "xi-test")
     monkeypatch.delenv("SERENA_CALL_ELEVEN_VOICE_ID", raising=False)
     monkeypatch.setenv("SERENA_CALL_TTS_BACKEND", "kokoro")
-    assert not isinstance(create_tts_backend(), ElevenLabsTTSBackend)
+    assert not isinstance(_engine(create_tts_backend()), ElevenLabsTTSBackend)
 
     monkeypatch.setenv("SERENA_CALL_TTS_BACKEND", "elevenlabs")
     with pytest.raises(RuntimeError, match="SERENA_CALL_ELEVEN_VOICE_ID"):
@@ -182,7 +194,7 @@ def test_the_desk_and_the_phone_read_one_shared_voice(tmp_path, monkeypatch):
 
     assert stack_config()["tts"]["voice_id"] == "grace-1"
     backend = create_tts_backend()
-    assert isinstance(backend, ElevenLabsTTSBackend)
+    assert isinstance(_engine(backend), ElevenLabsTTSBackend)
     assert backend.voice_id == "grace-1"
     assert voice_setting(
         "stt", "backend", env="SERENA_CALL_STT_BACKEND", default="auto") == "scribe"
@@ -195,7 +207,7 @@ def test_one_machine_can_still_be_pinned_for_a_test(tmp_path, monkeypatch):
     monkeypatch.setenv("SERENA_VOICE_STACK_CONFIG", str(config))
     monkeypatch.setenv("SERENA_CALL_TTS_BACKEND", "kokoro")
 
-    assert not isinstance(create_tts_backend(), ElevenLabsTTSBackend)
+    assert not isinstance(_engine(create_tts_backend()), ElevenLabsTTSBackend)
 
 
 def test_an_unreadable_stack_file_never_costs_her_a_voice(tmp_path, monkeypatch):
@@ -223,3 +235,44 @@ def test_the_checked_in_stack_is_the_voice_both_machines_should_run(monkeypatch)
     assert shipped["tts"]["backend"] == "elevenlabs"
     assert shipped["tts"]["voice_id"]
     assert shipped["stt"]["backend"] == "auto"
+
+
+def test_the_engine_takes_the_rate_it_can_and_the_stretch_takes_the_rest():
+    """1.3 is a 400 from the API; 1.2 is a 200. Measured 2026-09-19.
+
+    Applying the full rate on top of what the engine already did would compound
+    the two, so the wrapper only stretches the remainder.
+    """
+
+    from voice.call.tts import ELEVEN_MAX_SPEED, ELEVEN_MIN_SPEED
+
+    eleven = ElevenLabsTTSBackend(api_key="xi-test", voice_id="voice-1")
+    assert eleven.native_speed(1.0) == 1.0
+    assert eleven.native_speed(1.2) == ELEVEN_MAX_SPEED
+    # Past the ceiling the engine takes what it can and the rest is stretched.
+    assert eleven.native_speed(1.3) == ELEVEN_MAX_SPEED
+    assert eleven.native_speed(2.0) == ELEVEN_MAX_SPEED
+    assert eleven.native_speed(0.2) == ELEVEN_MIN_SPEED
+
+
+def test_an_engine_with_no_rate_control_leaves_it_all_to_the_stretch():
+    from voice.call.tts import DeterministicTTSStub
+
+    assert DeterministicTTSStub().native_speed(1.3) == 1.0
+
+
+def test_the_speed_wrapper_never_emits_a_frame_the_transport_refuses(monkeypatch):
+    """Slowing down makes frames longer, and over 50ms they are dropped."""
+
+    from voice.call.tts import (DeterministicTTSStub, SpeedAdjustedTTSBackend,
+                                ELEVEN_SAMPLE_RATE)
+
+    monkeypatch.setenv("SERENA_CALL_VOICE_RATE", "0.5")
+    stub = DeterministicTTSStub(samples_per_sentence=24_000)
+    backend = SpeedAdjustedTTSBackend(stub)
+
+    chunks = _drain(backend)
+    assert chunks
+    for chunk in chunks:
+        milliseconds = len(chunk.pcm) / 2 / ELEVEN_SAMPLE_RATE * 1000
+        assert milliseconds <= 50, f"{milliseconds:.0f} ms frame would be refused"

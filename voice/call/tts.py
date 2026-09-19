@@ -52,6 +52,17 @@ class PCMChunk:
 
 
 class AsyncTTSBackend(ABC):
+    def native_speed(self, speed: float) -> float:
+        """How much of the requested rate this engine applies on its own.
+
+        1.0 means none of it, so the wrapper stretches the lot. An engine with
+        a real speaking-rate control returns what it clamped to, and only the
+        remainder is stretched -- a rate the engine produces sounds better than
+        the same rate fabricated afterwards.
+        """
+
+        return 1.0
+
     """Adapter boundary shared by sentence and true-stream local engines."""
 
     name = "abstract"
@@ -742,6 +753,22 @@ class PocketTTSBackend(AsyncTTSBackend):
         _terminate_process(process)
 
 
+def _framed(pcm: bytes, rate: int) -> list[bytes]:
+    """Cut PCM into frames the transport will accept.
+
+    A stretch does not preserve chunk duration: slowing down makes each one
+    longer, and the desk protocol rejects anything past 50ms outright rather
+    than trimming it -- which is heard as silence, not as a slow voice.
+    """
+
+    if not pcm:
+        return []
+    limit = max(2, (rate * 2 * MAX_TTS_FRAME_MS // 1000) & ~1)
+    if len(pcm) <= limit:
+        return [pcm]
+    return [pcm[i:i + limit] for i in range(0, len(pcm), limit)]
+
+
 class SpeedAdjustedTTSBackend(AsyncTTSBackend):
     """Wrap an engine so the speed slider applies to every voice surface.
 
@@ -776,7 +803,12 @@ class SpeedAdjustedTTSBackend(AsyncTTSBackend):
         self._inner.retire_generation(generation)
 
     async def stream(self, sentence: str, *, generation: int):
-        speed = read_voice_speed()
+        wanted = read_voice_speed()
+        # Whatever the engine applied itself is already in the audio; stretching
+        # by the full rate on top of it would compound the two.
+        applied = self._inner.native_speed(wanted)
+        speed = wanted / applied if applied else wanted
+        speed = round(speed, 4)
         stretcher: StreamingTimeStretch | None = None
         rate = getattr(self._inner, "sample_rate", 24_000)
         async for chunk in self._inner.stream(sentence, generation=generation):
@@ -787,12 +819,12 @@ class SpeedAdjustedTTSBackend(AsyncTTSBackend):
                 rate = chunk.sample_rate or rate
                 stretcher = StreamingTimeStretch(rate, speed)
             stretched = stretcher.feed(chunk.pcm)
-            if stretched:
-                yield PCMChunk(stretched, chunk.sample_rate)
+            for frame in _framed(stretched, chunk.sample_rate or rate):
+                yield PCMChunk(frame, chunk.sample_rate)
         if stretcher is not None:
             tail = stretcher.flush()
-            if tail:
-                yield PCMChunk(tail, rate)
+            for frame in _framed(tail, rate):
+                yield PCMChunk(frame, rate)
 
 
 
@@ -1210,7 +1242,10 @@ def create_tts_backend() -> AsyncTTSBackend:
                 "SERENA_CALL_TTS_BACKEND asked for ElevenLabs but no key or "
                 "SERENA_CALL_ELEVEN_VOICE_ID is set"
             )
-        return eleven
+        # Wrapped so the one speed slider reaches her too. The engine takes
+        # the rate up to its own 1.2 ceiling and the wrapper stretches only
+        # what is left, so nothing is applied twice.
+        return SpeedAdjustedTTSBackend(eleven)
     raise RuntimeError(f"unsupported Serena call TTS backend {backend!r}")
 
 
@@ -1274,6 +1309,9 @@ ELEVEN_READ_BYTES = 4_096
 # frame: she had a voice and every sentence of it was thrown away.
 ELEVEN_FRAME_MS = 40
 ELEVEN_FRAME_BYTES = ELEVEN_SAMPLE_RATE * 2 * ELEVEN_FRAME_MS // 1000
+# The API's own speaking-rate range; outside it the request is rejected.
+ELEVEN_MIN_SPEED = 0.7
+ELEVEN_MAX_SPEED = 1.2
 
 
 class ElevenLabsTTSBackend(AsyncTTSBackend):
@@ -1342,6 +1380,11 @@ class ElevenLabsTTSBackend(AsyncTTSBackend):
     def configured(self) -> bool:
         return bool(self.api_key and self.voice_id)
 
+    def native_speed(self, speed: float) -> float:
+        # Measured 2026-09-19: the API returns 200 at 1.2 and 400 at 1.3, so
+        # this is a hard ceiling and anything past it has to be stretched.
+        return min(max(float(speed), ELEVEN_MIN_SPEED), ELEVEN_MAX_SPEED)
+
     async def warm(self) -> None:
         if self.fallback is not None:
             await self.fallback.warm()
@@ -1350,10 +1393,14 @@ class ElevenLabsTTSBackend(AsyncTTSBackend):
         import json
         import urllib.request
 
+        settings = {"stability": 0.4, "similarity_boost": 0.75}
+        speed = self.native_speed(read_voice_speed())
+        if speed != 1.0:
+            settings["speed"] = round(speed, 3)
         body = json.dumps({
             "text": sentence,
             "model_id": self.model_id,
-            "voice_settings": {"stability": 0.4, "similarity_boost": 0.75},
+            "voice_settings": settings,
         }).encode("utf-8")
         return urllib.request.Request(
             f"{ELEVEN_TTS_URL}/{self.voice_id}/stream"
