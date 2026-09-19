@@ -45,8 +45,9 @@
     {
       "id": "fleet-report-visibility",
       "title": "Hide automatic Fleet report chats",
-      "devTag": "v0.3.10-dev.1",
-      "commit": "4c6885f70ae6324db1c065d66741a006b8936069",
+      "devTag": "v0.3.10-dev.2",
+      "base": "f5438e3940ee8d811e297de92d25b90f79e26da5",
+      "commit": "0351f95e3fd52120f16073eeaa78c246ed924306",
       "requires": [],
       "paths": ["core/indexer.py", "tests/test_fleet_report_visibility.py", "tests/test_web_terminal_performance.py"]
     }
