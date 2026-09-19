@@ -155,3 +155,71 @@ def test_monitors_caches_between_frames(monkeypatch):
     for _ in range(5):
         desktop.monitors()
     assert len(calls) == 1
+
+
+def _input_stub():
+    import threading
+
+    desktop = object.__new__(X11Desktop)
+    desktop.monitor_cache = None
+    desktop.monitor_cached_at = 0.0
+
+    class DummyDisplay:
+        def sync(self):
+            return None
+
+    desktop.display = DummyDisplay()
+    desktop.lock = threading.RLock()
+    desktop.held_keys = set()
+    desktop.held_buttons = set()
+    return desktop
+
+
+def _fake_xtest(monkeypatch):
+    import sys
+    import types
+
+    calls = []
+    xtest = types.ModuleType("Xlib.ext.xtest")
+    xtest.fake_input = lambda *args, **kwargs: calls.append(args)
+    monkeypatch.setitem(sys.modules, "Xlib.ext.xtest", xtest)
+    return calls
+
+
+def test_synthetic_input_tags_the_agent_driven_window(tmp_path, monkeypatch):
+    import core.computer_platform as platform
+    from core.ambient_store import AmbientStore
+
+    monkeypatch.setenv("SERENA_AMBIENT_DB_PATH", str(tmp_path / "ambient.sqlite3"))
+    platform._AGENT_TAG_STATE["at"] = 0.0
+    calls = _fake_xtest(monkeypatch)
+    desktop = _input_stub()
+
+    desktop.move(10, 20)
+    desktop.button(1, True)
+    desktop.button(1, False)
+
+    assert len(calls) == 3
+    assert AmbientStore(tmp_path / "ambient.sqlite3").is_agent_driven() is True
+
+
+def test_agent_tag_is_fail_soft_and_rearmed(tmp_path, monkeypatch):
+    import core.computer_platform as platform
+
+    monkeypatch.setenv("SERENA_AMBIENT_DB_PATH", str(tmp_path / "ambient.sqlite3"))
+    platform._AGENT_TAG_STATE["at"] = 0.0
+    platform._tag_agent_input()
+    first = platform._AGENT_TAG_STATE["at"]
+    assert first > 0.0
+
+    # A burst within the re-arm window is one write, not a hot loop.
+    platform._tag_agent_input()
+    assert platform._AGENT_TAG_STATE["at"] == first
+
+    # A broken store must never break her mouse.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    monkeypatch.setenv(
+        "SERENA_AMBIENT_DB_PATH", str(blocker / "ambient.sqlite3"))
+    platform._AGENT_TAG_STATE["at"] = 0.0
+    platform._tag_agent_input()

@@ -641,3 +641,64 @@ def test_a_brief_accepted_before_tiering_still_runs_at_what_it_froze() -> None:
     # Nonsense falls back to ordinary rather than inventing an effort.
     assert frozen_implement_effort({"codex_effort": "banana"}) == "high"
     assert frozen_implement_effort(None) == "high"
+
+
+def test_one_typo_in_a_project_name_still_resolves(tmp_path) -> None:
+    """He texts "Lockit"; a single edit is a typo, not an ambiguous request."""
+
+    serena = _repo(tmp_path / "serena")
+    locket = _repo(tmp_path / "locket")
+
+    resolved = resolve_repository_root(
+        "do some research to enable workouts so they affect the health stats in Lockit",
+        roots=[serena, locket],
+        projects_root=tmp_path,
+        serena_root=serena,
+    )
+
+    assert resolved == locket
+
+
+def test_two_projects_within_one_edit_stay_a_question(tmp_path) -> None:
+    """Near misses are only a typo while exactly one project can be meant."""
+
+    serena = _repo(tmp_path / "serena")
+    locket = _repo(tmp_path / "locket")
+    rocket = _repo(tmp_path / "rocket")
+
+    # "docket" is one edit from both, so which one he meant is a real question.
+    with pytest.raises(RepositoryResolutionError, match="which Git project"):
+        resolve_repository_root(
+            "enable workouts so they affect the health stats in docket",
+            roots=[serena, locket, rocket],
+            projects_root=tmp_path,
+            serena_root=serena,
+        )
+
+
+def test_a_short_name_is_never_reached_by_a_typo(tmp_path) -> None:
+    """Six characters each way, so "live"/"like" and "app"/"api" cannot collide."""
+
+    serena = _repo(tmp_path / "serena")
+    live = _repo(tmp_path / "live")
+
+    with pytest.raises(RepositoryResolutionError, match="i need the project name"):
+        resolve_repository_root(
+            "make the like button stop flickering when a card reloads",
+            roots=[serena, live],
+            projects_root=tmp_path,
+            serena_root=serena,
+        )
+
+
+def test_a_brief_with_no_project_at_all_still_asks(tmp_path) -> None:
+    serena = _repo(tmp_path / "serena")
+    locket = _repo(tmp_path / "locket")
+
+    with pytest.raises(RepositoryResolutionError, match="i need the project name"):
+        resolve_repository_root(
+            "please fix the thing that keeps breaking, it is still broken",
+            roots=[serena, locket],
+            projects_root=tmp_path,
+            serena_root=serena,
+        )

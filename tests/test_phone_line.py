@@ -55,7 +55,7 @@ def test_ping_reads_the_pong_from_data(monkeypatch):
     assert bluebubbles_line.ping() is False
 
 
-def test_all_five_commands_still_parse():
+def test_all_six_commands_still_parse():
     """Spec: conversation must not regress the command grammar."""
 
     from core import phone_line
@@ -69,6 +69,79 @@ def test_all_five_commands_still_parse():
     assert phone_line.parse("status") == ("status", {})
     assert phone_line.parse("serena: queued as #9") is None
     assert phone_line.parse("   ") is None
+
+
+def test_stop_parses_but_stop_by_the_store_does_not():
+    from core import phone_line
+
+    assert phone_line.parse("stop") == ("proactive_stop", {})
+    assert phone_line.parse("Stop please.") == ("proactive_stop", {})
+    assert phone_line.parse("stop by the store") is None
+    assert phone_line.parse("don't stop") is None
+
+
+def test_stop_dismisses_the_latest_proactive_kind(tmp_path, monkeypatch):
+    import core.notification_senders as senders
+    from core import phone_line
+    from core.control_plane import ControlPlaneStore
+    from core.interrupt_policy import PolicyStore
+    from core.notification_authority import (
+        NotificationAuthority,
+        NotificationPolicy,
+        NotificationRequest,
+    )
+
+    authority = NotificationAuthority(
+        tmp_path / "notices.sqlite3",
+        policy=NotificationPolicy(quiet_start_hour=0, quiet_end_hour=0),
+        senders={"telegram": lambda request: True},
+        control_store=ControlPlaneStore(tmp_path / "control.sqlite3"),
+    )
+    monkeypatch.setattr(senders, "_AUTHORITY", authority)
+    monkeypatch.setenv("SERENA_POLICY_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    authority.request(
+        NotificationRequest(kind="stuck.nudge", summary="you look stuck",
+                            channel="telegram", proactive=True,
+                            dedupe_key="stop-1"),
+        now=1000.0,
+    )
+    line = _FakeSharedLine([_row("g1", "stop", 2)])
+    monkeypatch.setattr(phone_line, "_backend", lambda: line)
+
+    report = phone_line.poll(now=1100.0)
+
+    assert [c["kind"] for c in report.commands] == ["proactive_stop"]
+    assert "stuck.nudge" in line.sent[0][0]
+    store = PolicyStore()
+    assert store.is_suppressed("stuck.nudge", now=1200.0) is False
+    # Two more stops and the kind earns its week of silence.
+    for at in (1300.0, 1400.0):
+        authority.request(
+            NotificationRequest(kind="stuck.nudge", summary="again",
+                                channel="telegram", proactive=True,
+                                dedupe_key=f"stop-{at}"),
+            now=at,
+        )
+        line2 = _FakeSharedLine([_row("g2", "stop", at + 1)])
+        monkeypatch.setattr(phone_line, "_backend", lambda line=line2: line)
+        phone_line.poll(now=at + 2.0)
+    assert PolicyStore().is_suppressed("stuck.nudge", now=1500.0) is True
+
+
+def test_stop_with_nothing_recent_says_so(tmp_path, monkeypatch):
+    import core.notification_senders as senders
+    from core import phone_line
+    from core.control_plane import ControlPlaneStore
+    from core.notification_authority import NotificationAuthority
+
+    monkeypatch.setattr(
+        senders, "_AUTHORITY",
+        NotificationAuthority(
+            tmp_path / "notices.sqlite3",
+            control_store=ControlPlaneStore(tmp_path / "control.sqlite3")))
+    monkeypatch.setenv("SERENA_POLICY_DB_PATH", str(tmp_path / "policy.sqlite3"))
+
+    assert "nothing recent" in phone_line._stop_proactive(1000.0)
 
 
 class _FakeSharedLine:

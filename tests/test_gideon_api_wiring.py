@@ -346,7 +346,11 @@ def test_gideon_tools_are_available_to_both_provider_runtimes(tmp_path: Path) ->
     )
 
     assert "serena-gideon" in options.mcp_servers
-    assert options.allowed_tools == brain_gideon_tools.GIDEON_TOOL_NAMES
+    # The read-only file tools lead every allow list; this case is about the
+    # gideon surface mounted beside them.
+    mounted = [name for name in options.allowed_tools
+               if name not in brain_daemon._BRAIN_BUILTIN_TOOLS]
+    assert mounted == brain_gideon_tools.GIDEON_TOOL_NAMES
 
     from core.codex_brain_tools import build_serena_codex_brain_tools
 

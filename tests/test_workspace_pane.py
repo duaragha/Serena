@@ -2864,6 +2864,36 @@ def test_claude_permission_selector_is_unavailable_even_with_controls(pane, tmp_
     assert not errors
 
 
+@pytest.mark.parametrize('width', [390, 1600])
+def test_codex_context_uses_live_last_request_not_cumulative_total(pane, width, tmp_path):
+    page, errors = pane
+    page.set_viewport_size({'width':width,'height':900})
+    page.evaluate("""()=>{
+      pane.dispose();window.pane=new pane.constructor(document.querySelector('#left'),{sessionId:'exact',provider:'Codex',controls});window.seq=0;
+      emit({method:'workspace/history',params:{thread:{id:'exact',turns:[]},model:'native-model'}});
+    }""")
+    page.locator('#left').get_by_role('button',name='Context breakdown',exact=True).click()
+    dialog=page.get_by_role('dialog',name='Context breakdown')
+    playwright.expect(dialog).to_contain_text('Context usage not reported yet')
+    page.evaluate("""emit({method:'thread/tokenUsage/updated',params:{tokenUsage:{
+      last:{totalTokens:2000,inputTokens:1500,cachedInputTokens:500,outputTokens:500,reasoningOutputTokens:200},
+      total:{totalTokens:999999},modelContextWindow:10000}}})""")
+    playwright.expect(dialog).to_contain_text('2,000 / 10,000 tokens')
+    playwright.expect(dialog).to_contain_text('20.0% of context window (last request)')
+    assert dialog.locator('progress').evaluate('el=>el.value') == 2000
+    assert dialog.locator('dt', has_text='Chat total (cumulative)').evaluate('el=>el.nextElementSibling.textContent') == '999,999'
+    assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth')
+    page.screenshot(path=str(tmp_path / f'codex-context-{width}.png'))
+    page.evaluate("emit({method:'thread/tokenUsage/updated',params:{tokenUsage:{last:{totalTokens:0},modelContextWindow:null}}})")
+    playwright.expect(dialog).to_contain_text('Context window unavailable')
+    assert dialog.locator('dt', has_text='Chat total (cumulative)').evaluate('el=>el.nextElementSibling.textContent') == 'Not reported'
+    assert dialog.locator('progress').count() == 0
+    page.evaluate("emit({method:'thread/tokenUsage/updated',params:{tokenUsage:{last:{totalTokens:0},total:{totalTokens:0},modelContextWindow:10000}}})")
+    playwright.expect(dialog.locator('dt', has_text='Chat total (cumulative)').locator('+ dd')).to_have_text('0')
+    assert page.evaluate('calls') == []
+    assert not errors
+
+
 def test_context_breakdown_is_explicit_and_clears_stale_data_on_failure(pane, tmp_path):
     page, errors = pane
     page.set_viewport_size({"width": 390, "height": 844})

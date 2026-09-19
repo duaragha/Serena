@@ -128,3 +128,64 @@ def test_notification_reads_do_not_retain_descriptors_until_gc(tmp_path):
     finally:
         if enabled:
             gc.enable()
+
+
+# ---- answering him is not interrupting him -------------------------------
+
+
+def _authority_in_quiet_hours(tmp_path, sent):
+    """An authority whose quiet hours are open right now, with a live sender."""
+
+    hour = datetime.now().hour
+    return NotificationAuthority(
+        tmp_path / "quiet.sqlite3",
+        control_store=ControlPlaneStore(tmp_path / "quiet-control.sqlite3"),
+        policy=NotificationPolicy(quiet_start_hour=hour, quiet_end_hour=(hour + 1) % 24),
+        senders={"imessage": lambda request: sent.append(request.summary) or True},
+    )
+
+
+def test_quiet_hours_still_hold_an_unprompted_notice(tmp_path):
+    sent = []
+    authority = _authority_in_quiet_hours(tmp_path, sent)
+
+    result = authority.request(NotificationRequest(
+        kind="task.update", summary="#9 is still stuck and i can't move it",
+        channel="imessage", dedupe_key="nudge:9:blocked"))
+
+    assert result.decision == "deferred"
+    assert result.reason == "quiet hours"
+    assert sent == []
+
+
+def test_an_answer_to_something_he_asked_for_is_not_held(tmp_path):
+    """#1054 failed at 23:56 and the notice was parked until 08:00.
+
+    He was awake, on that line, asking about it. Holding the answer until
+    morning is indistinguishable from the bot being broken.
+    """
+
+    sent = []
+    authority = _authority_in_quiet_hours(tmp_path, sent)
+
+    result = authority.request(NotificationRequest(
+        kind="task.update", summary="#1054 failed: test gate failed after integration",
+        channel="imessage", dedupe_key="task:1054:blocked", answers_request=True))
+
+    assert result.decision == "sent", result.reason
+    assert sent == ["#1054 failed: test gate failed after integration"]
+
+
+def test_answering_is_not_a_general_escape(tmp_path):
+    """It skips quiet hours only. Dedupe still applies, so it cannot spam."""
+
+    sent = []
+    authority = _authority_in_quiet_hours(tmp_path, sent)
+    request = NotificationRequest(
+        kind="task.update", summary="#1054 failed: test gate failed after integration",
+        channel="imessage", dedupe_key="task:1054:blocked", answers_request=True)
+
+    assert authority.request(request).decision == "sent"
+    repeat = authority.request(request)
+    assert repeat.decision == "suppressed"
+    assert len(sent) == 1

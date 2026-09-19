@@ -114,6 +114,63 @@ _instance_lock_handle: BinaryIO | None = None
 _BRAIN_BUILTIN_TOOLS: list[str] = ["Read", "Grep", "Glob"]
 
 
+def _remote_mcp_servers() -> tuple[dict[str, dict], list[str]]:
+    """Every MCP server from his master config, mounted for her too.
+
+    She and the terminal are the same person with different reach; this is most
+    of the difference. The master config at ~/.config/serena/mcp.json is the one
+    source of truth, so a server he adds there reaches her without a second
+    edit here.
+
+    Raghav asked for the whole surface, writes included, on 2026-09-18. These
+    are live business systems -- ads budgets, DNS, storefronts -- and the allow
+    entry is per server, so he can narrow it later by disabling a server in the
+    same config rather than editing this file.
+
+    SERENA_BRAIN_MCP=0 turns the lot off: the daemon has to start even when the
+    PC hosting them is down, and her own tools matter more than theirs.
+    """
+
+    if os.environ.get("SERENA_BRAIN_MCP", "1").strip().lower() in {"0", "false", "no"}:
+        return {}, []
+    try:
+        from core.mcp import config as mcp_config
+    except ImportError:
+        return {}, []
+    try:
+        servers = mcp_config.load().get("servers", {})
+    except Exception:
+        return {}, []
+
+    mounted: dict[str, dict] = {}
+    allow: list[str] = []
+    for name, entry in sorted(servers.items()):
+        if not isinstance(entry, dict) or entry.get("enabled") is False:
+            continue
+        if "claude" not in (entry.get("targets") or ["claude"]):
+            continue
+        transport = str(entry.get("transport") or "").lower()
+        if transport == "http" and entry.get("url"):
+            spec: dict = {"type": "http", "url": str(entry["url"])}
+            if entry.get("headers"):
+                spec["headers"] = dict(entry["headers"])
+        elif transport == "stdio" and entry.get("command"):
+            spec = {
+                "type": "stdio",
+                "command": str(entry["command"]),
+                "args": [str(a) for a in (entry.get("args") or [])],
+            }
+            if entry.get("env"):
+                spec["env"] = {str(k): str(v) for k, v in entry["env"].items()}
+        else:
+            continue
+        mounted[name] = spec
+        # The whole server in one entry, so a tool added upstream is not
+        # silently denied the way the builtins were.
+        allow.append(f"mcp__{name}")
+    return mounted, allow
+
+
 def _readable_roots() -> list[str]:
     """His Projects tree, wherever it lives on this machine.
 
@@ -2086,15 +2143,21 @@ def _build_agent_options(
     fleet_tool_names: list[str] | None = None,
     gideon_tools=None,
     gideon_tool_names: list[str] | None = None,
+    vm_tools=None,
+    vm_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
+    mcp_servers = {"serena-ro": brain_tools}
+
+    _, remote_allow_names = _remote_mcp_servers()
     allowed_tools = [
         # `tools` enables these; `allowed_tools` is what actually permits them.
         # Under permission_mode="dontAsk" anything missing here is denied
         # silently, so listing them in one place only reads as working and
         # quietly is not: she answers from memory instead of opening the file.
         *_BRAIN_BUILTIN_TOOLS,
+        *remote_allow_names,
         *brain_tool_names,
         *(laptop_tool_names or []),
         *(work_tool_names or []),
@@ -2103,8 +2166,8 @@ def _build_agent_options(
         *(capability_tool_names or []),
         *(fleet_tool_names or []),
         *(gideon_tool_names or []),
+        *(vm_tool_names or []),
     ]
-    mcp_servers = {"serena-ro": brain_tools}
     if laptop_tools is not None:
         mcp_servers["serena-laptop"] = laptop_tools
     if work_tools is not None:
@@ -2119,6 +2182,12 @@ def _build_agent_options(
         mcp_servers["serena-fleet"] = fleet_tools
     if gideon_tools is not None:
         mcp_servers["serena-gideon"] = gideon_tools
+    if vm_tools is not None:
+        mcp_servers["serena-vm"] = vm_tools
+    remote_servers, remote_allow = _remote_mcp_servers()
+    mcp_servers.update(remote_servers)
+    print(f"[brain] {len(mcp_servers)} mcp servers, "
+          f"{len(allowed_tools)} allowed tools", flush=True)
     prompt_path = _write_private_text(
         BRAIN_SYSTEM_PROMPT_FILE,
         _persona_context(),
@@ -2227,6 +2296,8 @@ class ResidentClientManager:
         fleet_tool_names: list[str] | None = None,
         gideon_tools_factory=None,
         gideon_tool_names: list[str] | None = None,
+        vm_tools_factory=None,
+        vm_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
         voice_transcripts: VoiceTranscriptStore | None = None,
@@ -2256,6 +2327,8 @@ class ResidentClientManager:
         self.fleet_tool_names = list(fleet_tool_names or [])
         self.gideon_tools_factory = gideon_tools_factory
         self.gideon_tool_names = list(gideon_tool_names or [])
+        self.vm_tools_factory = vm_tools_factory
+        self.vm_tool_names = list(vm_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.voice_transcripts = voice_transcripts or VoiceTranscriptStore()
@@ -2873,6 +2946,12 @@ class ResidentClientManager:
                 else None
             ),
             gideon_tool_names=self.gideon_tool_names,
+            vm_tools=(
+                self.vm_tools_factory()
+                if self.vm_tools_factory is not None
+                else None
+            ),
+            vm_tool_names=self.vm_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -3449,6 +3528,7 @@ async def _run_daemon() -> None:
     from core.brain_document_tools import DOCUMENT_TOOL_NAMES, document_tools_server
     from core.brain_fleet_tools import FLEET_TOOL_NAMES, fleet_tools_server
     from core.brain_gideon_tools import GIDEON_TOOL_NAMES, gideon_tools_server
+    from core.brain_vm_tools import VM_TOOL_NAMES, vm_tools_server
     from core.brain_laptop_tools import LAPTOP_TOOL_NAMES, laptop_tools_server
     from core.brain_memory_tools import MEMORY_TOOL_NAMES, memory_tools_server
     from core.brain_tools import BRAIN_TOOL_NAMES, brain_tools_server
@@ -3481,6 +3561,8 @@ async def _run_daemon() -> None:
         fleet_tool_names=FLEET_TOOL_NAMES,
         gideon_tools_factory=gideon_tools_server,
         gideon_tool_names=GIDEON_TOOL_NAMES,
+        vm_tools_factory=vm_tools_server,
+        vm_tool_names=VM_TOOL_NAMES,
         codex_brain_factory=lambda: CodexBrainClient(
             cwd=BRAIN_CWD,
             developer_instructions=_persona_context(),

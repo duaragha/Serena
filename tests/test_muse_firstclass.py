@@ -689,3 +689,27 @@ def test_coding_jobs_accept_muse_sessions(tmp_path, monkeypatch) -> None:
         claude_projects_root=tmp_path / "claude",
     )
     assert "not supported" not in reason, reason
+
+
+def test_subagent_transcripts_are_not_listed_as_chats(tmp_path, monkeypatch) -> None:
+    sid = "33333333-4444-5555-6666-777777777777"
+    log = _muse_sessions(tmp_path, monkeypatch, sid)
+    sub = log.parent / "subagent" / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" / "session.jsonl"
+    sub.parent.mkdir(parents=True)
+    sub.write_text('{"type":"user","message":{"content":"sub task"}}\n', encoding="utf-8")
+
+    found = list(muse_scanner.scan_muse_sessions())
+    assert found == [("muse", log)]
+
+
+def test_subagent_sessions_are_not_resumable(tmp_path, monkeypatch) -> None:
+    sid = "44444444-5555-6666-7777-888888888888"
+    log = _muse_sessions(tmp_path, monkeypatch, sid)
+    sub_id = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+    sub = log.parent / "subagent" / sub_id / "session.jsonl"
+    sub.parent.mkdir(parents=True)
+    sub.write_text('{"type":"user","message":{"content":"sub task"}}\n', encoding="utf-8")
+
+    assert muse_scanner.resumable_session_path(sid) == log
+    assert muse_scanner.resumable_session_path(sub_id) is None
+    assert muse_scanner.transcript_path(sub_id) is None

@@ -7,7 +7,10 @@ from types import SimpleNamespace
 import tomllib
 from mcp import types
 
+import pytest
+
 from core import brain_daemon, brain_laptop_tools, brain_tools
+
 
 
 def test_completed_brain_turn_emits_bounded_plugin_metadata(monkeypatch):
@@ -156,7 +159,10 @@ def test_brain_options_are_unattended_and_read_only(monkeypatch, tmp_path: Path)
     if os.name != "nt":
         assert prompt_path.stat().st_mode & 0o777 == 0o600
     assert options.strict_mcp_config is True
-    assert options.mcp_servers == {"serena-ro": server}
+    # serena-vm is mounted unconditionally; the remote servers are sealed off
+    # by the fixture above.
+    assert options.mcp_servers["serena-ro"] is server
+    assert set(options.mcp_servers) <= {"serena-ro", "serena-vm"}
     # She can look at his files, and only look. The point of this assertion is
     # not the list but the boundary: anything that writes, edits or executes
     # must never appear here, because this surface runs unattended and there is
@@ -221,7 +227,8 @@ def test_laptop_tools_are_separate_and_capability_brokered(
         laptop_tool_names=brain_laptop_tools.LAPTOP_TOOL_NAMES,
     )
 
-    assert set(options.mcp_servers) == {"serena-ro", "serena-laptop"}
+    assert {"serena-ro", "serena-laptop"} <= set(options.mcp_servers)
+    assert set(options.mcp_servers) <= {"serena-ro", "serena-laptop", "serena-vm"}
     assert options.permission_mode == "dontAsk"
     # The read-only file tools lead every allow list; these cases are about
     # the MCP surface mounted beside them.
@@ -1016,3 +1023,57 @@ def test_discovery_token_file_is_user_only_on_posix(monkeypatch, tmp_path):
     assert json.loads(path.read_text())["token"] == "secret"
     assert path.stat().st_mode & 0o077 == 0
     assert path.parent.stat().st_mode & 0o077 == 0
+
+
+def test_his_whole_mcp_roster_and_the_mac_reach_her_too(monkeypatch, tmp_path):
+    """She and the terminal are one person; the difference was mostly reach.
+
+    Raghav asked for the full surface on 2026-09-18, writes included, after
+    being told what that allows. The allow entry is per server rather than per
+    tool so a tool added upstream is not silently denied -- the exact failure
+    that made her answer from memory instead of opening a file.
+    """
+
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"version": 1, "servers": {
+        "google-ads": {"transport": "http", "url": "https://pc/mcp/google-ads"},
+        "playwright": {"transport": "stdio", "command": "npx", "args": ["-y", "pw"]},
+        "switched-off": {"transport": "http", "url": "https://pc/mcp/off", "enabled": False},
+        "codex-only": {"transport": "http", "url": "https://pc/mcp/x", "targets": ["codex"]},
+    }}), encoding="utf-8")
+
+    from core.mcp import config as mcp_config
+    monkeypatch.setattr(mcp_config, "CONFIG_PATH", config)
+    monkeypatch.setenv("SERENA_BRAIN_MCP", "1")
+
+    servers, allow = brain_daemon._remote_mcp_servers()
+
+    assert set(servers) == {"google-ads", "playwright"}
+    assert servers["google-ads"] == {"type": "http", "url": "https://pc/mcp/google-ads"}
+    assert servers["playwright"]["command"] == "npx"
+    assert allow == ["mcp__google-ads", "mcp__playwright"]
+
+    # A server he switches off, or aims at codex, must not reach her.
+    assert "switched-off" not in servers
+    assert "codex-only" not in servers
+
+    # And the kill switch has to work, because the daemon must start even when
+    # the PC hosting every one of these is off.
+    monkeypatch.setenv("SERENA_BRAIN_MCP", "0")
+    assert brain_daemon._remote_mcp_servers() == ({}, [])
+
+
+def test_the_mac_is_reached_by_tools_not_a_raw_shell():
+    """Two ssh hops behind VirtualBox NAT; the quoting is what goes wrong."""
+
+    from core import brain_vm_tools
+
+    assert brain_vm_tools.VM_TOOL_NAMES == [
+        "mcp__serena-vm__mac_status",
+        "mcp__serena-vm__mac_run",
+        "mcp__serena-vm__mac_control",
+    ]
+    # Stopping the guest stops the iMessage bridge with it, so these are not
+    # advertised as read-only.
+    assert set(brain_vm_tools._CONTROL_VERBS) == {
+        "status", "start", "stop", "kill", "save", "snapshot"}

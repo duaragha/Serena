@@ -42,6 +42,8 @@ def test_the_registry_is_a_fixed_set_of_named_actions():
         "serena.phone.poll",
         "serena.phone.health",
         "serena.approvals.sweep",
+        "serena.proactive.scan",
+        "serena.support.checkin",
     }
     assert all(callable(handler) for handler in REVIEWED_ACTIONS.values())
 
