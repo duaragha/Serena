@@ -590,11 +590,19 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
             )
         assert result["session"]["driver"] == "astra"
         assert result["session"]["source_session_id"] == parent
-        deadline = time.monotonic() + 3
-        while not controller.session.observation and time.monotonic() < deadline:
+        # Wait for everything that is asserted below, not just the first of
+        # them: `options` is appended by the same background worker, and a
+        # loaded machine let the observation land while the options list was
+        # still empty -- an IndexError three lines later rather than a timeout
+        # that says what was missing.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if controller.session.observation and options:
+                break
             time.sleep(0.01)
         assert controller.session.observation == "open the next setup step"
         assert controller.session.last_inspected_at is not None
+        assert options, "the watch worker never recorded its model options"
         assert options[0]["model"] == "gpt-6-astra" and options[0]["effort"] == "medium"
         assert options[0]["service_tier"] == "fast"
         assert options[0]["allow_user_hooks"] is False
