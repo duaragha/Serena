@@ -264,8 +264,7 @@ def test_an_engine_with_no_rate_control_leaves_it_all_to_the_stretch():
 def test_the_speed_wrapper_never_emits_a_frame_the_transport_refuses(monkeypatch):
     """Slowing down makes frames longer, and over 50ms they are dropped."""
 
-    from voice.call.tts import (DeterministicTTSStub, SpeedAdjustedTTSBackend,
-                                ELEVEN_SAMPLE_RATE)
+    from voice.call.tts import ELEVEN_SAMPLE_RATE, DeterministicTTSStub, SpeedAdjustedTTSBackend
 
     monkeypatch.setenv("SERENA_CALL_VOICE_RATE", "0.5")
     stub = DeterministicTTSStub(samples_per_sentence=24_000)
