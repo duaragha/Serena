@@ -272,6 +272,27 @@ def test_tasks_and_memories_count_in_separate_sequences(queue):
     assert store.enqueue_task(BRIEF, source_id="second")["id"] == first + 1
 
 
+def test_a_stray_high_id_does_not_drag_the_sequence_up(queue):
+    """A task imported from a machine that predated the counter is an
+    outlier, not a new floor. It pinned his whole todo list in the 1100s."""
+    store.enqueue_task(BRIEF, source_id="first")
+    stray = queue / "task" / "1120-imported.md"
+    stray.write_text("---\nid: 1120\ntype: task\ncreated: 2026-01-01 00:00:00\n"
+                     "updated: 2026-01-01 00:00:00\n---\n\nqueued elsewhere\n",
+                     encoding="utf-8")
+    assert store.enqueue_task(BRIEF, source_id="second")["id"] == 2
+    # and the outlier is still never overwritten
+    assert store.get_memory(1120, "task")["content"] == "queued elsewhere"
+
+
+def test_the_counter_survives_deleting_the_highest_task(queue):
+    """Deleting the newest task must not hand its id to the next one."""
+    store.enqueue_task(BRIEF, source_id="a")
+    second = store.enqueue_task(BRIEF, source_id="b")["id"]
+    assert store.delete_memory(second, "task")
+    assert store.enqueue_task(BRIEF, source_id="c")["id"] > second
+
+
 def test_an_id_naming_both_spaces_refuses_to_resolve(queue):
     """A bare number is a question once the two spaces overlap."""
     task = store.enqueue_task(BRIEF)

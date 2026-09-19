@@ -684,15 +684,20 @@ def set_locket_id(memory_id: int, locket_id: int, mem_type: str | None = None) -
 
 @_serialized_write
 def _next_id(mem_type: str = "general") -> int:
-    # A scheduler's durable dispatch receipt outlives a deleted task. Never
-    # recycle that identity. Persist before publication: a crash may leave a
-    # harmless gap, but cannot make two different tasks share a receipt.
-    # Tasks draw from their own counter so his todo list numbers itself.
+    # A scheduler's durable dispatch receipt outlives a deleted task, so the
+    # counter only moves forward: a crash may leave a harmless gap, but two
+    # tasks can never share a receipt. The counter is the authority on what
+    # has been handed out; the scan is a fallback for when it is missing, and
+    # a stray high id is stepped over rather than dragging every later id up
+    # to meet it. One task imported from a machine that predated the counter
+    # used to pin his whole todo list in the 1100s.
     is_task = mem_type == "task"
     counter = MEMORY_DIR / (TASK_COUNTER if is_task else MEMORY_COUNTER)
-    floor = int(counter.read_text(encoding="utf-8")) if counter.exists() else 1
-    peers = [m["id"] for m in _scan_all() if (m["type"] == "task") is is_task]
-    mid = max(floor, max(peers, default=0) + 1)
+    taken = {m["id"] for m in _scan_all() if (m["type"] == "task") is is_task}
+    mid = (int(counter.read_text(encoding="utf-8")) if counter.exists()
+           else max(taken, default=0) + 1)
+    while mid in taken:
+        mid += 1
     _atomic_text(counter, str(mid + 1))
     return mid
 
