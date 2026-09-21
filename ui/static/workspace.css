@@ -43,16 +43,28 @@
 .serena-workspace .agent-filter-btn .agent-icon{width:10px;height:10px;margin:0}.serena-workspace .agent-filter-btn.active{background:#2c1729;color:var(--accent)}
 .serena-workspace .session-list-header{display:none}.serena-workspace .session-list{padding:0 8px 10px}
 .serena-workspace .group-header{font:10px var(--mono);border:0;background:#0b080c;padding:13px 9px 7px;color:#c4a8c1}
-.serena-workspace .session-row{display:grid;grid-template-columns:14px 14px minmax(0,1fr) auto;grid-template-rows:auto auto;align-items:center;column-gap:4px;row-gap:5px;padding:10px 9px;margin:2px 0;border:1px solid transparent;border-radius:5px;min-height:55px;background:transparent}
+.sidebar-project-header{display:flex;align-items:center;gap:6px;width:100%;min-height:28px;padding:4px 9px;border:0;background:transparent;color:var(--text-dim);font:11px 'Segoe UI',Arial,sans-serif;text-align:left;letter-spacing:0;cursor:pointer}
+.sidebar-project-header:hover,.sidebar-project-header:focus-visible{background:#20151e;color:var(--text-bright)}
+.sidebar-project-header:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
+.sidebar-project-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.sidebar-project-count{flex-shrink:0;font:10px var(--mono);font-variant-numeric:tabular-nums}
+.sidebar-project-section{margin-left:8px;border-left:1px solid var(--border)}
+.sidebar-project-section.collapsed{display:none}
+.serena-workspace .sidebar-utility-header{position:static;display:flex;align-items:center;gap:7px;width:100%;min-height:30px;padding:5px 9px;background:transparent;font:11px 'Segoe UI',Arial,sans-serif;letter-spacing:0;text-transform:none;text-align:left;cursor:pointer}
+.sidebar-utility-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-utility-count{flex-shrink:0;font:10px var(--mono);font-variant-numeric:tabular-nums;color:var(--text-dim)}
+.serena-workspace .sidebar-utility-header:hover,.serena-workspace .sidebar-utility-header:focus-visible{background:#20151e;color:var(--text-bright)}
+.sidebar-utility-header:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
+.sidebar-section-empty{padding:5px 24px 9px;color:var(--text-dim);font:11px 'Segoe UI',Arial,sans-serif}
+.serena-workspace .session-row{display:flex;align-items:center;gap:4px;padding:5px 7px;margin:1px 0;border:1px solid transparent;border-radius:4px;min-height:32px;background:transparent}
 .serena-workspace .session-row.focused{background:#251323;border-color:#54304b;box-shadow:inset 2px 0 var(--accent)}
 .serena-workspace .session-row.selected{background:#29142d;border-color:#784465}.serena-workspace .session-row.has-group{border-left:1px solid transparent;box-shadow:none}
 .serena-workspace .session-row.focused.has-group{box-shadow:inset 2px 0 var(--accent)}
-.serena-workspace .session-star{grid-column:1;grid-row:1;width:14px;font-size:12px}.serena-workspace .session-link{grid-column:2;grid-row:1;width:13px;margin:0}
-.serena-workspace .session-title{grid-column:3/5;grid-row:1;min-width:0;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;font-weight:500}
+.serena-workspace .session-star{width:14px;font-size:12px}.serena-workspace .session-link{width:13px;margin:0}
+.serena-workspace .session-title{min-width:0;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;font-weight:500;line-height:20px}
 .serena-workspace .session-title-main{min-width:0}.serena-workspace .session-title .agent-icon{width:12px;height:12px;margin-right:4px}
-.serena-workspace .workspace-row-project{grid-row:2;grid-column:3;min-width:0;font:10px var(--mono);color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.serena-workspace .session-date{grid-row:2;grid-column:4;font:9px var(--mono);width:auto;color:var(--text-dim)}
-.serena-workspace .session-disclosure{grid-row:2;grid-column:2}.serena-workspace .session-snippet{font-size:11px;font-weight:400;white-space:normal}
+.serena-workspace .session-disclosure{flex-shrink:0;width:12px}.serena-workspace .session-snippet{font-size:11px;font-weight:400;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+@media (pointer:coarse){.serena-workspace .session-row{min-height:44px}.sidebar-project-header{min-height:36px}}
 .serena-workspace .thread-sibling,.serena-workspace .child-session{margin-left:15px}
 .workspace-completed{height:42px;flex-shrink:0;border:0;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:0 16px;background:#0b080c;color:var(--text-dim);font-size:11px;text-align:left}
 .workspace-completed span{margin-left:auto;font:10px var(--mono)}.workspace-completed svg{width:13px}.workspace-completed:hover{color:var(--accent)}

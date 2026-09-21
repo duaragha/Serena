@@ -1450,7 +1450,7 @@ def test_native_file_search_is_bound_to_owned_project(tmp_path):
     async def run():
         client, rpc, _ = await make(tmp_path)
         await client.open(binary="codex")
-        (tmp_path / "selected file.py").write_text("fixture")
+        (tmp_path / "selected file.py").write_text("fixture", encoding="utf-8")
         async def request(method, params):
             assert method == "fuzzyFileSearch"
             assert params == {"query": "selected", "roots": [str(tmp_path)]}

@@ -125,3 +125,35 @@ def test_the_host_badge_survives_a_broken_machine_lookup(monkeypatch):
 
     assert facts["os"], "the fallback must still name an OS"
     assert facts["name"] == ""
+
+
+def test_persona_is_found_where_it_actually_lives(monkeypatch, tmp_path):
+    """On the PC Fleet runs from ~/serena-runtime, which has no Persona.md
+    (it is gitignored); the real one is ~/Projects/serena. A worker handed the
+    laptop's /home/raghav/... path found nothing and refused a finished run."""
+    from core import machine_context
+
+    runtime = tmp_path / "serena-runtime"
+    synced = tmp_path / "Projects" / "serena"
+    runtime.mkdir(parents=True)
+    synced.mkdir(parents=True)
+    (runtime / "Tooling.md").write_text("tooling", encoding="utf-8")
+    (synced / "Persona.md").write_text("persona", encoding="utf-8")
+    monkeypatch.setattr(machine_context, "serena_root", lambda: runtime)
+    monkeypatch.setattr(machine_context.Path, "home", staticmethod(lambda: tmp_path))
+
+    assert machine_context.persona_dir() == synced
+    line = machine_context.persona_instruction()
+    assert str(synced / "Persona.md") in line
+    assert "/home/raghav" not in line
+    assert "never a prerequisite" in line
+
+
+def test_a_missing_persona_is_never_a_reason_to_stop(monkeypatch, tmp_path):
+    from core import machine_context
+
+    monkeypatch.setattr(machine_context, "serena_root", lambda: None)
+    monkeypatch.setattr(machine_context.Path, "home", staticmethod(lambda: tmp_path))
+
+    assert machine_context.persona_dir() is None
+    assert "carry on without it" in machine_context.persona_instruction()

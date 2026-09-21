@@ -82,7 +82,9 @@ PHASE_MODEL_POLICY = {
         "finalize": (("claude", "claude-opus-5", "high"),),
     },
     # Research runs read, analyse, review, refine. Same four models in the same
-    # order: Luna reads, Opus analyses, Sol reviews, Opus refines.
+    # order: Luna reads, Opus analyses, Astra reviews, Opus refines. Review
+    # tracks the coding ladder -- Sol is retired, and a phase left pinned to it
+    # fails validation against this very table, which refuses the whole run.
     "research": {
         "discover": (("codex", "gpt-5.6-luna", "max"),),
         "execute": (("claude", "claude-opus-5", "high"),),
@@ -133,16 +135,16 @@ PROVIDER_ONLY_POLICY = {
     # stacks this is an explicit downgrade target, never a silent pick.
     "muse": {
         "coding": {
-            "discover": (("muse", "muse-spark", "high"),),
-            "execute": (("muse", "muse-spark", "high"),),
-            "verify": (("muse", "muse-spark", "high"),),
-            "finalize": (("muse", "muse-spark", "high"),),
+            "discover": (("muse", "muse-spark", "max"),),
+            "execute": (("muse", "muse-spark", "max"),),
+            "verify": (("muse", "muse-spark", "max"),),
+            "finalize": (("muse", "muse-spark", "max"),),
         },
         "research": {
-            "discover": (("muse", "muse-spark", "high"),),
-            "execute": (("muse", "muse-spark", "high"),),
-            "verify": (("muse", "muse-spark", "high"),),
-            "finalize": (("muse", "muse-spark", "high"),),
+            "discover": (("muse", "muse-spark", "max"),),
+            "execute": (("muse", "muse-spark", "max"),),
+            "verify": (("muse", "muse-spark", "max"),),
+            "finalize": (("muse", "muse-spark", "max"),),
         },
     },
 }
@@ -350,6 +352,10 @@ class FleetPolicy:
     phases: tuple[PhasePolicy, ...]
     handoffs: tuple[dict[str, Any], ...] = ()
     difficult_retries: tuple[dict[str, Any], ...] = ()
+    blocker_gates_run: bool = False
+    review_rounds: int = 2
+    ui_verify_screenshots: bool = False
+    computer_session_id: str = ''
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -370,6 +376,10 @@ class FleetPolicy:
             "phases": [phase.to_dict() for phase in self.phases],
             "handoffs": [dict(handoff) for handoff in self.handoffs],
             "difficult_retries": [dict(item) for item in self.difficult_retries],
+            "blocker_gates_run": self.blocker_gates_run,
+            "review_rounds": self.review_rounds,
+            "ui_verify_screenshots": self.ui_verify_screenshots,
+            "computer_session_id": self.computer_session_id,
         }
 
 
@@ -393,6 +403,10 @@ def builtin_config() -> dict[str, Any]:
             "minimum_workers_per_phase": 1,
             "no_silent_fallback": True,
             "capacity_handoff": "automatic",
+            "blocker_gates_run": False,
+            "review_rounds": 2,
+            "ui_verify_screenshots": False,
+            "computer_session_id": '',
             "max_parallel_workers": 4,
             "max_parallel_writers": 2,
             # Which real accounts a non-writing leg may read. Enforced per tool
@@ -948,6 +962,10 @@ def build_policy(
         work_units=tuple(work_unit_contracts),
         phases=tuple(phases),
         handoffs=(),
+        blocker_gates_run=defaults.get('blocker_gates_run', False),
+        review_rounds=defaults.get('review_rounds', 2),
+        ui_verify_screenshots=defaults.get('ui_verify_screenshots', False),
+        computer_session_id=str(defaults.get('computer_session_id') or ''),
     )
     validate_policy_snapshot(policy.to_dict())
     return policy
@@ -1184,12 +1202,21 @@ def policy_from_snapshot(snapshot: dict[str, Any]) -> FleetPolicy:
             if isinstance(item, dict)
         ),
         difficult_retries=tuple(dict(item) for item in snapshot.get("difficult_retries", [])),
+        blocker_gates_run=snapshot.get('blocker_gates_run', False),
+        review_rounds=snapshot.get('review_rounds', 2),
+        ui_verify_screenshots=snapshot.get('ui_verify_screenshots', False),
+        computer_session_id=str(snapshot.get('computer_session_id') or ''),
     )
 
 
 def validate_policy_snapshot(snapshot: object) -> None:
     if not isinstance(snapshot, dict):
         raise ValueError("Fleet policy snapshot must be an object")
+    for key in ('blocker_gates_run', 'ui_verify_screenshots'):
+        if not isinstance(snapshot.get(key, False), bool):
+            raise ValueError(f'{key} must be boolean')
+    if type(snapshot.get('review_rounds', 2)) is not int or not 0 <= snapshot.get('review_rounds', 2) <= 10:
+        raise ValueError('review_rounds must be an integer between 0 and 10')
     if snapshot.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("Fleet policy snapshot has an unsupported schema")
     if snapshot.get("activity") not in {"coding", "research"}:

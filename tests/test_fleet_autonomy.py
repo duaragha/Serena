@@ -177,7 +177,7 @@ def test_unavailable_peer_escalates_once_and_late_reply_cannot_claim_success(tea
 
 def final_lesson(team, tmp_path):
     store, run, peers, legs, attempts, tokens = team
-    (tmp_path / "rules.txt").write_text("empty input returns an empty list\n")
+    (tmp_path / "rules.txt").write_text("empty input returns an empty list\n", encoding="utf-8")
     learning = FleetLearning(store)
     # Create the candidate during Fix, AFTER all normal Review workers completed.
     for phase in run["phases"][:-1]:
@@ -245,7 +245,7 @@ def test_post_fix_independent_review_and_promotion(team, tmp_path, outcome):
         )
 
     if outcome == "changed":
-        (tmp_path / "rules.txt").write_text("different evidence")
+        (tmp_path / "rules.txt").write_text("different evidence", encoding="utf-8")
     capacity = {
         "codex": {"usable": outcome != "capacity"},
         "claude": {"usable": outcome != "capacity"},

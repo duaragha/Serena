@@ -517,7 +517,7 @@ def _knowledge_index() -> str:
         from core.config import KNOWLEDGE_DIR
         from knowledge.reader import list_topics
 
-        topics = list_topics()
+        topics = list_topics(surface='daemon', caller='knowledge_index')
         if not topics:
             return ""
         lines = [

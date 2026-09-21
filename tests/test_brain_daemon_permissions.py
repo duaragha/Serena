@@ -109,9 +109,25 @@ def test_brain_instance_lock_is_process_exclusive(tmp_path: Path):
 
 
 def test_runtime_declares_the_claude_agent_sdk_dependency():
-    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
-    dependencies = project["project"]["dependencies"]
-    assert any(value.startswith("claude-agent-sdk>=0.2.120") for value in dependencies)
+    """The brain needs a version of the SDK that has what it calls.
+
+    Asserted as "this specifier admits nothing older" rather than as the exact
+    text of the specifier: pinning the string means an ordinary pin bump reads
+    as the dependency having been dropped, which is what it did.
+    """
+
+    from packaging.requirements import Requirement
+
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = [Requirement(value) for value in project["project"]["dependencies"]]
+    sdk = next(
+        (requirement for requirement in declared if requirement.name == "claude-agent-sdk"),
+        None,
+    )
+    assert sdk is not None, "the resident brain's SDK is not a required dependency"
+    # Whether it is pinned or floored, no version below what the brain calls
+    # may satisfy it.
+    assert not any(sdk.specifier.contains(old) for old in ("0.2.0", "0.2.119"))
 
 
 def test_windows_acl_principal_prefers_resolvable_whoami(monkeypatch):
@@ -162,6 +178,9 @@ def test_brain_options_are_unattended_and_read_only(monkeypatch, tmp_path: Path)
         "git_latest",
         "github_activity",
         "recall_chats",
+        # Read-only search over the local code corpus, which is as unattended
+        # as recalling a chat: it reads an index and returns citations.
+        "recall_code",
         "read_ledger",
         # Read-only recall over everything she knows, added 2026-08-01: only
         # active tasks/loops/ledgers are injected, the rest was unreachable.
@@ -999,6 +1018,6 @@ def test_discovery_token_file_is_user_only_on_posix(monkeypatch, tmp_path):
     path = tmp_path / "config" / "brain.json"
     monkeypatch.setattr(brain_daemon, "BRAIN_FILE", path)
     brain_daemon._write_discovery({"token": "secret"})
-    assert json.loads(path.read_text())["token"] == "secret"
+    assert json.loads(path.read_text(encoding="utf-8"))["token"] == "secret"
     assert path.stat().st_mode & 0o077 == 0
     assert path.parent.stat().st_mode & 0o077 == 0

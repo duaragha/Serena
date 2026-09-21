@@ -156,6 +156,8 @@ def route_turn(
     conversation_model: str | None = None,
     voice_model: str | None = None,
     reflex_model: str | None = None,
+    phone_model: str | None = None,
+    phone_effort: str = "high",
     capacity: Mapping[str, object] | None = None,
     manual_override: object = "auto",
     policy: Mapping[str, object] | None = None,
@@ -166,7 +168,16 @@ def route_turn(
         conversation = str(conversation_model or "sonnet")
         voice = str(voice_model or conversation)
         reflex = str(reflex_model or voice)
-        if protocol != "voice":
+        # His own text line is not a spoken turn. Voice buys its 500-800ms first
+        # token by thinking as little as possible, and every other surface
+        # inherited that because they all shared one model. A text he waits
+        # seconds for can afford a reasoning model, so the phone gets its own.
+        phone = str(phone_model or "").strip()
+        effort = "high"
+        if protocol == "phone" and phone:
+            model = phone
+            effort = str(phone_effort or "high")
+        elif protocol != "voice":
             model = conversation
         elif route_class == "reflex":
             model = reflex
@@ -185,8 +196,9 @@ def route_turn(
             model=model,
             runtime_model=model,
             provider=provider,
+            effort=effort,
             activity="chat" if route_class == "conversation" else route_class,
-            lane="legacy",
+            lane="phone" if protocol == "phone" and phone else "legacy",
             reason=reason,
         )
 

@@ -3764,9 +3764,11 @@ function formatDate(ts) {
   return ts.slice(0, 10);
 }
 
+const _monthGroupFormatter = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
 function timeGroup(ts) {
   if (!ts) return 'Unknown';
   const d = new Date(ts);
+  if (!Number.isFinite(d.getTime())) return 'Invalid Date';
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const diffMs = todayStart - new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -3777,7 +3779,7 @@ function timeGroup(ts) {
   if (days <= 14) return 'Last Week';
   if (days <= 30) return 'This Month';
   if (days <= 60) return 'Last Month';
-  return d.toLocaleString('default', { month: 'long', year: 'numeric' });
+  return _monthGroupFormatter.format(d);
 }
 
 function totalTokens(s) {
@@ -3888,6 +3890,7 @@ function _maybeFollowSpawnedChat() {
 // CHATS: Data Loading
 // ═══════════════════════════════════════════════════════════════
 async function _fetchSidebarSessions(params, dirs) {
+  params.set('view', 'sidebar');
   const response = await fetch('/api/sessions?' + params);
   const primary = await response.json();
   if ((dirs && dirs.length) || primary.length !== 500) return primary;
@@ -3956,6 +3959,7 @@ function _snippetHtml(snip) {
 }
 
 async function searchSessions(q) {
+  _filteredProjectGroupsCollapsed.clear();
   _searchQuery = q || '';
   if (!q) { loadSessions(currentProject); return; }
   const seq = ++_searchSeq;
@@ -4303,10 +4307,12 @@ function updateChatCount() {
 // ═══════════════════════════════════════════════════════════════
 // CHATS: Rendering
 // ═══════════════════════════════════════════════════════════════
+let _sessionListHtml = null;
 function renderSessionList() {
   const el = document.getElementById('sessionList');
   const source = sessionSource.length ? sessionSource : sessions;
   if (!source.length) {
+    _sessionListHtml = null;
     el.innerHTML = '<div class="empty-text">No conversations found</div>';
     focusedIndex = -1;
     focusedSid = null;
@@ -4317,6 +4323,7 @@ function renderSessionList() {
   const topSessions = tree.top;
   const childrenByParent = tree.childrenByParent;
   if (!topSessions.length) {
+    _sessionListHtml = null;
     el.innerHTML = '<div class="empty-text">No conversations found</div>';
     sessions = [];
     focusedIndex = -1;
@@ -4418,20 +4425,49 @@ function renderSessionList() {
     // (linked siblings are folded into the row above — no separate rows)
   };
 
+  const appendProjects = (rows, scope) => {
+    const projects = new Map();
+    for (const s of rows) {
+      const cwd = s.cwd || s.last_cwd || '';
+      const identity = _normCwd(cwd) || cwd || s.project_dir || s.project_short || 'Other';
+      if (!projects.has(identity)) projects.set(identity, []);
+      projects.get(identity).push(s);
+    }
+    // Rows arrive newest-first, so insertion order also ranks projects by activity.
+    for (const [identity, members] of projects) {
+      const key = JSON.stringify([scope, identity]);
+      const collapsed = isProjectGroupCollapsed(key);
+      const first = members[0];
+      const label = first.project_short || first.project_trail || identity;
+      html += '<button type="button" class="sidebar-project-header" data-project-key="' + escAttr(esc(key))
+        + '" title="' + escAttr(esc(first.cwd || first.last_cwd || identity)) + '" aria-expanded="' + (!collapsed)
+        + '" onclick="toggleProjectGroupCollapsed(this.dataset.projectKey)"'
+        + ' onkeydown="if(event.key === \'Enter\' || event.key === \' \') event.stopPropagation()">'
+        + '<span aria-hidden="true">' + (collapsed ? '\u25b8' : '\u25be') + '</span>'
+        + '<span class="sidebar-project-name">' + esc(label) + '</span>'
+        + '<span class="sidebar-project-count">' + members.length + '</span></button>';
+      html += '<div class="sidebar-project-section' + (collapsed ? ' collapsed' : '') + '">';
+      for (const s of members) appendRow(s);
+      html += '</div>';
+    }
+  };
+
   if (serenaVoice.length) {
     html += '<div class="group-header serena-header">Serena</div>';
     for (const s of serenaVoice) appendRow(s);
   }
 
-  if (fleetChats.length) {
+  {
     const chev = _collapsedState.fleetChats ? '▸' : '▾';
-    html += '<div class="group-header fleet-header" data-testid="fleet-chats-header" role="button" aria-expanded="'
-      + (!_collapsedState.fleetChats) + '" onclick="toggleFleetChatsCollapsed()">'
-      + chev + ' Fleet Chats (' + fleetChats.length + ')</div>';
+    html += '<button type="button" class="group-header fleet-header sidebar-utility-header" data-testid="fleet-chats-header" aria-expanded="'
+      + (!_collapsedState.fleetChats) + '" aria-controls="fleetChatsSection" onclick="toggleFleetChatsCollapsed()"'
+      + ' onkeydown="if(event.key === \'Enter\' || event.key === \' \') event.stopPropagation()">'
+      + '<span aria-hidden="true">' + chev + '</span> <span class="sidebar-utility-label">Fleet Chats</span> '
+      + '<span class="sidebar-utility-count">(' + fleetChats.length + ')</span></button>';
     // Keep rows mounted so focus, search, and direct Fleet deep-links retain
     // their real session indexes while the visual section is collapsed.
     html += '<div class="fleet-chats-section' + (_collapsedState.fleetChats ? ' collapsed' : '')
-      + '" data-testid="fleet-chats-section">';
+      + '" id="fleetChatsSection" data-testid="fleet-chats-section">';
     // Fleet runs pile up fast, and one flat list of forty-nine worker chats
     // says nothing about what they were for. Group them by the project each
     // run targeted, newest project first, so the section reads like the rest
@@ -4455,21 +4491,22 @@ function renderSessionList() {
       }
       for (const s of rows) appendRow(s);
     }
+    if (!fleetChats.length) html += '<div class="sidebar-section-empty">No fleet chats</div>';
     html += '</div>';
   }
 
   const voiceChev = _collapsedState.voiceChats ? '▸' : '▾';
-  html += '<div class="group-header voice-chats-header" data-testid="voice-chats-header" role="button" aria-expanded="'
-    + (!_collapsedState.voiceChats) + '" onclick="toggleVoiceChatsCollapsed()">'
-    + voiceChev + ' Voice Chats (' + voiceChats.length + ')</div>';
+  html += '<button type="button" class="group-header voice-chats-header sidebar-utility-header" data-testid="voice-chats-header" aria-expanded="'
+    + (!_collapsedState.voiceChats) + '" aria-controls="voiceChatsSection" onclick="toggleVoiceChatsCollapsed()"'
+    + ' onkeydown="if(event.key === \'Enter\' || event.key === \' \') event.stopPropagation()">'
+    + '<span aria-hidden="true">' + voiceChev + '</span> <span class="sidebar-utility-label">Voice Chats</span> '
+    + '<span class="sidebar-utility-count">(' + voiceChats.length + ')</span></button>';
   html += '<div class="voice-chats-section' + (_collapsedState.voiceChats ? ' collapsed' : '')
-    + '" data-testid="voice-chats-section"></div>';
+    + '" id="voiceChatsSection" data-testid="voice-chats-section"><div class="sidebar-section-empty">No voice chats</div></div>';
 
   if (active.length) {
     html += '<div class="group-header active-header">\u25CF Active Terminals</div>';
-    for (const s of active) {
-      appendRow(s);
-    }
+    appendProjects(active, 'active');
   }
 
   if (starred.length) {
@@ -4485,29 +4522,27 @@ function renderSessionList() {
     html += '</div>';
   }
 
-  // Count per time group up front so the header can show its size.
-  const timeGroupCounts = new Map();
+  // Date buckets remain primary; projects only reorder rows inside each bucket.
+  const timeBuckets = new Map();
+  const timeGroups = new Map();
   for (const s of unstarred) {
-    const g = timeGroup(rowActivityTs(s));
-    timeGroupCounts.set(g, (timeGroupCounts.get(g) || 0) + 1);
+    const ts = rowActivityTs(s);
+    if (!timeGroups.has(ts)) timeGroups.set(ts, timeGroup(ts));
+    const g = timeGroups.get(ts);
+    if (!timeBuckets.has(g)) timeBuckets.set(g, []);
+    timeBuckets.get(g).push(s);
   }
-  let group = null;
-  for (const s of unstarred) {
-    const g = timeGroup(rowActivityTs(s));
-    if (g !== group) {
-      if (group !== null) html += '</div>';
-      group = g;
+  for (const [g, rows] of timeBuckets) {
       const collapsed = isTimeGroupCollapsed(g);
       const chev = collapsed ? '\u25b8' : '\u25be';
       html += '<div class="group-header time-header" role="button" aria-expanded="'
         + (!collapsed) + '" onclick="toggleTimeGroupCollapsed(\'' + esc(g).replace(/'/g, "\\'") + '\')">'
-        + chev + ' ' + esc(g) + ' (' + (timeGroupCounts.get(g) || 0) + ')</div>';
+        + chev + ' ' + esc(g) + ' (' + rows.length + ')</div>';
       // Rows stay mounted (hidden via CSS) so focus/search keep real indexes.
       html += '<div class="time-section' + (collapsed ? ' collapsed' : '') + '">';
-    }
-    appendRow(s);
+    appendProjects(rows, 'time:' + g);
+    html += '</div>';
   }
-  if (group !== null) html += '</div>';
 
   if (doneList.length) {
     const chev = _collapsedState.done ? '▸' : '▾';
@@ -4522,7 +4557,12 @@ function renderSessionList() {
   }
 
   sessions = rendered;
-  el.innerHTML = html;
+  // Polling often returns identical rows. Keep their DOM, focus and scroll
+  // position instead of paying for parsing and layout again.
+  if (_sessionListHtml !== html) {
+    el.innerHTML = html;
+    _sessionListHtml = html;
+  }
   window.SerenaWorkspace?.refresh();
 
   // Re-attach focus highlight by sid — not by numeric index. Auto-poll
@@ -4551,6 +4591,23 @@ let _timeGroupsCollapsed = new Set();
 // Filtering starts with the matching history visible, without overwriting the
 // saved collapse choices used when browsing all agents.
 let _filteredTimeGroupsCollapsed = new Set();
+let _projectGroupsCollapsed = new Set();
+let _filteredProjectGroupsCollapsed = new Set();
+
+function isProjectGroupCollapsed(key) {
+  return (_agentFilter || _searchQuery ? _filteredProjectGroupsCollapsed : _projectGroupsCollapsed).has(key);
+}
+function toggleProjectGroupCollapsed(key) {
+  const groups = _agentFilter || _searchQuery ? _filteredProjectGroupsCollapsed : _projectGroupsCollapsed;
+  if (groups.has(key)) groups.delete(key);
+  else groups.add(key);
+  if (!_agentFilter && !_searchQuery) _saveCollapsedState();
+  renderSessionList();
+  // Replacing the sidebar must not lose keyboard focus on the disclosure.
+  for (const button of document.querySelectorAll('.sidebar-project-header')) {
+    if (button.dataset.projectKey === key) { button.focus({preventScroll:true}); break; }
+  }
+}
 
 function _applyCollapsedState(raw) {
   const c = (raw && typeof raw === 'object') ? raw : {};
@@ -4560,6 +4617,7 @@ function _applyCollapsedState(raw) {
   if (typeof c.done === 'boolean') _collapsedState.done = c.done;
   _collapsedState.timeGroups = Array.isArray(c.timeGroups) ? c.timeGroups.map(String) : [];
   _timeGroupsCollapsed = new Set(_collapsedState.timeGroups);
+  _projectGroupsCollapsed = new Set(Array.isArray(c.projectGroups) ? c.projectGroups.map(String) : []);
 }
 
 async function loadCollapsedState() {
@@ -4576,6 +4634,7 @@ async function loadCollapsedState() {
 
 function _saveCollapsedState() {
   _collapsedState.timeGroups = [..._timeGroupsCollapsed];
+  _collapsedState.projectGroups = [..._projectGroupsCollapsed];
   try {
     fetch('/api/ui-state', {
       method: 'POST',
@@ -4589,12 +4648,14 @@ function toggleFleetChatsCollapsed() {
   _collapsedState.fleetChats = !_collapsedState.fleetChats;
   _saveCollapsedState();
   renderSessionList();
+  document.querySelector('[data-testid="fleet-chats-header"]')?.focus({preventScroll:true});
 }
 
 function toggleVoiceChatsCollapsed() {
   _collapsedState.voiceChats = !_collapsedState.voiceChats;
   _saveCollapsedState();
   renderSessionList();
+  document.querySelector('[data-testid="voice-chats-header"]')?.focus({preventScroll:true});
 }
 
 function toggleStarredCollapsed() {
@@ -4790,21 +4851,33 @@ function renderSessionRow(s, idx, opts) {
   const snippetHtml = s.search_snippet
     ? '<span class="session-snippet">' + _snippetHtml(s.search_snippet) + '</span>'
     : '';
+  const title = _isSerenaVoiceSession(s) ? 'Serena' : (s.display_title || 'Untitled');
+  const project = s.project_trail || s.project_short || 'Other';
+  const path = s.cwd || s.last_cwd || '';
+  const details = [title, project, path, rowActivityTs(s)].filter(Boolean).join('\n');
   return '<div class="' + cls + '" data-idx="' + idx + '" data-sid="' + s.session_id + '"' + childAttr + groupStyle + ' '
+    + 'title="' + escAttr(esc(details)) + '" aria-label="' + escAttr(esc(details)) + '" '
     + 'onclick="onRowClick(event,' + idx + ')" ondblclick="openConv(\'' + s.session_id + '\')"'
     + ' oncontextmenu="showSessionContextMenu(event,' + idx + ')">'
     + '<span class="' + starCls + '" onclick="event.stopPropagation();toggleStar(\'' + s.session_id + '\')">' + starChar + '</span>'
     + disclosure
     + linkGlyph
-    + '<span class="session-title"><span class="session-title-main">' + liveIndicator + agentBadges + esc(_isSerenaVoiceSession(s) ? 'Serena' : (s.display_title || 'Untitled')) + childBadge + threadBadge + '</span>' + snippetHtml + '</span>'
-    + '<span class="workspace-row-project">' + esc(s.project_trail || s.project_short || '') + '</span>'
-    + '<span class="session-date" title="Last activity">' + formatDate(rowActivityTs(s)) + '</span>'
+    + '<span class="session-title"><span class="session-title-main">' + liveIndicator + agentBadges + esc(title) + childBadge + threadBadge + '</span>' + snippetHtml + '</span>'
     + '</div>';
 }
 
 // ═══════════════════════════════════════════════════════════════
 // CHATS: Focus & Selection
 // ═══════════════════════════════════════════════════════════════
+function nextVisibleSessionIndex(direction) {
+  const rows = document.querySelectorAll('#sessionList .session-row');
+  let index = focusedIndex < 0 ? (direction > 0 ? 0 : rows.length - 1) : focusedIndex + direction;
+  for (; index >= 0 && index < rows.length; index += direction) {
+    if (!rows[index].closest('.collapsed')) return index;
+  }
+  return focusedIndex >= 0 && rows[focusedIndex] && !rows[focusedIndex].closest('.collapsed') ? focusedIndex : -1;
+}
+
 function setFocus(idx, scroll) {
   if (idx < 0 || idx >= sessions.length) return;
   focusedIndex = idx;
@@ -8582,12 +8655,12 @@ window.__gtkShortcut = function(action, sourceSid) {
       if (typeof focusedIndex === 'undefined') return;
       const n = sessions.length;
       if (n === 0) return;
-      setFocus(Math.min(n - 1, (focusedIndex < 0 ? 0 : focusedIndex + 1)), true);
+      setFocus(nextVisibleSessionIndex(1), true);
       return;
     }
     case 'prev': {
       if (typeof focusedIndex === 'undefined') return;
-      if (focusedIndex > 0) setFocus(focusedIndex - 1, true);
+      setFocus(nextVisibleSessionIndex(-1), true);
       return;
     }
     case 'delete': {
@@ -10528,7 +10601,8 @@ document.addEventListener('keydown', function(e) {
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      const next = Math.min(focusedIndex + 1, sessions.length - 1);
+      const next = nextVisibleSessionIndex(1);
+      if (next < 0) return;
       if (e.shiftKey) {
         selectedIds.add(sessions[next].session_id);
         if (focusedIndex >= 0) selectedIds.add(sessions[focusedIndex].session_id);
@@ -10540,7 +10614,8 @@ document.addEventListener('keydown', function(e) {
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
-      const next = Math.max(focusedIndex - 1, 0);
+      const next = nextVisibleSessionIndex(-1);
+      if (next < 0) return;
       if (e.shiftKey) {
         selectedIds.add(sessions[next].session_id);
         if (focusedIndex >= 0) selectedIds.add(sessions[focusedIndex].session_id);
@@ -10681,6 +10756,7 @@ let _agentFilter = null;  // null | 'claude' | 'codex'
 function toggleAgentFilter(agent) {
   _agentFilter = (_agentFilter === agent) ? null : agent;
   _filteredTimeGroupsCollapsed.clear();
+  _filteredProjectGroupsCollapsed.clear();
   const c = document.getElementById('filterClaude');
   const x = document.getElementById('filterCodex');
   const g = document.getElementById('filterGemini');
@@ -11966,7 +12042,16 @@ def api_sessions():
     if workspace is not None:
         sessions = workspace.include_pending_sessions(sessions, projects=dirs)
         sessions = workspace.decorate_runtime_sessions(sessions)
-    return jsonify(_decorate_sessions(_include_permanent_serena_session(sessions)))
+    sessions = _decorate_sessions(_include_permanent_serena_session(sessions))
+    if request.args.get("view") == "sidebar":
+        # The sidebar only needs the durable run identity to classify workers.
+        # Assignment text and execution details belong to the Fleet view.
+        sessions = [
+            {**session, "fleet_worker": {"run_id": session["fleet_worker"].get("run_id")}}
+            if isinstance(session.get("fleet_worker"), dict) else session
+            for session in sessions
+        ]
+    return jsonify(sessions)
 
 
 @app.route("/api/search")
@@ -12420,6 +12505,23 @@ def api_claude_bridge():
 # mobile/src/types.ts, handlers in core/chat_daemon.py. Token rides the query
 # string because browsers can't set headers on a WebSocket handshake.)
 # ─────────────────────────────────────────────────────────────────────────────
+def _mobile_dist_root() -> Path:
+    """Where the built phone client lives, as one overridable lookup.
+
+    dist is a build output and is not in the repo, so a test that exercises
+    this route's security -- that it will not serve a file outside dist, and
+    that it never writes the bearer token into the page -- has to be able to
+    point the route at a directory it controls. Resolving the path inline made
+    those assertions silently untestable on a checkout that had never built.
+    """
+
+    root = Path(__file__).resolve().parent.parent
+    dist = (root / "apps" / "mobile" / "dist").resolve()
+    if not dist.exists():
+        dist = (root / "mobile" / "dist").resolve()
+    return dist
+
+
 @app.route("/app")
 @app.route("/app/")
 @app.route("/app/<path:subpath>")
@@ -12430,9 +12532,7 @@ def serve_mobile_app(subpath: str = ""):
     disclosed by this unauthenticated static route. Assets are served as-is."""
     from flask import Response, send_file
 
-    dist = (Path(__file__).resolve().parent.parent / "apps" / "mobile" / "dist").resolve()
-    if not dist.exists():
-        dist = (Path(__file__).resolve().parent.parent / "mobile" / "dist").resolve()
+    dist = _mobile_dist_root()
     # static asset (js/css/svg/png) — serve directly
     if subpath and subpath != "index.html":
         target = (dist / subpath).resolve()
@@ -12453,18 +12553,32 @@ def serve_mobile_app(subpath: str = ""):
     return Response(html, mimetype="text/html")
 
 
-@sock.route("/ws/chat")
-def ws_chat(ws):
-    from core import chat_daemon
+def _chat_websocket_is_authorized(expected: str) -> bool:
+    """Whether this chat socket handshake carries the private token.
 
-    expected = chat_daemon.get_or_create_token()
+    Unlike the call socket, this one also accepts ?token= : the phone client
+    opens it from saved settings and cannot set a header on a WebSocket. It is
+    a named predicate rather than an inline check so the rule can be asserted
+    directly instead of only through a live handshake.
+    """
+
+    import hmac
+
     authorization = request.headers.get("Authorization", "")
     provided = (
         authorization.removeprefix("Bearer ")
         if authorization.startswith("Bearer ")
         else request.args.get("token", "")
     )
-    if not provided or provided != expected:
+    return bool(provided) and hmac.compare_digest(provided, expected)
+
+
+@sock.route("/ws/chat")
+def ws_chat(ws):
+    from core import chat_daemon
+
+    expected = chat_daemon.get_or_create_token()
+    if not _chat_websocket_is_authorized(expected):
         try:
             ws.send(json.dumps({"type": "error", "message": "unauthorized"}))
         except Exception:

@@ -134,7 +134,18 @@ def test_active_v2_is_the_normal_search_authority_with_a_receipt(
     assert len(store.retrieval_receipts()) == 1
 
 
-def test_knowledge_search_finds_the_topic_that_is_about_the_thing() -> None:
+def test_knowledge_search_finds_the_topic_that_is_about_the_thing(tmp_path, monkeypatch) -> None:
+    from core import config
+    from knowledge import reader
+    monkeypatch.setattr(config, 'DATA_DIR', tmp_path / 'data')
+    monkeypatch.setattr(reader, 'KNOWLEDGE_DIR', tmp_path / 'kb')
+    monkeypatch.setattr(reader, 'INDEX_PATH', tmp_path / 'kb/INDEX.md')
+    topic = tmp_path / 'kb/outlander-phev'
+    topic.mkdir(parents=True)
+    (topic / 'README.md').write_text('# Outlander PHEV\nBattery charging and range.', encoding="utf-8")
+    other = tmp_path / 'kb/coffee'
+    other.mkdir()
+    (other / 'README.md').write_text('# Coffee\nRoasting recipes.', encoding="utf-8")
     out = _search_knowledge("outlander phev")
     assert "outlander-phev" in out
 

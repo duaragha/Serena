@@ -47,7 +47,7 @@ def main():
             async def publish(event):
                 pass
             async def checkpoint(identity):
-                (root / 'identity.json').write_text(json.dumps(identity))
+                (root / 'identity.json').write_text(json.dumps(identity), encoding="utf-8")
             owner = LocalOwner(session_id='new:' + str(uuid4()), cwd=root, publish=publish)
             try:
                 await owner.create(binary=binary, env=env, checkpoint=checkpoint)

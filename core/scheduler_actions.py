@@ -13,10 +13,13 @@ command. Other user-facing delivery still goes through notification authority.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from core.serena_scheduler import ActionOutcome
 
+# A spoken notice is read aloud, so the doctor's lead line has to stay short.
+DOCTOR_SUMMARY_LIMIT = 220
 # Below this, telling him about outstanding work is noise rather than useful.
 OWED_NOTICE_THRESHOLD = 1
 # Only complain about something that has genuinely been sitting.
@@ -61,6 +64,55 @@ DELIVERY_RULES = (
     "your delivery[] entries exactly as below, copying each requirement string "
     "character for character (only the evidence text is yours to write):\n{answers}"
 )
+
+# A private checkout is a clone. It holds what git tracks and nothing else: no
+# memory/, no .env, no node_modules, no local databases. A worker asked to
+# "audit the task list" once found no task list, invented an unrelated change
+# and reported success, which is worse than failing -- so say plainly what is
+# absent, and that a brief depending on it must stop rather than substitute.
+UNSEEN_STATE_RULES = (
+    "\n\nWhat this checkout does not contain: it is a fresh clone, so only files "
+    "git tracks are present. His task queue (memory/), environment files, "
+    "node_modules, and local databases are NOT here, and neither is anything "
+    "written by a running Serena. If this brief depends on something you cannot "
+    "see, do not substitute different work and do not report success: say "
+    "exactly what you needed and could not read, and stop.{queue}"
+)
+
+# Briefs that are about the queue itself, which a clone cannot show.
+_QUEUE_WORDS = re.compile(
+    r"\b(task list|tasks?|queue|backlog|todo|to-do|open work)\b", re.IGNORECASE)
+MAX_ATTACHED_TASKS = 40
+
+
+def _attached_task_list() -> str:
+    """The open queue, for a brief that talks about it, since git cannot show it."""
+
+    from memory import store
+
+    lines: list[str] = []
+    for state in ("running", "ready", "needs_triage", "blocked", "backlog"):
+        try:
+            rows = store.tasks_in_state(state)
+        except Exception:
+            continue
+        for row in rows[:MAX_ATTACHED_TASKS]:
+            text = " ".join(str(row.get("content") or "").split())[:160]
+            lines.append(f"  #{row['id']} [{state}] {text}")
+            if len(lines) >= MAX_ATTACHED_TASKS:
+                break
+        if len(lines) >= MAX_ATTACHED_TASKS:
+            break
+    if not lines:
+        return ""
+    return ("\n\nHis open tasks, attached because this checkout cannot show them "
+            "(newest states first; this is the whole list you may reason about):\n"
+            + "\n".join(lines))
+
+
+def _unseen_state_rules(brief: str) -> str:
+    queue = _attached_task_list() if _QUEUE_WORDS.search(brief or "") else ""
+    return UNSEEN_STATE_RULES.format(queue=queue)
 
 
 def _why(error: BaseException) -> str:
@@ -283,11 +335,10 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
     from pathlib import Path
     from uuid import uuid4
 
+    from core import agent_checkouts
     from core.coding_job_contract import resolve_repository_root
     from fleet.supervisor import list_runs, start_run
     from memory import store
-
-    from core import agent_checkouts
 
     if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.start accepts no schedule payload")
@@ -439,7 +490,8 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
             output["stale_base"] = True
         try:
             run = start_run(
-                task=task["content"] + _delivery_rules(task_id),
+                task=task["content"] + _delivery_rules(task_id)
+                + _unseen_state_rules(brief),
                 activity="auto", provider_mode="auto",
                 cwd=str(checkout.path), origin_session_id=origin,
             )
@@ -677,6 +729,19 @@ NUDGE_ASKED_AGE_SECONDS = 45 * 60
 NUDGE_INTERVAL_SECONDS = 6 * 3600
 
 
+NUDGE_SPOKEN_DECISIONS = frozenset({"sent", "deferred", "pending_approval", "suppressed"})
+
+
+def _nudge_decision(text: str, key: str) -> str:
+    """Hand one nudge to the authority and report what it decided to do."""
+
+    from core.notification_senders import notify
+
+    result = notify("task.update", text, channel="imessage", dedupe_key=key,
+                    source_surface="dispatch", fallback_channel=None)
+    return str(result.decision)
+
+
 def _nudge_state_path():
     from pathlib import Path
 
@@ -745,8 +810,16 @@ def nudge_phone_line(payload: dict[str, Any]) -> ActionOutcome:
         return ActionOutcome(True, "nothing is waiting on him")
 
     key = f"nudge:{candidate['id']}:{candidate['state']}"
-    sent = _notify_phone(_nudge_text(candidate), key)
-    if sent:
+    decision = _nudge_decision(_nudge_text(candidate), key)
+    sent = decision == "sent"
+    # The shift starts when the authority takes the nudge, not when it lands.
+    # Deferred through quiet hours it still goes out in the morning; held for
+    # approval or suppressed as a duplicate, it was already said. Only a nudge
+    # that failed to reach him is unsaid, and only that is retried next pass.
+    # Starting the clock on an immediate send alone meant quiet hours never
+    # started it: she re-raised the same task every fifteen minutes all night
+    # and he woke to the pile.
+    if decision in NUDGE_SPOKEN_DECISIONS:
         state.update(nudged_at=now, task_id=candidate["id"], key=key)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -836,7 +909,81 @@ def check_phone_health(payload: dict[str, Any]) -> ActionOutcome:
 
 
 # The whole registry. A schedule may name exactly one of these keys.
+from core.knowledge_maintenance import scheduled_pass as maintain_knowledge
+
+
+def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
+    """Run the system doctor and tell him only when the answer changes.
+
+    core.doctor existed for a month and nothing ran it. It was written after
+    `fleet serve` spent two days on stale code, and then it sat as a module
+    somebody had to remember to call -- so on 2026-09-18 the PC runtime was
+    thirty-five commits behind with a model policy that refused every coding
+    brief, and the tool that says exactly that in one line went unread.
+
+    A check nobody runs is not a check. This is how it runs.
+    """
+
+    from core import doctor
+    from core.machine_context import machine_name
+
+    # `channel` is the one thing worth configuring per machine; anything else
+    # in the payload is a schedule trying to narrow what gets checked, which is
+    # how a doctor stops covering the thing that breaks.
+    unknown = set(_configuration(payload)) - {"channel"}
+    if unknown:
+        return ActionOutcome(
+            False, f"serena.doctor takes no {', '.join(sorted(unknown))}")
+
+    where = machine_name()
+    report = doctor.run()
+    broken = report.failures + report.warnings
+    output = {
+        "ok": report.ok,
+        "failures": [finding.name for finding in report.failures],
+        "warnings": [finding.name for finding in report.warnings],
+    }
+    if not broken:
+        return ActionOutcome(True, "nothing broken", output=output)
+    if not report.failures:
+        # A warning is drift worth recording, not worth a text. "HEAD is
+        # level with origin/master but nothing has fetched for 41 hours" is
+        # true of every deploy checkout and means nothing to him; it stays in
+        # `chats doctor` and the action's output, and never reaches his phone.
+        return ActionOutcome(
+            True, f"{len(report.warnings)} warning(s), nothing broken", output=output)
+
+    broken = report.failures
+    lead = broken[0]
+    extra = f" (+{len(broken) - 1} more)" if len(broken) > 1 else ""
+    # Name the machine: this runs on both, and "the repo is behind" means
+    # something different depending on which one is saying it.
+    summary = f"{where}: {lead.name}: {lead.detail}"[:DOCTOR_SUMMARY_LIMIT] + extra
+    return ActionOutcome(
+        True,
+        summary,
+        notify={
+            "kind": "serena.doctor",
+            "summary": summary,
+            # Telegram by default: a machine that has gone wrong is worth
+            # hearing about wherever he is, not only if he happens to be
+            # sitting in front of the one that broke.
+            "channel": str(payload.get("channel") or "telegram"),
+            # A failure stops work; a warning is a drift he should know about
+            # before it becomes one. Neither is worth waking him for.
+            "urgency": "normal",
+            # One notice per distinct shape of breakage, so a problem that
+            # persists for a day does not become an hourly nag. A new or fixed
+            # check changes the shape, and he hears about it then.
+            "dedupe_key": f"doctor:{where}:" + ",".join(
+                sorted(finding.name for finding in broken)),
+        },
+        output=output,
+    )
+
+
 REVIEWED_ACTIONS = {
+    'serena.knowledge.maintenance': maintain_knowledge,
     "serena.obligations.sweep": sweep_obligations,
     "serena.obligations.report": report_outstanding,
     "serena.notifications.flush": flush_notifications,
@@ -846,6 +993,7 @@ REVIEWED_ACTIONS = {
     "serena.phone.poll": poll_phone_line,
     "serena.phone.nudge": nudge_phone_line,
     "serena.phone.health": check_phone_health,
+    "serena.doctor": run_doctor,
 }
 
 

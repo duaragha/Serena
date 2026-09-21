@@ -13,7 +13,7 @@ ChatsApp = app_gtk.ChatsApp
 
 
 def _process_state(pid: int) -> str:
-    with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+    with open(f"/proc/{pid}/status", encoding='utf-8') as fh:
         for line in fh:
             if line.startswith("State:"):
                 return line.split()[1]

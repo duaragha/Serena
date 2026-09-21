@@ -97,7 +97,7 @@ def test_resume_streams_steps_without_duplicate_final_and_retains_owner(build):
 def test_historical_error_does_not_finish_new_turn_or_allow_duplicate_input(build, tmp_path, monkeypatch, fresh_error):
     path=tmp_path/'transcript.jsonl'
     record=json.dumps({'type':'ERROR_MESSAGE','error':'old connection reset'})+'\n'
-    path.write_text(record)
+    path.write_text(record, encoding="utf-8")
     monkeypatch.setattr(native, 'transcript_path', lambda sid:path)
     async def run():
         owner, events=build()
@@ -263,7 +263,7 @@ def test_headless_transcript_and_confirmed_workspace_rebuild_catalog(tmp_path, m
     db.touch()
     transcript = tmp_path / 'transcript.jsonl'
     transcript.write_text(json.dumps({'type':'USER_INPUT', 'created_at':'2026-09-12T10:00:00Z',
-                                     'content':'<USER_REQUEST>Native headless message</USER_REQUEST>'}) + '\n')
+                                     'content':'<USER_REQUEST>Native headless message</USER_REQUEST>'}) + '\n', encoding="utf-8")
     monkeypatch.setattr(gemini_scanner, '_history_entries', lambda: [])
     monkeypatch.setattr(gemini_scanner, 'transcript_path', lambda sid: transcript)
     monkeypatch.setattr(metadata, 'get_meta', lambda sid: {'gemini_workspace': str(tmp_path)})
@@ -279,7 +279,7 @@ def test_background_settles_only_when_nothing_started_can_still_run(tmp_path, mo
     sid = '11111111-2222-4333-8444-555555555555'
     owner = native.AntigravityWorkspace(session_id=sid, cwd=tmp_path, publish=lambda event: None)
     transcript = tmp_path / 'transcript.jsonl'
-    transcript.write_text('{}\n')
+    transcript.write_text('{}\n', encoding="utf-8")
     if case != 'recent':
         old = time.time() - 60
         os.utime(transcript, (old, old))

@@ -22,11 +22,24 @@ from typing import Any, Literal
 
 import psutil
 
+from core.coding_model_preferences import CODEX_MODEL
+
 RouteMode = Literal["private", "reuse", "refused"]
 RoutePreference = Literal["auto", "new", "existing"]
 
-SOL_MODEL = "gpt-5.6-sol"
-SOL_REUSE_EFFORTS = frozenset({"high", "xhigh", "max", "ultra"})
+# The Codex coding model, read from its one definition. The old name is kept
+# because it is exported and callers import it, but a constant called SOL that
+# holds Astra is how a migration goes half-done, so nothing new should use it.
+CODING_MODEL = CODEX_MODEL
+SOL_MODEL = CODING_MODEL
+# The efforts a *running* chat may be reused at. This is not the ladder a brief
+# freezes against: it is what an already-live session reports, so it stays a
+# frozen set rather than being derived from the current tiers. It has to reach
+# down to where ordinary work now runs -- Astra 6 implements ordinary jobs at
+# medium, and a set that started at high refused every one of them, silently
+# turning "reuse the chat he is looking at" into "open a private one".
+REUSE_EFFORTS = frozenset({"medium", "high", "xhigh", "max", "ultra"})
+SOL_REUSE_EFFORTS = REUSE_EFFORTS
 RUNTIME_CONTEXT_PATH = "/api/runtime-context"
 MAX_RUNTIME_CONTEXT_BYTES = 256 * 1024
 _SESSION_ID = re.compile(
@@ -327,10 +340,10 @@ def _candidate_blocker(
         .strip()
         .casefold()
     )
-    if model != SOL_MODEL:
-        return "the chat is not running Sol 5.6"
-    if effort not in SOL_REUSE_EFFORTS:
-        return "the chat is not running an allowed high-reasoning effort"
+    if model != CODING_MODEL:
+        return f"the chat is not running {CODING_MODEL}"
+    if effort not in REUSE_EFFORTS:
+        return "the chat is not running an allowed reasoning effort"
     return ""
 
 
@@ -843,7 +856,7 @@ def _enrich_session(
                 record["canonical_project_root"] = canonical
         model = str(record.get("model") or "").strip()
         effort = str(record.get("effort") or record.get("reasoning_effort") or "").strip()
-        if (not model or model.casefold() == SOL_MODEL) and not effort:
+        if (not model or model.casefold() == CODING_MODEL) and not effort:
             identity_path = record.get("file_path")
             if not identity_path:
                 try:
@@ -1110,6 +1123,8 @@ def discover_work_route(
 
 
 __all__ = [
+    "CODING_MODEL",
+    "REUSE_EFFORTS",
     "SOL_MODEL",
     "SOL_REUSE_EFFORTS",
     "WorkRoute",

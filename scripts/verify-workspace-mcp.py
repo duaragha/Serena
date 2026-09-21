@@ -61,7 +61,7 @@ async def main(inventory_only=False, auth_home=None):
             + "\nargs = "
             + json.dumps([str(Path(__file__).resolve()), "--serve"])
             + "\n"
-        )
+        , encoding="utf-8")
         env = strip_metered_auth_env(dict(os.environ))
         env["CODEX_HOME"] = str(home)
         for name in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):

@@ -14,18 +14,18 @@ def git(root, *args):
 def test_diff_reads_staged_unstaged_untracked_without_mutation(tmp_path):
     git(tmp_path, 'init')
     file = tmp_path / 'tracked.txt'
-    file.write_text('staged\n')
+    file.write_text('staged\n', encoding="utf-8")
     git(tmp_path, 'add', '--', 'tracked.txt')
-    file.write_text('unstaged\n')
-    (tmp_path / 'new name.txt').write_text('<b>new</b>\n')
-    (tmp_path / '.gitignore').write_text('ignored\n')
-    (tmp_path / 'ignored').write_text('secret')
+    file.write_text('unstaged\n', encoding="utf-8")
+    (tmp_path / 'new name.txt').write_text('<b>new</b>\n', encoding="utf-8")
+    (tmp_path / '.gitignore').write_text('ignored\n', encoding="utf-8")
+    (tmp_path / 'ignored').write_text('secret', encoding="utf-8")
     before = (tmp_path / '.git/index').read_bytes()
     result = read_project_diff(tmp_path)
     assert '+staged' in result['staged'] and '+unstaged' in result['unstaged']
     assert '+<b>new</b>' in result['untracked'] and 'secret' not in str(result)
     assert (tmp_path / '.git/index').read_bytes() == before
-    assert file.read_text() == 'unstaged\n'
+    assert file.read_text(encoding="utf-8") == 'unstaged\n'
     assert result['omitted'] == []
     with pytest.raises(RuntimeError, match='display limit'):
         read_project_diff(tmp_path, max_bytes=5)

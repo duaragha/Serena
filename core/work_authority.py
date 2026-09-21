@@ -39,6 +39,7 @@ from core.coding_job_contract import (
     resolve_repository_root,
 )
 from core.coding_model_preferences import (
+    CODEX_MODEL,
     normalise_coding_model,
     read_coding_model_preference,
 )
@@ -508,9 +509,9 @@ def start_coding_work(
             f"the selected chat is Codex, but this job froze "
             f"{assignment.implement_model} on {assignment.implement_provider}"
         )
-    elif route.mode == "reuse" and assignment.implement_model != "gpt-5.6-sol":
+    elif route.mode == "reuse" and assignment.implement_model != CODEX_MODEL:
         reuse_mismatch = (
-            f"the selected chat uses gpt-5.6-sol, but this job froze "
+            f"the selected chat uses {CODEX_MODEL}, but this job froze "
             f"{assignment.implement_model}"
         )
     elif route.mode == "reuse" and route.effort != implement_effort:

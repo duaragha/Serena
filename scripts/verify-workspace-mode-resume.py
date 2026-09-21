@@ -39,7 +39,7 @@ async def main():
             journal.append(owner.session_id, event)
 
         async def checkpoint(identity):
-            (root / "identity.json").write_text(json.dumps(identity))
+            (root / "identity.json").write_text(json.dumps(identity), encoding="utf-8")
 
         owner = LocalOwner(session_id="new:" + str(uuid4()), cwd=root, publish=publish)
         pids = []

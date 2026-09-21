@@ -27,6 +27,6 @@ def test_missing_install_is_not_invented(tmp_path, monkeypatch):
 
 
 def test_usage_failure_is_not_shown_as_waiting():
-    page = (Path(__file__).resolve().parents[1] / "ui" / "web.py").read_text()
+    page = (Path(__file__).resolve().parents[1] / "ui" / "web.py").read_text(encoding="utf-8")
     assert "svc.reason ? 'unavailable' : 'waiting'" in page
     assert "esc(svc.reason || '')" in page

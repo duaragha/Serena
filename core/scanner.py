@@ -9,6 +9,24 @@ from core.config import PROJECTS_DIR
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
+# Serena's headless utilities run with a cwd under ~/.cache/serena-headless-*,
+# which is how they are told apart from real chats (core/frontdoor.py,
+# core/projects.py). Their transcripts are machine chatter -- one front-door
+# classification, one title -- and indexing them buries real chats in recall.
+#
+# The resident brain is the exception and is deliberately indexed: it is one
+# long-lived conversation, it is what `chats recall` has to be able to find,
+# and the indexer already hides it from the chat list rather than dropping it.
+HEADLESS_PROJECT_MARKER = "cache-serena-headless"
+INDEXED_HEADLESS_PROJECTS = ("cache-serena-headless-brain",)
+
+
+def _is_hidden_headless_project(project_dir_name: str) -> bool:
+    name = project_dir_name.casefold()
+    if HEADLESS_PROJECT_MARKER not in name:
+        return False
+    return not any(kept in name for kept in INDEXED_HEADLESS_PROJECTS)
+
 
 def _is_teammate_session(file_path: Path) -> bool:
     """Check if a session is a teammate/agent spawned by team mode."""
@@ -40,6 +58,8 @@ def scan_sessions(projects_dir: Path | None = None):
 
     for project_dir in sorted(root.iterdir()):
         if not project_dir.is_dir():
+            continue
+        if _is_hidden_headless_project(project_dir.name):
             continue
         for session_file in project_dir.glob("*.jsonl"):
             # Only include UUID-named files (actual sessions)

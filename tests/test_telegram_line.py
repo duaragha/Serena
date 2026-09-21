@@ -5,7 +5,7 @@ import pytest
 
 def _configure(monkeypatch, tmp_path, *, backend="telegram", chat="6354"):
     env = tmp_path / "telegram.env"
-    env.write_text(f"TELEGRAM_BOT_TOKEN=123:abc\nTELEGRAM_CHAT_ID={chat}\n", encoding="utf-8")
+    env.write_text(f"TELEGRAM_BOT_TOKEN=123:abc\nTELEGRAM_CHAT_ID={chat}\n", encoding='utf-8')
     line = tmp_path / "phone-line.json"
     line.write_text(json.dumps({"backend": backend}), encoding="utf-8")
     monkeypatch.setenv("SERENA_TELEGRAM_ENV", str(env))

@@ -1,8 +1,5 @@
 """Private notification DBs and fake transports; never send an actual notice."""
 
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from pathlib import Path
 import gc
 import os
 import sqlite3
@@ -10,11 +7,18 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from core.control_plane import ControlPlaneStore
-from core.notification_authority import NotificationAuthority, NotificationPolicy, NotificationRequest
+from core.notification_authority import (
+    NotificationAuthority,
+    NotificationPolicy,
+    NotificationRequest,
+)
 
 
 def _queued(tmp_path):
@@ -188,3 +192,159 @@ def test_answering_is_not_a_general_escape(tmp_path):
     assert authority.request(request).decision == "sent"
     assert authority.request(request).decision == "suppressed"
     assert len(sent) == 1
+
+
+# ---- the notice goes out through this install's CLI, not another one -------
+
+
+def test_the_chats_binary_prefers_this_installs_entry_point(tmp_path, monkeypatch):
+    """The runtime sent its notices through a different Serena's CLI.
+
+    _chats_binary looked for a sibling named exactly "chats". Windows entry
+    points are chats.exe, so on the PC the sibling never matched, PATH won, and
+    the deployed runtime shelled out to a user-site chats running the synced
+    dev tree instead of its own code.
+    """
+
+    from core import notification_senders as senders
+
+    scripts = tmp_path / "runtime" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "python.exe").write_text("", encoding="utf-8")
+    mine = scripts / "chats.exe"
+    mine.write_text("", encoding="utf-8")
+    other = tmp_path / "elsewhere" / "chats.exe"
+    other.parent.mkdir()
+    other.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(senders, "_BINARY_SUFFIXES", ("", ".exe"))
+    monkeypatch.setattr(senders.sys, "executable", str(scripts / "python.exe"))
+    monkeypatch.setattr(senders.shutil, "which", lambda _name: str(other))
+
+    assert senders._chats_binary() == str(mine)
+
+
+def test_path_is_still_used_when_this_install_has_no_cli(tmp_path, monkeypatch):
+    from core import notification_senders as senders
+
+    scripts = tmp_path / "bare"
+    scripts.mkdir()
+    (scripts / "python").write_text("", encoding="utf-8")
+    fallback = tmp_path / "onpath" / "chats"
+    fallback.parent.mkdir()
+    fallback.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(senders, "_BINARY_SUFFIXES", ("",))
+    monkeypatch.setattr(senders.sys, "executable", str(scripts / "python"))
+    monkeypatch.setattr(senders, "HOME", tmp_path / "nohome")
+    monkeypatch.setattr(senders.shutil, "which", lambda _name: str(fallback))
+
+    assert senders._chats_binary() == str(fallback)
+
+
+def test_a_missing_cli_is_reported_as_no_binary(tmp_path, monkeypatch):
+    """Returning a path that is not there sends the notice nowhere, silently."""
+
+    from core import notification_senders as senders
+
+    monkeypatch.setattr(senders, "_BINARY_SUFFIXES", ("",))
+    monkeypatch.setattr(senders.sys, "executable", str(tmp_path / "gone" / "python"))
+    monkeypatch.setattr(senders, "HOME", tmp_path / "nohome")
+    monkeypatch.setattr(senders.shutil, "which", lambda _name: str(tmp_path / "ghost"))
+
+    assert senders._chats_binary() is None
+
+
+# ---- a notice must not crash on a machine with no unix sockets ------------
+
+
+def test_no_unix_sockets_is_not_a_crash(monkeypatch, tmp_path):
+    """Windows has no AF_UNIX, and asking for one raises AttributeError.
+
+    The senders caught OSError, so on the PC -- the machine that actually runs
+    Fleet -- a terminal run notice raised "module 'socket' has no attribute
+    'AF_UNIX'" straight out of the code whose whole job is telling him what
+    happened. It showed up in a real run's event log.
+    """
+
+    from core import notification_senders as senders
+
+    target = tmp_path / "brain-events.sock"
+    target.write_text("", encoding="utf-8")
+    monkeypatch.setattr(senders, "UNIX_DATAGRAMS_AVAILABLE", False)
+
+    assert senders.overlay_datagram({"type": "fleet_notice"}, target) is False
+
+
+def test_a_missing_listener_is_not_a_crash(tmp_path):
+    from core import notification_senders as senders
+
+    assert senders.overlay_datagram({"x": 1}, tmp_path / "absent.sock") is False
+
+
+def test_an_oversized_payload_is_refused_not_raised(monkeypatch, tmp_path):
+    from core import notification_senders as senders
+
+    target = tmp_path / "brain-events.sock"
+    target.write_text("", encoding="utf-8")
+    monkeypatch.setattr(senders, "UNIX_DATAGRAMS_AVAILABLE", True)
+
+    assert senders.overlay_datagram({"text": "x" * 70_000}, target) is False
+
+
+def test_fleet_and_the_work_supervisor_share_this_one_sender():
+    """Three copies of the same unguarded socket is how two of them stayed broken."""
+
+    import inspect
+
+    from core import voice_work_supervisor
+    from fleet import supervisor
+
+    for module, name in ((supervisor, "_send_spoken_notice"),
+                         (voice_work_supervisor, "_send_overlay_event")):
+        source = inspect.getsource(getattr(module, name))
+        assert "overlay_datagram" in source, name
+        assert "AF_UNIX" not in source, name
+
+
+def test_fleet_texts_him_through_the_shared_binary_resolver():
+    import inspect
+
+    from fleet import supervisor
+
+    source = inspect.getsource(supervisor._send_raghav_text)
+    assert "_chats_binary" in source
+    assert "shutil.which" not in source
+
+
+def test_a_reminder_held_overnight_does_not_stack_hourly(tmp_path):
+    """One deferred reminder, not one per hour of quiet.
+
+    A deferred notice only counted as a duplicate for the dedupe window, so
+    after an hour of quiet the same reminder was deferred again, and again,
+    and the morning flush delivered the whole pile at once.
+    """
+    sent = []
+    hour = datetime.now().hour
+    authority = NotificationAuthority(
+        tmp_path / "overnight.sqlite3",
+        control_store=ControlPlaneStore(tmp_path / "overnight-control.sqlite3"),
+        policy=NotificationPolicy(quiet_start_hour=hour, quiet_end_hour=(hour + 5) % 24),
+        senders={"imessage": lambda request: sent.append(request.summary) or True},
+    )
+    start = time.time()
+    reminder = NotificationRequest(
+        kind="task.update", summary="#65 is still waiting on you",
+        channel="imessage", dedupe_key="nudge:65:needs_triage")
+
+    first = authority.request(reminder, now=start)
+    # Two and three hours later: well past the one-hour window, still quiet.
+    later = [authority.request(reminder, now=start + h * 3600) for h in (2, 3)]
+
+    assert first.decision == "deferred"
+    assert [r.decision for r in later] == ["suppressed", "suppressed"]
+    with sqlite3.connect(tmp_path / "overnight.sqlite3") as db:
+        waiting = db.execute(
+            "SELECT COUNT(*) FROM notifications WHERE decision = 'deferred'").fetchone()[0]
+    assert waiting == 1
+    assert sent == []

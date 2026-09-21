@@ -60,7 +60,7 @@ def main() -> None:
             print("Token expired, attempting refresh...")
             try:
                 creds.refresh(Request())
-                TOKEN_PATH.write_text(creds.to_json())
+                TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
                 print("Token refreshed successfully.")
                 return
             except Exception as e:
@@ -103,7 +103,7 @@ def main() -> None:
         creds = flow.run_console()
 
     # Save the token
-    TOKEN_PATH.write_text(creds.to_json())
+    TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
     print()
     print(f"Token saved to: {TOKEN_PATH}")
     print()

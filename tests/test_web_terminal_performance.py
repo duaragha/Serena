@@ -202,7 +202,7 @@ def test_renderer_terminal_opens_at_tail_without_trapping_manual_scrollback():
 
 def test_renderer_terminal_dependencies_are_local_and_pinned():
     root = Path(web.__file__).resolve().parents[1]
-    package = json.loads((root / "ui" / "renderer" / "package.json").read_text())
+    package = json.loads((root / "ui" / "renderer" / "package.json").read_text(encoding="utf-8"))
     assert "cdn.jsdelivr.net" not in web.HTML
     assert package["dependencies"] == {
         "@xterm/addon-canvas": "0.7.0",
@@ -323,10 +323,10 @@ def test_internal_brain_rotations_are_hidden_from_chat_rows():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute(
-        "CREATE TABLE sessions (session_id TEXT, project_dir TEXT, is_teammate INTEGER)"
+        "CREATE TABLE sessions (session_id TEXT, project_dir TEXT, is_teammate INTEGER, first_message TEXT)"
     )
     conn.executemany(
-        "INSERT INTO sessions VALUES (?, ?, 0)",
+        "INSERT INTO sessions (session_id, project_dir, is_teammate) VALUES (?, ?, 0)",
         [
             ("brain", "-home-raghav--cache-serena-headless-brain"),
             ("test", "-tmp-serena-http-rotation-cwd"),

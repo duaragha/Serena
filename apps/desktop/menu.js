@@ -53,7 +53,7 @@ function aboutSubmenu(getWindow) {
   ];
 }
 
-function template(getWindow) {
+function template(getWindow, openReleases = null) {
   const isMac = process.platform === 'darwin';
   const menu = [
     {
@@ -123,6 +123,13 @@ function template(getWindow) {
     },
   ];
 
+  if (openReleases) menu.splice(4, 0, {
+    label: 'Releases',
+    submenu: [{ label: 'Promote to Main...', click: () => {
+      Promise.resolve().then(openReleases).catch(error => console.error('[menu] releases failed:', error.message));
+    } }],
+  });
+
   if (isMac) {
     menu.unshift({
       label: app.getName(),
@@ -132,8 +139,8 @@ function template(getWindow) {
   return menu;
 }
 
-function install(getWindow) {
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template(getWindow)));
+function install(getWindow, openReleases = null) {
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template(getWindow, openReleases)));
 }
 
 module.exports = { install, template };

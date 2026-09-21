@@ -88,7 +88,7 @@ class SessionLease:
             self.closed = True
             raise SessionOwnedError("This session already has a runtime owner") from error
         try:
-            previous = json.loads(self.metadata.read_text()) if self.metadata.exists() else {}
+            previous = json.loads(self.metadata.read_text(encoding="utf-8")) if self.metadata.exists() else {}
             if previous.get("phase") == "launching" or _runtime_alive(previous):
                 raise SessionOwnedError(
                     "Previous runtime may still be running; recovery must confirm its exit"

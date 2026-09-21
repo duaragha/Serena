@@ -98,5 +98,5 @@ def test_native_search_receipts(tmp_path):
                  "state": state, "step_type": "tool", "tool_name": "search_web",
                  "tool_info": {"error": error}}}
         lines.append(json.dumps({"line": json.dumps(event)}))
-    path.write_text("\n".join(lines))
+    path.write_text("\n".join(lines), encoding="utf-8")
     assert _event_log_research_activity(str(path)) == {"searches": 1, "fetches": 0}

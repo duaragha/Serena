@@ -26,7 +26,7 @@ def legacy(root, mid=1, extra=""):
     directory.mkdir(exist_ok=True)
     path = directory / f"{mid:03d}-old.md"
     path.write_text(f"---\nid: {mid}\ntype: task\ncreated: 2026-01-01 00:00:00\n"
-                    f"updated: 2026-01-01 00:00:00\n{extra}---\n\nlegacy task\n")
+                    f"updated: 2026-01-01 00:00:00\n{extra}---\n\nlegacy task\n", encoding='utf-8')
     return path
 
 
@@ -209,10 +209,10 @@ def test_legacy_rewriters_preserve_operational_fields(queue):
 
 def test_claim_preserves_unknown_frontmatter_and_body(queue):
     path = legacy(queue, extra="custom: keep me\nsource_session_id: abc\n")
-    body = path.read_text().split("---", 2)[2]
+    body = path.read_text(encoding="utf-8").split("---", 2)[2]
     store.claim_next_task("worker")
-    assert "custom: keep me" in path.read_text()
-    assert path.read_text().split("---", 2)[2] == body
+    assert "custom: keep me" in path.read_text(encoding="utf-8")
+    assert path.read_text(encoding="utf-8").split("---", 2)[2] == body
     assert store.get_memory(1)["source_session_id"] == "abc"
 
 
@@ -254,11 +254,59 @@ def test_queue_capacity(queue, monkeypatch):
 
 
 def test_deleted_ids_are_not_reused_by_any_writer(queue):
+    # Each space is monotonic on its own: finishing a task frees nothing,
+    # because a dispatch receipt outlives the task it names.
     task = store.enqueue_task(BRIEF)
-    assert store.delete_memory(task["id"])
-    memory_id = store.add_memory("reference", _no_mirror=True)
-    assert memory_id > task["id"]
-    assert store.enqueue_task(BRIEF)["id"] > memory_id
+    assert store.delete_memory(task["id"], "task")
+    assert store.enqueue_task(BRIEF)["id"] > task["id"]
+    memory_id = store.add_memory("a note", _no_mirror=True)
+    assert store.delete_memory(memory_id, "general")
+    assert store.add_memory("another note", _no_mirror=True) > memory_id
+
+
+def test_tasks_and_memories_count_in_separate_sequences(queue):
+    """His todo list numbers itself. A passing note never pushes it along."""
+    first = store.enqueue_task(BRIEF)["id"]
+    for i in range(5):
+        store.add_memory(f"note {i}", _no_mirror=True)
+    assert store.enqueue_task(BRIEF, source_id="second")["id"] == first + 1
+
+
+def test_a_stray_high_id_does_not_drag_the_sequence_up(queue):
+    """A task imported from a machine that predated the counter is an
+    outlier, not a new floor. It pinned his whole todo list in the 1100s."""
+    store.enqueue_task(BRIEF, source_id="first")
+    stray = queue / "task" / "1120-imported.md"
+    stray.write_text("---\nid: 1120\ntype: task\ncreated: 2026-01-01 00:00:00\n"
+                     "updated: 2026-01-01 00:00:00\n---\n\nqueued elsewhere\n",
+                     encoding="utf-8")
+    assert store.enqueue_task(BRIEF, source_id="second")["id"] == 2
+    # and the outlier is still never overwritten
+    assert store.get_memory(1120, "task")["content"] == "queued elsewhere"
+
+
+def test_the_counter_survives_deleting_the_highest_task(queue):
+    """Deleting the newest task must not hand its id to the next one."""
+    store.enqueue_task(BRIEF, source_id="a")
+    second = store.enqueue_task(BRIEF, source_id="b")["id"]
+    assert store.delete_memory(second, "task")
+    assert store.enqueue_task(BRIEF, source_id="c")["id"] > second
+
+
+def test_an_id_naming_both_spaces_refuses_to_resolve(queue):
+    """A bare number is a question once the two spaces overlap."""
+    task = store.enqueue_task(BRIEF)
+    memory_id = store.add_memory("a note", _no_mirror=True)
+    assert memory_id == task["id"]
+    with pytest.raises(store.AmbiguousMemoryId):
+        store._find_path(task["id"])
+    assert store._find_path(task["id"], "task").parent.name == "task"
+    assert store._find_path(memory_id, "general").parent.name == "general"
+    # Deleting one leaves the other untouched.
+    assert store.delete_memory(task["id"], "task")
+    assert store.get_memory(memory_id, "general")["content"] == "a note"
+
+
 
 
 def test_duplicate_task_identity_fails_closed(queue):
@@ -353,3 +401,25 @@ def test_two_process_race(queue, enqueue):
                 process.terminate()
                 process.join(timeout=5)
         results.close()
+
+
+@pytest.mark.parametrize("brief", [
+    "In unified when I click search, especially on mobile, it should bring the "
+    "keyboard up right away and I should be able to type instantly",
+    "There shouldn't be up and down buttons, I should just be able to hold the "
+    "exercise and drag it within the routine",
+    "Get rid of the rename, up, down, less and more buttons on the routines page",
+])
+def test_a_requirement_he_states_is_work_not_chat(brief):
+    """He writes what it should do, not the verb a triager expects. Reading
+    these as too vague bounced his clearest briefs back to him."""
+    assert store.classify_task(brief) == "ready"
+
+
+@pytest.mark.parametrize("brief", [
+    "please fix it, it is still broken",
+    "how is it going today",
+    "it should work",
+])
+def test_vague_or_chatty_text_still_gets_one_question(brief):
+    assert store.classify_task(brief) == "needs_triage"

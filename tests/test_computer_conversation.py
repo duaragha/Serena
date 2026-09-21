@@ -51,7 +51,7 @@ def write_chat(home, agent, *, sid=None, count=30):
                 }
             )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
     return sid, path
 
 
@@ -185,16 +185,16 @@ def test_hook_installation_preserves_existing_hooks_and_is_idempotent(tmp_path):
                 },
             }
         )
-    )
+    , encoding="utf-8")
     install_context_hooks(home=tmp_path, python="/python path/bin/python", cli="/repo path/cli.py")
     before = {p: p.read_bytes() for p in (settings, tmp_path / ".codex/hooks.json")}
     install_context_hooks(home=tmp_path, python="/python path/bin/python", cli="/repo path/cli.py")
     assert all(p.read_bytes() == content for p, content in before.items())
-    claude = json.loads(settings.read_text())
+    claude = json.loads(settings.read_text(encoding="utf-8"))
     assert claude["theme"] == "dark"
     assert claude["hooks"]["Stop"][0]["hooks"][0]["command"] == "keep-stop"
     assert len(claude["hooks"]["UserPromptSubmit"]) == 2
-    codex = json.loads((tmp_path / ".codex/hooks.json").read_text())
+    codex = json.loads((tmp_path / ".codex/hooks.json").read_text(encoding="utf-8"))
     handler = codex["hooks"]["UserPromptSubmit"][0]["hooks"][0]
     assert handler["additionalContextLimit"] == 0
     assert handler["command"].startswith("'/python path/bin/python' '/repo path/cli.py'")

@@ -341,7 +341,7 @@ async def main(browser_width=None, lose_ack=False, lose_receipt=False, fail_befo
             assert not archive_journal.has_pending_archive(sid)
             archived = list((home / "archived_sessions").rglob(f"*{sid}.jsonl"))
             assert len(archived) == 1 and not original[0].exists()
-            assert "archive-contract-original" in archived[0].read_text()
+            assert "archive-contract-original" in archived[0].read_text(encoding="utf-8")
             register_fork(target)
             assert not list_saved_sessions('codex')['data']
             assert list_saved_sessions('codex', archived=True)['data'][0]['session_id'] == sid

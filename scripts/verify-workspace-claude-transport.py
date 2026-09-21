@@ -79,7 +79,7 @@ async def main():
         }}}), encoding="utf-8")
         (root / ".claude").mkdir(exist_ok=True)
         (root / ".claude" / "settings.local.json").write_text(
-            json.dumps({"enabledMcpjsonServers": ["form_proof"]}), encoding="utf-8")
+            json.dumps({"enabledMcpjsonServers": ["form_proof"]}), encoding='utf-8')
 
     queued_boundary = asyncio.Event()
     release_boundary = asyncio.Event()
@@ -106,7 +106,7 @@ async def main():
         original_pid = owner.client.owned_pid
         skill = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "skills/workspace-proof/SKILL.md"
         skill.parent.mkdir(parents=True)
-        skill.write_text("---\nname: workspace-proof\ndescription: Isolated reload proof\n---\nReturn the word proof.\n")
+        skill.write_text("---\nname: workspace-proof\ndescription: Isolated reload proof\n---\nReturn the word proof.\n", encoding="utf-8")
         refreshed = await owner.reload_skills()
         assert any(command["name"] == "workspace-proof" for command in refreshed["data"]), [item["name"] for item in refreshed["data"]]
         skill.unlink()
@@ -143,7 +143,7 @@ async def main():
             async with asyncio.timeout(15):
                 while not form_receipt.exists():
                     await asyncio.sleep(0.05)
-            native_form_result = json.loads(form_receipt.read_text())
+            native_form_result = json.loads(form_receipt.read_text(encoding="utf-8"))
             assert native_form_result["content"] == {"count": 2}, native_form_result
             print("PASS: real local MCP form crossed native SDK, Node channel, Python transport and pane owner; validated answer returned to the requesting MCP server without inference")
         assert any(event["method"] == "workspace/history" for event in events)

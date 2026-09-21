@@ -1969,6 +1969,12 @@ def test_pending_delete_retains_recovery_and_rejects_owned_target(tmp_path, monk
     monkeypatch.setattr(indexer, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(indexer, "DB_PATH", tmp_path / "data/index.db")
     monkeypatch.setattr(indexer, "_INDEX_LOCK_PATH", tmp_path / "data/index.lock")
+    # The schema is created once per process and remembered. Repointing the
+    # database without clearing that flag leaves this test reading a file that
+    # was never given tables -- but only when something earlier in the run
+    # created the real one, which is why it failed in the full suite and passed
+    # on its own.
+    monkeypatch.setattr(indexer, "_schema_ready", False)
     monkeypatch.setattr(metadata, "METADATA_DIR", tmp_path / "meta")
     monkeypatch.setattr(metadata, "METADATA_PATH", tmp_path / "legacy.json")
     monkeypatch.setattr(metadata, "_migrated", False)
@@ -1985,7 +1991,7 @@ def test_pending_delete_retains_recovery_and_rejects_owned_target(tmp_path, monk
     if case != "missing":
         transcript = tmp_path / "claude/projects/project" / f"{sid}.jsonl"
         transcript.parent.mkdir(parents=True)
-        transcript.write_text(json.dumps({"type": "user", "cwd": str(tmp_path), "message": {"content": "Native history"}}) + "\n")
+        transcript.write_text(json.dumps({"type": "user", "cwd": str(tmp_path), "message": {"content": "Native history"}}) + "\n", encoding="utf-8")
         if case == "ambiguous":
             other = transcript.parent.parent / "other" / transcript.name
             other.parent.mkdir()
@@ -2008,7 +2014,7 @@ def test_pending_delete_retains_recovery_and_rejects_owned_target(tmp_path, monk
     assert not metadata.get_meta(sid)
     assert journal.read(sid)["events"][0]["event"]["params"]["text"] == "retained"
     manifests = list(tmp_path.rglob("recovery.json"))
-    assert len(manifests) == 1 and json.loads(manifests[0].read_text())["metadata"]["custom_title"] == "Keep title"
+    assert len(manifests) == 1 and json.loads(manifests[0].read_text(encoding="utf-8"))["metadata"]["custom_title"] == "Keep title"
     assert host.delete_pending_session(sid, source="proof") is None
     assert host._loop is None and not host._sessions
 

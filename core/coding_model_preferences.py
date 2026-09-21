@@ -17,7 +17,11 @@ from core.serena_policy import (
 
 AUTO_MODEL = "auto"
 TERRA_MODEL = "gpt-5.6-terra"
-CODEX_MODEL = "gpt-5.6-sol"
+# The current Codex coding model. Every other module reads this rather than
+# repeating the name, because retiring Sol for Astra 6 only reached the
+# policy file and left five copies of the literal behind, which is what made
+# accepted briefs fail validation against their own policy.
+CODEX_MODEL = "gpt-6-astra"
 SONNET_MODEL = "claude-sonnet-5"
 CLAUDE_MODEL = "claude-opus-5"
 MUSE_MODEL = "muse-spark"

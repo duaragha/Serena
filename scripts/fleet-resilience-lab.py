@@ -57,7 +57,7 @@ def main():
     result = subprocess.run(
         command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
     )
-    (output / "test-output.txt").write_text(result.stdout)
+    (output / "test-output.txt").write_text(result.stdout, encoding="utf-8")
     print(result.stdout)
     cases = []
     if (output / "results.xml").exists():
@@ -78,14 +78,14 @@ def main():
                     "error": (bad.text or "") if bad is not None else "",
                 }
             )
-    receipts = [json.loads(path.read_text()) for path in sorted(traces.glob("*.json"))]
+    receipts = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(traces.glob("*.json"))]
     data = {
         "created": datetime.now(timezone.utc).isoformat(),
         "exit_code": result.returncode,
         "cases": cases,
         "receipts": receipts,
     }
-    (output / "results.json").write_text(json.dumps(data, indent=2))
+    (output / "results.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
     passed = sum(c["state"] == "passed" for c in cases)
     blocks = []
     for case in cases:
@@ -150,7 +150,7 @@ document.querySelector('#expand').onclick=()=>document.querySelectorAll('.case')
 document.querySelector('#collapse').onclick=()=>document.querySelectorAll('details').forEach(e=>e.open=false);
 </script></html>"""
     )
-    (output / "index.html").write_text(page)
+    (output / "index.html").write_text(page, encoding="utf-8")
     print("Report: " + str(output / "index.html"))
     return result.returncode
 

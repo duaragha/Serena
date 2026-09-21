@@ -184,11 +184,18 @@ class NotificationAuthority:
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            # A notice still waiting to go out -- deferred through quiet hours
+            # or held for approval -- has not reached him yet, so a second one
+            # with the same key says nothing new however old the first is.
+            # Only a notice he has actually received expires with the window.
+            # Treating a deferred notice as stale after an hour let one
+            # reminder stack up hourly overnight and arrive as a pile at 8am.
             duplicate = connection.execute(
                 """
                 SELECT notification_id, created_at FROM notifications
-                WHERE dedupe_key = ? AND decision IN ('sent', 'deferred', 'pending_approval')
-                  AND created_at >= ?
+                WHERE dedupe_key = ?
+                  AND (decision IN ('deferred', 'pending_approval')
+                       OR (decision = 'sent' AND created_at >= ?))
                 ORDER BY created_at DESC LIMIT 1
                 """,
                 (dedupe_key, moment - self.policy.dedupe_window_seconds),

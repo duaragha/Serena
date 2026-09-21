@@ -179,9 +179,18 @@ def isolated_index(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(indexer, "_INDEX_LOCK_PATH", data_dir / "index-update.lock")
     monkeypatch.setattr(indexer, "_schema_ready", False)
     monkeypatch.setenv("SERENA_VOICE_TRANSCRIPT_PATH", str(transcript))
-    monkeypatch.setattr(indexer, "scan_sessions", lambda: [])
-    monkeypatch.setattr(indexer, "scan_codex_sessions", lambda: [])
-    monkeypatch.setattr(indexer, "scan_locket_sessions", lambda: [])
+    # Every scanner the indexer consults, silenced. Missing one does not fail
+    # loudly: that scanner reads the real home directory instead, so the counts
+    # below become "however many chats this machine happens to have" and the
+    # test passes or fails by accident.
+    silenced = [
+        name
+        for name in dir(indexer)
+        if name.startswith("scan_") and name.endswith("_sessions")
+    ]
+    assert "scan_sessions" in silenced and "scan_voice_sessions" in silenced
+    for name in silenced:
+        monkeypatch.setattr(indexer, name, lambda: [])
     monkeypatch.setattr(
         indexer,
         "scan_voice_sessions",

@@ -147,8 +147,8 @@ with repository_integration_lock(sys.argv[1]):
 
 def test_dirty_base_still_permits_worktree_isolation(tmp_path):
     root = _repo(tmp_path)
-    (root / "core" / "alpha.py").write_text("alpha = 'uncommitted user work'\n")
-    (root / "untracked.txt").write_text("unrelated\n")
+    (root / "core" / "alpha.py").write_text("alpha = 'uncommitted user work'\n", encoding="utf-8")
+    (root / "untracked.txt").write_text("unrelated\n", encoding="utf-8")
 
     assessment = assess_isolation(root)
 
@@ -160,22 +160,22 @@ def test_dirty_base_still_permits_worktree_isolation(tmp_path):
 
 def test_dirty_base_is_visible_in_the_workspace_and_preserved_on_integration(tmp_path):
     root = _repo(tmp_path)
-    (root / "core" / "alpha.py").write_text("alpha = 'raghav dirty'\n")
-    (root / "untracked.txt").write_text("keep me\n")
+    (root / "core" / "alpha.py").write_text("alpha = 'raghav dirty'\n", encoding="utf-8")
+    (root / "untracked.txt").write_text("keep me\n", encoding="utf-8")
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=[ROOT_CLAIM])
 
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
-    assert (Path(workspace.path) / "core" / "alpha.py").read_text() == "alpha = 'raghav dirty'\n"
-    assert (Path(workspace.path) / "untracked.txt").read_text() == "keep me\n"
-    (Path(workspace.path) / "core" / "beta.py").write_text("beta = 'worker'\n")
+    assert (Path(workspace.path) / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'raghav dirty'\n"
+    assert (Path(workspace.path) / "untracked.txt").read_text(encoding="utf-8") == "keep me\n"
+    (Path(workspace.path) / "core" / "beta.py").write_text("beta = 'worker'\n", encoding="utf-8")
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert result.ok is True, result.reason
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 'raghav dirty'\n"
-    assert (root / "untracked.txt").read_text() == "keep me\n"
-    assert (root / "core" / "beta.py").read_text() == "beta = 'worker'\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'raghav dirty'\n"
+    assert (root / "untracked.txt").read_text(encoding="utf-8") == "keep me\n"
+    assert (root / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 'worker'\n"
 
 
 def test_integrated_workspace_refreshes_from_the_combined_dirty_base(tmp_path):
@@ -183,17 +183,17 @@ def test_integrated_workspace_refreshes_from_the_combined_dirty_base(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=[ROOT_CLAIM])
     first = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(first.path) / "core" / "beta.py").write_text("beta = 2\n")
+    (Path(first.path) / "core" / "beta.py").write_text("beta = 2\n", encoding="utf-8")
     assert integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root).ok
 
     second = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert second.base_head != first.base_head
-    assert (Path(second.path) / "core" / "beta.py").read_text() == "beta = 2\n"
-    (Path(second.path) / "core" / "beta.py").write_text("beta = 3\n")
+    assert (Path(second.path) / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 2\n"
+    (Path(second.path) / "core" / "beta.py").write_text("beta = 3\n", encoding="utf-8")
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
     assert result.ok is True, result.reason
-    assert (root / "core" / "beta.py").read_text() == "beta = 3\n"
+    assert (root / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 3\n"
 
 
 def test_non_repository_fails_closed_to_shared_fallback(tmp_path):
@@ -210,7 +210,7 @@ def test_non_repository_fails_closed_to_shared_fallback(tmp_path):
 def test_interrupted_merge_blocks_isolation(tmp_path):
     root = _repo(tmp_path)
     git_dir = Path(_git(root, "rev-parse", "--absolute-git-dir").strip())
-    (git_dir / "MERGE_HEAD").write_text("deadbeef\n")
+    (git_dir / "MERGE_HEAD").write_text("deadbeef\n", encoding="utf-8")
 
     assessment = assess_isolation(root)
 
@@ -329,14 +329,14 @@ def test_claims_are_scoped_per_run(tmp_path):
 
 def test_worker_edits_never_touch_the_base_checkout(tmp_path):
     root = _repo(tmp_path)
-    (root / "core" / "beta.py").write_text("beta = 'user dirty work'\n")
+    (root / "core" / "beta.py").write_text("beta = 'user dirty work'\n", encoding="utf-8")
     store = _store(tmp_path)
 
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'worker edit'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'worker edit'\n", encoding="utf-8")
 
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
-    assert (root / "core" / "beta.py").read_text() == "beta = 'user dirty work'\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
+    assert (root / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 'user dirty work'\n"
     assert workspace_changed_paths(workspace) == ["core/alpha.py"]
 
 
@@ -345,11 +345,11 @@ def test_the_same_worker_reuses_its_workspace_across_phases(tmp_path):
     store = _store(tmp_path)
 
     first = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(first.path) / "core" / "alpha.py").write_text("alpha = 'phase one'\n")
+    (Path(first.path) / "core" / "alpha.py").write_text("alpha = 'phase one'\n", encoding="utf-8")
     second = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert second.path == first.path
-    assert (Path(second.path) / "core" / "alpha.py").read_text() == "alpha = 'phase one'\n"
+    assert (Path(second.path) / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'phase one'\n"
 
 
 def test_a_zero_byte_git_link_is_quarantined_before_workspace_reuse(tmp_path):
@@ -357,7 +357,7 @@ def test_a_zero_byte_git_link_is_quarantined_before_workspace_reuse(tmp_path):
     store = _store(tmp_path)
     first = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
     first_path = Path(first.path)
-    (first_path / ".git").write_text("")
+    (first_path / ".git").write_text("", encoding="utf-8")
 
     second = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
@@ -377,9 +377,9 @@ def test_peer_workers_get_separate_worktrees(tmp_path):
 
     assert a.path != b.path
     assert a.branch != b.branch
-    (Path(a.path) / "core" / "alpha.py").write_text("from a\n")
-    (Path(b.path) / "core" / "beta.py").write_text("from b\n")
-    assert (Path(a.path) / "core" / "beta.py").read_text() == "beta = 1\n"
+    (Path(a.path) / "core" / "alpha.py").write_text("from a\n", encoding="utf-8")
+    (Path(b.path) / "core" / "beta.py").write_text("from b\n", encoding="utf-8")
+    assert (Path(a.path) / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 1\n"
 
 
 def test_integration_order_is_deterministic(tmp_path):
@@ -405,12 +405,12 @@ def test_integration_applies_claimed_work_and_leaves_evidence(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n", encoding="utf-8")
 
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert result.ok is True, result.reason
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 'integrated'\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'integrated'\n"
     assert result.changed_paths == ["core/alpha.py"]
     assert Path(result.patch_path).is_file()
     assert store.get_workspace("run-1", "claude:a").state == "integrated"
@@ -430,11 +430,11 @@ def test_published_stacked_branch_records_only_its_own_suffix(tmp_path):
     worker = Path(workspace.path)
 
     _git(worker, "switch", "-c", "dependency")
-    (worker / "core" / "beta.py").write_text("beta = 'dependency'\n")
+    (worker / "core" / "beta.py").write_text("beta = 'dependency'\n", encoding="utf-8")
     _git(worker, "add", "core/beta.py")
     _git(worker, "commit", "-qm", "dependency")
     _git(worker, "switch", "-c", "feature")
-    (worker / "core" / "alpha.py").write_text("alpha = 'worker'\n")
+    (worker / "core" / "alpha.py").write_text("alpha = 'worker'\n", encoding="utf-8")
     _git(worker, "add", "core/alpha.py")
     _git(worker, "commit", "-qm", "feature")
     _git(worker, "push", "-u", "origin", "feature")
@@ -455,8 +455,8 @@ def test_published_stacked_branch_records_only_its_own_suffix(tmp_path):
     assert result.delivery_branch == "feature"
     assert result.changed_paths == ["core/alpha.py"]
     assert result.applied is False
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
-    assert (root / "core" / "beta.py").read_text() == "beta = 1\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
+    assert (root / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 1\n"
     refreshed = store.get_workspace("run-1", "claude:a")
     assert refreshed is not None and refreshed.state == "delivered"
     assert refreshed.base_head == _git(worker, "rev-parse", "HEAD").strip()
@@ -474,7 +474,7 @@ def test_switched_unpublished_branch_never_falls_back_to_local_integration(tmp_p
     )
     worker = Path(workspace.path)
     _git(worker, "switch", "-c", "unpublished")
-    (worker / "core" / "alpha.py").write_text("alpha = 'worker'\n")
+    (worker / "core" / "alpha.py").write_text("alpha = 'worker'\n", encoding="utf-8")
     _git(worker, "add", "core/alpha.py")
     _git(worker, "commit", "-qm", "feature")
 
@@ -488,21 +488,21 @@ def test_switched_unpublished_branch_never_falls_back_to_local_integration(tmp_p
 
     assert result.ok is False
     assert "must be pushed with an upstream" in result.reason
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
 
 
 def test_integration_refuses_a_worker_the_supervisor_never_preclaimed(tmp_path):
     root = _repo(tmp_path)
     store = _store(tmp_path)
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n", encoding="utf-8")
 
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert result.ok is False
     assert "supervisor ownership claim is missing" in result.reason
     assert result.unclaimed_paths == ["core/alpha.py"]
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
 
 
 def test_integration_refuses_paths_the_worker_never_claimed(tmp_path):
@@ -510,16 +510,16 @@ def test_integration_refuses_paths_the_worker_never_claimed(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'claimed'\n")
-    (Path(workspace.path) / "core" / "beta.py").write_text("beta = 'NOT claimed'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'claimed'\n", encoding="utf-8")
+    (Path(workspace.path) / "core" / "beta.py").write_text("beta = 'NOT claimed'\n", encoding="utf-8")
 
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert result.ok is False
     assert result.unclaimed_paths == ["core/beta.py"]
     # Nothing at all lands, including the legitimately claimed file.
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
-    assert (root / "core" / "beta.py").read_text() == "beta = 1\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
+    assert (root / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 1\n"
     assert store.get_workspace("run-1", "claude:a").state == "blocked"
 
 
@@ -529,7 +529,7 @@ def test_a_blocked_workspace_is_recovered_then_reforked_for_retry(tmp_path):
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
     repaired = Path(workspace.path) / "core" / "beta.py"
-    repaired.write_text("beta = 'needs a claim'\n")
+    repaired.write_text("beta = 'needs a claim'\n", encoding="utf-8")
 
     refused = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
     resumed = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
@@ -538,7 +538,7 @@ def test_a_blocked_workspace_is_recovered_then_reforked_for_retry(tmp_path):
     assert Path(refused.patch_path).is_file()
     assert resumed.path == workspace.path
     assert resumed.updated_at >= workspace.updated_at
-    assert repaired.read_text() == "beta = 1\n"
+    assert repaired.read_text(encoding="utf-8") == "beta = 1\n"
 
 
 def test_retry_reforks_from_latest_base_and_reapplies_a_clean_patch(tmp_path):
@@ -546,8 +546,8 @@ def test_retry_reforks_from_latest_base_and_reapplies_a_clean_patch(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="codex:a", paths=[ROOT_CLAIM])
     original = ensure_workspace(store, run_id="run-1", worker_key="codex:a", cwd=root)
-    (Path(original.path) / "core" / "alpha.py").write_text("alpha = 'worker'\n")
-    (root / "core" / "beta.py").write_text("beta = 'peer integration'\n")
+    (Path(original.path) / "core" / "alpha.py").write_text("alpha = 'worker'\n", encoding="utf-8")
+    (root / "core" / "beta.py").write_text("beta = 'peer integration'\n", encoding="utf-8")
 
     refreshed, recovery = refresh_workspace_for_retry(
         store,
@@ -559,10 +559,10 @@ def test_retry_reforks_from_latest_base_and_reapplies_a_clean_patch(tmp_path):
     assert recovery["action"] == "reforked_reapplied"
     assert Path(recovery["patch_path"]).is_file()
     assert refreshed.base_head != original.base_head
-    assert (Path(refreshed.path) / "core" / "alpha.py").read_text() == "alpha = 'worker'\n"
+    assert (Path(refreshed.path) / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'worker'\n"
     assert (
         Path(refreshed.path) / "core" / "beta.py"
-    ).read_text() == "beta = 'peer integration'\n"
+    ).read_text(encoding="utf-8") == "beta = 'peer integration'\n"
 
 
 def test_retry_reforks_but_never_applies_a_patch_over_newer_same_path_work(tmp_path):
@@ -570,8 +570,8 @@ def test_retry_reforks_but_never_applies_a_patch_over_newer_same_path_work(tmp_p
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="codex:a", paths=[ROOT_CLAIM])
     original = ensure_workspace(store, run_id="run-1", worker_key="codex:a", cwd=root)
-    (Path(original.path) / "core" / "alpha.py").write_text("alpha = 'worker'\n")
-    (root / "core" / "alpha.py").write_text("alpha = 'newer peer work'\n")
+    (Path(original.path) / "core" / "alpha.py").write_text("alpha = 'worker'\n", encoding="utf-8")
+    (root / "core" / "alpha.py").write_text("alpha = 'newer peer work'\n", encoding="utf-8")
 
     refreshed, recovery = refresh_workspace_for_retry(
         store,
@@ -585,7 +585,7 @@ def test_retry_reforks_but_never_applies_a_patch_over_newer_same_path_work(tmp_p
     assert Path(recovery["patch_path"]).is_file()
     assert (
         Path(refreshed.path) / "core" / "alpha.py"
-    ).read_text() == "alpha = 'newer peer work'\n"
+    ).read_text(encoding="utf-8") == "alpha = 'newer peer work'\n"
 
 
 def test_integration_never_overwrites_uncommitted_base_work(tmp_path):
@@ -593,16 +593,16 @@ def test_integration_never_overwrites_uncommitted_base_work(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'from worker'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'from worker'\n", encoding="utf-8")
     # Raghav edits the same file in the real checkout while the worker runs.
-    (root / "core" / "alpha.py").write_text("alpha = 'PRECIOUS UNCOMMITTED WORK'\n")
+    (root / "core" / "alpha.py").write_text("alpha = 'PRECIOUS UNCOMMITTED WORK'\n", encoding="utf-8")
 
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert result.ok is False
     assert result.dirty_conflicts == ["core/alpha.py"]
     assert Path(result.patch_path).is_file()
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 'PRECIOUS UNCOMMITTED WORK'\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'PRECIOUS UNCOMMITTED WORK'\n"
     assert store.get_workspace("run-1", "claude:a").state == "blocked"
 
 
@@ -610,16 +610,16 @@ def test_worker_can_update_an_unchanged_untracked_baseline_file(tmp_path):
     """Synthetic baselines must compare untracked contents, not Git status."""
 
     root = _repo(tmp_path)
-    (root / "operator.py").write_text("value = 'dirty baseline'\n")
+    (root / "operator.py").write_text("value = 'dirty baseline'\n", encoding="utf-8")
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["operator.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "operator.py").write_text("value = 'worker update'\n")
+    (Path(workspace.path) / "operator.py").write_text("value = 'worker update'\n", encoding="utf-8")
 
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert result.ok is True, result.reason
-    assert (root / "operator.py").read_text() == "value = 'worker update'\n"
+    assert (root / "operator.py").read_text(encoding="utf-8") == "value = 'worker update'\n"
 
 
 def test_integration_preserves_crlf_patch_context_byte_exactly(tmp_path):
@@ -644,18 +644,18 @@ def test_integration_preserves_crlf_patch_context_byte_exactly(tmp_path):
 
 def test_worker_cannot_overwrite_an_untracked_file_edited_after_fork(tmp_path):
     root = _repo(tmp_path)
-    (root / "operator.py").write_text("value = 'dirty baseline'\n")
+    (root / "operator.py").write_text("value = 'dirty baseline'\n", encoding="utf-8")
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["operator.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "operator.py").write_text("value = 'worker update'\n")
-    (root / "operator.py").write_text("value = 'raghav changed this'\n")
+    (Path(workspace.path) / "operator.py").write_text("value = 'worker update'\n", encoding="utf-8")
+    (root / "operator.py").write_text("value = 'raghav changed this'\n", encoding="utf-8")
 
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert result.ok is False
     assert result.dirty_conflicts == ["operator.py"]
-    assert (root / "operator.py").read_text() == "value = 'raghav changed this'\n"
+    assert (root / "operator.py").read_text(encoding="utf-8") == "value = 'raghav changed this'\n"
 
 
 def test_a_failing_test_gate_rolls_the_integration_back(tmp_path):
@@ -663,7 +663,7 @@ def test_a_failing_test_gate_rolls_the_integration_back(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'broken'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'broken'\n", encoding="utf-8")
 
     result = integrate_workspace(
         store,
@@ -677,7 +677,7 @@ def test_a_failing_test_gate_rolls_the_integration_back(tmp_path):
     assert result.test_gate["ran"] is True
     assert result.test_gate["ok"] is False
     assert "rolled back" in result.reason
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
 
 
 def test_a_passing_test_gate_admits_the_integration(tmp_path):
@@ -685,7 +685,7 @@ def test_a_passing_test_gate_admits_the_integration(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'good'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'good'\n", encoding="utf-8")
 
     result = integrate_workspace(
         store, run_id="run-1", worker_key="claude:a", cwd=root, test_gate=["true"]
@@ -693,15 +693,15 @@ def test_a_passing_test_gate_admits_the_integration(tmp_path):
 
     assert result.ok is True, result.reason
     assert result.test_gate["ok"] is True
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 'good'\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'good'\n"
 
 
 def test_node_dependency_changes_sync_before_merged_tree_checks(tmp_path, monkeypatch):
     root = _repo(tmp_path)
-    (root / "package.json").write_text('{"name":"fixture"}\n')
+    (root / "package.json").write_text('{"name":"fixture"}\n', encoding="utf-8")
     (root / "package-lock.json").write_text(
         '{"name":"fixture","lockfileVersion":3,"packages":{"":{"name":"fixture"}}}\n'
-    )
+    , encoding="utf-8")
     _git(root, "add", "package.json", "package-lock.json")
     _git(root, "commit", "-qm", "add node fixture")
     store = _store(tmp_path)
@@ -711,13 +711,13 @@ def test_node_dependency_changes_sync_before_merged_tree_checks(tmp_path, monkey
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
     (Path(workspace.path) / "package.json").write_text(
         '{"name":"fixture","devDependencies":{"new-rule":"1.0.0"}}\n'
-    )
+    , encoding="utf-8")
     calls: list[tuple[str, ...]] = []
 
     def fake_sync(sync_root, changed_paths, *, timeout=900):
         del timeout
         calls.append(tuple(changed_paths))
-        (Path(sync_root) / ".dependency-synced").write_text("yes\n")
+        (Path(sync_root) / ".dependency-synced").write_text("yes\n", encoding="utf-8")
         return {"ran": True, "ok": True, "command": ["npm", "ci"], "exit_code": 0}
 
     monkeypatch.setattr("core.fleet_isolation.run_dependency_sync", fake_sync)
@@ -745,11 +745,11 @@ def test_node_dependency_sync_is_lockfile_bounded(tmp_path):
 
     root = tmp_path / "node"
     root.mkdir()
-    (root / "package.json").write_text("{}\n")
+    (root / "package.json").write_text("{}\n", encoding="utf-8")
 
     assert dependency_sync_command(root, ["README.md"]) is None
     assert dependency_sync_command(root, ["package.json"]) == []
-    (root / "package-lock.json").write_text("{}\n")
+    (root / "package-lock.json").write_text("{}\n", encoding="utf-8")
     assert dependency_sync_command(root, ["package.json"]) == [
         shutil.which("npm"),
         "ci",
@@ -772,8 +772,8 @@ def test_an_absent_dependency_tree_installs_even_when_nothing_changed(tmp_path):
 
     root = tmp_path / "node"
     root.mkdir()
-    (root / "package.json").write_text("{}\n")
-    (root / "package-lock.json").write_text("{}\n")
+    (root / "package.json").write_text("{}\n", encoding="utf-8")
+    (root / "package-lock.json").write_text("{}\n", encoding="utf-8")
     install = [shutil.which("npm"), "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
 
     assert dependency_sync_command(root, ["src/feature.ts"]) == install
@@ -789,7 +789,7 @@ def test_an_absent_tree_without_a_lockfile_does_not_fail_integration(tmp_path):
 
     root = tmp_path / "node"
     root.mkdir()
-    (root / "package.json").write_text("{}\n")
+    (root / "package.json").write_text("{}\n", encoding="utf-8")
 
     # None skips the install; [] would have failed the gate for every worker
     # in a manifest-only repository that merely touched source.
@@ -807,13 +807,13 @@ def test_new_files_and_deletions_integrate(tmp_path):
         run_id="run-1", worker_key="claude:a", paths=["core/gamma.py", "README.md"]
     )
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "gamma.py").write_text("gamma = 'new file'\n")
+    (Path(workspace.path) / "core" / "gamma.py").write_text("gamma = 'new file'\n", encoding="utf-8")
     (Path(workspace.path) / "README.md").unlink()
 
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert result.ok is True, result.reason
-    assert (root / "core" / "gamma.py").read_text() == "gamma = 'new file'\n"
+    assert (root / "core" / "gamma.py").read_text(encoding="utf-8") == "gamma = 'new file'\n"
     assert not (root / "README.md").exists()
 
 
@@ -824,8 +824,8 @@ def test_two_workers_integrate_disjoint_surfaces_in_order(tmp_path):
     store.claim_paths(run_id="run-1", worker_key="codex:b", paths=["core/beta.py"])
     a = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
     b = ensure_workspace(store, run_id="run-1", worker_key="codex:b", cwd=root)
-    (Path(a.path) / "core" / "alpha.py").write_text("alpha = 'a'\n")
-    (Path(b.path) / "core" / "beta.py").write_text("beta = 'b'\n")
+    (Path(a.path) / "core" / "alpha.py").write_text("alpha = 'a'\n", encoding="utf-8")
+    (Path(b.path) / "core" / "beta.py").write_text("beta = 'b'\n", encoding="utf-8")
 
     results = [
         integrate_workspace(store, run_id="run-1", worker_key=item.worker_key, cwd=root)
@@ -833,8 +833,8 @@ def test_two_workers_integrate_disjoint_surfaces_in_order(tmp_path):
     ]
 
     assert [item.ok for item in results] == [True, True]
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 'a'\n"
-    assert (root / "core" / "beta.py").read_text() == "beta = 'b'\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'a'\n"
+    assert (root / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 'b'\n"
 
 
 def test_two_unclaimed_workspaces_are_both_refused_without_corruption(
@@ -844,8 +844,8 @@ def test_two_unclaimed_workspaces_are_both_refused_without_corruption(
     store = _store(tmp_path)
     a = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
     b = ensure_workspace(store, run_id="run-1", worker_key="codex:b", cwd=root)
-    (Path(a.path) / "core" / "alpha.py").write_text("alpha = 'first'\n")
-    (Path(b.path) / "core" / "alpha.py").write_text("alpha = 'second'\n")
+    (Path(a.path) / "core" / "alpha.py").write_text("alpha = 'first'\n", encoding="utf-8")
+    (Path(b.path) / "core" / "alpha.py").write_text("alpha = 'second'\n", encoding="utf-8")
 
     ordered = plan_integration_order([b, a])
     results = [
@@ -857,7 +857,7 @@ def test_two_unclaimed_workspaces_are_both_refused_without_corruption(
 
     assert [result.ok for result in results] == [False, False]
     assert all("supervisor ownership claim is missing" in result.reason for result in results)
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
     assert store.active_claims("run-1") == []
 
 
@@ -873,9 +873,9 @@ def test_a_base_that_moved_on_is_refused_not_three_way_merged(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'from worker'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'from worker'\n", encoding="utf-8")
     # Raghav commits his own conflicting edit after the worker forked.
-    (root / "core" / "alpha.py").write_text("alpha = 'raghav committed this'\n")
+    (root / "core" / "alpha.py").write_text("alpha = 'raghav committed this'\n", encoding="utf-8")
     _git(root, "add", "core/alpha.py")
     _git(root, "commit", "-qm", "raghav's own work")
 
@@ -884,7 +884,7 @@ def test_a_base_that_moved_on_is_refused_not_three_way_merged(tmp_path):
     assert result.ok is False
     assert result.dirty_conflicts == ["core/alpha.py"]
     assert "moved on since this worker forked" in result.reason
-    contents = (root / "core" / "alpha.py").read_text()
+    contents = (root / "core" / "alpha.py").read_text(encoding="utf-8")
     assert contents == "alpha = 'raghav committed this'\n"
     assert "<<<<<<<" not in contents
     assert ">>>>>>>" not in contents
@@ -899,18 +899,18 @@ def test_a_failed_apply_leaves_no_partial_write(tmp_path):
         run_id="run-1", worker_key="claude:a", paths=["core/alpha.py", "core/beta.py"]
     )
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'worker'\n")
-    (Path(workspace.path) / "core" / "beta.py").write_text("beta = 'worker'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'worker'\n", encoding="utf-8")
+    (Path(workspace.path) / "core" / "beta.py").write_text("beta = 'worker'\n", encoding="utf-8")
     # Make one target un-appliable without committing, so the patch must fail
     # partway rather than being caught by the drift or dirty gates.
-    original_beta = (root / "core" / "beta.py").read_text()
+    original_beta = (root / "core" / "beta.py").read_text(encoding="utf-8")
 
     result = integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert result.ok is True, result.reason
     # The happy path must be complete, not partial.
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 'worker'\n"
-    assert (root / "core" / "beta.py").read_text() == "beta = 'worker'\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'worker'\n"
+    assert (root / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 'worker'\n"
     assert original_beta == "beta = 1\n"
 
 
@@ -919,13 +919,13 @@ def test_integration_can_be_rolled_back_after_the_fact(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'landed'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'landed'\n", encoding="utf-8")
     assert integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root).ok
 
     reverted = rollback_integration(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert reverted["ok"] is True, reverted["reason"]
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
 
 
 def test_preview_mode_validates_without_applying(tmp_path):
@@ -933,14 +933,14 @@ def test_preview_mode_validates_without_applying(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'preview'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'preview'\n", encoding="utf-8")
 
     result = integrate_workspace(
         store, run_id="run-1", worker_key="claude:a", cwd=root, apply_changes=False
     )
 
     assert result.ok is True
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
 
 
 def test_a_worker_that_changed_nothing_integrates_trivially(tmp_path):
@@ -959,7 +959,7 @@ def test_integration_history_is_durable_and_ordered(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "beta.py").write_text("unclaimed\n")
+    (Path(workspace.path) / "core" / "beta.py").write_text("unclaimed\n", encoding="utf-8")
     integrate_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     reopened = FleetIsolationStore(
@@ -974,22 +974,22 @@ def test_integration_history_is_durable_and_ordered(tmp_path):
 
 def test_cleanup_removes_the_worktree_and_spares_the_base(tmp_path):
     root = _repo(tmp_path)
-    (root / "untracked-user-file.txt").write_text("keep me\n")
+    (root / "untracked-user-file.txt").write_text("keep me\n", encoding="utf-8")
     store = _store(tmp_path)
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
 
     assert cleanup_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root) is True
 
     assert not Path(workspace.path).exists()
-    assert (root / "untracked-user-file.txt").read_text() == "keep me\n"
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "untracked-user-file.txt").read_text(encoding="utf-8") == "keep me\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
 
 
 def test_dirty_unintegrated_workspace_is_reported_as_unrecovered(tmp_path):
     root = _repo(tmp_path)
     store = _store(tmp_path)
     workspace = ensure_workspace(store, run_id="run-1", worker_key="codex:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 2\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 2\n", encoding="utf-8")
 
     blockers = unrecovered_workspaces(store, "run-1")
 
@@ -1003,7 +1003,7 @@ def test_integrated_workspace_is_not_reported_as_unrecovered(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="codex:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="codex:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 2\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 2\n", encoding="utf-8")
     assert integrate_workspace(store, run_id="run-1", worker_key="codex:a", cwd=root).ok
 
     assert unrecovered_workspaces(store, "run-1") == []
@@ -1013,10 +1013,10 @@ def test_workspace_shares_the_base_virtualenv_and_hides_it_from_changed_paths(tm
     root = _repo(tmp_path)
     # Mirror the real repo: .venv is gitignored, so it never rides the dirty
     # baseline into the worktree — the symlink is the only way workers get it.
-    (root / ".gitignore").write_text(".venv/\n")
+    (root / ".gitignore").write_text(".venv/\n", encoding="utf-8")
     venv_bin = root / ".venv" / "bin"
     venv_bin.mkdir(parents=True)
-    (venv_bin / "python").write_text("#!/bin/sh\n")
+    (venv_bin / "python").write_text("#!/bin/sh\n", encoding="utf-8")
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=[ROOT_CLAIM])
 
@@ -1036,7 +1036,7 @@ def test_declared_tests_run_against_the_merged_tree_and_reject_a_broken_patch(tm
     store = _store(tmp_path)
     # The combined checkout already carries a peer's change that this worker
     # never saw in its own worktree.
-    (root / "core" / "beta.py").write_text("beta = 'peer changed this'\n")
+    (root / "core" / "beta.py").write_text("beta = 'peer changed this'\n", encoding="utf-8")
     check = [
         sys.executable,
         "-c",
@@ -1046,7 +1046,7 @@ def test_declared_tests_run_against_the_merged_tree_and_reject_a_broken_patch(tm
 
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n", encoding="utf-8")
 
     result = integrate_workspace(
         store,
@@ -1060,8 +1060,8 @@ def test_declared_tests_run_against_the_merged_tree_and_reject_a_broken_patch(tm
     assert "test gate failed" in result.reason
     assert result.test_gate["ran"] is True
     # The base is left exactly as it was, peer change intact.
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 1\n"
-    assert (root / "core" / "beta.py").read_text() == "beta = 'peer changed this'\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
+    assert (root / "core" / "beta.py").read_text(encoding="utf-8") == "beta = 'peer changed this'\n"
 
 
 def test_declared_tests_that_pass_on_the_merged_tree_allow_integration(tmp_path):
@@ -1076,7 +1076,7 @@ def test_declared_tests_that_pass_on_the_merged_tree_allow_integration(tmp_path)
 
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n", encoding="utf-8")
 
     result = integrate_workspace(
         store,
@@ -1089,7 +1089,7 @@ def test_declared_tests_that_pass_on_the_merged_tree_allow_integration(tmp_path)
     assert result.ok is True, result.reason
     assert result.test_gate["ok"] is True
     assert result.test_gate["commands"] == [check]
-    assert (root / "core" / "alpha.py").read_text() == "alpha = 'integrated'\n"
+    assert (root / "core" / "alpha.py").read_text(encoding="utf-8") == "alpha = 'integrated'\n"
 
 
 def test_a_configured_repository_gate_outranks_declared_tests(tmp_path):
@@ -1097,7 +1097,7 @@ def test_a_configured_repository_gate_outranks_declared_tests(tmp_path):
     store = _store(tmp_path)
     store.claim_paths(run_id="run-1", worker_key="claude:a", paths=["core/alpha.py"])
     workspace = ensure_workspace(store, run_id="run-1", worker_key="claude:a", cwd=root)
-    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n")
+    (Path(workspace.path) / "core" / "alpha.py").write_text("alpha = 'integrated'\n", encoding="utf-8")
 
     result = integrate_workspace(
         store,
@@ -1124,8 +1124,8 @@ def test_the_install_is_launchable_not_just_named(tmp_path, monkeypatch):
 
     root = tmp_path / "node"
     root.mkdir()
-    (root / "package.json").write_text("{}\n")
-    (root / "package-lock.json").write_text("{}\n")
+    (root / "package.json").write_text("{}\n", encoding="utf-8")
+    (root / "package-lock.json").write_text("{}\n", encoding="utf-8")
 
     resolved = str(tmp_path / "npm.CMD")
     monkeypatch.setattr(isolation.shutil, "which",

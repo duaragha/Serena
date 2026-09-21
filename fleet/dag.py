@@ -444,7 +444,8 @@ def prepare_phase(
         if stored_leg_state in {"completed", "waiting_for_resources", "waiting_for_input"}:
             attempt = connection.execute(
                 "SELECT attempt_id, error FROM fleet_attempts "
-                "WHERE leg_id = ? ORDER BY attempt_number DESC LIMIT 1",
+                "WHERE leg_id = ? AND replay_of IS NULL "
+                "ORDER BY attempt_number DESC LIMIT 1",
                 (leg_id,),
             ).fetchone()
             mark_leg_finished(
@@ -1040,7 +1041,8 @@ def _reconcile_from_legs(
         attempt = connection.execute(
             """
             SELECT attempt_id, error FROM fleet_attempts
-            WHERE leg_id = ? ORDER BY attempt_number DESC LIMIT 1
+            WHERE leg_id = ? AND replay_of IS NULL
+            ORDER BY attempt_number DESC LIMIT 1
             """,
             (str(row["leg_id"]),),
         ).fetchone()
@@ -1104,3 +1106,22 @@ def _decoded_dict(value: object) -> dict[str, Any]:
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def frozen_replay_context(bundle: dict[str, Any], cwd: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Replay uses its frozen phase graph, never today's advancing DAG rows."""
+    from copy import deepcopy
+    snapshot = deepcopy(bundle['snapshot'])
+    snapshot['cwd'] = cwd
+    leg = deepcopy(bundle['leg'])
+    phase_index = bundle.get('phase_index')
+    for unit in snapshot.get('work_units', []):
+        state = bundle.get('dependency_states', {}).get(unit['id'])
+        if state is None:
+            continue
+        if phase_index is None:
+            unit['state'] = state
+        for phase in unit.get('phase_executions', []):
+            if phase.get('phase_index') == phase_index:
+                phase['state'] = state
+    return snapshot, leg

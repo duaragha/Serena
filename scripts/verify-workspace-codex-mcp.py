@@ -193,7 +193,7 @@ async def main():
             home, project = root / "home", root / "project"
             home.mkdir()
             project.mkdir()
-            (home / "config.toml").write_text(f'mcp_oauth_credentials_store = "file"\n[mcp_servers.proof]\nurl = "{server.base}/mcp"\nstartup_timeout_sec = 3\n')
+            (home / "config.toml").write_text(f'mcp_oauth_credentials_store = "file"\n[mcp_servers.proof]\nurl = "{server.base}/mcp"\nstartup_timeout_sec = 3\n', encoding="utf-8")
             env = {"PATH": os.environ["PATH"], "HOME": str(home), "CODEX_HOME": str(home), "XDG_CONFIG_HOME": str(home / "config"), "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}
             binary = shutil.which("codex")
             rpc = WorkspaceRpc()
@@ -235,13 +235,13 @@ async def main():
                 assert server.tokens == 1
                 result = await owner.reload_mcp()
                 assert result["data"][0]["authStatus"] == "oAuth", result
-                before = (home / "config.toml").read_text()
+                before = (home / "config.toml").read_text(encoding="utf-8")
                 disabled = await owner.set_mcp_enabled("proof", False)
                 assert disabled["effectiveEnabled"] is False, disabled
                 enabled = await owner.set_mcp_enabled("proof", True)
                 assert enabled["effectiveEnabled"] is True, enabled
                 import tomllib
-                prior_config, current_config = tomllib.loads(before), tomllib.loads((home / "config.toml").read_text())
+                prior_config, current_config = tomllib.loads(before), tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
                 current_config["mcp_servers"]["proof"].pop("enabled")
                 assert current_config == prior_config, "Toggle altered unrelated configuration"
                 assert owner.rpc.process.pid == pid and owner.session_id == sid

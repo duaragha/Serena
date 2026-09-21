@@ -23,7 +23,7 @@ def test_owned_delete_reports_conflict_and_bulk_keeps_other_results():
         return "recovery-path"
 
     source = Path(__file__).resolve().parents[1] / "ui/web.py"
-    selected = [node for node in ast.parse(source.read_text()).body if isinstance(node, ast.FunctionDef)
+    selected = [node for node in ast.parse(source.read_text(encoding="utf-8")).body if isinstance(node, ast.FunctionDef)
                 and node.name in {"api_delete_session", "api_bulk_delete", "_delete_workspace_session"}]
     namespace = {"app": app, "request": request, "jsonify": jsonify,
                  "get_session": lambda sid: {"session_id": sid}, "delete_session": delete,
@@ -60,7 +60,7 @@ def test_pending_rename_uses_synced_metadata_and_unknown_ids_stay_rejected(tmp_p
     monkeypatch.setattr(indexer, "toggle_done", missing)
 
     source = Path(__file__).resolve().parents[1] / "ui/web.py"
-    tree = ast.parse(source.read_text())
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     selected = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                 and node.name in {"api_rename", "api_sessions", "_decorate_sessions", "_pending_workspace_meta",
                                   "_toggle_workspace_done", "api_star", "api_done", "api_bulk_done", "api_conversation"}]
@@ -144,7 +144,7 @@ def test_sessions_route_includes_only_matching_committed_pending_chat(tmp_path):
     app.extensions["workspace_host"] = host
     indexed = []
     source = Path(__file__).resolve().parents[1] / "ui/web.py"
-    tree = ast.parse(source.read_text())
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     route = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "api_sessions")
     namespace = {"app": app, "jsonify": jsonify, "request": request,
                  "list_sessions": lambda **kwargs: indexed,

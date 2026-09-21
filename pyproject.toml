@@ -21,13 +21,25 @@ dependencies = [
     "mcp>=1.28.1,<2",
     "Pillow>=11.0,<13",
     "hjson==3.1.0",
+    # Knowledge maintenance is imported by the base scheduler and desktop.
+    "pyyaml>=6.0",
+    # The resident brain is not optional and its tool modules import this at
+    # import time (core/brain_tools.py and siblings), so a base install without
+    # it is a Serena whose brain cannot start. It was declared only under the
+    # workspace extra, which is where the native pane first needed it.
+    "claude-agent-sdk==0.2.121",
     "python-xlib>=0.33,<0.34; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
+browser = [
+    # Raw CDP, no Playwright driver/browser download or context mutations.
+    "httpx>=0.28,<1",
+    "websockets>=10.4,<16",
+]
 workspace = [
     # Verified SDK control schema/process identity for the opt-in native pane.
-    "claude-agent-sdk==0.2.121",
+    # The SDK itself is a base dependency; only the schema check is extra.
     "jsonschema==4.26.0",
 ]
 voice = [
@@ -43,7 +55,6 @@ voice = [
     "beautifulsoup4>=4.12.0",
     "httpx>=0.28.0",
     "websockets>=14.0",
-    "pyyaml>=6.0",
     "numpy>=1.26.0",
 ]
 dev = [

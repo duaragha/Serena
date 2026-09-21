@@ -32,7 +32,7 @@ async def main(bridge=False, background_task=False, typescript_sdk=None, mcp_for
     source = Path(original_config or Path.home() / ".claude") / ".credentials.json"
     oauth = None
     if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        oauth = json.loads(source.read_text()).get("claudeAiOauth")
+        oauth = json.loads(source.read_text(encoding="utf-8")).get("claudeAiOauth")
         if not oauth or not oauth.get("accessToken"):
             raise RuntimeError("Proof requires existing Claude subscription authentication")
     with tempfile.TemporaryDirectory(prefix="serena-claude-roundtrip-") as temporary:
@@ -89,7 +89,7 @@ async def main(bridge=False, background_task=False, typescript_sdk=None, mcp_for
                 }}}), encoding="utf-8")
                 (project / ".claude").mkdir()
                 (project / ".claude" / "settings.local.json").write_text(
-                    json.dumps({"enabledMcpjsonServers": ["form_proof"]}), encoding="utf-8")
+                    json.dumps({"enabledMcpjsonServers": ["form_proof"]}), encoding='utf-8')
             events = []
             finished = asyncio.Event()
 
@@ -165,7 +165,7 @@ async def main(bridge=False, background_task=False, typescript_sdk=None, mcp_for
                 await owner.submit([{"type": "text", "text": "Transport test: call mcp__form_proof__ask exactly once with empty arguments. It requests a count via the native user form. Do not call any other tools, edit files, or run commands. After it returns, report its returned count."}])
                 await asyncio.wait_for(finished.wait(), 120)
                 assert receipt.exists(), "MCP tool did not return a form result"
-                result = json.loads(receipt.read_text())
+                result = json.loads(receipt.read_text(encoding="utf-8"))
                 assert result["action"] == "accept" and result["content"] == {"count": 2}, result
                 assert any(event.get("method") == "mcpServer/elicitation/request" for event in events)
                 assert [event for event in events if event.get("method") == "turn/completed"][-1]["params"]["turn"]["status"] == "completed"

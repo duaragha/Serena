@@ -10,6 +10,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import queue
 import ssl
@@ -1190,6 +1191,21 @@ def create_tts_backend() -> AsyncTTSBackend:
     if backend == "kokoro":
         # Kokoro takes a native speed, so it needs no stretching.
         return KokoroOnnxBackend()
+    if backend in {"elevenlabs", "eleven"}:
+        # Metered, so it is never picked implicitly: the key alone is not
+        # consent to spend his credits on every sentence she says.
+        local = (
+            SpeedAdjustedTTSBackend(RemotePocketTTSBackend())
+            if _env_truthy("SERENA_CALL_TTS_REMOTE_FALLBACK", True)
+            else KokoroOnnxBackend()
+        )
+        eleven = ElevenLabsTTSBackend(fallback=local)
+        if not eleven.configured():
+            raise RuntimeError(
+                "SERENA_CALL_TTS_BACKEND asked for ElevenLabs but no key or "
+                "SERENA_CALL_ELEVEN_VOICE_ID is set"
+            )
+        return eleven
     raise RuntimeError(f"unsupported Serena call TTS backend {backend!r}")
 
 
@@ -1238,3 +1254,200 @@ class DeterministicTTSStub(AsyncTTSBackend):
 
     def retire_generation(self, generation: int) -> None:
         self.cancelled.discard(generation)
+
+
+ELEVEN_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+ELEVEN_DEFAULT_MODEL = "eleven_flash_v2_5"
+# Flash bills 0.5 credits per character, measured: 336 characters cost 168.
+# One minute of speech is roughly a thousand characters, so a ten minute call
+# where she talks for three costs about 1,500 credits of a 10,000 month.
+ELEVEN_SAMPLE_RATE = 24_000
+ELEVEN_READ_BYTES = 4_096
+# The desk protocol refuses any PCM16 payload longer than 50 ms, so whatever
+# size the socket hands back is re-cut to 40 ms frames. Reading 4 kB and
+# forwarding it whole is 85 ms at 24 kHz, which the host rejected frame by
+# frame: she had a voice and every sentence of it was thrown away.
+ELEVEN_FRAME_MS = 40
+ELEVEN_FRAME_BYTES = ELEVEN_SAMPLE_RATE * 2 * ELEVEN_FRAME_MS // 1000
+
+
+class ElevenLabsTTSBackend(AsyncTTSBackend):
+    """Her voice from ElevenLabs, with a local engine underneath it.
+
+    Pocket is intelligible and free and sounds like a machine. This sounds like
+    a person, and it is metered, so the two are stacked rather than swapped:
+    every failure -- no key, quota gone, a stalled first chunk, a dropped
+    connection -- falls through to `fallback` mid-sentence. The worst case is
+    that she sounds robotic again, never that she goes silent.
+
+    PCM comes back at 24 kHz to match what the rest of the call pipeline and
+    Pocket already speak, so nothing downstream has to resample.
+    """
+
+    name = "elevenlabs"
+    execution = "remote"
+    model_source = "hosted"
+    supports_true_stream = True
+
+    def __init__(
+        self,
+        *,
+        fallback: AsyncTTSBackend | None = None,
+        api_key: str | None = None,
+        voice_id: str | None = None,
+        model_id: str | None = None,
+        first_audio_timeout: float | None = None,
+    ) -> None:
+        from voice.call.stt import load_elevenlabs_key
+
+        self.fallback = fallback
+        self.api_key = api_key if api_key is not None else load_elevenlabs_key()
+        self.voice_id = str(voice_id or os.environ.get("SERENA_CALL_ELEVEN_VOICE_ID", "")).strip()
+        self.model_id = str(
+            model_id or os.environ.get("SERENA_CALL_ELEVEN_MODEL") or ELEVEN_DEFAULT_MODEL
+        )
+        self.first_audio_timeout = max(
+            0.5,
+            float(
+                first_audio_timeout
+                if first_audio_timeout is not None
+                else os.environ.get("SERENA_CALL_ELEVEN_FIRST_AUDIO_TIMEOUT", "2.5")
+            ),
+        )
+        self.sample_rate = ELEVEN_SAMPLE_RATE
+        self.provider = "elevenlabs"
+        self.last_backend = ""
+        self._cancelled: set[int] = set()
+        self._cancel_all = False
+
+    @property
+    def metadata(self) -> dict[str, object]:
+        return {
+            "sample_rate": self.sample_rate,
+            "voice": self.voice_id or "unset",
+            "model": self.model_id,
+        }
+
+    def configured(self) -> bool:
+        return bool(self.api_key and self.voice_id)
+
+    async def warm(self) -> None:
+        if self.fallback is not None:
+            await self.fallback.warm()
+
+    def _request(self, sentence: str):
+        import json
+        import urllib.request
+
+        body = json.dumps({
+            "text": sentence,
+            "model_id": self.model_id,
+            "voice_settings": {"stability": 0.4, "similarity_boost": 0.75},
+        }).encode("utf-8")
+        return urllib.request.Request(
+            f"{ELEVEN_TTS_URL}/{self.voice_id}/stream"
+            f"?output_format=pcm_{ELEVEN_SAMPLE_RATE}&optimize_streaming_latency=3",
+            data=body,
+            headers={"xi-api-key": self.api_key, "Content-Type": "application/json"},
+            method="POST",
+        )
+
+    def _read_chunks(self, sentence: str, queue, stop) -> None:
+        """Pull PCM off the socket in a worker thread; never touch the loop."""
+
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(
+                    self._request(sentence), timeout=self.first_audio_timeout + 30) as response:
+                while not stop.is_set():
+                    chunk = response.read(ELEVEN_READ_BYTES)
+                    if not chunk:
+                        break
+                    queue.put_nowait(chunk)
+        except Exception as error:  # quota, auth, network, malformed voice id
+            queue.put_nowait(error)
+        finally:
+            queue.put_nowait(None)
+
+    async def stream(self, sentence: str, *, generation: int) -> AsyncIterator[PCMChunk]:
+        import asyncio
+        import queue as queue_module
+        import threading
+
+        spoken = (sentence or "").strip()
+        if not spoken:
+            return
+        if self._cancel_all or generation in self._cancelled:
+            return
+        if not self.configured():
+            async for chunk in self._speak_locally(spoken, generation):
+                yield chunk
+            return
+
+        outbox: queue_module.Queue = queue_module.Queue()
+        stop = threading.Event()
+        threading.Thread(
+            target=self._read_chunks, args=(spoken, outbox, stop),
+            name="eleven-tts", daemon=True,
+        ).start()
+
+        loop = asyncio.get_running_loop()
+        first = True
+        produced = False
+        buffer = bytearray()
+        try:
+            while True:
+                if self._cancel_all or generation in self._cancelled:
+                    return
+                timeout = self.first_audio_timeout if first else 30.0
+                try:
+                    item = await asyncio.wait_for(
+                        loop.run_in_executor(None, outbox.get), timeout)
+                except asyncio.TimeoutError:
+                    break
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    logging.getLogger("serena.call.tts").warning(
+                        "ElevenLabs voice unavailable (%s); speaking locally", item)
+                    break
+                first = False
+                produced = True
+                self.last_backend = self.name
+                buffer += item
+                while len(buffer) >= ELEVEN_FRAME_BYTES:
+                    frame, buffer = (buffer[:ELEVEN_FRAME_BYTES],
+                                     buffer[ELEVEN_FRAME_BYTES:])
+                    yield PCMChunk(pcm=bytes(frame), sample_rate=self.sample_rate)
+        finally:
+            stop.set()
+        if buffer:
+            # The tail is shorter than a frame, which is under the limit.
+            yield PCMChunk(pcm=bytes(buffer), sample_rate=self.sample_rate)
+        if not produced:
+            # Nothing was heard, so the sentence still owes him a voice.
+            async for chunk in self._speak_locally(spoken, generation):
+                yield chunk
+
+    async def _speak_locally(self, sentence: str, generation: int) -> AsyncIterator[PCMChunk]:
+        if self.fallback is None:
+            return
+        self.last_backend = getattr(self.fallback, "name", "fallback")
+        async for chunk in self.fallback.stream(sentence, generation=generation):
+            yield chunk
+
+    async def cancel(self, generation: int | None = None) -> None:
+        if generation is None:
+            self._cancel_all = True
+        else:
+            self._cancelled.add(generation)
+            if len(self._cancelled) > 64:
+                self._cancelled = set(sorted(self._cancelled)[-32:])
+        if self.fallback is not None:
+            await self.fallback.cancel(generation)
+
+    def retire_generation(self, generation: int) -> None:
+        self._cancelled.discard(generation)
+        if self.fallback is not None:
+            self.fallback.retire_generation(generation)

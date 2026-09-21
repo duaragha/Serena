@@ -1,6 +1,6 @@
 {
   "name": "serena-desktop",
-  "version": "0.3.6",
+  "version": "0.3.10",
   "description": "Serena desktop shell",
   "main": "main.js",
   "author": "Raghav",
@@ -35,6 +35,10 @@
     "files": [
       "main.js",
       "preload.js",
+      "promotion-*.cjs",
+      "promotion-renderer.js",
+      "promotion.html",
+      "promotion.css",
       "runtime.js",
       "profile.js",
       "folder-picker.js",

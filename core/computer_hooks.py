@@ -35,7 +35,7 @@ def install_context_hooks(*, home=None, python=None, cli=None):
         ("codex", home / ".codex/hooks.json"),
         ("claude", home / ".claude/settings.json"),
     ):
-        original = path.read_text() if path.exists() else "{}"
+        original = path.read_text(encoding="utf-8") if path.exists() else "{}"
         settings = json.loads(original)
         hooks = settings.setdefault("hooks", {})
         groups = hooks.setdefault("UserPromptSubmit", [])
@@ -58,7 +58,7 @@ def install_context_hooks(*, home=None, python=None, cli=None):
                 shutil.copyfile(path, backup)
                 backup.chmod(0o600)
             temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            temporary.write_text(updated)
+            temporary.write_text(updated, encoding="utf-8")
             temporary.chmod(0o600)
             temporary.replace(path)
         installed.append({"agent": agent, "path": str(path), "command": command})

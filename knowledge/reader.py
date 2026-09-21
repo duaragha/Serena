@@ -19,7 +19,7 @@ def _parse_index() -> dict[str, str]:
         return {}
 
     descriptions: dict[str, str] = {}
-    text = INDEX_PATH.read_text()
+    text = INDEX_PATH.read_text(encoding="utf-8")
 
     for match in re.finditer(r"- \[([^\]]+)\]\(\./([^/]+)/?\)\s*-\s*(.+)", text):
         _title, slug, desc = match.groups()
@@ -29,7 +29,7 @@ def _parse_index() -> dict[str, str]:
     return descriptions
 
 
-def list_topics() -> list[dict]:
+def list_topics(*, surface: str = '', caller: str = '') -> list[dict]:
     """List all knowledge topics with metadata.
 
     Returns list of dicts with: slug, title, description, file_count, modified, total_size
@@ -41,14 +41,18 @@ def list_topics() -> list[dict]:
     topics = []
 
     for entry in sorted(KNOWLEDGE_DIR.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("."):
+        if not entry.is_dir() or entry.is_symlink() or entry.name.startswith("."):
             continue
 
         # Get title from README.md first line, fallback to slug
         readme = entry / "README.md"
         title = entry.name
-        if readme.exists():
-            first_line = readme.read_text().split("\n", 1)[0]
+        if readme.exists() and not readme.is_symlink():
+            from core.knowledge_store import metadata, read_note
+            text = (read_note(entry.name, readme.name, surface=surface, caller=caller,
+                              root=KNOWLEDGE_DIR) if surface else readme.read_text(encoding="utf-8"))
+            first_line = next((line for line in text.splitlines() if line.startswith('# ')), '')
+            title = str(metadata(text).get('title') or title)
             if first_line.startswith("# "):
                 title = first_line[2:].strip()
 
@@ -90,9 +94,10 @@ def get_topic_files(slug: str) -> list[dict]:
     return files
 
 
-def get_topic_content(slug: str) -> str:
+def get_topic_content(slug: str, *, query: str = '', surface: str = 'knowledge', caller: str = 'reader', include_receipts: bool = False) -> str:
     """Read all markdown content from a topic, concatenating all files."""
-    topic_dir = KNOWLEDGE_DIR / slug
+    from core.knowledge_store import note_path
+    topic_dir = note_path(slug, 'README.md', KNOWLEDGE_DIR).parent
     if not topic_dir.exists():
         return "Topic not found."
 
@@ -108,18 +113,21 @@ def get_topic_content(slug: str) -> str:
     for f in files:
         if len(files) > 1:
             parts.append(f"{'─' * 40}\n📄 {f.name}\n{'─' * 40}\n")
-        parts.append(f.read_text())
+        parts.append(get_file_content(slug, f.name, query=query, surface=surface, caller=caller,
+                                      include_receipts=include_receipts))
         parts.append("")
 
     return "\n".join(parts).strip()
 
 
-def get_file_content(slug: str, filename: str) -> str:
+def get_file_content(slug: str, filename: str, *, query: str = '', surface: str = 'knowledge', caller: str = 'reader', include_receipts: bool = False) -> str:
     """Read a single markdown file from a topic."""
-    f = KNOWLEDGE_DIR / slug / filename
+    from core.knowledge_store import note_path, read_note
+    f = note_path(slug, filename, KNOWLEDGE_DIR)
     if not f.exists():
         return "File not found."
-    return f.read_text()
+    return read_note(slug, filename, query=query, surface=surface, caller=caller,
+                     root=KNOWLEDGE_DIR, include_receipt=include_receipts)
 
 
 def delete_topic(slug: str) -> bool:
@@ -133,7 +141,7 @@ def delete_topic(slug: str) -> bool:
 
     # Remove from INDEX.md
     if INDEX_PATH.exists():
-        lines = INDEX_PATH.read_text().splitlines()
+        lines = INDEX_PATH.read_text(encoding="utf-8").splitlines()
         pattern = re.compile(rf"- \[[^\]]+\]\(\./\s*{re.escape(slug)}\s*/?\)")
         filtered = [line for line in lines if not pattern.search(line)]
         # Clean up double blank lines left behind
@@ -142,7 +150,7 @@ def delete_topic(slug: str) -> bool:
             if line.strip() == "" and cleaned and cleaned[-1].strip() == "":
                 continue
             cleaned.append(line)
-        INDEX_PATH.write_text("\n".join(cleaned) + "\n")
+        INDEX_PATH.write_text("\n".join(cleaned) + "\n", encoding="utf-8")
 
     return True
 

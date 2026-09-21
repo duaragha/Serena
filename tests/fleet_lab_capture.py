@@ -47,4 +47,4 @@ def fleet_lab_receipts(request, monkeypatch):
     name = hashlib.sha256(request.node.nodeid.encode()).hexdigest()[:20] + ".json"
     Path(destination, name).write_text(
         json.dumps({"test": request.node.nodeid, "events": events}, indent=2)
-    )
+    , encoding="utf-8")

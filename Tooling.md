@@ -30,7 +30,7 @@ Never install an update by hand via SSH or manual copying. Both desktop apps sel
 ### 1. Serena Desktop (`apps/desktop/`)
 - **Architecture**: Public repository `duaragha/Serena`. Releases are downloaded anonymously by `electron-updater`, requiring no token.
 - **When**: Any changes affecting `apps/desktop/`, `ui/`, or core desktop services.
-- **Every Serena update ships to Serena Dev, never straight to stable.** Serena Dev is a separate app that runs alongside stable (own name, `~/.config/serena-dev`, `~/.local/share/chats-dev`, `dev` update channel), so Raghav tests new features without disturbing the stable app his work runs in. Native structured panes only run in Dev. Cut a stable `vX.Y.Z` only when Raghav asks to promote a Dev build he has tested.
+- **Every Serena update ships to Serena Dev, never straight to stable.** Serena Dev is a separate app that runs alongside stable (own name, `~/.config/serena-dev`, `~/.local/share/chats-dev`, `dev` update channel), so Raghav tests new features without disturbing the stable app his work runs in. Native structured panes only run in Dev. Raghav promotes tested feature selections himself using Dev's **Releases > Promote to Main**. Conversational approval is not release authorization.
 - **Workflow**:
   1. Test: `cd apps/desktop && npm test`
   2. Set `apps/desktop/package.json` to the next patch version (e.g. `0.3.4` -> `0.3.5`) for the first Dev build of that version. Later Dev builds of the same version keep it unchanged; the release job refuses a tag whose base differs from `package.json`.
@@ -41,7 +41,7 @@ Never install an update by hand via SSH or manual copying. Both desktop apps sel
      git tag vX.Y.Z-dev.N
      git push origin master vX.Y.Z-dev.N
      ```
-     Promoting to stable, only on request: `git tag vX.Y.Z && git push origin vX.Y.Z` on the tested commit.
+     Stable publication uses `selective-promotion.yml`, never a tag of the latest Dev tree. See `docs/selective-promotion.md` for catalog registration, dependencies and verification. Do not dispatch `mode=publish` without explicit authorization of that feature selection; use `mode=verify` for development proof.
   4. GitHub Actions (`.github/workflows/desktop-release.yml`) builds Linux AppImage + Windows installer into the same release. Dev tags publish a prerelease on the `dev` channel, which stable installs never read.
 - **Invariants**:
   - The installed AppImage on Linux must live at `~/Applications/Serena.AppImage`. The unversioned filename is load-bearing so `electron-updater` overwrites in-place instead of creating orphan files.
@@ -80,6 +80,23 @@ Memories persist what you've learned about Raghav across sessions. They're injec
 - `chats memory add "what you learned" --type feedback` — what worked or didn't in YOUR approach
 - `chats memory add "..." --type project` — ongoing work, decisions, constraints
 - `chats memory add "..." --type reference` — tool/workflow/API pointers
+
+### Task numbers are their own sequence
+Tasks count `1, 2, 3...` in their own space; every other memory type shares the
+older counter (now past 1100). Both are monotonic: finishing #53 never frees
+#53, because a scheduler's dispatch receipt outlives the task it names — after
+73 tasks the next one is #74 whatever you deleted. Renumbered 2026-09-19 from
+the shared counter, which had pushed a 73-item todo list into the 1000s; the
+old-to-new map is `memory/.task-id-map.json`, so a task id quoted in an older
+chat can still be traced.
+
+Because the two spaces overlap, a bare number can name both a task and a
+memory. `chats memory remove|edit|snooze <id>` then refuses and asks for
+`--task` or `--memory` rather than guessing; in code, `_find_path(id)` raises
+`AmbiguousMemoryId` unless you pass a type. Counters live in
+`memory/.task-next-id` and `memory/.memory-next-id` — never hand-edit one to a
+value at or below an id already in use.
+
 
 ### Auto-capture (do this without being asked)
 Save immediately when you detect:
@@ -156,6 +173,26 @@ ssh docker-pc "ssh -o BatchMode=yes docker-ubuntu-vm bash -s" < script.sh
 ssh docker-vm docker logs <container>          # when already inside
 ```
 Pipe scripts via stdin (Windows cmd mangles quotes and braces). The VM sees this Projects tree at `/mnt/projects` as a VirtualBox shared folder (vboxsf).
+
+## Calling the docker MCPs programmatically
+The 12 dockerized MCPs (`https://pc.tail4d6220.ts.net/mcp/<name>`) are callable from any agent session through Serena's capability broker — no MCP client tools needed:
+```bash
+cd ~/Documents/Projects/serena && .venv/bin/python -c "
+import asyncio
+from core.mcp.capability_broker import catalog, find_capabilities, invoke_capability
+async def main():
+    caps, unavailable = await catalog(refresh=True)   # all live tools
+    print(await find_capabilities('linear issues'))   # search by words
+    print(await invoke_capability('linear', 'list_issues', {'limit': 5}))
+asyncio.run(main())
+"
+```
+- MUST use `.venv/bin/python` — the `mcp` SDK lives in the venv, not system python.
+- Reads go through freely. Writes are classified per-tool and refused without fresh direct turn authority from Raghav (3 denials trips a circuit breaker needing explicit reset).
+- Broker serves **http servers only** (stdio like `playwright` is out of scope) and skips `enabled: false` entries.
+- Two config prerequisites in `~/.config/serena/mcp.json`, both set 2026-09-16: tailnet http servers need `allow_private_network: true` (100.x is non-public, URLPolicy refuses otherwise) and every http server needs `allowed_domains`. Fix via `core.mcp.config.upsert_server` (master config only, no client sync).
+- Known states: `netsuite` is a direct NetSuite cloud URL that 401s until credentials are configured; `beeper` is `enabled: false`.
+- Never hand-roll MCP json-rpc over curl when the broker exists — it handles headers, secrets, session negotiation, and output truncation.
 
 ## Launching a GUI app on Windows, from a pane
 Always detach GUI applications: `Start-Process app.exe` in PowerShell, or `start "" app.exe` in cmd. Never run the bare executable.

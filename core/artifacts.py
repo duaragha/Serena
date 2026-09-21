@@ -18,6 +18,18 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+# Directory descriptors and the dir_fd arguments built on them are POSIX only.
+# Windows has neither, so the artifact write needs a second implementation
+# there rather than a PermissionError on every proof it tries to store.
+# os.replace is deliberately not tested here: it takes src_dir_fd/dst_dir_fd
+# rather than dir_fd, so it is never a member of os.supports_dir_fd and
+# checking for it would disable this path on Linux too.
+DIR_FD_WRITES_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY")
+    and os.open in os.supports_dir_fd
+    and os.mkdir in os.supports_dir_fd
+)
+
 DEFAULT_ARTIFACT_ROOT = Path.home() / ".local" / "state" / "serena" / "artifacts"
 DEFAULT_ARTIFACT_DB = Path.home() / ".local" / "state" / "serena" / "artifacts.sqlite3"
 DEFAULT_ARTIFACT_KEY = Path.home() / ".config" / "serena" / "artifact.key"
@@ -96,6 +108,7 @@ class ArtifactRegistry:
         job_id: str,
         name: str,
         content: str | bytes,
+        max_bytes: int = MAX_ARTIFACT_BYTES,
     ) -> Path:
         """Atomically replace one artifact without following attacker-made links."""
 
@@ -103,10 +116,12 @@ class ArtifactRegistry:
             raise ValueError("invalid job id")
         clean_name = _clean_artifact_name(name)
         data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
-        if not data or len(data) > MAX_ARTIFACT_BYTES:
+        if not data or len(data) > max_bytes:
             raise ValueError("artifact size is outside the allowed range")
 
         root = self.root.resolve()
+        if not DIR_FD_WRITES_SUPPORTED:
+            return self._write_job_artifact_by_path(root, job_id, clean_name, data)
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         root_fd = os.open(root, directory_flags)
@@ -151,6 +166,56 @@ class ArtifactRegistry:
             os.close(root_fd)
         return root / job_id / clean_name
 
+    def _write_job_artifact_by_path(
+        self,
+        root: Path,
+        job_id: str,
+        clean_name: str,
+        data: bytes,
+    ) -> Path:
+        """The same write for a platform without directory descriptors.
+
+        Windows cannot open a directory as a file descriptor -- os.open on one
+        raises PermissionError -- and supports none of the dir_fd arguments the
+        primary path uses. That made every proof artifact fail there, and with
+        it the integration gate, so no Fleet coding run on the PC could finish.
+
+        The intent is kept as far as the platform allows: the job directory and
+        the destination are refused if either is a link, the content lands in a
+        uniquely named temporary file in the same directory, it is flushed
+        before it is published, and os.replace is atomic within one volume.
+        What is genuinely lost is the guarantee that the directory cannot be
+        swapped between the check and the write; Windows offers no openat.
+        """
+
+        directory = root / job_id
+        directory.mkdir(parents=True, exist_ok=True)
+        if directory.is_symlink() or directory.resolve() != directory:
+            raise ValueError("artifact job directory may not be a symlink")
+        final = directory / clean_name
+        if final.is_symlink():
+            raise ValueError("artifact may not be a symlink")
+
+        temporary = directory / f".{clean_name}.{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                if written < 1:
+                    raise OSError("artifact write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.replace(temporary, final)
+        except OSError:
+            with suppress(OSError):
+                os.unlink(temporary)
+            raise
+        return final
+
     def register(
         self,
         *,
@@ -161,6 +226,7 @@ class ArtifactRegistry:
         origin_session_id: str = "",
         fleet_run_id: str = "",
         fleet_worker_key: str = "",
+        max_bytes: int = MAX_ARTIFACT_BYTES,
     ) -> ArtifactLink:
         if not _safe_identifier(job_id):
             raise ValueError("invalid job id")
@@ -177,7 +243,7 @@ class ArtifactRegistry:
         if _has_symlink_between(root, source):
             raise ValueError("artifact path may not contain symlinks")
         size = resolved.stat().st_size
-        if size < 1 or size > MAX_ARTIFACT_BYTES:
+        if size < 1 or size > max_bytes:
             raise ValueError("artifact size is outside the allowed range")
         clean_name = _clean_artifact_name(name)
         artifact_id = str(uuid.uuid4())
@@ -268,6 +334,11 @@ class ArtifactRegistry:
                 tuple(values),
             ).fetchall()
         return [self._link_from_row(row) for row in rows]
+
+    def get_link(self, artifact_id: str) -> ArtifactLink | None:
+        with self._connect() as connection:
+            row = connection.execute('SELECT * FROM artifacts WHERE artifact_id=?', (artifact_id,)).fetchone()
+        return self._link_from_row(row) if row else None
 
     def attach_provenance(
         self,

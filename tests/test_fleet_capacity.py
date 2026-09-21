@@ -235,3 +235,61 @@ def test_invalid_override_fails_closed_as_configuration_error():
         fleet_capacity.read_fleet_capacity(
             environ={"SERENA_FLEET_CAPACITY_JSON": json.dumps({"codex": {"status": "available"}})}
         )
+
+
+# ---- a provider this machine cannot run is not "usable" --------------------
+
+
+def test_a_provider_whose_cli_is_absent_is_reported_unavailable(monkeypatch):
+    """The PC has no muse CLI, and Fleet called muse usable anyway.
+
+    `unknown` is usable by design, so a muse leg was scheduled onto a machine
+    that cannot run one and only found out when the worker raised
+    FileNotFoundError mid-run. Reported unavailable, the automatic capacity
+    handoff routes around it before any work is handed over.
+    """
+
+    from fleet import capacity
+
+    monkeypatch.setattr("fleet.workers.provider_binary", lambda *_a, **_k: None)
+
+    for reader, provider in (
+        (capacity._read_muse_capacity, "muse"),
+        (capacity._read_codex_capacity, "codex"),
+        (capacity._read_claude_capacity, "claude"),
+    ):
+        result = reader(1_000.0, {})
+        assert result.usable is False, provider
+        assert result.status == "unavailable", provider
+        assert "not installed on this machine" in result.reason, provider
+
+
+def test_capacity_resolves_a_binary_the_same_way_a_worker_will(monkeypatch, tmp_path):
+    """They disagreed: capacity asked shutil.which, a worker searched further.
+
+    A provider installed under ~/.local/bin ran perfectly well and was still
+    reported missing, because only one of the two knew to look there.
+    """
+
+    from fleet import capacity
+    from fleet.workers import provider_binary
+
+    monkeypatch.setattr(capacity.shutil, "which", lambda _name: None)
+    found = tmp_path / "muse"
+    found.write_text("#!/bin/sh\n", encoding="utf-8")
+    found.chmod(0o755)
+
+    seen = provider_binary("muse", {"SERENA_FLEET_MUSE_BIN": str(found)})
+    assert seen == str(found)
+    assert capacity._read_muse_capacity(
+        1_000.0, {"SERENA_FLEET_MUSE_BIN": str(found)}
+    ).usable is True
+
+
+def test_an_unknown_provider_is_not_quietly_handed_claude(monkeypatch):
+    """A typo in a policy used to run the wrong model instead of saying so."""
+
+    from fleet.workers import provider_binary
+
+    assert provider_binary("gpt-6-astra") is None
+    assert provider_binary("") is None

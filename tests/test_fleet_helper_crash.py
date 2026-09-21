@@ -44,7 +44,7 @@ def test_external_helper_kill_preserves_applied_patch_and_reaps_gate(tmp_path, m
                 time.sleep(0.02)
             assert marker.exists(), future.result(timeout=5) if future.done() else 'gate never entered'
             current = store.get_run(run_id)['phases'][3]['legs'][0]['current_attempt']
-            gate_parent_pid, gate_pid = map(int, marker.read_text().split(':'))
+            gate_parent_pid, gate_pid = map(int, marker.read_text(encoding="utf-8").split(':'))
             gate_process = psutil.Process(gate_pid)
             with store._connect() as db:
                 lease = db.execute('SELECT owner_pid,owner_token FROM fleet_worker_leases WHERE attempt_id=? AND state=?',

@@ -52,6 +52,6 @@ def write_voice_speed(speed: float, path: Path = DEFAULT_SPEED_PATH) -> float:
     target = Path(path).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(target.name + ".tmp")
-    temporary.write_text(f"{value:.2f}\n", encoding="utf-8")
+    temporary.write_text(f"{value:.2f}\n", encoding='utf-8')
     temporary.replace(target)  # atomic: a reader never sees a half-written rate
     return value

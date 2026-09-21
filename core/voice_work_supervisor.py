@@ -9,7 +9,6 @@ from core.process_probe import probe_process
 import re
 import shutil
 import signal
-import socket
 import subprocess
 import threading
 import time
@@ -461,11 +460,13 @@ def _work_title(request: str) -> str:
 
 
 def _private_prompt(item: VoiceInboxItem) -> str:
+    from core.machine_context import persona_instruction
+
     return (
         item.prompt
-        + "\n\nThis is Serena's private coding session. Before acting, read "
-        "/home/raghav/Documents/Projects/serena/Persona.md and Tooling.md and "
-        "continue as the same Serena. The accepted brief, resolved root, frozen "
+        + "\n\nThis is Serena's private coding session. "
+        + persona_instruction()
+        + " Continue as the same Serena. The accepted brief, resolved root, frozen "
         "baseline tree, model policy, acceptance criteria, and authority boundaries "
         "are immutable. Own the work end to end. "
         "Do not tell Raghav to open another app or terminal. Inspect the live state, "
@@ -573,18 +574,9 @@ def _narration_line(text: str) -> str:
 
 
 def _send_overlay_event(message: dict) -> None:
-    payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8"
-    )
-    if len(payload) > 60_000:
-        return
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        client.sendto(payload, str(OVERLAY_EVENT_SOCKET))
-    except OSError:
-        pass
-    finally:
-        client.close()
+    from core.notification_senders import overlay_datagram
+
+    overlay_datagram(message, OVERLAY_EVENT_SOCKET)
 
 
 def _ignore_overlay_event(_message: dict) -> None:

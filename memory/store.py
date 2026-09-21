@@ -5,6 +5,15 @@ Memories live as Markdown files with YAML frontmatter under
 the web UI, the TUI, and the ``chats memory`` CLI all read and write the
 same files.
 
+Tasks count in their own sequence, everything else in another. His todo list
+is the one surface he reads numbers off out loud, and sharing a counter with
+every passing reference note pushed task #3 to #1093 without three digits of
+work behind it. Both sequences are monotonic for the same reason: a
+scheduler's dispatch receipt outlives the task it names, so finishing #53
+never frees #53 — the next task is still #74. Because the two spaces now
+overlap, an id alone no longer identifies a file, and ``_find_path`` refuses
+an ambiguous one rather than guessing which of the two the caller meant.
+
 Task ownership uses the voice inbox's discipline: serialize selection and
 transition, expire abandoned claims, and fence acknowledgements by owner/token.
 Here a bounded process lock and atomic replacement protect Markdown itself;
@@ -28,6 +37,20 @@ from core.config import MEMORY_DIR
 from core.file_lock import exclusive_lock
 
 MEMORY_TYPES = ["task", "ledger", "feedback", "user", "project", "reference", "general"]
+
+# One counter per id space. Tasks are their own; every other type shares the
+# original one, so existing memory ids keep meaning what they always meant.
+TASK_COUNTER = ".task-next-id"
+MEMORY_COUNTER = ".memory-next-id"
+
+
+class AmbiguousMemoryId(LookupError):
+    """An id that names both a task and a memory, with no type to choose by.
+
+    Raised instead of returning either file: the two id spaces overlap by
+    design, so a bare number is a question, not an address.
+    """
+
 # "backlog" is human-owned work: anything filed as a note, by an agent or by
 # hand, and every task that predates the queue. Only enqueue_task, the phone
 # and webhook boundary, can make work "ready", so the dispatcher never picks up
@@ -171,7 +194,15 @@ def classify_task(text: str, project_hint: str | None = None) -> str:
     action = re.search(r"\b(fix|add|implement|build|update|remove|repair|test|create|"
                        r"investigate|diagnose|refactor|replace|resolve|enable|disable|"
                        r"research|change|make|migrate|integrate|connect|wire|rename|"
-                       r"ship|support)\b", text, re.I)
+                       r"ship|support|redesign|improve|clean|polish|focus|show|hide|"
+                       r"move|drag|reorder|delete|restore)\b", text, re.I)
+    # And more often he states the requirement rather than the verb: "it
+    # should open the keyboard", "I should be able to drag it", "get rid of
+    # these buttons". That is a spec, not chat -- the verb list alone read
+    # his clearest briefs as too vague and bounced them back to him.
+    action = action or re.search(
+        r"\b(should(?:n'?t)?(?: be able to)?|needs? to|has to|must|get rid of|"
+        r"i want|i'?d like|there should(?:n'?t)? be)\b", text, re.I)
     substantive = {word for word in words if len(word) > 2 and word not in _TASK_PADDING}
     return "ready" if action and len(words) >= 8 and len(substantive) >= 4 else "needs_triage"
 
@@ -210,7 +241,7 @@ def enqueue_task(text: str, project_hint: str | None = None,
             return _clean(row)
     if len(rows) >= MAX_TASKS:
         raise ValueError("task queue capacity exceeded")
-    path = _write_file(_next_id(), "task", text, task_fields={
+    path = _write_file(_next_id("task"), "task", text, task_fields={
         "state": classify_task(text, project), "assignee": "", "priority": priority,
         "project_hint": project, "source_id": source or f"queue:{uuid.uuid4().hex}",
     })
@@ -285,7 +316,7 @@ def claim_next_task(owner: str, now=None, lease_seconds=TASK_LEASE_SECONDS) -> d
 
 
 def _owned_task(task_id: int, owner: str, token: str, now: float) -> dict | None:
-    path = _find_path(task_id)
+    path = _find_task_path(task_id)
     row = _parse_file(path) if path else None
     if (not row or row["type"] != "task" or row["state"] not in {"claimed", "running"}
             or not owner or not token or row["assignee"] != owner
@@ -346,7 +377,7 @@ def finish_task_run(task_id: int, run_id: str, state: str, result: str = "") -> 
     if state not in {"done", "blocked"}:
         raise ValueError("invalid task finish state")
     run_id = _task_text(run_id, "run_id", 256)
-    path = _find_path(task_id)
+    path = _find_task_path(task_id)
     row = _parse_file(path) if path else None
     if not row or row["type"] != "task" or row["state"] != "running" or row["run_id"] != run_id:
         return False
@@ -359,7 +390,7 @@ def finish_task_run(task_id: int, run_id: str, state: str, result: str = "") -> 
 def reopen_task_run(task_id: int, run_id: str, *, now=None) -> bool:
     """Put a blocked dispatched task back on its (retried) run."""
     run_id = _task_text(run_id, "run_id", 256)
-    path = _find_path(task_id)
+    path = _find_task_path(task_id)
     row = _parse_file(path) if path else None
     if not row or row["type"] != "task" or row["state"] != "blocked" or row["run_id"] != run_id:
         return False
@@ -372,7 +403,7 @@ def reopen_task_run(task_id: int, run_id: str, *, now=None) -> bool:
 @_serialized_write
 def mark_task_asked(task_id: int, now=None) -> bool:
     """Record that the one triage question went out, so it is asked once."""
-    path = _find_path(task_id)
+    path = _find_task_path(task_id)
     row = _parse_file(path) if path else None
     if not row or row["type"] != "task" or row["state"] != "needs_triage" or row["asked_at"]:
         return False
@@ -390,7 +421,7 @@ def answer_triage(task_id: int, answer: str) -> dict | None:
     """
     answer = _task_text(_flatten(str(answer)) if isinstance(answer, str) else answer,
                         "answer", 2000)
-    path = _find_path(task_id)
+    path = _find_task_path(task_id)
     row = _parse_file(path) if path else None
     if not row or row["type"] != "task" or row["state"] != "needs_triage":
         return None
@@ -549,18 +580,36 @@ def _scan_all() -> list[dict]:
     return out
 
 
-def _find_path(memory_id: int) -> Path | None:
+def _find_path(memory_id: int, mem_type: str | None = None) -> Path | None:
+    """Locate one memory file. ``mem_type`` picks the id space to look in.
+
+    Without it both spaces are searched, and an id living in both raises
+    rather than resolving to whichever type sorts first.
+    """
+    types = [mem_type] if mem_type else MEMORY_TYPES
     prefix = f"{memory_id:03d}-"
-    for t in MEMORY_TYPES:
+    hits: list[Path] = []
+    for t in types:
         d = MEMORY_DIR / t
         if not d.exists():
             continue
         for f in d.glob(f"{prefix}*.md"):
-            return f
-    for m in _scan_all():
-        if m["id"] == memory_id:
-            return m["_path"]
-    return None
+            hits.append(f)
+            break
+    if not hits:
+        # Frontmatter is the authority when a filename was hand-renamed.
+        hits = [m["_path"] for m in _scan_all()
+                if m["id"] == memory_id and (not mem_type or m["type"] == mem_type)]
+    if len(hits) > 1:
+        kinds = sorted({h.parent.name for h in hits})
+        raise AmbiguousMemoryId(
+            f"#{memory_id} names more than one thing ({', '.join(kinds)}); "
+            f"pass a type to say which")
+    return hits[0] if hits else None
+
+
+def _find_task_path(task_id: int) -> Path | None:
+    return _find_path(task_id, "task")
 
 
 @_serialized_write
@@ -602,7 +651,7 @@ def _write_file(mem_id: int, mem_type: str, content: str,
             v = (ledger_fields or {}).get(f, "")
             fm += f"{f}: {_flatten(v).strip()}\n"
     if mem_type == "task":
-        previous_path = _find_path(mem_id)
+        previous_path = _find_path(mem_id, "task")
         previous = _parse_file(previous_path) if previous_path else {}
         fields = {key: (previous or {}).get(key, "") for key in _TASK_FIELDS}
         fields.update(task_fields or {})
@@ -621,10 +670,10 @@ def _write_file(mem_id: int, mem_type: str, content: str,
 
 
 @_serialized_write
-def set_locket_id(memory_id: int, locket_id: int) -> None:
+def set_locket_id(memory_id: int, locket_id: int, mem_type: str | None = None) -> None:
     """Stamp an existing local memory with its Locket row id (rewrites the
     file in place, preserving everything else)."""
-    fpath = _find_path(memory_id)
+    fpath = _find_path(memory_id, mem_type)
     if not fpath:
         return
     m = _parse_file(fpath)
@@ -642,13 +691,21 @@ def set_locket_id(memory_id: int, locket_id: int) -> None:
 
 
 @_serialized_write
-def _next_id() -> int:
-    # A scheduler's durable dispatch receipt outlives a deleted task. Never
-    # recycle that identity. Persist before publication: a crash may leave a
-    # harmless gap, but cannot make two different tasks share a receipt.
-    counter = MEMORY_DIR / ".memory-next-id"
-    floor = int(counter.read_text()) if counter.exists() else 1
-    mid = max(floor, max((m["id"] for m in _scan_all()), default=0) + 1)
+def _next_id(mem_type: str = "general") -> int:
+    # A scheduler's durable dispatch receipt outlives a deleted task, so the
+    # counter only moves forward: a crash may leave a harmless gap, but two
+    # tasks can never share a receipt. The counter is the authority on what
+    # has been handed out; the scan is a fallback for when it is missing, and
+    # a stray high id is stepped over rather than dragging every later id up
+    # to meet it. One task imported from a machine that predated the counter
+    # used to pin his whole todo list in the 1100s.
+    is_task = mem_type == "task"
+    counter = MEMORY_DIR / (TASK_COUNTER if is_task else MEMORY_COUNTER)
+    taken = {m["id"] for m in _scan_all() if (m["type"] == "task") is is_task}
+    mid = (int(counter.read_text(encoding="utf-8")) if counter.exists()
+           else max(taken, default=0) + 1)
+    while mid in taken:
+        mid += 1
     _atomic_text(counter, str(mid + 1))
     return mid
 
@@ -777,7 +834,7 @@ def add_memory(
             sensitivity="personal",
         )
         return str(_flush_v2_outbox(v2, proposal)["proposal_id"])
-    mid = _next_id()
+    mid = _next_id(mem_type)
     _write_file(
         mid,
         mem_type,
@@ -810,9 +867,10 @@ def add_memory(
 
 @_serialized_write
 def update_memory(
-    memory_id: int, content: str | None = None, mem_type: str | None = None
+    memory_id: int, content: str | None = None, mem_type: str | None = None,
+    find_type: str | None = None
 ) -> str | None:
-    fpath = _find_path(memory_id)
+    fpath = _find_path(memory_id, find_type)
     if not fpath:
         return
     existing = _parse_file(fpath)
@@ -885,8 +943,8 @@ def update_memory(
 
 
 @_serialized_write
-def delete_memory(memory_id: int) -> bool | str:
-    fpath = _find_path(memory_id)
+def delete_memory(memory_id: int, mem_type: str | None = None) -> bool | str:
+    fpath = _find_path(memory_id, mem_type)
     if not fpath:
         return False
     existing = _parse_file(fpath)
@@ -921,10 +979,11 @@ def delete_memory(memory_id: int) -> bool | str:
 
 
 @_serialized_write
-def snooze_memory(memory_id: int, days: float = 7) -> bool | str:
+def snooze_memory(memory_id: int, days: float = 7,
+                  mem_type: str | None = None) -> bool | str:
     """Defer an item (task/loop): hide it from the nudge rail until `days`
     from now, so a different one surfaces instead. Content is untouched."""
-    fpath = _find_path(memory_id)
+    fpath = _find_path(memory_id, mem_type)
     if not fpath:
         return False
     existing = _parse_file(fpath)
@@ -1007,7 +1066,7 @@ def upsert_ledger(key: str, **fields) -> int:
             with suppress(OSError):
                 fpath.unlink()
     else:
-        mid = _next_id()
+        mid = _next_id("ledger")
         source_session_id, source_agent, source_title, _ts = _source_context()
         _write_file(
             mid, "ledger", "", ledger_key=key, ledger_fields=merged,
@@ -1018,8 +1077,8 @@ def upsert_ledger(key: str, **fields) -> int:
     return mid
 
 
-def get_memory(memory_id: int) -> dict | None:
-    fpath = _find_path(memory_id)
+def get_memory(memory_id: int, mem_type: str | None = None) -> dict | None:
+    fpath = _find_path(memory_id, mem_type)
     if not fpath:
         return None
     m = _parse_file(fpath)
@@ -1027,10 +1086,20 @@ def get_memory(memory_id: int) -> dict | None:
 
 
 def search_memories(query: str) -> list[dict]:
-    q = query.lower()
-    results = [m for m in _scan_all() if q in m["content"].lower()]
-    results.sort(key=lambda m: m["updated_at"], reverse=True)
-    return [_clean(m) for m in results]
+    """Search memory through the one retrieval authority.
+
+    This used to be its own substring scan over every file, which made it the
+    only search surface that did not go through `retrieve_memory`: it ignored
+    the active authority, scored nothing, and returned rows with no record_id,
+    so a hit found here could not be matched against a hit found anywhere else.
+    The surface stays the default private one: this is a local search over his
+    own memory, and the old scan read everything. Imported lazily because
+    retrieval reads this module.
+    """
+
+    from memory.retrieval import search_memory_records
+
+    return search_memory_records(query)
 
 
 def format_loops() -> str:

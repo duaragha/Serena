@@ -143,9 +143,9 @@ def prepare(tmp_path):
     root = tmp_path / "antigravity-acp"
     (root / "conversations").mkdir(parents=True)
     (root / "conversations" / f"{SID}.db").write_bytes(b"fixture")
-    (root / "conversations" / f"{SID}.meta").write_text(json.dumps({"cwd": str(tmp_path)}))
-    (root / "settings.json").write_text('{"auth":{"type":"oauth-personal"}}')
-    (root / "acp_token.json").write_text("fixture-not-a-credential")
+    (root / "conversations" / f"{SID}.meta").write_text(json.dumps({"cwd": str(tmp_path)}), encoding='utf-8')
+    (root / "settings.json").write_text('{"auth":{"type":"oauth-personal"}}', encoding="utf-8")
+    (root / "acp_token.json").write_text("fixture-not-a-credential", encoding="utf-8")
     return root
 
 
@@ -167,7 +167,7 @@ def test_native_hjson_settings_are_accepted_without_rewriting(tmp_path, settings
                                       '{auth: {type: "gemini-api-key"}}', '{"auth":'])
 def test_native_settings_invalid_shape_or_auth_remains_unavailable(tmp_path, settings):
     root = prepare(tmp_path)
-    (root / "settings.json").write_text(settings)
+    (root / "settings.json").write_text(settings, encoding="utf-8")
     owner = make(tmp_path, ProbeRpc())
     with pytest.raises(ValueError):
         owner._validate_native_target()
@@ -303,9 +303,9 @@ def test_invalid_native_target_cannot_launch_or_migrate(tmp_path, problem):
     if problem == "missing-token":
         (root / "acp_token.json").unlink()
     elif problem == "api-billing":
-        (root / "settings.json").write_text('{"auth":{"type":"gemini-api-key"}}')
+        (root / "settings.json").write_text('{"auth":{"type":"gemini-api-key"}}', encoding="utf-8")
     elif problem == "wrong-project":
-        (root / "conversations" / f"{SID}.meta").write_text('{"cwd":"/wrong"}')
+        (root / "conversations" / f"{SID}.meta").write_text('{"cwd":"/wrong"}', encoding='utf-8')
     elif problem == "cli-hardlink":
         os.link(root / "conversations" / f"{SID}.db", tmp_path / "cli.db")
     else:

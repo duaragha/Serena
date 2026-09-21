@@ -52,7 +52,7 @@ async def main():
             def messages(thread):
                 path = Path(thread["path"]).resolve()
                 assert path.is_relative_to(home.resolve())
-                return [row["payload"] for line in path.read_text().splitlines()
+                return [row["payload"] for line in path.read_text(encoding="utf-8").splitlines()
                         if (row := json.loads(line)).get("type") == "response_item"]
 
             source_messages = messages(source)
@@ -61,7 +61,7 @@ async def main():
             # response records. Verify that exact persisted prefix, not a guessed
             # concatenation of all present/future parent messages.
             def inherited_messages(thread):
-                rows = [json.loads(line) for line in Path(thread["path"]).read_text().splitlines()]
+                rows = [json.loads(line) for line in Path(thread["path"]).read_text(encoding="utf-8").splitlines()]
                 metadata = next(row["payload"] for row in rows if row["type"] == "session_meta")
                 base = metadata.get("history_base")
                 if not base:

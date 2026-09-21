@@ -49,12 +49,12 @@ def test_saved_replay_survives_after_apply_crash(tmp_path, monkeypatch, boundary
     leg = store.get_run(rid)["phases"][3]["legs"][0]
     first = supervisor._execute_leg(store, rid, leg)
     assert first.exit_code == -9, first.error
-    assert (root / "core/alpha.py").read_text() == "alpha = 2\n"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 2\n"
     assert resume_ready_resource_waits(store, now=time.time() + 31) == [leg["leg_id"]]
     monkeypatch.setattr(recovery, "helper_command", lambda: normal_command)
     retried = supervisor._execute_leg(store, rid, store.get_run(rid)["phases"][3]["legs"][0])
     current = store.get_run(rid)["phases"][3]["legs"][0]
-    assert (root / "core/alpha.py").read_text() == "alpha = 2\n"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 2\n"
     assert current["current_attempt"]["actual_model"] is None
     assert retried.ok, f"{boundary}: {current['state']}: {retried.error}"
     assert current["state"] == "completed"
@@ -68,7 +68,7 @@ def _intent(tmp_path):
     store.claim_paths(run_id="journal", worker_key="agent:a", paths=["*"])
     workspace = ensure_workspace(store, run_id="journal", worker_key="agent:a", cwd=root)
     worker = Path(workspace.path)
-    (worker / "core/alpha.py").write_text("alpha = 2\n")
+    (worker / "core/alpha.py").write_text("alpha = 2\n", encoding="utf-8")
     (worker / "new.bin").write_bytes(b"\x00\xffnew\r\n")
     paths = workspace_changed_paths(workspace)
     journal = IntegrationJournal(store, root, workspace, _workspace_patch(workspace, paths))
@@ -82,34 +82,34 @@ def _integrate(root, store, **kwargs):
 
 def test_mixed_exact_images_restore_then_apply_and_preserve_unrelated_files(tmp_path):
     root, store, _, journal = _intent(tmp_path)
-    (root / "core/alpha.py").write_text("alpha = 2\n")
-    (root / "unrelated.txt").write_text("user work")
+    (root / "core/alpha.py").write_text("alpha = 2\n", encoding="utf-8")
+    (root / "unrelated.txt").write_text("user work", encoding="utf-8")
     assert journal.state() == "mixed"
     result = _integrate(root, store)
     assert result.ok, result.reason
     assert result.test_gate["integration_journal"]["restored_mixed_preimage"]
     assert result.rollback_ref == "retained-preimage-ref"
-    assert (root / "unrelated.txt").read_text() == "user work"
+    assert (root / "unrelated.txt").read_text(encoding="utf-8") == "user work"
     assert (root / "new.bin").read_bytes() == b"\x00\xffnew\r\n"
 
 
 def test_foreign_drift_refuses_before_restoring_any_paths(tmp_path):
     root, store, _, _ = _intent(tmp_path)
     (root / "new.bin").write_bytes(b"\x00\xffnew\r\n")
-    (root / "core/alpha.py").write_text("foreign edit")
+    (root / "core/alpha.py").write_text("foreign edit", encoding="utf-8")
     result = _integrate(root, store)
     assert not result.ok
     assert "foreign" in result.reason
     assert (root / "new.bin").exists()
-    assert (root / "core/alpha.py").read_text() == "foreign edit"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "foreign edit"
 
 
 def test_preview_never_restores_a_mixed_intent(tmp_path):
     root, store, _, _ = _intent(tmp_path)
-    (root / "core/alpha.py").write_text("alpha = 2\n")
+    (root / "core/alpha.py").write_text("alpha = 2\n", encoding="utf-8")
     result = _integrate(root, store, apply_changes=False)
     assert not result.ok and "preview" in result.reason
-    assert (root / "core/alpha.py").read_text() == "alpha = 2\n"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 2\n"
     assert not (root / "new.bin").exists()
 
 
@@ -119,7 +119,7 @@ def test_recovered_postimage_must_pass_gates_and_rolls_back_to_original_preimage
     failed = _integrate(root, store, test_gate=[sys.executable, "-c", "raise SystemExit(7)"])
     assert not failed.ok and failed.test_gate["exit_code"] == 7
     assert journal.state() == "pre"
-    assert (root / "core/alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
     assert not (root / "new.bin").exists()
 
 
@@ -128,7 +128,7 @@ def test_gate_cannot_change_owned_bytes_and_claim_completion(tmp_path):
     result = _integrate(root, store, test_gate=[sys.executable, "-c",
                         "from pathlib import Path; Path('core/alpha.py').write_text('other edit')"])
     assert not result.ok
-    assert (root / "core/alpha.py").read_text() == "other edit"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "other edit"
 
 
 def test_corrupt_intent_refuses_without_touching_checkout(tmp_path):
@@ -137,7 +137,7 @@ def test_corrupt_intent_refuses_without_touching_checkout(tmp_path):
         db.execute("UPDATE fleet_integration_intents SET digest='bad' WHERE intent_id=?", (journal.key,))
     result = _integrate(root, store)
     assert not result.ok and "fingerprint" in result.reason
-    assert (root / "core/alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
 
 
 def test_failed_intent_commit_prevents_git_apply(tmp_path, monkeypatch):
@@ -149,7 +149,7 @@ def test_failed_intent_commit_prevents_git_apply(tmp_path, monkeypatch):
     monkeypatch.setattr(IntegrationJournal, "prepare", fail)
     with pytest.raises(sqlite3.OperationalError, match="journal write"):
         _integrate(root, store)
-    assert (root / "core/alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
     assert not (root / "new.bin").exists()
 
 
@@ -188,7 +188,7 @@ def test_parent_symlink_never_reads_or_writes_outside_checkout(tmp_path):
     (root / "core").symlink_to(tmp_path / "outside", target_is_directory=True)
     result = _integrate(root, store)
     assert not result.ok and "redirected parent" in result.reason
-    assert (tmp_path / "outside/alpha.py").read_text() == "alpha = 1\n"
+    assert (tmp_path / "outside/alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX SIGKILL fault injection")
@@ -209,13 +209,13 @@ def test_death_during_rollback_recovers_remaining_mixed_images(tmp_path):
     )
     child = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=30)
     assert child.returncode == -9, child.stderr
-    assert (root / "core/alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
     assert (root / "new.bin").exists()
     reopened = FleetIsolationStore(store.path, workspace_root=store.workspace_root)
     result = _integrate(root, reopened)
     assert result.ok, result.reason
     assert result.test_gate["integration_journal"]["restored_mixed_preimage"]
-    assert (root / "core/alpha.py").read_text() == "alpha = 2\n"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 2\n"
 
 
 def test_explicit_run_deletion_removes_its_private_intent(tmp_path):
@@ -251,7 +251,7 @@ def test_target_branch_switch_cannot_create_a_new_intent(tmp_path):
     subprocess.run(["git", "-C", str(root), "switch", "-c", "other-target"], check=True, capture_output=True)
     result = _integrate(root, store)
     assert not result.ok and "target branch changed" in result.reason
-    assert (root / "core/alpha.py").read_text() == "alpha = 1\n"
+    assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 1\n"
     assert not (root / "new.bin").exists()
 
 
@@ -300,7 +300,7 @@ def test_helper_exit_cleans_gates_with_private_pipes(tmp_path, monkeypatch, cras
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
         try:
-            status = Path(f"/proc/{seen[0]}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            status = Path(f"/proc/{seen[0]}/stat").read_text(encoding='utf-8').rsplit(")", 1)[1].split()[0]
         except FileNotFoundError:
             status = "gone"
         if status in {"Z", "gone"}:

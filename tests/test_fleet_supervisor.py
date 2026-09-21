@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,8 +19,43 @@ from core.fleet_policy import build_policy, builtin_config
 from core.fleet_workers import WorkerRequest, WorkerResult
 
 
+@pytest.mark.parametrize('fixable', [True, False])
+def test_review_loop_runs_to_clean_or_gated_failure(fleet_env, monkeypatch, fixable):
+    config = builtin_config()
+    config['defaults']['blocker_gates_run'] = True
+    policy = build_policy('coding', 'review loop fixture', config=config, worker_count=1, provider_mode='codex')
+    store = supervisor.FleetStore()
+    run = store.create_run(task='review loop fixture', activity='coding', cwd=str(fleet_env),
+        origin_session_id=None, origin_agent='codex', dry_run=False, policy=policy.to_dict())
+    calls = []
+    normal = _successful_fake(calls)
+    reviews = []
+    def worker(request, **kwargs):
+        result = normal(request, **kwargs)
+        if request.phase == 'verify':
+            reviews.append(request.attempt_id)
+            findings = [] if fixable and len(reviews) > 1 else [
+                {'unit_id': 'ws-1', 'severity': 'blocker', 'summary': 'fixture defect', 'evidence': 'fixture.py:1'}]
+            output = '<serena-evidence>' + json.dumps({'units': [{'id': 'ws-1', 'findings': findings}]}) + '</serena-evidence>'
+            return replace(result, output_text=output)
+        return result
+    monkeypatch.setattr(supervisor, 'run_worker', worker)
+    completed = supervisor.run_supervisor(run['run_id'])
+    assert completed['state'] == ('completed' if fixable else 'failed'), completed.get('error')
+    assert len(reviews) == (2 if fixable else 3)
+    assert store.has_event(run['run_id'], 'run.review.unresolved') is (not fixable)
+
+
 @pytest.fixture
 def fleet_env(tmp_path, monkeypatch):
+    # Scheduling assertions count ordinary phase workers only. Report provider
+    # behavior and notification ordering have dedicated coverage in test_fleet_reports.
+    from fleet import reports
+    enrich = reports.enrich_report
+    def offline(*args, **kwargs):
+        raise RuntimeError("report provider disabled in scheduler fixture")
+    monkeypatch.setattr(reports, "enrich_report",
+        lambda run_id, store, work, **kwargs: enrich(run_id, store, work, runner=offline))
     database = tmp_path / "fleet.sqlite3"
     monkeypatch.setenv("SERENA_FLEET_DB_PATH", str(database))
     monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
@@ -187,7 +224,7 @@ def test_write_legs_run_isolated_and_integrate_before_review(fleet_env, monkeypa
         ["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "value.txt").write_text("base\n")
+    (root / "value.txt").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "value.txt"], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -203,11 +240,11 @@ def test_write_legs_run_isolated_and_integrate_before_review(fleet_env, monkeypa
         if request.access_mode == "write":
             assert Path(request.cwd) != root
             target = Path(request.cwd) / "value.txt"
-            target.write_text(target.read_text() + request.phase + "\n")
+            target.write_text(target.read_text(encoding="utf-8") + request.phase + "\n", encoding="utf-8")
         else:
             assert Path(request.cwd) == root
             if request.phase == "verify":
-                assert (root / "value.txt").read_text() == "base\nexecute\n"
+                assert (root / "value.txt").read_text(encoding="utf-8") == "base\nexecute\n"
         return WorkerResult(
             True,
             f"{request.phase}: complete",
@@ -228,7 +265,7 @@ def test_write_legs_run_isolated_and_integrate_before_review(fleet_env, monkeypa
     completed = supervisor.run_supervisor(run["run_id"])
 
     assert completed["state"] == "completed", completed.get("error")
-    assert (root / "value.txt").read_text() == "base\nexecute\nfinalize\n"
+    assert (root / "value.txt").read_text(encoding="utf-8") == "base\nexecute\nfinalize\n"
     isolation = FleetIsolationStore(
         fleet_env / "fleet-isolation.sqlite3", workspace_root=fleet_env / "worktrees"
     )
@@ -248,7 +285,7 @@ def test_four_isolated_writers_without_declared_paths_are_serialized_and_preclai
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
     for slot in "abcd":
-        (root / f"{slot}.txt").write_text("base\n")
+        (root / f"{slot}.txt").write_text("base\n", encoding='utf-8')
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -273,7 +310,7 @@ def test_four_isolated_writers_without_declared_paths_are_serialized_and_preclai
             )
             slot = request.worker_key.rsplit(":", 1)[-1]
             target = Path(request.cwd) / f"{slot}.txt"
-            target.write_text(target.read_text() + request.phase + "\n")
+            target.write_text(target.read_text(encoding="utf-8") + request.phase + "\n", encoding="utf-8")
             if request.phase == "execute":
                 with lock:
                     active_execute += 1
@@ -310,10 +347,12 @@ def test_four_isolated_writers_without_declared_paths_are_serialized_and_preclai
     assert observed_claims
     assert all(paths == ["*"] for _worker, paths in observed_claims)
     for slot in "abcd":
-        assert (root / f"{slot}.txt").read_text() == "base\nexecute\nfinalize\n"
+        assert (root / f"{slot}.txt").read_text(encoding='utf-8') == "base\nexecute\nfinalize\n"
 
 
 def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch):
+    # This queue fixture has no durable attempts; proof uses real-row fixtures.
+    monkeypatch.setattr('fleet.artifacts.FleetArtifacts.write', lambda *a, **kw: {'artifact_id': 'fixture'})
     root = fleet_env / "ordered-integration-repo"
     root.mkdir()
     subprocess.run(["git", "-C", str(root), "init", "-q", "-b", "main"], check=True)
@@ -321,8 +360,8 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
         ["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "alpha.txt").write_text("base\n")
-    (root / "beta.txt").write_text("base\n")
+    (root / "alpha.txt").write_text("base\n", encoding="utf-8")
+    (root / "beta.txt").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -340,8 +379,8 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
     second = ensure_workspace(
         isolation, run_id="run-order", worker_key="agent:b", cwd=root
     )
-    (Path(first.path) / "alpha.txt").write_text("alpha\n")
-    (Path(second.path) / "beta.txt").write_text("beta\n")
+    (Path(first.path) / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    (Path(second.path) / "beta.txt").write_text("beta\n", encoding="utf-8")
     legs = [
         {
             "leg_id": "leg-agent:a",
@@ -413,13 +452,14 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
         "agent:a",
         "agent:b",
     ]
-    assert (root / "alpha.txt").read_text() == "alpha\n"
-    assert (root / "beta.txt").read_text() == "beta\n"
+    assert (root / "alpha.txt").read_text(encoding="utf-8") == "alpha\n"
+    assert (root / "beta.txt").read_text(encoding="utf-8") == "beta\n"
     isolation.release_claims("run-order", "agent:a")
     isolation.release_claims("run-order", "agent:b")
 
 
 def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, monkeypatch):
+    monkeypatch.setattr('fleet.artifacts.FleetArtifacts.write', lambda *a, **kw: {'artifact_id': 'fixture'})
     root = fleet_env / "failed-writer-integration-repo"
     root.mkdir()
     subprocess.run(["git", "-C", str(root), "init", "-q", "-b", "main"], check=True)
@@ -427,7 +467,7 @@ def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, mon
         ["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "beta.txt").write_text("base\n")
+    (root / "beta.txt").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -439,7 +479,7 @@ def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, mon
     workspace = ensure_workspace(
         isolation, run_id="run-failed-order", worker_key="agent:b", cwd=root
     )
-    (Path(workspace.path) / "beta.txt").write_text("beta\n")
+    (Path(workspace.path) / "beta.txt").write_text("beta\n", encoding="utf-8")
     earlier = {
         "leg_id": "leg-agent:a",
         "worker_key": "agent:a",
@@ -504,7 +544,7 @@ def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, mon
     assert [entry["worker_key"] for entry in isolation.integrations("run-failed-order")] == [
         "agent:b"
     ]
-    assert (root / "beta.txt").read_text() == "beta\n"
+    assert (root / "beta.txt").read_text(encoding="utf-8") == "beta\n"
     isolation.release_claims("run-failed-order", "agent:b")
 
 
@@ -552,7 +592,7 @@ def test_rejected_write_releases_claims_and_retry_unblocks_sibling(
         check=True,
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "value.txt").write_text("base\n")
+    (root / "value.txt").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "value.txt"], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -591,7 +631,7 @@ def test_rejected_write_releases_claims_and_retry_unblocks_sibling(
         if request.phase == "execute":
             execute_calls.append(request.worker_key)
             target = Path(request.cwd) / f"{request.worker_key.replace(':', '-')}.txt"
-            target.write_text(f"{request.worker_key}\n")
+            target.write_text(f"{request.worker_key}\n", encoding='utf-8')
         return WorkerResult(
             True,
             f"{request.phase}: complete",
@@ -1401,7 +1441,10 @@ def test_parallel_siblings_receive_only_completed_prior_phase_context(
     assert "peer-research" in prompt
 
 
-def test_worker_prompt_names_the_actual_isolated_directory(fleet_env):
+def test_worker_prompt_names_the_actual_isolated_directory(fleet_env, monkeypatch):
+    from core import repo_brief
+    monkeypatch.setattr(repo_brief, 'for_cwd', lambda cwd: ('fixture architecture brief',
+                        {'brief_sha256': 'version-one', 'path': 'repo-fixture/brief.md'}))
     run = supervisor.start_run(
         "implement without touching the base checkout",
         activity="coding",
@@ -1412,6 +1455,17 @@ def test_worker_prompt_names_the_actual_isolated_directory(fleet_env):
     leg = run["phases"][0]["legs"][0]
     attempt = store.begin_attempt(leg["leg_id"])
     isolated = str(fleet_env / "isolated" / "codex-a")
+    skill = Path(isolated) / 'SKILL.md'
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text('---\nname: implement\ndescription: implement project changes\n---\nfixture implementation procedure', encoding="utf-8")
+    broken = Path(isolated) / '.agents/skills/broken/SKILL.md'
+    broken.parent.mkdir(parents=True)
+    broken.write_text('not valid frontmatter', encoding="utf-8")
+    # A skill whose frontmatter exhausts the YAML parser must be skipped like
+    # any other malformed skill, never break prompt assembly.
+    nested = Path(isolated) / '.agents/skills/nested/SKILL.md'
+    nested.parent.mkdir(parents=True)
+    nested.write_text('---\n' + '- ' * 1200 + 'x\n---\nbody', encoding="utf-8")
 
     prompt = supervisor._worker_prompt(
         store,
@@ -1422,6 +1476,16 @@ def test_worker_prompt_names_the_actual_isolated_directory(fleet_env):
     )
 
     assert f"Working directory: {isolated}" in prompt
+    assert 'fixture architecture brief' in prompt
+    assert 'implement: implement project changes' in prompt
+    assert 'fixture implementation procedure' in prompt
+    assert supervisor._worker_prompt(store, run, leg, attempt, working_directory=isolated) == prompt
+    events = store.events(run['run_id'])
+    assert any(e['type'] == 'skill.discovery_warning' and 'broken' in e['payload']['path'] for e in events)
+    assert any(e['type'] == 'skill.discovery_warning' and 'nested' in e['payload']['path'] for e in events)
+    assert any(e['type'] == 'context.budgeted' and
+               e['payload'].get('sources', [{}])[0].get('brief_sha256') == 'version-one'
+               for e in events)
     assert "Work only inside the exact isolated Working directory below" in prompt
     assert "Never cd to or edit the base checkout" in prompt
     assert "Never use pkill, killall, or pattern-based process termination" in prompt
@@ -1897,7 +1961,6 @@ def test_doctor_reports_the_locked_phase_model_matrix(fleet_env, monkeypatch):
     luna = [{"provider": "codex", "model": "gpt-5.6-luna", "effort": "max"}]
     opus = [{"provider": "claude", "model": "claude-opus-5", "effort": "high"}]
     astra_medium = [{"provider": "codex", "model": "gpt-6-astra", "effort": "medium"}]
-    sol = [{"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"}]
     assert policy["coding_phase_models"] == {
         "Research": luna,
         "Code": astra_medium,
@@ -1907,7 +1970,7 @@ def test_doctor_reports_the_locked_phase_model_matrix(fleet_env, monkeypatch):
     assert policy["research_phase_models"] == {
         "Research": luna,
         "Analyze": opus,
-        "Review": sol,
+        "Review": astra_medium,
         "Refine": opus,
     }
 
@@ -2341,7 +2404,7 @@ def test_delete_terminal_run_refuses_unrecovered_worker_changes(fleet_env, monke
         ["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "value.txt").write_text("base\n")
+    (root / "value.txt").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "value.txt"], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.setenv("SERENA_FLEET_WORKSPACE_ROOT", str(fleet_env / "delete-worktrees"))
@@ -2376,7 +2439,7 @@ def test_delete_terminal_run_refuses_unrecovered_worker_changes(fleet_env, monke
         ["git", "-C", str(root), "worktree", "add", "-q", "-b", workspace.branch, str(worker)],
         check=True,
     )
-    (worker / "value.txt").write_text("unrecovered\n")
+    (worker / "value.txt").write_text("unrecovered\n", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="unrecovered worker changes"):
         supervisor.delete_run(run["run_id"])

@@ -178,7 +178,11 @@ def test_secure_directory_uses_one_inheritable_windows_acl(
 
     assert secure_directory(path) == path.resolve()
     assert secure_directory(path) == path.resolve()
+    # Read the ACL first: rewriting one whose children inherit it makes Windows
+    # walk every child, and this directory holds the Fleet tree. The fake
+    # reports no entries, so the rewrite does follow -- once, for both calls.
     assert calls == [
+        ["icacls", str(path.resolve())],
         [
             "icacls",
             str(path.resolve()),
@@ -189,7 +193,7 @@ def test_secure_directory_uses_one_inheritable_windows_acl(
             "*S-1-5-18:(OI)(CI)(F)",
             "/grant:r",
             "*S-1-5-32-544:(OI)(CI)(F)",
-        ]
+        ],
     ]
 
 
@@ -228,12 +232,16 @@ def test_private_text_atomic_restricts_windows_temp_and_final_files(
     write_text_atomic(path, "secret")
 
     assert path.read_text(encoding="utf-8") == "secret\n"
-    assert len(calls) == 3
-    assert calls[0][0] == "icacls"
-    assert calls[0][1] == str(path.parent.resolve())
-    assert calls[1][0] == "icacls"
-    assert calls[1][1].endswith(".tmp")
-    assert calls[2][:2] == ["icacls", str(path.resolve())]
+    # Read the parent's ACL, restrict the parent, then the temp file it was
+    # written through, then the file itself. The temp file matters: it holds
+    # the same secret and is what an inherited ACL would have exposed.
+    assert len(calls) == 4
+    assert calls[0] == ["icacls", str(path.parent.resolve())]
+    assert calls[1][:2] == ["icacls", str(path.parent.resolve())]
+    assert "/inheritance:r" in calls[1]
+    assert calls[2][0] == "icacls"
+    assert calls[2][1].endswith(".tmp")
+    assert calls[3][:2] == ["icacls", str(path.resolve())]
 
 
 def test_journal_handoff_contains_only_delivered_bounded_turns(tmp_path: Path) -> None:
@@ -351,7 +359,7 @@ def test_lifetime_ledger_closes_superseded_epoch_and_stays_bounded(
     lifetime.start_epoch("two", reason="rotation", now=20)
     lifetime.start_epoch("three", reason="rotation", now=30)
 
-    document = json.loads(path.read_text())
+    document = json.loads(path.read_text(encoding="utf-8"))
     assert [row["session_id"] for row in document["epochs"]] == ["two", "three"]
     assert document["epochs"][0]["end_reason"] == "superseded"
     assert document["epochs"][0]["ended_at"] == 30
@@ -395,7 +403,7 @@ def test_session_store_snapshot_uses_claudes_dot_munging(monkeypatch, tmp_path: 
     project = tmp_path / ".claude" / "projects" / slug
     project.mkdir(parents=True)
     session_id = "11111111-1111-4111-8111-111111111111"
-    (project / f"{session_id}.jsonl").write_text("{}\n", encoding="utf-8")
+    (project / f"{session_id}.jsonl").write_text("{}\n", encoding='utf-8')
 
     snapshot = brain_daemon._session_store_snapshot(session_id)
 

@@ -73,13 +73,13 @@ def test_killed_writer_resumes_with_its_patch_and_completed_research(fleet_env, 
     assert parked["phases"][1]["legs"][0]["current_attempt"]["exit_code"] == (0xC0000005 if os.name == "nt" else -9)
     isolation = FleetIsolationStore(fleet_env / "fleet-isolation.sqlite3")
     workspace = isolation.get_workspace(run["run_id"], "agent:a")
-    assert Path(workspace.path, "survived.txt").read_text() == "before death"
+    assert Path(workspace.path, "survived.txt").read_text(encoding="utf-8") == "before death"
     assert not Path(parked["cwd"], "survived.txt").exists()
     assert resume_ready_resource_waits(store, now=time.time() + 120)
     completed = supervisor.run_supervisor(run["run_id"])
     assert completed["state"] == "completed", completed.get("error")
     assert completed["phases"][0]["legs"][0]["current_attempt"]["attempt_id"] == research_id
-    assert Path(completed["cwd"], "survived.txt").read_text() == "recovered"
+    assert Path(completed["cwd"], "survived.txt").read_text(encoding="utf-8") == "recovered"
     assert not (root / "survived.txt").exists()
 
 

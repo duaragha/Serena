@@ -691,7 +691,7 @@ def test_policy_rejects_worker_capacity_above_four_but_allows_writer_tuning():
 
 def test_declared_paths_use_real_repository_tokens_and_ignore_prose(tmp_path):
     (tmp_path / "core").mkdir()
-    (tmp_path / "core" / "shared.py").write_text("value = 1\n")
+    (tmp_path / "core" / "shared.py").write_text("value = 1\n", encoding="utf-8")
     (tmp_path / "docs").mkdir()
 
     paths = extract_declared_paths(
@@ -703,9 +703,9 @@ def test_declared_paths_use_real_repository_tokens_and_ignore_prose(tmp_path):
 
 
 def test_read_and_negated_paths_do_not_become_write_ownership(tmp_path):
-    (tmp_path / "CLAUDE.md").write_text("instructions\n")
+    (tmp_path / "CLAUDE.md").write_text("instructions\n", encoding="utf-8")
     (tmp_path / "core").mkdir()
-    (tmp_path / "core" / "shared.py").write_text("value = 1\n")
+    (tmp_path / "core" / "shared.py").write_text("value = 1\n", encoding="utf-8")
 
     paths = extract_declared_paths(
         "Read CLAUDE.md before acting. Do not edit core/shared.py. "
@@ -717,7 +717,7 @@ def test_read_and_negated_paths_do_not_become_write_ownership(tmp_path):
 
 
 def test_read_only_path_reference_uses_repository_serialized_write_claim(tmp_path):
-    (tmp_path / "CLAUDE.md").write_text("instructions\n")
+    (tmp_path / "CLAUDE.md").write_text("instructions\n", encoding="utf-8")
     workstreams = [
         {
             "id": "ws-1",
@@ -739,7 +739,7 @@ def test_read_only_path_reference_uses_repository_serialized_write_claim(tmp_pat
 
 def test_overlapping_declared_paths_gain_a_deterministic_dependency(tmp_path):
     (tmp_path / "core").mkdir()
-    (tmp_path / "core" / "shared.py").write_text("value = 1\n")
+    (tmp_path / "core" / "shared.py").write_text("value = 1\n", encoding="utf-8")
     workstreams = [
         {"id": "ws-1", "title": "core owner", "description": "edit core/"},
         {
@@ -769,10 +769,10 @@ def test_overlapping_declared_paths_gain_a_deterministic_dependency(tmp_path):
 
 def test_shared_verification_path_is_not_treated_as_owned(tmp_path):
     (tmp_path / "core").mkdir()
-    (tmp_path / "core" / "alpha.py").write_text("alpha = 1\n")
-    (tmp_path / "core" / "beta.py").write_text("beta = 1\n")
+    (tmp_path / "core" / "alpha.py").write_text("alpha = 1\n", encoding="utf-8")
+    (tmp_path / "core" / "beta.py").write_text("beta = 1\n", encoding="utf-8")
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_probe.py").write_text("def test_probe(): pass\n")
+    (tmp_path / "tests" / "test_probe.py").write_text("def test_probe(): pass\n", encoding="utf-8")
     workstreams = [
         {
             "id": "ws-1",

@@ -12,8 +12,26 @@
     html, body {
       background: #0a0a1a;
     }
-    #widget {
+    /* One row: the app, then the coding drawer beside it. Opening the drawer
+       widens the OS window by the drawer's width, so the stage keeps the room
+       it had instead of being covered by a sheet sliding over it. */
+    #shell {
       position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: stretch;
+      overflow: hidden;
+    }
+    /* Everything that is not the drawer. It has to be able to give up room, so
+       it grows and is allowed to shrink below its content width. */
+    #stage {
+      position: relative;
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+    }
+    #widget {
+      position: absolute;
       inset: 0;
       background: radial-gradient(
         ellipse at center,
@@ -82,6 +100,8 @@
   </style>
 </head>
 <body>
+  <div id="shell">
+  <div id="stage">
   <div id="widget">
     <!-- Header: state indicator at top of widget -->
     <div id="widget-header">
@@ -122,6 +142,8 @@
       </div>
     </div>
   </div>
+  </div><!-- #stage -->
+  </div><!-- #shell -->
 
   <script src="app.js"></script>
   <!-- Import map so unmodified Three.js addons (which import from 'three')
@@ -158,15 +180,28 @@
       clearText: () => transcription.clear(),
     });
 
-    // Code output panel
-    const codePanel = new CodePanel(document.body);
+    // Code output panel. It joins the shell row as a column beside the stage,
+    // so opening it takes the window's new room rather than the stage's.
+    const codePanel = new CodePanel(document.getElementById('shell'));
+
+    function renderSnapshot(snapshot) {
+      if (!snapshot) return;
+      codePanel.setItemId(snapshot.item_id || null);
+      const project = snapshot.project || 'project';
+      const state = snapshot.state || 'idle';
+      codePanel.setStatus(state === 'working' ? `working on ${project}...` : state);
+    }
 
     // Register code panel callbacks via the preload bridge
     window.serena.registerCodePanel({
       onStart: (data) => {
-        codePanel.clear();
-        codePanel.setStatus(`working on ${data.project || 'project'}...`);
-        codePanel.show();
+        // The coding app owns the pane once it is installed; a second job
+        // starting must not wipe the job he is reading.
+        if (!codePanel.__codingJobsInstalled) {
+          codePanel.clear();
+          codePanel.setStatus(`working on ${data.project || 'project'}...`);
+        }
+        codePanel.setItemId(data.item_id || null);
       },
       onEvent: (event) => {
         codePanel.addEvent(event);
@@ -174,8 +209,18 @@
       onDone: (data) => {
         codePanel.setStatus('done');
       },
+      onSnapshot: (snapshot) => {
+        // Draw it. Whether the drawer is on screen is the main process's
+        // call -- it owns the window width this column lives in -- and a
+        // snapshot arriving is not permission to reopen what he closed.
+        renderSnapshot(snapshot);
+      },
+      onControlResult: (result) => {
+        if (result && result.error) codePanel.setStatus(String(result.error));
+      },
       onToggle: () => {
-        codePanel.toggle();
+        if (codePanel.isVisible) window.serena.hideCodePanel();
+        else window.serena.showCodePanel();
       },
     });
 
@@ -183,6 +228,10 @@
     window._serenaDashboard = dashboard;
     window._serenaNotifications = notifications;
     window._serenaCodePanel = codePanel;
+
+    // Reloaded. Ask for whatever was on screen back, drawer included if it was
+    // open -- and not if he had closed it.
+    window.serena.rendererReady();
   </script>
 </body>
 </html>

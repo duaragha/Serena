@@ -47,7 +47,7 @@ def test_fleet_chats_have_one_collapsible_home_outside_normal_buckets() -> None:
     assert partition < active_bucket < done_bucket < starred_bucket
 
     active_section = html.index("if (active.length)")
-    fleet_section = html.index("if (fleetChats.length)")
+    fleet_section = html.index('data-testid="fleet-chats-header"')
     starred_section = html.index("if (starred.length)")
     serena_section = html.index("if (serenaVoice.length)")
     voice_section = html.index('data-testid="voice-chats-header"')
@@ -80,3 +80,18 @@ def test_finished_fleet_workers_are_never_resumable(monkeypatch) -> None:
     deleted = client.delete("/api/session/fleet-worker-1")
     assert deleted.status_code == 409
     assert "durable run history" in deleted.get_json()["error"]
+
+
+def test_sidebar_response_omits_fleet_assignment_without_changing_default_api(monkeypatch):
+    marker = {"run_id": "run-1", "assignment": "large assignment " * 1000, "phase": "code"}
+    rows = [{"session_id": "worker-1", "fleet_worker": marker, "first_message": "searchable"}]
+    monkeypatch.setattr(web, "list_sessions", lambda **kwargs: rows)
+    monkeypatch.setattr(web, "_include_permanent_serena_session", lambda rows: rows)
+    monkeypatch.setattr(web, "_decorate_sessions", lambda rows: rows)
+    monkeypatch.delitem(web.app.extensions, "workspace_host", raising=False)
+    client = web.app.test_client()
+    compact = client.get('/api/sessions?view=sidebar').get_json()
+    assert compact[0]["fleet_worker"] == {"run_id": "run-1"}
+    assert compact[0]["first_message"] == "searchable"
+    assert client.get('/api/sessions').get_json()[0]["fleet_worker"] == marker
+    assert rows[0]["fleet_worker"] == marker

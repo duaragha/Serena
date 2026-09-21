@@ -23,7 +23,7 @@ class Clock:
 
 
 def rows(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines()]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 def test_rtt_and_eou_estimate_include_both_network_legs(tmp_path: Path) -> None:

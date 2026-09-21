@@ -44,7 +44,7 @@ async def main(model, auth_home):
             f'model = {json.dumps(model)}\nmodel_reasoning_effort = "medium"\n'
             'sandbox_mode = "read-only"\napproval_policy = "never"\nweb_search = "disabled"\n'
             '[agents]\nenabled = true\nmax_concurrent_threads_per_session = 1\n'
-        )
+        , encoding="utf-8")
         env = strip_metered_auth_env(dict(os.environ))
         env.update(HOME=str(root), CODEX_HOME=str(home))
         for key in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):

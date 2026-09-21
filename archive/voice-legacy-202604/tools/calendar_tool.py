@@ -45,7 +45,7 @@ def _build_service(credentials_path: Path):
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            TOKEN_PATH.write_text(creds.to_json())
+            TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
             logger.info("Google Calendar token refreshed")
         except Exception:
             logger.exception("Failed to refresh Google Calendar token")

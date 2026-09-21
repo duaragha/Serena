@@ -1,9 +1,21 @@
 // Code Output Panel — shows Claude Code's live output in the Serena overlay
 
+// The same bounds main.js clamps to. The drawer is a column of the window, so
+// its width is a window measurement, and both ends have to agree on it.
+export const DEFAULT_CODE_PANEL_WIDTH = 450;
+export const MIN_CODE_PANEL_WIDTH = 300;
+export const MAX_CODE_PANEL_WIDTH = 720;
+const KEYBOARD_STEP = 24;
+const KEYBOARD_PAGE = 96;
+
 export class CodePanel {
   constructor(container) {
     this._visible = false;
     this._container = container;
+    this._width = DEFAULT_CODE_PANEL_WIDTH;
+    // The job this pane is showing. Events for any other job belong to another
+    // pane and must not be painted into the one he is reading.
+    this._itemId = null;
     this._build();
   }
 
@@ -38,9 +50,13 @@ export class CodePanel {
     this._output = document.createElement('div');
     this._output.className = 'code-panel__output';
 
+    this._resizeHandle = this._buildResizeHandle();
+
     this.el.appendChild(this._statusBar);
     this.el.appendChild(this._output);
+    this.el.appendChild(this._resizeHandle);
     this._container.appendChild(this.el);
+    this.setWidth(this._width);
 
     // Mouse passthrough handling
     this.el.addEventListener('mouseenter', () => {
@@ -51,8 +67,89 @@ export class CodePanel {
     });
   }
 
+  _buildResizeHandle() {
+    // A separator, announced as one: he can drag it, and he can also reach it
+    // with the keyboard, which a bare draggable div gives nobody.
+    const handle = document.createElement('div');
+    handle.className = 'code-panel__resize';
+    handle.setAttribute('role', 'separator');
+    handle.setAttribute('aria-label', 'Resize coding pane');
+    handle.setAttribute('aria-orientation', 'vertical');
+    handle.setAttribute('tabindex', '0');
+    handle.setAttribute('aria-valuemin', MIN_CODE_PANEL_WIDTH);
+    handle.setAttribute('aria-valuemax', MAX_CODE_PANEL_WIDTH);
+
+    let dragFrom = null;
+
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      dragFrom = { x: event.clientX, width: this._width };
+      handle.setPointerCapture(event.pointerId);
+    });
+
+    handle.addEventListener('pointermove', (event) => {
+      if (!dragFrom || !handle.hasPointerCapture(event.pointerId)) return;
+      // The drawer grows rightward from its own left edge, so a rightward drag
+      // widens it.
+      this.setWidth(dragFrom.width + (event.clientX - dragFrom.x));
+    });
+
+    const endDrag = (event) => {
+      if (!dragFrom) return;
+      dragFrom = null;
+      handle.releasePointerCapture(event.pointerId);
+      // One request, on release: every intermediate width would move the OS
+      // window under his cursor mid-drag.
+      this._requestWidth(this._width);
+    };
+
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+
+    handle.addEventListener('keydown', (event) => {
+      const step = event.shiftKey ? KEYBOARD_PAGE : KEYBOARD_STEP;
+      let next = null;
+      if (event.key === 'ArrowRight') next = this._width + step;
+      else if (event.key === 'ArrowLeft') next = this._width - step;
+      else if (event.key === 'Home') next = MIN_CODE_PANEL_WIDTH;
+      else if (event.key === 'End') next = MAX_CODE_PANEL_WIDTH;
+      if (next === null) return;
+      event.preventDefault();
+      this.setWidth(next);
+      this._requestWidth(this._width);
+    });
+
+    return handle;
+  }
+
   get isVisible() {
     return this._visible;
+  }
+
+  get width() {
+    return this._width;
+  }
+
+  /** Draw at this width. Local only: the window is resized by _requestWidth. */
+  setWidth(value) {
+    const width = Math.round(Number(value));
+    this._width = Math.min(
+      MAX_CODE_PANEL_WIDTH,
+      Math.max(MIN_CODE_PANEL_WIDTH, Number.isFinite(width) ? width : this._width),
+    );
+    this.el.style.setProperty('--code-panel-width', `${this._width}px`);
+    this._resizeHandle.setAttribute('aria-valuenow', this._width);
+    return this._width;
+  }
+
+  _requestWidth(width) {
+    window.serena.setCodePanelWidth(width);
+  }
+
+  /** Show this job's events, and only this job's, in this pane. */
+  setItemId(itemId) {
+    this._itemId = itemId || null;
   }
 
   show() {
@@ -93,6 +190,9 @@ export class CodePanel {
   }
 
   addEvent(event) {
+    // A second job starting does not repaint the pane he is reading.
+    if (this._itemId && event.item_id && event.item_id !== this._itemId) return false;
+
     const block = document.createElement('div');
     block.className = 'code-event';
 
@@ -120,6 +220,7 @@ export class CodePanel {
 
     this._output.appendChild(block);
     this._scrollToBottom();
+    return true;
   }
 
   _renderFileEdit(event) {

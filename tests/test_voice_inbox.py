@@ -6,6 +6,8 @@ import sqlite3
 import pytest
 
 from core import voice_inbox
+from core.coding_job_contract import DEFAULT_IMPLEMENT_EFFORT
+from core.coding_model_preferences import CODEX_MODEL
 from core.voice_inbox import VoiceInboxStore
 
 
@@ -165,7 +167,7 @@ def test_restart_recovery_closes_orphan_running_attempt(tmp_path) -> None:
     attempt_id, _attempt_no = store.start_attempt(
         queued.item_id,
         provider="codex",
-        model="gpt-5.6-sol",
+        model=CODEX_MODEL,
         effort="xhigh",
         resume_session_id="persisted-codex-session",
     )
@@ -228,8 +230,8 @@ def _accepted_brief(item_id: str, root: str = "/tmp/project") -> dict:
         "ledger_guidance": [],
         "handoff_guidance": [],
         "requested_outcome": "fix the project",
-        "codex_model": "gpt-5.6-sol",
-        "codex_effort": "high",
+        "codex_model": CODEX_MODEL,
+        "codex_effort": DEFAULT_IMPLEMENT_EFFORT,
         "review_model": "claude-opus-5",
         "review_effort": "xhigh",
         "accepted_at": 10.0,

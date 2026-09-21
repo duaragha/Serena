@@ -59,6 +59,7 @@ async def computer_start(
     speak: bool = False,
     source_session_id: str = "",
     source_agent: Literal["", "codex", "claude"] = "",
+    browser_checks: dict | None = None,
 ) -> dict:
     """Start the bounded computer-use task the user requested in this chat.
 
@@ -85,6 +86,12 @@ async def computer_start(
     number(seconds, "seconds", 1, MAX_SESSION_SECONDS)
     if speak and not background:
         raise ComputerError("spoken coaching requires background=true")
+    if browser_checks is not None:
+        from core.computer_browser import validate_plan
+
+        browser_checks = validate_plan(browser_checks)
+        if mode != "watch" or not background:
+            raise ComputerError("scripted browser conditions require background watch mode")
     client = ComputerClient()
     await asyncio.to_thread(client.ensure_running)
     params = {
@@ -95,6 +102,8 @@ async def computer_start(
         "owner": "mcp",
         **origin_arguments(source_session_id, source_agent),
     }
+    if browser_checks is not None:
+        params["browser_checks"] = browser_checks
     if background:
         params["speak"] = speak
     else:

@@ -63,6 +63,36 @@ def serena_root() -> Path | None:
     return here if (here / "cli.py").is_file() else None
 
 
+def persona_dir() -> Path | None:
+    """The directory holding Persona.md on THIS machine, if it exists anywhere.
+
+    Persona.md is gitignored, so it lives only in the Syncthing tree, never in
+    a deploy checkout. On the PC Fleet runs from ~/serena-runtime, which has
+    Tooling.md but no Persona.md; the real one is ~/Projects/serena. A worker
+    told to read the laptop's /home/raghav/... path found neither, and a
+    strict one refused to review a finished run over it.
+    """
+
+    home = Path.home()
+    for candidate in (serena_root(), home / "Documents" / "Projects" / "serena",
+                      home / "Projects" / "serena"):
+        if candidate and (candidate / "Persona.md").is_file():
+            return candidate
+    return None
+
+
+def persona_instruction() -> str:
+    """The one line every worker gets about the persona, true on this machine."""
+
+    where = persona_dir()
+    if where is None:
+        return ("Serena's Persona.md is not on this machine; carry on without it. "
+                "It is voice guidance, never a prerequisite for the work.")
+    return (f"Read {where / 'Persona.md'} and {where / 'Tooling.md'} if you can. "
+            "They are voice and workflow guidance, never a prerequisite: if either "
+            "cannot be read, say so once and carry on with the work.")
+
+
 def python_for_repo(repo: Path | None) -> str:
     if repo is None:
         return sys.executable
