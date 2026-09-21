@@ -116,10 +116,12 @@
 .serena-workspace .conv-header{min-height:80px;display:flex;align-items:center;padding:14px 24px}
 .serena-workspace .conv-header-top{width:100%}
 .serena-workspace .workspace-terminal-head{height:48px;min-height:48px;padding:8px 17px}
-.serena-workspace .workspace-terminal-body{padding:16px 18px 0}
+/* Margin, not padding: xterm's fit reads its parent's border-box height, so
+   padding here made it size one row too many and clip the status line. */
+.serena-workspace .workspace-terminal-body{margin:16px 18px 0;width:auto}
 .serena-workspace .files-tree{flex:0 1 auto}
 .serena-workspace .workspace-context{margin:15px 14px;padding:17px 0}
 .serena-workspace #fdOrb{display:none}
 .serena-workspace #fdInputRow{box-shadow:none;background:#0b080c;border-radius:6px}
 @media(min-width:1700px){.serena-workspace .chat-list-col{flex-basis:var(--chats-w,290px)}.serena-workspace .panel-files{flex-basis:var(--files-w,250px)}.workspace-topbar{height:61px}.serena-workspace .conv-header{min-height:87px}}
-@media(max-width:760px){.workspace-session-toolbar{padding-right:7px}.workspace-session-toolbar .workspace-agents{padding-left:7px}.serena-workspace .workspace-terminal-body{padding:8px 4px 0}}
+@media(max-width:760px){.workspace-session-toolbar{padding-right:7px}.workspace-session-toolbar .workspace-agents{padding-left:7px}.serena-workspace .workspace-terminal-body{margin:8px 4px 0}}

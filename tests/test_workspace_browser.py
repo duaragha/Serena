@@ -521,3 +521,26 @@ def test_muse_limits_show_native_windows_and_stale_snapshot(workspace, width):
     page.evaluate("loadLiveUsage()")
     playwright.expect(card.locator(".live-usage-empty")).to_have_text("loading")
     assert not errors
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_fitted_terminal_rows_fit_inside_the_visible_pane(workspace, split):
+    """The last row is the agent's input bar and status line. Fitting against a
+    height that still includes the body's padding left it clipped off-screen."""
+    page, calls, errors, rows = workspace
+    page.evaluate("(sid)=>openConv(sid)", rows[0]["session_id"])
+    page.wait_for_function("_termStarting.size===0 && termSessions.size===3")
+    if not split:
+        page.get_by_role("button", name="Show Codex pane", exact=True).click()
+    page.wait_for_timeout(200)
+    fits = page.evaluate("""()=>[...termSessions.values()].filter(r=>r.term && !r.mount.classList.contains('hidden')).map(r=>{
+        r.fit.fit();
+        const body=r.term.element.parentElement, style=getComputedStyle(body);
+        const visible=body.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom);
+        const cell=r.term._core._renderService.dimensions.css.cell.height;
+        return {rows:r.term.rows, needed:r.term.rows*cell, visible};
+    })""")
+    assert fits
+    for fit in fits:
+        assert fit["needed"] <= fit["visible"] + 0.5, fit
+    assert not errors
