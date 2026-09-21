@@ -50,7 +50,7 @@ Never install an update by hand via SSH or manual copying. Both desktop apps sel
   - Release check: `apps/desktop/releases.js` polls every 15 minutes. It announces only when both the installer and its channel file are present.
 
 ### 2. Unified Inbox Desktop (`personal_projects/unified/apps/desktop/`)
-- **Architecture**: Private source repo, public releases repo (`duaragha/unified-inbox-releases`).
+- **Architecture**: Private source repo `duaragha/unified`, public releases repo `duaragha/unified-releases` (renamed 2026-09-21 from `unified-inbox` / `unified-inbox-releases`; GitHub redirects the old names). The releases repo exists because the updater and SideStore download anonymously and cannot read a private repo. Its `sidestore-source.json` is Unified's SideStore feed.
 - **When**: Any changes to `apps/desktop/` or its dependent core packages.
 - **Workflow**:
   1. Verify: `pnpm --filter @unified-inbox/desktop check`
@@ -63,7 +63,7 @@ Never install an update by hand via SSH or manual copying. Both desktop apps sel
      git push origin master --tags
      gh workflow run desktop-release.yml -f release_tag=vX.Y.Z
      ```
-  4. GitHub Actions verifies `UNIFIED_RELEASES_TOKEN` and publishes to `duaragha/unified-inbox-releases`.
+  4. GitHub Actions verifies `UNIFIED_RELEASES_TOKEN` and publishes to `duaragha/unified-releases`.
 
 ### 3. iOS Apps (CodeMagic Feeds)
 - Self-updates via live SideStore/LiveContainer feed endpoints (e.g. `/api/v1/sidestore/source`), which query CodeMagic API for the newest finished build.
