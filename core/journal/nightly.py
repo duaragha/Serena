@@ -43,10 +43,13 @@ def build(day: date) -> dict[str, Any]:
     # Questions he already answered stay answered even if a rerun rephrases them.
     text = draft.summary(gathered, answers)
     html = draft.render_html(key, gathered, text, answers, asked)
-    entry_id = locket.write_entry(day=key, title=draft.title(key), html=html,
-                                  entry_id=existing.get("entry_id"))
+    written = locket.write_entry(day=key, title=draft.title(key), html=html,
+                                 entry_id=existing.get("entry_id"),
+                                 base=existing.get("entry_base"),
+                                 written=existing.get("entry_written"))
     store.save_day(key, facts=gathered, questions=asked, summary=text,
-                   entry_id=entry_id, drafted_at=time.time())
+                   entry_id=written["id"], entry_base=written["base"],
+                   entry_written=written["written"], drafted_at=time.time())
     return store.load_day(key) or {}
 
 
@@ -132,9 +135,13 @@ def record_answer(day: str, answer: str, *, question_id: str = "",
 
     text_summary = draft.summary(facts, answers)
     html = draft.render_html(day, facts, text_summary, answers, record["questions"])
-    entry_id = locket.write_entry(day=day, title=draft.title(day), html=html,
-                                  entry_id=record.get("entry_id"))
-    store.save_day(day, facts=facts, answers=answers, summary=text_summary, entry_id=entry_id)
+    written = locket.write_entry(day=day, title=draft.title(day), html=html,
+                                 entry_id=record.get("entry_id"),
+                                 base=record.get("entry_base"),
+                                 written=record.get("entry_written"))
+    entry_id = written["id"]
+    store.save_day(day, facts=facts, answers=answers, summary=text_summary, entry_id=entry_id,
+                   entry_base=written["base"], entry_written=written["written"])
     remaining = store.unanswered(store.load_day(day) or {})
     return {"day": day, "saved": True, "entry_id": entry_id,
             "still_open": [q["text"] for q in remaining]}

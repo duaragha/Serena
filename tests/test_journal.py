@@ -132,9 +132,9 @@ class TestHisAnswers:
     def written(self, monkeypatch):
         entries = []
 
-        def write_entry(*, day, title, html, entry_id):
+        def write_entry(*, day, title, html, entry_id, base=None, written=None):
             entries.append({"day": day, "html": html, "entry_id": entry_id})
-            return entry_id or 77
+            return {"id": entry_id or 77, "base": "", "written": html, "skipped": False}
 
         def plain(_prompt):
             return "You saw Saad."
@@ -317,50 +317,89 @@ class TestOneEntryPerDay:
     def locket_api(self, monkeypatch):
         from core.journal import locket
 
-        state = {"entries": [], "calls": []}
+        state = {"entries": [], "calls": [], "stored": {}}
 
         def fake(method, path, body=None):
             state["calls"].append((method, path, body))
-            if method == "GET":
+            if method == "GET" and "dateFrom" in path:
                 return {"success": True, "data": state["entries"]}
+            if method == "GET":
+                entry_id = int(path.rstrip("/").split("/")[-1])
+                return {"success": True, "data": {"content": state["stored"].get(entry_id, "")}}
             if method == "POST":
+                state["stored"][99] = body["content"]
                 return {"success": True, "data": {"id": 99}}
+            state["stored"][int(path.rstrip("/").split("/")[-1])] = body["content"]
             return {"success": True}
 
         monkeypatch.setattr(locket, "_request", fake)
         return locket, state
 
+    def _patches(self, state):
+        return [c for c in state["calls"] if c[0] == "PATCH"]
+
     def test_the_auto_logged_entry_is_used_instead_of_adding_a_second(self, locket_api):
         locket, state = locket_api
         state["entries"] = [{"id": 2187, "entryDate": "2026-09-20", "title": "Auto-logged",
                              "content": "", "tags": []}]
-        section = draft.MARKER + " x</em></p><p>You saw Saad.</p>"
-        assert locket.write_entry(day="2026-09-20", title="Sunday, September 20",
-                                  html=section, entry_id=None) == 2187
-        methods = [m for m, *_ in state["calls"]]
-        assert "POST" not in methods
-        _, path, body = state["calls"][-1]
+        out = locket.write_entry(day="2026-09-20", title="Sunday, September 20",
+                                 html="<p>You saw Saad.</p>", entry_id=None)
+        assert out["id"] == 2187 and not out["skipped"]
+        assert "POST" not in [m for m, *_ in state["calls"]]
+        _, path, body = self._patches(state)[-1]
         assert path == "/api/v1/journal/2187/"
-        assert body["content"] == section
+        assert body["content"] == "<p>You saw Saad.</p>"
         assert body["title"] == "Sunday, September 20", "a placeholder title is replaced"
-        assert body["tagNames"] == ["serena"]
+        assert out["written"] == "<p>You saw Saad.</p>"
 
-    def test_his_own_words_and_title_and_tags_survive(self, locket_api):
+    def test_there_is_no_byline_on_his_journal(self):
+        html = draft.render_html("2026-09-20", {"people": [{"name": "Saad"}]}, "You saw Saad.", [], [])
+        assert "Serena" not in html and "Drafted" not in html
+
+    def test_what_he_wrote_before_her_stays_first(self, locket_api):
         locket, state = locket_api
-        old = draft.MARKER + " x</em></p><p>old draft</p>"
         state["entries"] = [{"id": 7, "entryDate": "2026-09-20", "title": "good day",
-                             "content": "<p>i wrote this</p>" + old, "tags": [{"name": "friends"}]}]
-        new = draft.MARKER + " x</em></p><p>new draft</p>"
-        locket.write_entry(day="2026-09-20", title="Sunday", html=new, entry_id=7)
-        body = state["calls"][-1][2]
-        assert body["content"] == "<p>i wrote this</p>" + new
+                             "content": "<p>i wrote this</p>", "tags": [{"name": "friends"}]}]
+        out = locket.write_entry(day="2026-09-20", title="Sunday", html="<p>draft</p>", entry_id=7)
+        body = self._patches(state)[-1][2]
+        assert body["content"] == "<p>i wrote this</p><p>draft</p>"
         assert "title" not in body
         assert body["tagNames"] == ["friends", "serena"]
+        assert out["base"] == "<p>i wrote this</p>"
+
+    def test_her_later_drafts_replace_only_her_own_part(self, locket_api):
+        locket, state = locket_api
+        state["stored"][7] = "<p>mine</p><p>draft 1</p>"
+        state["entries"] = [{"id": 7, "entryDate": "2026-09-20", "title": "x",
+                             "content": "<p>mine</p><p>draft 1</p>", "tags": [{"name": "serena"}]}]
+        out = locket.write_entry(day="2026-09-20", title="t", html="<p>draft 2</p>", entry_id=7,
+                                 base="<p>mine</p>", written="<p>mine</p><p>draft 1</p>")
+        assert self._patches(state)[-1][2]["content"] == "<p>mine</p><p>draft 2</p>"
+        assert out["written"] == "<p>mine</p><p>draft 2</p>"
+
+    def test_once_he_has_edited_it_she_leaves_it_alone(self, locket_api):
+        """No visible boundary means an edit of his could be anywhere; never overwrite it."""
+
+        locket, state = locket_api
+        state["entries"] = [{"id": 7, "entryDate": "2026-09-20", "title": "x",
+                             "content": "<p>draft 1, but he fixed a name</p>", "tags": []}]
+        out = locket.write_entry(day="2026-09-20", title="t", html="<p>draft 2</p>", entry_id=7,
+                                 base="", written="<p>draft 1</p>")
+        assert out["skipped"] is True
+        assert self._patches(state) == []
+
+    def test_an_entry_from_the_first_version_loses_its_byline(self, locket_api):
+        locket, state = locket_api
+        state["entries"] = [{"id": 2187, "entryDate": "2026-09-20", "title": "Sunday",
+                             "content": "<p><em>Drafted by Serena from your chats.</em></p><p>old</p>",
+                             "tags": [{"name": "serena"}]}]
+        locket.write_entry(day="2026-09-20", title="t", html="<p>new</p>", entry_id=2187)
+        assert self._patches(state)[-1][2]["content"] == "<p>new</p>"
 
     def test_a_day_with_no_entry_gets_one(self, locket_api):
         locket, state = locket_api
-        assert locket.write_entry(day="2026-09-20", title="t", html="h", entry_id=None) == 99
-        assert state["calls"][-1][0] == "POST"
+        out = locket.write_entry(day="2026-09-20", title="t", html="<p>h</p>", entry_id=None)
+        assert out["id"] == 99 and out["written"] == "<p>h</p>"
 
 
 def test_nothing_already_auto_logged_is_written_again():

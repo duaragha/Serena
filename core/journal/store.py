@@ -53,6 +53,10 @@ def _connect() -> sqlite3.Connection:
             radius_m REAL NOT NULL DEFAULT 150, created_at REAL NOT NULL
         );
         """)
+    # Added after the first release; older databases get them here.
+    for column in ("entry_base", "entry_written"):
+        with suppress(sqlite3.OperationalError):
+            connection.execute(f"ALTER TABLE days ADD COLUMN {column} TEXT")
     if os.name != "nt":
         with suppress(OSError):
             path.chmod(0o600)
@@ -111,6 +115,8 @@ def load_day(day: str) -> dict[str, Any] | None:
         "drafted_at": row["drafted_at"],
         "sent_at": row["sent_at"],
         "called_at": row["called_at"],
+        "entry_base": row["entry_base"],
+        "entry_written": row["entry_written"],
     }
 
 
@@ -119,6 +125,7 @@ def save_day(day: str, **fields: Any) -> None:
         "facts": "facts_json", "questions": "questions_json", "answers": "answers_json",
         "summary": "summary", "entry_id": "entry_id", "drafted_at": "drafted_at",
         "sent_at": "sent_at", "called_at": "called_at",
+        "entry_base": "entry_base", "entry_written": "entry_written",
     }
     values = {}
     for key, value in fields.items():

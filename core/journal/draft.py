@@ -16,9 +16,6 @@ import re
 from typing import Any
 
 MAX_QUESTIONS = 3
-# Her section of an entry starts here and runs to the end. Everything above it
-# is his and is never touched; see core.journal.locket.write_entry.
-MARKER = "<p><em>Drafted by Serena"
 # Worth asking about. A 20-minute stop is in the timeline; only a longer one
 # is worth interrupting him to name.
 ASK_ABOUT_VISIT_MINUTES = 45
@@ -185,9 +182,9 @@ def title(day: str) -> str:
 
 def render_html(day: str, facts: dict[str, Any], text: str,
                 answers: list[dict[str, Any]], questions_: list[dict[str, Any]]) -> str:
-    parts = [MARKER + " from your chats and location. Anything under \u201cIn your words\u201d "
-             "is exactly what you said. Write above this line; everything below it is "
-             "hers and is rewritten as answers come in.</em></p>"]
+    # No byline: it is his journal. What is hers is tracked on the PC instead
+    # (see core.journal.locket.write_entry), not announced on the page.
+    parts: list[str] = []
     if text:
         parts.append(f"<p>{_e(text)}</p>")
     people = facts.get("people") or []
