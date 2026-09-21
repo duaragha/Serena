@@ -5,3 +5,7 @@ pywinpty==3.0.5
 # numpy. Without it the frozen sidecar died on startup with an unhandled
 # ModuleNotFoundError before the window ever appeared.
 numpy>=2.1
+
+# ZoneInfo on Windows has no zone database without this; the journal and
+# the webhook ingress (which mounts its location route) both need one.
+tzdata>=2024.1

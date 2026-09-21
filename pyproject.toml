@@ -28,6 +28,14 @@ dependencies = [
     # it is a Serena whose brain cannot start. It was declared only under the
     # workspace extra, which is where the native pane first needed it.
     "claude-agent-sdk==0.2.121",
+    # Windows ships no zone database, so ZoneInfo("America/Toronto") raises
+    # there. The journal builds one at import, and the webhook ingress imports
+    # the journal's location route, so without this the PC's ingress would not
+    # start at all.
+    "tzdata>=2024.1; sys_platform == 'win32'",
+    # The PC's system trust store carries an expired root; clients that reach
+    # public HTTPS (Locket on Railway) verify against these roots instead.
+    "certifi>=2024.2",
     "python-xlib>=0.33,<0.34; sys_platform == 'linux'",
 ]
 

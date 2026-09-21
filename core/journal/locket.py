@@ -40,7 +40,12 @@ def _request(method: str, path: str, body: dict[str, Any] | None = None) -> dict
                  "Accept": "application/json"},
         method=method)
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        from core.unified_hub import _tls_context
+
+        # The PC's system store has an expired Let's Encrypt root that Python
+        # picks over the valid chain; the first live run failed on exactly that.
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS,
+                                    context=_tls_context()) as response:
             return json.loads(response.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]

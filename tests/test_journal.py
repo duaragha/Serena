@@ -279,3 +279,15 @@ def test_the_commit_scan_uses_the_projects_tree_not_the_runtime_parent(tmp_path,
 def test_a_date_in_the_summary_is_not_an_invention():
     facts = {"day": "2026-09-20", "people": [{"name": "Saad"}]}
     assert draft.faithful("On September 20th you saw Saad.", facts)
+
+
+def test_windows_gets_a_zone_database_and_current_tls_roots():
+    """Windows has no zone database; the dependency must be declared for it."""
+
+    from pathlib import Path
+
+    import tomllib
+
+    deps = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
+    assert any(d.startswith("tzdata") and "win32" in d for d in deps)
+    assert any(d.startswith("certifi") for d in deps)
