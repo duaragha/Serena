@@ -2504,6 +2504,43 @@ def doctor_command(as_json):
     sys.exit(0 if report.ok else 1)
 
 
+@main.group(name="journal")
+def journal_group():
+    """His journal: the day's facts, her draft, and his answers."""
+
+
+@journal_group.command(name="people")
+@click.argument("day")
+def journal_people(day):
+    """Who he was with on DAY (YYYY-MM-DD), read off the plans in his chats."""
+    from datetime import date
+
+    from core.journal.people import who_i_met
+
+    result = who_i_met(date.fromisoformat(day))
+    click.echo(json.dumps(result.to_dict(), indent=2))
+
+
+@journal_group.command(name="build")
+@click.argument("day")
+@click.option("--send", is_flag=True, help="Also text it to him.")
+@click.option("--call/--no-call", default=False, help="With --send, ring him too if there are questions.")
+def journal_build(day, send, call):
+    """Draft DAY and write it into Locket. Nothing is sent unless --send."""
+    from datetime import date
+
+    from core.journal import nightly
+
+    target = date.fromisoformat(day)
+    record = nightly.build(target)
+    click.echo(json.dumps({"day": day, "entry_id": record.get("entry_id"),
+                           "summary": record.get("summary"),
+                           "questions": [q["text"] for q in record.get("questions") or []],
+                           "unavailable": record.get("facts", {}).get("unavailable")}, indent=2))
+    if send:
+        click.echo(json.dumps(nightly.send(target, call=call), indent=2))
+
+
 @main.group(name="schedule")
 def schedule_group():
     """Inspect and approve Serena's bounded schedules."""

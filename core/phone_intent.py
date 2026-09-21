@@ -54,7 +54,27 @@ def _post(url: str, payload: dict[str, Any], token: str) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def envelope(text: str, *, queue: str = "") -> str:
+def journal_grounding() -> str:
+    """The journal questions she asked him that are still open, if any.
+
+    Without this his "it was saad and sohaib" reads as a stray remark -- or
+    worse, as work -- because the question it answers was sent hours ago.
+    """
+
+    try:
+        from core.journal import store
+
+        days = store.open_days(limit=2)
+    except Exception:
+        return ""
+    lines = []
+    for day in days:
+        for q in store.unanswered(day):
+            lines.append(f"{day['day']} | question_id={q['id']} | {q['text']}")
+    return "\n".join(lines)
+
+
+def envelope(text: str, *, queue: str = "", journal: str = "") -> str:
     """The instruction that turns one text into a decision plus a reply."""
 
     return (
@@ -83,6 +103,15 @@ def envelope(text: str, *, queue: str = "") -> str:
         "\"retry #<id>\" to rerun a blocked job from where it stopped, and "
         "\"#<id> <answer>\" to answer a question you asked about that job.\n\n"
         + (f"His queue right now:\n{queue}\n\n" if queue else "")
+        + (
+            "You asked him these journal questions and he has not answered yet:\n"
+            f"{journal}\n"
+            "If his text answers any of them, it is neither work nor small talk: "
+            "call mcp__serena-journal__journal_answer once per question it answers, "
+            "with his words as `answer`, the matching `question_id` and `day`, a "
+            "short `place_name` for a where-question, and first names in `people`. "
+            "Then reply in a few words. Only say it is saved if the tool said so.\n\n"
+            if journal else "")
         + f"His text:\n{text}"
     )
 
@@ -98,7 +127,7 @@ def read(text: str, *, queue: str = "") -> tuple[str, str] | None:
         return None
     url, token = endpoint
     payload: dict[str, Any] = {
-        "text": envelope(body, queue=queue),
+        "text": envelope(body, queue=queue, journal=journal_grounding()),
         "memory_query": body,
         # Not "plain": the daemon routes a phone turn to its own model and
         # role, so a text can be reasoned through instead of answered at

@@ -86,6 +86,11 @@ class Route:
     description: str = ""
     validator: Callable[[dict[str, Any]], None] | None = None
     max_body_bytes: int = MAX_BODY_BYTES
+    # A route may be signed with its own key instead of the ingress-wide one.
+    # A device that only ever posts to one route should not hold a key that
+    # can also sign `task` or `notify`; with its own key it cannot, and the
+    # ingress-wide key cannot sign for it either.
+    secret: Callable[[], str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +200,7 @@ class WebhookIngress:
         description: str = "",
         validator: Callable[[dict[str, Any]], None] | None = None,
         max_body_bytes: int = MAX_BODY_BYTES,
+        secret: Callable[[], str] | None = None,
     ) -> None:
         """Add one reviewed route. This is the only way a route can exist."""
 
@@ -207,6 +213,8 @@ class WebhookIngress:
             raise WebhookIngressError("a webhook validator must be callable")
         if not 0 < max_body_bytes <= MAX_BODY_BYTES:
             raise WebhookIngressError("a webhook body limit must fit the ingress limit")
+        if secret is not None and not callable(secret):
+            raise WebhookIngressError("a route secret must be a callable that reads it")
         self._routes[route] = Route(
             name=route,
             handler=handler,
@@ -214,6 +222,7 @@ class WebhookIngress:
             description=_clean(description, 200),
             validator=validator,
             max_body_bytes=max_body_bytes,
+            secret=secret,
         )
 
     @property
@@ -247,7 +256,16 @@ class WebhookIngress:
                 decision="rejected", reason="body is too large", status=413,
             )
 
-        secret = self.secret()
+        registered = self._routes.get(name)
+        # A route with its own key is verified with that key alone; an unset
+        # route key closes that route rather than falling back to the wide one.
+        if registered is not None and registered.secret is not None:
+            try:
+                secret = str(registered.secret() or "")
+            except Exception:
+                secret = ""
+        else:
+            secret = self.secret()
         if not secret:
             # Fail closed. An ingress with no secret is not an open ingress.
             return self._record(
@@ -257,7 +275,6 @@ class WebhookIngress:
                 status=503,
             )
 
-        registered = self._routes.get(name)
         if registered is None:
             return self._record(
                 delivery_id, name, raw, moment,
@@ -765,6 +782,16 @@ def default_ingress(**kwargs: Any) -> WebhookIngress:
         "task", route_task, requires_approval=True,
         description="queue a task brief after Raghav approves it",
         validator=validate_task_payload, max_body_bytes=MAX_TASK_BODY_BYTES,
+    )
+    from core.journal import location
+
+    ingress.register(
+        "location", location.route_location,
+        # His own phone reporting where he is; it instructs nothing, so there
+        # is nothing to approve. It gets its own key so the phone cannot sign
+        # for any other route.
+        description="store his location visits from Locket, on this PC only",
+        validator=location.validate_payload, secret=location.route_secret,
     )
     return ingress
 

@@ -2072,6 +2072,8 @@ def _build_agent_options(
     fleet_tool_names: list[str] | None = None,
     gideon_tools=None,
     gideon_tool_names: list[str] | None = None,
+    journal_tools=None,
+    journal_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
@@ -2084,6 +2086,7 @@ def _build_agent_options(
         *(capability_tool_names or []),
         *(fleet_tool_names or []),
         *(gideon_tool_names or []),
+        *(journal_tool_names or []),
     ]
     mcp_servers = {"serena-ro": brain_tools}
     if laptop_tools is not None:
@@ -2100,6 +2103,8 @@ def _build_agent_options(
         mcp_servers["serena-fleet"] = fleet_tools
     if gideon_tools is not None:
         mcp_servers["serena-gideon"] = gideon_tools
+    if journal_tools is not None:
+        mcp_servers["serena-journal"] = journal_tools
     prompt_path = _write_private_text(
         BRAIN_SYSTEM_PROMPT_FILE,
         _persona_context(),
@@ -2207,6 +2212,8 @@ class ResidentClientManager:
         fleet_tool_names: list[str] | None = None,
         gideon_tools_factory=None,
         gideon_tool_names: list[str] | None = None,
+        journal_tools_factory=None,
+        journal_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
         voice_transcripts: VoiceTranscriptStore | None = None,
@@ -2236,6 +2243,8 @@ class ResidentClientManager:
         self.fleet_tool_names = list(fleet_tool_names or [])
         self.gideon_tools_factory = gideon_tools_factory
         self.gideon_tool_names = list(gideon_tool_names or [])
+        self.journal_tools_factory = journal_tools_factory
+        self.journal_tool_names = list(journal_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.voice_transcripts = voice_transcripts or VoiceTranscriptStore()
@@ -2853,6 +2862,12 @@ class ResidentClientManager:
                 else None
             ),
             gideon_tool_names=self.gideon_tool_names,
+            journal_tools=(
+                self.journal_tools_factory()
+                if self.journal_tools_factory is not None
+                else None
+            ),
+            journal_tool_names=self.journal_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -3429,16 +3444,17 @@ async def _run_daemon() -> None:
     from core.brain_document_tools import DOCUMENT_TOOL_NAMES, document_tools_server
     from core.brain_fleet_tools import FLEET_TOOL_NAMES, fleet_tools_server
     from core.brain_gideon_tools import GIDEON_TOOL_NAMES, gideon_tools_server
+    from core.brain_journal_tools import JOURNAL_TOOL_NAMES, journal_tools_server
     from core.brain_laptop_tools import LAPTOP_TOOL_NAMES, laptop_tools_server
     from core.brain_memory_tools import MEMORY_TOOL_NAMES, memory_tools_server
     from core.brain_tools import BRAIN_TOOL_NAMES, brain_tools_server
     from core.brain_work_tools import WORK_TOOL_NAMES, work_tools_server
     from core.codex_brain import CodexBrainClient
-    from core.muse_brain import MuseBrainClient
     from core.codex_brain_tools import build_serena_codex_brain_tools
-    from fleet.capacity import read_fleet_capacity
     from core.local_model_fallback import LocalBrain
+    from core.muse_brain import MuseBrainClient
     from core.provider_health import ContinuityStore
+    from fleet.capacity import read_fleet_capacity
 
     codex_tools = build_serena_codex_brain_tools()
 
@@ -3461,6 +3477,8 @@ async def _run_daemon() -> None:
         fleet_tool_names=FLEET_TOOL_NAMES,
         gideon_tools_factory=gideon_tools_server,
         gideon_tool_names=GIDEON_TOOL_NAMES,
+        journal_tools_factory=journal_tools_server,
+        journal_tool_names=JOURNAL_TOOL_NAMES,
         codex_brain_factory=lambda: CodexBrainClient(
             cwd=BRAIN_CWD,
             developer_instructions=_persona_context(),

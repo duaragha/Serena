@@ -45,7 +45,7 @@ def test_task_waits_for_approval_and_passes_only_reviewed_fields(ingress, enqueu
     held = post(ingress, {"text": "fix the login error and add a regression test",
                           hint: "serena", "priority": "high"})
     assert held.status == 202
-    assert ingress.routes == ("notify", "ping", "task")
+    assert ingress.routes == ("location", "notify", "ping", "task")
     enqueue.assert_not_called()
     assert ingress.pending()[0]["route"] == "task"
     approved = ingress.approve(held.delivery_id, actor="raghav", now=1001)
