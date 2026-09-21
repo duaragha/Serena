@@ -15,6 +15,10 @@ import urllib.request
 from typing import Any
 
 TIMEOUT_SECONDS = 20
+# Every Locket route answers the bare path with a 308 to the trailing-slash
+# one. urllib follows that for GET but not for POST or PATCH, so the first
+# live run drafted a whole day and then failed to save it. Paths carry the
+# slash themselves.
 SERENA_TAG = "serena"
 
 
@@ -56,7 +60,7 @@ def _request(method: str, path: str, body: dict[str, Any] | None = None) -> dict
 
 def day_facts(day: str, tz: str = "America/Toronto") -> dict[str, Any]:
     query = urllib.parse.urlencode({"date": day, "tz": tz})
-    data = _request("GET", f"/api/v1/journal/day-facts?{query}")
+    data = _request("GET", f"/api/v1/journal/day-facts/?{query}")
     if not data.get("success"):
         raise LocketError(f"day-facts refused: {data.get('error') or data}")
     return data
@@ -66,9 +70,9 @@ def write_entry(*, day: str, title: str, html: str, entry_id: int | None) -> int
     """Create her entry for the day, or update the one she already wrote."""
 
     if entry_id:
-        _request("PATCH", f"/api/v1/journal/{int(entry_id)}", {"title": title, "content": html})
+        _request("PATCH", f"/api/v1/journal/{int(entry_id)}/", {"title": title, "content": html})
         return int(entry_id)
-    data = _request("POST", "/api/v1/journal", {
+    data = _request("POST", "/api/v1/journal/", {
         "title": title, "content": html, "entryDate": day, "entryTime": "22:00",
         "tagNames": [SERENA_TAG],
     })

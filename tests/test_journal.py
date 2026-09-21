@@ -291,3 +291,21 @@ def test_windows_gets_a_zone_database_and_current_tls_roots():
     deps = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
     assert any(d.startswith("tzdata") and "win32" in d for d in deps)
     assert any(d.startswith("certifi") for d in deps)
+
+
+def test_every_locket_path_carries_its_trailing_slash(monkeypatch):
+    """Locket 308s bare paths, and urllib will not follow that for a POST."""
+
+    from core.journal import locket
+
+    seen = []
+
+    def fake(method, path, body=None):
+        seen.append(path)
+        return {"success": True, "data": {"id": 5}}
+
+    monkeypatch.setattr(locket, "_request", fake)
+    locket.day_facts("2026-09-20")
+    locket.write_entry(day="2026-09-20", title="t", html="h", entry_id=None)
+    locket.write_entry(day="2026-09-20", title="t", html="h", entry_id=5)
+    assert all(path.split("?")[0].endswith("/") for path in seen), seen
