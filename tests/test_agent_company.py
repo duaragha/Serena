@@ -987,15 +987,18 @@ def test_task_texts_name_the_project_and_what_it_does(queue, monkeypatch):
     task = store.enqueue_task(
         "In Unified (personal_projects/unified, apps/mobile), redesign the chat view like iMessage",
         source_id="imessage:l")
-    monkeypatch.setattr(scheduler_actions, "_describe", lambda brief: "liquid glass ui in chats")
+    monkeypatch.setattr(scheduler_actions, "_describe", lambda brief: ("first words only", False))
     from core import coding_job_contract
     monkeypatch.setattr(coding_job_contract, "resolve_repository_root",
                         lambda brief, **kw: Path("/p/unified"))
+    # A stand-in label is used but not kept, so the next text asks her again.
+    assert scheduler_actions._task_label(task) == "In Unified (first words only)"
+    monkeypatch.setattr(scheduler_actions, "_describe", lambda brief: ("liquid glass ui in chats", True))
     assert scheduler_actions._task_label(task) == "In Unified (liquid glass ui in chats)"
     # Worked out once: a later text reuses it even if the describer would now say otherwise.
-    monkeypatch.setattr(scheduler_actions, "_describe", lambda brief: "something else")
+    monkeypatch.setattr(scheduler_actions, "_describe", lambda brief: ("something else", True))
     assert scheduler_actions._task_label(task) == "In Unified (liquid glass ui in chats)"
     # With the brain down, the brief's own words stand in, minus the "In X (...)," lead-in.
     monkeypatch.undo()
     monkeypatch.setattr(phone_intent, "_endpoint", lambda: None)
-    assert scheduler_actions._describe(task["content"]) == "redesign the chat view like"
+    assert scheduler_actions._describe(task["content"]) == ("redesign the chat view like", False)
