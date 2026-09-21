@@ -104,7 +104,13 @@ def record_answer(day: str, answer: str, *, question_id: str = "",
 
     record = store.load_day(day)
     if record is None:
-        raise JournalError(f"there is no journal draft for {day}")
+        if question_id:
+            raise JournalError(f"there is no journal draft for {day}, so no question {question_id!r}")
+        # He can add to a day before she has drafted it ("put in today's
+        # journal that..."). The day starts with just his words; the nightly
+        # draft keeps them and builds the rest around them.
+        store.save_day(day, facts={"day": day}, questions=[])
+        record = store.load_day(day) or {}
     text = " ".join(str(answer or "").split())
     if not text:
         raise JournalError("an answer needs some words in it")

@@ -983,13 +983,16 @@ def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
 
 
 def journal_nightly(payload: dict[str, Any]) -> ActionOutcome:
-    """Draft his journal once a day, and send it before quiet hours start.
+    """Draft his journal once a day at JOURNAL_SEND_AT, and catch up missed days.
 
     The scheduler runs on intervals and drifts, so this runs every few minutes
-    and decides for itself: after JOURNAL_SEND_AT it drafts and sends today,
-    once. If the PC was off at that time, yesterday's entry is still drafted
-    the next morning -- after quiet hours, text only, no call -- so a day is
-    never left blank because the machine was asleep.
+    and decides for itself. From JOURNAL_SEND_AT until midnight it drafts,
+    texts and (with questions) rings about today; a tick that lands just after
+    midnight still sends that day, until JOURNAL_GRACE_UNTIL_HOUR. He chose
+    11:45pm knowing it is inside quiet hours, so this one send is exempt.
+
+    A day the PC slept through entirely is still drafted the next morning --
+    once quiet hours are over, by text only -- so no day is left blank.
     """
 
     if payload:
@@ -1001,23 +1004,30 @@ def journal_nightly(payload: dict[str, Any]) -> ActionOutcome:
     from core.notification_senders import default_authority
 
     now = datetime.now(nightly.TZ)
-    policy = default_authority().policy
-    quiet = policy.in_quiet_hours(time.time())
     today = now.date()
     send_at = now.replace(hour=JOURNAL_SEND_AT[0], minute=JOURNAL_SEND_AT[1],
                           second=0, microsecond=0)
 
-    record = store.load_day(today.isoformat())
-    if now >= send_at and not quiet and not (record and record.get("sent_at")):
+    def unsent(day) -> bool:
+        record = store.load_day(day.isoformat())
+        return not (record and record.get("sent_at"))
+
+    due = None
+    if now >= send_at:
+        due = today
+    elif now.hour < JOURNAL_GRACE_UNTIL_HOUR:
+        due = today - timedelta(days=1)
+    if due is not None:
+        if not unsent(due):
+            return ActionOutcome(True, "nothing due")
         try:
-            outcome = nightly.run_nightly(today)
+            outcome = nightly.run_nightly(due)
         except Exception as error:
-            return ActionOutcome(False, f"journal for {today} failed: {_why(error)}")
-        return ActionOutcome(True, f"journal for {today}: {outcome}", output=outcome)
+            return ActionOutcome(False, f"journal for {due} failed: {_why(error)}")
+        return ActionOutcome(True, f"journal for {due}: {outcome}", output=outcome)
 
     yesterday = today - timedelta(days=1)
-    missed = store.load_day(yesterday.isoformat())
-    if not quiet and now < send_at and not (missed and missed.get("sent_at")):
+    if not default_authority().policy.in_quiet_hours(time.time()) and unsent(yesterday):
         try:
             nightly.build(yesterday)
             outcome = nightly.send(yesterday, call=False)
@@ -1027,10 +1037,11 @@ def journal_nightly(payload: dict[str, Any]) -> ActionOutcome:
     return ActionOutcome(True, "nothing due")
 
 
-# 9:30pm, not 10: quiet hours begin at 22:00 and a call placed inside them is
-# held until morning, which would turn "a question about your day" into one
-# about yesterday.
-JOURNAL_SEND_AT = (21, 30)
+# His choice: 11:45pm, so the day is actually over when she writes it up. That
+# is inside quiet hours, which is why the send above does not consult them.
+JOURNAL_SEND_AT = (23, 45)
+# A tick that lands just past midnight still sends the day that just ended.
+JOURNAL_GRACE_UNTIL_HOUR = 1
 
 
 REVIEWED_ACTIONS = {

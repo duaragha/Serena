@@ -62,10 +62,11 @@ async def journal_day(args):
 
 
 @tool("journal_answer",
-      "Record what he said in answer to one of your journal questions. `answer` is "
-      "his words, kept as he said them. `question_id` is the question it answers "
-      "(from journal_day). For a `where` question, also pass `place_name`: just the "
-      "place, short (\"MOTW Cafe\"), so the spot is remembered next time. `people` "
+      "Put what he said into his journal, in his words. Use it for answers to your "
+      "journal questions (pass `question_id` from journal_day) and whenever he asks you "
+      "to add something to a day's journal (no `question_id`; `day` is YYYY-MM-DD, "
+      "today if he does not say). For a `where` question, also pass `place_name`: just "
+      "the place, short (\"MOTW Cafe\"), so the spot is remembered next time. `people` "
       "is first names he says he was with.",
       {"day": str, "answer": str, "question_id": str, "place_name": str, "people": list},
       annotations=_WRITES)
@@ -78,9 +79,8 @@ async def journal_answer(args):
         from core.journal import store
 
         waiting = store.open_days(limit=1)
-        if not waiting:
-            return _failed("no journal day has open questions; pass `day`")
-        day = waiting[0]["day"]
+        # An answer goes to the day that asked; anything else is about today.
+        day = waiting[0]["day"] if waiting and args.get("question_id") else nightly.today().isoformat()
     people = args.get("people") or []
     if not isinstance(people, list):
         people = [str(people)]
