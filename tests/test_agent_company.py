@@ -881,3 +881,58 @@ def test_every_queue_word_pulls_the_list_in(queue):
                      "what is in the queue", "finish my todo list",
                      "complete the highest impact task"):
         assert "His open tasks" in _unseen_state_rules(phrasing), phrasing
+
+
+def test_each_finished_phase_texts_him_once(queue, monkeypatch):
+    from core import scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task(BRIEF, source_id="imessage:p")
+    claimed = store.claim_next_task("d")
+    store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-p")
+    phases = [{"name": name, "state": "pending"} for name in ("discover", "execute", "verify", "finalize")]
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: {"state": "running", "phases": phases})
+    texts = []
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key, **kw: texts.append((key, text)) or True)
+    action = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]
+
+    action({})
+    assert texts == []
+    phases[0]["state"] = "completed"
+    action({})
+    action({})
+    phases[1]["state"] = phases[2]["state"] = phases[3]["state"] = "completed"
+    action({})
+    assert [key for key, _ in texts] == [
+        f"task:{task['id']}:phase:run-p:discover",
+        f"task:{task['id']}:phase:run-p:execute",
+        f"task:{task['id']}:phase:run-p:verify",
+    ]
+    assert texts[0][1].startswith(f"#{task['id']} research done (1/4)")
+    assert texts[2][1].startswith(f"#{task['id']} review done (3/4)")
+
+
+def test_ship_builds_only_when_the_change_touches_app_paths(github, monkeypatch):
+    import io
+    import json
+    import urllib.request
+
+    from core import agent_checkouts
+
+    checkout = agent_checkouts.prepare(github.synced, 9, projects_root=github.projects)
+    (checkout.path / "web.txt").write_text("site only\n", encoding="utf-8")
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "add", ".", cwd=checkout.path)
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "web", cwd=checkout.path)
+    (github.root / "dispatch.json").write_text(json.dumps({"ship": {"duaragha/demo": {
+        "codemagic_app_id": "app", "codemagic_workflow": "ios", "paths": ["ios/"]}}}), encoding="utf-8")
+    monkeypatch.setenv("CODEMAGIC_API_TOKEN", "tok")
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda request, timeout=0: io.BytesIO(b'{"buildId": "b2"}'))
+
+    assert agent_checkouts.ship(checkout) == ""
+    (checkout.path / "ios").mkdir()
+    (checkout.path / "ios" / "App.swift").write_text("//\n", encoding="utf-8")
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "add", ".", cwd=checkout.path)
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "native", cwd=checkout.path)
+    assert agent_checkouts.ship(checkout) == "codemagic build b2"

@@ -572,6 +572,30 @@ def _spoken_summary(task_id: int, final: str, headline: str) -> str:
     return f"hey, task {task_id} got stuck: {headline}. i texted you what happened."
 
 
+# What each Fleet phase means to him. The last phase has no text of its own:
+# the "PR ready" / "merged" message that follows it already says it finished.
+PHASE_LABELS = {"discover": "research", "execute": "code", "verify": "review"}
+
+
+def _announce_finished_phases(task: dict, run_id: str, run: dict) -> list[str]:
+    """Text him once as each phase of a dispatched run completes."""
+
+    phases = [p for p in (run or {}).get("phases") or [] if isinstance(p, dict)]
+    headline = " ".join(str(task.get("content") or "").split())[:60]
+    sent = []
+    for number, phase in enumerate(phases, start=1):
+        name = str(phase.get("name") or "")
+        if phase.get("state") != "completed" or name not in PHASE_LABELS:
+            continue
+        if _notify_once(
+            f"#{task['id']} {PHASE_LABELS[name]} done ({number}/{len(phases)}): {headline}",
+            f"task:{task['id']}:phase:{run_id}:{name}",
+            answers_request=_he_asked(task),
+        ):
+            sent.append(name)
+    return sent
+
+
 def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     """Close finished dispatched runs: deliver, record, and tell him.
 
@@ -613,6 +637,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 closed.append({"task_id": int(task["id"]), "run_state": state,
                                "waiting": True})
             continue
+        _announce_finished_phases(task, run_id, run)
         if state not in TERMINAL_RUN_STATES:
             continue
         task_id = int(task["id"])
