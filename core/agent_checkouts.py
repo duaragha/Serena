@@ -280,7 +280,10 @@ def ship(checkout: TaskCheckout) -> str:
 
     Railway services deploy from their GitHub branch by themselves, so only
     repositories that need an explicit trigger appear in dispatch.json:
-    ``{"ship": {"owner/repo": {"codemagic_app_id": "...", "codemagic_workflow": "..."}}}``.
+    ``{"ship": {"owner/repo": {"codemagic_app_id": "...", "codemagic_workflow": "...",
+    "paths": ["apps/mobile/", "packages/"]}}}``. With ``paths``, only a change
+    touching one of them builds: Locket's iOS shell loads the live site, so a
+    web-only change would burn a Mac build for an identical app.
     Returns a short receipt, or "" when the repository has nothing to trigger.
     """
 
@@ -291,6 +294,12 @@ def ship(checkout: TaskCheckout) -> str:
     rule = rules.get(f"{owner}/{repo}".lower())
     if not isinstance(rule, dict) or not rule.get("codemagic_app_id"):
         return ""
+    paths = [str(p) for p in rule.get("paths") or [] if str(p).strip()]
+    if paths:
+        changed = _git(checkout.path, "diff", "--name-only",
+                       f"origin/{checkout.default_branch}...HEAD", check=False).stdout.split()
+        if not any(name.startswith(prefix) for name in changed for prefix in paths):
+            return ""
     token = _codemagic_token()
     if not token:
         raise CheckoutError("a Codemagic build is configured but no API token is present")
