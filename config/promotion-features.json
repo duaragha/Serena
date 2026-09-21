@@ -50,6 +50,14 @@
       "commit": "0351f95e3fd52120f16073eeaa78c246ed924306",
       "requires": [],
       "paths": ["core/indexer.py", "tests/test_fleet_report_visibility.py", "tests/test_web_terminal_performance.py"]
+    },
+    {
+      "id": "terminal-status-line",
+      "title": "Terminal panes show their bottom status line",
+      "devTag": "v0.3.10-dev.3",
+      "commit": "75d5f6bcd26eb4fdd8ca4f509fd09fcfb9c573ca",
+      "requires": [],
+      "paths": ["ui/static/workspace.css", "tests/test_workspace_browser.py"]
     }
   ]
 }
