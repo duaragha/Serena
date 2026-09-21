@@ -208,12 +208,22 @@ function connectionFailed(error) {
   pane.error(error);
   showRetry();
 }
+// /attach can answer just before the owner's history reaches the journal, and
+// poll() is a no-op while another poll is in flight, so one sample is not proof
+// that an accepted attachment is unavailable.
+async function statusAfterAttach(attempts = 25) {
+  for (let attempt = 0; attempt < attempts && pane.conversation.status === 'unavailable'; attempt++) {
+    await new Promise(done => setTimeout(done, 200));
+    await connection.poll();
+  }
+  return pane.conversation.status;
+}
 button.addEventListener('click', async () => {
   button.disabled = true;
   try {
     await connection.connect();
     pane.setConnectionHealthy(true);
-    if (pane.conversation.status === 'unavailable') {
+    if (await statusAfterAttach() === 'unavailable') {
       showRetry();
       return;
     }

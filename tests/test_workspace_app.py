@@ -1095,3 +1095,66 @@ def test_page_reports_engagement_only_after_a_real_click_or_key(tmp_path):
         server.server_close()
         thread.join(5)
         host.shutdown()
+
+
+def test_retry_after_a_failed_attach_waits_for_the_new_history(tmp_path):
+    """The failed attempt leaves the conversation marked unavailable.
+
+    On retry, /attach can answer before the owner's history reaches the journal,
+    and poll() is a no-op while another poll is in flight. Judging that one
+    sample left an attached chat showing Retry connection for good.
+    """
+    playwright = pytest.importorskip('playwright.sync_api')
+    app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / 'ui/static'))
+    host = install_workspace(app, tmp_path / 'late-history.db',
+        describe=lambda sid: {'session_id': sid, 'agent': 'claude'})
+    server = make_server('127.0.0.1', 0, app, threaded=True)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with playwright.sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={'width': 390, 'height': 900})
+                errors, polls, attached = [], [], []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                failure = {'method': 'workspace/error',
+                           'params': {'threadId': 'exact', 'reason': 'Saved setting is no longer available'}}
+                history = {'method': 'workspace/history', 'params': {'thread': {'id': 'exact', 'turns': [
+                    {'id': 'done', 'status': 'completed',
+                     'items': [{'id': 'reply', 'type': 'agentMessage', 'text': 'Recovered reply'}]}]}}}
+
+                def api(route):
+                    url = route.request.url
+                    if '/replay?' in url:
+                        route.fulfill(content_type='application/x-ndjson', body='{"complete":true}\n')
+                    elif url.endswith('/observe'):
+                        route.fulfill(json={'session_id': 'exact', 'observing': True})
+                    elif url.endswith('/attach'):
+                        attached.append(url)
+                        route.fulfill(json={'ok': True, 'session_id': 'exact'})
+                    elif '/events?' in url:
+                        polls.append(url)
+                        events = []
+                        if not attached and 'after=0' in url:
+                            events = [{'sequence': 1, 'event': failure}]
+                        elif attached and len(polls) > len(attached) + 1 and 'after=1' in url:
+                            # The history lands only after the first poll of the retry.
+                            events = [{'sequence': 2, 'event': history}]
+                        route.fulfill(json={'ok': True, 'has_more': False, 'events': events})
+                    else:
+                        route.fulfill(json={'ok': True})
+
+                page.route('**/api/workspace/**', api)
+                page.goto(f'http://127.0.0.1:{server.server_port}/workspace/exact')
+                retry = page.get_by_role('button', name='Retry connection', exact=True)
+                playwright.expect(retry).to_be_enabled()
+                retry.click()
+                page.get_by_text('Recovered reply', exact=True).wait_for()
+                # Attached and healthy: the button is gone, not offering a retry again.
+                page.locator('#workspace-connect').wait_for(state='hidden')
+                assert attached and len(polls) > 2 and not errors
+            finally:
+                browser.close()
+    finally:
+        server.shutdown();server.server_close();worker.join(5);host.shutdown()
