@@ -380,3 +380,29 @@ def test_the_timeline_only_shows_places_with_names():
     facts = {"visits": [{"place": "", "arrived": "2:10pm", "departed": "5:40pm"},
                         {"place": "MOTW Cafe", "arrived": "6:00pm", "departed": "8:00pm"}]}
     assert [line for _, line in draft._timeline(facts)] == ["6:00pm–8:00pm · MOTW Cafe"]
+
+
+def test_the_codex_fallback_sends_the_prompt_on_stdin(monkeypatch):
+    """A day of chats is far past Windows' 32K command-line limit."""
+
+    import subprocess
+
+    from core.journal import model
+
+    seen = {}
+
+    class Done:
+        returncode = 0
+        stderr = ""
+        stdout = '{"item": {"type": "agent_message", "text": "ok"}}'
+
+    def run(args, **kwargs):
+        seen["args"], seen["input"] = args, kwargs.get("input")
+        return Done()
+
+    monkeypatch.setattr(model.shutil, "which", lambda name: "codex")
+    monkeypatch.setattr(subprocess, "run", run)
+    huge = "x" * 100_000
+    assert model._codex(huge, "sys") == "ok"
+    assert all(len(a) < 1000 for a in seen["args"])
+    assert huge in seen["input"]

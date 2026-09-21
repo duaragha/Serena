@@ -49,9 +49,12 @@ def _codex(prompt: str, system: str) -> str:
     if not codex:
         raise ModelUnavailable("codex is not installed on this machine")
     with tempfile.TemporaryDirectory() as scratch:
+        # The prompt goes on stdin ("-"), never argv: a day of chats is well
+        # past Windows' 32K command-line limit, and the first fallback run on
+        # the PC died on exactly that ("filename or extension is too long").
         done = subprocess.run(
-            [codex, "exec", "--json", "--skip-git-repo-check", "-s", "read-only", "-C", scratch,
-             f"{system}\n\n{prompt}"],
+            [codex, "exec", "--json", "--skip-git-repo-check", "-s", "read-only", "-C", scratch, "-"],
+            input=f"{system}\n\n{prompt}",
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=CODEX_TIMEOUT_SECONDS, check=False)
     last = ""
