@@ -484,6 +484,48 @@ def check_notification_backlog(now: float | None = None) -> list[Finding]:
     return [Finding("notifications", True, f"{len(rows)} deferred, none overdue")]
 
 
+def check_brain_alive(now: float | None = None) -> list[Finding]:
+    """Is her brain running, and if not, since when and why.
+
+    It was dead for two days from 2026-09-19 15:37 while this doctor ran every
+    fifteen minutes and reported nothing broken. The brain now writes a line to
+    its uptime ledger on every start and stop; the newest line says whether it
+    is running, and the reason it stopped is already in it.
+    """
+
+    from core import brain_downtime
+
+    moment = time.time() if now is None else now
+    events = brain_downtime.read()
+    if not events:
+        # Nothing has ever started a brain here, or it predates the ledger.
+        return [Finding("brain", True, "no brain history on this machine", severity="warn")]
+    last = events[-1]
+    if last["event"] == "start":
+        try:
+            import psutil
+
+            alive = psutil.pid_exists(int(last["pid"]))
+        except Exception:
+            alive = True  # cannot tell; do not cry wolf
+        if alive:
+            return [Finding("brain", True, f"running since pid {last['pid']} started")]
+        return [Finding(
+            "brain.down", False,
+            f"her brain died without recording why (pid {last['pid']} is gone); "
+            f"down about {brain_downtime._span(moment - float(last['at']))} at most",
+            fix="chats brain history; restart the Serena Brain Daemon task",
+        )]
+    reason = last.get("reason", "unknown")
+    detail = f" -- {last['detail'][:160]}" if last.get("detail") else ""
+    return [Finding(
+        "brain.down", False,
+        f"her brain is down for {brain_downtime._span(moment - float(last['at']))}: "
+        f"{reason}{detail}",
+        fix="chats brain history; restart the Serena Brain Daemon task",
+    )]
+
+
 CHECKS = (
     check_schedules,
     check_task_store,
@@ -493,6 +535,7 @@ CHECKS = (
     check_dispatch_visibility,
     check_repo_freshness,
     check_notification_backlog,
+    check_brain_alive,
 )
 
 

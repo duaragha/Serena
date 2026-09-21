@@ -97,6 +97,14 @@ Get-ChildItem Env: | Where-Object {
 }
 
 Set-Location $runtime
+$stamp = { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
+Add-Content "$runtime\brain.stdout.log" "$(& $stamp) [wrapper] starting the brain"
 & "$runtime\.venv\Scripts\python.exe" -u -m core.brain_daemon `
     1>> "$runtime\brain.stdout.log" 2>> "$runtime\brain.stderr.log"
-exit $LASTEXITCODE
+$code = $LASTEXITCODE
+# The brain records its own reason when it can. This line is the backstop for
+# when it can't -- a hard crash or a kill skips its cleanup -- so the log still
+# says when it ended and with what code. On 2026-09-19 it exited 1 and nothing
+# anywhere said so.
+Add-Content "$runtime\brain.stdout.log" "$(& $stamp) [wrapper] brain exited with code $code"
+exit $code

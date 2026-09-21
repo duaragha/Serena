@@ -3479,7 +3479,15 @@ async def _run_daemon() -> None:
         await manager.start()
     except BaseException as exc:
         print(f"[brain] FATAL: startup failed: {type(exc).__name__}: {exc}", flush=True)
+        _set_stop("startup_failed", f"{type(exc).__name__}: {exc}")
         raise
+    _STOP["started_at"] = time.time()
+    with contextlib.suppress(Exception):
+        from core import brain_downtime
+
+        started = brain_downtime.record_start(os.getpid())
+        if "previous_stop" in started:
+            print(f"[brain] started after {started.get('previous_stop')}", flush=True)
     stream_ready = asyncio.Event()
     server_tasks = [
         asyncio.create_task(_serve(manager, stream_ready), name="brain-http-server"),
@@ -3492,7 +3500,8 @@ async def _run_daemon() -> None:
     signal_installed = False
     if os.name != "nt" and hasattr(signal, "SIGTERM"):
         with contextlib.suppress(NotImplementedError, RuntimeError):
-            loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
+            loop.add_signal_handler(
+                signal.SIGTERM, lambda: (_set_stop("signal:SIGTERM"), shutdown_event.set()))
             signal_installed = True
     try:
         finished, _ = await asyncio.wait(
@@ -3500,9 +3509,14 @@ async def _run_daemon() -> None:
             return_when=asyncio.FIRST_COMPLETED,
         )
         if fatal_task in finished and manager.fatal_error:
+            _set_stop("fatal", str(manager.fatal_error))
             raise RuntimeError(manager.fatal_error)
         for task in server_tasks:
             if task in finished:
+                error = task.exception() if not task.cancelled() else None
+                _set_stop(f"server_exited:{task.get_name()}",
+                          f"{type(error).__name__}: {error}" if error else
+                          "the server returned on its own")
                 await task
     finally:
         if signal_installed:
@@ -3525,17 +3539,112 @@ async def _run_daemon() -> None:
                 BRAIN_FILE.unlink()
 
 
+# Why this process is ending, set by whichever path ends it and written once.
+# Every exit used to record "shutdown", so a crash, a kill and a clean stop
+# looked identical, and the 2026-09-19 outage could not be explained after.
+_STOP: dict = {"reason": "", "detail": "", "recorded": False, "started_at": None}
+
+
+def _set_stop(reason: str, detail: str = "") -> None:
+    if not _STOP["reason"]:
+        _STOP["reason"], _STOP["detail"] = reason, detail
+
+
+def _write_stop(reason: str = "", detail: str = "") -> None:
+    """Record the stop exactly once, best effort -- never let logging kill her."""
+
+    if _STOP["recorded"]:
+        return
+    if reason:
+        _set_stop(reason, detail)
+    _STOP["recorded"] = True
+    with contextlib.suppress(Exception):
+        from core import brain_downtime
+
+        brain_downtime.record_stop(
+            os.getpid(), _STOP["reason"] or "exited_without_a_reason",
+            detail=_STOP["detail"], started_at=_STOP["started_at"])
+    print(f"[brain] stopping: {_STOP['reason'] or 'exited_without_a_reason'}"
+          + (f" -- {_STOP['detail']}" if _STOP["detail"] else ""), flush=True)
+
+
+def _install_windows_stop_hooks():
+    """Hear Windows say why it is ending the process, before it does.
+
+    No signal handler was ever installed on Windows, so a logoff, a system
+    shutdown or the console closing ended her without a word. The console
+    control handler runs on its own thread, so it writes the stop line itself
+    rather than trusting the event loop to get the chance.
+    """
+
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    names = {0: "ctrl_c", 1: "ctrl_break", 2: "console_closed",
+             5: "windows_logoff", 6: "windows_shutdown"}
+    handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+    def handler(event: int) -> bool:
+        _write_stop(f"windows:{names.get(int(event), f'event_{event}')}")
+        return False  # let Windows carry on with its default handling
+
+    hook = handler_type(handler)
+    with contextlib.suppress(Exception):
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(hook, True)
+    return hook  # the caller must keep this alive, or ctypes frees the callback
+
+
 async def main() -> None:
     _guard_billing()
     _acquire_instance_lock()
+    windows_hook = _install_windows_stop_hooks()
     try:
         _guard_single_instance()
         await _run_daemon()
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
+            _set_stop("interrupted", type(exc).__name__)
+        else:
+            import traceback
+
+            tail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            _set_stop("crashed", f"{type(exc).__name__}: {exc} | {tail[-400:]}")
+        raise
     finally:
+        _write_stop()
         _release_instance_lock()
+        del windows_hook
+
+
+class _Stamped:
+    """Prefix every line with the wall clock, so a log can be read against time.
+
+    Her log had no timestamps at all, so "when did it stop" could not be read
+    off it -- the one question an outage needs answered first.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._fresh = True
+
+    def write(self, text: str) -> int:
+        out = []
+        for chunk in text.splitlines(keepends=True):
+            if self._fresh:
+                out.append(time.strftime("%Y-%m-%d %H:%M:%S "))
+            out.append(chunk)
+            self._fresh = chunk.endswith("\n")
+        return self._stream.write("".join(out))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 
 if __name__ == "__main__":
+    sys.stdout = _Stamped(sys.stdout)
+    sys.stderr = _Stamped(sys.stderr)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
