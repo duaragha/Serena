@@ -767,7 +767,10 @@ def test_a_broken_check_reaches_him_once_per_shape(monkeypatch):
     assert outcome.notify is not None
     assert outcome.notify["kind"] == "serena.doctor"
     assert "Fleet refuses its own config" in outcome.notify["summary"]
-    assert "+1 more" in outcome.notify["summary"]
+    # The warning rides along in the record, never in his text: drift like
+    # "35 commits behind" is not an outage, and it reached him hourly.
+    assert "+1 more" not in outcome.notify["summary"]
+    assert "35 commit" not in outcome.notify["summary"]
     assert outcome.notify["urgency"] == "normal"
     # It runs on both machines, and "the repo is behind" means something
     # different depending on which one is saying it.
@@ -776,12 +779,16 @@ def test_a_broken_check_reaches_him_once_per_shape(monkeypatch):
     assert outcome.notify["channel"] == "telegram"
     # One notice per distinct shape, per machine, so a problem that persists
     # all day is not an hourly nag and a new or fixed check is heard about.
-    assert outcome.notify["dedupe_key"] == "doctor:test-machine:fleet.config,repo.behind"
+    # The shape is the failures alone, so a warning flapping on and off does
+    # not re-send a failure he has already heard about.
+    assert outcome.notify["dedupe_key"] == "doctor:test-machine:fleet.config"
     assert outcome.output["failures"] == ["fleet.config"]
     assert outcome.output["warnings"] == ["repo.behind"]
 
 
-def test_drift_alone_is_reported_quietly(monkeypatch):
+def test_drift_alone_is_recorded_but_never_texted(monkeypatch):
+    """repo.stale_fetch reached his phone every quarter hour while the PC was
+    exactly current. Drift belongs in `chats doctor`, not his messages."""
     from core import doctor
 
     monkeypatch.setattr(doctor, "run", lambda: _doctor_report(
@@ -791,8 +798,9 @@ def test_drift_alone_is_reported_quietly(monkeypatch):
 
     outcome = REVIEWED_ACTIONS["serena.doctor"]({})
 
-    assert outcome.notify["urgency"] == "low"
-    assert "+" not in outcome.notify["summary"]
+    assert outcome.ok is True
+    assert outcome.notify is None
+    assert outcome.output["warnings"] == ["repo.unlanded"]
 
 
 def test_a_long_finding_is_cut_before_it_is_spoken(monkeypatch):

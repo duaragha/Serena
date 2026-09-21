@@ -18,8 +18,8 @@ def line(monkeypatch, tmp_path):
     """An available phone line, a captured notice, and a private state file."""
 
     sent: list[tuple[str, str]] = []
-    monkeypatch.setattr(scheduler_actions, "_notify_phone",
-                        lambda text, key: bool(sent.append((text, key))) or True)
+    monkeypatch.setattr(scheduler_actions, "_nudge_decision",
+                        lambda text, key: sent.append((text, key)) or "sent")
     monkeypatch.setattr(scheduler_actions, "_nudge_state_path",
                         lambda: tmp_path / "phone-nudge.json")
     from core import phone_line
@@ -88,18 +88,32 @@ def test_a_snoozed_task_stays_quiet(line, monkeypatch):
     assert line == []
 
 
-def test_a_held_notice_does_not_count_as_spoken(monkeypatch, tmp_path):
+def _nudge_with(monkeypatch, tmp_path, decision):
     from core import phone_line
 
     monkeypatch.setattr(phone_line, "available", lambda: True)
-    monkeypatch.setattr(scheduler_actions, "_notify_phone", lambda text, key: False)
+    monkeypatch.setattr(scheduler_actions, "_nudge_decision", lambda text, key: decision)
     state = tmp_path / "phone-nudge.json"
     monkeypatch.setattr(scheduler_actions, "_nudge_state_path", lambda: state)
     _tasks(monkeypatch, [_task(14, "blocked")])
-    outcome = scheduler_actions.nudge_phone_line({})
+    return scheduler_actions.nudge_phone_line({}), state
+
+
+def test_a_failed_notice_does_not_count_as_spoken(monkeypatch, tmp_path):
+    outcome, state = _nudge_with(monkeypatch, tmp_path, "failed")
     assert outcome.ok and outcome.output["sent"] is False
-    # Quiet hours held it, so the next pass must be free to try again.
+    # It never reached him, so the next pass must be free to try again.
     assert not state.exists()
+
+
+def test_a_nudge_deferred_through_quiet_hours_still_starts_the_shift(monkeypatch, tmp_path):
+    """Deferred is not lost: it goes out in the morning. Treating it as unsaid
+    re-raised the same task every fifteen minutes all night."""
+    outcome, state = _nudge_with(monkeypatch, tmp_path, "deferred")
+    assert outcome.output["sent"] is False
+    assert state.exists()
+    again, _ = _nudge_with(monkeypatch, tmp_path, "deferred")
+    assert "quiet for" in again.detail
 
 
 def test_the_action_takes_no_payload_and_needs_a_line(monkeypatch, tmp_path):

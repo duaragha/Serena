@@ -401,3 +401,25 @@ def test_two_process_race(queue, enqueue):
                 process.terminate()
                 process.join(timeout=5)
         results.close()
+
+
+@pytest.mark.parametrize("brief", [
+    "In unified when I click search, especially on mobile, it should bring the "
+    "keyboard up right away and I should be able to type instantly",
+    "There shouldn't be up and down buttons, I should just be able to hold the "
+    "exercise and drag it within the routine",
+    "Get rid of the rename, up, down, less and more buttons on the routines page",
+])
+def test_a_requirement_he_states_is_work_not_chat(brief):
+    """He writes what it should do, not the verb a triager expects. Reading
+    these as too vague bounced his clearest briefs back to him."""
+    assert store.classify_task(brief) == "ready"
+
+
+@pytest.mark.parametrize("brief", [
+    "please fix it, it is still broken",
+    "how is it going today",
+    "it should work",
+])
+def test_vague_or_chatty_text_still_gets_one_question(brief):
+    assert store.classify_task(brief) == "needs_triage"
